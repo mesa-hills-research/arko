@@ -68,9 +68,17 @@ impl Folder {
         &self.path
     }
 
-    /// Its real path, with no link in it.
+    /// Its real path, with no link in it, as it was when it was opened.
     pub(crate) fn real(&self) -> &Path {
         &self.real
+    }
+
+    /// Its device and inode, where the system has them.
+    pub(crate) fn id(&self) -> Option<(u64, u64)> {
+        #[cfg(unix)]
+        return sys::id_of(&self.fd).ok();
+        #[cfg(not(unix))]
+        return None;
     }
 
     /// The folder `name` in this one, and whether this call made it. With
@@ -243,22 +251,45 @@ impl Folder {
         written
     }
 
-    /// The bytes of the file `name`, refusing a link.
-    pub(crate) fn read(&self, name: impl AsRef<OsStr>) -> io::Result<Vec<u8>> {
-        use std::io::Read;
+    /// Writes the file `name` whole, through a new file renamed into place,
+    /// in place of what is there. A link there is replaced, never followed.
+    pub(crate) fn write_whole(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+        let temporary = format!(".{name}.{}.new", uuid::Uuid::new_v4().simple());
+        let written = self
+            .create(&temporary, bytes)
+            .and_then(|()| self.rename(&temporary, name));
+        if written.is_err() {
+            let _ = self.remove_file(&temporary);
+        }
+        written
+    }
+
+    /// The regular file `name`, opened to read. Refuses a link and anything
+    /// else that isn't a regular file, such as a pipe, which opening doesn't
+    /// wait for.
+    pub(crate) fn open_file(&self, name: impl AsRef<OsStr>) -> io::Result<std::fs::File> {
         let name = name.as_ref();
         #[cfg(unix)]
-        let mut file = sys::open_file(&self.fd, name)?;
+        return sys::open_file(&self.fd, name);
         #[cfg(not(unix))]
-        let mut file = {
+        {
             let path = self.checked(name)?;
-            if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
-                return Err(io::Error::other("a link"));
+            if !std::fs::symlink_metadata(&path)?.file_type().is_file() {
+                return Err(io::Error::other("not a regular file"));
             }
-            std::fs::File::open(path)?
-        };
+            let file = std::fs::File::open(path)?;
+            if !file.metadata()?.is_file() {
+                return Err(io::Error::other("not a regular file"));
+            }
+            Ok(file)
+        }
+    }
+
+    /// The bytes of the regular file `name`, refusing a link.
+    pub(crate) fn read(&self, name: impl AsRef<OsStr>) -> io::Result<Vec<u8>> {
+        use std::io::Read;
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
+        self.open_file(name)?.read_to_end(&mut bytes)?;
         Ok(bytes)
     }
 
@@ -303,19 +334,37 @@ impl Folder {
     /// Deletes the folder `name` and everything in it. A link in it is
     /// deleted, never followed.
     pub(crate) fn remove_all(&self, name: impl AsRef<OsStr>) -> io::Result<()> {
+        self.remove_all_of(name, None)
+    }
+
+    /// Deletes the folder `name` and everything in it, as [`remove_all`]
+    /// does, when it is the folder `id` names (its device and inode, checked
+    /// on the folder opened), else fails with `InvalidData`.
+    ///
+    /// [`remove_all`]: Self::remove_all
+    pub(crate) fn remove_all_of(
+        &self,
+        name: impl AsRef<OsStr>,
+        id: Option<(u64, u64)>,
+    ) -> io::Result<()> {
         let name = name.as_ref();
         #[cfg(unix)]
         {
             match self.entry(name)? {
-                None => return Ok(()),
+                None if id.is_none() => return Ok(()),
+                None => return Err(io::Error::from(io::ErrorKind::NotFound)),
                 Some(Entry {
                     kind: Kind::Folder, ..
                 }) => {}
-                Some(_) => return self.remove_file(name),
+                Some(_) if id.is_none() => return self.remove_file(name),
+                Some(_) => return Err(io::Error::from(io::ErrorKind::InvalidData)),
             }
             let Some((inner, _)) = self.open(name, false).map_err(io::Error::other)? else {
                 return Ok(());
             };
+            if id.is_some() && inner.id() != id {
+                return Err(io::Error::from(io::ErrorKind::InvalidData));
+            }
             for entry in inner.names()? {
                 inner.remove_all(&entry)?;
             }
@@ -323,6 +372,8 @@ impl Folder {
         }
         #[cfg(not(unix))]
         {
+            // (No identity to check where the system has none.)
+            let _ = id;
             let path = self.checked(name)?;
             if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
                 return std::fs::remove_file(path);
@@ -467,8 +518,14 @@ mod sys {
         open_at(dir, name, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL)
     }
 
+    /// Opens the regular file `name` to read, without waiting on a pipe or
+    /// a device.
     pub fn open_file(dir: &OwnedFd, name: &OsStr) -> io::Result<std::fs::File> {
-        open_at(dir, name, libc::O_RDONLY)
+        let file = open_at(dir, name, libc::O_RDONLY | libc::O_NONBLOCK)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::other("not a regular file"));
+        }
+        Ok(file)
     }
 
     pub fn rename(dir: &OwnedFd, from: &OsStr, to: &OsStr) -> io::Result<()> {

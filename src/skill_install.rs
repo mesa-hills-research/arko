@@ -273,7 +273,8 @@ fn lock_saves(root: &Path) -> Result<std::fs::File, String> {
 }
 
 /// What the folder of the agent's skill a save replaces held when the card
-/// was made. A save goes ahead only while it holds the same.
+/// was made. A save goes ahead only while it holds the same, and deletes the
+/// folder it put aside only when that still holds the same.
 #[derive(Debug, PartialEq, Eq)]
 struct Stamp {
     /// The folder's device and inode, where the system has them.
@@ -282,37 +283,76 @@ struct Stamp {
     hash: [u8; 32],
 }
 
-/// The stamp of the folder `name` in `folder`.
+/// The most a stamp reads of a folder: its files, folders and other
+/// entries, their bytes, and how deep its folders go. A skill's folder that
+/// holds more isn't replaced, since the user has put more in it than a save
+/// does.
+const STAMP_ENTRIES: usize = 1_000;
+const STAMP_BYTES: u64 = 4 * MAX_UNPACKED;
+const STAMP_DEPTH: usize = 16;
+
+/// The stamp of the folder `name` in `folder`, read within the limits
+/// above (`FileTooLarge` past them). Files are read in small pieces, and
+/// only regular files are opened.
 fn stamp(folder: &Folder, name: &str) -> std::io::Result<Stamp> {
     use sha2::Digest;
-    fn hash(folder: &Folder, hasher: &mut sha2::Sha256) -> std::io::Result<()> {
+    use std::io::Read;
+    struct Reading {
+        hasher: sha2::Sha256,
+        entries: usize,
+        bytes: u64,
+    }
+    fn too_big() -> std::io::Error {
+        std::io::Error::from(std::io::ErrorKind::FileTooLarge)
+    }
+    fn hash(folder: &Folder, reading: &mut Reading, depth: usize) -> std::io::Result<()> {
+        if depth > STAMP_DEPTH {
+            return Err(too_big());
+        }
         for name in folder.names()? {
             let Some(entry) = folder.entry(&name)? else {
                 continue;
             };
-            hasher.update(name.as_encoded_bytes());
-            hasher.update([0]);
+            reading.entries += 1;
+            if reading.entries > STAMP_ENTRIES {
+                return Err(too_big());
+            }
+            reading.hasher.update(name.as_encoded_bytes());
+            reading.hasher.update([0]);
             match entry.kind {
                 Kind::Folder => {
-                    hasher.update(b"d");
+                    reading.hasher.update(b"d");
                     if let Some((inner, _)) =
                         folder.open(&name, false).map_err(std::io::Error::other)?
                     {
-                        hash(&inner, hasher)?;
+                        hash(&inner, reading, depth + 1)?;
                     }
-                    hasher.update(b"/");
+                    reading.hasher.update(b"/");
                 }
                 Kind::File => {
-                    let bytes = folder.read(&name)?;
-                    hasher.update(b"f");
-                    hasher.update((bytes.len() as u64).to_le_bytes());
-                    hasher.update(&bytes);
+                    reading.hasher.update(b"f");
+                    let mut file = folder.open_file(&name)?;
+                    let mut buffer = [0u8; 64 * 1024];
+                    let mut length = 0u64;
+                    loop {
+                        let read = file.read(&mut buffer)?;
+                        if read == 0 {
+                            break;
+                        }
+                        length += read as u64;
+                        reading.bytes += read as u64;
+                        if reading.bytes > STAMP_BYTES {
+                            return Err(too_big());
+                        }
+                        reading.hasher.update(&buffer[..read]);
+                    }
+                    reading.hasher.update(length.to_le_bytes());
                 }
                 Kind::Link | Kind::Other => {
-                    hasher.update(b"l");
+                    reading.hasher.update(b"l");
                     if let Some((device, inode)) = entry.id {
-                        hasher.update(device.to_le_bytes());
-                        hasher.update(inode.to_le_bytes());
+                        reading.hasher.update(device.to_le_bytes());
+                        reading.hasher.update(inode.to_le_bytes());
                     }
                 }
             }
@@ -325,12 +365,65 @@ fn stamp(folder: &Folder, name: &str) -> std::io::Result<Stamp> {
         .map_err(std::io::Error::other)?
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?
         .0;
-    let mut hasher = sha2::Sha256::new();
-    hash(&inner, &mut hasher)?;
+    let mut reading = Reading {
+        hasher: sha2::Sha256::new(),
+        entries: 0,
+        bytes: 0,
+    };
+    hash(&inner, &mut reading, 0)?;
     Ok(Stamp {
         id,
-        hash: hasher.finalize().into(),
+        hash: reading.hasher.finalize().into(),
     })
+}
+
+/// How putting a staged skill in place of an agent's went wrong.
+#[derive(Debug)]
+enum NotSwapped {
+    /// What was there isn't the folder the card showed. It is back.
+    Changed,
+    /// A step failed, and what was there is back.
+    Failed(std::io::Error),
+    /// A step failed, and what was there couldn't be put back, so it is
+    /// kept under the hidden name `old`.
+    Stranded { old: String, error: std::io::Error },
+}
+
+/// Puts the staged folder `staging` in place of the folder `name` in
+/// `target`, which must be the one `id` names. That folder is renamed aside
+/// to a hidden name and checked there, then the staged one is renamed into
+/// place without replacing anything. A step that fails puts the folder
+/// back, without replacing anything either. Returns the hidden name of the
+/// folder put aside. (`displaced` runs once it is aside, for the tests.)
+fn swap_in(
+    target: &Folder,
+    name: &str,
+    staging: &str,
+    id: Option<(u64, u64)>,
+    displaced: impl FnOnce(),
+) -> Result<String, NotSwapped> {
+    let old = format!(".{name}.old-{}", uuid::Uuid::new_v4().simple());
+    target.rename(name, &old).map_err(NotSwapped::Failed)?;
+    let put_back = |error: Option<std::io::Error>| match target.rename_new(&old, name) {
+        Ok(()) => error.map_or(NotSwapped::Changed, NotSwapped::Failed),
+        Err(restoring) => NotSwapped::Stranded {
+            old: old.clone(),
+            error: error.unwrap_or(restoring),
+        },
+    };
+    match target.entry(&old) {
+        Ok(Some(Entry {
+            kind: Kind::Folder,
+            id: now,
+        })) if now == id => {}
+        Ok(_) => return Err(put_back(None)),
+        Err(error) => return Err(put_back(Some(error))),
+    }
+    displaced();
+    if let Err(error) = target.rename_new(staging, name) {
+        return Err(put_back(Some(error)));
+    }
+    Ok(old)
 }
 
 /// `path` absolute, without `.` and `..`, as records hold paths.
@@ -1021,16 +1114,17 @@ impl AddSkill {
     }
 
     /// Saves the skill of `plan`, once the user approved it, and records it.
-    /// Under [`LOCK_FILE`] it checks that nothing changed since the card was
-    /// made, writes the snapshot into a hidden folder beside the skill's,
-    /// renames that into place without replacing anything, and records the
-    /// skill by its folder's real path. Says why the record couldn't be
-    /// written, if it couldn't.
-    async fn save(&self, plan: &Plan) -> Result<Option<String>, String> {
+    /// It writes the snapshot into a hidden folder beside the skill's and
+    /// checks that what is at the skill's place is still what the card
+    /// showed. Then, under [`LOCK_FILE`], it checks that place again, renames
+    /// the new folder into place without replacing anything (an agent's
+    /// skill it replaces is first renamed aside and checked), and records the
+    /// skill. A folder put aside is deleted after that, once it is checked to
+    /// hold what the card showed, else it is kept.
+    async fn save(&self, plan: &Plan) -> Result<Saved, String> {
         let context = &self.0;
         let _writing = context.writing.lock().await;
         // (No await from here on, so the save isn't dropped halfway.)
-        let _lock = lock_saves(&context.root)?;
         let target = open_target(context, plan.scope, true)?
             .ok_or_else(|| format!("Couldn't make {}.", target(context, plan.scope).display()))?;
         let changed = || {
@@ -1039,21 +1133,6 @@ impl AddSkill {
                 plan.dest.display()
             )
         };
-        let now = found_at(Some(&target), &plan.name, &plan.dest, true).map_err(|_| changed())?;
-        let recorded = agent_added::skill_at(&context.root, &plan.dest);
-        fn same_record(
-            record: &Option<SkillRecord>,
-        ) -> Option<(&Path, chrono::DateTime<chrono::Utc>)> {
-            record
-                .as_ref()
-                .map(|record| (record.path.as_path(), record.added))
-        }
-        if now != plan.found || same_record(&recorded) != same_record(&plan.replaces) {
-            return Err(changed());
-        }
-        // A skill of the name the user added elsewhere while they decided.
-        self.place(&plan.name, plan.scope, &plan.dest)
-            .map_err(|why| format!("Arko didn't save the skill, since the skill folders changed while the user decided. {why}"))?;
 
         let staging = Owned {
             folder: &target,
@@ -1073,8 +1152,39 @@ impl AddSkill {
             )
         })?;
         self.stage(plan, &folder.0)?;
+        // What is there is checked whole before the lock, which every
+        // session's saves wait for.
+        let now = found_at(Some(&target), &plan.name, &plan.dest, true).map_err(|_| changed())?;
+        if now != plan.found {
+            return Err(changed());
+        }
+        // A skill of the name the user added elsewhere while they decided.
+        self.place(&plan.name, plan.scope, &plan.dest)
+            .map_err(|why| format!("Arko didn't save the skill, since the skill folders changed while the user decided. {why}"))?;
+
+        let lock = lock_saves(&context.root)?;
+        // The place again, by what is there and its identity, and the record.
+        let there = target
+            .entry(&plan.name)
+            .map_err(|_| changed())?
+            .map(|entry| (entry.kind, entry.id));
+        let expected = plan.found.as_ref().map(|stamp| (Kind::Folder, stamp.id));
+        let recorded = agent_added::skill_at(&context.root, &plan.dest);
+        fn same_record(
+            record: &Option<SkillRecord>,
+        ) -> Option<(&Path, chrono::DateTime<chrono::Utc>)> {
+            record
+                .as_ref()
+                .map(|record| (record.path.as_path(), record.added))
+        }
+        if there != expected || same_record(&recorded) != same_record(&plan.replaces) {
+            return Err(changed());
+        }
         let not_saved = |error: std::io::Error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound
+            ) {
                 changed()
             } else {
                 format!(
@@ -1084,29 +1194,49 @@ impl AddSkill {
                 )
             }
         };
-        if plan.found.is_none() {
-            target
+        let mut aside = None;
+        match &plan.found {
+            None => target
                 .rename_new(&staging.name, &plan.name)
-                .map_err(not_saved)?;
-        } else {
-            let old = format!(".{}.old-{}", plan.name, uuid::Uuid::new_v4().simple());
-            target.rename(&plan.name, &old).map_err(not_saved)?;
-            if let Err(error) = target.rename_new(&staging.name, &plan.name) {
-                let _ = target.rename(&old, &plan.name);
-                return Err(not_saved(error));
-            }
-            let _ = target.remove_all(&old);
+                .map_err(not_saved)?,
+            Some(stamp) => match swap_in(&target, &plan.name, &staging.name, stamp.id, || {}) {
+                Ok(old) => aside = Some(old),
+                Err(NotSwapped::Changed) => return Err(changed()),
+                Err(NotSwapped::Failed(error)) => return Err(not_saved(error)),
+                Err(NotSwapped::Stranded { old, error }) => {
+                    return Err(format!(
+                        "{} The skill that was there is in {} now. Move it back to {} to restore it.",
+                        not_saved(error),
+                        target.path().join(old).display(),
+                        plan.dest.display()
+                    ));
+                }
+            },
         }
-        let record = SkillRecord {
-            path: target.real().join(&plan.name),
-            scope: plan.scope,
-            session: context.session.clone(),
-            session_title: (context.title)(),
-            added: chrono::Utc::now(),
-            why: plan.why.clone(),
-            source: Some(plan.source.clone()),
+        let unrecorded = match owned(&target, &plan.name) {
+            Ok((path, id)) => {
+                let record = SkillRecord {
+                    path,
+                    id,
+                    scope: plan.scope,
+                    session: context.session.clone(),
+                    session_title: (context.title)(),
+                    added: chrono::Utc::now(),
+                    why: plan.why.clone(),
+                    source: Some(plan.source.clone()),
+                };
+                agent_added::record_skill(&context.root, record).err()
+            }
+            Err(why) => Some(why),
         };
-        Ok(agent_added::record_skill(&context.root, record).err())
+        drop(lock);
+        // The folder put aside is read whole, so after the lock.
+        let kept = aside.and_then(|old| {
+            let same = stamp(&target, &old).ok() == plan.found;
+            let id = plan.found.as_ref().and_then(|stamp| stamp.id);
+            (!same || target.remove_all_of(&old, id).is_err()).then(|| target.path().join(old))
+        });
+        Ok(Saved { unrecorded, kept })
     }
 
     /// Writes the files of `plan` into the new folder `staging`, `SKILL.md`
@@ -1131,8 +1261,7 @@ impl AddSkill {
     }
 
     /// The note in the transcript and the result for the agent, once saved.
-    /// `unrecorded` says why the save couldn't be recorded, if it couldn't.
-    fn saved(&self, plan: &Plan, words: Option<&str>, unrecorded: Option<String>) -> String {
+    fn saved(&self, plan: &Plan, words: Option<&str>, saved: Saved) -> String {
         let context = &self.0;
         let mut notice = format!(
             "The main agent saved the skill {} for {}.",
@@ -1145,6 +1274,16 @@ impl AddSkill {
                 " It is in {}.",
                 with_tilde(&plan.dest, home.as_deref())
             ));
+        }
+        // The skill it replaced, changed as it was put aside.
+        let kept = saved.kept.as_ref().map(|old| {
+            format!(
+                " The skill it replaced changed as Arko replaced it, so its folder is kept in {}.",
+                with_tilde(old, context.home.as_deref())
+            )
+        });
+        if let Some(kept) = &kept {
+            notice.push_str(kept);
         }
         (context.notice)(Level::Info, &notice);
         let mut result = match &plan.replaces {
@@ -1167,7 +1306,10 @@ impl AddSkill {
         } else {
             " Workers don't get it."
         });
-        if let Some(error) = unrecorded {
+        if let Some(kept) = &kept {
+            result.push_str(kept);
+        }
+        if let Some(error) = saved.unrecorded {
             result.push_str(&format!(
                 " Arko couldn't record that an agent saved it ({error}), so only the user can remove it."
             ));
@@ -1219,7 +1361,17 @@ fn found_at(
         return Ok(None);
     };
     let unread = |error: std::io::Error| {
-        format!("Couldn't read {} ({}).", dest.display(), reason_of(&error))
+        if error.kind() == std::io::ErrorKind::FileTooLarge {
+            format!(
+                "{} holds more than Arko reads before it replaces a skill ({} files and folders, {}, or {} folders deep). Ask the user to remove it, or choose another name.",
+                dest.display(),
+                thousands(STAMP_ENTRIES),
+                size_words(STAMP_BYTES),
+                STAMP_DEPTH
+            )
+        } else {
+            format!("Couldn't read {} ({}).", dest.display(), reason_of(&error))
+        }
     };
     match target.entry(name).map_err(unread)? {
         None => Ok(None),
@@ -1253,6 +1405,15 @@ fn write_in(folder: &Folder, path: &str, bytes: &[u8]) -> std::io::Result<()> {
         opened = Some(inner.0);
     }
     opened.as_ref().unwrap_or(folder).create(file, bytes)
+}
+
+/// What a save did besides saving.
+struct Saved {
+    /// Why it couldn't be recorded, if it couldn't.
+    unrecorded: Option<String>,
+    /// Where the folder of the skill it replaced is kept, when it changed
+    /// while the save replaced it.
+    kept: Option<PathBuf>,
 }
 
 /// A hidden folder a save made beside a skill's, deleted when this is
@@ -1353,8 +1514,8 @@ impl Tool for AddSkill {
                 answer => return Ok(self.not_saved(&plan, &answer)),
             }
         }
-        let unrecorded = self.save(&plan).await.map_err(refused)?;
-        Ok(self.saved(&plan, words.as_deref(), unrecorded))
+        let saved = self.save(&plan).await.map_err(refused)?;
+        Ok(self.saved(&plan, words.as_deref(), saved))
     }
 }
 
@@ -1377,16 +1538,54 @@ pub fn remove_saved(root: &Path, path: &Path) -> Result<String, String> {
     };
     let folder = saved_in(root, &record)?;
     let saved = record.path.file_name().unwrap_or_default();
-    folder.remove_all(saved).map_err(|error| {
-        format!(
-            "Couldn't delete {} ({}).",
-            record.path.display(),
-            reason_of(&error)
-        )
+    // Only the very folder the agent saved, by its identity.
+    let id = record.id.map(<(u64, u64)>::from);
+    folder.remove_all_of(saved, id).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::InvalidData {
+            format!(
+                "Arko didn't delete {}, since it isn't the folder an agent saved there. Delete it by hand.",
+                record.path.display()
+            )
+        } else {
+            format!(
+                "Couldn't delete {} ({}).",
+                record.path.display(),
+                reason_of(&error)
+            )
+        }
     })?;
     // (A record left behind is dropped once its folder is gone.)
     let _ = agent_added::forget_skill(root, &record.path);
     Ok(format!("Removed the skill {name}."))
+}
+
+/// The real path and identity of the folder `name` in `target`, for the
+/// record of a save. The path is the one `target` had when it was opened,
+/// and it must still name the folder reached through `target`, so a folder
+/// on the way swapped for a link since then doesn't have the record claim
+/// what the link leads to.
+fn owned(target: &Folder, name: &str) -> Result<(PathBuf, Option<agent_added::FileId>), String> {
+    let path = target.real().join(name);
+    let id = target
+        .entry(name)
+        .ok()
+        .flatten()
+        .filter(|entry| entry.kind == Kind::Folder)
+        .and_then(|entry| entry.id);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let named = std::fs::symlink_metadata(&path)
+            .ok()
+            .map(|meta| (meta.dev(), meta.ino()));
+        if id.is_none() || named != id {
+            return Err(format!(
+                "{} no longer leads to the folder it saved in",
+                path.display()
+            ));
+        }
+    }
+    Ok((path, id.map(agent_added::FileId::from)))
 }
 
 /// The folder that holds the skill of `record`, opened as a save opens it,

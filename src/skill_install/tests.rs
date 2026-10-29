@@ -1476,6 +1476,188 @@ async fn the_record_holds_the_real_path_and_a_removal_follows_no_link() {
     assert_eq!(files_in(&theirs), ["SKILL.md"]);
 }
 
+/// A save records its folder's real path as it opened it, with the
+/// folder's identity, and a removal by the record deletes only that very
+/// folder. When a folder on the way was swapped for a link after the save
+/// opened it, the path no longer leads to the folder it wrote in, so it
+/// claims nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_record_claims_only_the_folder_the_save_wrote() {
+    use std::os::unix::fs::{MetadataExt, symlink};
+    let fixture = quiet();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    fixture
+        .add(params("notes", &draft.display().to_string()))
+        .await
+        .unwrap();
+    let saved = fixture.project().join("notes");
+    let record = agent_added::skill_at(&fixture.root, &saved).unwrap();
+    let meta = std::fs::metadata(&saved).unwrap();
+    assert_eq!(record.path, saved.canonicalize().unwrap());
+    assert_eq!(
+        record.id,
+        Some(agent_added::FileId {
+            device: meta.dev(),
+            inode: meta.ino()
+        })
+    );
+
+    // A folder put in its place, with the same files, isn't the agent's.
+    let copy = saved.with_file_name("copy");
+    std::fs::create_dir(&copy).unwrap();
+    std::fs::copy(saved.join("SKILL.md"), copy.join("SKILL.md")).unwrap();
+    std::fs::remove_dir_all(&saved).unwrap();
+    std::fs::rename(&copy, &saved).unwrap();
+    let error = remove_saved(&fixture.root, &saved).unwrap_err();
+    assert!(
+        error.contains("isn't the folder an agent saved there"),
+        "{error}"
+    );
+    assert!(saved.join("SKILL.md").is_file());
+
+    // .arko swapped for a link to another project's after the save opened
+    // its folder.
+    let target = open_target(&fixture.context, Scope::Project, true)
+        .unwrap()
+        .unwrap();
+    target.make("other").unwrap();
+    let elsewhere = fixture.workspace.with_file_name("elsewhere");
+    let theirs = write_skill(&elsewhere.join(".arko/skills"), "other", "", &[]);
+    let arko = fixture.workspace.join(".arko");
+    std::fs::rename(&arko, fixture.workspace.join("moved")).unwrap();
+    symlink(elsewhere.join(".arko"), &arko).unwrap();
+    let error = owned(&target, "other").unwrap_err();
+    assert!(
+        error.ends_with("no longer leads to the folder it saved in"),
+        "{error}"
+    );
+    assert!(theirs.join("SKILL.md").is_file());
+    let records = std::fs::read_to_string(fixture.root.join(agent_added::FILE)).unwrap();
+    assert!(!records.contains("other"), "{records}");
+}
+
+/// An agent's skill the user filled past what a stamp reads (its bytes, its
+/// files and folders, or how deep they go) isn't replaced, and stays as it
+/// is. A pipe in it isn't opened, so it doesn't stop the replacement.
+#[tokio::test]
+async fn a_skill_too_big_to_check_isnt_replaced() {
+    let fixture = quiet();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    let call = || {
+        with(
+            params("notes", &draft.display().to_string()),
+            "scope",
+            json!("user"),
+        )
+    };
+    fixture.add(call()).await.unwrap();
+    let saved = fixture.user().join("notes");
+    let refused = format!(
+        "{} holds more than Arko reads before it replaces a skill (1,000 files and folders, 16 MB, or 16 folders deep). Ask the user to remove it, or choose another name.",
+        saved.display()
+    );
+    // (A sparse file, so nothing is written to the disk.)
+    std::fs::File::create(saved.join("big.bin"))
+        .unwrap()
+        .set_len(STAMP_BYTES + 1)
+        .unwrap();
+    assert_eq!(fixture.add(call()).await.unwrap_err(), refused);
+    assert!(saved.join("big.bin").is_file());
+    std::fs::remove_file(saved.join("big.bin")).unwrap();
+    for n in 0..STAMP_ENTRIES {
+        std::fs::write(saved.join(format!("f{n}.md")), "x").unwrap();
+    }
+    assert_eq!(fixture.add(call()).await.unwrap_err(), refused);
+    for n in 0..STAMP_ENTRIES {
+        std::fs::remove_file(saved.join(format!("f{n}.md"))).unwrap();
+    }
+    let deep: PathBuf = (0..=STAMP_DEPTH).map(|n| format!("d{n}")).collect();
+    std::fs::create_dir_all(saved.join(&deep)).unwrap();
+    assert_eq!(fixture.add(call()).await.unwrap_err(), refused);
+    std::fs::remove_dir_all(saved.join("d0")).unwrap();
+    assert_eq!(fixture.cards().len(), 1);
+    #[cfg(unix)]
+    {
+        let fifo = std::ffi::CString::new(saved.join("pipe").into_os_string().into_encoded_bytes())
+            .unwrap();
+        // SAFETY: a C string for a path, and a mode.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let result = fixture.add(call()).await.unwrap();
+        assert!(
+            result.contains(" in place of the one saved before."),
+            "{result}"
+        );
+        assert_eq!(files_in(&fixture.user()), ["notes/SKILL.md"]);
+    }
+}
+
+/// Putting a staged skill in place of an agent's checks the folder it put
+/// aside. One that isn't the folder the card showed goes back, and one that
+/// can't go back, because something took its place meanwhile, is kept under
+/// its hidden name, which the error gives.
+#[test]
+fn a_swap_checks_what_it_put_aside_and_keeps_what_it_cant_put_back() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().join("skills");
+    std::fs::create_dir_all(base.join("notes")).unwrap();
+    std::fs::write(base.join("notes/SKILL.md"), "Old.").unwrap();
+    let target = Folder::base(&base).unwrap();
+    let before = stamp(&target, "notes").unwrap();
+    let staged = |target: &Folder| {
+        target.make(".staged").unwrap();
+        target
+            .open(".staged", false)
+            .unwrap()
+            .unwrap()
+            .0
+            .create("SKILL.md", b"New.")
+            .unwrap();
+    };
+
+    // Another folder than the one the card showed.
+    #[cfg(unix)]
+    {
+        staged(&target);
+        let other = Some((0, 0));
+        let swapped = swap_in(&target, "notes", ".staged", other, || {});
+        assert!(matches!(swapped, Err(NotSwapped::Changed)), "{swapped:?}");
+        assert_eq!(
+            std::fs::read_to_string(base.join("notes/SKILL.md")).unwrap(),
+            "Old."
+        );
+        target.remove_all(".staged").unwrap();
+    }
+
+    // The place taken while the folder was aside.
+    staged(&target);
+    let taken = base.join("notes");
+    let swapped = swap_in(&target, "notes", ".staged", before.id, || {
+        std::fs::create_dir(&taken).unwrap();
+    });
+    let Err(NotSwapped::Stranded { old, .. }) = swapped else {
+        panic!("{swapped:?}");
+    };
+    assert_eq!(
+        std::fs::read_to_string(base.join(&old).join("SKILL.md")).unwrap(),
+        "Old."
+    );
+    assert_eq!(stamp(&target, &old).unwrap(), before);
+    std::fs::remove_dir(&taken).unwrap();
+    std::fs::rename(base.join(&old), &taken).unwrap();
+
+    // A swap that goes through leaves the folder aside as the card showed it,
+    // and one edited meanwhile is told apart.
+    let old = swap_in(&target, "notes", ".staged", before.id, || {}).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(base.join("notes/SKILL.md")).unwrap(),
+        "New."
+    );
+    assert_eq!(stamp(&target, &old).unwrap(), before);
+    std::fs::write(base.join(&old).join("SKILL.md"), "Edited.").unwrap();
+    assert_ne!(stamp(&target, &old).unwrap(), before);
+}
+
 /// `workers` goes into the front matter as `workers: false`, or comes out
 /// for true, whatever the line endings.
 #[test]

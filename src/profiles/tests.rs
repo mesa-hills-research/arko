@@ -1001,7 +1001,10 @@ fn an_agents_first_write_never_replaces_a_file_that_appeared_meanwhile() {
     // The file is there when the write comes, as if made after the check.
     let file = folder.join("judge.md");
     std::fs::write(&file, "---\ndescription: The user's own\n---\n").unwrap();
-    let error = crate::session::write_new(&file, b"agent").unwrap_err();
+    let error = crate::arko_dir::Folder::base(&folder)
+        .unwrap()
+        .create_whole("judge.md", b"agent")
+        .unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
     // Saved through the library, the agent is refused outright.
     let mut profile = Profile::new("judge", "Judges");
@@ -1604,5 +1607,25 @@ fn the_approval_names_the_folder_it_saves_in() {
             details.iter().any(|detail| detail.text == line),
             "{place:?}: {details:?}"
         );
+    }
+}
+
+/// A save writes its file through the folder it opened, so a link at the
+/// file, in any place, is replaced and nothing is written where it leads.
+#[cfg(unix)]
+#[test]
+fn a_save_replaces_a_link_at_its_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let roots = roots(temp.path());
+    let outside = temp.path().join("outside.md");
+    for place in [Place::Project, Place::User, Place::Session] {
+        std::fs::write(&outside, "Mine.").unwrap();
+        let folder = roots.folder(place).unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        std::os::unix::fs::symlink(&outside, folder.join("judge.md")).unwrap();
+        save(&roots, place, &judge(), Author::User).unwrap();
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "Mine.");
+        let file = folder.join("judge.md").symlink_metadata().unwrap();
+        assert!(file.is_file(), "{place:?}");
     }
 }

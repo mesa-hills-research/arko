@@ -139,14 +139,28 @@ pub enum NotRemoved {
 /// Takes the server `name` an agent added out of `file`, and out of the
 /// record. A project's `.arko/mcp.json` stays approved when it was. The
 /// server keeps running in sessions open now.
+///
+/// The record names the file by its real path, and the folder that holds it
+/// by its identity, as the add wrote them. The folder is opened with no link
+/// on the way from the project (or Arko's folder), and the entry comes out
+/// only when it is that very folder, so a `.arko` swapped for a link to
+/// another place, or another project's moved in, keeps its servers.
 pub fn take_out(root: &Path, file: &Path, name: &str) -> Result<(), NotRemoved> {
     let file = normal(file);
-    if agent_added::server_in(root, &file, name).is_none() {
+    let Some(record) = agent_added::server_in(root, &file, name) else {
         return Err(NotRemoved::NotAdded(file));
-    }
+    };
     {
         let _lock = super::approval_lock(root).map_err(NotRemoved::Failed)?;
-        let changed = super::remove_entry(&file, name).map_err(NotRemoved::Failed)?;
+        let folder = added_in(root, &record)?;
+        let servers = super::ServersFile {
+            folder: &folder,
+            name: match local_workspace(&record.file) {
+                Some(_) => super::LOCAL_FILE,
+                None => super::USER_FILE,
+            },
+        };
+        let changed = super::remove_entry_in(&servers, name).map_err(NotRemoved::Failed)?;
         if let (Some((before, after)), Some(workspace)) = (changed, local_workspace(&file)) {
             let approvals = super::read_approvals(root).map_err(NotRemoved::Failed)?;
             if super::remembered_raw(&approvals, &workspace, Asked::Local, &before) == Some(true) {
@@ -155,8 +169,36 @@ pub fn take_out(root: &Path, file: &Path, name: &str) -> Result<(), NotRemoved> 
             }
         }
     }
-    agent_added::forget_server(root, &file, name).map_err(NotRemoved::Failed)?;
+    agent_added::forget_server(root, &record.file, name).map_err(NotRemoved::Failed)?;
     Ok(())
+}
+
+/// The folder of the file `record` names, opened with no link on the way
+/// from the project, or from Arko's folder for its own `mcp.json`, when it is
+/// the folder the agent's add wrote in: at the recorded real path, with the
+/// recorded identity.
+fn added_in(root: &Path, record: &ServerRecord) -> Result<crate::arko_dir::Folder, NotRemoved> {
+    let opened = match local_workspace(&record.file) {
+        Some(workspace) => crate::arko_dir::open_in(&workspace, &[crate::arko_dir::DIR], false),
+        None => crate::arko_dir::open_in(root, &[], false),
+    }
+    .map_err(NotRemoved::Failed)?;
+    let named = record
+        .file
+        .file_name()
+        .is_some_and(|name| name == super::LOCAL_FILE || name == super::USER_FILE);
+    match opened {
+        Some(folder)
+            if named
+                && Some(folder.real()) == record.file.parent()
+                && record
+                    .folder
+                    .is_none_or(|id| folder.id().map(agent_added::FileId::from) == Some(id)) =>
+        {
+            Ok(folder)
+        }
+        _ => Err(NotRemoved::NotAdded(record.file.clone())),
+    }
 }
 
 /// The project whose `.arko/mcp.json` `file` is, if it is one.
@@ -388,53 +430,47 @@ impl Changes {
         let name = record.name.clone();
         let _lock = super::approval_lock(&self.root)?;
         self.unchanged(&name, &normal(&self.target(scope)), found)?;
-        let file = match scope {
-            Scope::Project => {
-                crate::arko_dir::ensure(&self.workspace, &self.root)?.join(super::LOCAL_FILE)
-            }
-            Scope::User => {
-                std::fs::create_dir_all(&self.root).map_err(|error| {
-                    format!(
-                        "Couldn't make {} ({}).",
-                        self.root.display(),
-                        crate::profiles::reason_of(&error)
-                    )
-                })?;
-                self.root.join(super::USER_FILE)
-            }
+        // The file's folder, opened with no link on the way from the project
+        // (or Arko's folder). The file is read and written through it, so a
+        // folder swapped for a link meanwhile doesn't take the entry
+        // elsewhere.
+        let folder = match scope {
+            Scope::Project => crate::arko_dir::ensure_dir(&self.workspace, &self.root)?,
+            Scope::User => crate::arko_dir::open_in(&self.root, &[], true)?
+                .ok_or_else(|| format!("Couldn't make {}.", self.root.display()))?,
         };
+        let servers = super::ServersFile {
+            folder: &folder,
+            name: match scope {
+                Scope::Project => super::LOCAL_FILE,
+                Scope::User => super::USER_FILE,
+            },
+        };
+        let file = servers.path();
         // What it changes is read first, so that it can be put back.
-        let previous = match std::fs::read(&file) {
-            Ok(text) => Some(text),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => {
-                return Err(format!(
-                    "Couldn't read {} ({}).",
-                    file.display(),
-                    crate::profiles::reason_of(&error)
-                ));
-            }
-        };
+        let previous = servers.read()?;
         let approvals = match scope {
             Scope::Project => Some(super::read_approvals(&self.root)?),
             Scope::User => None,
         };
-        record.file = normal(&file);
+        record.file = folder.real().join(servers.name);
+        record.folder = folder.id().map(agent_added::FileId::from);
         agent_added::record_server(&self.root, record.clone())
             .map_err(|why| format!("{} Arko didn't add {name}.", as_sentence(&why)))?;
         let undo = Undo {
             changes: self,
             name: &name,
-            file: &file,
+            servers: &servers,
+            recorded: &record.file,
             scope,
             replaced: found.replaced.as_ref(),
         };
         let (before, after) =
-            super::write_entry(&file, &name, entry).map_err(|why| undo.all(&why, None))?;
+            super::write_entry_in(&servers, &name, entry).map_err(|why| undo.all(&why, None))?;
         // Another session's change to the record, made before the entry was
         // there to keep it, drops it. It goes in again.
         if agent_added::server_in(&self.root, &record.file, &name).as_ref() != Some(&record) {
-            agent_added::record_server(&self.root, record)
+            agent_added::record_server(&self.root, record.clone())
                 .map_err(|why| undo.all(&why, Some(previous.as_deref())))?;
         }
         let Some(approvals) = approvals else {
@@ -463,7 +499,9 @@ struct Undo<'a> {
     changes: &'a Changes,
     name: &'a str,
     /// The file the entry goes in.
-    file: &'a Path,
+    servers: &'a super::ServersFile<'a>,
+    /// The file as the record names it.
+    recorded: &'a Path,
     scope: Scope,
     /// The record of the agent's server the add replaces.
     replaced: Option<&'a ServerRecord>,
@@ -477,34 +515,31 @@ impl Undo<'_> {
     /// record, so an agent's remove takes it out.
     fn all(&self, why: &str, previous: Option<Option<&[u8]>>) -> String {
         let mut said = format!("{} Arko didn't add {}", as_sentence(why), self.name);
-        if let Some(previous) = previous {
-            let put_back = match previous {
-                Some(text) => crate::session::write_whole(self.file, text),
-                None => std::fs::remove_file(self.file),
-            };
-            if let Err(error) = put_back {
-                said.push_str(&format!(
-                    ", but couldn't put {} back as it was ({}), so the new entry is there. It's recorded as an agent's, so remove takes it out.",
-                    self.file.display(),
-                    crate::profiles::reason_of(&error)
-                ));
-                said.push_str(match self.scope {
-                    Scope::Project => " The next session asks the user before it starts it.",
-                    Scope::User => " The next session starts it unless it's removed.",
-                });
-                return said;
-            }
+        let file = self.servers.path();
+        if let Some(previous) = previous
+            && let Err(error) = self.servers.put(previous)
+        {
+            said.push_str(&format!(
+                ", but couldn't put {} back as it was ({}), so the new entry is there. It's recorded as an agent's, so remove takes it out.",
+                file.display(),
+                crate::profiles::reason_of(&error)
+            ));
+            said.push_str(match self.scope {
+                Scope::Project => " The next session asks the user before it starts it.",
+                Scope::User => " The next session starts it unless it's removed.",
+            });
+            return said;
         }
         let root = &self.changes.root;
         let record = match self.replaced {
             Some(replaced) => agent_added::record_server(root, replaced.clone()),
-            None => agent_added::forget_server(root, &normal(self.file), self.name).map(|_| ()),
+            None => agent_added::forget_server(root, self.recorded, self.name).map(|_| ()),
         };
         match record {
             Ok(()) => said.push_str(", and changed nothing."),
             Err(error) => said.push_str(&format!(
                 ", and left {} as it was, but couldn't put back the record of what agents added ({}).",
-                self.file.display(),
+                file.display(),
                 error.trim_end_matches('.')
             )),
         }
@@ -615,6 +650,7 @@ impl McpChanges for Changes {
         let entry = entry_of(&request);
         let record = ServerRecord {
             file: target,
+            folder: None,
             name: name.clone(),
             session: self.session.clone(),
             session_title: (self.title)(),
@@ -732,7 +768,8 @@ impl Changes {
         agent_added::servers(&self.root)
             .into_iter()
             .filter(|record| {
-                files.contains(&record.file) && self.servers.hub.config(&record.name).is_none()
+                files.iter().any(|file| record.is_in(file))
+                    && self.servers.hub.config(&record.name).is_none()
             })
             .map(|record| {
                 let why = match super::entry_in(&record.file, &record.name)

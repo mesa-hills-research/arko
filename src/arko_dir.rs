@@ -53,12 +53,13 @@ pub fn ensure(workspace: &Path, root: &Path) -> Result<PathBuf, String> {
 }
 
 /// Makes the folder `name` in the project's `.arko` folder, as [`ensure`]
-/// makes that, and returns it. Refuses either when it is a link or isn't a
-/// folder.
-pub fn ensure_in(workspace: &Path, root: &Path, name: &str) -> Result<PathBuf, String> {
+/// makes that, and returns it opened, so what is written in it goes there
+/// whatever happens to the paths. Refuses either when it is a link or isn't
+/// a folder.
+pub(crate) fn ensure_in(workspace: &Path, root: &Path, name: &str) -> Result<Folder, String> {
     let dir = ensure_dir(workspace, root)?;
     match dir.open(name, true)? {
-        Some((folder, _)) => Ok(folder.path().to_path_buf()),
+        Some((folder, _)) => Ok(folder),
         None => Err(made_not(&dir.path().join(name), "it isn't there")),
     }
 }

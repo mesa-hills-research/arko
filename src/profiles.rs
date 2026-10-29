@@ -1169,7 +1169,8 @@ pub struct Saved {
 /// replaced by it, so the old file is deleted and the name isn't listed
 /// twice. [`arko_dir::ensure`](crate::arko_dir::ensure) makes the `.arko`
 /// folder, with its `.gitignore` while [`Preferences::keep_out_of_git`] is
-/// on.
+/// on. The folder is opened with no link on the way, and the file written
+/// through it ([`arko_dir::Folder`](crate::arko_dir::Folder)).
 pub fn save(
     roots: &Roots,
     place: Place,
@@ -1200,27 +1201,36 @@ pub fn save(
         .map(|folder| folder.join(Profile::file_name(&profile.name)))
         .filter(|older| older.is_file())
         .collect();
-    let replaced = file.is_file() || !older.is_empty();
-    if let Some(dir) = roots.project_dir(place) {
-        // (Neither `.arko` nor its profiles folder may be a link.)
-        crate::arko_dir::ensure_in(&dir, &roots.root, PROJECT_FOLDER[1])?;
-    }
-    std::fs::create_dir_all(&folder)
-        .map_err(|error| format!("Couldn't make {} ({})", folder.display(), reason_of(&error)))?;
+    // The folder, opened with no link on the way from the project (neither
+    // `.arko` nor its profiles folder may be one), Arko's folder or the
+    // session's. The file is written through it, so a folder swapped for a
+    // link meanwhile doesn't take the write elsewhere.
+    let opened = match (roots.project_dir(place), place, &roots.session) {
+        (Some(dir), _, _) => crate::arko_dir::ensure_in(&dir, &roots.root, PROJECT_FOLDER[1]),
+        (None, Place::Session, Some(session)) => crate::arko_dir::open_in(session, &[FOLDER], true)
+            .and_then(|opened| opened.ok_or_else(|| format!("Couldn't make {}", folder.display()))),
+        _ => crate::arko_dir::open_in(&roots.root, &[FOLDER], true)
+            .and_then(|opened| opened.ok_or_else(|| format!("Couldn't make {}", folder.display()))),
+    }?;
+    let name = Profile::file_name(&profile.name);
+    let there = opened
+        .entry(&name)
+        .map_err(|error| format!("Couldn't read {} ({})", file.display(), reason_of(&error)))?;
+    let replaced = there.is_some() || !older.is_empty();
     let text = written.render();
     let write = if author == Author::Agent && !replaced {
         // The check above and this write are two steps. Someone who wrote
         // the same name between them keeps their file, and the agent is
         // refused as if it had been there.
-        match crate::session::write_new(&file, text.as_bytes()) {
+        match opened.create_whole(&name, text.as_bytes()) {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 check_agent_save(roots, &profile.name)?;
-                crate::session::write_whole(&file, text.as_bytes())
+                opened.write_whole(&name, text.as_bytes())
             }
             other => other,
         }
     } else {
-        crate::session::write_whole(&file, text.as_bytes())
+        opened.write_whole(&name, text.as_bytes())
     };
     write.map_err(|error| format!("Couldn't write {} ({})", file.display(), reason_of(&error)))?;
     for old in older {

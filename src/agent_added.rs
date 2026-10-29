@@ -7,9 +7,13 @@
 //! marking it. Only what the record names can be removed by an agent, or by
 //! the user's remove command for what agents added.
 //!
-//! A skill is recorded by its folder's real path ([`real_path`]), and found
-//! by the real path of the folder asked about, so a folder reached through a
-//! link that leads elsewhere is never taken for the one an agent saved.
+//! A skill is recorded by its folder's real path and the folder's identity
+//! on its device ([`FileId`]), and a server by the real path of its file and
+//! the identity of the folder that holds it, as the save or the add opened
+//! them. Each is found by the real path ([`real_path`]) of the folder or
+//! file asked about, so one reached through a link that leads elsewhere is
+//! never taken for what an agent added, and a removal checks the identity on
+//! what it opens, so a folder moved into the place isn't either.
 //!
 //! Each write takes a lock beside the record, as `mcp-approvals.json` does,
 //! so sessions open at the same time keep each other's entries. An entry
@@ -34,11 +38,34 @@ pub enum Scope {
     User,
 }
 
+/// A file or folder's identity on its device, where the system has one (its
+/// device and inode on Unix).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileId {
+    pub device: u64,
+    pub inode: u64,
+}
+
+impl From<(u64, u64)> for FileId {
+    fn from((device, inode): (u64, u64)) -> Self {
+        Self { device, inode }
+    }
+}
+
+impl From<FileId> for (u64, u64) {
+    fn from(id: FileId) -> Self {
+        (id.device, id.inode)
+    }
+}
+
 /// A skill an agent saved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillRecord {
     /// The skill's folder, by its real path.
     pub path: PathBuf,
+    /// The folder's identity, where the system has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<FileId>,
     pub scope: Scope,
     /// The session it was saved in, by ID.
     pub session: String,
@@ -54,12 +81,23 @@ pub struct SkillRecord {
     pub source: Option<String>,
 }
 
+impl ServerRecord {
+    /// Whether its entry is in the file at `file`, by the file's real path.
+    pub fn is_in(&self, file: &Path) -> bool {
+        self.file == real_path(file)
+    }
+}
+
 /// An MCP server an agent added.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerRecord {
     /// The file its entry is in (a project's `.arko/mcp.json`, or Arko's
-    /// `mcp.json`).
+    /// `mcp.json`), by its real path.
     pub file: PathBuf,
+    /// The identity of the folder the file is in, where the system has one.
+    /// (The file's own changes with each save, as it is written whole.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<FileId>,
     pub name: String,
     /// The session it was added in, by ID.
     pub session: String,
@@ -208,10 +246,11 @@ pub fn added_skill<'a>(records: &'a [SkillRecord], path: &Path) -> Option<&'a Sk
     records.iter().find(|record| record.path == real)
 }
 
-/// Records a skill an agent saved, by its folder's real path, in place of an
-/// entry for the same folder.
-pub fn record_skill(root: &Path, mut record: SkillRecord) -> Result<(), String> {
-    record.path = real_path(&record.path);
+/// Records a skill an agent saved, in place of an entry for the same folder.
+/// Its path is the folder's real path as the save opened and checked it,
+/// kept as it is rather than resolved again, since a folder on the way may
+/// have been swapped for a link since.
+pub fn record_skill(root: &Path, record: SkillRecord) -> Result<(), String> {
     update(root, |kept| {
         kept.skills.retain(|skill| skill.path != record.path);
         kept.skills.push(record);
@@ -237,15 +276,17 @@ pub fn servers(root: &Path) -> Vec<ServerRecord> {
     current(root).servers
 }
 
-/// The record of the server `name` in `file`, if an agent added it there.
+/// The record of the server `name` in `file`, if an agent added it there,
+/// by the file's real path.
 pub fn server_in(root: &Path, file: &Path, name: &str) -> Option<ServerRecord> {
+    let real = real_path(file);
     servers(root)
         .into_iter()
-        .find(|server| server.file == file && server.name == name)
+        .find(|server| server.file == real && server.name == name)
 }
 
 /// Records a server an agent added, in place of an entry for the same name
-/// in the same file.
+/// in the same file. Its file is the real path its add opened.
 pub fn record_server(root: &Path, record: ServerRecord) -> Result<(), String> {
     update(root, |kept| {
         kept.servers
@@ -257,10 +298,12 @@ pub fn record_server(root: &Path, record: ServerRecord) -> Result<(), String> {
 
 /// Drops the record of the server `name` in `file`. Says whether it had one.
 pub fn forget_server(root: &Path, file: &Path, name: &str) -> Result<bool, String> {
+    let real = real_path(file);
     update(root, |kept| {
         let before = kept.servers.len();
-        kept.servers
-            .retain(|server| !(server.file == file && server.name == name));
+        kept.servers.retain(|server| {
+            !((server.file == file || server.file == real) && server.name == name)
+        });
         let removed = kept.servers.len() != before;
         (removed, removed)
     })

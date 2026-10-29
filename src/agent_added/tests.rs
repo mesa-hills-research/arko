@@ -3,6 +3,7 @@ use super::*;
 fn skill(path: &Path, why: &str) -> SkillRecord {
     SkillRecord {
         path: path.to_path_buf(),
+        id: None,
         scope: Scope::Project,
         session: "2026-10-28-a1b2".into(),
         session_title: Some("Release prep".into()),
@@ -15,6 +16,7 @@ fn skill(path: &Path, why: &str) -> SkillRecord {
 fn server(file: &Path, name: &str) -> ServerRecord {
     ServerRecord {
         file: file.to_path_buf(),
+        folder: None,
         name: name.into(),
         session: "2026-10-28-a1b2".into(),
         session_title: None,
