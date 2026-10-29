@@ -689,10 +689,20 @@ impl McpChanges for Changes {
         name: &str,
         _why: &str,
     ) -> Result<String, String> {
-        let Some(server) = self.servers.server(name) else {
-            return Err(format!("There's no MCP server named {name}."));
+        // A server of the session, or one an agent added that it doesn't
+        // run (one that didn't start).
+        let file = match self.servers.server(name) {
+            Some(server) => server.file,
+            None => match self
+                .not_started()
+                .into_iter()
+                .find(|(record, _)| record.name == name)
+            {
+                Some((record, _)) => record.file,
+                None => return Err(format!("There's no MCP server named {name}.")),
+            },
         };
-        match take_out(&self.root, &server.file, name) {
+        match take_out(&self.root, &file, name) {
             Ok(()) => {}
             Err(NotRemoved::NotAdded(file)) => {
                 return Err(format!(
@@ -702,9 +712,41 @@ impl McpChanges for Changes {
             }
             Err(NotRemoved::Failed(why)) => return Err(why),
         }
+        let ran = self.servers.hub.config(name).is_some();
         self.servers.remove(name).await;
         self.notice(&format!("The main agent removed the MCP server {name}."));
-        Ok(format!("Removed {name} and stopped it."))
+        Ok(if ran {
+            format!("Removed {name} and stopped it.")
+        } else {
+            format!("Removed {name}.")
+        })
+    }
+}
+
+impl Changes {
+    /// The servers an agent added to a file this session reads that it
+    /// doesn't run, each with why: one whose variable isn't set doesn't
+    /// start, and one added since the session started starts in the next.
+    pub(crate) fn not_started(&self) -> Vec<(ServerRecord, String)> {
+        let files = self.files();
+        agent_added::servers(&self.root)
+            .into_iter()
+            .filter(|record| {
+                files.contains(&record.file) && self.servers.hub.config(&record.name).is_none()
+            })
+            .map(|record| {
+                let why = match super::entry_in(&record.file, &record.name)
+                    .map(|entry| approved_server(&record.name, &entry, &record.file))
+                {
+                    Some(Err(why)) => {
+                        format!("{why}. The next session starts it once that's fixed")
+                    }
+                    _ => "it was added since this session started. The next session starts it"
+                        .to_string(),
+                };
+                (record, why)
+            })
+            .collect()
     }
 }
 

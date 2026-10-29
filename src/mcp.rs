@@ -1074,12 +1074,10 @@ impl Session {
     /// The main agent's `mcp`, as a registry takes it.
     pub fn lead_tool(&self, access: Arc<dyn McpAccess>) -> Arc<dyn Tool> {
         match &self.changes {
-            Some(changes) => Arc::new(Bridge::lead(
-                &self.servers,
-                access,
-                changes.clone(),
-                self.notices.clone(),
-            )),
+            Some(changes) => Arc::new(Bridge {
+                added: Some(changes.clone()),
+                ..Bridge::lead(&self.servers, access, changes.clone(), self.notices.clone())
+            }),
             None => Arc::new(UnstartedTool::bridge_in_chat(Role::Lead)),
         }
     }
@@ -1110,6 +1108,9 @@ pub struct Bridge {
     role: Role,
     servers: Servers,
     notices: Option<changes::Notices>,
+    /// The main agent's adds, whose servers that didn't start `servers`
+    /// lists too.
+    added: Option<Arc<changes::Changes>>,
 }
 
 impl std::fmt::Debug for Bridge {
@@ -1134,6 +1135,7 @@ impl Bridge {
             role: Role::Lead,
             servers: servers.clone(),
             notices,
+            added: None,
         }
     }
 
@@ -1144,6 +1146,7 @@ impl Bridge {
             role: Role::Worker,
             servers: servers.clone(),
             notices: None,
+            added: None,
         }
     }
 
@@ -1164,6 +1167,26 @@ impl Bridge {
             .and_then(Value::as_str)
             .map(str::trim)
             .unwrap_or_default()
+    }
+
+    /// `servers`'s list with the servers an agent added that didn't start
+    /// (they aren't the hub's), each with why.
+    fn with_not_started(&self, mut output: ToolOutput, added: &changes::Changes) -> ToolOutput {
+        let rows: Vec<String> = added
+            .not_started()
+            .into_iter()
+            .map(|(record, why)| format!("{}  not started, because {why}.", record.name))
+            .collect();
+        if rows.is_empty() {
+            return output;
+        }
+        let rows = rows.join("\n");
+        output.text = if self.servers.hub.servers().is_empty() {
+            rows
+        } else {
+            format!("{}\n{rows}", output.text.trim_end())
+        };
+        output
     }
 
     /// Says in the transcript that the main agent started or stopped a
@@ -1267,7 +1290,10 @@ impl Tool for Bridge {
         if self.role == Role::Lead {
             self.after(&action, server.as_deref(), &result);
         }
-        result
+        match (action.as_str(), result, &self.added) {
+            ("servers", Ok(output), Some(added)) => Ok(self.with_not_started(output, added)),
+            (_, result, _) => result,
+        }
     }
 }
 

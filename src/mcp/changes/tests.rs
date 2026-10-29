@@ -706,3 +706,51 @@ fn a_failed_step_puts_back_what_the_add_changed() {
         "{said}"
     );
 }
+
+/// A server an agent added that didn't start, because a variable it uses
+/// isn't set, is in `servers`'s list with why, and remove takes it out of
+/// its file and the record.
+#[tokio::test]
+async fn a_server_that_didnt_start_is_listed_and_removed() {
+    let temp = tempfile::tempdir().unwrap();
+    let setup = setup(temp.path(), Fake::new(approve()), Vec::new());
+    let request = stub_request(&setup, "issues", &["ARKO_SURELY_UNSET_VARIABLE"]);
+    let Setup {
+        root,
+        workspace,
+        changes,
+        ..
+    } = setup;
+    let changes = Arc::new(changes);
+    changes.add(&context(temp.path()), request).await.unwrap();
+    let session = crate::mcp::Session {
+        servers: changes.servers.clone(),
+        changes: Some(changes.clone()),
+        notices: None,
+    };
+    let bridge = session.lead_tool(Arc::new(arko_agents::mcp::AllServers));
+    let servers = || {
+        let bridge = bridge.clone();
+        let temp = temp.path().to_path_buf();
+        async move {
+            let params =
+                std::collections::HashMap::from([("action".to_string(), "servers".into())]);
+            bridge.execute(&context(&temp), params).await.unwrap()
+        }
+    };
+    assert_eq!(
+        servers().await,
+        "issues  not started, because it uses ${ARKO_SURELY_UNSET_VARIABLE}, which isn't set. The next session starts it once that's fixed."
+    );
+    let removed = changes
+        .remove(&context(temp.path()), "issues", "Not needed.")
+        .await
+        .unwrap();
+    assert_eq!(removed, "Removed issues.");
+    assert!(!crate::mcp::sets_up(&local_file(&workspace), "issues"));
+    assert!(agent_added::servers(&root).is_empty());
+    assert_eq!(
+        servers().await,
+        "No MCP servers are set up. add sets one up once the user approves it."
+    );
+}
