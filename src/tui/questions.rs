@@ -217,6 +217,7 @@ impl App {
             && self.editor.is_empty()
             && self.overlay.is_none()
             && self.list_focus.is_none()
+            && !self.tray.focused
             && self.panel.attached.is_empty()
         {
             self.open_panel_at(first);
@@ -268,6 +269,7 @@ impl App {
 
     fn open_panel_at(&mut self, focus: usize) {
         self.panel.open = true;
+        self.tray.focused = false;
         self.focus_on(focus);
         // Attached questions are answered here now.
         self.panel.attached.clear();
@@ -422,13 +424,11 @@ enum Opt {
     Other,
 }
 
-/// A question's answers to pick, in order: its choices, "You decide" (not
-/// for an approval), and Other.
+/// A question's answers to pick, in order: its choices, "You decide", and
+/// Other.
 fn options(question: &AgentQuestion) -> Vec<Opt> {
     let mut options: Vec<Opt> = (0..question.choices.len()).map(Opt::Choice).collect();
-    if question.approval.is_none() {
-        options.push(Opt::YouDecide);
-    }
+    options.push(Opt::YouDecide);
     options.push(Opt::Other);
     options
 }
@@ -437,8 +437,7 @@ fn label(question: &AgentQuestion, opt: Opt) -> String {
     match opt {
         Opt::Choice(at) => question.choices.get(at).cloned().unwrap_or_default(),
         Opt::YouDecide => "You decide".to_string(),
-        Opt::Other if question.approval.is_some() => "Tell Arko what to change".to_string(),
-        Opt::Other => placeholder(question).to_string(),
+        Opt::Other => PLACEHOLDER.to_string(),
     }
 }
 
@@ -451,13 +450,7 @@ fn default_note(question: &AgentQuestion, opt: Opt) -> Option<String> {
 }
 
 /// What an empty Other field says.
-fn placeholder(question: &AgentQuestion) -> &'static str {
-    if question.approval.is_some() {
-        "Tell Arko what to change"
-    } else {
-        "Type your own answer"
-    }
-}
+const PLACEHOLDER: &str = "Type your own answer";
 
 // ----- what is picked -----
 
@@ -681,29 +674,19 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|span| wrap::width(&span.content)).sum()
 }
 
-/// A question's own lines at `width`: its text (an approval's title, what
-/// it runs on and what it's for), "Choose any" after a question that takes
-/// several.
+/// A question's own lines at `width`: its text, and "Choose any" after a
+/// question that takes several.
 fn question_lines(
     question: &AgentQuestion,
     style: Style,
     theme: &Theme,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let mut text = match &question.approval {
-        Some(approval) => {
-            let mut text = markdown::render(&approval.title(), style, theme, width);
-            for part in [approval.runs_on(), approval.description.clone()] {
-                text.extend(markdown::render(&part, theme.text(), theme, width));
-            }
-            text
-        }
-        None => markdown::render(&question.question, style, theme, width),
-    };
+    let mut text = markdown::render(&question.question, style, theme, width);
     if text.is_empty() {
         text.push(Wrapped::line(Vec::new()));
     }
-    if question.multiple && !question.choices.is_empty() && question.approval.is_none() {
+    if question.multiple && !question.choices.is_empty() {
         let hint = Span::styled(CHOOSE_ANY.to_string(), theme.dim());
         let last = text.last_mut().expect("a line at least");
         if spans_width(&last.spans) + 2 + wrap::width(CHOOSE_ANY) <= width {
@@ -716,38 +699,6 @@ fn question_lines(
         .map(|line| Line::from(line.spans))
         .collect()
 }
-
-/// An approval's instructions, on a quiet rule.
-fn instruction_lines(question: &AgentQuestion, theme: &Theme, width: usize) -> Vec<Line<'static>> {
-    let Some(approval) = &question.approval else {
-        return Vec::new();
-    };
-    if approval.instructions.trim().is_empty() {
-        return Vec::new();
-    }
-    let rule = glyphs::render("│ ").into_owned();
-    let mut lines = vec![Line::from(Span::styled(
-        "Instructions".to_string(),
-        theme.dim(),
-    ))];
-    for line in approval.instructions.trim_end().lines() {
-        let line = wrap::clean(line);
-        for row in wrap::wrap(
-            &[Span::styled(line, theme.text())],
-            width.saturating_sub(2).max(4),
-            0,
-        ) {
-            let mut spans = vec![Span::styled(rule.clone(), theme.dim())];
-            spans.extend(row);
-            lines.push(Line::from(spans));
-        }
-    }
-    lines
-}
-
-/// The rows instructions take beyond these count toward no panel's height
-/// (they scroll).
-const INSTRUCTION_ROWS: usize = 6;
 
 /// A question's options as a list.
 struct Rows {
@@ -810,10 +761,7 @@ fn list_rows(
             if here {
                 if draft.other.is_empty() {
                     rows.cursor = Some((first, lead_width));
-                    vec![vec![Span::styled(
-                        placeholder(question).to_string(),
-                        theme.dim(),
-                    )]]
+                    vec![vec![Span::styled(PLACEHOLDER.to_string(), theme.dim())]]
                 } else {
                     let (field, (r, c)) =
                         field_rows(&draft.other, draft.cursor, room, theme.text());
@@ -824,10 +772,7 @@ fn list_rows(
                 let style = if on { theme.text() } else { theme.dim() };
                 wrap::wrap(&[Span::styled(draft.other.clone(), style)], room, 0)
             } else {
-                vec![vec![Span::styled(
-                    placeholder(question).to_string(),
-                    theme.dim(),
-                )]]
+                vec![vec![Span::styled(PLACEHOLDER.to_string(), theme.dim())]]
             }
         } else {
             let mut text = vec![Span::styled(label(question, opt), label_style)];
@@ -1039,21 +984,12 @@ fn steps_card(app: &App, width: usize) -> Card {
             .map_or((0, 0), |(a, b)| (a + offset, b + offset));
         let cursor = rows.cursor.map(|(r, c)| (r + offset, c));
         lines.extend(rows.lines);
-        let tail = instruction_lines(question, theme, width);
-        let extra = tail.len().saturating_sub(INSTRUCTION_ROWS + 1);
-        if !tail.is_empty() {
-            lines.push(Line::default());
-            lines.extend(tail);
-        }
-        (lines, focus, cursor, extra)
+        (lines, focus, cursor)
     };
     let (summary, summary_focus) = review_lines(app, &questions, app.panel.review, width);
     let tallest = questions
         .iter()
-        .map(|question| {
-            let (lines, _, _, extra) = page(question, None);
-            lines.len() - extra
-        })
+        .map(|question| page(question, None).0.len())
         .chain([summary.len()])
         .max()
         .unwrap_or(0);
@@ -1077,7 +1013,7 @@ fn steps_card(app: &App, width: usize) -> Card {
     let question = &questions[focus];
     let options = options(question);
     let row = app.panel.row.min(options.len() - 1);
-    let (body, focus_rows, cursor, _) = page(question, Some(row));
+    let (body, focus_rows, cursor) = page(question, Some(row));
     let draft = draft_of(app, question);
     let picks = options.len() - 1;
     let number_keys = match picks {
@@ -1137,16 +1073,13 @@ fn review_lines(
     for (at, question) in questions.iter().enumerate() {
         let here = selected == Some(at);
         let first = lines.len();
-        let text = match &question.approval {
-            Some(approval) => approval.title(),
-            None => question
-                .question
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
-        };
+        let text = question
+            .question
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         let text = transcript::cut_end(&text, column);
         let pad = column.saturating_sub(wrap::width(&text));
         let draft = draft_of(app, question);
@@ -1352,12 +1285,9 @@ impl App {
 
 /// The panel's title: "Arko asks 2 questions".
 pub(super) fn title(questions: &[AgentQuestion]) -> String {
-    let approvals = questions.iter().all(|question| question.approval.is_some());
-    match (questions.len(), approvals) {
-        (1, true) => " Arko asks to save a worker profile ".to_string(),
-        (count, true) => format!(" Arko asks to save {count} worker profiles "),
-        (1, false) => " Arko asks ".to_string(),
-        (count, false) => format!(" Arko asks {count} questions "),
+    match questions.len() {
+        1 => " Arko asks ".to_string(),
+        count => format!(" Arko asks {count} questions "),
     }
 }
 

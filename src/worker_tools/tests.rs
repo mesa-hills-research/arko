@@ -1,21 +1,6 @@
 use std::time::Duration;
 
 use super::*;
-use crate::questions::ApprovalAnswer;
-
-/// Gives an approval its answer, as the user's decision.
-trait Decide {
-    fn decide(self, answer: ApprovalAnswer);
-}
-
-impl Decide for crate::inputs::Answering {
-    fn decide(self, answer: ApprovalAnswer) {
-        match self {
-            crate::inputs::Answering::Approval(sender) => sender.send(answer).unwrap(),
-            crate::inputs::Answering::Text(_) => panic!("not an approval"),
-        }
-    }
-}
 use crate::agents::{ExtraRules, ModelSettings, resolve_model};
 use crate::crew::{NewWorkers, Setup, WorkerSetup};
 use crate::profiles::Roots;
@@ -320,8 +305,40 @@ struct Fixture {
     basis: Arc<Basis>,
     crew: Arc<Crew>,
     feed: remote::Feed,
-    questions: Option<tokio::sync::mpsc::UnboundedReceiver<crate::inputs::Question>>,
     _temp: tempfile::TempDir,
+}
+
+impl Fixture {
+    /// The first request in the approval tray, in time.
+    async fn asked(&self) -> crate::approvals::ApprovalRequest {
+        within(async {
+            loop {
+                if let Some(request) = self.feed.approvals().into_iter().next() {
+                    return request;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+    }
+
+    /// Answers the first request in the tray as the tray's buttons do:
+    /// `approve`, with the message box's `words`. Returns what it asked.
+    async fn decide(&self, approve: bool, words: Option<&str>) -> crate::approvals::Approval {
+        let request = self.asked().await;
+        let answered = self
+            .feed
+            .answer_approvals(&crate::approvals::ApprovalAnswers {
+                choices: vec![crate::approvals::ApprovalChoice {
+                    id: request.id.clone(),
+                    approve,
+                    option: false,
+                }],
+                words: words.map(str::to_string),
+            });
+        assert_eq!(answered.len(), 1);
+        request.approval
+    }
 }
 
 fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
@@ -358,10 +375,10 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
         None,
         None,
     );
-    let (sender, questions) = tokio::sync::mpsc::unbounded_channel();
     let asker = Arc::new(Asker {
-        questions: can_ask.then_some(sender),
+        questions: None,
         feed: None,
+        approvals: crate::approvals::Approvals::new(Some(feed.clone()), can_ask, None),
     });
     let mut tools = tools(
         crew.clone(),
@@ -377,7 +394,6 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
         basis,
         crew,
         feed,
-        questions: can_ask.then_some(questions),
         _temp: temp,
     }
 }
@@ -533,8 +549,7 @@ async fn a_profile_for_the_session_is_saved_without_asking() {
 /// while git ignores the profiles folder, and is when git tracks it.
 #[tokio::test]
 async fn a_profile_with_no_scope_is_kept_with_the_project_and_asks_when_git_tracks_it() {
-    let mut fixture = fixture(ModelChoice::Agent, true);
-    let mut questions = fixture.questions.take().unwrap();
+    let fixture = fixture(ModelChoice::Agent, true);
     let folder = fixture.basis.roots.folder(Place::Project).unwrap();
     let work = folder.parent().unwrap().parent().unwrap();
     std::fs::create_dir_all(work).unwrap();
@@ -560,7 +575,7 @@ async fn a_profile_with_no_scope_is_kept_with_the_project_and_asks_when_git_trac
         result,
         "Saved the worker profile reviewer for this project. start_agent takes it by name."
     );
-    assert!(questions.try_recv().is_err(), "no question");
+    assert!(fixture.feed.approvals().is_empty(), "no approval");
     assert!(work.join(".arko").join(".gitignore").is_file());
     let found = profiles::read(&fixture.basis.roots, "reviewer").unwrap();
     assert_eq!(found.place, Place::Project);
@@ -577,20 +592,17 @@ async fn a_profile_with_no_scope_is_kept_with_the_project_and_asks_when_git_trac
             .await
         })
     };
-    let question = within(questions.recv()).await.unwrap();
-    assert!(
-        question
-            .text()
-            .contains("worker profile audit in this project's")
+    let asked = fixture.decide(true, None).await;
+    assert_eq!(
+        asked.title(),
+        "Save the worker profile audit for this project?"
     );
-    question.answer.unwrap().decide(ApprovalAnswer::Save);
     assert!(within(asking).await.unwrap().is_ok());
 }
 
 #[tokio::test]
 async fn a_profile_for_every_session_waits_for_the_users_save() {
-    let mut fixture = fixture(ModelChoice::Agent, true);
-    let mut questions = fixture.questions.take().unwrap();
+    let fixture = fixture(ModelChoice::Agent, true);
     let parameters = [
         ("name", "3d-judge".into()),
         (
@@ -608,30 +620,35 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
         let parameters = parameters.clone();
         tokio::spawn(async move { call(&save, &parameters).await })
     };
-    let question = within(questions.recv()).await.unwrap();
-    assert!(
-        question.text().starts_with(
-            "The main agent wants to save the worker profile 3d-judge in your Arko folder, for every project.\n\nJudges 3D results against a reference image\nRuns on sol at high effort."
-        ),
-        "{}",
-        question.text()
-    );
-    // Its card shows what it approves, with Save and Don't save.
-    let card = question.approval.clone().unwrap();
+    // Its row and details show what it approves.
+    let card = fixture
+        .decide(false, Some("yes, but use medium effort"))
+        .await;
     assert_eq!(
         card.title(),
         "Save the worker profile 3d-judge for every project?"
     );
-    assert_eq!(card.runs_on(), "Runs on sol at high effort.");
     assert_eq!(
-        card.description,
-        "Judges 3D results against a reference image"
+        (card.kind_word(), card.name(), card.scope(), card.summary()),
+        (
+            "Profile",
+            "3d-judge",
+            "every project",
+            "sol high".to_string()
+        )
     );
-    assert_eq!(question.asked[0].question.choices, ["Save", "Don't save"]);
-    question
-        .answer
-        .unwrap()
-        .decide(ApprovalAnswer::Edit("yes, but use medium effort".into()));
+    assert_eq!(
+        card.details()
+            .into_iter()
+            .map(|detail| detail.text)
+            .collect::<Vec<_>>(),
+        [
+            "Runs on sol at high effort.",
+            "Judges 3D results against a reference image",
+            "Instructions",
+            "You judge 3D models."
+        ]
+    );
     assert_eq!(
         within(asking).await.unwrap().unwrap(),
         "The user didn't save 3d-judge for every project and wrote \"yes, but use medium effort\". If those words ask for changes to the profile, make them and call save_worker_profile again, which shows them the changed profile. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call save_worker_profile again with the same profile, and end with a short reminder that it is still waiting for their decision."
@@ -646,15 +663,17 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
         let parameters = parameters.clone();
         tokio::spawn(async move { call(&save, &parameters).await })
     };
-    within(questions.recv())
-        .await
-        .unwrap()
-        .answer
-        .unwrap()
-        .decide(ApprovalAnswer::Save);
+    fixture.decide(true, Some("Keep it strict.")).await;
     let result = within(asking).await.unwrap().unwrap();
     assert!(
         result.starts_with("Saved the worker profile 3d-judge in the user's Arko folder, for every project. start_agent takes it by name."),
+        "{result}"
+    );
+    // The words in the message box go with the approval.
+    assert!(
+        result.ends_with(
+            " The user approved it and wrote \"Keep it strict.\". Act on what they wrote."
+        ),
         "{result}"
     );
     let found = profiles::read(&fixture.basis.roots, "3d-judge").unwrap();
@@ -683,13 +702,8 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
             .await
         })
     };
-    let question = within(questions.recv()).await.unwrap();
-    assert!(
-        question
-            .text()
-            .contains("in this project's .arko/profiles folder")
-    );
-    question.answer.unwrap().decide(ApprovalAnswer::Save);
+    let asked = fixture.decide(true, None).await;
+    assert_eq!(asked.scope(), "this project");
     assert!(
         asking
             .await
@@ -705,8 +719,7 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
 
 #[tokio::test]
 async fn an_empty_answer_or_no_one_to_ask_saves_nothing() {
-    let mut fixture = fixture(ModelChoice::Agent, true);
-    let mut questions = fixture.questions.take().unwrap();
+    let fixture = fixture(ModelChoice::Agent, true);
     let asking = {
         let save = fixture.save.clone();
         tokio::spawn(async move {
@@ -721,12 +734,7 @@ async fn an_empty_answer_or_no_one_to_ask_saves_nothing() {
             .await
         })
     };
-    within(questions.recv())
-        .await
-        .unwrap()
-        .answer
-        .unwrap()
-        .decide(ApprovalAnswer::DontSave);
+    fixture.decide(false, None).await;
     assert_eq!(
         within(asking).await.unwrap().unwrap(),
         "The user chose not to save audit for every project, so don't ask again unless they want it. You may save it for this session with scope session."
@@ -777,8 +785,7 @@ async fn refusal(tool: &Arc<dyn Tool>, pairs: Vec<(&str, Value)>) -> String {
 
 #[tokio::test]
 async fn a_profile_that_cant_work_is_refused_before_the_user_is_asked() {
-    let mut fixture = fixture(ModelChoice::Agent, true);
-    let mut questions = fixture.questions.take().unwrap();
+    let fixture = fixture(ModelChoice::Agent, true);
     assert_eq!(
         refusal(
             &fixture.save,
@@ -860,7 +867,10 @@ async fn a_profile_that_cant_work_is_refused_before_the_user_is_asked() {
             .unwrap_err()
     };
     assert_eq!(missing_name, "Give the profile a name.");
-    assert!(questions.try_recv().is_err(), "the user was asked nothing");
+    assert!(
+        fixture.feed.approvals().is_empty(),
+        "the user was asked nothing"
+    );
 }
 
 #[tokio::test]
@@ -952,8 +962,7 @@ async fn a_profile_on_a_model_the_session_cant_reach_is_saved_with_a_warning() {
 
 #[tokio::test]
 async fn a_saved_profile_hidden_by_a_nearer_one_says_so() {
-    let mut fixture = fixture(ModelChoice::Agent, true);
-    let mut questions = fixture.questions.take().unwrap();
+    let fixture = fixture(ModelChoice::Agent, true);
     write(
         &fixture.basis,
         Place::Session,
@@ -974,12 +983,7 @@ async fn a_saved_profile_hidden_by_a_nearer_one_says_so() {
             .await
         })
     };
-    within(questions.recv())
-        .await
-        .unwrap()
-        .answer
-        .unwrap()
-        .decide(ApprovalAnswer::Save);
+    fixture.decide(true, None).await;
     let result = within(asking).await.unwrap().unwrap();
     assert!(
         result.contains(

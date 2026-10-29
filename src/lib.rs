@@ -29,6 +29,7 @@
 
 pub mod agent_added;
 mod agents;
+pub mod approvals;
 pub mod arko_dir;
 mod asking;
 mod billing;

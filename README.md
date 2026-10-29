@@ -12,6 +12,7 @@ models, and on your Claude plan through an installed Claude Code.
 - Saved sessions you can continue or resume, with handovers to a fresh conversation as the
   context fills
 - [Questions](docs/questions.md) from the agent, answered in a panel or in a message when you're ready
+- An [approval tray](docs/approvals.md) for what the agent needs your OK for, answered all at once
 - Search indexes of code and docs (`arko index`), kept current while Arko runs
 - A web page for following a session and taking part from a browser, such as a phone's
   (`--remote`)

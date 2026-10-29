@@ -56,7 +56,7 @@ impl Harness {
                 .as_ref()
                 .map(|skills| skills.model_names.clone())
                 .unwrap_or_default(),
-            approver: self.asker.clone(),
+            approver: Arc::new(self.asker.approvals.clone()),
             fetch: Arc::new(skill_install::Https),
             notice: Arc::new(move |level, text| {
                 output.echo(&match level {

@@ -12,7 +12,7 @@ use lucide_leptos::{MessageCircleQuestionMark, X};
 use wasm_bindgen::JsCast;
 
 use crate::app::{Cell, page, post};
-use crate::protocol::{ApprovalData, CHOOSE_ANY, QuestionData, SAVE};
+use crate::protocol::{CHOOSE_ANY, QuestionData};
 
 /// How long after a key the user still counts as typing, so a question
 /// that comes then waits in a chip rather than open the panel (ms).
@@ -68,15 +68,10 @@ impl Asking {
 // ----- words -----
 
 /// "Arko asks 2 questions": the panel's title, and the chip of new ones.
-/// Approvals alone say what they ask.
 pub fn asks_text(questions: &[QuestionData]) -> String {
-    let approvals =
-        !questions.is_empty() && questions.iter().all(|question| question.approval.is_some());
-    match (questions.len(), approvals) {
-        (1, true) => "Arko asks to save a worker profile".to_string(),
-        (count, true) => format!("Arko asks to save {count} worker profiles"),
-        (1, false) => "Arko asks a question".to_string(),
-        (count, false) => format!("Arko asks {count} questions"),
+    match questions.len() {
+        1 => "Arko asks a question".to_string(),
+        count => format!("Arko asks {count} questions"),
     }
 }
 
@@ -123,48 +118,21 @@ pub fn outcome(question: &QuestionData) -> Option<String> {
     })
 }
 
-/// "Save the worker profile 3d-judge for every project?"
-pub fn title(approval: &ApprovalData) -> String {
-    format!(
-        "Save the worker profile {} for {}?",
-        approval.name, approval.scope
-    )
-}
-
-/// "Runs on sol at high effort."
-pub fn runs_on(approval: &ApprovalData) -> String {
-    match &approval.effort {
-        Some(effort) => format!("Runs on {} at {effort} effort.", approval.model),
-        None => format!("Runs on {}.", approval.model),
-    }
-}
-
-/// A question's words without its number: an approval says what it
-/// approves.
+/// A question's words without its number.
 pub fn text(question: &QuestionData) -> String {
-    match &question.approval {
-        Some(approval) => title(approval),
-        None => question.question.trim().to_string(),
-    }
+    question.question.trim().to_string()
 }
 
 /// The body of `POST /api/questions/answer` for what is filled in, and the
 /// ids it answers, or none when nothing is. It names every question shown,
-/// an unanswered one by its id alone. With `chosen` (an approval's id and
-/// Save or Don't save), that is the question's whole answer.
+/// an unanswered one by its id alone.
 pub fn answers_body(
     questions: &[QuestionData],
     drafts: &HashMap<String, Draft>,
-    chosen: Option<(&str, &str)>,
 ) -> Option<(serde_json::Value, Vec<String>)> {
     let mut answers = Vec::new();
     let mut ids = Vec::new();
     for question in questions {
-        if let Some((_, choice)) = chosen.filter(|(id, _)| *id == question.id) {
-            answers.push(serde_json::json!({ "id": question.id, "choices": [choice] }));
-            ids.push(question.id.clone());
-            continue;
-        }
         let draft = drafts.get(&question.id).cloned().unwrap_or_default();
         // In the question's order, whatever order they were picked in.
         let choices: Vec<&String> = question
@@ -372,24 +340,16 @@ fn answer_in_chat() {
     crate::composer::focus();
 }
 
-/// Sends what is filled in, with `chosen` as an approval's answer. Send
-/// closes the panel, and an approval's Save or Don't save leaves it for the
-/// questions left.
-fn send(chosen: Option<(String, String)>) {
+/// Sends what is filled in, and closes the panel.
+fn send() {
     let ask = page().ask;
     let questions = open_questions();
-    let Some((body, ids)) = ask.drafts.with_untracked(|drafts| {
-        answers_body(
-            &questions,
-            drafts,
-            chosen
-                .as_ref()
-                .map(|(id, choice)| (id.as_str(), choice.as_str())),
-        )
-    }) else {
+    let Some((body, ids)) = ask
+        .drafts
+        .with_untracked(|drafts| answers_body(&questions, drafts))
+    else {
         return;
     };
-    let closes = chosen.is_none();
     ask.answering
         .update(|answering| answering.extend(ids.iter().cloned()));
     spawn_local(async move {
@@ -397,9 +357,7 @@ fn send(chosen: Option<(String, String)>) {
         if post("/api/questions/answer", body).await {
             ask.drafts
                 .update(|drafts| drafts.retain(|id, _| !ids.contains(id)));
-            if closes {
-                close_panel();
-            }
+            close_panel();
         } else {
             ask.answering
                 .update(|answering| answering.retain(|id| !ids.contains(id)));
@@ -439,8 +397,7 @@ fn update_draft(id: &str, change: impl FnOnce(&mut Draft)) {
 // ----- views -----
 
 /// The answer panel above the message box: each open question with its
-/// choices, "You decide" and an Other field, an approval with Save and
-/// Don't save, "Answer in chat" and Send.
+/// choices, "You decide" and an Other field, "Answer in chat" and Send.
 #[component]
 pub fn AnswerPanel() -> impl IntoView {
     let page = page();
@@ -449,7 +406,7 @@ pub fn AnswerPanel() -> impl IntoView {
     let can_send = move || {
         let questions = open.get();
         ask.drafts
-            .with(|drafts| answers_body(&questions, drafts, None).is_some())
+            .with(|drafts| answers_body(&questions, drafts).is_some())
     };
     let keys = move |event: web_sys::KeyboardEvent| {
         // Esc puts the questions in the message box, to answer in a message.
@@ -483,7 +440,7 @@ pub fn AnswerPanel() -> impl IntoView {
                     <button type="button" class="btn ghost small" title="Answer in chat (Esc)" on:click=move |_| answer_in_chat()>
                         "Answer in chat"
                     </button>
-                    <button type="button" class="btn primary small" disabled=move || !can_send() on:click=move |_| send(None)>
+                    <button type="button" class="btn primary small" disabled=move || !can_send() on:click=move |_| send()>
                         "Send"
                     </button>
                 </div>
@@ -520,10 +477,7 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
         }
     };
     let words = text(&question);
-    let approval = question.approval.clone();
-    let placeholder = if approval.is_some() {
-        "Tell Arko what to change"
-    } else if question.choices.is_empty() {
+    let placeholder = if question.choices.is_empty() {
         "Answer"
     } else {
         "Other"
@@ -533,23 +487,6 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
         .iter()
         .map(|choice| {
             let (id, choice) = (id.clone(), choice.clone());
-            // An approval's choices answer at once, and Save is the primary one.
-            if approval.is_some() {
-                let class = if choice == SAVE { "btn primary small" } else { "btn outline small" };
-                // Words for Arko are changes to make, so Save waits until
-                // they're gone (they go with Send).
-                let words = {
-                    let draft = draft.clone();
-                    let save = choice == SAVE;
-                    move || save && !draft().other.trim().is_empty()
-                };
-                return view! {
-                    <button type="button" class=class disabled=words on:click=move |_| send(Some((id.clone(), choice.clone())))>
-                        {choice.clone()}
-                    </button>
-                }
-                .into_any();
-            }
             let multiple = question.multiple;
             let pressed = {
                 let draft = draft.clone();
@@ -572,10 +509,9 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
                     {choice.clone()}
                 </button>
             }
-            .into_any()
         })
         .collect_view();
-    let you_decide = approval.is_none().then(|| {
+    let you_decide = {
         let id = id.clone();
         let default = question.default.clone();
         let spoken = match &default {
@@ -598,21 +534,7 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
                 {default.map(|default| view! { <span class="chip-default">{format!("· {default}")}</span> })}
             </button>
         }
-    });
-    let profile = approval.clone().map(|approval| {
-        view! {
-            <span class="answers-runs">{runs_on(&approval)}</span>
-            <span>{approval.description.trim().to_string()}</span>
-        }
-    });
-    let instructions = approval.filter(|approval| !approval.instructions.trim().is_empty()).map(|approval| {
-        view! {
-            <div class="answers-instructions">
-                <span class="answers-label">"Instructions"</span>
-                <div class="answers-instructions-box">{approval.instructions.trim_end().to_string()}</div>
-            </div>
-        }
-    });
+    };
     let other_id = id.clone();
     let initial = draft().other;
     let label = format!("{}, other answer", words.lines().next().unwrap_or_default());
@@ -626,7 +548,6 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
                         {words.clone()}
                         {question.multiple.then(|| view! { " " <span class="answers-any">{CHOOSE_ANY}</span> })}
                     </span>
-                    {profile}
                 </div>
             </div>
             <div class="answers-chips">{chips}{you_decide}</div>
@@ -644,11 +565,10 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
                 on:keydown=move |event: web_sys::KeyboardEvent| {
                     if event.key() == "Enter" && !event.is_composing() {
                         event.prevent_default();
-                        send(None);
+                        send();
                     }
                 }
             />
-            {instructions}
         </div>
     }
 }
@@ -804,10 +724,6 @@ mod tests {
     #[test]
     fn the_words_follow_the_count_and_what_is_asked() {
         let one = question(serde_json::json!({ "id": "q7", "question": "Tabs?", "state": "open" }));
-        let approval = question(serde_json::json!({
-            "id": "x1", "question": "Save?", "state": "open", "choices": ["Save", "Don't save"],
-            "approval": { "name": "3d-judge", "model": "sol", "effort": "high", "scope": "every project", "description": "Judges" }
-        }));
         assert_eq!(
             asks_text(std::slice::from_ref(&one)),
             "Arko asks a question"
@@ -816,18 +732,7 @@ mod tests {
             asks_text(&[one.clone(), one.clone()]),
             "Arko asks 2 questions"
         );
-        assert_eq!(
-            asks_text(&[approval.clone(), approval.clone()]),
-            "Arko asks to save 2 worker profiles"
-        );
-        assert_eq!(
-            text(&approval),
-            "Save the worker profile 3d-judge for every project?"
-        );
-        assert_eq!(
-            runs_on(approval.approval.as_ref().unwrap()),
-            "Runs on sol at high effort."
-        );
+        assert_eq!(text(&one), "Tabs?");
         assert_eq!(
             (open_text(1), replying_text(2)),
             ("1 open question".into(), "Replying to 2 questions".into())
@@ -865,12 +770,9 @@ mod tests {
             ),
             question(serde_json::json!({ "id": "q4", "question": "Push?", "state": "open" })),
             question(serde_json::json!({ "id": "q5", "question": "Branch?", "state": "open" })),
-            question(
-                serde_json::json!({ "id": "x1", "question": "Save?", "choices": ["Save", "Don't save"], "state": "open" }),
-            ),
         ];
         let mut drafts = HashMap::new();
-        assert!(answers_body(&questions, &drafts, None).is_none());
+        assert!(answers_body(&questions, &drafts).is_none());
         drafts.insert(
             "q3".to_string(),
             Draft {
@@ -887,7 +789,7 @@ mod tests {
             },
         );
         drafts.insert("q5".to_string(), Draft::default());
-        let (body, ids) = answers_body(&questions, &drafts, None).unwrap();
+        let (body, ids) = answers_body(&questions, &drafts).unwrap();
         assert_eq!(
             body,
             serde_json::json!({
@@ -896,17 +798,9 @@ mod tests {
                     { "id": "q3", "choices": ["A", "C"], "text": "2 wide" },
                     { "id": "q4", "you_decide": true },
                     { "id": "q5" },
-                    { "id": "x1" },
                 ],
             })
         );
         assert_eq!(ids, ["q3", "q4"]);
-        // An approval's Save goes with what else is filled in.
-        let (body, ids) = answers_body(&questions, &drafts, Some(("x1", SAVE))).unwrap();
-        assert_eq!(
-            body["answers"][3],
-            serde_json::json!({ "id": "x1", "choices": ["Save"] })
-        );
-        assert_eq!(ids, ["q3", "q4", "x1"]);
     }
 }

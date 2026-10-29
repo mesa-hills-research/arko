@@ -186,6 +186,20 @@ pub const COMMANDS: &[Command] = &[
         runs: Runs::Session,
     },
     Command {
+        name: "/approve",
+        args: "[N…] [WORDS]",
+        about: "approve the requests in the approval tray, all of them or those numbered, and reject the rest. Words after go to the agent",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/reject",
+        args: "[WORDS]",
+        about: "reject the requests in the approval tray. Words after go to the agent",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
         name: "/background-after",
         args: "DURATION|off",
         about: "how long a shell command or another long call runs before it moves to the background, where it goes on as a job and the agent goes on with its work",

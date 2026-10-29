@@ -14,6 +14,9 @@
 //! are written without the executable bit, and nothing in a skill runs when
 //! it is saved.
 //!
+//! The user approves a save in the session's approval tray, whose card
+//! shows the skill's text and files.
+//!
 //! Each save is recorded in Arko's folder ([`agent_added`]), so only a skill
 //! an agent saved can be removed by `remove_skill` or `/skills remove`.
 //!
@@ -36,6 +39,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::agent_added::{self, Scope, SkillRecord};
+use crate::approvals::{Answer, Approval, SkillApproval, SkillFile, SkillSource};
 use crate::builtin_skills::BuiltinSkills;
 use crate::remote::Level;
 use crate::skills;
@@ -64,194 +68,23 @@ const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 /// What `add_skill` tells the agent of itself.
 const ADD_DESCRIPTION: &str = "Saves a skill that you and later conversations load with load_skill. Use it when instructions would help later conversations or workers, such as this project's release steps or a workaround for a tool. A SKILL.md opens with front matter that gives name, description (what it is for and when to load it, in one or two sentences) and, if needed, models. models lists the models whose agents see the skill in their skill list. An exact id such as claude-haiku-5-5 pins it to that release, which suits a workaround for one version's quirk. A short name or pattern such as haiku or gpt-6* follows the family across releases, which suits advice about a kind of model. Other agents can still load it by name. load_skill finds the skill at once, and the skill list shows it from the next conversation. Project skills go in the project's .arko/skills, which git ignores until the user turns off Keep agents' project files out of git in Arko's settings.";
 
-/// Who saved a skill to approve, as the card shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CardSource {
-    /// The agent wrote it in place.
-    Agent,
-    /// Copied from a folder or a file, as the user reads its path.
-    Copied { path: String },
-    /// Downloaded from `url`, `bytes` long.
-    Downloaded { url: String, bytes: u64 },
-}
-
-/// One of a skill's files, as the card shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CardFile {
-    /// Its path in the skill, such as `SKILL.md` or `scripts/release.sh`.
-    pub path: String,
-    pub bytes: u64,
-    /// Its text, for a text file the user may read.
-    pub text: Option<String>,
-}
-
-/// What the user is asked to approve when an agent saves a skill.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SkillCard {
-    pub name: String,
-    pub scope: Scope,
-    /// Its front matter's description.
-    pub description: String,
-    pub source: CardSource,
-    /// Workers get it (no `workers: false`).
-    pub workers: bool,
-    /// Its `models`, empty for every model.
-    pub models: Vec<String>,
-    /// The scripts an agent may run, by their paths in the skill.
-    pub scripts: Vec<String>,
-    /// When an agent saved the skill it replaces, such as "26 Oct".
-    pub replaces: Option<String>,
-    /// The agent's reason.
-    pub why: String,
-    /// Its files, `SKILL.md` first.
-    pub files: Vec<CardFile>,
-}
-
-impl SkillCard {
-    /// "Save the skill release-notes for every project?"
-    pub fn title(&self) -> String {
-        format!("Save the skill {} for {}?", self.name, reach(self.scope))
-    }
-
-    /// The lines under the title, in order: what it is for, where it came
-    /// from, who gets it, its size and scripts, and what it replaces.
-    pub fn lines(&self) -> Vec<String> {
-        let mut lines = vec![one_line(&self.description)];
-        lines.push(match &self.source {
-            CardSource::Agent => "Written by the agent.".to_string(),
-            CardSource::Copied { path } => format!("Copied from {path}."),
-            CardSource::Downloaded { url, bytes } => {
-                format!("Downloaded from {url} ({}).", size_words(*bytes))
-            }
-        });
-        let mut who = if self.workers {
-            "Workers get it too.".to_string()
-        } else {
-            "Only the main agent gets it.".to_string()
-        };
-        if !self.models.is_empty() {
-            who.push_str(&format!(
-                " Listed for agents on {}.",
-                crate::and_list(&self.models)
-            ));
-        }
-        lines.push(who);
-        if let Some(skill_md) = self.files.first() {
-            let characters = skill_md
-                .text
-                .as_deref()
-                .map_or(0, |text| text.chars().count());
-            let line_count = skill_md
-                .text
-                .as_deref()
-                .map_or(0, |text| text.lines().count());
-            let mut size = format!(
-                "SKILL.md is {} characters ({} line{})",
-                thousands(characters),
-                thousands(line_count),
-                if line_count == 1 { "" } else { "s" }
-            );
-            match self.files.len() - 1 {
-                0 => size.push('.'),
-                1 => size.push_str(", with 1 more file."),
-                more => size.push_str(&format!(", with {more} more files.")),
-            }
-            if !self.scripts.is_empty() {
-                size.push_str(&format!(
-                    " It has scripts an agent may run ({}).",
-                    self.scripts.join(", ")
-                ));
-            }
-            lines.push(size);
-        }
-        if let Some(date) = &self.replaces {
-            lines.push(format!(
-                "It replaces the skill {} an agent saved on {date}.",
-                self.name
-            ));
-        }
-        lines
-    }
-
-    /// The whole card as text, for a view that shows a question: the title,
-    /// the lines, the agent's reason, and the files with `SKILL.md`'s text.
-    pub fn text(&self) -> String {
-        let mut text = format!("{}\n\n{}\n", self.title(), self.lines().join("\n"));
-        text.push_str(&format!("\nWhy\n{}\n", self.why.trim()));
-        text.push_str("\nFiles\n");
-        for file in &self.files {
-            text.push_str(&file.path);
-            text.push('\n');
-        }
-        if let Some(text_md) = self.files.first().and_then(|file| file.text.as_deref()) {
-            text.push_str(&format!("\nSKILL.md\n{}\n", text_md.trim_end()));
-        }
-        text
-    }
-}
-
-/// What the user decided about a skill to save.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Answer {
-    /// Save it. `words` is what they wrote with the answer, for the agent.
-    Approved { words: Option<String> },
-    /// Don't save it, with what they wrote.
-    Rejected { words: Option<String> },
-    /// No answer came: the turn stopped.
-    Unanswered,
-}
-
-/// Whom a save asks.
+/// Whom a save asks: the session's approval tray.
 #[async_trait]
 pub(crate) trait Approver: Send + Sync {
     /// Whether anyone can answer (there is a terminal, or an app).
     fn can_answer(&self) -> bool;
     /// Asks the user about `card`, for the call of `context`, and waits.
-    async fn request(&self, context: &TaskContext<'_>, card: SkillCard) -> Answer;
+    async fn request(&self, context: &TaskContext<'_>, card: SkillApproval) -> Answer;
 }
 
-/// The session's questions ask the user, with the choices Save and Don't
-/// save, until approvals have a tray of their own.
 #[async_trait]
-impl Approver for crate::inputs::Asker {
+impl Approver for crate::approvals::Approvals {
     fn can_answer(&self) -> bool {
-        self.can_ask()
+        crate::approvals::Approvals::can_answer(self)
     }
 
-    async fn request(&self, context: &TaskContext<'_>, card: SkillCard) -> Answer {
-        use crate::inputs::{Answering, Question};
-        use crate::questions::ApprovalAnswer;
-        let Some(questions) = &self.questions else {
-            return Answer::Unanswered;
-        };
-        let asked = vec![arko_agents::questions::AskedQuestion {
-            id: crate::questions::PLAIN_ID.to_string(),
-            question: arko_agents::questions::Question {
-                question: card.text(),
-                choices: vec![
-                    crate::questions::SAVE.into(),
-                    crate::questions::DONT_SAVE.into(),
-                ],
-                ..Default::default()
-            },
-        }];
-        let (answer, answered) = tokio::sync::oneshot::channel();
-        let question = Question {
-            run: context.task_id,
-            asked,
-            answer: Some(Answering::Approval(answer)),
-            approval: None,
-            call: context.call_id.clone(),
-        };
-        if questions.send(question).is_err() {
-            return Answer::Unanswered;
-        }
-        match answered.await.unwrap_or(ApprovalAnswer::Unanswered) {
-            ApprovalAnswer::Save => Answer::Approved { words: None },
-            ApprovalAnswer::DontSave => Answer::Rejected { words: None },
-            ApprovalAnswer::Edit(words) => Answer::Rejected { words: Some(words) },
-            ApprovalAnswer::Unanswered => Answer::Unanswered,
-        }
+    async fn request(&self, context: &TaskContext<'_>, card: SkillApproval) -> Answer {
+        crate::approvals::Approvals::request(self, context, Approval::Skill(card)).await
     }
 }
 
@@ -1019,9 +852,9 @@ impl AddSkill {
     }
 
     /// The card for `plan`.
-    fn card(&self, plan: &Plan) -> SkillCard {
+    fn card(&self, plan: &Plan) -> SkillApproval {
         let home = &self.0.home;
-        let mut files: Vec<CardFile> = vec![CardFile {
+        let mut files: Vec<SkillFile> = vec![SkillFile {
             path: "SKILL.md".into(),
             bytes: plan.skill_md.len() as u64,
             text: Some(plan.skill_md.clone()),
@@ -1031,7 +864,7 @@ impl AddSkill {
                 .files
                 .iter()
                 .filter(|(path, _)| path != "SKILL.md")
-                .map(|(path, bytes)| CardFile {
+                .map(|(path, bytes)| SkillFile {
                     path: path.clone(),
                     bytes: bytes.len() as u64,
                     text: std::str::from_utf8(bytes).ok().map(String::from),
@@ -1045,16 +878,19 @@ impl AddSkill {
             .filter(|path| is_script(path))
             .cloned()
             .collect();
-        SkillCard {
+        SkillApproval {
             name: plan.name.clone(),
-            scope: plan.scope,
+            scope: match plan.scope {
+                Scope::Project => crate::approvals::Scope::Project,
+                Scope::User => crate::approvals::Scope::User,
+            },
             description: plan.parsed.description.clone(),
             source: match &plan.draft.origin {
-                Origin::InPlace => CardSource::Agent,
-                Origin::Copied(path) => CardSource::Copied {
+                Origin::InPlace => SkillSource::Agent,
+                Origin::Copied(path) => SkillSource::Copied {
                     path: with_tilde(path, home.as_deref()),
                 },
-                Origin::Downloaded { url, bytes } => CardSource::Downloaded {
+                Origin::Downloaded { url, bytes } => SkillSource::Downloaded {
                     url: url.clone(),
                     bytes: *bytes,
                 },
@@ -1187,9 +1023,9 @@ impl AddSkill {
                 " Arko couldn't record that an agent saved it ({error}), so only the user can remove it."
             ));
         }
-        if let Some(words) = words {
+        if let Some(words) = words.filter(|words| !words.trim().is_empty()) {
             result.push_str(&format!(
-                " The user approved it and wrote \"{}\".",
+                " The user approved it and wrote \"{}\". Act on what they wrote.",
                 words.trim()
             ));
         }
@@ -1202,7 +1038,7 @@ impl AddSkill {
     fn not_saved(&self, plan: &Plan, answer: &Answer) -> String {
         let reach = reach(plan.scope);
         let mut result = match answer {
-            Answer::Rejected { words: Some(words) } => {
+            Answer::Rejected { words: Some(words) } if !words.trim().is_empty() => {
                 (self.0.notice)(Level::Info, "Not saved. Arko asks again.");
                 format!(
                     "The user didn't save the skill {} for {reach} and wrote \"{}\". If those words ask for changes to the skill, make them and call add_skill again, which shows them the changed skill. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call add_skill again with the same skill, and end with a short reminder that it is still waiting for their decision.",
@@ -1210,7 +1046,7 @@ impl AddSkill {
                     words.trim()
                 )
             }
-            Answer::Rejected { words: None } => format!(
+            Answer::Rejected { .. } => format!(
                 "The user chose not to save the skill {} for {reach}, so don't ask again unless they want it.",
                 plan.name
             ),
@@ -1346,7 +1182,7 @@ impl Tool for AddSkill {
                 return Err(refused(why));
             }
             match self.0.approver.request(context, self.card(&plan)).await {
-                Answer::Approved { words: said } => words = said,
+                Answer::Approved { words: said, .. } => words = said,
                 answer => return Ok(self.not_saved(&plan, &answer)),
             }
         }
@@ -1503,11 +1339,6 @@ fn size_words(bytes: u64) -> String {
             format!("{}.{} MB", tenths / 10, tenths % 10)
         }
     }
-}
-
-/// `text` on one line.
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]

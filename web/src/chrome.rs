@@ -123,10 +123,14 @@ pub fn Header() -> impl IntoView {
     let menu = RwSignal::new(false);
     // The tab's title says when the session needs the user.
     Effect::new(move |_| {
-        let (key, _) = page
-            .status
-            .with(|status| words::state_of(Some(status), &page.connection.get(), None));
+        let (key, approvals) = page.status.with(|status| {
+            (
+                words::state_of(Some(status), &page.connection.get(), None).0,
+                !status.approvals.is_empty(),
+            )
+        });
         document().set_title(match key {
+            "asking" if approvals => "Arko · needs approval",
             "asking" => "Arko · asks you",
             "working" => "Arko · working",
             _ => "Arko",

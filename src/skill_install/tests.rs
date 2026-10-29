@@ -5,11 +5,16 @@ use serde_json::json;
 
 use super::*;
 
+/// "Save the skill notes for every project?"
+fn title(card: &SkillApproval) -> String {
+    Approval::Skill(card.clone()).title()
+}
+
 /// Answers as it is told, and keeps the cards it was shown.
 struct Approve {
     can: bool,
     answer: Answer,
-    cards: Mutex<Vec<SkillCard>>,
+    cards: Mutex<Vec<SkillApproval>>,
 }
 
 #[async_trait]
@@ -18,7 +23,7 @@ impl Approver for Approve {
         self.can
     }
 
-    async fn request(&self, _: &TaskContext<'_>, card: SkillCard) -> Answer {
+    async fn request(&self, _: &TaskContext<'_>, card: SkillApproval) -> Answer {
         self.cards.lock().unwrap().push(card);
         self.answer.clone()
     }
@@ -102,7 +107,14 @@ fn fixture(can: bool, answer: Answer, downloads: Vec<(&str, Vec<u8>)>) -> Fixtur
 
 /// No one asks, and nothing is downloaded.
 fn quiet() -> Fixture {
-    fixture(true, Answer::Approved { words: None }, Vec::new())
+    fixture(
+        true,
+        Answer::Approved {
+            words: None,
+            option: false,
+        },
+        Vec::new(),
+    )
 }
 
 fn skill_md(name: &str, extra: &str) -> String {
@@ -175,7 +187,7 @@ impl Fixture {
         self.workspace.join("drafts")
     }
 
-    fn cards(&self) -> Vec<SkillCard> {
+    fn cards(&self) -> Vec<SkillApproval> {
         self.approver.cards.lock().unwrap().clone()
     }
 
@@ -406,7 +418,10 @@ async fn a_url_is_read_by_its_first_bytes_and_asks() {
     ]);
     let fixture = fixture(
         true,
-        Answer::Approved { words: None },
+        Answer::Approved {
+            words: None,
+            option: false,
+        },
         vec![
             ("https://example.com/notes.md", bundle.clone()),
             ("https://example.com/notes.zip", skill.clone().into_bytes()),
@@ -419,10 +434,10 @@ async fn a_url_is_read_by_its_first_bytes_and_asks() {
     let saved = fixture.project().join("notes");
     assert_eq!(files_in(&saved), ["SKILL.md", "scripts/go.py"]);
     let card = &fixture.cards()[0];
-    assert_eq!(card.title(), "Save the skill notes for this project?");
+    assert_eq!(title(card), "Save the skill notes for this project?");
     assert_eq!(
         card.source,
-        CardSource::Downloaded {
+        SkillSource::Downloaded {
             url: "https://example.com/notes.md".into(),
             bytes: bundle.len() as u64
         }
@@ -446,7 +461,7 @@ async fn a_url_is_read_by_its_first_bytes_and_asks() {
     assert_eq!(files_in(&fixture.user().join("notes")), ["SKILL.md"]);
     assert_eq!(fixture.cards().len(), 2);
     assert_eq!(
-        fixture.cards()[1].title(),
+        title(&fixture.cards()[1]),
         "Save the skill notes for every project?"
     );
 }
@@ -457,7 +472,10 @@ async fn a_url_is_read_by_its_first_bytes_and_asks() {
 async fn a_skill_that_fails_a_check_is_refused_and_nothing_is_written() {
     let fixture = fixture(
         true,
-        Answer::Approved { words: None },
+        Answer::Approved {
+            words: None,
+            option: false,
+        },
         vec![
             (
                 "https://example.com/page",
@@ -646,8 +664,8 @@ async fn user_scope_asks_and_project_scope_asks_only_with_review_on() {
         .unwrap();
     assert_eq!(fixture.cards().len(), 1);
     let card = &fixture.cards()[0];
-    assert_eq!(card.title(), "Save the skill notes for every project?");
-    assert_eq!(card.scope, Scope::User);
+    assert_eq!(title(card), "Save the skill notes for every project?");
+    assert_eq!(card.scope, crate::approvals::Scope::User);
     assert_eq!(card.files[0].path, "SKILL.md");
     assert_eq!(card.files[1].path, "b.md");
     let saved = fixture.user().join("notes");
@@ -676,7 +694,7 @@ async fn user_scope_asks_and_project_scope_asks_only_with_review_on() {
         .unwrap();
     assert_eq!(fixture.cards().len(), 2);
     assert_eq!(
-        fixture.cards()[1].title(),
+        title(&fixture.cards()[1]),
         "Save the skill more for this project?"
     );
 }
@@ -821,7 +839,9 @@ async fn the_users_words_reach_the_agent() {
         .await
         .unwrap();
     assert!(
-        result.ends_with(" The user approved it and wrote \"Keep it short.\"."),
+        result.ends_with(
+            " The user approved it and wrote \"Keep it short.\". Act on what they wrote."
+        ),
         "{result}"
     );
 }
@@ -831,6 +851,7 @@ fn fixture_approving_with(words: &str) -> Fixture {
         true,
         Answer::Approved {
             words: Some(words.into()),
+            option: false,
         },
         Vec::new(),
     )
@@ -869,8 +890,13 @@ async fn the_card_shows_what_is_saved() {
         ["SKILL.md", "checklist.md", "scripts/release.sh"]
     );
     let today = day(&chrono::Utc::now());
+    let details: Vec<String> = Approval::Skill(card.clone())
+        .details()
+        .into_iter()
+        .map(|detail| detail.text)
+        .collect();
     assert_eq!(
-        card.lines(),
+        details[..7],
         [
             "How this project writes notes.".to_string(),
             format!("Copied from {}.", draft.display()),
@@ -880,6 +906,8 @@ async fn the_card_shows_what_is_saved() {
                 skill.chars().count()
             ),
             format!("It replaces the skill notes an agent saved on {today}."),
+            "Why".to_string(),
+            "Later conversations need the steps.".to_string(),
         ]
     );
     assert!(fixture.cards()[0].workers);
@@ -888,12 +916,6 @@ async fn the_card_shows_what_is_saved() {
         std::fs::read_to_string(fixture.user().join("notes/SKILL.md")).unwrap(),
         skill
     );
-    let text = card.text();
-    assert!(text.starts_with(
-        "Save the skill notes for every project?\n\nHow this project writes notes.\n"
-    ));
-    assert!(text.contains("\nWhy\nLater conversations need the steps.\n"));
-    assert!(text.contains("\nFiles\nSKILL.md\nchecklist.md\nscripts/release.sh\n"));
 }
 
 /// A second save of a skill an agent saved replaces it whole, and the
