@@ -2254,6 +2254,25 @@ pub fn setup(worker: &WorkerSummary, usual: &Usual) -> Option<String> {
     }
 }
 
+/// `text` cut to `room` columns, with an ellipsis, when it is wider.
+fn fit(text: &str, room: usize) -> String {
+    if text_width(text) <= room {
+        return text.to_string();
+    }
+    let ellipsis = glyphs::render("…");
+    let mut fitted = String::new();
+    let mut taken = text_width(&ellipsis);
+    for c in text.chars() {
+        let width = wrap::char_width(c);
+        if taken + width > room {
+            break;
+        }
+        fitted.push(c);
+        taken += width;
+    }
+    fitted + &ellipsis
+}
+
 /// A worker's line: `r2 Fix flaky test · 18 tool calls · 2m · running`, with
 /// its setup after the task when it isn't the usual one.
 fn worker_line(
@@ -2269,7 +2288,7 @@ fn worker_line(
         Span::raw(" "),
     ];
     if let Some(worker) = worker {
-        let mut facts = vec![worker.title.clone()];
+        let mut facts = Vec::new();
         facts.extend(setup(worker, usual));
         facts.push(format!(
             "{} tool call{}",
@@ -2277,11 +2296,14 @@ fn worker_line(
             if worker.tool_calls == 1 { "" } else { "s" }
         ));
         facts.extend(worker_time(worker));
-        spans.push(Span::styled(
-            rendered(format!("{} · ", facts.join(" · "))),
-            theme.dim(),
-        ));
+        let facts = rendered(format!(" · {} · ", facts.join(" · ")));
         let (word, style) = state(worker, theme);
+        // A long task gives way to what follows it, so the setup, the time
+        // and the state stay on the line.
+        let taken = MARGIN + text_width(id) + 1 + text_width(&facts) + text_width(word);
+        let title = fit(&rendered(&worker.title), width.saturating_sub(taken).max(8));
+        spans.push(Span::styled(title, theme.dim()));
+        spans.push(Span::styled(facts, theme.dim()));
         spans.push(Span::styled(word.to_string(), style));
         if worker.state == WorkerState::Running
             && let Some(last) = &worker.last
@@ -3678,6 +3700,40 @@ mod tests {
                 .iter()
                 .any(|r| r == "  r5 Fix flaky test · impl-light · 3 tool calls · running"),
             "{rows_of:?}"
+        );
+    }
+
+    /// A long task is cut short, so the setup, the time and the state stay on
+    /// the line.
+    #[test]
+    fn a_long_task_gives_way_to_the_state_on_a_workers_line() {
+        let mut t = Transcript::new();
+        let mut line = item(1, Kind::WorkerLine, "Fix flaky test");
+        line.worker = Some("r5".into());
+        line.turn = Some(1);
+        t.apply(Update::Item(line));
+        t.apply(Update::Worker(WorkerSummary {
+            title:
+                "Fix the flaky test in tests/sync.rs by waiting for the lock instead of sleeping"
+                    .into(),
+            state: WorkerState::Running,
+            tool_calls: 3,
+            profile: Some("impl-light".into()),
+            last: Some("cargo test".into()),
+            ..WorkerSummary::new("r5")
+        }));
+        let quiet = Filter::Main(View::Quiet);
+        let rows_of = rows(&mut t, &quiet, 70, 3);
+        assert_eq!(
+            rows_of[0], "  r5 Fix the flaky test in test… · impl-light · 3 tool calls · running",
+            "{rows_of:?}"
+        );
+        assert_eq!(text_width(&rows_of[0]), 70);
+        // A wide screen has room for the whole task and the last call.
+        let rows_of = rows(&mut t, &quiet, 140, 3);
+        assert_eq!(
+            rows_of[0],
+            "  r5 Fix the flaky test in tests/sync.rs by waiting for the lock instead of sleeping · impl-light · 3 tool calls · running · cargo test"
         );
     }
 
