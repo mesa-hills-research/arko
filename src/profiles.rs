@@ -1202,7 +1202,8 @@ pub fn save(
         .collect();
     let replaced = file.is_file() || !older.is_empty();
     if let Some(dir) = roots.project_dir(place) {
-        crate::arko_dir::ensure(&dir, &roots.root)?;
+        // (Neither `.arko` nor its profiles folder may be a link.)
+        crate::arko_dir::ensure_in(&dir, &roots.root, PROJECT_FOLDER[1])?;
     }
     std::fs::create_dir_all(&folder)
         .map_err(|error| format!("Couldn't make {} ({})", folder.display(), reason_of(&error)))?;

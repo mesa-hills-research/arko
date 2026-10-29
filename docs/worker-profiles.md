@@ -66,6 +66,7 @@ never moves a file there by itself. Saving a profile that lives in `.agents/prof
 file in `.arko/profiles` and deletes the old one, so the name isn't listed twice.
 
 Arko keeps the project's `.arko` folder out of git by default. See [the .arko folder](arko-folder.md).
+A `.arko` or `.arko/profiles` that is a link is refused, so a save can't land outside the project.
 
 In a subfolder of a git repository, Arko also reads the repository root's `.arko/profiles` and
 `.agents/profiles`, after the working directory's own. "Repo root" under "Worker profiles" in

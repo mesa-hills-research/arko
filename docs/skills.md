@@ -35,9 +35,9 @@ shares with Arko.
 ## Skills the agent saves
 
 The main agent saves a skill with `add_skill`, from a folder or Markdown file it wrote outside the
-skill folders, a `.zip` or `.skill` bundle, or an https URL of one. A skill for the project goes in its `.arko/skills`, which
-git ignores unless you say otherwise (see [the .arko folder](arko-folder.md)). A skill for every
-project goes in `skills` in Arko's folder.
+skill folders, a `.zip` or `.skill` bundle, or an https URL of one. A skill for the project goes in
+its `.arko/skills`, which git ignores unless you say otherwise (see
+[the .arko folder](arko-folder.md)). A skill for every project goes in `skills` in Arko's folder.
 
 | Save | Asks you |
 |---|---|
@@ -48,9 +48,13 @@ project goes in `skills` in Arko's folder.
 The [approval tray](approvals.md) shows the skill's text and files, where it came from and who gets
 it. Arko checks the skill before it asks and refuses one with `auto_load`, a link, more than 200
 files or more than 1 MB, or the name of a skill you made. A skill the agent saved before under that
-name is replaced, and the request says so. Nothing is written before you approve. The agent's
-`load_skill` finds the skill at once, and its skill list shows it from the next conversation.
-Workers started after the save get it unless it says `workers: false`.
+name is replaced, and the request says so. Nothing is written before you approve, and what's saved
+is the copy the tray showed, even if the source changes meanwhile. If a skill of that name appears
+while you decide, or the agent's skill it would replace is edited, Arko doesn't save it and the
+agent asks again. A `.arko`, `.arko/skills` or `skills` folder that is a link is refused, so a save
+can't land outside its place. The agent's `load_skill` finds the skill at once, and its skill list
+shows it from the next conversation. Workers started after the save get it unless it says
+`workers: false`.
 
 Arko records each save in `agent-added.json` in its folder, so `/skills` marks the skill "added by
 the agent" with the day, and `/skills NAME` says why and from where. The agent's `remove_skill` and

@@ -9,7 +9,8 @@ What agents save in a project goes in the project's `.arko` folder, so other too
 | `mcp.json` | MCP servers the agent [adds](mcp.md#servers-the-agent-adds) for the project |
 | `profiles` | [Worker profiles](worker-profiles.md#where-profiles-live) the agent saves for the project |
 
-Arko reads what you put there yourself in the same way.
+Arko reads what you put there yourself in the same way. A `.arko`, or a folder in it, that is a
+link is refused, so a save can't land outside the project.
 
 ## Keeping it out of git
 
