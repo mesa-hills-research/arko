@@ -609,6 +609,18 @@ impl Details {
         facts
     }
 
+    /// Reads the settings an app may save in Arko's folder without the
+    /// session (the switches for what agents add, as
+    /// [`extension_prefs`](crate::extension_prefs) and
+    /// [`profiles::Preferences`](crate::profiles::Preferences) save them)
+    /// and sends them to the session's clients in its next status, so an
+    /// open web page shows a change made in the app. Nothing shows in the
+    /// transcript. Call it after saving them.
+    pub fn refresh_settings(&self) {
+        *lock(&self.gauges.extensions) = crate::extension_prefs::Switches::load(&self.root);
+        self.gauges.touch();
+    }
+
     /// The built-in skills the session gives its agents.
     pub(crate) fn builtin_skills(&self) -> BuiltinSkills {
         lock(&self.session)
