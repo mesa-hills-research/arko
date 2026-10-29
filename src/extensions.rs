@@ -717,7 +717,10 @@ mod tests {
                     path: skills.join("mine")
                 }
             ),
-            Err("mine wasn't added by an agent.".to_string())
+            Err(format!(
+                "mine wasn't added by an agent. Delete {} to remove it.",
+                skills.join("mine").display()
+            ))
         );
         assert!(skills.join("mine").is_dir());
         assert_eq!(

@@ -144,14 +144,14 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/mcp",
         args: "[NAME|remove NAME]",
-        about: "the MCP servers and their tools, one server whole, or remove a server an agent added",
+        about: "the MCP servers and their tools, one server in full, or remove a server an agent added",
         aliases: &[],
         runs: Runs::Session,
     },
     Command {
         name: "/skills",
         args: "[NAME|remove NAME]",
-        about: "the skills the agents can load, one skill in full, or removing one an agent saved",
+        about: "the skills the agents can load, one skill in full, or remove a skill an agent saved",
         aliases: &[],
         runs: Runs::Session,
     },

@@ -1221,7 +1221,10 @@ pub fn remove_saved(root: &Path, path: &Path) -> Result<String, String> {
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default();
     if agent_added::skill_at(root, path).is_none() {
-        return Err(format!("{name} wasn't added by an agent."));
+        return Err(format!(
+            "{name} wasn't added by an agent. Delete {} to remove it.",
+            path.display()
+        ));
     }
     std::fs::remove_dir_all(path).map_err(|error| {
         format!(
