@@ -57,7 +57,8 @@ Each request's tool call reads its own answer. A profile approved is saved, reje
 your words come with either. A rejection with words asks the agent to change the profile as they
 say and save it again, which asks you again. A worker rejected doesn't start, and the agent reads
 why with your words. A request whose turn stops leaves the tray, and when no one can answer (`-p`,
-or Arko without a terminal) the agent is told so and nothing is saved or started.
+or Arko without a terminal, while the web page isn't served) the agent is told so and nothing is
+saved or started.
 
 The tray isn't kept with the session. A tool that runs again after a resume asks again.
 

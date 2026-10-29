@@ -1833,6 +1833,8 @@ impl Harness {
         };
         *lock(&self.gauges.page) = Some(page.clone());
         self.gauges.touch();
+        // The user can answer approvals there.
+        self.asker.approvals.set_page_served(true);
         page
     }
 
@@ -1842,6 +1844,7 @@ impl Harness {
         if let Some(server) = self.remote.take() {
             lock(&self.gauges.page).take();
             self.gauges.touch();
+            self.asker.approvals.set_page_served(false);
             server.stop().await;
         }
     }

@@ -343,6 +343,24 @@ async fn no_one_to_answer_asks_nothing() {
     assert!(feed.approvals().is_empty());
 }
 
+/// The web page, while it is served, is someone to answer, also without a
+/// terminal (`-p --remote`, or input piped in). Every copy of the tray
+/// follows it.
+#[test]
+fn the_web_page_can_answer_while_it_is_served() {
+    let feed = Feed::new(crate::agents::MAIN);
+    let alone = Approvals::new(Some(feed), false, None);
+    let copy = alone.clone();
+    alone.set_page_served(true);
+    assert!(alone.can_answer() && copy.can_answer());
+    alone.set_page_served(false);
+    assert!(!copy.can_answer());
+    // Without a feed there is no tray to put a request in.
+    let trayless = Approvals::none();
+    trayless.set_page_served(true);
+    assert!(!trayless.can_answer());
+}
+
 /// A request waits until its answer comes, and leaves the tray when its
 /// asker stops waiting.
 #[tokio::test]
