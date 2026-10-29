@@ -30,17 +30,21 @@ thread_local! {
 }
 
 /// Keeps the spans Arko sent for code blocks, for the Markdown that shows
-/// them.
-pub fn remember(code: &[CodeSpans]) {
+/// them. Returns whether any were new.
+pub fn remember(code: &[CodeSpans]) -> bool {
     CODE.with(|kept| {
         let mut kept = kept.borrow_mut();
         if kept.len() + code.len() > KEPT {
             kept.clear();
         }
+        let mut learned = false;
         for block in code {
-            kept.insert(block.hash.clone(), Rc::new(block.spans.clone()));
+            learned |= kept
+                .insert(block.hash.clone(), Rc::new(block.spans.clone()))
+                .is_none();
         }
-    });
+        learned
+    })
 }
 
 /// Appends `code` escaped, in the spans Arko highlighted it with, if any.
