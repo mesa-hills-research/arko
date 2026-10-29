@@ -924,3 +924,59 @@ async fn an_add_never_replaces_a_server_in_a_folder_moved_in() {
     assert_eq!(std::fs::read_to_string(&local).unwrap(), users);
     assert_eq!(ask.cards().len(), 1);
 }
+
+/// What an add found by path before the user was asked is checked again on
+/// the folder it opens to write in. Another project's .arko moved in after
+/// the check by path, even with the same entry, isn't the folder of the
+/// agent's server the add replaces, and an entry that wasn't there when the
+/// add looked stops it too. The agent's own folder passes.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_add_checks_the_folder_it_opened() {
+    let temp = tempfile::tempdir().unwrap();
+    let setup = setup(temp.path(), Fake::new(approve()), Vec::new());
+    let mut request = AddServer::new("x", "arko-no-such-mcp-server");
+    request.why = "A reason.".into();
+    setup
+        .changes
+        .add(&context(temp.path()), request)
+        .await
+        .unwrap();
+    let arko = crate::arko_dir::dir(&setup.workspace);
+    let local = arko.join(crate::mcp::LOCAL_FILE);
+    let Ok(before) = setup.changes.found("x", &normal(&local)) else {
+        panic!("the agent's x is taken");
+    };
+    assert!(before.replaced.is_some());
+    let check = |found: &Found| {
+        let folder = crate::arko_dir::ensure_dir(&setup.workspace, &setup.root).unwrap();
+        let servers = crate::mcp::ServersFile {
+            folder: &folder,
+            name: crate::mcp::LOCAL_FILE,
+        };
+        let previous = servers.read().unwrap();
+        opened_unchanged("x", &servers, previous.as_deref(), found)
+    };
+    assert_eq!(check(&before), Ok(()));
+
+    let other = temp.path().join("other").join(crate::arko_dir::DIR);
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::copy(&local, other.join(crate::mcp::LOCAL_FILE)).unwrap();
+    let moved = setup.workspace.join("moved");
+    std::fs::rename(&arko, &moved).unwrap();
+    std::fs::rename(&other, &arko).unwrap();
+    let changed = format!(
+        "x changed in {} while the user decided, so Arko wrote nothing. Call add again, which asks them about it as it is now.",
+        normal(&local).display()
+    );
+    assert_eq!(check(&before), Err(changed.clone()));
+    let nothing = Found {
+        entry: None,
+        replaced: None,
+    };
+    assert_eq!(check(&nothing), Err(changed));
+
+    std::fs::remove_dir_all(&arko).unwrap();
+    std::fs::rename(&moved, &arko).unwrap();
+    assert_eq!(check(&before), Ok(()));
+}

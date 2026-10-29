@@ -219,8 +219,13 @@ pub(crate) fn sets_up(file: &Path, name: &str) -> bool {
 /// The entry for the server `name` in the file at `file`, as written, if it
 /// has one.
 pub(crate) fn entry_in(file: &Path, name: &str) -> Option<Value> {
-    let text = std::fs::read_to_string(file).ok()?;
-    let value: Value = serde_json::from_str(&text).ok()?;
+    entry_in_text(&std::fs::read(file).ok()?, name)
+}
+
+/// The entry for the server `name` in a file's `text`, as written, if it
+/// has one.
+pub(crate) fn entry_in_text(text: &[u8], name: &str) -> Option<Value> {
+    let value: Value = serde_json::from_slice(text).ok()?;
     entries(value.get("mcpServers")?)
         .ok()?
         .into_iter()

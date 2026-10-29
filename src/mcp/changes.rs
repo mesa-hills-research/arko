@@ -358,10 +358,7 @@ impl Changes {
         let wrote_nothing = "while the user decided, so Arko wrote nothing";
         match self.found(name, target) {
             Ok(now) if now == *before => Ok(()),
-            Ok(_) => Err(format!(
-                "{name} changed in {} {wrote_nothing}. Call add again, which asks them about it as it is now.",
-                target.display()
-            )),
+            Ok(_) => Err(changed_in(name, target)),
             Err(Taken::File(file)) => Err(format!(
                 "A server named {name} was set up in {} {wrote_nothing}. Choose another name, and call add again.",
                 file.display()
@@ -449,6 +446,9 @@ impl Changes {
         let file = servers.path();
         // What it changes is read first, so that it can be put back.
         let previous = servers.read()?;
+        // (The checks above went by the path, which a `.arko` moved or
+        // renamed since may lead elsewhere than the folder opened.)
+        opened_unchanged(&name, &servers, previous.as_deref(), found)?;
         let approvals = match scope {
             Scope::Project => Some(super::read_approvals(&self.root)?),
             Scope::User => None,
@@ -491,6 +491,41 @@ impl Changes {
         if let Some(notices) = &self.notices {
             notices.info(text);
         }
+    }
+}
+
+/// Why an add of `name` wrote nothing in `target`: its entry there, or the
+/// agent's server it replaces, changed while the user decided.
+fn changed_in(name: &str, target: &Path) -> String {
+    format!(
+        "{name} changed in {} while the user decided, so Arko wrote nothing. Call add again, which asks them about it as it is now.",
+        target.display()
+    )
+}
+
+/// Checks, on the folder an add opened to write in, what it found before the
+/// user was asked (`before`): the folder is the one that holds the agent's
+/// server it replaces, by its real path and identity (when the record has
+/// one), and the file read through it (`previous`) has the entry for `name`
+/// that the add found.
+fn opened_unchanged(
+    name: &str,
+    servers: &super::ServersFile,
+    previous: Option<&[u8]>,
+    before: &Found,
+) -> Result<(), String> {
+    let folder = servers.folder;
+    let same_folder = before.replaced.as_ref().is_none_or(|record| {
+        record.folder.is_none_or(|id| {
+            record.file == folder.real().join(servers.name)
+                && folder.id().map(agent_added::FileId::from) == Some(id)
+        })
+    });
+    let entry = previous.and_then(|text| super::entry_in_text(text, name));
+    if same_folder && entry == before.entry {
+        Ok(())
+    } else {
+        Err(changed_in(name, &normal(&servers.path())))
     }
 }
 
