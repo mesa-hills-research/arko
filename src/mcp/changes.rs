@@ -15,7 +15,8 @@
 //! gets the server, and the hub starts it as the user approved it. The name's
 //! checks are made again as the entry is written, and a change made while
 //! the user decided (an entry of that name, or a change to the agent's own)
-//! writes nothing.
+//! writes nothing. The record, the entry and the approval are written in
+//! that order as one change, and a step that fails puts back the others.
 //!
 //! A remove works only on a server the record says an agent added.
 
@@ -369,39 +370,27 @@ impl Changes {
         }
     }
 
-    /// Writes `entry` as the server `name` in the file of `scope`, once it
-    /// checked that what the add found there (`found`) didn't change while
-    /// the user decided, and remembers a project's file as approved when it
-    /// was before (or had no servers). Says where, and whether it did.
+    /// Writes `entry` as the server `name` in the file of `scope`, as one
+    /// change with the approvals' lock held, once it checked that what the
+    /// add found there (`found`) didn't change while the user decided. The
+    /// record of what agents added gets `record` first, so an entry is never
+    /// written without it. Then the entry is written, and a project's file is
+    /// remembered as approved when it was before (or had no servers). A step
+    /// that fails puts back what those before it changed. Says where it
+    /// wrote, and whether the file is approved.
     fn write(
         &self,
-        name: &str,
         entry: Value,
         scope: Scope,
         found: &Found,
+        mut record: ServerRecord,
     ) -> Result<(PathBuf, bool), String> {
+        let name = record.name.clone();
         let _lock = super::approval_lock(&self.root)?;
-        self.unchanged(name, &normal(&self.target(scope)), found)?;
-        match scope {
+        self.unchanged(&name, &normal(&self.target(scope)), found)?;
+        let file = match scope {
             Scope::Project => {
-                let file =
-                    crate::arko_dir::ensure(&self.workspace, &self.root)?.join(super::LOCAL_FILE);
-                let (before, after) = super::write_entry(&file, name, entry)?;
-                let approvals = super::read_approvals(&self.root)?;
-                let empty = super::entries(&before).map_or(true, |entries| entries.is_empty());
-                let approved = empty
-                    || super::remembered_raw(&approvals, &self.workspace, Asked::Local, &before)
-                        == Some(true);
-                if approved {
-                    super::remember_locked(
-                        &self.root,
-                        &self.workspace,
-                        Asked::Local,
-                        &after,
-                        true,
-                    )?;
-                }
-                Ok((normal(&file), approved))
+                crate::arko_dir::ensure(&self.workspace, &self.root)?.join(super::LOCAL_FILE)
             }
             Scope::User => {
                 std::fs::create_dir_all(&self.root).map_err(|error| {
@@ -411,17 +400,126 @@ impl Changes {
                         crate::profiles::reason_of(&error)
                     )
                 })?;
-                let file = self.root.join(super::USER_FILE);
-                super::write_entry(&file, name, entry)?;
-                Ok((normal(&file), true))
+                self.root.join(super::USER_FILE)
             }
+        };
+        // What it changes is read first, so that it can be put back.
+        let previous = match std::fs::read(&file) {
+            Ok(text) => Some(text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(format!(
+                    "Couldn't read {} ({}).",
+                    file.display(),
+                    crate::profiles::reason_of(&error)
+                ));
+            }
+        };
+        let approvals = match scope {
+            Scope::Project => Some(super::read_approvals(&self.root)?),
+            Scope::User => None,
+        };
+        record.file = normal(&file);
+        agent_added::record_server(&self.root, record.clone())
+            .map_err(|why| format!("{} Arko didn't add {name}.", as_sentence(&why)))?;
+        let undo = Undo {
+            changes: self,
+            name: &name,
+            file: &file,
+            scope,
+            replaced: found.replaced.as_ref(),
+        };
+        let (before, after) =
+            super::write_entry(&file, &name, entry).map_err(|why| undo.all(&why, None))?;
+        // Another session's change to the record, made before the entry was
+        // there to keep it, drops it. It goes in again.
+        if agent_added::server_in(&self.root, &record.file, &name).as_ref() != Some(&record) {
+            agent_added::record_server(&self.root, record)
+                .map_err(|why| undo.all(&why, Some(previous.as_deref())))?;
         }
+        let Some(approvals) = approvals else {
+            return Ok((normal(&file), true));
+        };
+        let empty = super::entries(&before).map_or(true, |entries| entries.is_empty());
+        let approved = empty
+            || super::remembered_raw(&approvals, &self.workspace, Asked::Local, &before)
+                == Some(true);
+        if approved {
+            super::remember_locked(&self.root, &self.workspace, Asked::Local, &after, true)
+                .map_err(|why| undo.all(&why, Some(previous.as_deref())))?;
+        }
+        Ok((normal(&file), approved))
     }
 
     fn notice(&self, text: &str) {
         if let Some(notices) = &self.notices {
             notices.info(text);
         }
+    }
+}
+
+/// Puts back what an add changed when a later step of it failed.
+struct Undo<'a> {
+    changes: &'a Changes,
+    name: &'a str,
+    /// The file the entry goes in.
+    file: &'a Path,
+    scope: Scope,
+    /// The record of the agent's server the add replaces.
+    replaced: Option<&'a ServerRecord>,
+}
+
+impl Undo<'_> {
+    /// Puts back the file as it was when `previous` is given (the entry was
+    /// written, and `None` is a file that wasn't there), and the record of
+    /// what agents added, after a step failed with `why`. Says what failed,
+    /// and what is left as it is. An entry that can't be taken out keeps its
+    /// record, so an agent's remove takes it out.
+    fn all(&self, why: &str, previous: Option<Option<&[u8]>>) -> String {
+        let mut said = format!("{} Arko didn't add {}", as_sentence(why), self.name);
+        if let Some(previous) = previous {
+            let put_back = match previous {
+                Some(text) => crate::session::write_whole(self.file, text),
+                None => std::fs::remove_file(self.file),
+            };
+            if let Err(error) = put_back {
+                said.push_str(&format!(
+                    ", but couldn't put {} back as it was ({}), so the new entry is there. It's recorded as an agent's, so remove takes it out.",
+                    self.file.display(),
+                    crate::profiles::reason_of(&error)
+                ));
+                said.push_str(match self.scope {
+                    Scope::Project => " The next session asks the user before it starts it.",
+                    Scope::User => " The next session starts it unless it's removed.",
+                });
+                return said;
+            }
+        }
+        let root = &self.changes.root;
+        let record = match self.replaced {
+            Some(replaced) => agent_added::record_server(root, replaced.clone()),
+            None => agent_added::forget_server(root, &normal(self.file), self.name).map(|_| ()),
+        };
+        match record {
+            Ok(()) => said.push_str(", and changed nothing."),
+            Err(error) => said.push_str(&format!(
+                ", and left {} as it was, but couldn't put back the record of what agents added ({}).",
+                self.file.display(),
+                error.trim_end_matches('.')
+            )),
+        }
+        said
+    }
+}
+
+/// `why` as a sentence of its own, starting with a capital and ending with
+/// a period.
+fn as_sentence(why: &str) -> String {
+    let why = crate::ui::sentence(why.trim());
+    if why.ends_with(['.', '!', '?']) {
+        why
+    } else {
+        format!("{why}.")
     }
 }
 
@@ -515,18 +613,15 @@ impl McpChanges for Changes {
             }
         }
         let entry = entry_of(&request);
-        let (file, approved) = self.write(&name, entry.clone(), scope, &found)?;
-        agent_added::record_server(
-            &self.root,
-            ServerRecord {
-                file: file.clone(),
-                name: name.clone(),
-                session: self.session.clone(),
-                session_title: (self.title)(),
-                added: chrono::Utc::now(),
-                why: request.why.trim().to_string(),
-            },
-        )?;
+        let record = ServerRecord {
+            file: target,
+            name: name.clone(),
+            session: self.session.clone(),
+            session_title: (self.title)(),
+            added: chrono::Utc::now(),
+            why: request.why.trim().to_string(),
+        };
+        let (file, approved) = self.write(entry.clone(), scope, &found, record)?;
         let started = match approved_server(&name, &entry, &file) {
             Ok(server) => self
                 .servers

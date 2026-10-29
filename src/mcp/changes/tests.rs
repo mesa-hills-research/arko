@@ -616,3 +616,93 @@ async fn what_changes_while_the_user_decides_is_kept() {
     assert!(setup.changes.servers.hub.config("other").is_none());
     setup.changes.servers.shutdown().await;
 }
+
+/// An add whose record of what agents added can't be written writes no
+/// entry and remembers no approval, so nothing starts in the next session.
+#[tokio::test]
+async fn an_add_that_cant_be_recorded_writes_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let ask = Fake::new(approve());
+    let setup = setup(temp.path(), ask, Vec::new());
+    // A folder where the record's file goes can't be read or written.
+    std::fs::create_dir_all(setup.root.join(agent_added::FILE)).unwrap();
+    let refused = setup
+        .changes
+        .add(&context(temp.path()), stub_request(&setup, "stub", &[]))
+        .await
+        .unwrap_err();
+    assert!(
+        refused.starts_with("Couldn't read ") && refused.ends_with(" Arko didn't add stub."),
+        "{refused}"
+    );
+    let local = local_file(&setup.workspace);
+    assert!(!crate::mcp::sets_up(&local, "stub"));
+    assert_eq!(
+        crate::mcp::local_approval(&setup.root, &setup.workspace),
+        Ok(None)
+    );
+    let plan = crate::mcp::plan(&setup.root, &setup.workspace, &[], true).unwrap();
+    assert!(plan.decide(&[]).unwrap().0.is_empty());
+    assert!(setup.changes.servers.hub.config("stub").is_none());
+}
+
+/// A step of an add that fails after the entry is written puts back the
+/// file and the record, and says so. When the file can't be put back, the
+/// entry keeps its record, so an agent's remove takes it out, and the
+/// result says what is left.
+#[test]
+fn a_failed_step_puts_back_what_the_add_changed() {
+    let temp = tempfile::tempdir().unwrap();
+    let setup = setup(temp.path(), Fake::new(approve()), Vec::new());
+    let file = setup.root.join(crate::mcp::USER_FILE);
+    let added = |name: &str| {
+        crate::mcp::write_entry(&file, name, serde_json::json!({"command": "npx"})).unwrap();
+        agent_added::record_server(
+            &setup.root,
+            ServerRecord {
+                file: normal(&file),
+                name: name.into(),
+                session: "s".into(),
+                session_title: None,
+                added: chrono::Utc::now(),
+                why: "A reason.".into(),
+            },
+        )
+        .unwrap();
+    };
+    std::fs::create_dir_all(&setup.root).unwrap();
+    let undo = |name: &'static str| Undo {
+        changes: &setup.changes,
+        name,
+        file: &file,
+        scope: Scope::User,
+        replaced: None,
+    };
+    // A file that wasn't there goes again, and so does the record.
+    added("first");
+    assert_eq!(
+        undo("first").all(
+            "couldn't save the approvals (permission denied)",
+            Some(None)
+        ),
+        "Couldn't save the approvals (permission denied). Arko didn't add first, and changed nothing."
+    );
+    assert!(!file.exists());
+    assert!(agent_added::servers(&setup.root).is_empty());
+    // A file that can't be put back keeps the entry and its record.
+    std::fs::write(&file, r#"{"mcpServers": {}}"#).unwrap();
+    let before = std::fs::read(&file).unwrap();
+    added("second");
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    let said = undo("second").all("Couldn't save the record.", Some(Some(&before)));
+    assert!(
+        said.starts_with(&format!(
+            "Couldn't save the record. Arko didn't add second, but couldn't put {} back as it was (",
+            file.display()
+        )) && said.ends_with(
+            "so the new entry is there. It's recorded as an agent's, so remove takes it out. The next session starts it unless it's removed."
+        ),
+        "{said}"
+    );
+}
