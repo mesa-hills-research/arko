@@ -469,6 +469,36 @@ mod tests {
                 .unwrap_or_default()
         }
 
+        /// An app that saves the switches without the session has the
+        /// session send them to its clients, with nothing in the
+        /// transcript.
+        #[tokio::test]
+        async fn an_app_refreshes_the_switches_without_a_transcript_line() {
+            let temp = tempfile::tempdir().unwrap();
+            let (harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), false);
+            let root = harness.root.clone();
+            let items = || harness.feed.subscribe().0.items.len();
+            let before = items();
+            let live = || crate::remote::Meter::read(harness.gauges.as_ref()).settings;
+            assert!(live().ask_before_adding_mcp);
+            update(&root, |prefs| {
+                prefs.ask_before_adding_mcp = false;
+                prefs.review_project_skills = true;
+            })
+            .unwrap();
+            let mut git = crate::profiles::Preferences::load(&root);
+            git.keep_out_of_git = false;
+            git.save(&root).unwrap();
+            // Until it is told, the session shows what it read last.
+            assert!(live().ask_before_adding_mcp);
+            harness.details.refresh_settings();
+            let settings = live();
+            assert!(!settings.ask_before_adding_mcp);
+            assert!(settings.review_project_skills);
+            assert!(!settings.keep_agents_files_out_of_git);
+            assert_eq!(items(), before, "nothing in the transcript");
+        }
+
         /// `/extensions` says the switches, changes each one and saves it
         /// where a new session reads it, and the clients read it from the
         /// status.

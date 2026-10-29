@@ -272,7 +272,9 @@ profiles::delete(&roots, Place::User, "3d-judge")?;
 `profiles::Preferences` loads and saves the profile settings, and `profiles::needs_approval` tells
 whether the agent's save asks you first. `Preferences::save_in` also adds or removes Arko's
 `.gitignore` in a project's `.arko` folder when the keep-out-of-git choice changes
-(`arko::arko_dir::apply_setting` does that alone). `Profile::check` tells whether a profile can be
+(`arko::arko_dir::apply_setting` does that alone). After saving it, or the switches of
+`arko::extension_prefs`, call `Details::refresh_settings` on each open session, so its web page
+shows the change with nothing in its transcript. `Profile::check` tells whether a profile can be
 saved, with a model Arko knows and an effort it takes. `profiles::folders` gives the folders for an
 "open the folder" button, the project's `.arko/profiles` and then its older `.agents/profiles`, and
 `Found::reach` names the older one for a profile read from it. `profiles::approval` is the request
