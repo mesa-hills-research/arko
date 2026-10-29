@@ -29,7 +29,7 @@ use crate::status::Gauges;
 use crate::ui::{Control, Input, Output, Stats};
 use crate::{
     agents, commands, conversations, crew, details, glyphs, handover, index, kept_notes, keys, mcp,
-    message, outside, project, providers, remote, shell, skills, ui, worker_tools,
+    message, outside, project, providers, remote, shell, skill_install, skills, ui, worker_tools,
 };
 use crate::{and_list, lock};
 
@@ -773,6 +773,19 @@ impl Harness {
                         crew: self.crew.clone(),
                     }),
                 );
+        }
+        // The main agent saves and removes skills, in a conversation that
+        // offers the tools (one saved before them doesn't).
+        if keep
+            || main_config
+                .tool_config
+                .available_tool_names
+                .iter()
+                .any(|name| name == skill_install::ADD_SKILL)
+        {
+            for tool in skill_install::tools(self.skill_context(&main_config)) {
+                builder = builder.agent_tool(MAIN, tool);
+            }
         }
         builder = builder.user_input_handler(self.asker.clone());
         let legacy = self.settings.max_workers > 0
@@ -3297,6 +3310,9 @@ impl Harness {
             }
             "/mcp" => self.list_mcp(),
             "/skills" => self.list_skills(),
+            skills if skills.split_whitespace().next() == Some("/skills") => {
+                self.skills_command(skills["/skills".len()..].trim());
+            }
             "/session" => {
                 self.publish_details();
                 let facts = self.details.session();
@@ -3444,11 +3460,15 @@ impl Harness {
             .skills
             .iter()
             .map(|skill| {
-                let always = if skill.always { ", always loaded" } else { "" };
+                let always = format!(
+                    "{}{}",
+                    if skill.always { ", always loaded" } else { "" },
+                    crate::skills_command::place_notes(skill)
+                );
                 let place = match &skill.path {
                     Some(path) => shorten_path(
                         &with_tilde(path, home.as_deref()),
-                        place_room.saturating_sub(always.len()),
+                        place_room.saturating_sub(always.width()),
                     ),
                     None => "built in".to_string(),
                 };
@@ -3462,7 +3482,7 @@ impl Harness {
         rows.sort();
         if rows.is_empty() {
             out.line(&format!(
-                "No skills. Arko reads them (folders with a SKILL.md) from the project's .agents/skills, .claude/skills and .skills, from {}, and from ~/.agents/skills and ~/.claude/skills.",
+                "No skills. Arko reads them (folders with a SKILL.md) from the project's .agents/skills, .claude/skills, .skills and .arko/skills, from {}, and from ~/.agents/skills and ~/.claude/skills.",
                 skills.own_folder.display()
             ));
         }

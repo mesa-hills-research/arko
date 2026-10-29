@@ -142,7 +142,13 @@ pub const COMMANDS: &[Command] = &[
         runs: Runs::Session,
     },
     Command::session("/mcp", "the MCP servers and their tools"),
-    Command::session("/skills", "the skills the agents can load"),
+    Command {
+        name: "/skills",
+        args: "[NAME|remove NAME]",
+        about: "the skills the agents can load, one skill in full, or removing one an agent saved",
+        aliases: &[],
+        runs: Runs::Session,
+    },
     Command::session("/session", "this session's ID, folder and models"),
     Command {
         name: "/session-names",

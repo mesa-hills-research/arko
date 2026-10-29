@@ -27,6 +27,7 @@
 //! and `remote` the web page's server. Both are on by default. An app builds
 //! Arko with `default-features = false` and adds `remote` for the web page.
 
+pub mod agent_added;
 mod agents;
 pub mod arko_dir;
 mod asking;
@@ -83,7 +84,9 @@ mod session;
 pub mod session_names;
 pub mod sessions;
 mod shell;
+mod skill_install;
 mod skills;
+mod skills_command;
 mod start;
 mod status;
 #[cfg(feature = "tui")]
