@@ -63,7 +63,12 @@ A worker has the servers of the agent that started it. See
 [Skills and MCP servers for a worker](worker-profiles.md#skills-and-mcp-servers-for-a-worker)
 to give it fewer. A worker with no servers isn't offered `mcp`.
 
-A conversation saved when each server tool was a tool of its own keeps those tools.
+A conversation saved when each server tool was a tool of its own keeps those tools, also after a
+handover, while new conversations and new workers get `mcp`. When a server of theirs doesn't
+start, its tools keep the definitions they had when the session last ran it, so the prompt cache
+holds, and a call says the server isn't running. A session an older Arko opened last has none of
+those definitions kept, so its tools get plain ones and the conversation's prompt cache starts
+again.
 
 ## Servers the agent adds
 

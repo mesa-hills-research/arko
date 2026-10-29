@@ -1397,6 +1397,43 @@ impl McpAccess for Access {
     }
 }
 
+/// The file in a session's folder that keeps the definitions of the MCP
+/// servers' own tools its saved runs were offered.
+const OFFERED_FILE: &str = "mcp-tools.json";
+
+/// The definitions of the MCP servers' own tools (`mcp__<server>__<tool>`)
+/// that the session in `session_dir` kept, by name. A run saved with one
+/// whose server doesn't run is offered it as it was. None for a tool of a
+/// session last opened by an Arko that didn't keep them.
+pub fn offered_definitions(session_dir: &Path) -> BTreeMap<String, ToolDefinition> {
+    std::fs::read_to_string(session_dir.join(OFFERED_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Keeps `definitions` in the session in `session_dir`, with those it kept
+/// before (a later one replaces one of the same name).
+pub fn keep_offered_definitions(
+    session_dir: &Path,
+    definitions: impl IntoIterator<Item = ToolDefinition>,
+) -> Result<(), String> {
+    let mut kept = offered_definitions(session_dir);
+    let before = serde_json::to_value(&kept).map_err(|error| error.to_string())?;
+    kept.extend(
+        definitions
+            .into_iter()
+            .map(|definition| (definition.name.clone(), definition)),
+    );
+    let after = serde_json::to_value(&kept).map_err(|error| error.to_string())?;
+    if after == before {
+        return Ok(());
+    }
+    let path = session_dir.join(OFFERED_FILE);
+    crate::session::write_whole(&path, after.to_string().as_bytes())
+        .map_err(|error| format!("could not save {} ({error})", path.display()))
+}
+
 /// Stands in for a tool a saved conversation offers that this session
 /// doesn't run. A saved conversation (or worker) keeps its own
 /// configuration, so it still offers the tools it was saved with, and can't
@@ -1440,6 +1477,16 @@ impl UnstartedTool {
             said: "This tool isn't available in this session.".into(),
             definition: None,
         }
+    }
+
+    /// This stand-in offered with `definition`, the one the saved run was
+    /// offered, so that its tool list and prompt cache stay as they were.
+    /// Without one it has a definition of its own.
+    pub fn offered_as(mut self, definition: Option<ToolDefinition>) -> Self {
+        if let Some(definition) = definition.filter(|definition| definition.name == self.name) {
+            self.definition = Some(definition);
+        }
+        self
     }
 
     /// For a tool of a server that is no longer set up or didn't start.

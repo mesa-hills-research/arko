@@ -103,19 +103,7 @@ struct WorkerOptions(Arc<Context>);
 #[async_trait]
 impl Tool for WorkerOptions {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: WORKER_OPTIONS.into(),
-            description: "Lists the worker profiles and the models usable now, with their efforts, prices and handover sizes.".into(),
-            output_based_example: None,
-            parameters: vec![text_parameter(
-                "show",
-                "profiles, models or all (default all).",
-                false,
-            )],
-            parallel_safe: true,
-            tool_type_details: ToolTypeDetails::DeveloperDefined,
-            raw_json_schema_override: None,
-        }
+        worker_options_definition()
     }
 
     fn recovery_mode(&self) -> ToolRecovery {
@@ -506,57 +494,7 @@ fn needs_warning(needs: &str) -> String {
 #[async_trait]
 impl Tool for SaveWorkerProfile {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: SAVE_WORKER_PROFILE.into(),
-            description: "Saves a worker profile that start_agent takes by name. It is kept with the project for later sessions, unless scope says session (this session only) or user (every project). The user is asked first, except for a session profile and a project profile in a folder git ignores.".into(),
-            output_based_example: None,
-            parameters: vec![
-                text_parameter(
-                    "name",
-                    "Lowercase letters, digits and hyphens, up to 32 characters, such as 3d-judge.",
-                    true,
-                ),
-                text_parameter(
-                    "description",
-                    "One line, up to 120 characters, saying what the profile is for.",
-                    true,
-                ),
-                text_parameter(
-                    "model",
-                    "A model as start_agent takes it. Without one, the session's worker model.",
-                    false,
-                ),
-                text_parameter(
-                    "effort",
-                    "low, medium, high, xhigh or max, as the model takes it.",
-                    false,
-                ),
-                text_parameter(
-                    "instructions",
-                    "Standing instructions for every worker with this profile, up to 4000 characters. The task goes in start_agent's task.",
-                    false,
-                ),
-                text_parameter(
-                    SKILLS_PARAM,
-                    "Skill names separated by commas, from your own. Workers with this profile get only these, as far as the agent that starts them has them, and none gives them no skills. Left out, they get their starter's.",
-                    false,
-                ),
-                text_parameter(
-                    MCP_PARAM,
-                    "MCP server names separated by commas, from your own. Workers with this profile reach only these, as far as the agent that starts them has them, and none gives them no servers. Left out, they get their starter's.",
-                    false,
-                ),
-                text_parameter(
-                    "scope",
-                    "project (the default, kept with the project), session (this session only) or user (every project).",
-                    false,
-                ),
-            ],
-            // Several saves of one response ask the user in one card.
-            parallel_safe: true,
-            tool_type_details: ToolTypeDetails::DeveloperDefined,
-            raw_json_schema_override: None,
-        }
+        save_worker_profile_definition()
     }
 
     /// The call waits for the user's answer, which no time limit cuts short.
@@ -717,6 +655,87 @@ impl Tool for SaveWorkerProfile {
             ));
         }
         Ok(result)
+    }
+}
+
+/// The definitions of the tools, which don't depend on the session: what a
+/// conversation saved with them was offered, for a session without workers.
+pub fn definitions() -> Vec<ToolDefinition> {
+    vec![
+        worker_options_definition(),
+        save_worker_profile_definition(),
+    ]
+}
+
+/// The definition of `WorkerOptions`'s tool.
+fn worker_options_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: WORKER_OPTIONS.into(),
+        description: "Lists the worker profiles and the models usable now, with their efforts, prices and handover sizes.".into(),
+        output_based_example: None,
+        parameters: vec![text_parameter(
+            "show",
+            "profiles, models or all (default all).",
+            false,
+        )],
+        parallel_safe: true,
+        tool_type_details: ToolTypeDetails::DeveloperDefined,
+        raw_json_schema_override: None,
+    }
+}
+
+/// The definition of `SaveWorkerProfile`'s tool.
+fn save_worker_profile_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: SAVE_WORKER_PROFILE.into(),
+        description: "Saves a worker profile that start_agent takes by name. It is kept with the project for later sessions, unless scope says session (this session only) or user (every project). The user is asked first, except for a session profile and a project profile in a folder git ignores.".into(),
+        output_based_example: None,
+        parameters: vec![
+            text_parameter(
+                "name",
+                "Lowercase letters, digits and hyphens, up to 32 characters, such as 3d-judge.",
+                true,
+            ),
+            text_parameter(
+                "description",
+                "One line, up to 120 characters, saying what the profile is for.",
+                true,
+            ),
+            text_parameter(
+                "model",
+                "A model as start_agent takes it. Without one, the session's worker model.",
+                false,
+            ),
+            text_parameter(
+                "effort",
+                "low, medium, high, xhigh or max, as the model takes it.",
+                false,
+            ),
+            text_parameter(
+                "instructions",
+                "Standing instructions for every worker with this profile, up to 4000 characters. The task goes in start_agent's task.",
+                false,
+            ),
+            text_parameter(
+                SKILLS_PARAM,
+                "Skill names separated by commas, from your own. Workers with this profile get only these, as far as the agent that starts them has them, and none gives them no skills. Left out, they get their starter's.",
+                false,
+            ),
+            text_parameter(
+                MCP_PARAM,
+                "MCP server names separated by commas, from your own. Workers with this profile reach only these, as far as the agent that starts them has them, and none gives them no servers. Left out, they get their starter's.",
+                false,
+            ),
+            text_parameter(
+                "scope",
+                "project (the default, kept with the project), session (this session only) or user (every project).",
+                false,
+            ),
+        ],
+        // Several saves of one response ask the user in one card.
+        parallel_safe: true,
+        tool_type_details: ToolTypeDetails::DeveloperDefined,
+        raw_json_schema_override: None,
     }
 }
 

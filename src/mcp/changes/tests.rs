@@ -716,8 +716,9 @@ fn a_failed_step_puts_back_what_the_add_changed() {
 }
 
 /// A server an agent added that didn't start, because a variable it uses
-/// isn't set, is in `servers`'s list with why, and remove takes it out of
-/// its file and the record.
+/// isn't set, is in `servers`'s list with why, and `remove` takes it out of
+/// its file and the record, both through the `mcp` tool. A name no server
+/// has is refused.
 #[tokio::test]
 async fn a_server_that_didnt_start_is_listed_and_removed() {
     let temp = tempfile::tempdir().unwrap();
@@ -737,24 +738,39 @@ async fn a_server_that_didnt_start_is_listed_and_removed() {
         notices: None,
     };
     let bridge = session.lead_tool(Arc::new(arko_agents::mcp::AllServers));
-    let servers = || {
+    // The tool's answer to `pairs`, or its error's words.
+    let mcp = |pairs: &[(&str, &str)]| {
         let bridge = bridge.clone();
         let temp = temp.path().to_path_buf();
+        let params: std::collections::HashMap<String, Value> = pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), Value::from(*value)))
+            .collect();
         async move {
-            let params =
-                std::collections::HashMap::from([("action".to_string(), "servers".into())]);
-            bridge.execute(&context(&temp), params).await.unwrap()
+            match bridge.execute(&context(&temp), params).await {
+                Ok(text) => text,
+                Err(arko_agents::ToolError::ExecutionFailed(text)) => text,
+                Err(error) => error.to_string(),
+            }
         }
     };
+    let servers = || mcp(&[("action", "servers")]);
     assert_eq!(
         servers().await,
         "issues  not started, because it uses ${ARKO_SURELY_UNSET_VARIABLE}, which isn't set. The next session starts it once that's fixed."
     );
-    let removed = changes
-        .remove(&context(temp.path()), "issues", "Not needed.")
-        .await
-        .unwrap();
-    assert_eq!(removed, "Removed issues.");
+    let remove = |name: &'static str| {
+        mcp(&[
+            ("action", "remove"),
+            ("server", name),
+            ("why", "Not needed."),
+        ])
+    };
+    assert_eq!(
+        remove("nosuch").await,
+        "There's no MCP server named nosuch."
+    );
+    assert_eq!(remove("issues").await, "Removed issues.");
     assert!(!crate::mcp::sets_up(&local_file(&workspace), "issues"));
     assert!(agent_added::servers(&root).is_empty());
     assert_eq!(

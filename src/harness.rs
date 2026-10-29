@@ -544,6 +544,10 @@ pub(crate) struct Harness {
     pub(crate) main_config: arko_agents::AgentConfig,
     pub(crate) worker_config: arko_agents::AgentConfig,
     pub(crate) tools: Vec<Arc<dyn Tool>>,
+    /// Tools Arko has that this session doesn't give (a chat's, the
+    /// monitors with -p): a saved run offered one gets a stand-in with its
+    /// definition.
+    pub(crate) withheld: Vec<Arc<dyn Tool>>,
     /// Arko's folder.
     pub(crate) root: PathBuf,
     /// The MCP servers started, and what was left out and why.
@@ -757,6 +761,17 @@ impl Harness {
         let direct = self.mcp.servers.hub.direct_tools(access.clone());
         let mut registered: std::collections::HashSet<String> =
             self.tools.iter().map(|tool| tool.name()).collect();
+        // The definitions of those a saved run offers are kept with the
+        // session, for a later session in which their server doesn't run.
+        if let Some(saved) = &saved {
+            let offered = direct
+                .iter()
+                .filter(|tool| saved.optional_tools.contains(&tool.name()))
+                .map(|tool| tool.definition());
+            if let Err(error) = mcp::keep_offered_definitions(&self.session.dir, offered) {
+                log::warn!("{error}");
+            }
+        }
         for tool in direct {
             registered.insert(tool.name());
             builder = builder.resume_only_agent_tool(MAIN, tool);
@@ -877,11 +892,24 @@ impl Harness {
         // doesn't have (a server that doesn't run, and a chat runs none, the
         // search index's or the monitors without them, the worker profile
         // tools without workers) get stand-ins that say so, for those runs.
+        // Each is offered with the definition the run had, so its tool list
+        // stays the same: Arko's own tools' as Arko has them, and a server's
+        // as the session kept it. (A session last opened by an Arko that
+        // didn't keep them has none for a server's tools.)
         if let Some(saved) = &saved {
             if self.crew.is_some() {
                 registered
                     .extend([crew::WORKER_OPTIONS, crew::SAVE_WORKER_PROFILE].map(String::from));
             }
+            let mut definitions = mcp::offered_definitions(&self.session.dir);
+            definitions.extend(
+                self.withheld
+                    .iter()
+                    .map(|tool| tool.definition())
+                    .chain(index::tool_definitions())
+                    .chain(worker_tools::definitions())
+                    .map(|definition| (definition.name.clone(), definition)),
+            );
             let agents: &[&str] = if self.settings.max_workers > 0 {
                 &[MAIN, WORKER]
             } else {
@@ -893,14 +921,14 @@ impl Harness {
                 .filter(|name| !registered.contains(*name))
             {
                 for agent in agents {
-                    let name = name.clone();
-                    let stand_in = if mcp::split_tool_name(&name).is_none() {
-                        mcp::UnstartedTool::unavailable(name)
+                    let stand_in = if mcp::split_tool_name(name).is_none() {
+                        mcp::UnstartedTool::unavailable(name.clone())
                     } else if self.settings.mode == Mode::Chat {
-                        mcp::UnstartedTool::in_chat(name)
+                        mcp::UnstartedTool::in_chat(name.clone())
                     } else {
-                        mcp::UnstartedTool::not_running(name)
+                        mcp::UnstartedTool::not_running(name.clone())
                     };
+                    let stand_in = stand_in.offered_as(definitions.get(name).cloned());
                     builder = builder.resume_only_agent_tool(*agent, Arc::new(stand_in));
                 }
             }
@@ -6217,6 +6245,7 @@ pub(crate) mod tests {
             main_config,
             worker_config,
             tools: Vec::new(),
+            withheld: Vec::new(),
             root,
             mcp: Default::default(),
             skill_folders: Vec::new(),
