@@ -41,6 +41,7 @@ fn profile(instructions: &str) -> Approval {
         effort: Some("xhigh".into()),
         scope: "every project".into(),
         description: "Judges 3D results".into(),
+        limits: vec!["Workers with it get only the skill ponytail.".into()],
         instructions: instructions.into(),
     })
 }
@@ -288,6 +289,7 @@ fn v_opens_the_details_in_place() {
         "Save the worker profile 3d-judge for every project?",
         "Runs on sol at xhigh effort.",
         "Judges 3D results",
+        "Workers with it get only the skill ponytail.",
         "Instructions",
         "│ Check point 1 of the render.",
         "PgDn more",

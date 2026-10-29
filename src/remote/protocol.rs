@@ -408,6 +408,10 @@ pub struct ProfileApproval {
     pub scope: String,
     /// What it is for, in one line.
     pub description: String,
+    /// What it narrows for the workers started with it, a line each, such
+    /// as "Workers with it get only the skills ponytail and release-notes."
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<String>,
     /// Its standing instructions (empty without any).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub instructions: String,
@@ -769,6 +773,9 @@ impl Approval {
                     },
                 );
                 text(&mut lines, profile.description.trim().to_string());
+                for limit in &profile.limits {
+                    text(&mut lines, limit.trim().to_string());
+                }
                 let instructions = profile.instructions.trim_end();
                 if instructions.trim().is_empty() {
                     text(&mut lines, "It has no instructions.".to_string());

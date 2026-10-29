@@ -204,6 +204,35 @@ fn a_server_reads_as_its_card() {
     }
 }
 
+/// A profile's details give its model, what it is for, what it narrows
+/// for its workers, and its instructions in a box.
+#[test]
+fn a_profile_reads_as_its_card() {
+    let approval = Approval::Profile(ProfileApproval {
+        name: "judge".into(),
+        model: "sol".into(),
+        effort: Some("high".into()),
+        scope: "every project".into(),
+        description: "Judges renders".into(),
+        limits: vec!["Workers with it get only the skill ponytail.".into()],
+        instructions: "Compare it with the reference.".into(),
+    });
+    assert_eq!(approval.summary(), "sol high");
+    assert_eq!(
+        lines(&approval),
+        [
+            (Look::Text, "Runs on sol at high effort.".to_string()),
+            (Look::Text, "Judges renders".to_string()),
+            (
+                Look::Text,
+                "Workers with it get only the skill ponytail.".to_string()
+            ),
+            (Look::Heading, "Instructions".to_string()),
+            (Look::Box, "Compare it with the reference.".to_string()),
+        ]
+    );
+}
+
 /// The tray's words: its heading, and the approve button by how many are
 /// selected.
 #[test]
@@ -238,6 +267,7 @@ fn requests_and_answers_cross_the_wire() {
             effort: Some("high".into()),
             scope: "every project".into(),
             description: "Judges".into(),
+            limits: vec!["Workers with it get only the skill ponytail.".into()],
             instructions: String::new(),
         }),
         Approval::Skill(skill()),

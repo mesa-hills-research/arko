@@ -1284,6 +1284,7 @@ pub fn approval(profile: &Profile, place: Place) -> crate::approvals::ProfileApp
         effort: profile.effort.map(|effort| effort.to_string()),
         scope: place.reach().to_string(),
         description: one_line(&profile.description),
+        limits: Vec::new(),
         instructions: profile.instructions.trim().to_string(),
     }
 }
