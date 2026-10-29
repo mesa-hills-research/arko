@@ -421,8 +421,40 @@ pub fn retry_now(page: Page) {
     spawn_local(start(page, None));
 }
 
-pub fn streaming_now() -> bool {
-    STREAM.with(|stream| stream.borrow().is_some())
+/// How long the stream has to answer a ping (ms).
+const PING_WAIT: i32 = 3000;
+
+thread_local! {
+    /// When the stream last gave an event, in this device's time (ms).
+    static HEARD_AT: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+}
+
+/// Checks that the stream still comes through, as a phone back from sleep
+/// or another app may hold one that died without a word. Arko answers a
+/// ping on every stream, and without an answer in time the page connects
+/// again, which starts it over from Arko's history as it is now.
+pub fn check_stream(page: Page) {
+    let Some(checked) = stream_source() else {
+        return retry_now(page);
+    };
+    let asked = js_sys::Date::now();
+    spawn_local(async {
+        let _ = request("POST", "/api/ping", None).await;
+    });
+    let check = Closure::once_into_js(move || {
+        let quiet = HEARD_AT.with(|heard| heard.get()) < asked;
+        if quiet && stream_source() == Some(checked) {
+            close_stream();
+            page.connection.set(Connection::Connecting);
+            retry_now(page);
+        }
+    });
+    let _ = window()
+        .set_timeout_with_callback_and_timeout_and_arguments_0(check.unchecked_ref(), PING_WAIT);
+}
+
+fn stream_source() -> Option<EventSource> {
+    STREAM.with(|stream| stream.borrow().as_ref().map(|(source, _)| source.clone()))
 }
 
 fn connect(page: Page) {
@@ -434,6 +466,7 @@ fn connect(page: Page) {
     let mut on = |name: &str, handle: fn(Page, &str) -> Result<(), String>| {
         let event = name.to_string();
         let handler = Closure::<dyn FnMut(MessageEvent)>::new(move |message: MessageEvent| {
+            HEARD_AT.with(|heard| heard.set(js_sys::Date::now()));
             let Some(data) = message.data().as_string() else {
                 return;
             };
@@ -457,6 +490,7 @@ fn connect(page: Page) {
     on("job", on_job);
     on("status", on_status);
     on("code", on_code);
+    on("ping", |_, _| Ok(()));
     let error = Closure::<dyn FnMut(MessageEvent)>::new(move |_| {
         close_stream();
         // The stream may have ended with the session: ask before retrying.
