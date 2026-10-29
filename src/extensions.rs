@@ -176,7 +176,7 @@ pub fn list_with(
         let added_here = |name: &str| {
             added
                 .iter()
-                .find(|record| record.name == name && record.file == *file)
+                .find(|record| record.name == name && record.is_in(file))
                 .cloned()
         };
         for server in &parsed.servers {

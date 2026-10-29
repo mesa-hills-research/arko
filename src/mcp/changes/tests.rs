@@ -661,6 +661,7 @@ fn a_failed_step_puts_back_what_the_add_changed() {
             &setup.root,
             ServerRecord {
                 file: normal(&file),
+                folder: None,
                 name: name.into(),
                 session: "s".into(),
                 session_title: None,
@@ -671,10 +672,17 @@ fn a_failed_step_puts_back_what_the_add_changed() {
         .unwrap();
     };
     std::fs::create_dir_all(&setup.root).unwrap();
+    let folder = crate::arko_dir::Folder::base(&setup.root).unwrap();
+    let servers = crate::mcp::ServersFile {
+        folder: &folder,
+        name: crate::mcp::USER_FILE,
+    };
+    let recorded = normal(&file);
     let undo = |name: &'static str| Undo {
         changes: &setup.changes,
         name,
-        file: &file,
+        servers: &servers,
+        recorded: &recorded,
         scope: Scope::User,
         replaced: None,
     };
@@ -753,4 +761,105 @@ async fn a_server_that_didnt_start_is_listed_and_removed() {
         servers().await,
         "No MCP servers are set up. add sets one up once the user approves it."
     );
+}
+
+/// A remove opens the project's .arko without following a link, and takes
+/// the entry out only when it is the folder the add wrote in, by its real
+/// path and identity. A .arko swapped for a link to Arko's folder, or
+/// another project's .arko moved into its place, keeps the user's server of
+/// that name there. Once the agent's folder is back, its server goes.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_remove_never_follows_a_swapped_arko_folder() {
+    let temp = tempfile::tempdir().unwrap();
+    let setup = setup(temp.path(), Fake::new(approve()), Vec::new());
+    let mut request = AddServer::new("x", "arko-no-such-mcp-server");
+    request.why = "A reason.".into();
+    setup
+        .changes
+        .add(&context(temp.path()), request)
+        .await
+        .unwrap();
+    let arko = crate::arko_dir::dir(&setup.workspace);
+    let local = arko.join(crate::mcp::LOCAL_FILE);
+    let user_file = setup.root.join(crate::mcp::USER_FILE);
+    let record = agent_added::servers(&setup.root).pop().unwrap();
+    assert_eq!(record.file, local.canonicalize().unwrap());
+    assert!(record.folder.is_some());
+    let users = r#"{"mcpServers": {"x": {"command": "users-own"}}}"#;
+
+    let moved = setup.workspace.join("moved");
+    std::fs::rename(&arko, &moved).unwrap();
+    std::fs::write(&user_file, users).unwrap();
+    std::os::unix::fs::symlink(&setup.root, &arko).unwrap();
+    assert!(take_out(&setup.root, &local, "x").is_err());
+    let refused = setup.changes.remove(&context(temp.path()), "x", "").await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(std::fs::read_to_string(&user_file).unwrap(), users);
+    std::fs::remove_file(&arko).unwrap();
+
+    let other = temp.path().join("other").join(crate::arko_dir::DIR);
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join(crate::mcp::LOCAL_FILE), users).unwrap();
+    std::fs::rename(&other, &arko).unwrap();
+    assert_eq!(
+        take_out(&setup.root, &local, "x"),
+        Err(NotRemoved::NotAdded(record.file.clone()))
+    );
+    assert_eq!(std::fs::read_to_string(&local).unwrap(), users);
+
+    std::fs::remove_dir_all(&arko).unwrap();
+    std::fs::rename(&moved, &arko).unwrap();
+    take_out(&setup.root, &local, "x").unwrap();
+    assert!(!crate::mcp::sets_up(&local, "x"));
+    assert!(agent_added::servers(&setup.root).is_empty());
+}
+
+/// An add writes its entry through the folder it opened, so a .arko swapped
+/// for a link after that keeps the write in the folder opened. A
+/// .arko/mcp.json that is itself a link is refused, and nothing is written
+/// or recorded.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_add_never_writes_through_a_link() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let setup = setup(temp.path(), Fake::new(approve()), Vec::new());
+    let folder = crate::arko_dir::ensure_dir(&setup.workspace, &setup.root).unwrap();
+    let arko = folder.path().to_path_buf();
+    let moved = setup.workspace.join("moved");
+    std::fs::rename(&arko, &moved).unwrap();
+    std::fs::create_dir_all(&setup.root).unwrap();
+    symlink(&setup.root, &arko).unwrap();
+    let servers = crate::mcp::ServersFile {
+        folder: &folder,
+        name: crate::mcp::LOCAL_FILE,
+    };
+    crate::mcp::write_entry_in(&servers, "x", serde_json::json!({"command": "npx"})).unwrap();
+    assert!(crate::mcp::sets_up(
+        &moved.join(crate::mcp::LOCAL_FILE),
+        "x"
+    ));
+    assert!(!setup.root.join(crate::mcp::USER_FILE).exists());
+    std::fs::remove_file(&arko).unwrap();
+    std::fs::rename(&moved, &arko).unwrap();
+
+    let user_file = setup.root.join(crate::mcp::USER_FILE);
+    let empty = r#"{"mcpServers": {}}"#;
+    std::fs::write(&user_file, empty).unwrap();
+    std::fs::remove_file(arko.join(crate::mcp::LOCAL_FILE)).unwrap();
+    symlink(&user_file, arko.join(crate::mcp::LOCAL_FILE)).unwrap();
+    let mut request = AddServer::new("y", "arko-no-such-mcp-server");
+    request.why = "A reason.".into();
+    let error = setup
+        .changes
+        .add(&context(temp.path()), request)
+        .await
+        .unwrap_err();
+    assert!(
+        error.ends_with("mcp.json is a link, and Arko doesn't write through links."),
+        "{error}"
+    );
+    assert_eq!(std::fs::read_to_string(&user_file).unwrap(), empty);
+    assert!(agent_added::servers(&setup.root).is_empty());
 }

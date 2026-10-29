@@ -228,7 +228,7 @@ fn a_link_at_arko_or_in_it_is_refused() {
         ensure_in(&work, &root, "profiles").unwrap_err(),
         refused(&arko.join("profiles"))
     );
-    assert!(ensure_in(&work, &root, "skills").unwrap().is_dir());
+    assert!(ensure_in(&work, &root, "skills").unwrap().path().is_dir());
     assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
 }
 

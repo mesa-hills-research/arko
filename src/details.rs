@@ -431,7 +431,7 @@ impl McpFacts {
                     McpServerFacts {
                         added: added
                             .iter()
-                            .find(|record| record.name == server.name && record.file == file)
+                            .find(|record| record.name == server.name && record.is_in(&file))
                             .cloned(),
                         env: server.env_names(),
                         name: server.name,

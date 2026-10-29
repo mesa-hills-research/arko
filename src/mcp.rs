@@ -774,42 +774,120 @@ fn save_approvals(root: &Path, approvals: &Approvals) -> Result<(), String> {
         .map_err(|error| format!("could not save {} ({error})", path.display()))
 }
 
-/// The file at `path` as JSON, or an empty one when there is none.
-fn read_servers_file(path: &Path) -> Result<Value, String> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text)
-            .map_err(|error| format!("Couldn't read {} ({error}).", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(serde_json::json!({"mcpServers": {}}))
+/// A servers file Arko changes: the file `name` in an opened folder, read
+/// and written through it, so that neither a link at the file nor a folder
+/// swapped for a link on the way takes a change elsewhere.
+pub(crate) struct ServersFile<'a> {
+    pub folder: &'a crate::arko_dir::Folder,
+    pub name: &'a str,
+}
+
+impl ServersFile<'_> {
+    /// Its path, as messages say it.
+    pub(crate) fn path(&self) -> PathBuf {
+        self.folder.path().join(self.name)
+    }
+
+    /// What it holds, `None` when it isn't there. Refuses a link.
+    pub(crate) fn read(&self) -> Result<Option<Vec<u8>>, String> {
+        let path = self.path();
+        let unread = |error: std::io::Error| {
+            format!(
+                "Couldn't read {} ({}).",
+                path.display(),
+                crate::profiles::reason_of(&error)
+            )
+        };
+        match self.folder.entry(self.name).map_err(unread)? {
+            None => return Ok(None),
+            Some(entry) if entry.kind == crate::arko_dir::folder::Kind::Link => {
+                return Err(crate::arko_dir::folder::link_refused(&path));
+            }
+            Some(_) => {}
         }
-        Err(error) => Err(format!(
-            "Couldn't read {} ({}).",
-            path.display(),
-            crate::profiles::reason_of(&error)
-        )),
+        match self.folder.read(self.name) {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(unread(error)),
+        }
+    }
+
+    /// Writes `bytes` as the whole file, or deletes it for `None`.
+    pub(crate) fn put(&self, bytes: Option<&[u8]>) -> std::io::Result<()> {
+        match bytes {
+            Some(bytes) => self.folder.write_whole(self.name, bytes),
+            None => match self.folder.remove_file(self.name) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other,
+            },
+        }
+    }
+
+    /// The file as JSON, or an empty one when there is none.
+    fn value(&self) -> Result<Value, String> {
+        match self.read()? {
+            Some(text) => serde_json::from_slice(&text)
+                .map_err(|error| format!("Couldn't read {} ({error}).", self.path().display())),
+            None => Ok(serde_json::json!({"mcpServers": {}})),
+        }
+    }
+
+    fn save(&self, value: &Value) -> Result<(), String> {
+        let mut text = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
+        text.push('\n');
+        self.put(Some(text.as_bytes())).map_err(|error| {
+            format!(
+                "Couldn't save {} ({}).",
+                self.path().display(),
+                crate::profiles::reason_of(&error)
+            )
+        })
     }
 }
 
-fn save_servers_file(path: &Path, value: &Value) -> Result<(), String> {
-    let mut text = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
-    text.push('\n');
-    crate::session::write_whole(path, text.as_bytes()).map_err(|error| {
-        format!(
-            "Couldn't save {} ({}).",
-            path.display(),
-            crate::profiles::reason_of(&error)
-        )
-    })
+/// [`write_entry_in`] for the file at `path`, whose folder is opened as it is
+/// reached.
+#[cfg(test)]
+fn write_entry(path: &Path, name: &str, entry: Value) -> Result<(Value, Value), String> {
+    let folder = crate::arko_dir::Folder::base(path.parent().unwrap()).unwrap();
+    let file = path.file_name().unwrap().to_str().unwrap();
+    write_entry_in(
+        &ServersFile {
+            folder: &folder,
+            name: file,
+        },
+        name,
+        entry,
+    )
 }
 
-/// Writes `entry` as the server `name` in the file at `path`, keeping its
-/// other entries and fields, in place of an entry of the same name. A file
-/// that lists its servers keeps the list, and any other gets them by name,
-/// as Claude Code writes them. Returns the file's `mcpServers` before and
-/// after.
-fn write_entry(path: &Path, name: &str, entry: Value) -> Result<(Value, Value), String> {
-    let mut file = read_servers_file(path)?;
-    let Some(object) = file.as_object_mut() else {
+/// [`remove_entry_in`] for the file at `path`, whose folder is opened as it
+/// is reached.
+#[cfg(test)]
+fn remove_entry(path: &Path, name: &str) -> Result<Option<(Value, Value)>, String> {
+    let folder = crate::arko_dir::Folder::base(path.parent().unwrap()).unwrap();
+    let file = path.file_name().unwrap().to_str().unwrap();
+    remove_entry_in(
+        &ServersFile {
+            folder: &folder,
+            name: file,
+        },
+        name,
+    )
+}
+
+/// Writes `entry` as the server `name` in `file`, keeping its other entries
+/// and fields, in place of an entry of the same name. A file that lists its
+/// servers keeps the list, and any other gets them by name, as Claude Code
+/// writes them. Returns the file's `mcpServers` before and after.
+pub(crate) fn write_entry_in(
+    file: &ServersFile,
+    name: &str,
+    entry: Value,
+) -> Result<(Value, Value), String> {
+    let path = file.path();
+    let mut value = file.value()?;
+    let Some(object) = value.as_object_mut() else {
         return Err(format!(
             "Couldn't add to {}, because it isn't a JSON object.",
             path.display()
@@ -847,19 +925,20 @@ fn write_entry(path: &Path, name: &str, entry: Value) -> Result<(Value, Value), 
         }
     }
     let after = servers.clone();
-    save_servers_file(path, &file)?;
+    file.save(&value)?;
     Ok((before, after))
 }
 
-/// Takes the entry of the server `name` out of the file at `path`, keeping
-/// the rest. Returns its `mcpServers` before and after, or `None` when it
-/// has no such entry.
-fn remove_entry(path: &Path, name: &str) -> Result<Option<(Value, Value)>, String> {
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let mut file = read_servers_file(path)?;
-    let Some(servers) = file.get_mut("mcpServers") else {
+/// Takes the entry of the server `name` out of `file`, keeping the rest.
+/// Returns its `mcpServers` before and after, or `None` when it has no such
+/// entry.
+pub(crate) fn remove_entry_in(
+    file: &ServersFile,
+    name: &str,
+) -> Result<Option<(Value, Value)>, String> {
+    // (A file that isn't there has no entry, and isn't made.)
+    let mut value = file.value()?;
+    let Some(servers) = value.get_mut("mcpServers") else {
         return Ok(None);
     };
     let before = servers.clone();
@@ -876,7 +955,7 @@ fn remove_entry(path: &Path, name: &str) -> Result<Option<(Value, Value)>, Strin
         return Ok(None);
     }
     let after = servers.clone();
-    save_servers_file(path, &file)?;
+    file.save(&value)?;
     Ok(Some((before, after)))
 }
 
@@ -930,9 +1009,7 @@ impl Servers {
             .map(|server| {
                 let why = added
                     .iter()
-                    .find(|record| {
-                        record.name == server.name && record.file == normal(&server.file)
-                    })
+                    .find(|record| record.name == server.name && record.is_in(&server.file))
                     .map(|record| record.why.clone());
                 server.config(why)
             })

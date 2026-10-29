@@ -3,6 +3,7 @@ use super::*;
 fn added() -> agent_added::ServerRecord {
     agent_added::ServerRecord {
         file: PathBuf::from("/app/.arko/mcp.json"),
+        folder: None,
         name: "github".into(),
         session: "2026-10-28-a1b2".into(),
         session_title: Some("Release prep".into()),
