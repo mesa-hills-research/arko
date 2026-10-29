@@ -19,6 +19,12 @@
 //! The user approves a save in the session's approval tray, whose card
 //! shows the skill's text and files.
 //!
+//! Once approved, a save writes the skill into a hidden folder beside its
+//! place and renames that into place. Neither the skill's folder nor a
+//! folder on the way to it may be a link (see
+//! [`arko_dir::folder`](crate::arko_dir::folder)), and the record holds the
+//! folder's real path.
+//!
 //! Each save is recorded in Arko's folder ([`agent_added`]), so only a skill
 //! an agent saved can be removed by `remove_skill` or `/skills remove`.
 //!
@@ -42,7 +48,10 @@ use serde_json::Value;
 
 use crate::agent_added::{self, Scope, SkillRecord};
 use crate::approvals::{Answer, Approval, SkillApproval, SkillFile, SkillSource};
+use crate::arko_dir::Folder;
+use crate::arko_dir::folder::{Entry, Kind, link_refused};
 use crate::builtin_skills::BuiltinSkills;
+use crate::profiles::reason_of;
 use crate::remote::Level;
 use crate::skills;
 
@@ -213,23 +222,30 @@ fn target(context: &Context, scope: Scope) -> PathBuf {
     }
 }
 
-/// `path` with the links on the way resolved, as far as it exists.
-fn real_path(path: &Path) -> PathBuf {
-    let normal = normal(path);
-    let mut rest = Vec::new();
-    let mut at = normal.as_path();
-    loop {
-        if let Ok(real) = std::fs::canonicalize(at) {
-            return rest.iter().rev().fold(real, |path, part| path.join(part));
+/// The folder skills of `scope` go in, opened with no link on the way from
+/// the project or Arko's folder. With `make` it is made (the project's
+/// `.arko` as [`crate::arko_dir::ensure`] makes it), else it is `None` while
+/// it isn't there.
+fn open_target(context: &Context, scope: Scope, make: bool) -> Result<Option<Folder>, String> {
+    let opened = match (scope, make) {
+        (Scope::Project, true) => crate::arko_dir::ensure_dir(&context.workspace, &context.root)
+            .and_then(|dir| dir.open(skills::SAVED_FOLDER, true))
+            .map(|opened| opened.map(|(folder, _)| folder)),
+        (Scope::Project, false) => crate::arko_dir::open_in(
+            &context.workspace,
+            &[crate::arko_dir::DIR, skills::SAVED_FOLDER],
+            false,
+        ),
+        (Scope::User, make) => {
+            crate::arko_dir::open_in(&context.root, &[skills::SAVED_FOLDER], make)
         }
-        match (at.parent(), at.file_name()) {
-            (Some(parent), Some(name)) => {
-                rest.push(name.to_os_string());
-                at = parent;
-            }
-            _ => return normal,
-        }
-    }
+    };
+    opened.map_err(|error| sentence(&error))
+}
+
+/// `text` ending with a full stop.
+fn sentence(text: &str) -> String {
+    format!("{}.", text.trim_end_matches('.'))
 }
 
 /// `path` absolute, without `.` and `..`, as records hold paths.
@@ -613,11 +629,13 @@ impl AddSkill {
     /// draft there would load before anyone approved it.
     fn skill_folder_holding(&self, path: &Path) -> Option<PathBuf> {
         let context = &self.0;
-        let real = real_path(path);
+        let real = agent_added::real_path(path);
         skills::every_folder(&context.workspace, &context.root, context.home.as_deref())
             .into_iter()
             .map(|folder| normal(&folder))
-            .find(|folder| path.starts_with(folder) || real.starts_with(real_path(folder)))
+            .find(|folder| {
+                path.starts_with(folder) || real.starts_with(agent_added::real_path(folder))
+            })
     }
 
     /// Reads the skill at `source` into a draft.
@@ -711,8 +729,9 @@ impl AddSkill {
         ))
     }
 
-    /// Why the skill `name` can't be saved in `dest` for `scope`, or the
-    /// record of the agent's skill it replaces.
+    /// Why the skill `name` can't be saved in `dest` for `scope`, by the
+    /// names of the other skills, or the record of the agent's skill it
+    /// replaces. ([`check_place`] checks what is at `dest`.)
     fn place(&self, name: &str, scope: Scope, dest: &Path) -> Result<Option<SkillRecord>, String> {
         let context = &self.0;
         if crate::builtin_skills::find(name).is_some() {
@@ -761,12 +780,6 @@ impl AddSkill {
                 ));
             }
         }
-        if replaces.is_none() && dest.symlink_metadata().is_ok() {
-            return Err(format!(
-                "{} is there already. Choose another name.",
-                dest.display()
-            ));
-        }
         Ok(replaces)
     }
 
@@ -801,6 +814,8 @@ impl AddSkill {
             }
         }
         let dest = skill_dir(context, scope, name);
+        // Where it would go, before anything is read.
+        let target = open_target(context, scope, false).map_err(refused)?;
         let draft = self.read(source).await.map_err(refused)?;
         let given = draft
             .skill_md()
@@ -845,6 +860,7 @@ impl AddSkill {
             )));
         }
         let replaces = self.place(name, scope, &dest).map_err(refused)?;
+        check_place(target.as_ref(), name, &dest, replaces.is_some()).map_err(refused)?;
         // (A path as the user reads it.)
         let given = match &draft.origin {
             Origin::Copied(path) => with_tilde(path, context.home.as_deref()),
@@ -915,24 +931,26 @@ impl AddSkill {
         }
     }
 
-    /// Writes the skill of `plan` to its folder and records it.
-    async fn save(&self, plan: &Plan) -> Result<(), String> {
+    /// Writes the skill of `plan` to its folder, once the user approved it:
+    /// into a hidden folder beside it, renamed into place. Returns the
+    /// folder's real path.
+    async fn save(&self, plan: &Plan) -> Result<PathBuf, String> {
         let context = &self.0;
         let _writing = context.writing.lock().await;
-        let parent = match plan.scope {
-            Scope::Project => {
-                crate::arko_dir::ensure(&context.workspace, &context.root)
-                    .map_err(|error| format!("{}.", error.trim_end_matches('.')))?;
-                skills::project_folder(&context.workspace)
-            }
-            Scope::User => skills::user_folder(&context.root),
+        let target = open_target(context, plan.scope, true)?
+            .ok_or_else(|| format!("Couldn't make {}.", target(context, plan.scope).display()))?;
+        let unread = |error: std::io::Error| {
+            format!(
+                "Couldn't read {} ({}).",
+                plan.dest.display(),
+                reason_of(&error)
+            )
         };
-        std::fs::create_dir_all(&parent)
-            .map_err(|error| format!("Couldn't make {} ({error}).", parent.display()))?;
         // Another save may have taken the folder while the user read the
         // card.
         let recorded = agent_added::skill_at(&context.root, &plan.dest);
-        if plan.dest.symlink_metadata().is_ok()
+        let there = target.entry(&plan.name).map_err(unread)?;
+        if there.is_some()
             && recorded.as_ref().map(|record| record.added)
                 != plan.replaces.as_ref().map(|record| record.added)
         {
@@ -941,36 +959,72 @@ impl AddSkill {
                 plan.dest.display()
             ));
         }
-        let staging = parent.join(format!(".{}.saving-{}", plan.name, uuid::Uuid::new_v4()));
-        let written = self
-            .stage(plan, &staging)
-            .and_then(|()| put(&staging, &plan.dest));
-        if let Err(error) = written {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(error);
+
+        let staging = Owned {
+            folder: &target,
+            name: format!(".{}.saving-{}", plan.name, uuid::Uuid::new_v4().simple()),
+        };
+        let made = target.make(&staging.name).and_then(|()| {
+            target
+                .open(&staging.name, false)
+                .map_err(std::io::Error::other)?
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+        });
+        let folder = made.map_err(|error| {
+            format!(
+                "Couldn't write the skill in {} ({}).",
+                target.path().display(),
+                reason_of(&error)
+            )
+        })?;
+        self.stage(plan, &folder.0)?;
+        let not_saved = |error: std::io::Error| {
+            format!(
+                "Couldn't save {} ({}).",
+                plan.dest.display(),
+                reason_of(&error)
+            )
+        };
+        if there.is_none() {
+            target
+                .rename(&staging.name, &plan.name)
+                .map_err(not_saved)?;
+        } else {
+            let old = format!(".{}.old-{}", plan.name, uuid::Uuid::new_v4().simple());
+            target.rename(&plan.name, &old).map_err(not_saved)?;
+            if let Err(error) = target.rename(&staging.name, &plan.name) {
+                let _ = target.rename(&old, &plan.name);
+                return Err(not_saved(error));
+            }
+            let _ = target.remove_all(&old);
+        }
+        Ok(target.real().join(&plan.name))
+    }
+
+    /// Writes the files of `plan` into the new folder `staging`, `SKILL.md`
+    /// as the card showed it.
+    fn stage(&self, plan: &Plan, staging: &Folder) -> Result<(), String> {
+        let skill_md = ("SKILL.md".to_string(), plan.skill_md.as_bytes().to_vec());
+        let files = plan
+            .draft
+            .files
+            .iter()
+            .filter(|(path, _)| path != "SKILL.md");
+        for (path, bytes) in files.chain([&skill_md]) {
+            write_in(staging, path, bytes).map_err(|error| {
+                format!(
+                    "Couldn't write {} ({}).",
+                    plan.dest.join(path).display(),
+                    reason_of(&error)
+                )
+            })?;
         }
         Ok(())
     }
 
-    /// Writes the files of `plan` to the new folder `staging`, as the card
-    /// showed them.
-    fn stage(&self, plan: &Plan, staging: &Path) -> Result<(), String> {
-        for (path, bytes) in &plan.draft.files {
-            let file = staging.join(path);
-            if let Some(folder) = file.parent() {
-                std::fs::create_dir_all(folder)
-                    .map_err(|error| format!("Couldn't make {} ({error}).", folder.display()))?;
-            }
-            std::fs::write(&file, bytes)
-                .map_err(|error| format!("Couldn't write {} ({error}).", file.display()))?;
-        }
-        let file = staging.join("SKILL.md");
-        std::fs::write(&file, plan.skill_md.as_bytes())
-            .map_err(|error| format!("Couldn't write {} ({error}).", file.display()))
-    }
-
-    /// The note in the transcript and the result for the agent, once saved.
-    fn saved(&self, plan: &Plan, words: Option<&str>) -> String {
+    /// The note in the transcript and the result for the agent, once saved
+    /// in the folder whose real path is `saved`, and records it.
+    fn saved(&self, plan: &Plan, words: Option<&str>, saved: &Path) -> String {
         let context = &self.0;
         let mut notice = format!(
             "The main agent saved the skill {} for {}.",
@@ -1006,7 +1060,7 @@ impl AddSkill {
             " Workers don't get it."
         });
         let record = SkillRecord {
-            path: plan.dest.clone(),
+            path: saved.to_path_buf(),
             scope: plan.scope,
             session: context.session.clone(),
             session_title: (context.title)(),
@@ -1053,28 +1107,66 @@ impl AddSkill {
     }
 }
 
-/// Renames the folder `staging` to `dest`, in place of an earlier one.
-fn put(staging: &Path, dest: &Path) -> Result<(), String> {
-    let old = dest.with_file_name(format!(
-        ".{}.old-{}",
-        dest.file_name().unwrap_or_default().to_string_lossy(),
-        uuid::Uuid::new_v4()
-    ));
-    let replacing = dest.symlink_metadata().is_ok();
-    if replacing {
-        std::fs::rename(dest, &old)
-            .map_err(|error| format!("Couldn't replace {} ({error}).", dest.display()))?;
+/// Why nothing can be saved at the skill's folder `dest`, `name` in
+/// `target`: it is a link, or something other than the folder of the
+/// agent's skill a save replaces (with `replaces`).
+fn check_place(
+    target: Option<&Folder>,
+    name: &str,
+    dest: &Path,
+    replaces: bool,
+) -> Result<(), String> {
+    let Some(target) = target else {
+        return Ok(());
+    };
+    let found = target
+        .entry(name)
+        .map_err(|error| format!("Couldn't read {} ({}).", dest.display(), reason_of(&error)))?;
+    match found {
+        None => Ok(()),
+        Some(Entry {
+            kind: Kind::Link, ..
+        }) => Err(format!("{} Choose another name.", link_refused(dest))),
+        Some(Entry {
+            kind: Kind::Folder, ..
+        }) if replaces => Ok(()),
+        Some(_) => Err(format!(
+            "{} is there already. Choose another name.",
+            dest.display()
+        )),
     }
-    if let Err(error) = std::fs::rename(staging, dest) {
-        if replacing {
-            let _ = std::fs::rename(&old, dest);
-        }
-        return Err(format!("Couldn't save {} ({error}).", dest.display()));
+}
+
+/// Writes `bytes` to the new file `path` (`/` between folders) in `folder`,
+/// making the folders on the way.
+fn write_in(folder: &Folder, path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let parts: Vec<&str> = path.split('/').collect();
+    let Some((file, folders)) = parts.split_last() else {
+        return Ok(());
+    };
+    let mut opened: Option<Folder> = None;
+    for part in folders {
+        let at = opened.as_ref().unwrap_or(folder);
+        let inner = at
+            .open(part, true)
+            .map_err(std::io::Error::other)?
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+        opened = Some(inner.0);
     }
-    if replacing {
-        let _ = std::fs::remove_dir_all(&old);
+    opened.as_ref().unwrap_or(folder).create(file, bytes)
+}
+
+/// A hidden folder a save made beside a skill's, deleted when this is
+/// dropped unless it was renamed away.
+struct Owned<'a> {
+    folder: &'a Folder,
+    name: String,
+}
+
+impl Drop for Owned<'_> {
+    fn drop(&mut self) {
+        let _ = self.folder.remove_all(&self.name);
     }
-    Ok(())
 }
 
 /// Whether the file at `path` in a skill is a script an agent may run.
@@ -1162,33 +1254,63 @@ impl Tool for AddSkill {
                 answer => return Ok(self.not_saved(&plan, &answer)),
             }
         }
-        self.save(&plan).await.map_err(refused)?;
-        Ok(self.saved(&plan, words.as_deref()))
+        let saved = self.save(&plan).await.map_err(refused)?;
+        Ok(self.saved(&plan, words.as_deref(), &saved))
     }
 }
 
 /// Removes the skill an agent saved in the folder `path`: deletes the
-/// folder and drops its record. Refuses a skill no agent saved. For
-/// `/skills remove` and an app's Remove (see
+/// folder and drops its record. Refuses a skill no agent saved, which is
+/// found by the folder's real path, so a link that leads to another folder
+/// isn't followed. For `/skills remove` and an app's Remove (see
 /// [`extensions`](crate::extensions)).
 pub fn remove_saved(root: &Path, path: &Path) -> Result<String, String> {
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default();
-    if agent_added::skill_at(root, path).is_none() {
+    let Some(record) = agent_added::skill_at(root, path) else {
         return Err(format!("{name} wasn't added by an agent."));
-    }
-    std::fs::remove_dir_all(path).map_err(|error| {
+    };
+    let folder = saved_in(root, &record)?;
+    let saved = record.path.file_name().unwrap_or_default();
+    folder.remove_all(saved).map_err(|error| {
         format!(
             "Couldn't delete {} ({}).",
-            path.display(),
-            crate::profiles::reason_of(&error)
+            record.path.display(),
+            reason_of(&error)
         )
     })?;
     // (A record left behind is dropped once its folder is gone.)
-    let _ = agent_added::forget_skill(root, path);
+    let _ = agent_added::forget_skill(root, &record.path);
     Ok(format!("Removed the skill {name}."))
+}
+
+/// The folder that holds the skill of `record`, opened as a save opens it,
+/// with no link on the way from the project or Arko's folder. Refuses a
+/// record whose folder isn't where saves put skills.
+fn saved_in(root: &Path, record: &SkillRecord) -> Result<Folder, String> {
+    let parent = record.path.parent();
+    let opened = match record.scope {
+        // (`<project>/.arko/skills/<name>`.)
+        Scope::Project => match parent.and_then(Path::parent).and_then(Path::parent) {
+            Some(workspace) => crate::arko_dir::open_in(
+                workspace,
+                &[crate::arko_dir::DIR, skills::SAVED_FOLDER],
+                false,
+            ),
+            None => Ok(None),
+        },
+        Scope::User => crate::arko_dir::open_in(root, &[skills::SAVED_FOLDER], false),
+    }
+    .map_err(|error| sentence(&error))?;
+    match opened {
+        Some(folder) if Some(folder.real()) == parent => Ok(folder),
+        _ => Err(format!(
+            "Arko didn't delete {}, since it isn't in a folder agents save skills in.",
+            record.path.display()
+        )),
+    }
 }
 
 /// The record of the skill `name` an agent saved, for the project

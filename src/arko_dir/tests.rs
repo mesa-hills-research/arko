@@ -184,3 +184,114 @@ fn a_file_named_arko_is_refused() {
     let why = ensure(&work, &temp.path().join("arko")).unwrap_err();
     assert!(why.ends_with(".arko isn't a folder."), "{why}");
 }
+
+/// A `.arko` that is a link, or a folder in it that is one, is refused with
+/// the reason, so no write (a skill, `mcp.json`, a profile or the
+/// `.gitignore`) goes where it leads, and the switch leaves it alone.
+#[cfg(unix)]
+#[test]
+fn a_link_at_arko_or_in_it_is_refused() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let (work, root) = (temp.path().join("work"), temp.path().join("arko"));
+    let elsewhere = temp.path().join("elsewhere");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let arko = work.join(".arko");
+    let refused = |path: &Path| {
+        format!(
+            "{} is a link, and Arko doesn't write through links.",
+            path.display()
+        )
+    };
+    symlink(&elsewhere, &arko).unwrap();
+    assert_eq!(ensure(&work, &root).unwrap_err(), refused(&arko));
+    assert_eq!(
+        ensure_in(&work, &root, "profiles").unwrap_err(),
+        refused(&arko)
+    );
+    assert_eq!(apply_setting(&work, true).unwrap_err(), refused(&arko));
+    // Arko's own text where the link leads doesn't count as the project's.
+    std::fs::write(elsewhere.join(IGNORE_FILE), IGNORE_TEXT).unwrap();
+    assert!(!has_own_ignore(&work));
+    assert_eq!(apply_setting(&work, false).unwrap_err(), refused(&arko));
+    assert_eq!(
+        std::fs::read_to_string(elsewhere.join(IGNORE_FILE)).unwrap(),
+        IGNORE_TEXT
+    );
+    std::fs::remove_file(elsewhere.join(IGNORE_FILE)).unwrap();
+    std::fs::remove_file(&arko).unwrap();
+
+    std::fs::create_dir(&arko).unwrap();
+    symlink(&elsewhere, arko.join("profiles")).unwrap();
+    assert_eq!(
+        ensure_in(&work, &root, "profiles").unwrap_err(),
+        refused(&arko.join("profiles"))
+    );
+    assert!(ensure_in(&work, &root, "skills").unwrap().is_dir());
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+}
+
+/// A `.gitignore` that is a link is neither written through nor taken for
+/// Arko's own, and isn't deleted.
+#[cfg(unix)]
+#[test]
+fn a_gitignore_that_is_a_link_is_left_alone() {
+    let temp = tempfile::tempdir().unwrap();
+    let (work, root) = (temp.path().join("work"), temp.path().join("arko"));
+    let target = temp.path().join("target");
+    std::fs::create_dir_all(work.join(".arko")).unwrap();
+    std::os::unix::fs::symlink(&target, ignore_of(&work)).unwrap();
+    apply_setting(&work, true).unwrap();
+    assert!(!target.exists(), "nothing is written through the link");
+    std::fs::write(&target, IGNORE_TEXT).unwrap();
+    assert!(!has_own_ignore(&work));
+    setting(&root, false);
+    ensure(&work, &root).unwrap();
+    apply_setting(&work, false).unwrap();
+    assert!(ignore_of(&work).symlink_metadata().is_ok());
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), IGNORE_TEXT);
+}
+
+/// An opened folder renames without replacing, even an empty folder, makes
+/// no file through a link, reads none through one, and deletes a folder
+/// with a link in it without following the link.
+#[cfg(unix)]
+#[test]
+fn a_folder_writes_and_deletes_without_following_links() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(outside.join("kept")).unwrap();
+    std::fs::write(outside.join("file"), "Mine.").unwrap();
+    let base = temp.path().join("base");
+    std::fs::create_dir_all(&base).unwrap();
+    let folder = Folder::base(&base).unwrap();
+    folder.make("staging").unwrap();
+    folder.make("empty").unwrap();
+    let error = folder.rename_new("staging", "empty").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::AlreadyExists);
+    folder.rename_new("staging", "fresh").unwrap();
+    assert!(base.join("fresh").is_dir() && base.join("empty").is_dir());
+
+    symlink(outside.join("file"), base.join("link")).unwrap();
+    assert!(folder.create("link", b"x").is_err());
+    assert!(folder.read("link").is_err());
+    assert_eq!(
+        folder.create_whole("link", b"x").unwrap_err().kind(),
+        ErrorKind::AlreadyExists
+    );
+    assert_eq!(
+        std::fs::read_to_string(outside.join("file")).unwrap(),
+        "Mine."
+    );
+
+    let (fresh, made) = folder.open("fresh", false).unwrap().unwrap();
+    assert!(!made);
+    fresh.create("a.md", b"A").unwrap();
+    symlink(outside.join("kept"), fresh.path().join("kept")).unwrap();
+    folder.remove_all("fresh").unwrap();
+    assert!(!base.join("fresh").exists());
+    assert!(outside.join("kept").is_dir());
+    assert!(folder.open("link", false).is_err());
+}

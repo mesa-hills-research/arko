@@ -639,10 +639,9 @@ impl Details {
             path: (!skill.embedded).then(|| skill.path.clone()),
             models: skill.models.clone(),
             workers: skill.workers,
-            added: added
-                .iter()
-                .find(|record| !skill.embedded && record.path == skill.path)
-                .cloned(),
+            added: (!skill.embedded)
+                .then(|| crate::agent_added::added_skill(&added, &skill.path).cloned())
+                .flatten(),
         };
         let mut skills: Vec<SkillFacts> = loaded()
             .filter(|skill| !skill.auto_load)

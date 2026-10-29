@@ -44,9 +44,10 @@ its `.arko/skills`, which git ignores while "Keep agents' project files out of g
 The approval tray shows the skill's text and files, where it came from and who gets it. Arko checks
 the skill before it asks, and refuses one with a name another skill has, `auto_load`, a link, more
 than 200 files or more than 1 MB. Nothing is written before you approve, and what's saved is the copy
-the tray showed, even if the source changes meanwhile. The agent's `load_skill` finds the skill at
-once, and its skill list shows it from the next conversation. Workers started after the save get it
-unless it says `workers: false`.
+the tray showed, even if the source changes meanwhile. A `.arko`, `.arko/skills` or `skills` folder
+that is a link is refused, so a save can't land outside its place. The agent's `load_skill` finds the
+skill at once, and its skill list shows it from the next conversation. Workers started after the save
+get it unless it says `workers: false`.
 
 Arko records each save in `agent-added.json` in its folder, so `/skills` marks the skill "added by
 the agent" with the day, and `/skills NAME` says why and from where. The agent's `remove_skill` and

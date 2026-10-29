@@ -7,6 +7,10 @@
 //! marking it. Only what the record names can be removed by an agent, or by
 //! the user's remove command for what agents added.
 //!
+//! A skill is recorded by its folder's real path ([`real_path`]), and found
+//! by the real path of the folder asked about, so a folder reached through a
+//! link that leads elsewhere is never taken for the one an agent saved.
+//!
 //! Each write takes a lock beside the record, as `mcp-approvals.json` does,
 //! so sessions open at the same time keep each other's entries. An entry
 //! whose skill folder is gone, or whose server's file no longer sets the
@@ -33,7 +37,7 @@ pub enum Scope {
 /// A skill an agent saved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillRecord {
-    /// The skill's folder.
+    /// The skill's folder, by its real path.
     pub path: PathBuf,
     pub scope: Scope,
     /// The session it was saved in, by ID.
@@ -162,6 +166,30 @@ fn lock_record(root: &Path) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
+/// `path` as it really is: absolute, without `.` and `..`, and with every
+/// link on the way resolved, as far as it exists. A record holds a skill's
+/// folder by it.
+pub fn real_path(path: &Path) -> PathBuf {
+    let normal = arko_agents::utils::normalize_path(
+        &std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()),
+    );
+    // The part that exists, resolved, then the rest as it is.
+    let mut rest = Vec::new();
+    let mut at = normal.as_path();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(real, |path, part| path.join(part));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                at = parent;
+            }
+            _ => return normal,
+        }
+    }
+}
+
 /// The skills agents saved whose folders are still there.
 pub fn skills(root: &Path) -> Vec<SkillRecord> {
     current(root).skills
@@ -169,11 +197,21 @@ pub fn skills(root: &Path) -> Vec<SkillRecord> {
 
 /// The record of the skill in the folder `path`, if an agent saved it.
 pub fn skill_at(root: &Path, path: &Path) -> Option<SkillRecord> {
-    skills(root).into_iter().find(|skill| skill.path == path)
+    let real = real_path(path);
+    skills(root).into_iter().find(|skill| skill.path == real)
 }
 
-/// Records a skill an agent saved, in place of an entry for the same folder.
-pub fn record_skill(root: &Path, record: SkillRecord) -> Result<(), String> {
+/// The one of `records` for the skill in the folder `path`, for a list of
+/// skills.
+pub fn added_skill<'a>(records: &'a [SkillRecord], path: &Path) -> Option<&'a SkillRecord> {
+    let real = real_path(path);
+    records.iter().find(|record| record.path == real)
+}
+
+/// Records a skill an agent saved, by its folder's real path, in place of an
+/// entry for the same folder.
+pub fn record_skill(root: &Path, mut record: SkillRecord) -> Result<(), String> {
+    record.path = real_path(&record.path);
     update(root, |kept| {
         kept.skills.retain(|skill| skill.path != record.path);
         kept.skills.push(record);
@@ -184,9 +222,11 @@ pub fn record_skill(root: &Path, record: SkillRecord) -> Result<(), String> {
 /// Drops the record of the skill in the folder `path`. Says whether it had
 /// one.
 pub fn forget_skill(root: &Path, path: &Path) -> Result<bool, String> {
+    let real = real_path(path);
     update(root, |kept| {
         let before = kept.skills.len();
-        kept.skills.retain(|skill| skill.path != path);
+        kept.skills
+            .retain(|skill| skill.path != path && skill.path != real);
         let removed = kept.skills.len() != before;
         (removed, removed)
     })

@@ -1217,6 +1217,140 @@ async fn a_save_given_up_leaves_nothing() {
     assert!(fixture.notices().is_empty());
 }
 
+/// Neither the project's .arko, its skills folder, Arko's skills folder nor
+/// a skill's own folder may be a link, so a save can't be led elsewhere,
+/// such as from the project into Arko's skills for every project. Each is
+/// refused with the reason before anyone is asked, and nothing is written
+/// where the link leads.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_on_the_way_to_a_skills_place_is_refused() {
+    use std::os::unix::fs::symlink;
+    let fixture = quiet();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    let source = draft.display().to_string();
+    let elsewhere = fixture.workspace.with_file_name("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::create_dir_all(fixture.user()).unwrap();
+    let arko = fixture.workspace.join(".arko");
+    let refused = |path: &Path| {
+        format!(
+            "{} is a link, and Arko doesn't write through links.",
+            path.display()
+        )
+    };
+
+    symlink(&elsewhere, &arko).unwrap();
+    let error = fixture.add(params("notes", &source)).await.unwrap_err();
+    assert_eq!(error, refused(&arko));
+    std::fs::remove_file(&arko).unwrap();
+
+    std::fs::create_dir(&arko).unwrap();
+    symlink(fixture.user(), fixture.project()).unwrap();
+    let error = fixture.add(params("notes", &source)).await.unwrap_err();
+    assert_eq!(error, refused(&fixture.project()));
+    assert!(files_in(&fixture.user()).is_empty());
+    std::fs::remove_file(fixture.project()).unwrap();
+
+    for (scope, place) in [("project", fixture.project()), ("user", fixture.user())] {
+        std::fs::create_dir_all(&place).unwrap();
+        symlink(&elsewhere, place.join("notes")).unwrap();
+        let error = fixture
+            .add(with(params("notes", &source), "scope", json!(scope)))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            format!("{} Choose another name.", refused(&place.join("notes")))
+        );
+        std::fs::remove_file(place.join("notes")).unwrap();
+    }
+
+    std::fs::remove_dir(fixture.user()).unwrap();
+    symlink(&elsewhere, fixture.user()).unwrap();
+    let error = fixture
+        .add(with(params("notes", &source), "scope", json!("user")))
+        .await
+        .unwrap_err();
+    assert_eq!(error, refused(&fixture.user()));
+
+    assert!(files_in(&elsewhere).is_empty());
+    assert!(agent_added::skills(&fixture.root).is_empty());
+    assert!(fixture.cards().is_empty());
+    assert!(fixture.notices().is_empty());
+}
+
+/// A link put in place of .arko while the user decides stops the save, and
+/// nothing is written where it leads.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_made_while_the_user_decides_is_refused() {
+    let fixture = quiet();
+    fixture.review_project_skills();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    let elsewhere = fixture.workspace.with_file_name("elsewhere");
+    std::fs::create_dir_all(elsewhere.join("skills")).unwrap();
+    std::fs::create_dir_all(fixture.project()).unwrap();
+    let arko = fixture.workspace.join(".arko");
+    let approver = meanwhile({
+        let (arko, elsewhere) = (arko.clone(), elsewhere.clone());
+        move || {
+            std::fs::remove_dir_all(&arko).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, &arko).unwrap();
+        }
+    });
+    let error = fixture
+        .add_asking(approver, params("notes", &draft.display().to_string()))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        format!(
+            "{} is a link, and Arko doesn't write through links.",
+            arko.display()
+        )
+    );
+    assert!(files_in(&elsewhere).is_empty());
+    assert!(agent_added::skills(&fixture.root).is_empty());
+}
+
+/// A skill is recorded by its folder's real path, so a project reached
+/// through a link finds it. A link put in place of .arko/skills later
+/// doesn't have a removal delete what it leads to, such as the user's own
+/// skill of that name for every project.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_record_holds_the_real_path_and_a_removal_follows_no_link() {
+    use std::os::unix::fs::symlink;
+    let fixture = quiet();
+    let linked = fixture.workspace.with_file_name("linked");
+    symlink(&fixture.workspace, &linked).unwrap();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    let context = fixture.context_with(&linked, fixture.approver.clone());
+    Fixture::add_in(context, params("notes", &draft.display().to_string()))
+        .await
+        .unwrap();
+    let real = fixture
+        .workspace
+        .canonicalize()
+        .unwrap()
+        .join(".arko/skills/notes");
+    let records = agent_added::skills(&fixture.root);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].path, real);
+    assert!(saved_skill(&fixture.root, &linked, "notes").is_some());
+    assert!(saved_skill(&fixture.root, &fixture.workspace, "notes").is_some());
+
+    let theirs = write_skill(&fixture.user(), "notes", "", &[]);
+    std::fs::rename(fixture.project(), fixture.workspace.join("moved")).unwrap();
+    symlink(fixture.user(), fixture.project()).unwrap();
+    for path in [fixture.project().join("notes"), real.clone()] {
+        assert!(remove_saved(&fixture.root, &path).is_err());
+    }
+    assert!(fixture.remove("notes").await.is_err());
+    assert_eq!(files_in(&theirs), ["SKILL.md"]);
+}
+
 /// `workers` goes into the front matter as `workers: false`, or comes out
 /// for true, whatever the line endings.
 #[test]

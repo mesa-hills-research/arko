@@ -28,10 +28,12 @@ fn server(file: &Path, name: &str) -> ServerRecord {
 #[test]
 fn skills_and_servers_are_recorded_and_forgotten() {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("arko");
-    let folder = temp.path().join("app/.arko/skills/release-notes");
+    // (Skills are recorded by their real paths.)
+    let base = temp.path().canonicalize().unwrap();
+    let root = base.join("arko");
+    let folder = base.join("app/.arko/skills/release-notes");
     std::fs::create_dir_all(&folder).unwrap();
-    let file = temp.path().join("app/.arko/mcp.json");
+    let file = base.join("app/.arko/mcp.json");
     std::fs::write(&file, r#"{"mcpServers": {"github": {"command": "npx"}}}"#).unwrap();
     assert!(skills(&root).is_empty() && servers(&root).is_empty());
     record_skill(&root, skill(&folder, "First.")).unwrap();
@@ -65,9 +67,10 @@ fn skills_and_servers_are_recorded_and_forgotten() {
 #[test]
 fn entries_whose_skill_or_server_is_gone_are_dropped() {
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("arko");
-    let kept = temp.path().join("kept");
-    let gone = temp.path().join("gone");
+    let base = temp.path().canonicalize().unwrap();
+    let root = base.join("arko");
+    let kept = base.join("kept");
+    let gone = base.join("gone");
     std::fs::create_dir_all(&kept).unwrap();
     std::fs::create_dir_all(&gone).unwrap();
     let file = temp.path().join("mcp.json");

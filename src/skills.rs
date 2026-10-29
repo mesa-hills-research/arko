@@ -37,16 +37,20 @@ const PROJECT_FOLDERS: [&str; 3] = [".agents/skills", ".claude/skills", ".skills
 /// The user's skill folders, in the home directory.
 const HOME_FOLDERS: [&str; 2] = [".agents/skills", ".claude/skills"];
 
+/// The name of the folder agents save skills in, in the project's `.arko`
+/// and in Arko's folder.
+pub(crate) const SAVED_FOLDER: &str = "skills";
+
 /// The folder agents save the project's skills in, `.arko/skills`, whether
 /// it exists or not.
 pub fn project_folder(workspace: &Path) -> PathBuf {
-    crate::arko_dir::dir(workspace).join("skills")
+    crate::arko_dir::dir(workspace).join(SAVED_FOLDER)
 }
 
 /// The folder agents save skills for every project in, `skills` in Arko's
 /// folder `root`, whether it exists or not.
 pub fn user_folder(root: &Path) -> PathBuf {
-    root.join("skills")
+    root.join(SAVED_FOLDER)
 }
 
 /// The skill folders, the project's first: a skill's name in more than one

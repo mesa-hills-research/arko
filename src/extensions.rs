@@ -219,10 +219,9 @@ pub fn list_with(
     extensions.skills = skills::scan(&folders, &builtin, workspace.unwrap_or(root))
         .into_iter()
         .map(|skill| SkillEntry {
-            added: added
-                .iter()
-                .find(|record| !skill.embedded && record.path == skill.path)
-                .cloned(),
+            added: (!skill.embedded)
+                .then(|| crate::agent_added::added_skill(&added, &skill.path).cloned())
+                .flatten(),
             path: skill.path,
             name: skill.name,
             description: skill.description,

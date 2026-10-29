@@ -68,7 +68,8 @@ file in `.arko/profiles` and deletes the old one, so the name isn't listed twice
 When Arko makes the project's `.arko` folder, it writes a `.gitignore` in it with a comment and `*`.
 Git then ignores the folder and that file, and your repository's own `.gitignore` stays as it is.
 Delete the file to share what Arko writes there with your team. Arko writes it only when it makes
-the folder, so it doesn't come back.
+the folder, so it doesn't come back. A `.arko` or `.arko/profiles` that is a link is refused, so a
+save can't land outside the project.
 
 In a subfolder of a git repository, Arko also reads the repository root's `.arko/profiles` and
 `.agents/profiles`, after the working directory's own. In `/settings`, "Keep agents' project files out
