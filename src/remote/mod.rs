@@ -400,7 +400,7 @@ pub struct Models {
 }
 
 /// The session's settings that can change while it runs.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LiveSettings {
     /// The agents may work outside the workspace.
     pub outside: bool,
@@ -470,6 +470,37 @@ pub struct LiveSettings {
     /// The files agents save in the project's `.arko` folder stay out of
     /// git (`/extensions keep-out-of-git`).
     pub keep_agents_files_out_of_git: bool,
+}
+
+impl Default for LiveSettings {
+    /// The settings of a session that hasn't reported yet. The two switches
+    /// that guard what agents add are on, as they are by default.
+    fn default() -> Self {
+        Self {
+            outside: false,
+            handover_at: 0,
+            workers_handover_at: 0,
+            text_replies: false,
+            cc_compact: false,
+            extra_rules: Default::default(),
+            project_instructions: Default::default(),
+            worker_project_instructions: false,
+            background_after: 0,
+            monitor_wakes: Default::default(),
+            monitor_wakes_within: None,
+            worker_models: Default::default(),
+            worker_billing: Default::default(),
+            api_budget: None,
+            worker_depth: 0,
+            worker_retry_cap: None,
+            message_copies: false,
+            builtin_skills: false,
+            builtin_skill_list: Vec::new(),
+            ask_before_adding_mcp: true,
+            review_project_skills: false,
+            keep_agents_files_out_of_git: true,
+        }
+    }
 }
 
 /// A built-in skill and whether `/builtin-skills` leaves it out by name.

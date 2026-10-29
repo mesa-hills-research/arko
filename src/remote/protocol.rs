@@ -483,12 +483,12 @@ pub struct SettingsData {
     pub builtin_skills: bool,
     #[serde(deserialize_with = "lenient")]
     pub builtin_skill_list: Vec<SkillData>,
-    #[serde(deserialize_with = "lenient")]
-    pub ask_before_adding_mcp: bool,
+    /// None until the status says. Both safety switches are on by default,
+    /// so the page treats anything but `Some(false)` as on.
+    pub ask_before_adding_mcp: Option<bool>,
     #[serde(deserialize_with = "lenient")]
     pub review_project_skills: bool,
-    #[serde(deserialize_with = "lenient")]
-    pub keep_agents_files_out_of_git: bool,
+    pub keep_agents_files_out_of_git: Option<bool>,
 }
 
 /// A built-in skill and whether it is on.
