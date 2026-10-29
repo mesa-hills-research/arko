@@ -1217,6 +1217,131 @@ async fn a_save_given_up_leaves_nothing() {
     assert!(fixture.notices().is_empty());
 }
 
+/// A folder that appears at a new skill's place while the user decides,
+/// one the user made with a skill in it or an empty one, stops the save and
+/// stays as it is. The agent is told to ask again, and no hidden folder is
+/// left beside it.
+#[tokio::test]
+async fn a_folder_made_at_the_place_while_the_user_decides_is_kept() {
+    let fixture = quiet();
+    fixture.review_project_skills();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    let source = draft.display().to_string();
+    for (scope, place) in [("user", fixture.user()), ("project", fixture.project())] {
+        for theirs in [true, false] {
+            let dest = place.join("notes");
+            let approver = meanwhile({
+                let dest = dest.clone();
+                move || {
+                    std::fs::create_dir_all(&dest).unwrap();
+                    if theirs {
+                        std::fs::write(dest.join("SKILL.md"), "Mine.").unwrap();
+                    }
+                }
+            });
+            let error = fixture
+                .add_asking(
+                    approver,
+                    with(params("notes", &source), "scope", json!(scope)),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "{} changed while the user decided, so Arko didn't save the skill. Call add_skill again to ask again.",
+                    dest.display()
+                )
+            );
+            if theirs {
+                assert_eq!(files_in(&dest), ["SKILL.md"]);
+                assert_eq!(
+                    std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+                    "Mine."
+                );
+            } else {
+                assert!(files_in(&dest).is_empty());
+            }
+            let beside: Vec<_> = std::fs::read_dir(&place)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(beside, ["notes"], "{scope}");
+            assert!(agent_added::skills(&fixture.root).is_empty());
+            std::fs::remove_dir_all(&dest).unwrap();
+        }
+    }
+}
+
+/// The skill an agent saved, which a save would replace, that changes while
+/// the user decides (an edit, or a new folder in its place) stops the save
+/// and stays as it is, with its record. Asked again, the save replaces it.
+#[tokio::test]
+async fn an_agents_skill_changed_while_the_user_decides_is_kept() {
+    let fixture = quiet();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[("new.md", "New.")]);
+    let source = draft.display().to_string();
+    let call = || with(params("notes", &source), "scope", json!("user"));
+    fixture.add(call()).await.unwrap();
+    let saved = fixture.user().join("notes");
+    let first = agent_added::skill_at(&fixture.root, &saved).unwrap();
+    let edit = |saved: PathBuf| move || std::fs::write(saved.join("SKILL.md"), "Edited.").unwrap();
+    let error = fixture
+        .add_asking(meanwhile(edit(saved.clone())), call())
+        .await
+        .unwrap_err();
+    assert!(
+        error.ends_with(" changed while the user decided, so Arko didn't save the skill. Call add_skill again to ask again."),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(saved.join("SKILL.md")).unwrap(),
+        "Edited."
+    );
+    assert_eq!(
+        agent_added::skill_at(&fixture.root, &saved).unwrap().added,
+        first.added
+    );
+    // A folder put in its place with the same files.
+    #[cfg(unix)]
+    {
+        let copy = |saved: PathBuf| {
+            move || {
+                let other = saved.with_file_name("other");
+                std::fs::create_dir(&other).unwrap();
+                for name in ["SKILL.md", "new.md"] {
+                    std::fs::copy(saved.join(name), other.join(name)).unwrap();
+                }
+                std::fs::remove_dir_all(&saved).unwrap();
+                std::fs::rename(&other, &saved).unwrap();
+            }
+        };
+        std::fs::write(saved.join("new.md"), "New.").unwrap();
+        let error = fixture
+            .add_asking(meanwhile(copy(saved.clone())), call())
+            .await
+            .unwrap_err();
+        assert!(error.contains(" changed while the user decided"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(saved.join("SKILL.md")).unwrap(),
+            "Edited."
+        );
+    }
+    let result = fixture.add(call()).await.unwrap();
+    assert!(
+        result.contains(" in place of the one saved before."),
+        "{result}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(saved.join("SKILL.md")).unwrap(),
+        skill_md("notes", "")
+    );
+    assert_eq!(
+        files_in(&fixture.user()),
+        ["notes/SKILL.md", "notes/new.md"]
+    );
+}
+
 /// Neither the project's .arko, its skills folder, Arko's skills folder nor
 /// a skill's own folder may be a link, so a save can't be led elsewhere,
 /// such as from the project into Arko's skills for every project. Each is
