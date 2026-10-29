@@ -111,6 +111,14 @@ struct Cached {
 
 pub use crate::ui::Banner;
 
+/// The model and effort workers start with unless told otherwise. A worker's
+/// line names its model or effort only when they are other ones.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Usual {
+    pub model: String,
+    pub effort: String,
+}
+
 /// What a block of the drawn transcript is.
 #[derive(Debug, Clone, PartialEq)]
 enum Shown {
@@ -272,6 +280,8 @@ pub struct Transcript {
     baseline: Option<(Filter, usize)>,
     /// The session's banner, which opens the main transcript.
     pub banner: Option<Banner>,
+    /// What workers start with unless told otherwise.
+    pub usual: Usual,
     /// The text highlighted with the mouse.
     pub selection: Option<Selection>,
     /// The view holds still (a drag selects text): it doesn't follow new
@@ -309,6 +319,7 @@ impl Transcript {
             anchor: None,
             baseline: None,
             banner: None,
+            usual: Usual::default(),
             selection: None,
             hold: false,
             drawn: Drawn::default(),
@@ -1058,7 +1069,13 @@ impl Transcript {
                 .as_ref()
                 .map(|c| c.lines.clone())
                 .unwrap_or_default(),
-            Shown::Worker(id) => vec![margin(worker_line(self.worker(id), id, theme, width))],
+            Shown::Worker(id) => vec![margin(worker_line(
+                self.worker(id),
+                id,
+                &self.usual,
+                theme,
+                width,
+            ))],
             Shown::Heading(id) => self
                 .worker(id)
                 .map(|worker| heading_lines(worker, theme, width))
@@ -1494,7 +1511,14 @@ impl Filter {
                     return Show::Hidden;
                 }
                 match view {
-                    View::Full | View::Quiet => Show::Item,
+                    View::Full => Show::Item,
+                    // The line of a worker stands for the call that started
+                    // it. A call that is still running, was refused or
+                    // queued its worker shows.
+                    View::Quiet if item.kind == Kind::Call && item.started.is_some() => {
+                        Show::Hidden
+                    }
+                    View::Quiet => Show::Item,
                     View::Messages => match item.kind {
                         Kind::User
                         | Kind::Text
@@ -2206,10 +2230,55 @@ pub fn run_time(worker: &WorkerSummary, now: i64) -> Option<i64> {
         .then(|| i64::try_from(worker.run_time_ms(now)).unwrap_or(i64::MAX))
 }
 
-/// A worker's line: `r2 Fix flaky test · 18 tool calls · 2m · running`.
+/// What sets a worker apart from the usual ones, for its line: its profile,
+/// or else its model when workers start on another, and its effort when that
+/// is another too (`impl-light`, `luna high`).
+pub fn setup(worker: &WorkerSummary, usual: &Usual) -> Option<String> {
+    if let Some(profile) = worker.profile.as_deref().filter(|name| !name.is_empty()) {
+        return Some(profile.to_string());
+    }
+    let model = worker
+        .model
+        .as_deref()
+        .filter(|model| *model != usual.model)
+        .map(crate::providers::short_model_name);
+    let effort = worker
+        .effort
+        .as_deref()
+        .filter(|effort| *effort != usual.effort);
+    match (model, effort) {
+        (Some(model), Some(effort)) => Some(format!("{model} {effort}")),
+        (Some(model), None) => Some(model),
+        (None, Some(effort)) => Some(format!("{effort} effort")),
+        (None, None) => None,
+    }
+}
+
+/// `text` cut to `room` columns, with an ellipsis, when it is wider.
+fn fit(text: &str, room: usize) -> String {
+    if text_width(text) <= room {
+        return text.to_string();
+    }
+    let ellipsis = glyphs::render("…");
+    let mut fitted = String::new();
+    let mut taken = text_width(&ellipsis);
+    for c in text.chars() {
+        let width = wrap::char_width(c);
+        if taken + width > room {
+            break;
+        }
+        fitted.push(c);
+        taken += width;
+    }
+    fitted + &ellipsis
+}
+
+/// A worker's line: `r2 Fix flaky test · 18 tool calls · 2m · running`, with
+/// its setup after the task when it isn't the usual one.
 fn worker_line(
     worker: Option<&WorkerSummary>,
     id: &str,
+    usual: &Usual,
     theme: &Theme,
     width: usize,
 ) -> Line<'static> {
@@ -2219,18 +2288,22 @@ fn worker_line(
         Span::raw(" "),
     ];
     if let Some(worker) = worker {
-        let mut facts = vec![worker.title.clone()];
+        let mut facts = Vec::new();
+        facts.extend(setup(worker, usual));
         facts.push(format!(
             "{} tool call{}",
             worker.tool_calls,
             if worker.tool_calls == 1 { "" } else { "s" }
         ));
         facts.extend(worker_time(worker));
-        spans.push(Span::styled(
-            rendered(format!("{} · ", facts.join(" · "))),
-            theme.dim(),
-        ));
+        let facts = rendered(format!(" · {} · ", facts.join(" · ")));
         let (word, style) = state(worker, theme);
+        // A long task gives way to what follows it, so the setup, the time
+        // and the state stay on the line.
+        let taken = MARGIN + text_width(id) + 1 + text_width(&facts) + text_width(word);
+        let title = fit(&rendered(&worker.title), width.saturating_sub(taken).max(8));
+        spans.push(Span::styled(title, theme.dim()));
+        spans.push(Span::styled(facts, theme.dim()));
         spans.push(Span::styled(word.to_string(), style));
         if worker.state == WorkerState::Running
             && let Some(last) = &worker.last
@@ -3484,6 +3557,184 @@ mod tests {
         // The agent's text stays, as on the web page.
         assert!(messages.iter().any(|r| r.contains("Thinking.")));
         assert_eq!(t.item(1).unwrap().agent, MAIN_AGENT);
+    }
+
+    /// A call that started its worker is left out of the quiet view, where
+    /// the worker's own line stands for it. One that is running, refused or
+    /// queued shows, and the other views keep every call.
+    #[test]
+    fn quiet_leaves_out_the_call_that_started_a_worker() {
+        let mut t = Transcript::new();
+        let mut user = item(1, Kind::User, "Fix it");
+        user.turn = Some(1);
+        t.apply(Update::Item(user));
+        let start = |id: u64, text: &str, status: CallStatus, started: Option<&str>| {
+            let mut call = item(id, Kind::Call, text);
+            call.turn = Some(1);
+            call.status = Some(status);
+            call.started = started.map(str::to_string);
+            call
+        };
+        t.apply(Update::Item(start(
+            2,
+            "start worker “Fix flaky test”",
+            CallStatus::Ok,
+            Some("r1"),
+        )));
+        let mut line = item(3, Kind::WorkerLine, "Fix flaky test");
+        line.worker = Some("r1".into());
+        line.turn = Some(1);
+        t.apply(Update::Item(line));
+        t.apply(Update::Item(start(
+            4,
+            "start worker “Update docs” queued",
+            CallStatus::Ok,
+            None,
+        )));
+        t.apply(Update::Item(start(
+            5,
+            "start worker “Run migration” refused",
+            CallStatus::Failed,
+            None,
+        )));
+        t.apply(Update::Item(start(
+            6,
+            "start worker “Waiting for billing”",
+            CallStatus::Running,
+            None,
+        )));
+        t.apply(Update::Worker(WorkerSummary {
+            title: "Fix flaky test".into(),
+            state: WorkerState::Running,
+            tool_calls: 3,
+            ..WorkerSummary::new("r1")
+        }));
+        let quiet = rows(&mut t, &Filter::Main(View::Quiet), 70, 12);
+        let count = |rows: &[String], text: &str| rows.iter().filter(|r| r.contains(text)).count();
+        assert_eq!(count(&quiet, "Fix flaky test"), 1, "{quiet:?}");
+        assert_eq!(count(&quiet, "r1 Fix flaky test · 3 tool calls"), 1);
+        assert_eq!(count(&quiet, "queued"), 1, "{quiet:?}");
+        assert_eq!(count(&quiet, "refused"), 1, "{quiet:?}");
+        assert_eq!(count(&quiet, "Waiting for billing"), 1, "{quiet:?}");
+        let full = rows(&mut t, &Filter::Main(View::Full), 70, 14);
+        assert_eq!(count(&full, "start worker “Fix flaky test”"), 1, "{full:?}");
+        assert_eq!(count(&full, "r1 Fix flaky test · 3 tool calls"), 1);
+        let messages = rows(&mut t, &Filter::Main(View::Messages), 70, 12);
+        assert!(
+            messages.iter().any(|r| r.contains("▸ 4 tool calls")),
+            "{messages:?}"
+        );
+        // The worker's own view keeps its lines of the workers it started.
+        let mut nested = start(7, "start worker “Count”", CallStatus::Ok, Some("r2"));
+        nested = nested.agent("r1");
+        t.apply(Update::Item(nested));
+        let own = rows(&mut t, &Filter::Worker("r1".into()), 70, 6);
+        assert_eq!(count(&own, "start worker “Count”"), 1, "{own:?}");
+    }
+
+    /// A worker's line names its setup when it isn't the usual one: its
+    /// profile, or its model when workers start on another, and the effort
+    /// when that is another too.
+    #[test]
+    fn a_worker_line_names_its_setup_only_when_it_isnt_the_usual_one() {
+        let usual = Usual {
+            model: "gpt-6-luna".into(),
+            effort: "high".into(),
+        };
+        let worker =
+            |model: Option<&str>, effort: Option<&str>, profile: Option<&str>| WorkerSummary {
+                title: "Fix flaky test".into(),
+                state: WorkerState::Running,
+                tool_calls: 3,
+                model: model.map(str::to_string),
+                effort: effort.map(str::to_string),
+                profile: profile.map(str::to_string),
+                ..WorkerSummary::new("r5")
+            };
+        let tag = |worker: &WorkerSummary| setup(worker, &usual);
+        assert_eq!(tag(&worker(None, None, None)), None);
+        assert_eq!(tag(&worker(Some("gpt-6-luna"), Some("high"), None)), None);
+        assert_eq!(
+            tag(&worker(
+                Some("gpt-6-luna"),
+                Some("high"),
+                Some("impl-light")
+            )),
+            Some("impl-light".to_string())
+        );
+        assert_eq!(
+            tag(&worker(Some("gpt-6.1-sol"), Some("high"), None)),
+            Some("sol".to_string())
+        );
+        assert_eq!(
+            tag(&worker(Some("gpt-6.1-sol"), Some("xhigh"), None)),
+            Some("sol xhigh".to_string())
+        );
+        assert_eq!(
+            tag(&worker(Some("gpt-6-luna"), Some("low"), None)),
+            Some("low effort".to_string())
+        );
+        let mut t = Transcript::new();
+        t.usual = usual;
+        let mut line = item(1, Kind::WorkerLine, "Fix flaky test");
+        line.worker = Some("r5".into());
+        line.turn = Some(1);
+        t.apply(Update::Item(line));
+        let quiet = Filter::Main(View::Quiet);
+        t.apply(Update::Worker(worker(
+            Some("gpt-6-luna"),
+            Some("high"),
+            None,
+        )));
+        let rows_of = rows(&mut t, &quiet, 70, 3);
+        assert!(
+            rows_of
+                .iter()
+                .any(|r| r == "  r5 Fix flaky test · 3 tool calls · running"),
+            "{rows_of:?}"
+        );
+        t.apply(Update::Worker(worker(None, None, Some("impl-light"))));
+        let rows_of = rows(&mut t, &quiet, 70, 3);
+        assert!(
+            rows_of
+                .iter()
+                .any(|r| r == "  r5 Fix flaky test · impl-light · 3 tool calls · running"),
+            "{rows_of:?}"
+        );
+    }
+
+    /// A long task is cut short, so the setup, the time and the state stay on
+    /// the line.
+    #[test]
+    fn a_long_task_gives_way_to_the_state_on_a_workers_line() {
+        let mut t = Transcript::new();
+        let mut line = item(1, Kind::WorkerLine, "Fix flaky test");
+        line.worker = Some("r5".into());
+        line.turn = Some(1);
+        t.apply(Update::Item(line));
+        t.apply(Update::Worker(WorkerSummary {
+            title:
+                "Fix the flaky test in tests/sync.rs by waiting for the lock instead of sleeping"
+                    .into(),
+            state: WorkerState::Running,
+            tool_calls: 3,
+            profile: Some("impl-light".into()),
+            last: Some("cargo test".into()),
+            ..WorkerSummary::new("r5")
+        }));
+        let quiet = Filter::Main(View::Quiet);
+        let rows_of = rows(&mut t, &quiet, 70, 3);
+        assert_eq!(
+            rows_of[0], "  r5 Fix the flaky test in test… · impl-light · 3 tool calls · running",
+            "{rows_of:?}"
+        );
+        assert_eq!(text_width(&rows_of[0]), 70);
+        // A wide screen has room for the whole task and the last call.
+        let rows_of = rows(&mut t, &quiet, 140, 3);
+        assert_eq!(
+            rows_of[0],
+            "  r5 Fix the flaky test in tests/sync.rs by waiting for the lock instead of sleeping · impl-light · 3 tool calls · running · cargo test"
+        );
     }
 
     /// The line of a worker that a worker started is in its parent's own

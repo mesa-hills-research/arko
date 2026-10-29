@@ -176,7 +176,10 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
                 }
             }
             View::Quiet => {
-                if main {
+                // The worker's own line stands for the call that started
+                // it. A call that is still running, was refused or queued
+                // its worker shows.
+                if main && !(item.kind == Kind::Call && item.started.is_some()) {
                     push(&mut rows, item);
                 }
             }
@@ -445,6 +448,55 @@ mod tests {
             }
         );
         assert_eq!(ids(&layout(&items, View::Full, Some("r1"))), ["i4", "i5"]);
+    }
+
+    /// Quiet leaves out the call that started a worker, whose own line
+    /// stands for it. A call still running, refused or queued shows, and
+    /// Full, Messages and the worker's own view keep every call.
+    #[test]
+    fn quiet_leaves_out_a_call_that_started_its_worker() {
+        let start = |id: u64, status: CallStatus, started: Option<&str>| ItemData {
+            status: Some(status),
+            started: started.map(str::to_string),
+            ..item(id, Kind::Call, MAIN, "start worker")
+        };
+        let mut nested = start(8, CallStatus::Ok, Some("r2"));
+        nested.agent = "r1".into();
+        let items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            start(2, CallStatus::Ok, Some("r1")),
+            item(3, Kind::WorkerLine, MAIN, "r1"),
+            // Queued, refused and still waiting for the billing answer.
+            start(4, CallStatus::Ok, None),
+            start(5, CallStatus::Failed, None),
+            start(6, CallStatus::Running, None),
+            // Several starts in a row: a line for each.
+            start(7, CallStatus::Ok, Some("r3")),
+            nested,
+            item(9, Kind::WorkerLine, MAIN, "r3"),
+        ];
+        assert_eq!(
+            ids(&layout(&items, View::Quiet, None)),
+            ["i1", "i3", "i4", "i5", "i6", "i9"]
+        );
+        assert_eq!(
+            ids(&layout(&items, View::Full, None)),
+            ["i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9"]
+        );
+        let messages = layout(&items, View::Messages, None);
+        assert_eq!(ids(&messages), ["i1", "c1", "i3", "i9"]);
+        assert!(matches!(
+            messages[1],
+            Row::Count {
+                count: Count {
+                    calls: 5,
+                    failed: 1,
+                    running: 1
+                },
+                ..
+            }
+        ));
+        assert_eq!(ids(&layout(&items, View::Quiet, Some("r1"))), ["i8"]);
     }
 
     #[test]

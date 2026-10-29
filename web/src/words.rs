@@ -1,6 +1,8 @@
 //! What the page says of figures, workers, states and settings.
 
-use crate::protocol::{CacheData, Delivery, ItemData, StatusData, WorkerData, WorkerState};
+use crate::protocol::{
+    CacheData, Delivery, ItemData, ModelsData, StatusData, WorkerData, WorkerState,
+};
 
 /// 2m14s, 45s, 1h05m.
 pub fn duration(ms: f64) -> String {
@@ -318,11 +320,14 @@ fn state_word(state: WorkerState) -> &'static str {
 /// A worker's summary in words: its title, the meta line ("18 calls ·
 /// 2m14s · running · under r1 · gpt-6.1-sol, high · profile judge ·
 /// $0.12") and what it did last. `viewing` is the worker whose own view
-/// shows, which says who started it already.
+/// shows, which says who started it already. `usual` has the model and
+/// effort workers start with, which the meta line names only when the
+/// worker runs another.
 pub fn worker_words(
     summary: &WorkerData,
     now: f64,
     viewing: Option<&str>,
+    usual: &ModelsData,
 ) -> (String, String, String) {
     let mut parts = vec![plural(summary.tool_calls, "call", "calls")];
     if let Some(ran) = run_time(summary, now) {
@@ -334,11 +339,19 @@ pub fn worker_words(
     {
         parts.push(format!("under {parent}"));
     }
-    if let Some(model) = &summary.model {
-        parts.push(match &summary.effort {
-            Some(effort) => format!("{model}, {effort}"),
-            None => model.clone(),
-        });
+    let model = summary
+        .model
+        .as_ref()
+        .filter(|model| **model != usual.workers);
+    let effort = summary
+        .effort
+        .as_ref()
+        .filter(|effort| **effort != usual.workers_effort);
+    match (model, effort) {
+        (Some(model), Some(effort)) => parts.push(format!("{model}, {effort}")),
+        (Some(model), None) => parts.push(model.clone()),
+        (None, Some(effort)) => parts.push(format!("{effort} effort")),
+        (None, None) => {}
     }
     if let Some(profile) = &summary.profile {
         parts.push(format!("profile {profile}"));
@@ -753,14 +766,63 @@ mod tests {
         summary.profile = Some("judge".into());
         summary.cost_billed = 0.12;
         summary.cost_list = 0.12;
-        let (title, meta, _) = worker_words(&summary, 130_000.0, None);
+        let usual = ModelsData {
+            workers: "gpt-6-luna".into(),
+            workers_effort: "medium".into(),
+            ..Default::default()
+        };
+        let (title, meta, _) = worker_words(&summary, 130_000.0, None, &usual);
         assert_eq!(title, "Task of r2");
         assert_eq!(
             meta,
             "18 calls · 2m14s · running · under r1 · gpt-6.1-sol, high · profile judge · $0.12"
         );
         // Not in the view of the worker that started it.
-        assert!(!worker_words(&summary, 0.0, Some("r1")).1.contains("under"));
+        assert!(
+            !worker_words(&summary, 0.0, Some("r1"), &usual)
+                .1
+                .contains("under")
+        );
+    }
+
+    /// The meta line names a worker's model and effort only when they aren't
+    /// the ones workers start with.
+    #[test]
+    fn a_worker_names_its_model_and_effort_only_when_they_are_not_the_usual() {
+        let usual = ModelsData {
+            workers: "gpt-6-luna".into(),
+            workers_effort: "high".into(),
+            ..Default::default()
+        };
+        let meta = |model: Option<&str>, effort: Option<&str>, profile: Option<&str>| {
+            let mut summary = worker("r5");
+            summary.tool_calls = 3;
+            summary.model = model.map(str::to_string);
+            summary.effort = effort.map(str::to_string);
+            summary.profile = profile.map(str::to_string);
+            worker_words(&summary, 0.0, None, &usual).1
+        };
+        assert_eq!(meta(None, None, None), "3 calls · running");
+        assert_eq!(
+            meta(Some("gpt-6-luna"), Some("high"), None),
+            "3 calls · running"
+        );
+        assert_eq!(
+            meta(Some("gpt-6-luna"), Some("high"), Some("impl-light")),
+            "3 calls · running · profile impl-light"
+        );
+        assert_eq!(
+            meta(Some("gpt-6.1-sol"), Some("high"), None),
+            "3 calls · running · gpt-6.1-sol"
+        );
+        assert_eq!(
+            meta(Some("gpt-6.1-sol"), Some("xhigh"), None),
+            "3 calls · running · gpt-6.1-sol, xhigh"
+        );
+        assert_eq!(
+            meta(Some("gpt-6-luna"), Some("low"), None),
+            "3 calls · running · low effort"
+        );
     }
 
     #[test]

@@ -35,26 +35,34 @@ const EARLIER_REFRESH_MESSAGE: &str = "(Arko: this message only keeps the prompt
 ///
 /// The images of the user's messages and of tool results go to `images`,
 /// and their items show them.
+///
+/// A call that started a worker is followed by the worker's line, as in a
+/// live session. The feed keeps it for a worker the session still has and
+/// leaves it out otherwise ([`Feed::restore`](super::Feed::restore)).
 pub fn items(messages: &[Message], text_replies: bool, images: &Images) -> Vec<Item> {
     items_from(
         messages,
         messages.len().saturating_sub(MESSAGES),
         text_replies,
         images,
+        true,
     )
 }
 
-/// The [`items`] of every message of `messages`, however many.
+/// The [`items`] of every message of `messages`, however many, without the
+/// workers' lines (an export has the workers' own records).
 pub(crate) fn all_items(messages: &[Message], text_replies: bool, images: &Images) -> Vec<Item> {
-    items_from(messages, 0, text_replies, images)
+    items_from(messages, 0, text_replies, images, false)
 }
 
-/// The [`items`] of `messages` from the `first`th on.
+/// The [`items`] of `messages` from the `first`th on, with the lines of the
+/// workers the calls started if `worker_lines`.
 fn items_from(
     messages: &[Message],
     first: usize,
     text_replies: bool,
     images: &Images,
+    worker_lines: bool,
 ) -> Vec<Item> {
     let messages = &messages[first..];
     let mut items: Vec<Item> = Vec::new();
@@ -120,6 +128,7 @@ fn items_from(
                             let call = &mut items[index];
                             call.status = Some(outcome.status);
                             call.outcome = outcome.text;
+                            call.started = outcome.started.clone();
                             call.output = outcome.output;
                             // The job a moved call went on in, which may
                             // have ended since.
@@ -133,6 +142,11 @@ fn items_from(
                             if let Some(mut block) = outcome.block {
                                 block.call = Some(call_id);
                                 push(&mut items, block);
+                            }
+                            if worker_lines && let Some(worker) = outcome.started {
+                                let mut line = Item::new(Kind::WorkerLine, worker.clone());
+                                line.worker = Some(worker);
+                                push(&mut items, line);
                             }
                         }
                         Content::Text(text) if answers.contains(&index) => {
@@ -863,6 +877,65 @@ mod tests {
     /// A wait without ids waited for a message before the agent started
     /// any run, then for the runs it started that no result told to be
     /// over, and for a message again once a wait's result says none go.
+    /// A start that began its worker is followed by the worker's line, as in
+    /// a live session, and one that queued its worker is not. An export has
+    /// no worker lines.
+    #[test]
+    fn a_reopened_start_is_followed_by_its_workers_line() {
+        let steps = [
+            ("Count", "Started r1 (agent `worker`)."),
+            ("Review", "Queued r2 (agent `worker`)."),
+            ("Test", "The task is empty."),
+        ];
+        let mut messages = vec![Message::new_user("Go.")];
+        for (index, (task, output)) in steps.iter().enumerate() {
+            let id = format!("call_{index}");
+            let mut ask = Message::new_assistant("");
+            ask.tool_calls = vec![call(
+                &id,
+                crew::START_AGENT,
+                serde_json::json!({ "task": task }),
+            )];
+            messages.push(ask);
+            messages.push(Message::new_user_with_contents(vec![Content::ToolResult(
+                ToolResult::new(Some(id), crew::START_AGENT, output),
+            )]));
+        }
+        let shape = |items: &[Item]| -> Vec<(Kind, Option<String>, Option<String>)> {
+            items
+                .iter()
+                .filter(|item| matches!(item.kind, Kind::Call | Kind::WorkerLine))
+                .map(|item| (item.kind, item.started.clone(), item.worker.clone()))
+                .collect()
+        };
+        let reopened = items(&messages, false, &Images::default());
+        assert_eq!(
+            shape(&reopened),
+            [
+                (Kind::Call, Some("r1".to_string()), None),
+                (Kind::WorkerLine, None, Some("r1".to_string())),
+                (Kind::Call, None, None),
+                (Kind::Call, None, None),
+            ]
+        );
+        // The line comes right after its call, in the call's turn.
+        let line = reopened
+            .iter()
+            .position(|item| item.kind == Kind::WorkerLine)
+            .unwrap();
+        assert_eq!(reopened[line - 1].kind, Kind::Call);
+        assert_eq!(reopened[line].turn, reopened[line - 1].turn);
+        let exported = all_items(&messages, false, &Images::default());
+        assert_eq!(
+            shape(&exported),
+            [
+                (Kind::Call, Some("r1".to_string()), None),
+                (Kind::Call, None, None),
+                (Kind::Call, None, None),
+            ]
+        );
+    }
+
     #[test]
     fn a_reopened_wait_names_the_runs_the_agent_had_going() {
         let steps = [

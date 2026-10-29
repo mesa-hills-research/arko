@@ -251,6 +251,9 @@ pub struct Outcome {
     pub output: Option<Arc<str>>,
     /// The job the call moved to, when it moved to the background.
     pub job: Option<Uuid>,
+    /// The worker a `start_agent` call started at once (not one that waits
+    /// for a place).
+    pub started: Option<String>,
 }
 
 impl Outcome {
@@ -262,6 +265,7 @@ impl Outcome {
             block: None,
             output: None,
             job: None,
+            started: None,
         }
     }
 
@@ -294,6 +298,7 @@ impl Outcome {
             block,
             output: (!message.is_empty()).then(|| message.into()),
             job: None,
+            started: None,
         }
     }
 }
@@ -391,6 +396,7 @@ fn brief(tool: &str, output: &str) -> Outcome {
                     ),
                     output: None,
                     job: None,
+                    started: None,
                 },
                 _ => Outcome::ok(cut(first, OUTCOME_CHARS)),
             }
@@ -399,7 +405,10 @@ fn brief(tool: &str, output: &str) -> Outcome {
             // "Started r2 (agent `worker`)." or "Queued r2 ...".
             let mut words = output.split_whitespace();
             match (words.next(), words.next()) {
-                (Some("Started"), Some(id)) => Outcome::ok(id),
+                (Some("Started"), Some(id)) => Outcome {
+                    started: Some(id.to_string()),
+                    ..Outcome::ok(id)
+                },
                 (Some("Queued"), Some(id)) => Outcome::ok(format!("{id} queued")),
                 _ => Outcome::ok(cut(output, OUTCOME_CHARS)),
             }
@@ -496,6 +505,7 @@ fn command_outcome(output: &str) -> Outcome {
         block,
         output: None,
         job: None,
+        started: None,
     }
 }
 
@@ -660,6 +670,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(item.text, "message lead “Done?”");
+    }
+
+    /// Only a start that began the worker at once names it as started: one
+    /// that waits for a place, a refusal and a result of another kind do not.
+    #[test]
+    fn a_start_names_its_worker_only_when_it_began_at_once() {
+        let started = |output: &str| outcome(crew::START_AGENT, output).started;
+        assert_eq!(
+            started("Started r5 (agent `worker`)."),
+            Some("r5".to_string())
+        );
+        assert_eq!(
+            started("Started r12 (agent `worker`) in the worktree /tmp/w."),
+            Some("r12".to_string())
+        );
+        assert_eq!(
+            started(
+                "Queued r5 (agent `worker`): 4 agent runs are running, the most this workflow allows, so it starts when one ends."
+            ),
+            None
+        );
+        assert_eq!(started("The task is empty."), None);
+        assert_eq!(Outcome::failed("refused (over budget)").started, None);
+        // Another tool's result that starts with the same word.
+        assert_eq!(outcome("shell", "Started r5").started, None);
     }
 
     /// A result is told in a few words on its call's line; a command's
