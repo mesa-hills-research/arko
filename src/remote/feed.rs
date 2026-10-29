@@ -337,6 +337,13 @@ pub struct WorkerSummary {
     pub effort: Option<String>,
     /// The profile it started with, if any.
     pub profile: Option<String>,
+    /// The skills it is narrowed to, when it is (a worker that has what its
+    /// starter has says nothing).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// The MCP servers it is narrowed to, in the same way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Vec<String>>,
     /// The worker that started it, such as `r1`. None for a worker the main
     /// agent started.
     pub parent: Option<String>,
@@ -380,6 +387,8 @@ impl WorkerSummary {
             model: None,
             effort: None,
             profile: None,
+            skills: None,
+            mcp: None,
             parent: None,
             depth: 1,
             nested: false,
@@ -528,6 +537,9 @@ pub struct WorkerInfo {
     pub effort: Option<String>,
     /// The profile it started with.
     pub profile: Option<String>,
+    /// The skills and MCP servers it is narrowed to, when it is.
+    pub skills: Option<Vec<String>>,
+    pub mcp: Option<Vec<String>>,
     /// How far it is from the main agent (0 is taken as 1).
     pub depth: u32,
     /// Whether it may start workers of its own.
@@ -2984,6 +2996,8 @@ impl Feed {
         summary.model = info.model;
         summary.effort = info.effort;
         summary.profile = info.profile;
+        summary.skills = info.skills;
+        summary.mcp = info.mcp;
         summary.parent = parent;
         summary.depth = info.depth.max(1);
         summary.nested = info.nested;

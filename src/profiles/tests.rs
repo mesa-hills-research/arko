@@ -52,6 +52,77 @@ fn every_key_survives_a_round_trip() {
     assert_eq!(Profile::parse("quick", &small.render()).unwrap(), small);
 }
 
+/// `skills` and `mcp` are lists in the front matter: names separated by
+/// commas, or `none`. A line with nothing in it leaves the set to the
+/// starter, and a bad one is said.
+#[test]
+fn skills_and_servers_are_lists_in_the_front_matter() {
+    let mut profile = Profile::new("narrow", "Reads");
+    profile.skills = Some(vec!["ponytail".into(), "release-notes".into()]);
+    profile.mcp = Some(Vec::new());
+    let text = profile.render();
+    assert_eq!(
+        text,
+        "---\ndescription: Reads\nskills: ponytail, release-notes\nmcp: none\n---\n"
+    );
+    assert_eq!(Profile::parse("narrow", &text).unwrap(), profile);
+    assert_eq!(profile.check(), Ok(()));
+    // The other forms read the same, and a repeated name counts once.
+    let json = "---\ndescription: Reads\nskills: [\"ponytail\", \"release-notes\", \"ponytail\"]\nmcp: None\n---\n";
+    assert_eq!(Profile::parse("narrow", json).unwrap(), profile);
+    // Left out or blank is the starter's.
+    let blank = Profile::parse("narrow", "---\ndescription: Reads\nskills:\n---\n").unwrap();
+    assert_eq!((blank.skills, blank.mcp), (None, None));
+    assert_eq!(
+        Profile::parse("narrow", "---\ndescription: Reads\nskills: ,\n---\n").unwrap_err(),
+        "`skills` isn't names separated by commas, a JSON array or none"
+    );
+    assert_eq!(
+        Profile::parse("narrow", "---\ndescription: Reads\nmcp: [1]\n---\n").unwrap_err(),
+        "`mcp` isn't names separated by commas, a JSON array or none"
+    );
+    assert_eq!(
+        Profile::parse("narrow", "---\ndescription: Reads\nmcp: a\nmcp: b\n---\n").unwrap_err(),
+        "`mcp` is given twice"
+    );
+    // A name a list can't hold isn't saved.
+    profile.skills = Some(vec!["a,b".into()]);
+    assert_eq!(
+        profile.check().unwrap_err(),
+        "The skills list has a name with a comma or a control character."
+    );
+}
+
+/// The approval carries what workers with the profile are limited to, in
+/// the card's data and in the question's text.
+#[test]
+fn the_approval_says_what_workers_with_the_profile_get() {
+    let mut profile = Profile::new("narrow", "Reads");
+    assert!(profile.limits().is_empty());
+    assert!(approval(&profile, Place::User).limits.is_empty());
+    profile.skills = Some(vec!["ponytail".into(), "release-notes".into()]);
+    profile.mcp = Some(Vec::new());
+    assert_eq!(
+        profile.limits(),
+        [
+            "Workers with it get only the skills ponytail and release-notes.",
+            "Workers with it get no MCP servers."
+        ]
+    );
+    assert_eq!(approval(&profile, Place::User).limits, profile.limits());
+    let text = approval_text(&profile, Place::User);
+    assert!(
+        text.contains("Runs on the session's worker model. Workers with it get only the skills ponytail and release-notes. Workers with it get no MCP servers.\n"),
+        "{text}"
+    );
+    profile.skills = Some(vec!["ponytail".into()]);
+    profile.mcp = None;
+    assert_eq!(
+        profile.limits(),
+        ["Workers with it get only the skill ponytail."]
+    );
+}
+
 #[test]
 fn awkward_values_read_back_as_written() {
     let mut profile = Profile::new("odd", "\"Quoted\" start: a colon, a # sign and \\ slash");

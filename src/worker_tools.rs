@@ -24,7 +24,7 @@ use serde_json::Value;
 use crate::agents::{Effort, ModelChoice};
 use crate::billing::WorkerBilling;
 use crate::chooser::Basis;
-use crate::crew::{Crew, SAVE_WORKER_PROFILE, WORKER_OPTIONS};
+use crate::crew::{Crew, MCP_PARAM, SAVE_WORKER_PROFILE, SKILLS_PARAM, WORKER_OPTIONS};
 use crate::inputs::Asker;
 use crate::keys::Keys;
 use crate::profiles::{self, Author, Place, Profile};
@@ -234,6 +234,11 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
         // A worker started with it starts workers unless the call says not.
         if profile.nested {
             details.push_str(", can start workers");
+        }
+        for phrase in
+            crate::crew::narrowing_phrases(profile.skills.as_deref(), profile.mcp.as_deref())
+        {
+            details.push_str(&format!(", {phrase}"));
         }
         let place = if profile.made_by_agent() {
             format!("{}, made by you", found.place.name())
@@ -462,6 +467,15 @@ impl SaveWorkerProfile {
         if let Some(effort) = text("effort")? {
             profile.effort = Some(providers::parse_effort(&effort).map_err(refused)?);
         }
+        for (key, names) in [
+            (SKILLS_PARAM, &mut profile.skills),
+            (MCP_PARAM, &mut profile.mcp),
+        ] {
+            if let Some(asked) = text(key)? {
+                *names = crate::crew::names_asked(&asked)
+                    .map_err(|why| refused(format!("{key} {why}")))?;
+            }
+        }
         profile.check().map_err(|why| {
             // A model Arko doesn't know is told where the right ones are.
             let unknown = profile
@@ -523,6 +537,16 @@ impl Tool for SaveWorkerProfile {
                     false,
                 ),
                 text_parameter(
+                    SKILLS_PARAM,
+                    "Skill names separated by commas, from your own. Workers with this profile get only these, as far as the agent that starts them has them, and none gives them no skills. Left out, they get their starter's.",
+                    false,
+                ),
+                text_parameter(
+                    MCP_PARAM,
+                    "MCP server names separated by commas, from your own. Workers with this profile reach only these, as far as the agent that starts them has them, and none gives them no servers. Left out, they get their starter's.",
+                    false,
+                ),
+                text_parameter(
                     "scope",
                     "project (the default, kept with the project), session (this session only) or user (every project).",
                     false,
@@ -567,6 +591,8 @@ impl Tool for SaveWorkerProfile {
         // Checked before the user is asked, so they are never asked about a
         // profile that can't work.
         let profile = Self::profile_of(&params)?;
+        crate::chooser::check_profile_names(&basis, &profile, &self.0.crew.mcp_servers())
+            .map_err(refused)?;
         let place = match optional_text(&params, "scope")? {
             None => Place::Project,
             Some(scope) => Place::parse(scope).ok_or_else(|| {

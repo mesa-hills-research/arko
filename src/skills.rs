@@ -90,6 +90,7 @@ pub fn config(folders: &[PathBuf], builtin: &BuiltinSkills) -> Option<SkillsConf
                 path: folder.display().to_string(),
                 include: None,
                 exclude: None,
+                optional: false,
             })
             .collect(),
         embedded,
