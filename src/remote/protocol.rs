@@ -247,6 +247,10 @@ pub struct ItemData {
     pub status: Option<CallStatus>,
     #[serde(default)]
     pub outcome: Option<String>,
+    /// The worker a `start_agent` call started at once. The Quiet view
+    /// leaves out such a call, because the worker's own line stands for it.
+    #[serde(default)]
+    pub started: Option<String>,
     #[serde(default)]
     pub worker: Option<String>,
     #[serde(default)]
@@ -495,7 +499,10 @@ pub struct SkillData {
 #[allow(dead_code)]
 pub struct ModelsData {
     pub main: String,
+    /// The model workers start on unless told otherwise, and their effort.
+    /// A worker's words name its model and effort only when they differ.
     pub workers: String,
+    pub workers_effort: String,
     #[serde(deserialize_with = "lenient")]
     pub started: bool,
     #[serde(deserialize_with = "lenient")]

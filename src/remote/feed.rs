@@ -106,6 +106,12 @@ pub struct Item {
     /// call's own line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    /// For a `start_agent` call that started its worker at once, the
+    /// worker's ID. A worker that waits for a place, a refused start and a
+    /// call without its result yet have none. The quiet view leaves out the
+    /// calls that have it, because the worker's own line stands for them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started: Option<String>,
     /// A command's whole output, when its `detail` shows the first lines.
     /// The terminal's view opens it on a click. The web page doesn't get
     /// it, and its clones share it.
@@ -196,6 +202,7 @@ impl Item {
             delivery: None,
             status: None,
             outcome: None,
+            started: None,
             whole: None,
             tool: None,
             parameters: None,
@@ -1271,6 +1278,7 @@ impl Feed {
         if let Some(item) = lane.find(call.item) {
             item.status = Some(outcome.status);
             item.outcome = outcome.text;
+            item.started = outcome.started;
             if let Some(job) = outcome.job {
                 item.job = Some(job.to_string());
             }
@@ -1381,6 +1389,7 @@ impl Feed {
                     block: None,
                     output: None,
                     job: None,
+                    started: None,
                 },
             );
         }
@@ -2187,6 +2196,22 @@ impl Feed {
         let turns = state.turn.unwrap_or(0);
         let at = now_ms();
         for mut item in items {
+            // The line of a worker the session has no record of would say
+            // nothing, so its call shows (the quiet view leaves out the
+            // calls that started a worker).
+            if item.kind == Kind::WorkerLine
+                && item
+                    .worker
+                    .as_deref()
+                    .is_some_and(|worker| state.worker(worker).is_none())
+            {
+                continue;
+            }
+            if let Some(worker) = &item.started
+                && state.worker(worker).is_none()
+            {
+                item.started = None;
+            }
             item.id += base;
             item.call = item.call.map(|call| call + base);
             item.turn = item.turn.map(|turn| turn + turns);
@@ -3307,6 +3332,113 @@ mod tests {
             .map(|item| item.images)
             .collect();
         assert_eq!(shown, [vec![image(1)], vec![image(2)]]);
+    }
+
+    /// A `start_agent` call names its worker as started once its result says
+    /// the worker began. Until then, and for a start that queued or was
+    /// refused, it names none.
+    #[test]
+    fn a_start_call_names_the_worker_it_started() {
+        let feed = Feed::new("main");
+        let start = |feed: &Feed, task: &str| {
+            let call = Uuid::new_v4();
+            let parameters = [("task".to_string(), serde_json::json!(task))].into();
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolCallFormatted {
+                        tool_call_id: call,
+                        tool_name: crate::crew::START_AGENT.into(),
+                        parameters,
+                    },
+                ),
+                None,
+            );
+            call
+        };
+        let result = |feed: &Feed, call: Uuid, output: &str| {
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolResult {
+                        tool_call_id: call,
+                        tool_name: crate::crew::START_AGENT.into(),
+                        output: output.into(),
+                    },
+                ),
+                None,
+            );
+        };
+        let started_of = |feed: &Feed, task: &str| call_item(feed, task).started;
+        let first = start(&feed, "Fix the flaky test");
+        assert_eq!(started_of(&feed, "Fix the flaky"), None, "still running");
+        result(&feed, first, "Started r1 (agent `worker`).");
+        let item = call_item(&feed, "Fix the flaky");
+        assert_eq!(
+            (item.started.as_deref(), item.status),
+            (Some("r1"), Some(CallStatus::Ok))
+        );
+        let queued = start(&feed, "Review the docs");
+        result(
+            &feed,
+            queued,
+            "Queued r2 (agent `worker`): 4 agent runs are running, the most this workflow allows, so it starts when one ends.",
+        );
+        assert_eq!(started_of(&feed, "Review the docs"), None);
+        let refused = start(&feed, "Run the migration");
+        feed.event(
+            &event(
+                "main",
+                AgentEvent::ErrorEncountered {
+                    error_message: "The worker's billing needs your answer.".into(),
+                    requires_approval_to_retry: false,
+                    tool_call_id: Some(refused),
+                    error_kind: None,
+                },
+            ),
+            None,
+        );
+        let item = call_item(&feed, "Run the migration");
+        assert_eq!(
+            (item.started, item.status),
+            (None, Some(CallStatus::Failed))
+        );
+        // A client that connects later gets it with the item.
+        let sent = serde_json::to_value(call_item(&feed, "Fix the flaky")).unwrap();
+        assert_eq!(sent["started"], "r1");
+        let sent = serde_json::to_value(call_item(&feed, "Review the docs")).unwrap();
+        assert!(sent.get("started").is_none());
+    }
+
+    /// A reopened session keeps the line of a worker it still has, and a
+    /// call that started a worker it lost shows alone.
+    #[test]
+    fn a_reopened_session_keeps_the_lines_of_the_workers_it_has() {
+        let feed = Feed::new("main");
+        feed.worker_restored("r1", "Count", WorkerState::Finished, None, None, 5, 0, 0);
+        let mut items_of_history = Vec::new();
+        for (number, worker) in [(1, "r1"), (3, "r2")] {
+            let mut call = Item::new(Kind::Call, "start worker");
+            call.id = number;
+            call.started = Some(worker.to_string());
+            let mut line = Item::new(Kind::WorkerLine, worker);
+            line.id = number + 1;
+            line.worker = Some(worker.to_string());
+            items_of_history.extend([call, line]);
+        }
+        feed.restore(items_of_history);
+        let shown: Vec<(Kind, Option<String>, Option<String>)> = items(&feed)
+            .into_iter()
+            .map(|item| (item.kind, item.started, item.worker))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Kind::Call, Some("r1".to_string()), None),
+                (Kind::WorkerLine, None, Some("r1".to_string())),
+                (Kind::Call, None, None),
+            ]
+        );
     }
 
     /// A monitor's call says it is monitoring, and its line follows the

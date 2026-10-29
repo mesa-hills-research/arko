@@ -468,8 +468,9 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
         move || {
             let now = page.server_now();
             let viewing = if listed { None } else { page.worker.get() };
+            let usual = page.status.with(|status| status.models.clone());
             match summary() {
-                Some(summary) => words::worker_words(&summary, now, viewing.as_deref()),
+                Some(summary) => words::worker_words(&summary, now, viewing.as_deref(), &usual),
                 None => (id.clone(), "0 calls · running".into(), String::new()),
             }
         }

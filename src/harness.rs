@@ -6831,6 +6831,16 @@ pub(crate) mod tests {
         assert!(snapshot.items.iter().any(|item| item.agent == "r1"
             && item.kind == remote::Kind::Reply
             && item.text == "Blue branch checked."));
+        // The call that started it names it, which the quiet view needs to
+        // leave the call out.
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .any(|item| item.kind == remote::Kind::Call
+                    && item.agent == remote::MAIN_AGENT
+                    && item.started.as_deref() == Some("r1"))
+        );
         let r1 = &snapshot.workers[0];
         assert_eq!(r1.id, "r1");
         assert_eq!(r1.title, "Check a branch after asking which one.");
