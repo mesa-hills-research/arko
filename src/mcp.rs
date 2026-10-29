@@ -60,12 +60,10 @@ pub struct Server {
 
 impl Server {
     fn config(&self) -> McpServerConfig {
-        McpServerConfig {
-            name: self.name.clone(),
-            command: self.command.clone(),
-            args: self.args.clone(),
-            env: self.env.clone().into_iter().collect(),
-        }
+        let mut config = McpServerConfig::new(self.name.clone(), self.command.clone());
+        config.args = self.args.clone();
+        config.env = self.env.clone().into_iter().collect();
+        config
     }
 }
 
