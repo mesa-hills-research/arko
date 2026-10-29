@@ -90,13 +90,13 @@ each model's efforts, price, handover size and prompt cache, and the plan usage 
 a plan. `save_worker_profile` saves a setup under a name. A profile for the session needs no
 approval, and neither does one for a project folder that git ignores (`git check-ignore` says),
 which is the folder Arko makes by default. Before Arko saves one in a folder git tracks, in a
-project outside a git repository, or for every project, it puts you a question that
-shows the whole profile, with Save and Don't save. Only Save saves it. Words you type instead go
-back to the agent, and the transcript says nothing was saved. The agent makes the changes they ask
-for, or replies when they are about something else, and asks again. The agent can't replace a
-profile you made.
+project outside a git repository, or for every project, it waits for your OK in the
+[approval tray](approvals.md), which shows the whole profile. Reject with words in the message box
+sends them back to the agent, and the transcript says nothing was saved. The agent makes the changes
+they ask for, or replies when they are about something else, and asks again. The agent can't
+replace a profile you made.
 
-The question guards what Arko writes for the agent. The agent's own file tools and shell can write
+The approval guards what Arko writes for the agent. The agent's own file tools and shell can write
 a file in the project's `.agents/profiles` folder as they can write any file in the project, and
 in your Arko folder once you turn outside access on. So treat a project's profiles as you treat its
 `AGENTS.md`, as text the project's authors and the agent can change.
@@ -153,12 +153,12 @@ that name on the web page, and it applies to the next worker started.
 | Value | A worker on a model billed per token |
 |---|---|
 | `plans` | Is refused, and the main agent is told which plan models it can use |
-| `ask` (the default) | Starts once you allow it on a card that names the model and its price |
+| `ask` (the default) | Starts once you approve it in the [approval tray](approvals.md), which names the model and its price |
 | `api` | Starts without asking |
 
-On the card, Allow starts that worker, "Allow MODEL for this session" also allows that model's
-next workers in the session, and Deny refuses it. The main agent waits for your answer, and words
-you type instead reach it with the refusal. Only the main agent's starts can ask, so a worker's own
+Approve starts that worker, and with "Allow MODEL for this session" turned on in its details, that
+model's next workers in the session too. Reject refuses it. The main agent waits for your answer, and
+the words in the message box reach it with the answer. Only the main agent's starts can ask, so a worker's own
 start on a model billed per token is refused unless you allowed that model for the session. With
 `plans`, `/model worker` and the profiles the main agent saves take a plan's model only. The main
 agent's own model stays your choice, and its instructions tell it to prefer your plans' models for
@@ -239,8 +239,8 @@ profiles::delete(&roots, Place::User, "3d-judge")?;
 `profiles::Preferences` loads and saves the profile settings, and `profiles::needs_approval` tells
 whether the agent's save asks you first. `Profile::check` tells whether a profile can be saved,
 with a model Arko knows and an effort it takes. `profiles::folders` gives the folders for an "open
-the folder" button, and `profiles::approval_text` and `profiles::is_approval` are the question the
-agent's save puts to the user and the rule for its answer. `arko::workers` has the names,
+the folder" button, and `profiles::approval` is the request the
+agent's save puts in the approval tray. `arko::workers` has the names,
 commands and sentences of the workers' settings, and `ModelChoice::label` and `about` and
 `WorkerBilling::label` and `about` the words for each value, so an app labels and sets them as the
 terminal and the web page do. `arko::models::billing` gives the label a picker shows beside a model

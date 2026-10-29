@@ -6,17 +6,8 @@ decide". The agent passes `wait: false` only for work no answer could change, su
 investigating. While a question is open, it must not use its default to write or delete files,
 spend money, start workers, or follow a preference, design or scope.
 
-Arko asks you too, before the agent saves a worker profile for the project or for every project.
-That approval shows the profile's name, where it is kept, its model and effort, what it is for and
-its instructions, with Save and Don't save. Only Save saves it. Words you type instead go back to
-the agent. It makes the changes they ask for, or replies when they are about something else, and
-asks again. Profiles the agent saves together come in one card, with a choice for each.
-
-With [worker billing](worker-profiles.md#worker-billing) on `ask`, the default, Arko also asks
-before a worker starts on a model billed per token. The question names the model, its price and the
-worker's task, with Allow, "Allow MODEL for this session" and Deny. Only a choice picked alone
-starts the worker. "You decide", "Not now" and words you type leave it unstarted, and the agent
-reads why.
+What waits for your OK, such as a worker profile the agent saves for every project, goes to the
+[approval tray](approvals.md) instead.
 
 ## Answering in the full-screen view
 
@@ -31,7 +22,7 @@ its suggested answers says "Choose any" after its text.
 | ↓, Tab | From a question's answers to its Other field, then on to the next question, and from the last back to the first |
 | ↑, Shift+Tab | Back |
 | Typing | An answer of your own (Other). A question without suggested answers takes typing at once |
-| PgUp, PgDn | Scroll a long question, such as a profile's instructions |
+| PgUp, PgDn | Scroll a long question |
 | Enter | Send what you filled in. The questions you left out stay open |
 | Esc | Answer in a message instead. The questions go with your next message ("Replying to 2 questions"), and Backspace in the empty message box takes them off |
 | Ctrl+N | Not now. The agent goes on with its defaults |
