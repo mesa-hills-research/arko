@@ -94,12 +94,23 @@ fn skills_and_servers_are_lists_in_the_front_matter() {
 }
 
 /// The approval carries what workers with the profile are limited to, in
-/// the card's data and in the question's text.
+/// the request's data, in its details in the tray and in the question's
+/// text.
 #[test]
 fn the_approval_says_what_workers_with_the_profile_get() {
+    use crate::approvals::{Approval, Look};
+    let details = |profile: &Profile| -> Vec<(Look, String)> {
+        Approval::Profile(approval(profile, Place::User))
+            .details()
+            .into_iter()
+            .map(|detail| (detail.look, detail.text))
+            .collect()
+    };
     let mut profile = Profile::new("narrow", "Reads");
+    profile.instructions = "Read only.".into();
     assert!(profile.limits().is_empty());
     assert!(approval(&profile, Place::User).limits.is_empty());
+    let plain = details(&profile);
     profile.skills = Some(vec!["ponytail".into(), "release-notes".into()]);
     profile.mcp = Some(Vec::new());
     assert_eq!(
@@ -110,6 +121,18 @@ fn the_approval_says_what_workers_with_the_profile_get() {
         ]
     );
     assert_eq!(approval(&profile, Place::User).limits, profile.limits());
+    // The tray shows them after the description, before the instructions.
+    let mut narrowed = plain.clone();
+    narrowed.splice(
+        2..2,
+        profile
+            .limits()
+            .into_iter()
+            .map(|limit| (Look::Text, limit)),
+    );
+    assert_eq!(plain[1], (Look::Text, "Reads".to_string()));
+    assert_eq!(plain[2], (Look::Heading, "Instructions".to_string()));
+    assert_eq!(details(&profile), narrowed);
     let text = approval_text(&profile, Place::User);
     assert!(
         text.contains("Runs on the session's worker model. Workers with it get only the skills ponytail and release-notes. Workers with it get no MCP servers.\n"),

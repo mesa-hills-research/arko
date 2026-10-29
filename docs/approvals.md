@@ -8,10 +8,10 @@ Each such request waits in the approval tray above the message box, apart from t
 them, so the saves of one response, for example, are answered at once.
 
 Each request is a row with its kind (profile, skill, server or worker), its name, where it applies
-and a short summary. A row opens to its details. A profile shows its model, what it is for and its
-instructions. A worker billed per token shows the model's price, what your sessions were billed per
-token today and the worker's task, with the option "Allow MODEL for this session", which Approve
-covers when you turn it on.
+and a short summary. A row opens to its details. A profile shows its model, what it is for, the
+skills and MCP servers it limits its workers to, and its instructions. A worker billed per token
+shows the model's price, what your sessions were billed per token today and the worker's task, with
+the option "Allow MODEL for this session", which Approve covers when you turn it on.
 
 With several requests each row has a box, and all start checked. Approve approves the rows checked and
 rejects the others in the same answer ("Approve 2, reject 1"), and Reject all rejects them all.
