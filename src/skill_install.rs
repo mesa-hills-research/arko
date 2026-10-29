@@ -157,6 +157,9 @@ impl Fetch for Https {
     }
 }
 
+/// Tells the user something, in the transcript.
+pub(crate) type Notice = Arc<dyn Fn(Level, &str) + Send + Sync>;
+
 /// What the tools need of the session.
 pub(crate) struct Context {
     /// Arko's folder.
@@ -173,7 +176,7 @@ pub(crate) struct Context {
     pub approver: Arc<dyn Approver>,
     pub fetch: Arc<dyn Fetch>,
     /// Tells the user something, in the transcript.
-    pub notice: Arc<dyn Fn(Level, &str) + Send + Sync>,
+    pub notice: Notice,
     /// Saves one at a time.
     pub writing: tokio::sync::Mutex<()>,
 }
@@ -910,18 +913,19 @@ impl AddSkill {
         let _writing = context.writing.lock().await;
         let parent = match plan.scope {
             Scope::Project => {
-                crate::arko_dir::ensure(&context.workspace, &context.root)?;
+                crate::arko_dir::ensure(&context.workspace, &context.root)
+                    .map_err(|error| format!("{}.", error.trim_end_matches('.')))?;
                 skills::project_folder(&context.workspace)
             }
             Scope::User => skills::user_folder(&context.root),
         };
         std::fs::create_dir_all(&parent)
-            .map_err(|error| format!("Couldn't make {} ({error})", parent.display()))?;
+            .map_err(|error| format!("Couldn't make {} ({error}).", parent.display()))?;
         if matches!(plan.draft.origin, Origin::InPlace) {
             if plan.draft.skill_md() != Some(plan.skill_md.as_str()) {
                 let file = plan.dest.join("SKILL.md");
                 crate::session::write_whole(&file, plan.skill_md.as_bytes())
-                    .map_err(|error| format!("Couldn't write {} ({error})", file.display()))?;
+                    .map_err(|error| format!("Couldn't write {} ({error}).", file.display()))?;
             }
         } else {
             // Another save may have taken the folder while the user read the
@@ -953,24 +957,24 @@ impl AddSkill {
         match &plan.draft.bundle {
             Some(bundle) => {
                 arko_agents::skill::unpack_bundle(bundle, staging)
-                    .map_err(|error| format!("Couldn't unpack the bundle ({error})"))?;
+                    .map_err(|error| format!("Couldn't unpack the bundle ({error})."))?;
             }
             None => {
                 for (path, bytes) in &plan.draft.files {
                     let file = staging.join(path);
                     if let Some(folder) = file.parent() {
                         std::fs::create_dir_all(folder).map_err(|error| {
-                            format!("Couldn't make {} ({error})", folder.display())
+                            format!("Couldn't make {} ({error}).", folder.display())
                         })?;
                     }
                     std::fs::write(&file, bytes)
-                        .map_err(|error| format!("Couldn't write {} ({error})", file.display()))?;
+                        .map_err(|error| format!("Couldn't write {} ({error}).", file.display()))?;
                 }
             }
         }
         let file = staging.join("SKILL.md");
         std::fs::write(&file, plan.skill_md.as_bytes())
-            .map_err(|error| format!("Couldn't write {} ({error})", file.display()))
+            .map_err(|error| format!("Couldn't write {} ({error}).", file.display()))
     }
 
     /// The note in the transcript and the result for the agent, once saved.
@@ -1081,13 +1085,13 @@ fn put(staging: &Path, dest: &Path) -> Result<(), String> {
     let replacing = dest.symlink_metadata().is_ok();
     if replacing {
         std::fs::rename(dest, &old)
-            .map_err(|error| format!("Couldn't replace {} ({error})", dest.display()))?;
+            .map_err(|error| format!("Couldn't replace {} ({error}).", dest.display()))?;
     }
     if let Err(error) = std::fs::rename(staging, dest) {
         if replacing {
             let _ = std::fs::rename(&old, dest);
         }
-        return Err(format!("Couldn't save {} ({error})", dest.display()));
+        return Err(format!("Couldn't save {} ({error}).", dest.display()));
     }
     if replacing {
         let _ = std::fs::remove_dir_all(&old);
@@ -1333,7 +1337,7 @@ fn size_words(bytes: u64) -> String {
         format!("{} KB", bytes.div_ceil(1024))
     } else {
         let tenths = (bytes * 10).div_ceil(1024 * 1024);
-        if tenths % 10 == 0 {
+        if tenths.is_multiple_of(10) {
             format!("{} MB", tenths / 10)
         } else {
             format!("{}.{} MB", tenths / 10, tenths % 10)

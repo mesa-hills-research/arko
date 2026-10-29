@@ -560,7 +560,7 @@ pub fn terminal_tool_names(monitors: bool) -> Vec<String> {
 
 /// The tools both agents have: the shell, the terminal and monitor tools,
 /// the file tools, the search index tools and the MCP servers' tools.
-/// (`load_skill` is added for each run when there are skills to load.)
+/// (The skills configuration adds `load_skill` for each run.)
 fn shared_tool_names(settings: &AgentSettings) -> Vec<String> {
     let mut tools = terminal_tool_names(settings.monitors);
     tools.extend(FILE_TOOL_NAMES.iter().map(|name| name.to_string()));

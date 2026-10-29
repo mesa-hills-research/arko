@@ -382,7 +382,7 @@ mod tests {
             "anthropic/claude-haiku-5.5-ft-acme",
         ] {
             let model = format!("openrouter:{slug}");
-            assert_eq!(names(&model), [model.clone()]);
+            assert_eq!(names(&model), std::slice::from_ref(&model));
             for pattern in ["haiku", "claude-haiku-*", "*haiku*", "claude-haiku-5-5"] {
                 assert!(!lists(&[pattern], &model), "{pattern} for {model}");
             }

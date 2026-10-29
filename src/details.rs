@@ -565,6 +565,7 @@ impl Details {
         let builtin = self.builtin_skills();
         let scanned = skills::scan(&self.skill_folders, &builtin, &workspace);
         let loaded = || scanned.iter().filter(|skill| skill.skipped.is_none());
+        let added = crate::agent_added::skills(&self.root);
         let facts = |skill: &arko_agents::skill::SkillScan| SkillFacts {
             name: skill.name.clone(),
             description: skill.description.clone(),
@@ -580,9 +581,10 @@ impl Details {
             path: (!skill.embedded).then(|| skill.path.clone()),
             models: skill.models.clone(),
             workers: skill.workers,
-            added: (!skill.embedded)
-                .then(|| crate::agent_added::skill_at(&self.root, &skill.path))
-                .flatten(),
+            added: added
+                .iter()
+                .find(|record| !skill.embedded && record.path == skill.path)
+                .cloned(),
         };
         let mut skills: Vec<SkillFacts> = loaded()
             .filter(|skill| !skill.auto_load)

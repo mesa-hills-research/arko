@@ -181,12 +181,14 @@ pub fn list_with(
     }
     let folders = skills::folders_for(workspace, root);
     let (builtin, refused) = builtin_choice(builtin_skills, builtin_skills_off);
+    let added = crate::agent_added::skills(root);
     extensions.skills = skills::scan(&folders, &builtin, workspace.unwrap_or(root))
         .into_iter()
         .map(|skill| SkillEntry {
-            added: (!skill.embedded)
-                .then(|| crate::agent_added::skill_at(root, &skill.path))
-                .flatten(),
+            added: added
+                .iter()
+                .find(|record| !skill.embedded && record.path == skill.path)
+                .cloned(),
             path: skill.path,
             name: skill.name,
             description: skill.description,

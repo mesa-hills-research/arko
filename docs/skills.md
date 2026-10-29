@@ -5,9 +5,51 @@ matter and goes on with instructions. The agents see each skill's name and descr
 with `load_skill` when a task calls for it. A skill with `auto_load: true` in its front matter is
 always in their instructions instead.
 
-Arko reads skills from the project's `.agents/skills`, `.claude/skills` and `.skills`, from `skills`
-in Arko's folder, and from `~/.agents/skills` and `~/.claude/skills`. `/skills` lists them with
-their descriptions and folders.
+Arko reads skills from the project's `.agents/skills`, `.claude/skills`, `.skills` and
+`.arko/skills`, from `skills` in Arko's folder, and from `~/.agents/skills` and `~/.claude/skills`.
+When two skills share a name, the first one read keeps it and the other loads as `name-2`. `/skills` lists them with their
+descriptions and folders, and `/skills NAME` shows one with its files.
+
+## Skills for some models
+
+Two more fields of the front matter decide who sees a skill.
+
+| Field | Effect |
+|---|---|
+| `models` | The models whose agents list the skill, one name or a list. Other agents can still load it by name. |
+| `workers: false` | Only the main agent gets the skill. |
+
+An entry of `models` is matched against the whole name, ignoring case, and `*` and `?` work as in
+file names. An exact ID such as `claude-haiku-5-5` pins the skill to that release, and a short name
+or pattern such as `haiku` or `gpt-6*` follows the family. `cc:haiku` reaches only Haiku in Claude
+Code. A plain name reaches a model on OpenRouter only through Arko's table of the slugs OpenRouter
+gives the models Arko knows, so `haiku` lists the skill for `openrouter:anthropic/claude-haiku-5.5`
+and not for another publisher's lookalike. For any other slug, write the pattern against it, such as
+`openrouter:openai/gpt-6*`. `/skills` shows the models after a skill's folder ("for haiku"), and
+"main agent only" for `workers: false`. Plain Claude Code ignores both fields.
+
+## Skills the agent saves
+
+The main agent saves a skill with `add_skill`, from a folder it wrote, a Markdown file, a `.zip` or
+`.skill` bundle, or an https URL of one. A skill for the project goes in its `.arko/skills`, which git
+ignores while "Keep agents' project files out of git" is on (see [extensions](extensions.md)). A
+skill for every project goes in `skills` in Arko's folder.
+
+| Save | Asks you |
+|---|---|
+| For every project | Always |
+| From a URL | Always |
+| For the project | Only with Review project skills on |
+
+The approval tray shows the skill's text and files, where it came from and who gets it. Arko checks
+the skill before it asks, and refuses one with a name another skill has, `auto_load`, a link, more
+than 200 files or more than 1 MB. Nothing is written before you approve. The agent's `load_skill`
+finds the skill at once, and its skill list shows it from the next conversation. Workers started
+after the save get it unless it says `workers: false`.
+
+Arko records each save in `agent-added.json` in its folder, so `/skills` marks the skill "added by
+the agent" with the day, and `/skills NAME` says why and from where. The agent's `remove_skill` and
+your `/skills remove NAME` remove only such a skill. Delete your own skills by hand.
 
 ## Built-in skills
 
@@ -56,3 +98,8 @@ out (`builtin_off`). `arko::extensions::list` includes the built-in skills as th
 settings leave them, and `arko::extensions::list_with` as the app's `builtin_skills` and
 `builtin_skills_off` leave them. Each has `builtin` set and an empty `path`. The live settings
 (`remote::LiveSettings`) hold the choice in `builtin_skills` and `builtin_skill_list`.
+
+Each `SkillEntry` and `SkillFacts` also has `models`, `workers` and `added`, the record of an
+agent's save (`arko::agent_added::SkillRecord`, with the day, the session, the reason and the
+source) or `None` for a skill no agent saved. `arko::extensions::remove_added` removes a skill an
+agent saved, without a session.

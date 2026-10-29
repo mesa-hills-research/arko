@@ -387,6 +387,10 @@ impl WorkerSetup {
             if let Some(names) = &self.model_names {
                 skills.model_names = names.clone();
             }
+            // A worker given no skills has nothing to load, now or later.
+            if self.skills.as_ref().is_some_and(Vec::is_empty) {
+                skills.offer_when_empty = false;
+            }
         }
         // The start tools are the run's own: none a configuration of
         // another run had, and the ones this run's setup adds.
@@ -2551,6 +2555,14 @@ mod tests {
         };
         assert!(listed(&haiku).contains(&"quirks".to_string()));
         assert!(!listed(&luna).contains(&"quirks".to_string()));
+        // load_skill is there for a skill saved later, except for a worker
+        // given none.
+        assert_eq!(luna["skills_config"]["offer_when_empty"], true);
+        let none = prepared(&crew, &start("r3", &[("skills", "none")]), &registered);
+        assert_eq!(
+            none["skills_config"]["offer_when_empty"],
+            serde_json::Value::Null
+        );
         // Each gets its own again, also from the other's saved
         // configuration.
         let saved: AgentConfig = serde_json::from_value(haiku.clone()).unwrap();
