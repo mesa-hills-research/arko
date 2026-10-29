@@ -407,7 +407,7 @@ fn setup_nobody(temp: &Path) -> Setup {
 }
 
 /// A card the user turns down writes nothing. Words with it go to the
-/// agent, and the transcript says Arko asks again.
+/// agent, and the transcript says it wasn't added.
 #[tokio::test]
 async fn a_card_turned_down_writes_nothing() {
     let temp = tempfile::tempdir().unwrap();
@@ -433,7 +433,7 @@ async fn a_card_turned_down_writes_nothing() {
         .await
         .unwrap();
     assert!(said.contains("wrote “Use uvx instead.”"), "{said}");
-    assert!(notices(&setup.feed).contains(&"Not added. Arko asks again.".to_string()));
+    assert!(notices(&setup.feed).contains(&"Not added.".to_string()));
     *ask.answer.lock().unwrap() = Answer::Unanswered;
     let said = setup
         .changes

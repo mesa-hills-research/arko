@@ -603,7 +603,7 @@ impl McpChanges for Changes {
                 }
                 Answer::Rejected { words: Some(said) } => {
                     // What they wrote is only the agent's to read.
-                    self.notice("Not added. Arko asks again.");
+                    self.notice("Not added.");
                     return Ok(format!(
                         "The user didn't add {name} for {} and wrote “{}”. If those words ask for changes to the server, make them and call add again, which shows them the changed server. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call add again with the same server, and end with a short reminder that it is still waiting for their decision.",
                         reach(scope),
