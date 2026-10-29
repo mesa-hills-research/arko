@@ -558,12 +558,12 @@ async fn a_profile_with_no_scope_is_kept_with_the_project_and_asks_when_git_trac
         "Saved the worker profile reviewer for this project. start_agent takes it by name."
     );
     assert!(questions.try_recv().is_err(), "no question");
-    assert!(folder.join(".gitignore").is_file());
+    assert!(work.join(".arko").join(".gitignore").is_file());
     let found = profiles::read(&fixture.basis.roots, "reviewer").unwrap();
     assert_eq!(found.place, Place::Project);
 
     // Without the .gitignore git tracks the folder, so the user is asked.
-    std::fs::remove_file(folder.join(".gitignore")).unwrap();
+    std::fs::remove_file(work.join(".arko").join(".gitignore")).unwrap();
     let asking = {
         let save = fixture.save.clone();
         tokio::spawn(async move {
@@ -684,7 +684,7 @@ async fn a_profile_for_every_session_waits_for_the_users_save() {
     assert!(
         question
             .text()
-            .contains("in this project's .agents/profiles folder")
+            .contains("in this project's .arko/profiles folder")
     );
     question.answer.unwrap().decide(ApprovalAnswer::Save);
     assert!(

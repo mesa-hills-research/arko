@@ -243,7 +243,7 @@ async fn a_worker_runs_the_model_effort_and_profile_the_main_agent_chose() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender, _server, seen) = setup(temp.path()).await;
     let workspace = harness.settings.workspace.clone();
-    let folder = workspace.join(".agents").join("profiles");
+    let folder = workspace.join(".arko").join("profiles");
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(
         folder.join("judge.md"),
@@ -1021,8 +1021,8 @@ async fn profiles_lists_shows_adds_and_removes() {
         "Until you do, the main agent reads \"Describe what this profile is for\" as its description."
     ));
 
-    // The project's and the session's, a hidden one and one that can't be
-    // read.
+    // The project's (in the older folder, which /profiles names) and the
+    // session's, a hidden one and one that can't be read.
     let project = harness.settings.workspace.join(".agents").join("profiles");
     std::fs::create_dir_all(&project).unwrap();
     std::fs::write(project.join("reviewer.md"), "---\ndescription: The project's reviewer\nmodel: opus\neffort: high\n---\n").unwrap();
@@ -1047,18 +1047,20 @@ async fn profiles_lists_shows_adds_and_removes() {
   reviewer  sol                this session
       Reviews a diff (made by the main agent)
 Hidden by a nearer profile of the same name
-  reviewer                     this project
+  reviewer                     this project (.agents/profiles)
 Can't be read
-  notes                        this project
+  notes                        this project (.agents/profiles)
       line 2 isn't `key: value`
 /profiles NAME shows one. The files are in
   this session
     {}
   this project
     {}
+    {}
   every project
     {}",
         session.display(),
+        harness.settings.workspace.join(".arko").join("profiles").display(),
         project.display(),
         harness.root.join("profiles").display()
     );
