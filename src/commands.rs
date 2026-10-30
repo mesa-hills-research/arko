@@ -403,40 +403,44 @@ fn closest<'a>(word: &str, offered: impl IntoIterator<Item = &'a Command>) -> Op
     if let [command] = taking[..] {
         return Some(format!("{command} {word}"));
     }
-    // A typo or two, by the word's length.
-    let most = (word.chars().count() / 3).max(1);
+    // A typo or a few, by the word's length.
+    let most = (word.len() / 3).clamp(1, 3);
     offered
         .iter()
-        .map(|command| (edits(word, &name(command)), command.name))
-        .filter(|(edits, _)| *edits <= most)
+        .filter_map(|command| Some((edits(word, &name(command), most)?, command.name)))
         .min_by_key(|(edits, _)| *edits)
         .map(|(_, name)| name.to_string())
 }
 
 /// How many letters to add, remove, change or swap with the next to turn
-/// `a` into `b`.
-fn edits(a: &str, b: &str) -> usize {
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let mut rows = vec![vec![0; b.len() + 1]; a.len() + 1];
-    for (i, row) in rows.iter_mut().enumerate() {
-        row[0] = i;
+/// `a` into `b` (ASCII words), when that is at most `most`. Words whose
+/// lengths differ by more are refused before anything is counted, and the
+/// count keeps three rows of its table.
+fn edits(a: &str, b: &str, most: usize) -> Option<usize> {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len().abs_diff(b.len()) > most {
+        return None;
     }
-    for (j, cell) in rows[0].iter_mut().enumerate() {
-        *cell = j;
-    }
+    // The rows for a's letters before the last two, the last one, and this
+    // one: how many edits turn a's start into each start of b.
+    let mut before: Vec<usize> = vec![0; b.len() + 1];
+    let mut last: Vec<usize> = (0..=b.len()).collect();
+    let mut row: Vec<usize> = vec![0; b.len() + 1];
     for i in 1..=a.len() {
+        row[0] = i;
         for j in 1..=b.len() {
             let change = usize::from(a[i - 1] != b[j - 1]);
-            let mut best = (rows[i - 1][j] + 1)
-                .min(rows[i][j - 1] + 1)
-                .min(rows[i - 1][j - 1] + change);
+            let mut best = (last[j] + 1).min(row[j - 1] + 1).min(last[j - 1] + change);
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                best = best.min(rows[i - 2][j - 2] + 1);
+                best = best.min(before[j - 2] + 1);
             }
-            rows[i][j] = best;
+            row[j] = best;
         }
+        std::mem::swap(&mut before, &mut last);
+        std::mem::swap(&mut last, &mut row);
     }
-    rows[a.len()][b.len()]
+    let count = last[b.len()];
+    (count <= most).then_some(count)
 }
 
 /// The commands the session runs wherever it was typed, the line prompt's.
@@ -937,9 +941,22 @@ mod tests {
         ] {
             assert_eq!(unknown(message, everywhere()), None, "{message:?}");
         }
-        assert_eq!(edits("modle", "model"), 1);
-        assert_eq!(edits("quiet", "quit"), 1);
-        assert_eq!(edits("", "new"), 3);
+        assert_eq!(edits("modle", "model", 3), Some(1));
+        assert_eq!(edits("quiet", "quit", 3), Some(1));
+        assert_eq!(edits("", "new", 3), Some(3));
+        assert_eq!(edits("abc", "xyz", 2), None);
+    }
+
+    /// A word of any length is answered at once, without a table for its
+    /// length per command.
+    #[test]
+    fn a_huge_word_after_a_slash_is_answered_at_once() {
+        let word = "a".repeat(512 * 1024);
+        let started = std::time::Instant::now();
+        let said = unknown(&format!("/{word}"), COMMANDS.iter()).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(said.ends_with(" isn't a command. Start with a space to send it as a message."));
+        assert_eq!(edits(&word, "new", 3), None);
     }
 
     #[test]
