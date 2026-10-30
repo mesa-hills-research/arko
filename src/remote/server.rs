@@ -1258,8 +1258,22 @@ impl Stream {
                         .push_back(Event::default().event("ping").data(count.to_string()));
                 }
                 // (The tick also wakes a quiet stream to see whether its
-                // session ended.)
-                _ = self.tick.tick() => self.send_status(),
+                // session ended.) What came before it goes first, so a
+                // command's answer comes before the status that shows its
+                // setting, and with it.
+                _ = self.tick.tick() => {
+                    loop {
+                        match self.updates.try_recv() {
+                            Ok(update) => self.take(update),
+                            Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                                self.reset();
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    self.send_status();
+                }
             }
         }
     }
