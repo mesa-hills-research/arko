@@ -1520,6 +1520,7 @@ impl Tool for UnstartedTool {
             output_based_example: None,
             parameters: vec![],
             parallel_safe: true,
+            read_only: true,
             tool_type_details: arko_agents::ToolTypeDetails::DeveloperDefined,
             raw_json_schema_override: Some(
                 serde_json::json!({"type":"object", "properties":{}, "additionalProperties":true}),

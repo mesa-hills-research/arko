@@ -692,6 +692,7 @@ fn worker_options_definition() -> ToolDefinition {
             false,
         )],
         parallel_safe: true,
+        read_only: true,
         tool_type_details: ToolTypeDetails::DeveloperDefined,
         raw_json_schema_override: None,
     }
@@ -747,6 +748,7 @@ fn save_worker_profile_definition() -> ToolDefinition {
         ],
         // Several saves of one response ask the user in one card.
         parallel_safe: true,
+        read_only: false,
         tool_type_details: ToolTypeDetails::DeveloperDefined,
         raw_json_schema_override: None,
     }

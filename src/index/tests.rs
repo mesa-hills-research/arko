@@ -1306,6 +1306,7 @@ fn tool_definitions() {
         let definition = tool.definition();
         let read_only = matches!(definition.name.as_str(), "index_search" | "index_status");
         assert_eq!(definition.parallel_safe, read_only, "{}", definition.name);
+        assert_eq!(definition.read_only, read_only, "{}", definition.name);
         assert_eq!(
             matches!(tool.recovery_mode(), ToolRecovery::Rerun),
             read_only,

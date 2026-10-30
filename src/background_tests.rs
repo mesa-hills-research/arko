@@ -477,6 +477,7 @@ impl arko_agents::Tool for SlowLookup {
             output_based_example: None,
             parameters: vec![],
             parallel_safe: false,
+            read_only: false,
             tool_type_details: arko_agents::ToolTypeDetails::DeveloperDefined,
             raw_json_schema_override: None,
         }
@@ -514,6 +515,7 @@ impl arko_agents::Tool for Lookup {
             output_based_example: None,
             parameters: vec![],
             parallel_safe: true,
+            read_only: false,
             tool_type_details: arko_agents::ToolTypeDetails::DeveloperDefined,
             raw_json_schema_override: None,
         }

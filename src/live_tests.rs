@@ -945,6 +945,7 @@ impl Tool for Big {
             output_based_example: None,
             parameters: Vec::new(),
             parallel_safe: true,
+            read_only: false,
             tool_type_details: arko_agents::ToolTypeDetails::DeveloperDefined,
             raw_json_schema_override: None,
         }

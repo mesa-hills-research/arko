@@ -224,14 +224,16 @@ fn definition(
     name: &str,
     description: &str,
     parameters: Vec<ToolParameterDefinition>,
-    parallel_safe: bool,
+    read_only: bool,
 ) -> ToolDefinition {
     ToolDefinition {
         name: name.into(),
         description: description.into(),
         output_based_example: None,
         parameters,
-        parallel_safe,
+        // The tools that only read are the ones whose calls can overlap.
+        parallel_safe: read_only,
+        read_only,
         tool_type_details: ToolTypeDetails::DeveloperDefined,
         raw_json_schema_override: None,
     }

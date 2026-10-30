@@ -441,6 +441,8 @@ fn the_tools_are_defined_for_the_main_agent() {
     assert_eq!(options.name, "worker_options");
     assert_eq!(options.parameters.len(), 1);
     assert!(!options.parameters[0].required && options.parallel_safe);
+    // It only lists, so Claude Code may run its calls beside other reads.
+    assert!(options.read_only);
     let save = fixture.save.definition();
     assert_eq!(save.name, "save_worker_profile");
     let names: Vec<(&str, bool)> = save
@@ -463,6 +465,7 @@ fn the_tools_are_defined_for_the_main_agent() {
     );
     // Several saves of one response run together, to ask in one card.
     assert!(save.parallel_safe);
+    assert!(!save.read_only);
     assert!(!fixture.save.uses_host_timeout());
     // The tools are the main agent's, among the lead's.
     for name in ["worker_options", "save_worker_profile"] {

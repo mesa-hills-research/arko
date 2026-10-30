@@ -503,6 +503,7 @@ impl Tool for ShellTool {
             ],
             output_based_example: None,
             parallel_safe: false,
+            read_only: false,
             tool_type_details: ToolTypeDetails::DeveloperDefined,
             raw_json_schema_override: None,
         }
