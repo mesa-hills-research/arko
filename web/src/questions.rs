@@ -770,6 +770,9 @@ mod tests {
             ),
             question(serde_json::json!({ "id": "q4", "question": "Push?", "state": "open" })),
             question(serde_json::json!({ "id": "q5", "question": "Branch?", "state": "open" })),
+            question(
+                serde_json::json!({ "id": "q6", "question": "Tabs?", "choices": ["Tabs", "Spaces"], "state": "open" }),
+            ),
         ];
         let mut drafts = HashMap::new();
         assert!(answers_body(&questions, &drafts).is_none());
@@ -781,14 +784,25 @@ mod tests {
                 ..Draft::default()
             },
         );
+        // The words in Other go with "You decide", and with a question's
+        // one choice.
         drafts.insert(
             "q4".to_string(),
             Draft {
                 you_decide: true,
+                other: "ask Bob first".into(),
                 ..Draft::default()
             },
         );
         drafts.insert("q5".to_string(), Draft::default());
+        drafts.insert(
+            "q6".to_string(),
+            Draft {
+                choices: vec!["Spaces".into()],
+                other: "4 wide".into(),
+                ..Draft::default()
+            },
+        );
         let (body, ids) = answers_body(&questions, &drafts).unwrap();
         assert_eq!(
             body,
@@ -796,11 +810,12 @@ mod tests {
                 // Every question shown is named, an unanswered one by its id.
                 "answers": [
                     { "id": "q3", "choices": ["A", "C"], "text": "2 wide" },
-                    { "id": "q4", "you_decide": true },
+                    { "id": "q4", "text": "ask Bob first", "you_decide": true },
                     { "id": "q5" },
+                    { "id": "q6", "choices": ["Spaces"], "text": "4 wide" },
                 ],
             })
         );
-        assert_eq!(ids, ["q3", "q4"]);
+        assert_eq!(ids, ["q3", "q4", "q6"]);
     }
 }

@@ -87,22 +87,47 @@ fn capture(app: &mut App, width: u16, height: u16) -> (String, Position) {
 }
 
 #[test]
-fn a_question_that_takes_one_answer_has_one() {
+fn a_question_that_takes_one_answer_has_one_pick_and_keeps_the_words() {
     let question = question("q1", &["Spaces", "Tabs"]);
     let mut draft = Draft::default();
     pick(&mut draft, &question, Opt::YouDecide, false);
     assert!(draft.you_decide);
     pick(&mut draft, &question, Opt::Choice(1), false);
     assert_eq!((draft.chosen.clone(), draft.you_decide), (vec![1], false));
-    draft.other = "four spaces".into();
-    assert!(!other_on(&draft, &question));
-    assert_eq!(answer_text(&draft, &question).as_deref(), Some("Tabs"));
-    typed(&mut draft, &question);
-    assert!(draft.chosen.is_empty() && other_on(&draft, &question));
+    draft.other = " four wide ".into();
+    assert!(other_on(&draft));
     assert_eq!(
         answer_text(&draft, &question).as_deref(),
-        Some("four spaces")
+        Some("Tabs, plus “four wide”")
     );
+    // Another pick keeps the words.
+    pick(&mut draft, &question, Opt::Choice(0), false);
+    assert_eq!(
+        draft.answer(&question),
+        Answer {
+            choices: vec!["Spaces".into()],
+            text: Some("four wide".into()),
+            you_decide: false,
+        }
+    );
+    pick(&mut draft, &question, Opt::YouDecide, false);
+    assert_eq!(
+        answer_text(&draft, &question).as_deref(),
+        Some("You decide (Spaces), plus “four wide”")
+    );
+    assert_eq!(
+        draft.answer(&question),
+        Answer {
+            choices: Vec::new(),
+            text: Some("four wide".into()),
+            you_decide: true,
+        }
+    );
+    // The words alone, once nothing is picked.
+    pick(&mut draft, &question, Opt::YouDecide, true);
+    assert_eq!(answer_text(&draft, &question).as_deref(), Some("four wide"));
+    draft.other.clear();
+    assert_eq!(answer_text(&draft, &question), None);
     pick(&mut draft, &question, Opt::Choice(0), false);
     pick(&mut draft, &question, Opt::Choice(0), false);
     assert_eq!(draft.chosen, vec![0]);
@@ -201,6 +226,71 @@ fn picks_advance_and_choose_any_waits_then_the_summary_can_edit_and_send() {
     press(&mut app, KeyCode::Enter);
     assert!(app.take_effects().iter().any(|effect| matches!(effect,
         Effect::Input(Input::AnswerQuestions(answers)) if answers.answers.iter().any(|a| a.answer.text.as_deref() == Some("Keep it local")))));
+}
+
+#[test]
+fn the_words_typed_go_with_the_choices_picked_or_you_decide() {
+    let mut app = sample();
+    let typing = |app: &mut App, text: &str| {
+        for c in text.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    };
+    // One choice, then words beside it: the choice stays picked.
+    press(&mut app, KeyCode::Char('2'));
+    app.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    typing(&mut app, "keep it narrow");
+    assert_eq!(app.panel.drafts["q1"].chosen, [1]);
+    press(&mut app, KeyCode::Enter);
+    // Several choices, with words.
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Char('3'));
+    typing(&mut app, "on CI");
+    press(&mut app, KeyCode::Enter);
+    // "You decide", with words: typing doesn't take it back.
+    press(&mut app, KeyCode::Char('4'));
+    app.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    typing(&mut app, "ask Bob first");
+    assert!(app.panel.drafts["q3"].you_decide);
+    press(&mut app, KeyCode::Enter);
+    // Words alone.
+    typing(&mut app, "nothing");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.panel.review, Some(4));
+    let (summary, _) = capture(&mut app, 140, 40);
+    for answer in [
+        "Tabs, plus “keep it narrow”",
+        "Unit tests, Clippy, plus “on CI”",
+        "You decide (Spaces), plus “ask Bob first”",
+        "nothing",
+    ] {
+        assert!(summary.contains(answer), "{answer}\n{summary}");
+    }
+    press(&mut app, KeyCode::Enter);
+    let answer = |choices: &[&str], text: &str, you_decide: bool| Answer {
+        choices: choices.iter().map(|choice| choice.to_string()).collect(),
+        text: Some(text.to_string()),
+        you_decide,
+    };
+    let sent: Vec<Answers> = app
+        .take_effects()
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::Input(Input::AnswerQuestions(answers)) => Some(answers),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [Answers {
+            answers: vec![
+                QuestionAnswer::new("q1", answer(&["Tabs"], "keep it narrow", false)),
+                QuestionAnswer::new("q2", answer(&["Unit tests", "Clippy"], "on CI", false)),
+                QuestionAnswer::new("q3", answer(&[], "ask Bob first", true)),
+                QuestionAnswer::new("q4", answer(&[], "nothing", false)),
+            ],
+        }]
+    );
 }
 
 #[test]

@@ -839,12 +839,17 @@ fn main_instructions(settings: &AgentSettings) -> String {
     } else {
         "Every response of yours must call a tool: a reply in plain text, without one, is an error."
     };
+    let kept_notes = format!(
+        "Kept notes (`keep_note`) come back after a handover or a compaction. Keep a running status in one note and update it with `replaces` rather than adding a note each time, and forget notes that no longer matter with `forget_note`. The notes hold {} KB in all.",
+        crate::kept_notes::MAX_BYTES / 1024
+    );
     format!(
         "# How this conversation works\n\
          {turns}\n\n\
          When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
          The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work.{waiting} Use `message_user` too for anything they must know before you finish. The user may not see your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. So every answer, question or progress note meant for them goes in what you write (your text, `message_user` or your reply). Text written only in your thinking may never reach them, and a long wait is where that is most likely. {ending}\n\n\
-         When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`, with choices and the default you'd go with when they help. It waits for the answer. Never write or delete files, spend money, start workers, or follow a preference, design or scope on the strength of your default while a question about it is open. Pass `wait: false` only when you have work no answer could change, such as reading and investigating. The answers then reach you as a note, and you do only that work until they come. Close questions that no longer matter with `close_questions`. A message of the user's may answer your questions (it starts with \"(This message answers q3.)\") or end with those still open (\"(Still open: q5.)\"). If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n"
+         When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`, with choices and the default you'd go with when they help. It waits for the answer. Never write or delete files, spend money, start workers, or follow a preference, design or scope on the strength of your default while a question about it is open. Pass `wait: false` only when you have work no answer could change, such as reading and investigating. The answers then reach you as a note, and you do only that work until they come. Close questions that no longer matter with `close_questions`. A message of the user's may answer your questions (it starts with \"(This message answers q3.)\") or end with those still open (\"(Still open: q5.)\"). If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n\n\
+         {kept_notes}\n"
     )
 }
 
@@ -2369,6 +2374,21 @@ mod tests {
             assert!(has(main_config(&settings).unwrap(), name), "{name}");
             assert!(!has(worker_config(&settings).unwrap(), name), "{name}");
         }
+        // The lead keeps a running status in one note, which it updates.
+        let instructions = main_config(&settings).unwrap().instructions;
+        for said in [
+            "Keep a running status in one note and update it with `replaces`",
+            "forget notes that no longer matter with `forget_note`",
+            "The notes hold 16 KB in all.",
+        ] {
+            assert!(instructions.contains(said), "{said}");
+        }
+        assert!(
+            !worker_config(&settings)
+                .unwrap()
+                .instructions
+                .contains("keep_note")
+        );
     }
 
     #[test]

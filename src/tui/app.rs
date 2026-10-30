@@ -3021,8 +3021,12 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
         type_text(&mut app, "main 2");
+        // The words go with "You decide" until Space takes it back.
+        assert!(app.panel.drafts["q2"].you_decide);
+        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
         assert!(!app.panel.drafts["q2"].you_decide);
-        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.panel.review, Some(2));
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(

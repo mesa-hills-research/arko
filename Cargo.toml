@@ -52,7 +52,7 @@ testing = []
 # The framework, from crates.io. CONTRIBUTING.md shows how to build against
 # a local checkout of it.
 arko_ai = "0.2.4"
-arko_agents = "0.5.0"
+arko_agents = "0.5.1"
 arko_workflows = "0.6.0"
 arko_index = "0.3.0"
 
