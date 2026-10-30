@@ -720,7 +720,7 @@ impl Engine {
         }
         prompter.session_found(&session.dir);
 
-        let managers = Managers::open(&session, &shell).map_err(|error| {
+        let mut managers = Managers::open(&session, &shell).map_err(|error| {
             // An Arko from before session locks holds only its terminal's.
             if error.contains("already in use") {
                 OpenError::Locked { holder: None }
@@ -853,6 +853,11 @@ impl Engine {
         if bare {
             withheld = std::mem::take(&mut tools);
         } else if one_shot {
+            // As a session with workers defines them, which adds a sentence
+            // on monitors that last while workers run.
+            if settings.max_workers > 0 {
+                managers.define_monitors_with_workers();
+            }
             let monitors;
             (monitors, tools) = tools.into_iter().partition(|tool| {
                 arko_agents::terminal::MonitorTool::NAMES.contains(&tool.name().as_str())
@@ -1056,6 +1061,8 @@ impl Engine {
             user_active_at: std::time::SystemTime::now(),
             waiting: Vec::new(),
             labelled: None,
+            main_reconfigured: false,
+            earlier: Arc::default(),
         };
         // A chat has no project.
         if !chat {
@@ -5305,7 +5312,7 @@ note("stop")
             );
         }
         assert!(
-            bodies[1].contains("This session's saved conversations and workers started without monitors (monitor_start), so they don't get them, even after a handover. New conversations (/new) and new workers do."),
+            bodies[1].contains("This session's saved conversations and workers started without monitors (monitor_start), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."),
             "{}",
             bodies[1]
         );
@@ -5371,6 +5378,8 @@ note("stop")
             body["tools"].to_string()
         };
         assert!(tools(&bodies[0]).contains("\"monitor_start\""));
+        // A session with workers offers monitors that last while they run.
+        assert!(tools(&bodies[0]).contains("while_workers_run"));
         assert_eq!(tools(&bodies[1]), tools(&bodies[0]));
     }
 

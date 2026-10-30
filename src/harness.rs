@@ -41,6 +41,25 @@ pub(crate) struct Managers {
     pub(crate) jobs: Arc<TerminalManager>,
     /// When the shell's commands move to the background, and those running.
     pub(crate) background: Arc<shell::Background>,
+    /// Held while the monitor tools are defined as in a session with
+    /// workers, though the workflow runs no monitors (with -p).
+    no_workers: Option<Arc<NoWorkers>>,
+}
+
+/// Workers that never run, which a monitor can't outlast: with it the
+/// manager defines its monitor tools as a workflow with workers does, so
+/// that the stand-ins of a session continued with -p keep the definitions
+/// its conversations were offered (and their prompt cache).
+struct NoWorkers(tokio::sync::watch::Sender<u64>);
+
+impl arko_agents::terminal::WorkerLiveness for NoWorkers {
+    fn has_running_workers(&self, _owner: uuid::Uuid) -> bool {
+        false
+    }
+
+    fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.subscribe()
+    }
 }
 
 impl Managers {
@@ -57,7 +76,18 @@ impl Managers {
         Ok(Self {
             background: shell::Background::new(0, &jobs),
             jobs,
+            no_workers: None,
         })
+    }
+
+    /// The monitor tools are defined as in a session with workers from now
+    /// on, for a session whose workflow runs no monitors (-p) but whose
+    /// conversations were offered them with workers.
+    pub(crate) fn define_monitors_with_workers(&mut self) {
+        let no_workers = Arc::new(NoWorkers(tokio::sync::watch::channel(0).0));
+        let weak: std::sync::Weak<NoWorkers> = Arc::downgrade(&no_workers);
+        self.jobs.add_worker_liveness(weak);
+        self.no_workers = Some(no_workers);
     }
 
     pub(crate) fn list(&self) -> Vec<Arc<TerminalManager>> {
@@ -450,7 +480,7 @@ pub(crate) fn unoffered_with(
         return None;
     }
     Some(format!(
-        "This session's saved conversations and workers started without {}, so they don't get them, even after a handover. New conversations (/new) and new workers do.",
+        "This session's saved conversations and workers started without {}, so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start.",
         and_list(&parts)
     ))
 }
@@ -674,6 +704,11 @@ pub(crate) struct Harness {
     /// The user's message starting the next turn as the agent reads it,
     /// labelled with the questions it answers and those still open.
     pub(crate) labelled: Option<String>,
+    /// New conversations start on `main_config`, which isn't the one the
+    /// workflow was built with (a switch changed it since).
+    pub(crate) main_reconfigured: bool,
+    /// The conversations `earlier_conversation` reads.
+    pub(crate) earlier: Arc<crate::switch::Earlier>,
 }
 
 impl Harness {
@@ -798,6 +833,12 @@ impl Harness {
         ];
         // The main agent saves and removes skills.
         own.extend(skill_install::tools(self.skill_context(&main_config)));
+        // A conversation that carries an earlier one over reads it (see
+        // `switch`): its configuration lists the tool.
+        own.push(Arc::new(crate::earlier::EarlierConversation(
+            self.earlier.clone(),
+        )));
+        registered.insert(crate::earlier::TOOL_NAME.to_string());
         for tool in own {
             builder = if offers(&tool) {
                 builder.agent_tool(MAIN, tool)
@@ -955,6 +996,9 @@ impl Harness {
             }
         }
         let workflow = Arc::new(builder.build().map_err(|error| error.to_string())?);
+        // New conversations start on the configuration it was built with.
+        self.main_reconfigured = false;
+        self.earlier.attach(&workflow);
         let mut configs = vec![going_on, main_config];
         if self.settings.max_workers > 0 {
             configs.push(self.worker_config.clone());
@@ -966,8 +1010,8 @@ impl Harness {
                 .iter()
                 .chain(saved.iter().flat_map(|saved| saved.configs.values())),
         );
-        self.handover
-            .watch(&workflow, &configs[0], self.settings.openai_auth);
+        // (Its sizes go by the conversation the session goes on in, below.)
+        self.handover.watch(&workflow);
         self.kept.follow(&workflow);
         let (control, controls) = mpsc::unbounded_channel();
         let task = tokio::spawn(ui::print_events(
@@ -995,28 +1039,19 @@ impl Harness {
         }
         self.conversation = conversation_of(&workflow, lead);
         {
+            // The conversation the session goes on in hands over and holds
+            // as its own configuration says (it may run another model than
+            // the session's latest), and a new one as the main agent's.
+            let current = lead.and_then(|run| workflow.agent_result(run)).map_or_else(
+                || self.main_config.clone(),
+                |result| result.info().agent_config.clone(),
+            );
+            self.handover
+                .configure_for(&current, self.settings.openai_auth);
             // What the main agent's model accepts, and (resumed) how much
             // of it the conversation takes, before its next request says.
-            let model = &configs[0].llm_config.model;
-            let chatgpt = model.provider == arko_ai::Provider::OpenAI
-                && self.settings.openai_auth == Some(providers::OpenAiAuth::ChatGpt);
+            self.take_window(&current);
             let mut stats = lock(&self.stats);
-            stats.context_window = arko_ai::input_limit::effective_max_input_tokens(model, chatgpt);
-            stats.main_model = Some(model.id.clone());
-            // How long its prompt cache lasts, as the provider says. Claude
-            // Code's shows in its cache writes.
-            let lifetime = arko_ai::prompt_cache::prompt_cache_lifetime(
-                model,
-                &configs[0].llm_config.generation_config,
-                chatgpt,
-            );
-            stats.learns_cache_lifetime = model.provider == arko_ai::Provider::ClaudeCode;
-            if !stats.learns_cache_lifetime || stats.cache_lifetime.is_none() {
-                stats.cache_lifetime = match lifetime {
-                    arko_ai::PromptCacheLifetime::Known(lifetime) => Some(lifetime),
-                    _ => None,
-                };
-            }
             let task = match &self.conversation {
                 Conversation::Answered(result) => result.task().ok(),
                 Conversation::Stopped(run) => run.result.task().ok(),
@@ -1040,9 +1075,36 @@ impl Harness {
         }
         self.workflow = Some(workflow);
         self.publish_conversations();
+        self.update_earlier();
         self.details.set_unoffered(self.unoffered.clone());
         self.publish_details();
         Ok(())
+    }
+
+    /// The status takes what the main agent's model in `config` accepts,
+    /// and how long its prompt cache lasts, as the provider says (Claude
+    /// Code's shows in its cache writes): for the conversation the session
+    /// opens in, one it goes back to, and a new one.
+    pub(crate) fn take_window(&self, config: &arko_agents::AgentConfig) {
+        let model = &config.llm_config.model;
+        let chatgpt = model.provider == arko_ai::Provider::OpenAI
+            && self.settings.openai_auth == Some(providers::OpenAiAuth::ChatGpt);
+        let mut stats = lock(&self.stats);
+        let changed = stats.main_model.as_deref() != Some(model.id.as_str());
+        stats.context_window = arko_ai::input_limit::effective_max_input_tokens(model, chatgpt);
+        stats.main_model = Some(model.id.clone());
+        let lifetime = arko_ai::prompt_cache::prompt_cache_lifetime(
+            model,
+            &config.llm_config.generation_config,
+            chatgpt,
+        );
+        stats.learns_cache_lifetime = model.provider == arko_ai::Provider::ClaudeCode;
+        if !stats.learns_cache_lifetime || stats.cache_lifetime.is_none() || changed {
+            stats.cache_lifetime = match lifetime {
+                arko_ai::PromptCacheLifetime::Known(lifetime) => Some(lifetime),
+                _ => None,
+            };
+        }
     }
 
     /// How many skills of the user's own the agents have, in the skill
@@ -1493,6 +1555,14 @@ impl Harness {
                     self.openrouter_live(command, argument, source).await;
                     continue;
                 }
+                // A new conversation that carries this one over.
+                if let Some(switch) = self.switch_of(command) {
+                    self.feed.user(command, source, Delivery::Command);
+                    if self.switch(switch, source, input).await {
+                        break;
+                    }
+                    continue;
+                }
                 if self.live_command(command, source) {
                     continue;
                 }
@@ -1508,7 +1578,10 @@ impl Harness {
                         false
                     }
                     other => {
-                        harness.command(other);
+                        match crate::switch::new_argument(other) {
+                            Some(Err(error)) => harness.output.line(&harness.output.error(&error)),
+                            _ => harness.command(other),
+                        }
                         false
                     }
                 });
@@ -3340,7 +3413,7 @@ impl Harness {
                     .iter()
                     .map(|plan| (plan.plan.clone(), plan.text.clone()))
                     .collect();
-                for line in providers::cost_lines(&report.main, &report.workers, &plans) {
+                for line in providers::cost_lines(&report.main_parts, &report.workers, &plans) {
                     match line.detail {
                         true => out.line(&out.dim(&format!("  {}", line.text))),
                         false => out.line(&line.text),
@@ -3479,7 +3552,9 @@ impl Harness {
                     facts.project_workers,
                 )));
             }
-            "/new" => out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first.")),
+            other if crate::switch::new_argument(other).is_some() => {
+                out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first."))
+            }
             other if conversations::resume_argument(other).is_some() => {
                 out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first."))
             }
@@ -3701,6 +3776,12 @@ impl Harness {
         if let Some(index) = cut {
             options = options.cut_back_to(index);
         }
+        // The configuration a new conversation starts on, when it isn't the
+        // one the workflow was built with.
+        let new_config = match &conversation {
+            Conversation::New => self.new_conversation_config(),
+            _ => None,
+        };
         // The images the user's message sends.
         let images = std::mem::take(&mut self.pending_images);
         if !images.is_empty() {
@@ -3711,7 +3792,10 @@ impl Harness {
             tokio::spawn(async move {
                 match conversation {
                     Conversation::New => {
-                        let options = RunOptions::new().images(images);
+                        let mut options = RunOptions::new().images(images);
+                        if let Some(config) = new_config {
+                            options = options.config(config);
+                        }
                         workflow.run_agent_with(MAIN, &message, options).await
                     }
                     Conversation::Answered(previous) => {
@@ -4401,7 +4485,7 @@ impl Harness {
 
     /// The web page's Move to background or Stop: done, and what didn't
     /// work said.
-    fn page_job_action(&mut self, action: Action) {
+    pub(crate) fn page_job_action(&mut self, action: Action) {
         match action {
             Action::Background { item } => {
                 if let Err(why) = self.move_call(item) {
@@ -4620,6 +4704,13 @@ impl Harness {
             | Prompt::Answers => None,
         };
         let mut parts = Vec::new();
+        // A new conversation that carries an earlier one over opens with its
+        // brief.
+        if matches!(self.conversation, Conversation::New)
+            && let Some(carry) = &self.conversations.carry
+        {
+            parts.push(carry.brief.clone());
+        }
         // (A conversation cut back to its first message starts over.)
         let starts = matches!(self.conversation, Conversation::New) || self.cut_back == Some(0);
         if starts && let Some(project) = self.project.for_main(self.settings.project_instructions) {
@@ -5053,7 +5144,7 @@ pub(crate) fn handover_text(asked: handover::Asked, compacts: bool) -> &'static 
 /// argument.
 /// `/openrouter`'s words, when the line is that command, which the session
 /// runs where it can wait.
-fn openrouter_words(text: &str) -> Option<&str> {
+pub(crate) fn openrouter_words(text: &str) -> Option<&str> {
     split_live_command(text)
         .filter(|(name, _)| *name == "/openrouter")
         .map(|(_, argument)| argument)
@@ -5125,6 +5216,13 @@ pub(crate) mod tests {
     mod model {
         use super::*;
         include!("model_tests.rs");
+    }
+
+    /// The end-to-end tests of switching the main agent's model in a
+    /// started conversation, and of `/new continue`, in their own file.
+    mod switching {
+        use super::*;
+        include!("switch_tests.rs");
     }
 
     /// `/keys`'s end-to-end tests, in their own file.
@@ -5556,7 +5654,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main), (WORKER, &worker)]).unwrap(),
-            "This session's saved conversations and workers started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so they don't get them, even after a handover. New conversations (/new) and new workers do."
+            "This session's saved conversations and workers started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
     }
 
@@ -5583,7 +5681,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session's saved conversations and workers started without monitors (monitor_start), so they don't get them, even after a handover. New conversations (/new) and new workers do."
+            "This session's saved conversations and workers started without monitors (monitor_start), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
     }
 
@@ -5612,7 +5710,7 @@ pub(crate) mod tests {
         let lacks = unoffered_with(&saved(&now), &[(MAIN, &main)], false);
         assert_eq!(
             lacks.unwrap(),
-            "This session's saved conversations and workers started without workers that start workers of their own (nested), so they don't get them, even after a handover. New conversations (/new) and new workers do."
+            "This session's saved conversations and workers started without workers that start workers of their own (nested), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
         // A session made since has it.
         assert_eq!(unoffered_with(&saved(&now), &[(MAIN, &main)], true), None);
@@ -5680,7 +5778,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session's saved conversations and workers started without the worker profile tools (worker_options and save_worker_profile), so they don't get them, even after a handover. New conversations (/new) and new workers do."
+            "This session's saved conversations and workers started without the worker profile tools (worker_options and save_worker_profile), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
         // Without workers at all, that is what it says instead.
         old.tool_config
@@ -5693,7 +5791,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session's saved conversations and workers started without workers that run in parallel, so they don't get them, even after a handover. New conversations (/new) and new workers do."
+            "This session's saved conversations and workers started without workers that run in parallel, so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
     }
 
@@ -6102,7 +6200,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             fresh(&saved, &with).unwrap(),
-            "This session's saved conversations and workers started without the search index tools and skills, so they don't get them, even after a handover. New conversations (/new) and new workers do."
+            "This session's saved conversations and workers started without the search index tools and skills, so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
         // Saved before `mcp`: with a tool for each MCP tool, nothing is said
         // of it, and without, it is.
@@ -6125,7 +6223,7 @@ pub(crate) mod tests {
         });
         assert_eq!(
             fresh(&before, &plain).unwrap(),
-            "This session's saved conversations and workers started without MCP servers (mcp), so they don't get them, even after a handover. New conversations (/new) and new workers do."
+            "This session's saved conversations and workers started without MCP servers (mcp), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
     }
 
@@ -6314,6 +6412,8 @@ pub(crate) mod tests {
             user_active_at: std::time::SystemTime::now(),
             waiting: Vec::new(),
             labelled: None,
+            main_reconfigured: false,
+            earlier: Arc::default(),
         };
         harness.open(false).unwrap();
         let inputs = Inputs {
@@ -10010,8 +10110,12 @@ pub(crate) mod tests {
         let api_price = reading.api_price.unwrap();
         assert!(api_price > 0.0, "{api_price}");
         let plans = harness.stats.lock().unwrap().plans.clone();
-        let lines =
-            providers::cost_report(&harness.workflow().cost_ledger(), &harness.settings, &plans);
+        let lines = providers::cost_report(
+            &harness.workflow().cost_ledger(),
+            &harness.settings,
+            &providers::main_run_costs(harness.workflow()),
+            &plans,
+        );
         assert_eq!(
             lines
                 .iter()
@@ -10131,6 +10235,7 @@ pub(crate) mod tests {
         let lines = providers::cost_report(
             &harness.workflow().cost_ledger(),
             &harness.settings,
+            &providers::main_run_costs(harness.workflow()),
             &Default::default(),
         );
         assert_eq!(
@@ -10202,6 +10307,7 @@ pub(crate) mod tests {
         let lines = providers::cost_report(
             &harness.workflow().cost_ledger(),
             &harness.settings,
+            &providers::main_run_costs(harness.workflow()),
             &Default::default(),
         );
         let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();

@@ -357,12 +357,15 @@ pub fn stop_reading() {
 /// prompt is a line editor with history, and the returned printer prints
 /// above it; without one, lines are read from standard input as they come.
 /// `/keys add PROVIDER` is read here, with the key's input hidden, and
-/// added to `keys`: neither reaches the session as a line.
+/// added to `keys`: neither reaches the session as a line. While the
+/// session's `feed` says the old model writes its report for a switch, a
+/// message stays in the box.
 #[cfg(feature = "tui")]
 pub fn spawn_input(
     history: PathBuf,
     sender: mpsc::UnboundedSender<Input>,
     keys: Option<Arc<crate::keys::Keys>>,
+    feed: Option<crate::remote::Feed>,
 ) -> Option<Box<dyn Printer>> {
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         let (printer_sender, printer_receiver) = std::sync::mpsc::channel();
@@ -395,14 +398,31 @@ pub fn spawn_input(
                 .map(|printer| Box::new(LinePrinter(Box::new(printer))) as Box<dyn Printer>);
             let _ = printer_sender.send(printer);
             let prompt = glyphs::render(PROMPT).into_owned();
+            // A message kept in the box, to send once the report is in.
+            let mut kept: Option<String> = None;
             while !CLOSING.load(Ordering::SeqCst) {
                 let mut entry = None;
-                let input = match editor.readline(prompt.as_str()) {
+                let read = match kept.take() {
+                    Some(line) => editor.readline_with_initial(prompt.as_str(), (&line, "")),
+                    None => editor.readline(prompt.as_str()),
+                };
+                let input = match read {
                     Ok(line) => {
                         if let Some(keys) = &keys
                             && let Some(key) = crate::keys::added_at_prompt(&line)
                         {
                             crate::keys::add_at_prompt(keys, key);
+                            continue;
+                        }
+                        // While the old model writes its report for a
+                        // switch, a message stays in the box. (A command
+                        // goes.)
+                        if feed.as_ref().is_some_and(|feed| feed.activity().reporting)
+                            && !line.trim().is_empty()
+                            && crate::harness::command(joined(&line).trim()).is_none()
+                        {
+                            println!("{}", crate::switch::REPORTING_AT_PROMPT);
+                            kept = Some(line);
                             continue;
                         }
                         let input = Input::Line(joined(&line));

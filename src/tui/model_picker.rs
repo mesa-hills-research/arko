@@ -107,6 +107,9 @@ pub struct ModelPicker {
     /// The filter and the model the browse step was on, while the efforts
     /// of a model chosen there are open: Back goes there.
     via_browse: Option<(String, usize)>,
+    /// The main agent's conversation has started, so the model chosen
+    /// starts a new conversation on it.
+    pub new_conversation: bool,
 }
 
 /// What a key did.
@@ -219,6 +222,7 @@ impl ModelPicker {
             summary,
             billing,
             via_browse: None,
+            new_conversation: target == Target::Main && models.started,
         }
     }
 
@@ -251,6 +255,12 @@ impl ModelPicker {
 
     /// The box's title: whose model it is.
     pub fn title(&self) -> String {
+        if self.new_conversation {
+            return match &self.step {
+                Step::Efforts { model, .. } => format!("New conversation's effort on {model}"),
+                _ => "New conversation's model".to_string(),
+            };
+        }
         match (&self.target, &self.step) {
             (Target::Main, Step::Efforts { model, .. }) => {
                 format!("Main agent's effort on {model}")
@@ -302,6 +312,10 @@ impl ModelPicker {
             .map(|e| format!(" at {e} effort"))
             .unwrap_or_default();
         match self.target {
+            Target::Main if self.new_conversation => Outcome::Apply {
+                line: format!("/model {model}{effort_words}"),
+                said: format!("A new conversation starts on {model}{effort_said}"),
+            },
             Target::Main => Outcome::Apply {
                 line: format!("/model {model}{effort_words}"),
                 said: format!("The main agent runs {model}{effort_said}"),
@@ -878,60 +892,6 @@ fn fit(text: &str, width: usize) -> String {
     }
     let pad = width.saturating_sub(text_width(&shown));
     shown + &" ".repeat(pad)
-}
-
-/// The note `/model` opens with once the conversation has started: the
-/// main agent keeps its model, and the workers' picker is one key away.
-pub fn draw_notice(
-    frame: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    text: &str,
-    choice: usize,
-    workers: bool,
-) {
-    let width = 60.min(area.width.saturating_sub(4)).max(20);
-    let inner = width.saturating_sub(4) as usize;
-    let mut lines: Vec<Line<'static>> =
-        wrap::wrap(&[Span::styled(text.to_string(), theme.text())], inner, 0)
-            .into_iter()
-            .map(Line::from)
-            .collect();
-    lines.push(Line::default());
-    let options: &[&str] = if workers {
-        &["Choose the workers' model", "Close"]
-    } else {
-        &["Close"]
-    };
-    let mut row = Vec::new();
-    for (n, option) in options.iter().enumerate() {
-        if n > 0 {
-            row.push(Span::raw("  "));
-        }
-        let style = if n == choice {
-            theme.chosen()
-        } else {
-            theme.key()
-        };
-        row.push(Span::styled(format!(" {option} "), style));
-    }
-    lines.push(Line::from(row));
-    let height = (lines.len() as u16 + 4).min(area.height);
-    let rect = centred(area, width, height);
-    let inner_rect = frame_box(frame, rect, theme, "Main agent's model");
-    let body = Rect::new(
-        inner_rect.x + 1,
-        inner_rect.y + 1,
-        inner_rect.width.saturating_sub(2),
-        inner_rect.height.saturating_sub(2),
-    );
-    put(frame, body, &lines, 0);
-    let keys: &[(&str, &str)] = if workers {
-        &[("← →", "choose"), ("Enter", "go on"), ("Esc", "close")]
-    } else {
-        &[("Enter", "close")]
-    };
-    footer(frame, rect, theme, keys);
 }
 
 #[cfg(test)]

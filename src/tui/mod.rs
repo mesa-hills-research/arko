@@ -120,9 +120,12 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
             eprintln!(
                 "arko: the full-screen view couldn't start ({error}), so Arko uses the line prompt"
             );
-            if let Some(printer) =
-                ui::spawn_input(history, setup.input.clone(), Some(setup.keys.clone()))
-            {
+            if let Some(printer) = ui::spawn_input(
+                history,
+                setup.input.clone(),
+                Some(setup.keys.clone()),
+                Some(setup.feed.clone()),
+            ) {
                 output.attach(printer);
             }
             return None;
@@ -287,12 +290,18 @@ fn close() {
         return;
     }
     let _ = crossterm::terminal::disable_raw_mode();
-    let mut stdout = std::io::stdout();
+    write_close(&mut std::io::stdout());
+}
+
+/// What gives the terminal back, written to `out`: the keyboard protocol
+/// popped (when it was pushed), the mouse, focus and paste reports off, the
+/// main screen back, the cursor shown and the title put back.
+fn write_close(out: &mut impl Write) {
     if ENHANCED.swap(false, std::sync::atomic::Ordering::SeqCst) {
-        let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+        let _ = execute!(out, PopKeyboardEnhancementFlags);
     }
     let _ = execute!(
-        stdout,
+        out,
         DisableMouseCapture,
         DisableFocusChange,
         DisableBracketedPaste,
@@ -300,9 +309,16 @@ fn close() {
         cursor::Show
     );
     if !cfg!(windows) {
-        let _ = write!(stdout, "\x1b[23;0t");
+        let _ = write!(out, "\x1b[23;0t");
     }
-    let _ = stdout.flush();
+    let _ = out.flush();
+}
+
+/// Gives the terminal back now, as the view does when it closes, for a
+/// process about to end without closing it (a signal). It does nothing
+/// when the view doesn't have the terminal.
+pub(crate) fn give_back_terminal() {
+    close();
 }
 
 /// A paste that came as keys: where it started in the box, and when it
@@ -757,5 +773,34 @@ mod tests {
         );
         assert_eq!(app.editor.text(), "a\nb");
         assert!(app.take_effects().is_empty());
+    }
+
+    /// Giving the terminal back undoes all the view did to it: the
+    /// keyboard protocol, the mouse, focus and paste reports, the
+    /// alternate screen, the cursor and the title.
+    #[cfg(unix)]
+    #[test]
+    fn the_terminal_is_given_back_whole() {
+        ENHANCED.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut out = Vec::new();
+        write_close(&mut out);
+        let written = String::from_utf8(out).unwrap();
+        for (what, sequence) in [
+            ("keyboard protocol", "\x1b[<1u"),
+            ("button reports", "\x1b[?1000l"),
+            ("drag reports", "\x1b[?1002l"),
+            ("SGR mouse", "\x1b[?1006l"),
+            ("focus reports", "\x1b[?1004l"),
+            ("bracketed paste", "\x1b[?2004l"),
+            ("alternate screen", "\x1b[?1049l"),
+            ("cursor", "\x1b[?25h"),
+            ("title", "\x1b[23;0t"),
+        ] {
+            assert!(written.contains(sequence), "{what}: {written:?}");
+        }
+        // The protocol is popped once.
+        let mut again = Vec::new();
+        write_close(&mut again);
+        assert!(!String::from_utf8(again).unwrap().contains("\x1b[<1u"));
     }
 }

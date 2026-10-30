@@ -1858,6 +1858,7 @@ impl Tool for AddSkill {
             ],
             // Several saves of one response wait for the user together.
             parallel_safe: true,
+            read_only: false,
             tool_type_details: ToolTypeDetails::DeveloperDefined,
             raw_json_schema_override: None,
         }
@@ -2039,6 +2040,7 @@ impl Tool for RemoveSkill {
                 text_parameter("why", "Why, in a sentence the user reads.", true),
             ],
             parallel_safe: false,
+            read_only: false,
             tool_type_details: ToolTypeDetails::DeveloperDefined,
             raw_json_schema_override: None,
         }

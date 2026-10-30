@@ -11,6 +11,9 @@ models, and on your Claude plan through an installed Claude Code.
   its reply (`-p`)
 - Saved sessions you can continue or resume, with handovers to a fresh conversation as the
   context fills
+- Another model for the main agent mid-session (`/model`), in a new conversation that starts from
+  the old model's report and a brief of the old conversation, reads the rest as it needs, and keeps
+  the workers running
 - [Questions](docs/questions.md) from the agent, answered in a panel or in a message when you're ready
 - An [approval tray](docs/approvals.md) for what the agent needs your OK for, such as an MCP server,
   a skill or a worker profile, answered all at once

@@ -104,6 +104,11 @@ pub const WORKER_BILLING: [(&str, &str, &str); 3] = [
 
 /// What the worker billing setting is (the library's `workers::BILLING_ABOUT`
 /// and `MODELS_APPLIES`).
+/// Why a message to the main agent waits in the box: the old model writes
+/// its report for a switch of the main agent's model. (The session says the
+/// same when one comes anyway.)
+pub const REPORTING: &str = "The report is being written. Stopping skips it.";
+
 pub const WORKER_BILLING_ABOUT: &str = "Whether workers may run on models billed per token. A change applies to the next worker started.";
 
 /// What the daily API budget does with `budget` (none: off), as the

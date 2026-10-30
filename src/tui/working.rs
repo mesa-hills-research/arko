@@ -158,6 +158,7 @@ mod tests {
         // (A turn the agent started by itself begins after the last one's.)
         let since = chrono::Utc::now().timestamp_millis() + 5_000;
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: Some(since),
             question: None,

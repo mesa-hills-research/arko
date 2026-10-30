@@ -122,6 +122,12 @@ pub struct Activity {
     pub question: Option<Question>,
     /// When the turn started (Unix milliseconds), while one runs.
     pub since: Option<i64>,
+    /// The old model writes its report for a switch of the main agent's
+    /// model (`working` too). Messages aren't sent meanwhile, so a client
+    /// keeps them in its box and says "The report is being written.
+    /// Stopping skips it." Its stop skips the report.
+    #[serde(default)]
+    pub reporting: bool,
 }
 /// Where a worker is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1211,6 +1217,9 @@ pub struct WorkerData {
 pub struct StatusData {
     #[serde(deserialize_with = "lenient")]
     pub working: bool,
+    /// The old model writes its report for a switch (see `Activity`).
+    #[serde(deserialize_with = "lenient")]
+    pub reporting: bool,
     pub question: Option<Question>,
     pub since: Option<i64>,
     #[serde(deserialize_with = "lenient")]

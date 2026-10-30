@@ -1,14 +1,15 @@
 //! `/model`: the agents' models while Arko runs.
 //!
-//! `/model [MODEL] [EFFORT]` is the main agent's, and only before the
-//! conversation starts: once it has, the main agent keeps its model for the
-//! conversation (its saved configuration can't change). `/model worker
-//! [MODEL] [EFFORT]` is for the workers started from now on, at any time,
-//! and `/model worker main` makes them follow the main agent's model again.
-//! Before the start a change rebuilds the agents (their configurations,
-//! the workflow, the handover size); after it, new workers start on the
-//! model through the subagents' start hook (see `crew::WorkerModels`),
-//! and the workers already started keep theirs.
+//! `/model [MODEL] [EFFORT]` is the main agent's. Before the conversation
+//! starts a change rebuilds the agents (their configurations, the workflow,
+//! the handover size). Once it has started, a conversation keeps its model
+//! (its saved configuration can't change), so `/model` starts a new
+//! conversation on the model that carries the old one over (see `switch`).
+//! `/model worker [MODEL] [EFFORT]` is for the workers started from now on,
+//! at any time, and `/model worker main` makes them follow the main agent's
+//! model again. After the start, new workers start on the model through the
+//! subagents' start hook (see `crew::WorkerModels`), and the workers already
+//! started keep theirs.
 
 use arko_ai::{Model, Provider};
 use arko_workflows::notes::{Note, NoteSource};
@@ -74,7 +75,7 @@ pub fn parse(argument: &str) -> Result<Request, String> {
 pub fn usage(target: Target) -> &'static str {
     match target {
         Target::Main => {
-            "/model MODEL [EFFORT] sets the main agent's model before the conversation starts (/model sol high). /model worker MODEL [EFFORT] sets the workers'."
+            "/model MODEL [EFFORT] sets the main agent's model (/model sol high), in a new conversation that carries this one over once it has started. /model worker MODEL [EFFORT] sets the workers'."
         }
         Target::Workers => {
             "/model worker MODEL [EFFORT] sets the model of the workers started from now on (/model worker fable high). /model worker main makes them follow the main agent's model."
@@ -143,9 +144,9 @@ impl Harness {
         let started = self.conversation_started();
         match request {
             Request::Show(Target::Main) => Ok(if started {
+                let model = shown(&self.conversation_settings());
                 format!(
-                    "The main agent keeps {} for this session. /model worker sets the model for workers started from now on.",
-                    shown(&self.settings.main)
+                    "This conversation runs {model}. /model MODEL [EFFORT] starts a new conversation on another model that carries this one over, and /model worker sets the workers' model."
                 )
             } else {
                 format!(
@@ -159,12 +160,13 @@ impl Harness {
                 self.workers_line(),
                 usage(Target::Workers)
             )),
+            // (Between turns the prompt makes the switch itself.)
             Request::Set {
                 target: Target::Main,
+                model,
                 ..
-            } if started => Ok(format!(
-                "The main agent keeps {} for this session. /model worker sets the model for workers started from now on.",
-                shown(&self.settings.main)
+            } if started => Err(format!(
+                "Wait for the turn to end (or stop it) first. Then /model {model} starts a new conversation on it."
             )),
             Request::Set {
                 target,
@@ -509,9 +511,10 @@ impl Harness {
             .or_else(|| providers::spare_openai_auth(None))
     }
 
-    /// The main agent's model, before the conversation starts: the agents
-    /// are built again on it (the workers too, when they follow it).
-    fn set_main_model(&mut self, model: &Model, effort: Effort) -> Result<String, String> {
+    /// The session's settings with the main agent on `model` at `effort`,
+    /// and the workers on it too when they follow the main agent (which is
+    /// returned).
+    pub(crate) fn main_switched(&self, model: &Model, effort: Effort) -> (Settings, bool) {
         let mut settings = self.settings.clone();
         let follow = settings.workers_follow_main();
         if model.provider == Provider::OpenAI && settings.openai_auth.is_none() {
@@ -531,6 +534,13 @@ impl Harness {
             };
         }
         settings.handover_at = settings.main.handover_at.unwrap_or(settings.handover_at);
+        (settings, follow)
+    }
+
+    /// The main agent's model, before the conversation starts: the agents
+    /// are built again on it (the workers too, when they follow it).
+    fn set_main_model(&mut self, model: &Model, effort: Effort) -> Result<String, String> {
+        let (settings, follow) = self.main_switched(model, effort);
         self.rebuild_agents(settings)?;
         Ok(if follow {
             format!(
@@ -619,11 +629,11 @@ impl Harness {
         };
         Ok(match follows {
             true => format!(
-                "Workers started from now on follow the main agent's model, {}. The main agent keeps it for this session{before}.",
+                "Workers started from now on follow the main agent's model, {}{before}.",
                 shown(&self.settings.worker)
             ),
             false => format!(
-                "Workers that get no profile or model of their own now run {}. The main agent keeps {} for this session{before}.",
+                "Workers that get no profile or model of their own now run {}. The main agent keeps {}{before}.",
                 shown(&self.settings.worker),
                 shown(&self.settings.main)
             ),
@@ -794,15 +804,22 @@ impl Harness {
             self.settings.project_instructions,
             self.settings.worker_project_instructions,
         );
+        let conversation = self.conversation_settings();
         *lock(&self.gauges.models) = remote::Models {
             main: self.settings.main.model.clone(),
             main_effort: self.settings.main.effort.to_string(),
+            conversation: conversation.model.clone(),
+            conversation_effort: match providers::resolve_model(&conversation.model) {
+                Ok(model) if providers::efforts(&model).is_empty() => String::new(),
+                _ => conversation.effort.to_string(),
+            },
             workers: self.settings.worker.model.clone(),
             workers_effort: self.settings.worker.effort.to_string(),
             workers_follow: self.settings.workers_follow_main(),
             started: self.conversation_started(),
             main_fast: self.settings.main.fast,
-            banner_model: self.settings.describe(&self.settings.main),
+            // (The conversation's, which `/resume` may have gone back to.)
+            banner_model: self.settings.describe(&conversation),
             banner_workers: self.workers_summary(),
             reachable: self.keys.reachable(),
             openai_auth: self

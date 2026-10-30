@@ -632,3 +632,88 @@ async fn a_conversation_whose_task_cant_be_read_says_so() {
     let error = harness.open(true).err().unwrap();
     assert!(error.contains("task file"), "{error}");
 }
+
+/// The JSON files under `dir`, at any depth.
+fn json_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files.extend(json_files(&path));
+        } else if path.extension().is_some_and(|extension| extension == "json") {
+            files.push(path);
+        }
+    }
+    files
+}
+
+/// A conversation an older Arko saved, before the main agent kept notes,
+/// goes on without them, and takes the main agent's tools now at its next
+/// handover: its fresh conversation is offered them.
+#[tokio::test]
+async fn a_saved_conversation_takes_the_current_tools_at_its_next_handover() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if body.contains("REPORT:") {
+                    complete("m3", "Second done.")
+                } else if body.contains("Your conversation is getting long") {
+                    tool_call(
+                        "report",
+                        arko_agents::handover::HANDOVER_REPORT_TOOL_NAME,
+                        serde_json::json!({"report": "REPORT: the work so far."}),
+                    )
+                } else if body.contains("call_m1") {
+                    // Over the handover size (200k): the next turn hands over.
+                    with_input(complete("m2", "First done."), 210_000)
+                } else {
+                    tool_call(
+                        "m1",
+                        message::MESSAGE_USER,
+                        serde_json::json!({"message": "Working on it."}),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let end = harness
+        .turn(Prompt::User("First.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    harness.crew.as_ref().unwrap().shutdown().await;
+    // The session as an Arko without kept notes saved it.
+    for path in json_files(&harness.session.run_dir()) {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let older = text
+            .replace("\"keep_note\",", "")
+            .replace("\"forget_note\",", "");
+        std::fs::write(&path, older).unwrap();
+    }
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    assert!(
+        harness
+            .unoffered
+            .as_deref()
+            .is_some_and(|notice| notice.contains("kept notes (keep_note), so they get them only from their next handover (")),
+        "{:?}",
+        harness.unoffered
+    );
+    let end = harness
+        .turn(Prompt::User("Second.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Second done.");
+    let offers_notes = |body: &str| body.contains("\"name\":\"keep_note\"");
+    let asked = request_with(&bodies, "Your conversation is getting long");
+    assert!(!offers_notes(&asked), "the old conversation keeps its tools");
+    let fresh = request_with(&bodies, "REPORT: the work so far.");
+    assert!(offers_notes(&fresh), "{fresh}");
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

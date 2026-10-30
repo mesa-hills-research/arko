@@ -572,6 +572,7 @@ fn definition(
         output_based_example: None,
         parameters,
         parallel_safe: false,
+        read_only: false,
         tool_type_details: ToolTypeDetails::DeveloperDefined,
         raw_json_schema_override: None,
     }

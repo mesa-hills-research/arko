@@ -266,9 +266,15 @@ pub struct Details {
 /// What `/cost` says.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CostReport {
-    /// The main agent's part and the workers'.
+    /// The main agent's part and the workers'. The main agent's `plan` is
+    /// the plan that paid for it when all of its calls were paid alike.
     pub main: CostShare,
     pub workers: CostShare,
+    /// The main agent's part for each way its calls were paid for, a plan or
+    /// per token, in the order its conversations first used it. Several
+    /// after a switch to a model paid for in another way (from Claude Code
+    /// to the ChatGPT login, say), each by its runs' own model, else one.
+    pub main_parts: Vec<CostShare>,
     /// Each plan's usage windows, as last reported.
     pub plans: Vec<remote::PlanStatus>,
     /// What the search indexes' embeddings cost while Arko ran, in tokens
@@ -536,12 +542,21 @@ impl Details {
     pub fn cost(&self) -> CostReport {
         let workflow = lock(&self.gauges.workflow).clone();
         let stats = lock(&self.gauges.stats).clone();
-        let (main, workers) = match (&workflow, self.settings()) {
+        let (main_parts, workers) = match (&workflow, self.settings()) {
             (Some(workflow), Some(settings)) => {
-                providers::cost_shares(&workflow.cost_ledger(), &settings)
+                // (The current conversation's, which a turn under way uses.)
+                let current =
+                    providers::resolve_model(&lock(&self.gauges.models).conversation).ok();
+                providers::cost_shares(
+                    &workflow.cost_ledger(),
+                    &settings,
+                    &providers::main_run_costs(workflow),
+                    current.as_ref(),
+                )
             }
-            _ => Default::default(),
+            _ => (vec![CostShare::default()], CostShare::default()),
         };
+        let main = CostShare::sum(&main_parts);
         let plans = stats.plan_status.values().cloned().collect();
         let embeddings = self
             .indexes
@@ -551,6 +566,7 @@ impl Details {
         CostReport {
             main,
             workers,
+            main_parts,
             plans,
             embeddings,
         }

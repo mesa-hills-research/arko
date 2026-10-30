@@ -33,14 +33,6 @@ pub enum Overlay {
     Remote { link: usize, since: Instant },
     /// `/model`'s picker.
     Model(super::model_picker::ModelPicker),
-    /// `/model` once the conversation has started: the main agent keeps
-    /// its model, and (`workers`) the workers' picker is offered; `choice`
-    /// is the button on.
-    ModelNotice {
-        text: String,
-        workers: bool,
-        choice: usize,
-    },
     /// The API keys (`/keys`).
     Keys(super::keys_menu::KeysMenu),
     /// OpenRouter's settings (`/openrouter`).
@@ -219,11 +211,6 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
         },
         Overlay::Remote { link, since } => page(frame, app, screen, *link, *since),
         Overlay::Model(picker) => super::model_picker::draw(frame, &app.theme, area, picker),
-        Overlay::ModelNotice {
-            text,
-            workers,
-            choice,
-        } => super::model_picker::draw_notice(frame, &app.theme, area, text, *choice, *workers),
         Overlay::Keys(menu) => super::keys_menu::draw(frame, &app.theme, area, menu),
         Overlay::OpenRouter(menu) => super::openrouter_menu::draw(frame, &app.theme, area, menu),
         Overlay::Names(menu) => super::names_menu::draw(frame, &app.theme, area, menu),

@@ -47,6 +47,7 @@ mod conversations;
 mod credentials;
 mod crew;
 pub mod details;
+mod earlier;
 mod engine;
 pub mod extension_prefs;
 pub mod extensions;
@@ -91,6 +92,7 @@ mod skills;
 mod skills_command;
 mod start;
 mod status;
+mod switch;
 #[cfg(feature = "tui")]
 mod term;
 #[cfg(feature = "tui")]

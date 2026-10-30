@@ -1670,6 +1670,7 @@ mod tests {
         ] {
             let mut app = app();
             app.set_activity(Activity {
+                reporting: false,
                 working: true,
                 since: None,
                 question: None,
@@ -1734,6 +1735,7 @@ mod tests {
     fn the_status_line_says_what_runs_and_what_it_costs() {
         let mut app = app();
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: None,
             question: None,
@@ -1751,6 +1753,7 @@ mod tests {
         assert_eq!(rows[4], " › Add to the task");
         // Once the turn ends, the line says how long it ran.
         app.set_activity(Activity {
+            reporting: false,
             working: false,
             since: None,
             question: None,
@@ -1769,6 +1772,7 @@ mod tests {
     fn the_status_line_offers_ctrl_b_while_a_command_runs() {
         let mut app = app();
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: None,
             question: None,
@@ -1799,6 +1803,7 @@ mod tests {
     fn a_long_hint_takes_the_status_lines_place() {
         let mut app = app();
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: None,
             question: None,
@@ -1849,6 +1854,7 @@ mod tests {
         use crate::tui::app::tests::worker;
         let mut app = app();
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: None,
             question: None,
@@ -1994,6 +2000,7 @@ mod tests {
         use crate::tui::app::tests::worker;
         let mut app = app();
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: None,
             question: None,
@@ -2045,6 +2052,7 @@ mod tests {
         app.reading.agents = vec![context_of("r1", 171_000, 190_000)];
         app.watch(Some("r1".into()));
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: None,
             question: Some(Question {
@@ -2551,6 +2559,7 @@ mod tests {
             app.reading.context_tokens = Some(142_000);
             app.reading.cost = 3.2;
             app.set_activity(Activity {
+                reporting: false,
                 working: true,
                 since: None,
                 question: Some(crate::remote::Question {
@@ -2712,6 +2721,7 @@ mod tests {
             Activity::default,
         );
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: Some(now),
             question: None,
@@ -2798,6 +2808,7 @@ mod tests {
         assert!(!working(&screen(&mut app, 50, 10)));
         assert!(!app.transcript.drawn.moving);
         let mut activity = Activity {
+            reporting: false,
             working: true,
             since: Some(0),
             question: None,
@@ -3329,18 +3340,21 @@ mod tests {
                 title: "Make the login page remember the user between visits, with a cookie that lasts a month".into(),
                 last_used: ago(0),
                 current: true,
+                ..Default::default()
             },
             ConversationEntry {
                 number: 2,
                 title: "Add a README with a usage section".into(),
                 last_used: ago(125),
                 current: false,
+                ..Default::default()
             },
             ConversationEntry {
                 number: 1,
                 title: "Fix the build on Windows".into(),
                 last_used: ago(190),
                 current: false,
+                ..Default::default()
             },
         ];
         let type_line = |app: &mut App, text: &str| {
@@ -3378,6 +3392,7 @@ mod tests {
             [Effect::Input(Input::Line("/resume 2".into()))]
         );
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: None,
             question: None,

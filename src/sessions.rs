@@ -32,6 +32,9 @@ pub struct SessionEntry {
     pub workspace: Option<PathBuf>,
     /// The main agent's model, as `/session` says it.
     pub model: String,
+    /// The model new conversations start on, as `/model` takes it
+    /// (`gpt-6.1-sol`). Each conversation's own is in `conversations`.
+    pub main_model: String,
     pub created: DateTime<Utc>,
     /// When it was last worked in, or `None` before its first message.
     pub last_active: Option<SystemTime>,
@@ -55,6 +58,7 @@ pub fn list(root: &Path) -> Vec<SessionEntry> {
                 .map(|(index, record)| ConversationEntry {
                     number: index + 1,
                     title: record.title.clone(),
+                    model: record.model.clone(),
                     last_used: None,
                     current: conversations.current == Some(index),
                 })
@@ -64,6 +68,7 @@ pub fn list(root: &Path) -> Vec<SessionEntry> {
                 mode: settings.mode,
                 workspace: (settings.mode == Mode::Agent).then(|| settings.workspace.clone()),
                 model: settings.describe(&settings.main),
+                main_model: settings.main.model.clone(),
                 created: settings.created,
                 last_active: session.last_active(),
                 conversations: entries,
@@ -762,8 +767,11 @@ mod tests {
                 runs: vec![uuid::Uuid::new_v4()],
                 title: "Saved words".into(),
                 unread: Vec::new(),
+                continues: None,
+                model: String::new(),
             }],
             current: Some(0),
+            ..Default::default()
         };
         conversations.save(&session.dir).unwrap();
         let check = || {
@@ -874,13 +882,25 @@ mod tests {
                 runs: Vec::new(),
                 title: crate::conversations::title_of(line),
                 unread: Vec::new(),
+                continues: None,
+                model: "gpt-6.1-sol".into(),
             }],
             current: Some(0),
+            ..Default::default()
         };
         conversations.save(&session.dir).unwrap();
         let entry = listed();
         assert_eq!(entry.title, "Fix the flaky scroll test in…");
         assert_eq!(entry.conversations[0].title, line, "the whole line stays");
+        // The list says each conversation's model and the one new ones start
+        // on, as `/model` takes them, without reading the runs.
+        assert_eq!(entry.conversations[0].model, "gpt-6.1-sol");
+        assert_eq!(entry.main_model, "gpt-6-luna");
+        assert!(
+            entry.model.starts_with("gpt-6-luna (high effort)"),
+            "{}",
+            entry.model
+        );
         rename(
             temp.path(),
             &session.id,
@@ -917,6 +937,8 @@ mod tests {
             runs: Vec::new(),
             title: title.into(),
             unread: Vec::new(),
+            continues: None,
+            model: String::new(),
         };
         let session = Session::create(temp.path()).unwrap();
         session
@@ -928,6 +950,7 @@ mod tests {
         Conversations {
             list: vec![conversation(line)],
             current: Some(0),
+            ..Default::default()
         }
         .save(&session.dir)
         .unwrap();
@@ -945,6 +968,7 @@ mod tests {
         Conversations {
             list: vec![conversation(line), conversation("Rename the settings page")],
             current: Some(1),
+            ..Default::default()
         }
         .save(&session.dir)
         .unwrap();
@@ -985,8 +1009,11 @@ mod tests {
                 runs: Vec::new(),
                 title: title.into(),
                 unread: Vec::new(),
+                continues: None,
+                model: String::new(),
             }],
             current: Some(0),
+            ..Default::default()
         };
         let name = || list(temp.path()).remove(0).title;
         // Before the conversation is saved, the name is the session's.

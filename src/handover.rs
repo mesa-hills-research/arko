@@ -184,6 +184,22 @@ struct Watch {
     warned: bool,
 }
 
+/// The most a run of `config` hands over at, in a session that reaches
+/// OpenAI models by `openai_auth`: what its model leaves room for, else (a
+/// model whose window isn't known) its configured size, as
+/// [`Handover::at`] says it.
+pub(crate) fn run_most(
+    config: &arko_agents::AgentConfig,
+    openai_auth: Option<OpenAiAuth>,
+) -> Option<usize> {
+    agents::max_handover(&config.llm_config.model, openai_auth).or_else(|| {
+        config
+            .handover
+            .as_ref()
+            .and_then(|handover| handover.at_input_tokens)
+    })
+}
+
 impl Drop for Handover {
     fn drop(&mut self) {
         if let Some(task) = crate::lock(&self.watching).take() {
@@ -206,9 +222,7 @@ impl Handover {
         // Each run goes by at most what its model leaves room for.
         let most = |threshold: HandoverThreshold| {
             let auth = openai_auth.clone();
-            threshold.with_most(move |config| {
-                agents::max_handover(&config.llm_config.model, *crate::lock(&auth))
-            })
+            threshold.with_most(move |config| run_most(config, *crate::lock(&auth)))
         };
         Self {
             runs,
@@ -294,17 +308,17 @@ impl Handover {
     /// The main agent's configuration, as the workflow runs it (the saved
     /// one in a resumed session), hands over at `configured`, and its model
     /// leaves room up to `most` (`None` when its limit isn't known: then
-    /// up to the configured size). The size the user set stays, up to
-    /// that, and so does a configured size over it (a session saved before
-    /// sizes were held under the model's room): the runs go by `most`.
+    /// up to the configured size). The size the user set stays as set, and
+    /// so does a configured size over `most` (a session saved before sizes
+    /// were held under the model's room): each run goes by at most what its
+    /// model leaves room for, and [`at`](Self::at) says the size the
+    /// current conversation goes by. (A conversation on a smaller model
+    /// doesn't lower the size for one on a larger model.)
     fn configure(&self, configured: Option<usize>, most: Option<usize>) {
         let configured = configured.unwrap_or(usize::MAX);
         let most = most.unwrap_or(configured);
         self.configured.store(configured, Ordering::SeqCst);
         self.most.store(most, Ordering::SeqCst);
-        if self.threshold.get().is_some_and(|at| at > most) {
-            self.threshold.set(Some(most));
-        }
     }
 
     /// The input of the main agent's latest request.
@@ -365,23 +379,9 @@ impl Handover {
     }
 
     /// Watches the main agent's events in `workflow` (in place of the
-    /// workflow watched before), whose main agent has configuration `main`,
-    /// in a session that reaches OpenAI models by `openai_auth`.
-    pub fn watch(
-        self: &Arc<Self>,
-        workflow: &Workflow,
-        main: &arko_agents::AgentConfig,
-        openai_auth: Option<OpenAiAuth>,
-    ) {
-        *crate::lock(&self.openai_auth) = openai_auth;
-        self.configure(
-            main.handover
-                .as_ref()
-                .and_then(|handover| handover.at_input_tokens),
-            agents::max_handover(&main.llm_config.model, openai_auth),
-        );
-        self.compacts
-            .store(agents::compacts(main), Ordering::SeqCst);
+    /// workflow watched before). [`configure_for`](Self::configure_for)
+    /// says which conversation's configuration its sizes go by.
+    pub fn watch(self: &Arc<Self>, workflow: &Workflow) {
         let mut events = workflow.subscribe_events_lossless();
         let handover = Arc::downgrade(self);
         let task = tokio::spawn(async move {
@@ -398,6 +398,23 @@ impl Handover {
         if let Some(old) = crate::lock(&self.watching).replace(task) {
             old.abort();
         }
+    }
+
+    /// The main agent's conversation runs on `main`, in a session that
+    /// reaches OpenAI models by `openai_auth`: its handover size, the most
+    /// the user can set, and whether it compacts in Claude Code go by it
+    /// from now on (the conversation the session opens in, one it goes back
+    /// to, a new one).
+    pub fn configure_for(&self, main: &arko_agents::AgentConfig, openai_auth: Option<OpenAiAuth>) {
+        *crate::lock(&self.openai_auth) = openai_auth;
+        self.configure(
+            main.handover
+                .as_ref()
+                .and_then(|handover| handover.at_input_tokens),
+            agents::max_handover(&main.llm_config.model, openai_auth),
+        );
+        self.compacts
+            .store(agents::compacts(main), Ordering::SeqCst);
     }
 
     fn event(&self, event: &WorkflowEvent) {
@@ -714,7 +731,9 @@ mod tests {
     /// The size the user set is the threshold the main agent's runs go by,
     /// larger or smaller than the configured one, up to what the model
     /// leaves room for. Unset (as a session starts without one), the
-    /// configured one applies, and a resumed session's size stays.
+    /// configured one applies, and a resumed session's size stays. A
+    /// conversation on a model with less room goes by that room, and the
+    /// size stays as set for one with more.
     #[test]
     fn the_size_set_is_the_runs_threshold_up_to_the_models_room() {
         let runs = Arc::new(Runs::default());
@@ -733,7 +752,10 @@ mod tests {
         handover.configure(Some(250_000), Some(950_000));
         assert_eq!(handover.at(), 600_000);
         handover.configure(Some(250_000), Some(400_000));
-        assert_eq!(handover.threshold().get(), Some(400_000));
+        assert_eq!(handover.at(), 400_000);
+        assert_eq!(handover.threshold().get(), Some(600_000));
+        handover.configure(Some(250_000), Some(950_000));
+        assert_eq!(handover.at(), 600_000);
         // A model whose limit isn't known: up to the configured size.
         handover.configure(Some(250_000), None);
         assert_eq!(handover.set_at(300_000), 250_000);
@@ -742,6 +764,33 @@ mod tests {
         handover.configure(Some(240_000), Some(190_000));
         assert_eq!(handover.at(), 190_000);
         assert_eq!(handover.set_at(1_000_000), 190_000);
+    }
+
+    /// A run goes by at most what its model leaves room for, and by its
+    /// configured size on a model whose window isn't known, as the size
+    /// shown says.
+    #[test]
+    fn a_run_on_an_unknown_window_goes_by_its_configured_size() {
+        let opus = crate::agents::ModelSettings {
+            model: "claude-opus-5-5".into(),
+            effort: crate::agents::Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let mut config =
+            crate::agents::main_config(&crate::agents::AgentSettings::for_test(&opus, &opus))
+                .unwrap();
+        assert_eq!(run_most(&config, None), Some(950_000));
+        config.llm_config.model =
+            crate::providers::resolve_model("openrouter:acme/unknown").unwrap();
+        config.llm_config.model.max_input_tokens = 0;
+        config.handover = Some(arko_agents::HandoverConfig::at_input_tokens(100_000));
+        assert_eq!(run_most(&config, None), Some(100_000));
+        let runs = Arc::new(Runs::default());
+        let (handover, _) = handover_at(&runs, None);
+        handover.configure(Some(100_000), None);
+        assert_eq!(handover.set_at(920_000), 100_000, "as the size shown says");
     }
 
     /// The watch leaves the size to the runtime: it asks for no handover

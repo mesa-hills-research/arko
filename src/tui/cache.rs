@@ -207,6 +207,7 @@ pub(super) mod tests {
     fn the_timer_is_hidden_while_requests_run() {
         let (mut app, _clock) = idle(5, 108_000);
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: None,
             question: None,
@@ -218,6 +219,7 @@ pub(super) mod tests {
         assert_eq!(app.cache_label(), None);
 
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: None,
             question: Some(Question {

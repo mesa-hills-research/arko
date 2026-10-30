@@ -170,6 +170,7 @@ pub(crate) mod tests {
             title: title.into(),
             last_used: Some(noon().with_timezone(&Utc) - chrono::Duration::hours(hours)),
             current,
+            ..Default::default()
         }
     }
 

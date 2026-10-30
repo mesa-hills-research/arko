@@ -18,7 +18,13 @@ fn openai_auth(models: &Models) -> Option<providers::OpenAiAuth> {
 
 /// The models by the way they are reached, as the picker lists them.
 pub fn menu(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<providers::ModelGroup> {
-    let current = [models.main.as_str(), models.workers.as_str()];
+    // (The conversation's may be none of the others: one /resume went back
+    // to.)
+    let current = [
+        models.main.as_str(),
+        models.workers.as_str(),
+        models.conversation.as_str(),
+    ];
     providers::model_menu(needs, openai_auth(models), &current, &models.recent)
 }
 
@@ -298,6 +304,13 @@ mod tests {
         };
         assert_eq!(openrouter(menu(&open, |_| None)), ["openrouter:acme/three"]);
         assert!(names(&open, |_| None).contains(&"openrouter:acme/three".to_string()));
+        // The model of the conversation the session went back to is listed,
+        // also when it is none of the others.
+        let resumed = Models {
+            conversation: "openrouter:acme/four".into(),
+            ..open
+        };
+        assert!(openrouter(menu(&resumed, |_| None)).contains(&"openrouter:acme/four".to_string()));
     }
 
     /// A new session's models come grouped, before any session opens.

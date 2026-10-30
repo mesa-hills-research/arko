@@ -43,6 +43,12 @@ pub struct Conversations {
     /// The one the next message goes to, by its place in `list`. `None`
     /// when the next message starts a new one.
     pub current: Option<usize>,
+    /// What the next new conversation carries over from an earlier one: a
+    /// switch made it (see `switch`), and its first run isn't recorded yet.
+    /// It stays until that run is, so a first message that fails to start
+    /// one, or a session closed before, goes on with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carry: Option<crate::switch::Carry>,
 }
 
 /// A conversation.
@@ -57,6 +63,15 @@ pub struct Record {
     /// next message in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unread: Vec<String>,
+    /// The conversation it continues, by its place in `list`: a switch
+    /// started it with a brief of that one, which `earlier_conversation`
+    /// reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<usize>,
+    /// The model its latest run runs, as `/model` takes it, for lists that
+    /// don't read its runs. Empty in a record an older Arko kept.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
 }
 
 /// What the record needs of one of the main agent's runs.
@@ -68,6 +83,8 @@ pub struct Run {
     /// It failed, so it can't go on.
     pub failed: bool,
     pub started: DateTime<Utc>,
+    /// Its model, as `/model` takes it.
+    pub model: String,
 }
 
 /// The main agent's runs in `workflow`, in the order they started.
@@ -86,10 +103,18 @@ pub fn main_runs_of(results: &[AgentResult]) -> Vec<Run> {
             title: title_of(&result.info().initial_task_prompt),
             failed: result.status == AgentRunStatus::Failed,
             started: result.info().start_time,
+            model: crate::providers::model_name(&result.info().agent_config.llm_config.model),
         })
         .collect();
     runs.sort_by_key(|run| run.started);
     runs
+}
+
+/// The model of the main agent's run `run`, as `/model` takes it.
+fn run_model(workflow: &Workflow, run: Uuid) -> Option<String> {
+    workflow
+        .agent_result(run)
+        .map(|result| crate::providers::model_name(&result.info().agent_config.llm_config.model))
 }
 
 /// When the main agent's run `run` was last used: when its last turn
@@ -144,17 +169,26 @@ impl Conversations {
         let mut after_failure = false;
         for run in runs {
             match list.last_mut() {
-                Some(last) if after_failure => last.runs.push(run.id),
+                Some(last) if after_failure => {
+                    last.runs.push(run.id);
+                    last.model = run.model.clone();
+                }
                 _ => list.push(Record {
                     runs: vec![run.id],
                     title: run.title.clone(),
                     unread: Vec::new(),
+                    continues: None,
+                    model: run.model.clone(),
                 }),
             }
             after_failure = run.failed;
         }
         let current = list.len().checked_sub(1);
-        Self { list, current }
+        Self {
+            list,
+            current,
+            ..Self::default()
+        }
     }
 
     /// Takes in the runs of `runs` the record doesn't have: each goes on
@@ -163,16 +197,32 @@ impl Conversations {
     pub fn take_in(&mut self, runs: &[Run]) -> bool {
         let mut changed = false;
         for run in runs {
+            // (A record an older Arko kept learns its model from its latest
+            // run.)
+            if let Some(record) = self
+                .list
+                .iter_mut()
+                .find(|record| record.runs.last() == Some(&run.id))
+                && record.model != run.model
+            {
+                record.model = run.model.clone();
+                changed = true;
+            }
             if self.list.iter().any(|record| record.runs.contains(&run.id)) {
                 continue;
             }
             match self.current {
-                Some(current) => self.list[current].runs.push(run.id),
+                Some(current) => {
+                    self.list[current].runs.push(run.id);
+                    self.list[current].model = run.model.clone();
+                }
                 None => {
                     self.list.push(Record {
                         runs: vec![run.id],
                         title: run.title.clone(),
                         unread: Vec::new(),
+                        continues: self.carry.take().map(|carry| carry.from),
+                        model: run.model.clone(),
                     });
                     self.current = Some(self.list.len() - 1);
                 }
@@ -199,10 +249,12 @@ impl Conversations {
     }
 
     /// The conversations as `/resume` lists them, newest first. `last_used`
-    /// says when a run was last used.
+    /// says when a run was last used, and `model` the model it runs (each
+    /// conversation's latest run's, else the one the record kept).
     pub fn entries(
         &self,
         last_used: impl Fn(Uuid) -> Option<DateTime<Utc>>,
+        model: impl Fn(Uuid) -> Option<String>,
     ) -> Vec<ConversationEntry> {
         self.list
             .iter()
@@ -211,6 +263,11 @@ impl Conversations {
             .map(|(index, record)| ConversationEntry {
                 number: index + 1,
                 title: record.title.clone(),
+                model: record
+                    .runs
+                    .last()
+                    .and_then(|run| model(*run))
+                    .unwrap_or_else(|| record.model.clone()),
                 last_used: record.runs.last().and_then(|run| last_used(*run)),
                 current: self.current == Some(index),
             })
@@ -341,6 +398,11 @@ impl Harness {
         if self.conversations.take_in(&runs) {
             self.save_conversations();
         }
+        // The workers' news goes to the conversation's run from now on,
+        // also when its first turn called no tool (a plain reply).
+        if let (Some(crew), Some(run)) = (&self.crew, self.conversations.current_run()) {
+            crew.lead_run(run);
+        }
         self.publish_conversations();
     }
 
@@ -359,8 +421,11 @@ impl Harness {
         self.gauges.touch();
         self.publish_title();
         let workflow = self.workflow().clone();
-        *lock(&self.gauges.conversations) =
-            self.conversations.entries(|run| last_used(&workflow, run));
+        *lock(&self.gauges.conversations) = self.conversations.entries(
+            |run| last_used(&workflow, run),
+            |run| run_model(&workflow, run),
+        );
+        self.update_earlier();
     }
 
     /// The current conversation is left: what the user typed during its
@@ -372,13 +437,30 @@ impl Harness {
         }
     }
 
-    /// `/new`: the next message starts a new conversation.
+    /// `/new`: the next message starts a new conversation, a clean one.
     pub(crate) fn new_conversation(&mut self) {
+        self.conversations.carry = None;
+        self.start_new_conversation();
+        self.feed.conversation("New conversation");
+        let mut text = "The next message starts a new conversation.".to_string();
+        if !self.conversations.list.is_empty() {
+            text.push_str(" /resume goes back to the last one.");
+        }
+        self.output.line(&self.output.dim(&text));
+    }
+
+    /// The current conversation is left, and the next message starts a new
+    /// one on the main agent's configuration: its handover size, compaction
+    /// and window from now on. (A switch then adds what it carries over.)
+    pub(crate) fn start_new_conversation(&mut self) {
         self.leave_conversation();
         self.switched = true;
         self.conversations.current = None;
         self.conversation = Conversation::New;
         self.handover.switch(None, None);
+        self.handover
+            .configure_for(&self.main_config, self.settings.openai_auth);
+        self.take_window(&self.main_config);
         {
             // Nothing of the new conversation is cached yet.
             let mut stats = lock(&self.stats);
@@ -389,13 +471,8 @@ impl Harness {
             self.save_conversations();
         }
         self.publish_conversations();
-        self.feed.conversation("New conversation");
+        self.publish_models();
         self.show_questions_of(None);
-        let mut text = "The next message starts a new conversation.".to_string();
-        if !self.conversations.list.is_empty() {
-            text.push_str(" /resume goes back to the last one.");
-        }
-        self.output.line(&self.output.dim(&text));
     }
 
     /// `/resume` lists the conversations, and `/resume N` goes back to
@@ -411,7 +488,10 @@ impl Harness {
         }
         if argument.is_empty() {
             let workflow = self.workflow().clone();
-            let entries = self.conversations.entries(|run| last_used(&workflow, run));
+            let entries = self.conversations.entries(
+                |run| last_used(&workflow, run),
+                |run| run_model(&workflow, run),
+            );
             self.mirrored(|harness| {
                 let out = &harness.output;
                 let lines = list_lines(&entries, Local::now());
@@ -481,7 +561,22 @@ impl Harness {
                 );
                 return;
             }
+            // It goes on on its own model, which the session must reach.
+            let model = &result.info().agent_config.llm_config.model;
+            if let Some(needs) = self.needs(model) {
+                self.say(
+                    Level::Error,
+                    &format!(
+                        "Couldn't go back to conversation {}. {}",
+                        index + 1,
+                        crate::providers::needs_text(&crate::providers::model_name(model), &needs)
+                    ),
+                );
+                return;
+            }
         }
+        // A switch made before it is left with the conversation it was for.
+        self.conversations.carry = None;
         self.leave_conversation();
         self.switched = true;
         let record = &mut self.conversations.list[index];
@@ -503,12 +598,21 @@ impl Harness {
             .as_ref()
             .and_then(|result| result.task().ok()?.current_conversation_context_size());
         self.handover.switch(run, input);
+        // Its handover size, compaction and window are its configuration's.
+        let config = result.as_ref().map_or_else(
+            || self.main_config.clone(),
+            |result| result.info().agent_config.clone(),
+        );
+        self.handover
+            .configure_for(&config, self.settings.openai_auth);
+        self.take_window(&config);
         lock(&self.stats).context_tokens = input;
         // Its prompt cache, as the session's record has it.
         self.restore_cache(input.is_some());
         self.conversation = conversation_of(&workflow, run);
         self.save_conversations();
         self.publish_conversations();
+        self.publish_models();
         // What changed in the workflow (the notes skipped, the workers'
         // lead) is saved now, for a session resumed before the next turn.
         if let Err(error) = workflow.checkpoint().await {
@@ -591,6 +695,7 @@ mod tests {
             title: title.into(),
             failed,
             started: Utc.timestamp_opt(id as i64 * 60, 0).unwrap(),
+            model: "gpt-6-luna".into(),
         }
     }
 
@@ -643,13 +748,59 @@ mod tests {
         assert!(!conversations.take_in(&[run(1, "First", false), run(2, "Again", false)]));
         assert!(conversations.take_in(&[run(3, "Second", false)]));
         assert_eq!(conversations.current, Some(1));
-        let entries = conversations
-            .entries(|run| Some(Utc.timestamp_opt(run.as_u128() as i64 * 3600, 0).unwrap()));
+        let entries = conversations.entries(
+            |run| Some(Utc.timestamp_opt(run.as_u128() as i64 * 3600, 0).unwrap()),
+            |_| None,
+        );
         let shown: Vec<(usize, &str, bool)> = entries
             .iter()
             .map(|entry| (entry.number, entry.title.as_str(), entry.current))
             .collect();
         assert_eq!(shown, [(2, "Second", true), (1, "First", false)]);
+    }
+
+    /// Each conversation's model is its latest run's. The record keeps it
+    /// for lists that don't read the runs, a record an older Arko kept
+    /// learns it from its runs, and a live list takes it from the runs.
+    #[test]
+    fn a_conversations_model_is_its_latest_runs() {
+        let on = |id: u128, title: &str, model: &str| Run {
+            model: model.into(),
+            ..run(id, title, false)
+        };
+        let mut conversations = Conversations::default();
+        assert!(conversations.take_in(&[on(1, "First", "cc:claude-opus-5-5")]));
+        conversations.current = None;
+        assert!(conversations.take_in(&[on(2, "Second", "gpt-6.1-sol")]));
+        let models: Vec<&str> = conversations
+            .list
+            .iter()
+            .map(|record| record.model.as_str())
+            .collect();
+        assert_eq!(models, ["cc:claude-opus-5-5", "gpt-6.1-sol"]);
+        // Kept with the session, and absent from an older record.
+        let dir = tempfile::tempdir().unwrap();
+        conversations.save(dir.path()).unwrap();
+        assert_eq!(Conversations::load(dir.path()).unwrap(), conversations);
+        std::fs::write(
+            dir.path().join(FILE),
+            r#"{"list": [{"runs": ["00000000-0000-0000-0000-000000000001"], "title": "First"}], "current": 0}"#,
+        )
+        .unwrap();
+        let mut older = Conversations::load(dir.path()).unwrap();
+        assert_eq!(older.list[0].model, "");
+        // The list says what it knows, and the runs say the rest.
+        let entries = older.entries(|_| None, |_| None);
+        assert_eq!(entries[0].model, "");
+        let entries = older.entries(
+            |_| None,
+            |run| (run == Uuid::from_u128(1)).then(|| "gpt-6-luna".to_string()),
+        );
+        assert_eq!(entries[0].model, "gpt-6-luna");
+        // Opened again, the record learns it from its run.
+        assert!(older.take_in(&[on(1, "First", "gpt-6-luna")]));
+        assert_eq!(older.list[0].model, "gpt-6-luna");
+        assert!(!older.take_in(&[on(1, "First", "gpt-6-luna")]));
     }
 
     /// The record is kept in the session's folder, with what waits for a
@@ -722,12 +873,14 @@ mod tests {
                 title: "Make the login page remember the user between visits, with a cookie".into(),
                 last_used: Some(now.with_timezone(&Utc)),
                 current: true,
+                ..Default::default()
             },
             ConversationEntry {
                 number: 1,
                 title: "Fix the build".into(),
                 last_used: Some((now - chrono::Duration::hours(26)).with_timezone(&Utc)),
                 current: false,
+                ..Default::default()
             },
         ];
         let lines = list_lines(&entries, now);
