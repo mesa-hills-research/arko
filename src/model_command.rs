@@ -171,7 +171,7 @@ impl Harness {
                 model,
                 ..
             } if started => Err(format!(
-                "Wait for the turn to end (or press Ctrl-C) first. Then /model {model} starts a new conversation on it."
+                "Wait for the turn to end (or stop it) first. Then /model {model} starts a new conversation on it."
             )),
             Request::Set {
                 target,

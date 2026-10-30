@@ -490,9 +490,14 @@ impl Harness {
             tokio::spawn(async move { workflow.request_report(&latest, Some(&request)).await })
         };
         tokio::pin!(asking);
-        self.say(
+        // The line prompt says the key. The feed's clients stop it their own
+        // way (Ctrl-C, the page's stop, an app's button).
+        self.output.echo(&self.output.dim(&format!(
+            "Asking {old_model} for a report (Ctrl-C skips it)."
+        )));
+        self.feed.notice(
             Level::Info,
-            &format!("Asking {old_model} for a report (Ctrl-C skips it)."),
+            &format!("Asking {old_model} for a report. Stopping skips it."),
         );
         self.feed.reporting(true);
         let mut skipped = false;

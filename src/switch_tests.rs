@@ -190,9 +190,10 @@ async fn a_switch_starts_a_new_conversation_from_the_old_models_report_and_a_bri
     );
     let said = lines(&harness.feed);
     assert!(
-        said.contains("Asking gpt-6-luna for a report (Ctrl-C skips it)."),
+        said.contains("Asking gpt-6-luna for a report. Stopping skips it."),
         "{said}"
     );
+    assert!(!said.contains("Ctrl-C"), "the page and apps have no keys: {said}");
     assert!(
         said.contains(
             "New conversation on gpt-6.1-sol (high effort), from gpt-6-luna's report and a brief of conversation 1."

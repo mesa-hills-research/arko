@@ -146,7 +146,7 @@ async fn before_the_start_model_sets_the_main_agent_and_after_it_opens_a_new_con
     // wait for the turn to end.
     assert!(harness.live_command("/model luna", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "Wait for the turn to end (or press Ctrl-C) first. Then /model luna starts a new conversation on it."
+        "Wait for the turn to end (or stop it) first. Then /model luna starts a new conversation on it."
     ));
     assert_eq!(harness.settings.main.model, "gpt-6.1-sol");
     // Between turns it opens a new conversation on luna, whose first
