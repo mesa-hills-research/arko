@@ -28,13 +28,15 @@ add.
 
 ## What a request shows
 
-Each request is a row with its kind (profile, skill, server or worker), its name, where it applies
-and a short summary. A row opens to its details.
+Each request is a row with its kind (profile, skill, update, server or worker), its name, where it
+applies and a short summary. A request for every project shows "every project" in the warning
+colour. A row opens to its details.
 
 | Kind | Details |
 |---|---|
 | Profile | Its model with its effort, fast mode and prompt cache, what it is for, whether its workers can start workers, the skills and MCP servers it limits its workers to, the folder it is saved in, and its instructions |
 | Skill | Its description, where it came from, who gets it, its scripts, its files with `SKILL.md` in a box, and the agent's reason |
+| Update | As for a skill, with what the update changes, the files it adds, removes and changes and `SKILL.md`'s changed lines in a box |
 | Server | Its command, the variables it needs and which aren't set, whether workers get it, where it is kept, whether sessions share one copy, and the agent's reason |
 | Worker | The model's price, what your sessions were billed per token today and the worker's task, with the option "Allow MODEL for this session", which Approve covers when you turn it on |
 
@@ -91,7 +93,7 @@ The status's `approvals` (`Reading::approvals`) lists the requests in the order 
 its id (`a1`, `a2`, ...), its `batch` and its `approval`, tagged by `kind` (`profile`, `skill`,
 `mcp_server` or `worker_billing`). The types are in `arko::approvals`. `Approval::title`,
 `kind_word`, `name`, `scope`, `summary`, `details` and `option` give the words every front end
-shows, and `approvals_heading`, `approve_label` and `reject_label` those of the tray's heading and
+shows, and `every_project` says when a row's scope stands out, and `approvals_heading`, `approve_label` and `reject_label` those of the tray's heading and
 buttons.
 
 `POST /api/approvals` answers them, naming every request the tray shows.

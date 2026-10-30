@@ -413,7 +413,10 @@ async fn a_resumed_conversation_keeps_its_direct_tools() {
         let note = seam.details.mcp().unoffered.unwrap_or_default();
         assert!(!note.contains("MCP"), "{session}: {note}");
         if session == id {
-            assert!(note.contains("saving skills (add_skill)"), "{note}");
+            assert!(
+                note.contains("saving skills (add_skill, edit_skill)"),
+                "{note}"
+            );
         }
         let again = ask(&seam, "Again.").await;
         let tools = offered(&again);

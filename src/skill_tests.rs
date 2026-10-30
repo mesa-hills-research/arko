@@ -173,7 +173,22 @@ fn a_session_saved_before_skill_saves_is_told_it_lacks_them() {
     };
     assert_eq!(
         unoffered(&saved, &[(MAIN, &fresh)]).unwrap(),
-        "This session's saved conversations and workers started without saving skills (add_skill), so they don't get them, even after a handover. New conversations (/new) and new workers do."
+        "This session's saved conversations and workers started without saving skills (add_skill, edit_skill), so they don't get them, even after a handover. New conversations (/new) and new workers do."
+    );
+    // One saved with add_skill but before edit_skill.
+    let mut older = fresh.clone();
+    older
+        .tool_config
+        .available_tool_names
+        .retain(|name| name != skill_install::EDIT_SKILL);
+    let saved = SavedSetup {
+        name: WORKFLOW_NAME.into(),
+        optional_tools: Default::default(),
+        configs: [(MAIN.to_string(), older)].into(),
+    };
+    assert_eq!(
+        unoffered(&saved, &[(MAIN, &fresh)]).unwrap(),
+        "This session's saved conversations and workers started without updating skills (edit_skill), so they don't get them, even after a handover. New conversations (/new) and new workers do."
     );
     // Workers never save skills, and their Skills section says nothing of
     // it.

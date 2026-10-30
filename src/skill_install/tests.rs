@@ -204,6 +204,11 @@ impl Fixture {
         Self::add_in(self.context.clone(), params).await
     }
 
+    /// `edit_skill`.
+    async fn edit(&self, params: Value) -> Result<String, String> {
+        Self::save_in(self.context.clone(), Mode::Edit, params).await
+    }
+
     /// The tools in the project `workspace`, asking `approver`.
     fn context_with(&self, workspace: &Path, approver: Arc<dyn Approver>) -> Arc<Context> {
         Arc::new(Context {
@@ -229,9 +234,27 @@ impl Fixture {
         Self::add_in(self.context_with(&self.workspace, approver), params).await
     }
 
+    /// `edit_skill`, asking `approver`.
+    async fn edit_asking(
+        &self,
+        approver: Arc<dyn Approver>,
+        params: Value,
+    ) -> Result<String, String> {
+        Self::save_in(
+            self.context_with(&self.workspace, approver),
+            Mode::Edit,
+            params,
+        )
+        .await
+    }
+
     async fn add_in(context: Arc<Context>, params: Value) -> Result<String, String> {
+        Self::save_in(context, Mode::Add, params).await
+    }
+
+    async fn save_in(context: Arc<Context>, mode: Mode, params: Value) -> Result<String, String> {
         let params: HashMap<String, Value> = serde_json::from_value(params).unwrap();
-        AddSkill(context)
+        AddSkill(context, mode)
             .execute(&Self::call(), params)
             .await
             .map_err(|error| match error {
@@ -781,6 +804,18 @@ async fn a_name_an_agent_saved_in_the_other_scope_is_refused() {
         error.ends_with("). Remove it with remove_skill first, or choose another name."),
         "{error}"
     );
+    let error = fixture
+        .edit(with(params("notes", &source), "scope", json!("user")))
+        .await
+        .unwrap_err();
+    assert!(
+        error.starts_with("The skill notes is saved for this project ("),
+        "{error}"
+    );
+    assert!(
+        error.ends_with("). Give scope project to update it there."),
+        "{error}"
+    );
 }
 
 /// A skill for every project always asks, with the card and its title. A
@@ -976,8 +1011,8 @@ fn fixture_approving_with(words: &str) -> Fixture {
 }
 
 /// The card says where the skill came from, who gets it, the models it is
-/// listed for, its size and scripts, and what it replaces, with the files
-/// SKILL.md first.
+/// listed for, its size and scripts, and for an update what changes, with
+/// the files SKILL.md first.
 #[tokio::test]
 async fn the_card_shows_what_is_saved() {
     let fixture = quiet();
@@ -996,7 +1031,7 @@ async fn the_card_shows_what_is_saved() {
         )
     };
     fixture.add(user(true)).await.unwrap();
-    fixture.add(user(false)).await.unwrap();
+    fixture.edit(user(false)).await.unwrap();
     let card = &fixture.cards()[1];
     let skill = skill_md("notes", "models: [haiku, cc:haiku]\nworkers: false\n");
     assert_eq!(card.files[0].text.as_deref(), Some(skill.as_str()));
@@ -1008,13 +1043,21 @@ async fn the_card_shows_what_is_saved() {
         ["SKILL.md", "checklist.md", "scripts/release.sh"]
     );
     let today = day(&chrono::Utc::now());
-    let details: Vec<String> = Approval::Skill(card.clone())
+    let approval = Approval::Skill(card.clone());
+    assert_eq!(approval.kind_word(), "Update");
+    assert_eq!(
+        approval.title(),
+        "Update the skill notes for every project?"
+    );
+    assert_eq!(approval.summary(), "changes SKILL.md");
+    assert!(approval.every_project());
+    let details: Vec<String> = approval
         .details()
         .into_iter()
         .map(|detail| detail.text)
         .collect();
     assert_eq!(
-        details[..7],
+        details[..9],
         [
             "How this project writes notes.".to_string(),
             format!("Copied from {}.", draft.display()),
@@ -1023,11 +1066,18 @@ async fn the_card_shows_what_is_saved() {
                 "SKILL.md is {} characters (8 lines), with 2 more files. It has scripts an agent may run (scripts/release.sh).",
                 skill.chars().count()
             ),
-            format!("It replaces the skill notes an agent saved on {today}."),
+            "Changes".to_string(),
+            format!("It changes SKILL.md. An agent saved the skill on {today}."),
+            "  description: How this project writes notes.\n  models: [haiku, cc:haiku]\n+ workers: false\n  ---".to_string(),
             "Why".to_string(),
             "Later conversations need the steps.".to_string(),
         ]
     );
+    // A new skill's card is a save.
+    let new = Approval::Skill(fixture.cards()[0].clone());
+    assert_eq!(new.kind_word(), "Skill");
+    assert_eq!(new.title(), "Save the skill notes for every project?");
+    assert_eq!(new.summary(), "How this project writes notes.");
     assert!(fixture.cards()[0].workers);
     // The saved copy is what the card showed.
     assert_eq!(
@@ -1036,10 +1086,10 @@ async fn the_card_shows_what_is_saved() {
     );
 }
 
-/// A second save of a skill an agent saved replaces it whole, and the
-/// record with it.
+/// An update of a skill an agent saved replaces it whole, and the record
+/// with it.
 #[tokio::test]
-async fn an_agents_skill_is_replaced_whole() {
+async fn an_agents_skill_is_updated_whole() {
     let fixture = quiet();
     let draft = write_skill(&fixture.drafts(), "notes", "", &[("old.md", "Old.")]);
     let source = draft.display().to_string();
@@ -1047,12 +1097,18 @@ async fn an_agents_skill_is_replaced_whole() {
     std::fs::remove_file(draft.join("old.md")).unwrap();
     std::fs::write(draft.join("new.md"), "New.").unwrap();
     let result = fixture
-        .add(with(params("notes", &source), "why", json!("Newer steps.")))
+        .edit(with(params("notes", &source), "why", json!("Newer steps.")))
         .await
         .unwrap();
     assert!(
-        result.starts_with("Saved the skill notes for this project in place of the one saved before. load_skill loads the new one now."),
+        result.starts_with(
+            "Updated the skill notes for this project. load_skill loads the new version now."
+        ),
         "{result}"
+    );
+    assert_eq!(
+        fixture.notices().last().unwrap(),
+        "The main agent updated the skill notes for this project."
     );
     let saved = fixture.project().join("notes");
     assert_eq!(files_in(&saved), ["SKILL.md", "new.md"]);
@@ -1062,6 +1118,110 @@ async fn an_agents_skill_is_replaced_whole() {
         "Newer steps."
     );
     assert_eq!(agent_added::skills(&fixture.root).len(), 1);
+}
+
+/// `add_skill` refuses the name of a skill an agent saved, and `edit_skill`
+/// a name no agent saved a skill under, or the version saved already, each
+/// with the way on.
+#[tokio::test]
+async fn adding_a_saved_name_and_editing_an_unknown_one_are_refused() {
+    let fixture = quiet();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    let source = draft.display().to_string();
+    assert_eq!(
+        fixture.edit(params("notes", &source)).await.unwrap_err(),
+        "No agent saved a skill named notes for this project. Save a new one with add_skill."
+    );
+    assert!(!fixture.project().join("notes").exists());
+    fixture.add(params("notes", &source)).await.unwrap();
+    let today = day(&chrono::Utc::now());
+    assert_eq!(
+        fixture.add(params("notes", &source)).await.unwrap_err(),
+        format!(
+            "An agent saved a skill named notes for this project on {today}. Change it with edit_skill, or choose another name."
+        )
+    );
+    assert_eq!(
+        fixture.edit(params("notes", &source)).await.unwrap_err(),
+        format!(
+            "{} holds this version already, so there's nothing to update.",
+            fixture.project().join("notes").display()
+        )
+    );
+    assert!(fixture.cards().is_empty());
+}
+
+/// An update's card lists the files it adds, removes and changes, with
+/// SKILL.md's changed lines, and is saved as it showed.
+#[tokio::test]
+async fn an_updates_card_says_what_changes() {
+    let fixture = quiet();
+    fixture.review_project_skills();
+    let draft = write_skill(
+        &fixture.drafts(),
+        "notes",
+        "",
+        &[("a.md", "A."), ("b.md", "B.")],
+    );
+    let source = draft.display().to_string();
+    fixture.add(params("notes", &source)).await.unwrap();
+    std::fs::remove_file(draft.join("a.md")).unwrap();
+    std::fs::write(draft.join("b.md"), "B, changed.").unwrap();
+    std::fs::write(draft.join("c.md"), "C.").unwrap();
+    let better = skill_md("notes", "").replace("well.", "better.");
+    std::fs::write(draft.join("SKILL.md"), &better).unwrap();
+    fixture.edit(params("notes", &source)).await.unwrap();
+    let card = fixture.cards()[1].clone();
+    let update = card.update.clone().unwrap();
+    assert_eq!(
+        (update.added, update.removed, update.changed),
+        (
+            vec!["c.md".to_string()],
+            vec!["a.md".to_string()],
+            vec!["b.md".to_string()]
+        )
+    );
+    assert_eq!(
+        update.diff,
+        "  ---\n\n- Write notes well.\n+ Write notes better."
+    );
+    let approval = Approval::Skill(card);
+    assert_eq!(approval.summary(), "changes SKILL.md and 3 more files");
+    assert!(!approval.every_project());
+    let today = day(&chrono::Utc::now());
+    assert!(
+        approval.details().iter().any(|detail| detail.text
+            == format!(
+                "It changes SKILL.md and b.md, adds c.md and removes a.md. An agent saved the skill on {today}."
+            )),
+        "{:?}",
+        approval.details()
+    );
+    let saved = fixture.project().join("notes");
+    assert_eq!(files_in(&saved), ["SKILL.md", "b.md", "c.md"]);
+    assert_eq!(
+        std::fs::read_to_string(saved.join("SKILL.md")).unwrap(),
+        better
+    );
+}
+
+/// A diff shows the changed lines with two lines around them, `…` where
+/// lines are left out, and at most [`DIFF_LINES`] lines.
+#[test]
+fn a_diff_shows_the_changed_lines_with_two_around_them() {
+    let before: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+    let after = before
+        .replace("line 5\n", "line five\n")
+        .replace("line 15\n", "");
+    assert_eq!(
+        line_diff(&before, &after),
+        "  line 3\n  line 4\n- line 5\n+ line five\n  line 6\n  line 7\n…\n  line 13\n  line 14\n- line 15\n  line 16\n  line 17"
+    );
+    assert_eq!(line_diff(&before, &before), "");
+    let many: String = (1..=300).map(|n| format!("new {n}\n")).collect();
+    let diff = line_diff("", &many);
+    assert_eq!(diff.lines().count(), DIFF_LINES + 1);
+    assert!(diff.ends_with("\n… 100 more lines"), "{diff}");
 }
 
 /// `remove_skill` removes only a skill an agent saved, in either scope, and
@@ -1273,10 +1433,11 @@ async fn a_folder_made_at_the_place_while_the_user_decides_is_kept() {
     }
 }
 
-/// The skill an agent saved, which a save would replace, that changes while
-/// the user decides (an edit, or a new folder in its place) stops the save
-/// and stays as it is, with its record. Asked again, the save replaces an
-/// edited one, and refuses a new folder, which isn't the agent's.
+/// The skill an agent saved, which an update would replace, that changes
+/// while the user decides (an edit, or a new folder in its place) stops the
+/// update and stays as it is, with its record. Asked again, the update
+/// replaces an edited one, and refuses a new folder, which isn't the
+/// agent's.
 #[tokio::test]
 async fn an_agents_skill_changed_while_the_user_decides_is_kept() {
     let fixture = quiet();
@@ -1284,15 +1445,16 @@ async fn an_agents_skill_changed_while_the_user_decides_is_kept() {
     let source = draft.display().to_string();
     let call = || with(params("notes", &source), "scope", json!("user"));
     fixture.add(call()).await.unwrap();
+    std::fs::write(draft.join("new.md"), "Newer.").unwrap();
     let saved = fixture.user().join("notes");
     let first = agent_added::skill_at(&fixture.root, &saved).unwrap();
     let edit = |saved: PathBuf| move || std::fs::write(saved.join("SKILL.md"), "Edited.").unwrap();
     let error = fixture
-        .add_asking(meanwhile(edit(saved.clone())), call())
+        .edit_asking(meanwhile(edit(saved.clone())), call())
         .await
         .unwrap_err();
     assert!(
-        error.ends_with(" changed while the user decided, so Arko didn't save the skill. Call add_skill again to ask again."),
+        error.ends_with(" changed while the user decided, so Arko didn't update the skill. Call edit_skill again to ask again."),
         "{error}"
     );
     assert_eq!(
@@ -1303,11 +1465,8 @@ async fn an_agents_skill_changed_while_the_user_decides_is_kept() {
         agent_added::skill_at(&fixture.root, &saved).unwrap().added,
         first.added
     );
-    let result = fixture.add(call()).await.unwrap();
-    assert!(
-        result.contains(" in place of the one saved before."),
-        "{result}"
-    );
+    let result = fixture.edit(call()).await.unwrap();
+    assert!(result.starts_with("Updated the skill notes"), "{result}");
     assert_eq!(
         std::fs::read_to_string(saved.join("SKILL.md")).unwrap(),
         skill_md("notes", "")
@@ -1330,14 +1489,15 @@ async fn an_agents_skill_changed_while_the_user_decides_is_kept() {
                 std::fs::rename(&other, &saved).unwrap();
             }
         };
+        std::fs::write(draft.join("new.md"), "Newest.").unwrap();
         let error = fixture
-            .add_asking(meanwhile(copy(saved.clone())), call())
+            .edit_asking(meanwhile(copy(saved.clone())), call())
             .await
             .unwrap_err();
         assert!(error.contains(" changed while the user decided"), "{error}");
-        let error = fixture.add(call()).await.unwrap_err();
+        let error = fixture.edit(call()).await.unwrap_err();
         assert!(
-            error.starts_with("The user has a skill named notes in "),
+            error.starts_with("The user made the skill notes in "),
             "{error}"
         );
         assert_eq!(
@@ -1540,10 +1700,10 @@ async fn a_record_claims_only_the_folder_the_save_wrote() {
 }
 
 /// An agent's skill the user filled past what a stamp reads (its bytes, its
-/// files and folders, or how deep they go) isn't replaced, and stays as it
-/// is. A pipe in it isn't opened, so it doesn't stop the replacement.
+/// files and folders, or how deep they go) isn't updated, and stays as it
+/// is. A pipe in it isn't opened, so it doesn't stop the update.
 #[tokio::test]
-async fn a_skill_too_big_to_check_isnt_replaced() {
+async fn a_skill_too_big_to_check_isnt_updated() {
     let fixture = quiet();
     let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
     let call = || {
@@ -1564,19 +1724,19 @@ async fn a_skill_too_big_to_check_isnt_replaced() {
         .unwrap()
         .set_len(STAMP_BYTES + 1)
         .unwrap();
-    assert_eq!(fixture.add(call()).await.unwrap_err(), refused);
+    assert_eq!(fixture.edit(call()).await.unwrap_err(), refused);
     assert!(saved.join("big.bin").is_file());
     std::fs::remove_file(saved.join("big.bin")).unwrap();
     for n in 0..STAMP_ENTRIES {
         std::fs::write(saved.join(format!("f{n}.md")), "x").unwrap();
     }
-    assert_eq!(fixture.add(call()).await.unwrap_err(), refused);
+    assert_eq!(fixture.edit(call()).await.unwrap_err(), refused);
     for n in 0..STAMP_ENTRIES {
         std::fs::remove_file(saved.join(format!("f{n}.md"))).unwrap();
     }
     let deep: PathBuf = (0..=STAMP_DEPTH).map(|n| format!("d{n}")).collect();
     std::fs::create_dir_all(saved.join(&deep)).unwrap();
-    assert_eq!(fixture.add(call()).await.unwrap_err(), refused);
+    assert_eq!(fixture.edit(call()).await.unwrap_err(), refused);
     std::fs::remove_dir_all(saved.join("d0")).unwrap();
     assert_eq!(fixture.cards().len(), 1);
     #[cfg(unix)]
@@ -1585,11 +1745,8 @@ async fn a_skill_too_big_to_check_isnt_replaced() {
             .unwrap();
         // SAFETY: a C string for a path, and a mode.
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
-        let result = fixture.add(call()).await.unwrap();
-        assert!(
-            result.contains(" in place of the one saved before."),
-            "{result}"
-        );
+        let result = fixture.edit(call()).await.unwrap();
+        assert!(result.starts_with("Updated the skill notes"), "{result}");
         assert_eq!(files_in(&fixture.user()), ["notes/SKILL.md"]);
     }
 }
@@ -1686,6 +1843,14 @@ async fn a_folder_put_in_place_of_an_agents_skill_isnt_replaced() {
         error,
         format!(
             "The user has a skill named notes in {}. Choose another name.",
+            saved.display()
+        )
+    );
+    let error = fixture.edit(params("notes", &source)).await.unwrap_err();
+    assert_eq!(
+        error,
+        format!(
+            "The user made the skill notes in {}, and agents update only the skills agents saved. Tell the user what to change.",
             saved.display()
         )
     );

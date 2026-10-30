@@ -1,6 +1,9 @@
-//! The main agent's two tools for skills. `add_skill` saves a skill for the
+//! The main agent's tools for skills. `add_skill` saves a new skill for the
 //! project (in its `.arko/skills`) or for every project (in Arko's
-//! `skills`), and `remove_skill` removes one an agent saved.
+//! `skills`), `edit_skill` updates one an agent saved, and `remove_skill`
+//! removes one an agent saved. `add_skill` refuses a name an agent's skill
+//! has, and `edit_skill` a name none has, so the user's card always says
+//! whether a skill is new or what an update changes.
 //!
 //! A skill comes from a folder with a `SKILL.md`, a Markdown file, a `.zip`
 //! or `.skill` bundle, or an https URL of one of the files. A source in a
@@ -17,7 +20,9 @@
 //! in a skill runs when it is saved.
 //!
 //! The user approves a save in the session's approval tray, whose card
-//! shows the skill's text and files.
+//! shows the skill's text and files, and for an update what changes:
+//! `SKILL.md`'s changed lines and the other files added, removed and
+//! changed.
 //!
 //! Once approved, a save takes a lock in Arko's folder that every session's
 //! saves and removals take ([`LOCK_FILE`]), checks that the skill's folder
@@ -50,7 +55,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::agent_added::{self, Scope, SkillRecord};
-use crate::approvals::{Answer, Approval, SkillApproval, SkillFile, SkillSource};
+use crate::approvals::{Answer, Approval, SkillApproval, SkillFile, SkillSource, SkillUpdate};
 use crate::arko_dir::Folder;
 use crate::arko_dir::folder::{Entry, Kind, link_refused};
 use crate::builtin_skills::BuiltinSkills;
@@ -59,9 +64,10 @@ use crate::remote::Level;
 use crate::skills;
 
 pub const ADD_SKILL: &str = "add_skill";
+pub const EDIT_SKILL: &str = "edit_skill";
 pub const REMOVE_SKILL: &str = "remove_skill";
 /// The main agent's tools for skills.
-pub const TOOL_NAMES: [&str; 2] = [ADD_SKILL, REMOVE_SKILL];
+pub const TOOL_NAMES: [&str; 3] = [ADD_SKILL, EDIT_SKILL, REMOVE_SKILL];
 
 /// The most files a skill may have.
 const MAX_FILES: usize = 200;
@@ -83,7 +89,9 @@ const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 const LOCK_FILE: &str = "skills.lock";
 
 /// What `add_skill` tells the agent of itself.
-const ADD_DESCRIPTION: &str = "Saves a skill that you and later conversations load with load_skill. Use it when instructions would help later conversations or workers, such as this project's release steps or a workaround for a tool. A SKILL.md opens with front matter that gives name, description (what it is for and when to load it, in one or two sentences) and, if needed, models. models lists the models whose agents see the skill in their skill list. An exact id such as claude-haiku-5-5 pins it to that release, which suits a workaround for one version's quirk. A short name or pattern such as haiku or gpt-6* follows the family across releases, which suits advice about a kind of model. Other agents can still load it by name. load_skill finds the skill at once, and the skill list shows it from the next conversation. Project skills go in the project's .arko/skills, which git ignores until the user turns off Keep agents' project files out of git in Arko's settings.";
+const ADD_DESCRIPTION: &str = "Saves a skill that you and later conversations load with load_skill. Use it when instructions would help later conversations or workers, such as this project's release steps or a workaround for a tool. A SKILL.md opens with front matter that gives name, description (what it is for and when to load it, in one or two sentences) and, if needed, models. models lists the models whose agents see the skill in their skill list. An exact id such as claude-haiku-5-5 pins it to that release, which suits a workaround for one version's quirk. A short name or pattern such as haiku or gpt-6* follows the family across releases, which suits advice about a kind of model. Other agents can still load it by name. load_skill finds the skill at once, and the skill list shows it from the next conversation. Project skills go in the project's .arko/skills, which git ignores until the user turns off Keep agents' project files out of git in Arko's settings. To change a skill an agent saved, use edit_skill.";
+
+const EDIT_DESCRIPTION: &str = "Updates a skill that you or another agent saved with add_skill, from a new version of it, in the scope it was saved in. Write the whole new version outside the skill folders, as for add_skill, and give it as the source. The user approves the update as they would the save, and sees what changes. A name no agent saved a skill under is refused, and add_skill saves a new one. load_skill loads the new version at once.";
 
 /// Whom a save asks: the session's approval tray.
 #[async_trait]
@@ -204,12 +212,38 @@ impl std::fmt::Debug for Context {
     }
 }
 
-/// The two tools, for the main agent.
+/// The three tools, for the main agent.
 pub(crate) fn tools(context: Arc<Context>) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(AddSkill(context.clone())),
+        Arc::new(AddSkill(context.clone(), Mode::Add)),
+        Arc::new(AddSkill(context.clone(), Mode::Edit)),
         Arc::new(RemoveSkill(context)),
     ]
+}
+
+/// Whether a save adds a new skill or updates one an agent saved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Add,
+    Edit,
+}
+
+impl Mode {
+    /// The tool that saves this way.
+    fn tool(self) -> &'static str {
+        match self {
+            Mode::Add => ADD_SKILL,
+            Mode::Edit => EDIT_SKILL,
+        }
+    }
+
+    /// "save" or "update", for what the agent reads.
+    fn verb(self) -> &'static str {
+        match self {
+            Mode::Add => "save",
+            Mode::Edit => "update",
+        }
+    }
 }
 
 /// "this project" or "every project".
@@ -793,18 +827,21 @@ struct Plan {
     /// `SKILL.md` as it will be saved, with `workers` set.
     skill_md: String,
     parsed: Parsed,
-    /// The record of the agent's skill it replaces.
+    /// The record of the agent's skill it updates.
     replaces: Option<SkillRecord>,
+    /// What the update changes, for the card.
+    update: Option<SkillUpdate>,
     /// What was at `dest` when the card was made: nothing, or the folder of
-    /// the agent's skill it replaces.
+    /// the agent's skill it updates.
     found: Option<Stamp>,
     why: String,
     /// What the agent gave as the source, for the record.
     source: String,
 }
 
+/// `add_skill`, or `edit_skill` with [`Mode::Edit`].
 #[derive(Debug)]
-struct AddSkill(Arc<Context>);
+struct AddSkill(Arc<Context>, Mode);
 
 impl AddSkill {
     /// The folder skills are read from that holds `path`, if one does. A
@@ -912,10 +949,11 @@ impl AddSkill {
     }
 
     /// Why the skill `name` can't be saved in `dest` for `scope`, by the
-    /// names of the other skills, or the record of the agent's skill it
-    /// replaces. ([`found_at`] checks what is at `dest`.)
+    /// names of the other skills, or the record of the agent's skill there,
+    /// which an update replaces. ([`found_at`] checks what is at `dest`.)
     fn place(&self, name: &str, scope: Scope, dest: &Path) -> Result<Option<SkillRecord>, String> {
         let context = &self.0;
+        let edit = self.1 == Mode::Edit;
         if crate::builtin_skills::find(name).is_some() {
             return Err(format!(
                 "{name} is the name of a skill built into Arko. Choose another name."
@@ -950,16 +988,32 @@ impl AddSkill {
                     continue;
                 }
                 if path == other_dir && agent_added::skill_at(&context.root, &path).is_some() {
-                    return Err(format!(
-                        "An agent saved a skill named {name} for {} ({}). Remove it with remove_skill first, or choose another name.",
-                        reach(other),
-                        path.display()
-                    ));
+                    return Err(if edit {
+                        format!(
+                            "The skill {name} is saved for {} ({}). Give scope {} to update it there.",
+                            reach(other),
+                            path.display(),
+                            scope_word(other)
+                        )
+                    } else {
+                        format!(
+                            "An agent saved a skill named {name} for {} ({}). Remove it with remove_skill first, or choose another name.",
+                            reach(other),
+                            path.display()
+                        )
+                    });
                 }
-                return Err(format!(
-                    "The user has a skill named {name} in {}. Choose another name.",
-                    path.display()
-                ));
+                return Err(if edit {
+                    format!(
+                        "The user made the skill {name} in {}, and agents update only the skills agents saved. Tell the user what to change.",
+                        path.display()
+                    )
+                } else {
+                    format!(
+                        "The user has a skill named {name} in {}. Choose another name.",
+                        path.display()
+                    )
+                });
             }
         }
         Ok(replaces)
@@ -1042,7 +1096,27 @@ impl AddSkill {
             )));
         }
         let replaces = self.place(name, scope, &dest).map_err(refused)?;
+        match (self.1, &replaces) {
+            (Mode::Add, Some(record)) => {
+                return Err(refused(format!(
+                    "An agent saved a skill named {name} for {} on {}. Change it with edit_skill, or choose another name.",
+                    reach(scope),
+                    day(&record.added)
+                )));
+            }
+            (Mode::Edit, None) => {
+                return Err(refused(format!(
+                    "No agent saved a skill named {name} for {}. Save a new one with add_skill.",
+                    reach(scope)
+                )));
+            }
+            _ => {}
+        }
         let found = found_at(target.as_ref(), name, &dest, replaces.is_some()).map_err(refused)?;
+        let update = match &replaces {
+            Some(record) => Some(changes(&dest, &draft, &skill_md, record).map_err(refused)?),
+            None => None,
+        };
         // (A path as the user reads it.)
         let given = match &draft.origin {
             Origin::Copied(path) => with_tilde(path, context.home.as_deref()),
@@ -1057,6 +1131,7 @@ impl AddSkill {
             skill_md,
             parsed,
             replaces,
+            update,
             found,
             why: why.to_string(),
         })
@@ -1108,7 +1183,7 @@ impl AddSkill {
             workers: plan.parsed.workers,
             models: plan.parsed.models.clone(),
             scripts,
-            replaces: plan.replaces.as_ref().map(|record| day(&record.added)),
+            update: plan.update.clone(),
             why: plan.why.clone(),
             files,
         }
@@ -1130,8 +1205,10 @@ impl AddSkill {
             .ok_or_else(|| format!("Couldn't make {}.", target(context, plan.scope).display()))?;
         let changed = || {
             format!(
-                "{} changed while the user decided, so Arko didn't save the skill. Call add_skill again to ask again.",
-                plan.dest.display()
+                "{} changed while the user decided, so Arko didn't {} the skill. Call {} again to ask again.",
+                plan.dest.display(),
+                self.1.verb(),
+                self.1.tool()
             )
         };
 
@@ -1161,7 +1238,7 @@ impl AddSkill {
         }
         // A skill of the name the user added elsewhere while they decided.
         self.place(&plan.name, plan.scope, &plan.dest)
-            .map_err(|why| format!("Arko didn't save the skill, since the skill folders changed while the user decided. {why}"))?;
+            .map_err(|why| format!("Arko didn't {} the skill, since the skill folders changed while the user decided. {why}", self.1.verb()))?;
 
         let lock = lock_saves(&context.root)?;
         // The place again, by what is there and its identity, and the record.
@@ -1265,7 +1342,12 @@ impl AddSkill {
     fn saved(&self, plan: &Plan, words: Option<&str>, saved: Saved) -> String {
         let context = &self.0;
         let mut notice = format!(
-            "The main agent saved the skill {} for {}.",
+            "The main agent {} the skill {} for {}.",
+            if self.1 == Mode::Edit {
+                "updated"
+            } else {
+                "saved"
+            },
             plan.name,
             reach(plan.scope)
         );
@@ -1276,10 +1358,10 @@ impl AddSkill {
                 with_tilde(&plan.dest, home.as_deref())
             ));
         }
-        // The skill it replaced, changed as it was put aside.
+        // The skill it updated, changed as it was put aside.
         let kept = saved.kept.as_ref().map(|old| {
             format!(
-                " The skill it replaced changed as Arko replaced it, so its folder is kept in {}.",
+                " The skill changed as Arko updated it, so its old folder is kept in {}.",
                 with_tilde(old, context.home.as_deref())
             )
         });
@@ -1294,7 +1376,7 @@ impl AddSkill {
                 reach(plan.scope)
             ),
             Some(_) => format!(
-                "Saved the skill {} for {} in place of the one saved before. load_skill loads the new one now.",
+                "Updated the skill {} for {}. load_skill loads the new version now.",
                 plan.name,
                 reach(plan.scope)
             ),
@@ -1328,22 +1410,35 @@ impl AddSkill {
     /// written, so nothing is deleted.
     fn not_saved(&self, plan: &Plan, answer: &Answer) -> String {
         let reach = reach(plan.scope);
+        let (verb, tool) = (self.1.verb(), self.1.tool());
         match answer {
             Answer::Rejected { words: Some(words) } if !words.trim().is_empty() => {
-                (self.0.notice)(Level::Info, "Not saved.");
+                (self.0.notice)(
+                    Level::Info,
+                    if self.1 == Mode::Edit {
+                        "Not updated."
+                    } else {
+                        "Not saved."
+                    },
+                );
                 format!(
-                    "The user didn't save the skill {} for {reach} and wrote \"{}\". If those words ask for changes to the skill, make them and call add_skill again, which shows them the changed skill. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call add_skill again with the same skill, and end with a short reminder that it is still waiting for their decision.",
+                    "The user didn't {verb} the skill {} for {reach} and wrote \"{}\". If those words ask for changes to the skill, make them and call {tool} again, which shows them the changed skill. If they don't (a new request, or words about something else), they are a message to you, not changes. Respond to it, call {tool} again with the same skill, and end with a short reminder that it is still waiting for their decision.",
                     plan.name,
                     words.trim()
                 )
             }
             Answer::Rejected { .. } => format!(
-                "The user chose not to save the skill {} for {reach}, so don't ask again unless they want it.",
+                "The user chose not to {verb} the skill {} for {reach}, so don't ask again unless they want it.",
                 plan.name
             ),
             _ => format!(
-                "The user didn't answer, so the skill {} wasn't saved.",
-                plan.name
+                "The user didn't answer, so the skill {} wasn't {}.",
+                plan.name,
+                if self.1 == Mode::Edit {
+                    "updated"
+                } else {
+                    "saved"
+                }
             ),
         }
     }
@@ -1387,6 +1482,210 @@ fn found_at(
             dest.display()
         )),
     }
+}
+
+/// The word `scope` takes for `scope`: project or user.
+fn scope_word(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Project => "project",
+        Scope::User => "user",
+    }
+}
+
+/// What saving `draft` (with `skill_md` as its SKILL.md) in `dest` changes
+/// in the skill an agent saved there (`record`), for the card. Refuses an
+/// update that changes nothing, and a saved skill that can't be read.
+fn changes(
+    dest: &Path,
+    draft: &Draft,
+    skill_md: &str,
+    record: &SkillRecord,
+) -> Result<SkillUpdate, String> {
+    let before = saved_files(dest).map_err(|error| {
+        format!(
+            "Arko couldn't read the saved skill to show what changes ({}).",
+            reason_of(&error)
+        )
+    })?;
+    let mut after: HashMap<&str, &[u8]> = draft
+        .files
+        .iter()
+        .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
+        .collect();
+    after.insert("SKILL.md", skill_md.as_bytes());
+    let others = |paths: &mut dyn Iterator<Item = &str>| {
+        let mut paths: Vec<String> = paths
+            .filter(|path| *path != "SKILL.md")
+            .map(String::from)
+            .collect();
+        paths.sort();
+        paths
+    };
+    let old_skill_md = before
+        .get("SKILL.md")
+        .and_then(Option::as_deref)
+        .unwrap_or_default();
+    let update = SkillUpdate {
+        saved: day(&record.added),
+        diff: line_diff(&String::from_utf8_lossy(old_skill_md), skill_md),
+        added: others(
+            &mut after
+                .keys()
+                .copied()
+                .filter(|path| !before.contains_key(*path)),
+        ),
+        removed: others(
+            &mut before
+                .keys()
+                .map(String::as_str)
+                .filter(|path| !after.contains_key(path)),
+        ),
+        // (What wasn't read counts as changed.)
+        changed: others(&mut after.iter().filter_map(|(path, bytes)| {
+            before
+                .get(*path)
+                .filter(|old| old.as_deref() != Some(*bytes))
+                .map(|_| *path)
+        })),
+    };
+    if update.diff.is_empty()
+        && update.added.is_empty()
+        && update.removed.is_empty()
+        && update.changed.is_empty()
+    {
+        return Err(format!(
+            "{} holds this version already, so there's nothing to update.",
+            dest.display()
+        ));
+    }
+    Ok(update)
+}
+
+/// The files of the saved skill in `dest`, by their paths (`/` between
+/// folders), each with its bytes while they come to at most [`MAX_BYTES`]
+/// in all. Anything else in it (a link, a pipe) is listed without being
+/// opened, and a hidden name is left out. The folder was stamped, so it is
+/// small enough to walk.
+fn saved_files(dest: &Path) -> std::io::Result<HashMap<String, Option<Vec<u8>>>> {
+    fn walk(
+        folder: &Path,
+        inside: &str,
+        files: &mut HashMap<String, Option<Vec<u8>>>,
+        total: &mut u64,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(folder)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = if inside.is_empty() {
+                name
+            } else {
+                format!("{inside}/{name}")
+            };
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                walk(&entry.path(), &path, files, total)?;
+                continue;
+            }
+            let bytes = if kind.is_file() {
+                *total += entry.metadata()?.len();
+                (*total <= MAX_BYTES)
+                    .then(|| std::fs::read(entry.path()))
+                    .transpose()?
+            } else {
+                None
+            };
+            files.insert(path, bytes);
+        }
+        Ok(())
+    }
+    let mut files = HashMap::new();
+    walk(dest, "", &mut files, &mut 0)?;
+    Ok(files)
+}
+
+/// The most lines a diff shows. A longer one ends with how many more there
+/// are.
+const DIFF_LINES: usize = 200;
+
+/// The changed lines of `before` and `after`, `-` before each removed line
+/// and `+` before each added one, with up to two unchanged lines around
+/// them (two spaces before each), and `…` where unchanged lines are left
+/// out. Empty when the texts have the same lines.
+fn line_diff(before: &str, after: &str) -> String {
+    let (old, new): (Vec<&str>, Vec<&str>) = (before.lines().collect(), after.lines().collect());
+    let start = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let end = old[start..]
+        .iter()
+        .rev()
+        .zip(new[start..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (a, b) = (&old[start..old.len() - end], &new[start..new.len() - end]);
+    if a.is_empty() && b.is_empty() {
+        return String::new();
+    }
+    let mut ops: Vec<(char, &str)> = old[..start].iter().map(|line| (' ', *line)).collect();
+    let (n, m) = (a.len(), b.len());
+    if n * m <= 4_000_000 {
+        // The longest common run of lines, from each pair of places on.
+        let width = m + 1;
+        let mut common = vec![0u32; (n + 1) * width];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                common[i * width + j] = if a[i] == b[j] {
+                    common[(i + 1) * width + j + 1] + 1
+                } else {
+                    common[(i + 1) * width + j].max(common[i * width + j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < n || j < m {
+            if i < n && j < m && a[i] == b[j] {
+                ops.push((' ', a[i]));
+                (i, j) = (i + 1, j + 1);
+            } else if i < n && (j == m || common[(i + 1) * width + j] >= common[i * width + j + 1])
+            {
+                ops.push(('-', a[i]));
+                i += 1;
+            } else {
+                ops.push(('+', b[j]));
+                j += 1;
+            }
+        }
+    } else {
+        // Too large to match line by line: the middle is changed whole.
+        ops.extend(a.iter().map(|line| ('-', *line)));
+        ops.extend(b.iter().map(|line| ('+', *line)));
+    }
+    ops.extend(new[new.len() - end..].iter().map(|line| (' ', *line)));
+    let near = |at: usize| {
+        ops[at.saturating_sub(2)..(at + 3).min(ops.len())]
+            .iter()
+            .any(|(mark, _)| *mark != ' ')
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut skipped = false;
+    for (at, (mark, line)) in ops.iter().enumerate() {
+        if *mark == ' ' && !near(at) {
+            skipped = true;
+            continue;
+        }
+        if skipped && !lines.is_empty() {
+            lines.push("…".to_string());
+        }
+        skipped = false;
+        lines.push(format!("{mark} {line}").trim_end().to_string());
+    }
+    if lines.len() > DIFF_LINES {
+        let more = lines.len() - DIFF_LINES;
+        lines.truncate(DIFF_LINES);
+        lines.push(format!("… {} more lines", thousands(more)));
+    }
+    lines.join("\n")
 }
 
 /// Writes `bytes` to the new file `path` (`/` between folders) in `folder`,
@@ -1444,9 +1743,15 @@ fn is_script(path: &str) -> bool {
 #[async_trait]
 impl Tool for AddSkill {
     fn definition(&self) -> ToolDefinition {
+        let edit = self.1 == Mode::Edit;
         ToolDefinition {
-            name: ADD_SKILL.into(),
-            description: ADD_DESCRIPTION.into(),
+            name: self.1.tool().into(),
+            description: if edit {
+                EDIT_DESCRIPTION
+            } else {
+                ADD_DESCRIPTION
+            }
+            .into(),
             output_based_example: None,
             parameters: vec![
                 text_parameter(
@@ -1456,12 +1761,20 @@ impl Tool for AddSkill {
                 ),
                 text_parameter(
                     "source",
-                    "A folder with a SKILL.md or a Markdown file you wrote outside the skill folders, such as in a scratch folder, or an https URL of a .md file or a .zip or .skill bundle.",
+                    if edit {
+                        "The whole new version: a folder with a SKILL.md or a Markdown file you wrote outside the skill folders, such as in a scratch folder, or an https URL of a .md file or a .zip or .skill bundle."
+                    } else {
+                        "A folder with a SKILL.md or a Markdown file you wrote outside the skill folders, such as in a scratch folder, or an https URL of a .md file or a .zip or .skill bundle."
+                    },
                     true,
                 ),
                 text_parameter(
                     "scope",
-                    "project (the default, this project's .arko/skills) or user (every project, in Arko's folder, which the user approves).",
+                    if edit {
+                        "Where the skill is saved, project (the default, this project's .arko/skills) or user (every project, in Arko's folder, which the user approves)."
+                    } else {
+                        "project (the default, this project's .arko/skills) or user (every project, in Arko's folder, which the user approves)."
+                    },
                     false,
                 ),
                 ToolParameterDefinition {
@@ -1475,7 +1788,11 @@ impl Tool for AddSkill {
                 },
                 text_parameter(
                     "why",
-                    "Why you add it, why this scope, and why workers do or don't get it, in a sentence or two the user reads.",
+                    if edit {
+                        "Why you change it, in a sentence or two the user reads."
+                    } else {
+                        "Why you add it, why this scope, and why workers do or don't get it, in a sentence or two the user reads."
+                    },
                     true,
                 ),
             ],

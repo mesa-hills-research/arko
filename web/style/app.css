@@ -837,6 +837,8 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .tray-kind { flex: none; min-width: 3.5rem; color: var(--muted); }
 .tray-name { flex: none; font-weight: 600; }
 .tray-scope { flex: none; color: var(--muted); }
+/* Every project stands out. */
+.tray-scope.every { color: var(--warn); font-weight: 600; }
 .tray-text { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .tray-chevron { display: flex; flex: none; align-self: center; color: var(--muted); }
 .tray-details { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 8px 30px; font-size: 14px; overflow-wrap: anywhere; }

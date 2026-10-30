@@ -420,11 +420,10 @@ pub(crate) fn unoffered_with(
     }
     if skills {
         parts.push("skills".to_string());
-    } else if missing
-        .iter()
-        .any(|name| skill_install::TOOL_NAMES.contains(name))
-    {
-        parts.push("saving skills (add_skill)".to_string());
+    } else if missing.contains(&skill_install::ADD_SKILL) {
+        parts.push("saving skills (add_skill, edit_skill)".to_string());
+    } else if missing.contains(&skill_install::EDIT_SKILL) {
+        parts.push("updating skills (edit_skill)".to_string());
     }
     let named = |name: &str| {
         index::TOOL_NAMES.contains(&name)
