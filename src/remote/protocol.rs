@@ -19,8 +19,10 @@ pub enum Kind {
     /// An agent's thinking (its reasoning, or its summary), as it streams.
     /// Clients show it folded. The user reads the agent's text, not this.
     Thinking,
-    /// The main agent's message to the user while it works, or a message a
-    /// worker got (`from` says whose).
+    /// An agent's message to the user while it works, or a message a worker
+    /// got (`from` says whose). A worker's message to the user has no
+    /// `from`, and clients show it in the main transcript too, naming the
+    /// worker.
     Message,
     /// A tool call, whose `status` and `outcome` follow as an
     /// `Update::Change`.

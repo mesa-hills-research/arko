@@ -770,6 +770,20 @@ impl EventPrinter {
                     if tool_name == SHELL_TOOL_NAME {
                         self.commands.insert(tool_call_id, tool_name);
                     }
+                } else if tool_name == message::MESSAGE_USER {
+                    // A worker's answer to the user, named as its other lines are.
+                    let worker = self.worker(event.agent_run_id);
+                    let message = parameters
+                        .get(message::MESSAGE_PARAM)
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .trim();
+                    self.output.echo(&format!(
+                        "{} {}\n  {}",
+                        self.output.accent("✉"),
+                        self.output.bold(&format!("{worker} to you")),
+                        message.replace('\n', "\n  ")
+                    ));
                 } else if tool_name != "complete_task" {
                     let worker = self.worker(event.agent_run_id);
                     let call = brief_waiting_for(&tool_name, &parameters, &self.running_runs);
@@ -2320,6 +2334,44 @@ mod tests {
         let shown = printed.0.lock().unwrap().clone();
         assert_eq!(shown[0], "Half a line,");
         assert!(shown[1].contains("the response broke off"), "{shown:?}");
+    }
+
+    /// A worker's message to the user prints whole, as the main agent's
+    /// does, under the worker's name. Its other calls print a line each.
+    #[tokio::test]
+    async fn a_workers_message_to_the_user_prints_under_its_name() {
+        let printed = Printed::default();
+        let output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
+        let mut printer = EventPrinter::new(output, Arc::default(), false, None);
+        let run = Uuid::new_v4();
+        printer.workers.insert(run, "r3".into());
+        let call = |tool: &str, name: &str, value: &str| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: Uuid::nil(),
+            agent_name: "worker".into(),
+            agent_run_id: run,
+            event: AgentEvent::ToolCallFormatted {
+                tool_call_id: Uuid::new_v4(),
+                tool_name: tool.into(),
+                parameters: [(name.to_string(), value.into())].into(),
+            },
+        };
+        printer.event(call(
+            message::MESSAGE_USER,
+            message::MESSAGE_PARAM,
+            "Found it.\nIt's in a.rs.",
+        ));
+        printer.event(call(crew::LIST_AGENTS, "x", ""));
+        let shown = printed.0.lock().unwrap().clone();
+        assert_eq!(
+            shown,
+            [
+                "✉ r3 to you",
+                "  Found it.",
+                "  It's in a.rs.",
+                "  ↳ r3 list workers",
+            ]
+        );
     }
 
     /// Claude Code's message about a request that failed mid-response is
