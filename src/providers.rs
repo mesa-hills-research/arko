@@ -1708,6 +1708,58 @@ impl CostShare {
         self.input += usage.input_tokens;
         self.output += usage.output_tokens;
     }
+
+    /// Whether it holds any call that reported tokens.
+    pub fn used(&self) -> bool {
+        self.input + self.output > 0
+    }
+
+    /// `parts` added up, with their plan when there is one part.
+    pub fn sum(parts: &[CostShare]) -> CostShare {
+        let mut sum = CostShare {
+            plan: match parts {
+                [one] => one.plan,
+                _ => None,
+            },
+            ..CostShare::default()
+        };
+        for part in parts {
+            sum.billed += part.billed;
+            sum.api += part.api;
+            sum.input += part.input;
+            sum.output += part.output;
+        }
+        sum
+    }
+}
+
+/// What one of the main agent's runs used, its calls added up, on the model
+/// it ran: what `/cost` splits the main agent's part by.
+#[derive(Debug, Clone)]
+pub struct RunCost {
+    pub model: Model,
+    pub usage: UsageInfo,
+}
+
+/// What each of the main agent's runs in `workflow` used, oldest first.
+pub fn main_run_costs(workflow: &arko_workflows::Workflow) -> Vec<RunCost> {
+    let results = workflow.context().agent_results.read();
+    let mut runs: Vec<(chrono::DateTime<chrono::Utc>, RunCost)> = results
+        .iter()
+        .filter(|result| result.agent_name == crate::agents::MAIN)
+        .map(|result| {
+            let info = result.info();
+            (
+                info.start_time,
+                RunCost {
+                    model: info.agent_config.llm_config.model.clone(),
+                    usage: info.usage.clone(),
+                },
+            )
+        })
+        .collect();
+    runs.sort_by_key(|(started, _)| *started);
+    runs.into_iter().map(|(_, run)| run).collect()
 }
 
 /// What the run `handle` used (`usage`, its calls added up), in one line that
@@ -1763,18 +1815,29 @@ pub(crate) fn run_usage_line(
 pub fn cost_report(
     ledger: &CostLedger,
     settings: &Settings,
+    main_runs: &[RunCost],
     plans: &std::collections::BTreeMap<String, String>,
 ) -> Vec<CostLine> {
-    let (main, workers) = cost_shares(ledger, settings);
+    let (main, workers) = cost_shares(ledger, settings, main_runs);
     cost_lines(&main, &workers, plans)
 }
 
-/// The main agent's part of the costs in `ledger` and the workers'.
-pub fn cost_shares(ledger: &CostLedger, settings: &Settings) -> (CostShare, CostShare) {
-    let plan_of = |model: &ModelSettings| {
+/// The main agent's part of the costs in `ledger`, one for each way its
+/// calls were paid for (a plan, or per token) in the order its runs first
+/// used it, and the workers' part. The main agent's runs `main_runs` say
+/// which plan paid for what, each by its own model, as conversations can
+/// run on different models. Without them (none is known) its calls in
+/// `ledger` go by the session's main model.
+pub fn cost_shares(
+    ledger: &CostLedger,
+    settings: &Settings,
+    main_runs: &[RunCost],
+) -> (Vec<CostShare>, CostShare) {
+    let plan_of_model = |model: &Model| plan_of(model, settings.openai_auth);
+    let plan_of_settings = |model: &ModelSettings| {
         resolve_model(&model.model)
             .ok()
-            .and_then(|model| plan_of(&model, settings.openai_auth))
+            .and_then(|model| plan_of_model(&model))
     };
     let mut main = CostShare::default();
     let mut workers = CostShare::default();
@@ -1789,16 +1852,41 @@ pub fn cost_shares(ledger: &CostLedger, settings: &Settings) -> (CostShare, Cost
         };
         part.add(usage, entry.amount);
         if usage.billing == BillingKind::Subscription {
-            part.plan = plan_of(model);
+            part.plan = plan_of_settings(model);
         }
     }
-    (main, workers)
+    let mut parts: Vec<CostShare> = Vec::new();
+    for run in main_runs {
+        if run.usage.input_tokens + run.usage.output_tokens == 0 {
+            continue;
+        }
+        let plan = match run.usage.billing {
+            BillingKind::Subscription => plan_of_model(&run.model),
+            _ => None,
+        };
+        let at = match parts.iter().position(|part| part.plan == plan) {
+            Some(at) => at,
+            None => {
+                parts.push(CostShare {
+                    plan,
+                    ..CostShare::default()
+                });
+                parts.len() - 1
+            }
+        };
+        parts[at].add(&run.usage, run.usage.billed());
+    }
+    if parts.is_empty() {
+        parts.push(main);
+    }
+    (parts, workers)
 }
 
-/// `/cost`'s lines for the main agent's part `main` and the workers' part
-/// `workers`, with the plans' usage windows (`plans`, by plan).
+/// `/cost`'s lines for the main agent's parts `main` (see [`cost_shares`])
+/// and the workers' part `workers`, with the plans' usage windows
+/// (`plans`, by plan).
 pub fn cost_lines(
-    main: &CostShare,
+    main: &[CostShare],
     workers: &CostShare,
     plans: &std::collections::BTreeMap<String, String>,
 ) -> Vec<CostLine> {
@@ -1807,24 +1895,29 @@ pub fn cost_lines(
         detail: false,
     };
     let detail = |text: String| CostLine { text, detail: true };
-    let used = |part: &CostShare| part.input + part.output > 0;
+    let total = CostShare::sum(main);
     let mut lines = vec![line(format!(
         "${:.2} billed in this session · {}k input and {}k output tokens",
-        main.billed + workers.billed,
-        (main.input + workers.input) / 1000,
-        (main.output + workers.output) / 1000
+        total.billed + workers.billed,
+        (total.input + workers.input) / 1000,
+        (total.output + workers.output) / 1000
     ))];
-    let parts = [main, workers];
-    let paid_alike = !used(main) || !used(workers) || main.plan == workers.plan;
+    let parts: Vec<(&str, &CostShare)> = main
+        .iter()
+        .map(|part| ("main agent", part))
+        .chain([("workers", workers)])
+        .collect();
+    let used: Vec<&(&str, &CostShare)> = parts.iter().filter(|(_, part)| part.used()).collect();
+    let paid_alike = used.windows(2).all(|pair| pair[0].1.plan == pair[1].1.plan);
     if paid_alike {
-        let plan = parts.iter().find_map(|part| part.plan);
+        let plan = parts.iter().find_map(|(_, part)| part.plan);
         if let Some(plan) = plan {
             lines.push(line(format!(
                 "≈ ${:.2} at API prices, which the {plan} covers",
-                main.api + workers.api
+                total.api + workers.api
             )));
         }
-        if used(workers) {
+        if workers.used() {
             lines.push(detail(match plan {
                 Some(_) => format!(
                     "the workers' share ≈ ${:.2} at API prices · {}",
@@ -1839,7 +1932,9 @@ pub fn cost_lines(
             }));
         }
     } else {
-        for (name, part) in [("main agent", main), ("workers", workers)] {
+        // (Each part the main agent's runs were paid for in, on a plan or
+        // per token, has a line of its own.)
+        for (name, part) in &used {
             lines.push(detail(match part.plan {
                 Some(plan) => format!(
                     "{name} ≈ ${:.2} at API prices, on the {plan} · {}",
@@ -1855,7 +1950,7 @@ pub fn cost_lines(
         }
     }
     // The plans' usage windows, as last reported.
-    for part in parts {
+    for (_, part) in &parts {
         if let Some(windows) = part.plan.and_then(|plan| plans.get(plan))
             && !lines.iter().any(|line| &line.text == windows)
         {
@@ -3095,6 +3190,15 @@ mod tests {
         session: &Settings,
         entries: Vec<arko_workflows::budget::CostEntry>,
     ) -> Vec<(bool, String)> {
+        report_with_runs(session, entries, &[])
+    }
+
+    /// [`report`] with the main agent's runs `runs`.
+    fn report_with_runs(
+        session: &Settings,
+        entries: Vec<arko_workflows::budget::CostEntry>,
+        runs: &[RunCost],
+    ) -> Vec<(bool, String)> {
         let plans = std::collections::BTreeMap::from([
             (
                 "Claude plan".to_string(),
@@ -3105,7 +3209,7 @@ mod tests {
                 "ChatGPT plan 7 d 40%".to_string(),
             ),
         ]);
-        cost_report(&CostLedger { entries }, session, &plans)
+        cost_report(&CostLedger { entries }, session, runs, &plans)
             .into_iter()
             .map(|line| (line.detail, line.text))
             .collect()
@@ -3255,6 +3359,67 @@ mod tests {
                 "$0.00 billed in this session · 0k input and 0k output tokens".to_string()
             )]
         );
+    }
+
+    /// A main agent whose conversations ran on models paid for in different
+    /// ways has a part for each, by each run's own model: the Claude plan's
+    /// part stays the Claude plan's after a switch to the ChatGPT login,
+    /// and a part billed per token says so.
+    #[test]
+    fn the_main_agents_part_is_split_by_the_plan_of_each_runs_model() {
+        use crate::agents::{MAIN, WORKER};
+        let run = |name: &str, entry: &arko_workflows::budget::CostEntry| RunCost {
+            model: resolve_model(name).unwrap(),
+            usage: match &entry.source {
+                CostSource::Agent { usage, .. } => (**usage).clone(),
+                CostSource::Manual { .. } => unreachable!(),
+            },
+        };
+        let on_claude = call(MAIN, 120_000, 8_000, 3.0, 0.0);
+        let on_chatgpt = call(MAIN, 50_000, 1_000, 0.9, 0.0);
+        let worker = call(WORKER, 30_000, 2_000, 0.4, 0.0);
+        // The session's main model is sol now, on the ChatGPT login.
+        let switched = settings(model("sol"), model("cc:opus"));
+        let runs = [run("cc:opus", &on_claude), run("sol", &on_chatgpt)];
+        assert_eq!(
+            report_with_runs(
+                &switched,
+                vec![on_claude.clone(), on_chatgpt.clone(), worker.clone()],
+                &runs
+            ),
+            [
+                (false, "$0.00 billed in this session · 200k input and 11k output tokens".to_string()),
+                (true, "main agent ≈ $3.00 at API prices, on the Claude plan · 120k input and 8k output tokens".to_string()),
+                (true, "main agent ≈ $0.90 at API prices, on the ChatGPT plan · 50k input and 1k output tokens".to_string()),
+                (true, "workers ≈ $0.40 at API prices, on the Claude plan · 30k input and 2k output tokens".to_string()),
+                (false, "Claude plan 5 h 12%, 7 d 3%".to_string()),
+                (false, "ChatGPT plan 7 d 40%".to_string()),
+            ]
+        );
+        // Without the runs, the session's main model named the plan.
+        assert!(
+            report(&switched, vec![on_claude.clone(), on_chatgpt.clone()])
+                .iter()
+                .any(|(_, line)| line == "≈ $3.90 at API prices, which the ChatGPT plan covers")
+        );
+        // Runs of one plan, one of them before a switch, read as one part.
+        let both = [run("cc:opus", &on_claude), run("cc:fable", &on_claude)];
+        let (parts, _) = cost_shares(&CostLedger::default(), &switched, &both);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].plan, Some("Claude plan"));
+        assert_eq!(parts[0].input, 240_000);
+        // From the Claude plan to a model billed per token.
+        let per_token = call(MAIN, 10_000, 1_000, 0.2, 0.2);
+        let runs = [run("cc:opus", &on_claude), run("opus", &per_token)];
+        let opus = settings(model("opus"), model("opus"));
+        let (parts, _) = cost_shares(&CostLedger::default(), &opus, &runs);
+        assert_eq!(
+            parts.iter().map(|part| part.plan).collect::<Vec<_>>(),
+            [Some("Claude plan"), None]
+        );
+        let total = CostShare::sum(&parts);
+        assert!((total.billed - 0.2).abs() < 1e-9 && (total.api - 3.2).abs() < 1e-9);
+        assert_eq!(total.plan, None);
     }
 
     /// The picker offers only the efforts each model takes, and a model

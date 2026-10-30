@@ -3404,7 +3404,7 @@ impl Harness {
                     .iter()
                     .map(|plan| (plan.plan.clone(), plan.text.clone()))
                     .collect();
-                for line in providers::cost_lines(&report.main, &report.workers, &plans) {
+                for line in providers::cost_lines(&report.main_parts, &report.workers, &plans) {
                     match line.detail {
                         true => out.line(&out.dim(&format!("  {}", line.text))),
                         false => out.line(&line.text),
@@ -10101,8 +10101,12 @@ pub(crate) mod tests {
         let api_price = reading.api_price.unwrap();
         assert!(api_price > 0.0, "{api_price}");
         let plans = harness.stats.lock().unwrap().plans.clone();
-        let lines =
-            providers::cost_report(&harness.workflow().cost_ledger(), &harness.settings, &plans);
+        let lines = providers::cost_report(
+            &harness.workflow().cost_ledger(),
+            &harness.settings,
+            &providers::main_run_costs(harness.workflow()),
+            &plans,
+        );
         assert_eq!(
             lines
                 .iter()
@@ -10222,6 +10226,7 @@ pub(crate) mod tests {
         let lines = providers::cost_report(
             &harness.workflow().cost_ledger(),
             &harness.settings,
+            &providers::main_run_costs(harness.workflow()),
             &Default::default(),
         );
         assert_eq!(
@@ -10293,6 +10298,7 @@ pub(crate) mod tests {
         let lines = providers::cost_report(
             &harness.workflow().cost_ledger(),
             &harness.settings,
+            &providers::main_run_costs(harness.workflow()),
             &Default::default(),
         );
         let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();

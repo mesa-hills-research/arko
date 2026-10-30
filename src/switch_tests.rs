@@ -628,3 +628,74 @@ async fn a_claude_code_lead_writes_its_report_as_a_reply_before_a_switch() {
     harness.crew.as_ref().unwrap().shutdown().await;
     managers.shutdown().await;
 }
+
+/// After a switch from Claude Code to sol on the ChatGPT login, `/cost`
+/// keeps each conversation's usage on its own plan, as the terminal, the
+/// page and an app's cost view read it.
+#[tokio::test]
+async fn cost_keeps_each_conversations_plan_after_a_switch_across_plans() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(reporting_model(bodies.clone())).await;
+    let temp = tempfile::tempdir().unwrap();
+    let fake = temp.path().join("fake");
+    std::fs::create_dir_all(&fake).unwrap();
+    let script = serde_json::json!([
+        [
+            {"text": "Making the file.", "input_tokens": 1200},
+            {"tool": "mcp__arko__complete_task", "input": {"summary": "Made it."}},
+        ],
+        [
+            {"text": "REPORT: made the file with the shell.", "input_tokens": 1300},
+        ],
+    ]);
+    std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.chatgpt_client(), true);
+    let cc = ModelSettings {
+        model: "cc:claude-opus-5-5".into(),
+        effort: Effort::High,
+        fast: false,
+        cache_1h: false,
+        handover_at: None,
+    };
+    let managers = on_models(&mut harness, &cc, &cc, &fake_claude_code(&fake));
+    harness.settings.openai_auth = Some(providers::OpenAiAuth::ChatGpt);
+    say(&mut harness, &mut inputs, "Make a file.").await;
+    switch(&mut harness, &mut inputs, "/model sol").await;
+    say(&mut harness, &mut inputs, "Go on.").await;
+    assert_eq!(model_in(&turn_with(&bodies, "Go on.")), "gpt-6.1-sol");
+    assert_eq!(harness.spent(), 0.0, "both on plans");
+
+    harness.publish_details();
+    let report = harness.details.cost();
+    assert_eq!(
+        report
+            .main_parts
+            .iter()
+            .map(|part| part.plan)
+            .collect::<Vec<_>>(),
+        [Some("Claude plan"), Some("ChatGPT plan")]
+    );
+    assert!(
+        report
+            .main_parts
+            .iter()
+            .all(|part| part.api > 0.0 && part.used())
+    );
+    assert_eq!(report.main.plan, None, "paid for in two ways");
+    assert!(
+        (report.main.api - report.main_parts.iter().map(|part| part.api).sum::<f64>()).abs() < 1e-9
+    );
+    harness.mirrored(|harness| harness.command("/cost"));
+    let said = lines(&harness.feed);
+    assert!(
+        said.contains("main agent ≈ $") && said.contains("at API prices, on the Claude plan"),
+        "{said}"
+    );
+    assert!(
+        said.contains("at API prices, on the ChatGPT plan"),
+        "{said}"
+    );
+    assert!(!said.contains("which the ChatGPT plan covers"), "{said}");
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
