@@ -17,7 +17,9 @@ is the same as `r1`.
 | Worker | In its first message, as they are kept while it runs, and again after its own handover or compaction |
 
 The notes hold 16 KB in all, and a replaced note counts at its new size. A note that would pass that
-is refused with each note's number, size and age, so the agent can replace or forget one.
+is refused with each note's number, size and age, so the agent can replace or forget one. A list
+longer than an agent can take in at once while it works reaches it in parts, one after another, and
+a long note goes on from one part into the next.
 
 `/notes` lists the notes, and `/notes remove N` removes one. The main agent and the running workers
 the note was for are told in one line. An agent that already read the note keeps what it read until

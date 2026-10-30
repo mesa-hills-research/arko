@@ -3075,3 +3075,128 @@ async fn workers_hear_of_a_removed_note(by_agent: bool) {
     assert_eq!(mains.contains(&1), !by_agent);
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// A list of kept notes longer than one of Claude Code's hooks holds comes
+/// back after a compaction in parts, every note whole. Posted again while a
+/// terminal update waits, a part comes beside the update, and every hook
+/// stays under the limit past which Claude Code cuts it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_long_list_of_kept_notes_comes_back_in_parts_after_a_compaction() {
+    let temp = tempfile::tempdir().unwrap();
+    let shell = |command: &str, tokens: u64| serde_json::json!({"tool": "mcp__arko__shell", "input": {"command": command}, "input_tokens": tokens});
+    // A job whose update, about 4,000 characters with its output's quotes
+    // escaped, comes while the call after it sleeps.
+    let job = "sleep 1; python3 -c 'print(chr(34) * 1800)'";
+    let script = serde_json::json!([
+        [
+            shell("echo one", 1000),
+            shell("echo two", 642_000),
+            {"text": "Not reached: the turn was interrupted."},
+        ],
+        {"compact": {"pre_tokens": 642_000, "post_tokens": 38_000}},
+        [
+            // (The notes are posted as the event arrives, a moment after.)
+            {"sleep": 0.5},
+            {"tool": "mcp__arko__terminal_start", "input": {"command": job, "terminal": false}, "input_tokens": 40_000},
+            shell("sleep 3", 40_000),
+            shell("echo four", 40_000),
+            shell("echo five", 40_000),
+            shell("echo six", 40_000),
+            shell("echo seven", 40_000),
+            shell("echo eight", 40_000),
+            {"tool": "mcp__arko__complete_task", "input": {"summary": "Done after the compaction."}},
+        ],
+    ]);
+    let (mut harness, mut inputs, _sender, managers, fake) = in_claude_code(temp.path(), script);
+    // Each note nearly fills a part.
+    let texts: Vec<String> = (1..=4)
+        .map(|n| {
+            format!("Note {n}: {}", "keep this whole ".repeat(218))
+                .trim()
+                .to_string()
+        })
+        .collect();
+    for text in &texts {
+        harness.kept.add(text, kept_notes::Audience::Lead).unwrap();
+    }
+    // Once the call that sleeps has started after the compaction, the list
+    // goes again. It waits with the job's update for the call's end.
+    let posting = tokio::spawn({
+        let (kept, workflow, fake) = (
+            harness.kept.clone(),
+            harness.workflow().clone(),
+            fake.clone(),
+        );
+        async move {
+            let sleeping = || {
+                let log = std::fs::read_to_string(fake.join("log.jsonl")).unwrap_or_default();
+                let entries: Vec<serde_json::Value> = log
+                    .lines()
+                    .filter_map(|line| serde_json::from_str(line).ok())
+                    .collect();
+                entries
+                    .iter()
+                    .skip_while(|entry| entry["text"] != "/compact")
+                    .any(|entry| entry["event"] == "pre" && entry["tool"] == "mcp__arko__shell")
+            };
+            until(sleeping).await;
+            kept.tell_lead(&workflow);
+        }
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(60),
+        harness.turn(Prompt::User("Work on it.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    posting.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    let (log, _) = fake_log(&fake);
+    let compacted = log
+        .iter()
+        .position(|entry| entry["text"] == "/compact")
+        .unwrap();
+    let hooks: Vec<&str> = log[compacted..]
+        .iter()
+        .filter_map(|entry| entry["answer"]["hookSpecificOutput"]["additionalContext"].as_str())
+        .collect();
+    // Claude Code cuts a hook's context past 10,000 characters.
+    for hook in &hooks {
+        assert!(hook.chars().count() <= 10_000, "{}", hook.chars().count());
+    }
+    assert!(
+        hooks
+            .iter()
+            .any(|hook| hook.contains("Terminal update:") && hook.contains("# Your kept notes, ")),
+        "no hook has a part beside the terminal update"
+    );
+    // A part, with what the framework wraps around it, takes at most the
+    // 4,750 characters the framework always leaves the notes beside other
+    // context.
+    for hook in &hooks {
+        if let Some(at) = hook.find("A new note on your task.") {
+            let notes = hook[at..].chars().count();
+            assert!(notes <= 4_750, "{notes}");
+        }
+    }
+    let given: Vec<&str> = log[compacted..]
+        .iter()
+        .filter_map(|entry| entry["text"].as_str())
+        .chain(hooks.iter().copied())
+        .collect();
+    let given = given.join("\n");
+    // Both lists arrive whole.
+    for part in 1..=4 {
+        let heading = format!("# Your kept notes, {part} of 4");
+        assert_eq!(given.matches(&heading).count(), 2, "{heading}");
+    }
+    assert!(
+        given.contains("This list replaces any earlier one, and the next 3 notes continue it.")
+    );
+    for text in &texts {
+        assert_eq!(given.matches(text.as_str()).count(), 2, "{}", &text[..8]);
+    }
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
