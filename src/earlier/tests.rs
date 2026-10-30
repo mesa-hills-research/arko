@@ -936,3 +936,60 @@ fn the_tool_only_reads_and_its_calls_can_overlap() {
     assert_eq!(tool.recovery_mode(), ToolRecovery::Rerun);
     assert_eq!(Tool::definition(&tool).name, TOOL_NAME);
 }
+
+/// At the smallest limit, a part of wide characters that holds more bytes
+/// than the output has room for is cut to it, and `read` goes on from the
+/// part after it, so that reading on always gets through.
+#[test]
+fn a_read_at_a_small_limit_gets_through_wide_text() {
+    let wide = "界".repeat(3_000);
+    let mut talk = Talk::new();
+    talk.user("Show the wide file.")
+        .call("shell", json!({"command": "cat wide.txt"}), &wide)
+        .reply(&"広い".repeat(1_500));
+    talk.user("Thanks.").reply("You're welcome.");
+    let saved = session(vec![vec![talk.task("opus", false)]]);
+    let mut turn = "1".to_string();
+    let mut seen = Vec::new();
+    for _ in 0..10 {
+        let read = call(
+            &saved,
+            json!({"operation": "read", "turn": turn, "through": 2, "limit": 1000}),
+        )
+        .unwrap();
+        assert!(tokens(&read) <= MIN_OUTPUT_TOKENS, "{} bytes", read.len());
+        seen.push(read.clone());
+        match read.rsplit_once("`read` with turn ") {
+            Some((_, rest)) => {
+                let next = rest
+                    .strip_suffix(" and through 2 goes on.")
+                    .unwrap()
+                    .to_string();
+                assert_ne!(next, turn, "it gets on");
+                turn = next;
+            }
+            None => break,
+        }
+    }
+    let all = seen.join("\n");
+    assert!(all.contains("1.2 Call shell"), "{all}");
+    assert!(all.contains("Cut. `result` 1.2 shows all 3,000 characters."));
+    assert!(all.contains("You're welcome."), "it reached the end");
+}
+
+/// The words searched for are repeated only so far, so that a long search
+/// keeps within the output's limit.
+#[test]
+fn a_long_search_keeps_within_the_limit() {
+    let saved = session(vec![vec![long_talk(5).task("opus", false)]]);
+    let words: Vec<String> = (0..400).map(|n| format!("missing{n:04}")).collect();
+    for words in [words.join(" "), format!("step002 {}", words.join(" "))] {
+        let found = call(
+            &saved,
+            json!({"operation": "search", "words": words, "limit": 1000}),
+        )
+        .unwrap();
+        assert!(tokens(&found) <= MIN_OUTPUT_TOKENS, "{} bytes", found.len());
+        assert!(found.contains('…'), "{found}");
+    }
+}

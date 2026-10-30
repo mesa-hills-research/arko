@@ -48,6 +48,11 @@ const PART_SHOWN: usize = 2_000;
 const RESULT_PAGE: usize = 20_000;
 /// The turns `search` finds at most.
 const HITS: usize = 20;
+/// The fewest bytes a part cut to the room left is shown in. With less
+/// room, `read` stops before it.
+const MIN_PART_ROOM: usize = 200;
+/// The most bytes of the words searched for that an output repeats.
+const QUOTED_BYTES: usize = 300;
 /// The user's messages the brief lists at most, the newest.
 const USER_LINES: usize = 60;
 /// The most tokens the brief gives the goal.
@@ -584,12 +589,30 @@ impl Part {
             }
         };
         if cut {
-            block.push_str(&format!(
-                "\nCut. `result` {handle} shows all {} characters.",
-                thousands(self.body().chars().count())
-            ));
+            block.push_str(&self.cut_line(handle));
         }
         block
+    }
+
+    /// The line that ends a part shown cut.
+    fn cut_line(&self, handle: &str) -> String {
+        format!(
+            "\nCut. `result` {handle} shows all {} characters.",
+            thousands(self.body().chars().count())
+        )
+    }
+
+    /// [`block`](Self::block) in at most `bytes` bytes, cut shorter where
+    /// it holds more (wide characters take up to 4 bytes each).
+    fn block_within(&self, handle: &str, bytes: usize) -> String {
+        let block = self.block(handle);
+        if block.len() <= bytes {
+            return block;
+        }
+        let tail = self.cut_line(handle);
+        let shown = block.split(tail.as_str()).next().unwrap_or(&block);
+        let (kept, _) = cut_bytes(shown, bytes.saturating_sub(tail.len() + '…'.len_utf8()));
+        format!("{kept}…{tail}")
     }
 }
 
@@ -1266,9 +1289,25 @@ impl Request {
                 let handle = format!("{}.{}", turn.number, index + 1);
                 let block = part.block(&handle);
                 if !output.fits(&block) {
-                    output.push(&format!(
-                        "The output stops at its limit here. `read` with turn {handle}{through} goes on."
-                    ));
+                    // A part wider than what is left is cut to it, so that a
+                    // read at a small limit always gets on.
+                    if output.room() < MIN_PART_ROOM {
+                        output.push(&format!(
+                            "The output stops at its limit here. `read` with turn {handle}{through} goes on."
+                        ));
+                        return Ok(());
+                    }
+                    output.push(&part.block_within(&handle, output.room()));
+                    let next = if index + 1 < turn.parts.len() {
+                        Some(format!("{}.{}", turn.number, index + 2))
+                    } else {
+                        (turn.number < last).then(|| (turn.number + 1).to_string())
+                    };
+                    if let Some(next) = next {
+                        output.push(&format!(
+                            "The output stops at its limit here. `read` with turn {next}{through} goes on."
+                        ));
+                    }
                     return Ok(());
                 }
                 output.push(&block);
@@ -1610,10 +1649,15 @@ fn around(line: &str, at: usize, width: usize) -> String {
 /// `terms` as the output names them: “parse_args” and “config”.
 fn quoted(terms: &[String]) -> String {
     let quoted: Vec<String> = terms.iter().map(|term| format!("“{term}”")).collect();
-    match quoted.split_last() {
+    let text = match quoted.split_last() {
         Some((last, [])) => last.clone(),
         Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
         None => String::new(),
+    };
+    // (Long words searched for don't take the output's room.)
+    match cut_bytes(&text, QUOTED_BYTES) {
+        (kept, true) => format!("{kept}…"),
+        (kept, false) => kept.to_string(),
     }
 }
 
@@ -1637,6 +1681,11 @@ impl Output {
 
     fn fits(&self, more: &str) -> bool {
         self.text.len() + 2 + more.len() + Self::RESERVE <= self.cap
+    }
+
+    /// The bytes a part may still take, the room for how to go on kept.
+    fn room(&self) -> usize {
+        self.cap.saturating_sub(self.text.len() + 2 + Self::RESERVE)
     }
 
     fn push(&mut self, more: &str) {
