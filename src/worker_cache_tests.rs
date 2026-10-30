@@ -411,3 +411,172 @@ async fn a_workers_cache_counts_from_its_latest_request_not_its_end() {
     );
     crew.shutdown().await;
 }
+
+/// A model server for a worker r1 whose conversation is replaced. Its first
+/// two requests call a tool, the second reading `input` tokens, and the
+/// request that asks for its handover report (over the handover size) reads
+/// as many. The first request of its fresh conversation waits, after it
+/// notifies `fresh`, and so does any other third request.
+async fn replacing(input: usize, fresh: Arc<tokio::sync::Notify>) -> ModelServer {
+    ModelServer::start(Arc::new(move |index, body: String| {
+        let who = sender(&body);
+        let fresh = fresh.clone();
+        Box::pin(async move {
+            let step = format!("s{index}");
+            if who != "r1" {
+                return lead(&body, &step);
+            }
+            if body.contains("Your conversation is getting long") {
+                return with_input(
+                    tool_call(
+                        &step,
+                        arko_agents::handover::HANDOVER_REPORT_TOOL_NAME,
+                        serde_json::json!({"report": "REPORT: the work so far."}),
+                    ),
+                    input,
+                );
+            }
+            let results = body.matches("function_call_output").count();
+            if body.contains("REPORT:") || results > 1 {
+                fresh.notify_one();
+                return std::future::pending().await;
+            }
+            // (A conversation whose first request is over the handover size
+            // doesn't hand over, so the first is small.)
+            let read = tool_call(
+                &step,
+                arko_agents::builtins::READ_FILE_TOOL_NAME,
+                serde_json::json!({"path": "missing.txt"}),
+            );
+            if results == 0 {
+                read
+            } else {
+                with_input(read, input)
+            }
+        })
+    }))
+    .await
+}
+
+/// Stops r1 and waits until it has stopped. Then neither the session nor
+/// the summary has a cache for it, and the record keeps none.
+async fn stopped_without_a_cache(harness: &Harness) {
+    let crew = harness.crew.clone().unwrap();
+    crew.stop("r1", "the test stopped it").unwrap();
+    until(|| {
+        harness
+            .feed
+            .worker_summary("r1")
+            .is_some_and(|summary| !summary.state.is_active())
+    })
+    .await;
+    assert_eq!(crew.worker_cache("r1"), None);
+    assert_eq!(harness.feed.worker_summary("r1").unwrap().cache(), None);
+    let record = std::fs::read_to_string(harness.session.dir.join("worker-requests.json"))
+        .unwrap_or_default();
+    assert!(!record.contains("\"input\""), "{record}");
+    crew.shutdown().await;
+}
+
+/// A handover replaces a worker's conversation with a fresh one that no
+/// cache holds. Stopped before a request of the fresh one ended, it has no
+/// cache to price or ask about, not the replaced conversation's.
+#[tokio::test]
+async fn a_worker_stopped_after_its_handover_has_no_cache_of_the_old_conversation() {
+    let fresh = Arc::new(tokio::sync::Notify::new());
+    let server = replacing(300_000, fresh.clone()).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    assert!(harness.live_command("/handover-at workers 100k", Source::Terminal));
+    assert!(matches!(
+        harness
+            .turn(Prompt::User("Start r1.".into()), &mut inputs)
+            .await,
+        TurnEnd::Answered
+    ));
+    tokio::time::timeout(Duration::from_secs(20), fresh.notified())
+        .await
+        .expect("r1 handed over");
+    stopped_without_a_cache(&harness).await;
+}
+
+/// Claude Code's compaction replaces the conversation too. (No mock runs
+/// Claude Code, so the compaction is told to the crew as Claude Code's
+/// runtime tells it.)
+#[tokio::test]
+async fn a_worker_stopped_after_a_compaction_has_no_cache_of_the_old_conversation() {
+    let fresh = Arc::new(tokio::sync::Notify::new());
+    let server = replacing(50_000, fresh.clone()).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    assert!(matches!(
+        harness
+            .turn(Prompt::User("Start r1.".into()), &mut inputs)
+            .await,
+        TurnEnd::Answered
+    ));
+    tokio::time::timeout(Duration::from_secs(20), fresh.notified())
+        .await
+        .expect("r1 read the file");
+    let run = harness
+        .workflow()
+        .subagents()
+        .into_iter()
+        .find(|run| run.handle == "r1")
+        .unwrap()
+        .run_id;
+    harness
+        .crew
+        .as_ref()
+        .unwrap()
+        .note_request(&arko_workflows::WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: WORKER.into(),
+            agent_run_id: run,
+            event: arko_agents::AgentEvent::ConversationCompacted {
+                input_tokens: 50_000,
+                compacted_tokens: Some(5_000),
+            },
+        });
+    stopped_without_a_cache(&harness).await;
+}
+
+/// A session that opens again tells each worker that ended with its cache
+/// from the first: no client sees it ended without one.
+#[tokio::test]
+async fn a_restored_worker_is_told_with_its_cache_from_the_first() {
+    let seen: Seen = Arc::default();
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let server = serve(seen.clone(), notify.clone(), notify).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    turn(&mut harness, &mut inputs, "Start r1.").await;
+    // The session's workers as another session over the same folder and
+    // workflow finds them, with a feed watched from before.
+    let fresh = remote::Feed::new(MAIN);
+    let (_, mut updates) = fresh.subscribe();
+    let (again, _) = Crew::new(crew::Setup {
+        session_id: harness.session.id.clone(),
+        session_dir: harness.session.dir.clone(),
+        output: harness.output.clone(),
+        max_running: NO_LIMIT,
+        cache_1h: false,
+        openai_auth: None,
+        cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(300)),
+        feed: Some(fresh.clone()),
+        refuse: None,
+        asker: None,
+        root: None,
+    });
+    again.attach(harness.workflow(), None);
+    let first = std::iter::from_fn(|| updates.try_recv().ok())
+        .find_map(|update| match update {
+            remote::Update::Worker(summary) if summary.id == "r1" => Some(summary),
+            _ => None,
+        })
+        .expect("r1 was told");
+    assert_eq!(first.state, remote::WorkerState::Finished);
+    assert_eq!(first.cache().unwrap().cost.tokens, 50_000);
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

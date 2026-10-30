@@ -195,13 +195,19 @@ pub(crate) struct LastRequest {
     pub at: i64,
     /// Its input, in tokens, which continuing the run sends again.
     pub input: usize,
+    /// How many model calls its run had made when it ended
+    /// (`TaskInfo::model_calls`), which says the record is its run's last.
+    /// None while the run goes on, and in a record a crash left behind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls: Option<usize>,
 }
 
 /// Each worker run's latest model request, kept in memory and in the
 /// session's folder. A request counts once it has ended (its usage came
 /// back), from the time it went out. So a run that stopped during a
 /// request counts from the one before, which can only say the cache lapses
-/// sooner than it does.
+/// sooner than it does. A handover or a compaction replaces the
+/// conversation, so the run has none until its next request ends.
 #[derive(Debug)]
 pub(crate) struct Requests {
     path: PathBuf,
@@ -238,7 +244,37 @@ impl Requests {
         let Some(at) = lock(&self.going).remove(&run) else {
             return;
         };
-        self.put([(run, LastRequest { at, input })]);
+        self.put([(
+            run,
+            LastRequest {
+                at,
+                input,
+                calls: None,
+            },
+        )]);
+    }
+
+    /// `run`'s conversation was replaced (a handover or a compaction), so
+    /// no request of it is cached until its next one. Saves the record when
+    /// it had one.
+    pub(crate) fn forget(&self, run: Uuid) {
+        lock(&self.going).remove(&run);
+        let mut ended = lock(&self.ended);
+        if ended.remove(&run).is_some() {
+            self.save(&ended);
+        }
+    }
+
+    /// `run` ended after `calls` model calls, so its record (if it has one)
+    /// is its last, and is saved so.
+    pub(crate) fn seal(&self, run: Uuid, calls: usize) {
+        let mut ended = lock(&self.ended);
+        if let Some(request) = ended.get_mut(&run)
+            && request.calls != Some(calls)
+        {
+            request.calls = Some(calls);
+            self.save(&ended);
+        }
     }
 
     /// The latest request of `run` that ended.
@@ -250,7 +286,12 @@ impl Requests {
     pub(crate) fn put(&self, requests: impl IntoIterator<Item = (Uuid, LastRequest)>) {
         let mut ended = lock(&self.ended);
         ended.extend(requests);
-        let written = serde_json::to_vec_pretty(&*ended)
+        self.save(&ended);
+    }
+
+    /// Writes the record whole.
+    fn save(&self, ended: &BTreeMap<Uuid, LastRequest>) {
+        let written = serde_json::to_vec_pretty(ended)
             .map_err(std::io::Error::other)
             .and_then(|text| crate::session::write_whole(&self.path, &text));
         if let Err(error) = written {

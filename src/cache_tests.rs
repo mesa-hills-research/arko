@@ -332,10 +332,12 @@ fn requests_record(root: &std::path::Path, id: &str) -> serde_json::Value {
 }
 
 /// A worker's prompt cache counts from its latest request, which the
-/// session keeps. A resumed session knows each worker's cache as it opens,
-/// before anything else happens, so a message that continues a worker whose
-/// cache expired asks first from the start. A session an older Arko saved
-/// takes it from the worker's task, once.
+/// session keeps, sealed when the worker's run ends. A resumed session knows
+/// each worker's cache once it has opened, without a read of its task, so a
+/// message that continues a worker whose cache expired asks first. (That
+/// the first news of a restored worker has its cache is tested in
+/// `worker_cache_tests`.) A record behind its task, which a crash can leave,
+/// or none (a session an older Arko saved) is brought up to the task once.
 #[tokio::test]
 async fn a_resumed_session_knows_its_workers_caches_as_it_opens() {
     let temp = tempfile::tempdir().unwrap();
@@ -370,6 +372,7 @@ async fn a_resumed_session_knows_its_workers_caches_as_it_opens() {
     assert_eq!(entries.len(), 1, "{record}");
     let (run, entry) = entries.iter().next().unwrap();
     assert_eq!(entry["input"], 50_000);
+    let calls = entry["calls"].as_u64().expect("sealed as r1 ended");
     let at = entry["at"].as_i64().unwrap();
     assert!(at >= before && at <= now_ms());
     assert_eq!(
@@ -404,6 +407,35 @@ async fn a_resumed_session_knows_its_workers_caches_as_it_opens() {
         restored.warning(now)
     );
     quit(seam, ended).await;
+
+    // A record behind r1's task, under the threshold: one a crash left
+    // before it was sealed, and one sealed with fewer model calls. The
+    // task's input, the larger, is kept, from the task's end, and the
+    // record is sealed then.
+    for calls_kept in [None, Some(calls - 1)] {
+        let mut behind = record.clone();
+        behind[run]["at"] = two_hours_ago.into();
+        behind[run]["input"] = 10_000.into();
+        match calls_kept {
+            Some(kept) => behind[run]["calls"] = kept.into(),
+            None => {
+                behind[run].as_object_mut().unwrap().remove("calls");
+            }
+        }
+        std::fs::write(&path, behind.to_string()).unwrap();
+        let (seam, ended) =
+            open_app(&root, &project, &server, SessionChoice::Resume(id.clone())).await;
+        let restored = seam.feed.worker_summary("r1").unwrap().cache().unwrap();
+        assert_eq!(restored.cost.tokens, 50_000, "{calls_kept:?}");
+        let from = restored.expires_at.timestamp_millis() - THIRTY_MINUTES.as_millis() as i64;
+        // (The task keeps its end to the second.)
+        assert!((from - at).abs() < 5_000, "{from} against {at}");
+        quit(seam, ended).await;
+        let kept = requests_record(&root, &id);
+        assert_eq!(kept[run]["input"], 50_000);
+        assert_eq!(kept[run]["at"], from);
+        assert_eq!(kept[run]["calls"], calls);
+    }
 
     // Saved by an older Arko, without the record: r1's task gives its input,
     // and its end stands for its latest request. The record is kept then.

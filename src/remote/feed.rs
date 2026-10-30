@@ -1142,7 +1142,6 @@ fn monitor_outcome(job: &JobSummary) -> (CallStatus, String) {
     }
 }
 
-/// A worker's title: its task's first line, in brief.
 /// Puts `cache` (a worker's prompt cache once it ended, or none) in its
 /// `summary`. Whether that changed it.
 fn set_cache(
@@ -1168,6 +1167,7 @@ fn set_cache(
         )
 }
 
+/// A worker's title: its task's first line, in brief.
 fn title(task: &str) -> String {
     let line = task
         .lines()

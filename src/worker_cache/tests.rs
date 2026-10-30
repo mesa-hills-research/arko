@@ -204,38 +204,47 @@ fn a_message_line_gives_its_worker_and_text() {
 
 /// A worker run's request counts once it ended, from when it went out, and
 /// the session's folder keeps it for a resume. A request that never ended
-/// leaves the one before.
+/// leaves the one before. The run's end seals the record, the next request
+/// unseals it, and a handover or a compaction takes it away.
 #[test]
 fn the_latest_request_that_ended_is_kept_in_the_sessions_folder() {
     let temp = tempfile::tempdir().unwrap();
     let requests = Requests::load(temp.path());
     let (run, other) = (Uuid::new_v4(), Uuid::new_v4());
+    let request = |at, input, calls| LastRequest { at, input, calls };
     assert_eq!(requests.get(run), None);
     requests.started(run, 1_000);
     assert_eq!(requests.get(run), None, "under way");
     requests.ended(run, 40_000);
-    let first = LastRequest {
-        at: 1_000,
-        input: 40_000,
-    };
-    assert_eq!(requests.get(run), Some(first));
+    assert_eq!(requests.get(run), Some(request(1_000, 40_000, None)));
     // One that went out and never ended (Arko stopped) leaves it.
     requests.started(run, 9_000);
     // A usage without a request of its own is no request.
     requests.ended(other, 5);
     let reloaded = Requests::load(temp.path());
-    assert_eq!(reloaded.get(run), Some(first));
+    assert_eq!(reloaded.get(run), Some(request(1_000, 40_000, None)));
     assert_eq!(reloaded.get(other), None);
-    // The next that ends replaces it.
+    // The next that ends replaces it, and the run's end seals it.
     requests.ended(run, 41_000);
-    assert_eq!(
-        Requests::load(temp.path()).get(run),
-        Some(LastRequest {
-            at: 9_000,
-            input: 41_000
-        })
-    );
+    requests.seal(run, 7);
+    requests.seal(other, 3);
+    let reloaded = Requests::load(temp.path());
+    assert_eq!(reloaded.get(run), Some(request(9_000, 41_000, Some(7))));
+    assert_eq!(reloaded.get(other), None, "nothing to seal");
+    // Going on, the run's next request unseals it.
+    requests.started(run, 12_000);
+    requests.ended(run, 42_000);
+    assert_eq!(requests.get(run), Some(request(12_000, 42_000, None)));
+    // A handover or a compaction replaces the conversation: no request of
+    // the new one has ended, and one under way is forgotten too.
+    requests.started(run, 13_000);
+    requests.forget(run);
+    requests.ended(run, 43_000);
+    assert_eq!(requests.get(run), None);
+    assert_eq!(Requests::load(temp.path()).get(run), None);
     // A damaged record is an empty one.
+    requests.started(run, 14_000);
+    requests.ended(run, 1_000);
     std::fs::write(temp.path().join(REQUESTS_FILE), "{ not json").unwrap();
     assert_eq!(Requests::load(temp.path()).get(run), None);
 }
