@@ -1368,6 +1368,14 @@ impl Harness {
     pub(crate) async fn repl(&mut self, input: &mut Inputs) {
         let mut last_interrupt: Option<Instant> = None;
         loop {
+            // The messages that wait for turns of their own go first, oldest
+            // first, before anything newer is read.
+            if self.holds() {
+                if self.held_turn(input).await {
+                    break;
+                }
+                continue;
+            }
             let (line, source, attached) = match input.next_event(true).await {
                 Event::Woken => {
                     if let News::Exit = self.deliver_news(input).await {
@@ -3962,6 +3970,12 @@ impl Harness {
                     if self.unknown_command(&line, source) {
                         continue;
                     }
+                    // While messages wait for turns of their own (sent
+                    // during a switch's report), this one waits behind them.
+                    if attached.is_empty() && self.holds() {
+                        self.hold(text, source, images, shown);
+                        continue;
+                    }
                     if let Some(refusal) = self.reply_refused(&text, &attached) {
                         self.pending_images = images;
                         self.pending_refs = shown;
@@ -5144,7 +5158,7 @@ pub(crate) fn handover_text(asked: handover::Asked, compacts: bool) -> &'static 
 /// argument.
 /// `/openrouter`'s words, when the line is that command, which the session
 /// runs where it can wait.
-fn openrouter_words(text: &str) -> Option<&str> {
+pub(crate) fn openrouter_words(text: &str) -> Option<&str> {
     split_live_command(text)
         .filter(|(name, _)| *name == "/openrouter")
         .map(|(_, argument)| argument)
@@ -6427,7 +6441,6 @@ pub(crate) mod tests {
             late: None,
             alerts: None,
             late_alert: None,
-            held: Default::default(),
         };
         (harness, inputs, input_sender)
     }

@@ -1104,7 +1104,6 @@ impl Engine {
             // With -p, monitors wake no one (the agents have none).
             alerts: (!one_shot).then(|| managers.jobs.subscribe_alerts()),
             late_alert: None,
-            held: Default::default(),
         };
         let (quit_popup, quit_asks) = mpsc::unbounded_channel();
         let seam = Seam {

@@ -49,6 +49,12 @@ pub struct Conversations {
     /// one, or a session closed before, goes on with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carry: Option<crate::switch::Carry>,
+    /// The messages the user sent while the old model wrote its report for a
+    /// switch, oldest first, each waiting for a turn of its own in the new
+    /// conversation (and those sent after them meanwhile). Each leaves as
+    /// its turn starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held: Vec<crate::switch::Held>,
 }
 
 /// A conversation.
