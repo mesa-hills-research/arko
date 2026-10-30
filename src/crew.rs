@@ -1958,8 +1958,9 @@ impl Crew {
     /// Brings the record of each ended worker run in `runs` up to its task
     /// where the record may be behind it. That is a record its run's end
     /// didn't seal (a crash can leave one a request behind, and a session an
-    /// older Arko saved has none), or one sealed with fewer model calls than
-    /// the task has. The saved task decides. A conversation it replaced (a
+    /// older Arko saved has none), one sealed with fewer model calls than
+    /// the task has, and any record of a run that didn't complete cleanly.
+    /// The saved task decides. A conversation it replaced (a
     /// handover or a compaction) with no request of the new one leaves no
     /// record. A latest input other than the record's is taken from the
     /// task, with the task's end standing for its time, the nearest the task
@@ -1976,7 +1977,18 @@ impl Crew {
             };
             let calls = result.info().model_calls;
             let kept = self.requests.get(run.run_id);
-            if kept.is_some_and(|kept| kept.calls == Some(calls)) {
+            // A record sealed with the task's model calls is its run's last
+            // only for a run that completed cleanly, whose saved task is the
+            // one that completed (and is read only when needed). Its
+            // conversation replaced after the seal (a handover, or Claude
+            // Code's compaction, which makes no model call) means a
+            // continuation, which either completed with more model calls or
+            // left the run not completed. Any other run's task is read as
+            // the session opens, so its record is checked against it at no
+            // cost.
+            let completed = result.status == arko_workflows::AgentRunStatus::Completed
+                && result.stopped_by.is_none();
+            if completed && kept.is_some_and(|kept| kept.calls == Some(calls)) {
                 continue;
             }
             let latest = result

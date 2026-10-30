@@ -735,3 +735,99 @@ async fn an_end_told_after_the_run_went_on_seals_nothing() {
     assert_eq!(crew.requests().get(run).unwrap().calls, second.calls);
     crew.shutdown().await;
 }
+
+/// Makes the saved task of run `run` look as Claude Code's compaction
+/// leaves it: a conversation that starts after every model call so far,
+/// with as many calls as before.
+fn compact_saved_task(dir: &std::path::Path, run: uuid::Uuid) {
+    fn files(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files(&path, found);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    files(dir, &mut found);
+    let mut compacted = 0;
+    for path in found
+        .iter()
+        .filter(|path| path.to_string_lossy().contains(&run.to_string()))
+    {
+        let Ok(mut task) =
+            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path).unwrap())
+        else {
+            continue;
+        };
+        let Some(calls) = task["usage_history"].as_array().map(Vec::len) else {
+            continue;
+        };
+        let model_calls = task["model_call_usage_history"]
+            .as_array()
+            .map_or(0, Vec::len);
+        task["conversation_usage_start"] = calls.into();
+        task["conversation_model_call_start"] = model_calls.into();
+        std::fs::write(path, task.to_string()).unwrap();
+        compacted += 1;
+    }
+    assert!(compacted > 0, "no saved task of {run}");
+}
+
+/// Claude Code's compaction makes no model call, so a worker whose record
+/// was sealed before it has as many calls after it. When Arko dies before
+/// the record forgets the old conversation, the session that opens again
+/// reads the saved task of a run that didn't complete cleanly, and its
+/// compacted conversation leaves no cache to ask about.
+#[tokio::test]
+async fn a_sealed_record_gives_way_to_a_task_compacted_since() {
+    let fresh = Arc::new(tokio::sync::Notify::new());
+    let server = replacing(50_000, None, fresh.clone()).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    assert!(matches!(
+        harness
+            .turn(Prompt::User("Start r1.".into()), &mut inputs)
+            .await,
+        TurnEnd::Answered
+    ));
+    tokio::time::timeout(Duration::from_secs(20), fresh.notified())
+        .await
+        .expect("r1 read the file");
+    let crew = harness.crew.clone().unwrap();
+    crew.stop("r1", "the test stopped it").unwrap();
+    until(|| crew.running().is_empty()).await;
+    let run = harness
+        .workflow()
+        .subagents()
+        .into_iter()
+        .find(|run| run.handle == "r1")
+        .unwrap()
+        .run_id;
+    // Sealed with the task's model calls as r1 stopped.
+    let calls = harness
+        .workflow()
+        .agent_result(run)
+        .unwrap()
+        .info()
+        .model_calls;
+    let sealed = crew.requests().get(run).unwrap();
+    assert_eq!((sealed.input, sealed.calls), (50_000, Some(calls)));
+    crew.shutdown().await;
+    compact_saved_task(&harness.session.dir, run);
+    harness.open(true).unwrap();
+    let reopened_calls = harness
+        .workflow()
+        .agent_result(run)
+        .unwrap()
+        .info()
+        .model_calls;
+    assert_eq!(reopened_calls, calls, "a compaction adds no model call");
+    assert_eq!(crew.requests().get(run), None);
+    assert_eq!(crew.worker_cache("r1"), None);
+    let record = std::fs::read_to_string(harness.session.dir.join("worker-requests.json"))
+        .unwrap_or_default();
+    assert!(!record.contains(&run.to_string()), "{record}");
+}
