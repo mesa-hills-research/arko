@@ -47,6 +47,7 @@ mod conversations;
 mod credentials;
 mod crew;
 pub mod details;
+mod earlier;
 mod engine;
 pub mod extension_prefs;
 pub mod extensions;
