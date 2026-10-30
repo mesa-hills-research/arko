@@ -1630,7 +1630,7 @@ impl Crew {
 
     /// What the crew does with a worker's event `received`: says it, tells
     /// the feed, and wakes the session. False once the workers' events end.
-    fn worker_event(
+    pub(crate) fn worker_event(
         &self,
         received: Result<
             arko_workflows::subagents::SubagentEvent,
@@ -1665,11 +1665,45 @@ impl Crew {
                 .output
                 .echo(&self.setup.output.dim(&format!("  ↳ {text}")));
         }
+        self.seal_ended(&event);
         if let Some(feed) = &self.setup.feed {
             self.tell_feed(feed, &event.handle, event.run_id, &event.kind);
         }
         let _ = self.wake.send(());
         true
+    }
+
+    /// Seals the record of the run that `event` says ended as the run's
+    /// last, with the run's model calls. Only while the run's result is the
+    /// one the event came from: not once the run went on, or ended again,
+    /// after it. (Its next end seals it then, or the next open reconciles it
+    /// with its task.)
+    fn seal_ended(&self, event: &arko_workflows::subagents::SubagentEvent) {
+        if !matches!(
+            event.kind,
+            SubagentEventKind::Finished { .. }
+                | SubagentEventKind::Failed { .. }
+                | SubagentEventKind::Stopped { .. }
+        ) {
+            return;
+        }
+        let Some(workflow) = self.workflow() else {
+            return;
+        };
+        let ended = workflow
+            .subagents()
+            .iter()
+            .any(|run| run.run_id == event.run_id && !run.state.is_active());
+        let Some(result) = workflow.agent_result(event.run_id) else {
+            return;
+        };
+        let its_own = result
+            .info()
+            .end_time
+            .is_some_and(|end| end <= event.timestamp);
+        if ended && its_own {
+            self.requests.seal(event.run_id, result.info().model_calls);
+        }
     }
 
     /// The worker `handle` (run `run`) as a notice names it: `r2`, or `r2
@@ -1718,15 +1752,7 @@ impl Crew {
         );
         // Its prompt cache from its latest request on, once it ended, which
         // a run that starts again renews. An end is told with its cache in
-        // place, so no client sees it ended without one. Its end seals its
-        // record as its run's last.
-        if ended
-            && let Some(result) = workflow
-                .as_ref()
-                .and_then(|workflow| workflow.agent_result(run))
-        {
-            self.requests.seal(run, result.info().model_calls);
-        }
+        // place, so no client sees it ended without one.
         let cache = record.filter(|_| ended).and_then(|record| {
             cache_of(&self.models, &self.requests, record, self.setup.openai_auth)
         });
@@ -1933,12 +1959,15 @@ impl Crew {
     /// where the record may be behind it. That is a record its run's end
     /// didn't seal (a crash can leave one a request behind, and a session an
     /// older Arko saved has none), or one sealed with fewer model calls than
-    /// the task has. The record keeps the larger input, its own or the
-    /// task's latest. When the task went further, the task's end stands for
-    /// its latest request, the nearest the task says. Each such task is read
-    /// once, as the session opens, and its record sealed.
+    /// the task has. The saved task decides. A conversation it replaced (a
+    /// handover or a compaction) with no request of the new one leaves no
+    /// record. A latest input other than the record's is taken from the
+    /// task, with the task's end standing for its time, the nearest the task
+    /// says. The record's time stays only with the same input. Each such
+    /// task is read once, as the session opens, and its record sealed.
     fn reconcile_requests(&self, workflow: &Workflow, runs: &[SubagentRecord]) {
         let mut reconciled = Vec::new();
+        let mut replaced = Vec::new();
         for run in runs.iter().filter(|run| {
             !run.state.is_active() && self.models.lock().unwrap().runs.contains_key(&run.run_id)
         }) {
@@ -1959,30 +1988,37 @@ impl Crew {
                 .end_time
                 .unwrap_or(run.since)
                 .timestamp_millis();
-            let request = match (kept, latest) {
-                (Some(kept), latest) => {
-                    let newer = match kept.calls {
-                        Some(sealed) => sealed < calls,
-                        None => latest.is_some_and(|latest| latest != kept.input),
-                    };
-                    crate::worker_cache::LastRequest {
-                        at: if newer { end.max(kept.at) } else { kept.at },
-                        input: latest.map_or(kept.input, |latest| latest.max(kept.input)),
-                        calls: Some(calls),
-                    }
+            let Some(latest) = latest else {
+                if kept.is_some() {
+                    replaced.push(run.run_id);
                 }
-                (None, Some(latest)) => crate::worker_cache::LastRequest {
-                    at: end,
+                continue;
+            };
+            let at = match kept {
+                Some(kept) if kept.input == latest => kept.at,
+                _ => end,
+            };
+            reconciled.push((
+                run.run_id,
+                crate::worker_cache::LastRequest {
+                    at,
                     input: latest,
                     calls: Some(calls),
                 },
-                (None, None) => continue,
-            };
-            reconciled.push((run.run_id, request));
+            ));
+        }
+        for run in replaced {
+            self.requests.forget(run);
         }
         if !reconciled.is_empty() {
             self.requests.put(reconciled);
         }
+    }
+
+    /// The record of the workers' latest requests, for a test.
+    #[cfg(test)]
+    pub(crate) fn requests(&self) -> &crate::worker_cache::Requests {
+        &self.requests
     }
 
     /// Has worker `handle`'s prompt cache last `lifetime` after its run's

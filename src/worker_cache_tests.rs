@@ -415,9 +415,14 @@ async fn a_workers_cache_counts_from_its_latest_request_not_its_end() {
 /// A model server for a worker r1 whose conversation is replaced. Its first
 /// two requests call a tool, the second reading `input` tokens, and the
 /// request that asks for its handover report (over the handover size) reads
-/// as many. The first request of its fresh conversation waits, after it
-/// notifies `fresh`, and so does any other third request.
-async fn replacing(input: usize, fresh: Arc<tokio::sync::Notify>) -> ModelServer {
+/// as many. The first request of its fresh conversation reports with
+/// `after` tokens of input, or without `after` waits, after it notifies
+/// `fresh`. Any other third request waits too.
+async fn replacing(
+    input: usize,
+    after: Option<usize>,
+    fresh: Arc<tokio::sync::Notify>,
+) -> ModelServer {
     ModelServer::start(Arc::new(move |index, body: String| {
         let who = sender(&body);
         let fresh = fresh.clone();
@@ -435,6 +440,9 @@ async fn replacing(input: usize, fresh: Arc<tokio::sync::Notify>) -> ModelServer
                     ),
                     input,
                 );
+            }
+            if let (true, Some(after)) = (body.contains("REPORT:"), after) {
+                return with_input(complete(&step, "Done after the handover."), after);
             }
             let results = body.matches("function_call_output").count();
             if body.contains("REPORT:") || results > 1 {
@@ -484,7 +492,7 @@ async fn stopped_without_a_cache(harness: &Harness) {
 #[tokio::test]
 async fn a_worker_stopped_after_its_handover_has_no_cache_of_the_old_conversation() {
     let fresh = Arc::new(tokio::sync::Notify::new());
-    let server = replacing(300_000, fresh.clone()).await;
+    let server = replacing(300_000, None, fresh.clone()).await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
     assert!(harness.live_command("/handover-at workers 100k", Source::Terminal));
@@ -506,7 +514,7 @@ async fn a_worker_stopped_after_its_handover_has_no_cache_of_the_old_conversatio
 #[tokio::test]
 async fn a_worker_stopped_after_a_compaction_has_no_cache_of_the_old_conversation() {
     let fresh = Arc::new(tokio::sync::Notify::new());
-    let server = replacing(50_000, fresh.clone()).await;
+    let server = replacing(50_000, None, fresh.clone()).await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
     assert!(matches!(
@@ -552,24 +560,7 @@ async fn a_restored_worker_is_told_with_its_cache_from_the_first() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
     turn(&mut harness, &mut inputs, "Start r1.").await;
-    // The session's workers as another session over the same folder and
-    // workflow finds them, with a feed watched from before.
-    let fresh = remote::Feed::new(MAIN);
-    let (_, mut updates) = fresh.subscribe();
-    let (again, _) = Crew::new(crew::Setup {
-        session_id: harness.session.id.clone(),
-        session_dir: harness.session.dir.clone(),
-        output: harness.output.clone(),
-        max_running: NO_LIMIT,
-        cache_1h: false,
-        openai_auth: None,
-        cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(300)),
-        feed: Some(fresh.clone()),
-        refuse: None,
-        asker: None,
-        root: None,
-    });
-    again.attach(harness.workflow(), None);
+    let (_, mut updates, _again) = reopened(&harness);
     let first = std::iter::from_fn(|| updates.try_recv().ok())
         .find_map(|update| match update {
             remote::Update::Worker(summary) if summary.id == "r1" => Some(summary),
@@ -579,4 +570,168 @@ async fn a_restored_worker_is_told_with_its_cache_from_the_first() {
     assert_eq!(first.state, remote::WorkerState::Finished);
     assert_eq!(first.cache().unwrap().cost.tokens, 50_000);
     harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// The session's workers as another session over the same folder and
+/// workflow finds them: its feed, the feed's updates from before it found
+/// them, and its crew.
+fn reopened(
+    harness: &Harness,
+) -> (
+    remote::Feed,
+    tokio::sync::broadcast::Receiver<remote::Update>,
+    Arc<Crew>,
+) {
+    let feed = remote::Feed::new(MAIN);
+    let (_, updates) = feed.subscribe();
+    let (again, _) = Crew::new(crew::Setup {
+        session_id: harness.session.id.clone(),
+        session_dir: harness.session.dir.clone(),
+        output: harness.output.clone(),
+        max_running: NO_LIMIT,
+        cache_1h: false,
+        openai_auth: None,
+        cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(300)),
+        feed: Some(feed.clone()),
+        refuse: None,
+        asker: None,
+        root: None,
+    });
+    again.attach(harness.workflow(), None);
+    (feed, updates, again)
+}
+
+/// Puts in the session's record what a crash can leave of r1's: its
+/// replaced conversation's latest request, 300k tokens an hour ago, which
+/// its end didn't seal.
+fn crash_left_the_old_record(harness: &Harness) -> uuid::Uuid {
+    let run = harness
+        .workflow()
+        .subagents()
+        .into_iter()
+        .find(|run| run.handle == "r1")
+        .unwrap()
+        .run_id;
+    let an_hour_ago = chrono::Utc::now().timestamp_millis() - 3_600_000;
+    let record = serde_json::json!({run.to_string(): {"at": an_hour_ago, "input": 300_000}});
+    std::fs::write(
+        harness.session.dir.join("worker-requests.json"),
+        record.to_string(),
+    )
+    .unwrap();
+    run
+}
+
+/// After a crash, the saved task decides. When it handed over, and no
+/// request of the fresh conversation ended before the crash, the old
+/// record goes. After a small request of the fresh conversation, its input
+/// counts, from the task's end.
+#[tokio::test]
+async fn a_restored_record_of_a_replaced_conversation_gives_way_to_the_task() {
+    for after in [None, Some(5_000)] {
+        let fresh = Arc::new(tokio::sync::Notify::new());
+        let server = replacing(300_000, after, fresh.clone()).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+        assert!(harness.live_command("/handover-at workers 100k", Source::Terminal));
+        let crew = harness.crew.clone().unwrap();
+        match after {
+            None => {
+                assert!(matches!(
+                    harness
+                        .turn(Prompt::User("Start r1.".into()), &mut inputs)
+                        .await,
+                    TurnEnd::Answered
+                ));
+                tokio::time::timeout(Duration::from_secs(20), fresh.notified())
+                    .await
+                    .expect("r1 handed over");
+                crew.stop("r1", "the test stopped it").unwrap();
+                until(|| crew.running().is_empty()).await;
+            }
+            Some(_) => turn(&mut harness, &mut inputs, "Start r1.").await,
+        }
+        let run = crash_left_the_old_record(&harness);
+        let (feed, _, again) = reopened(&harness);
+        let record: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(harness.session.dir.join("worker-requests.json")).unwrap(),
+        )
+        .unwrap();
+        let restored = feed.worker_summary("r1").unwrap().cache();
+        assert_eq!(again.worker_cache("r1"), restored);
+        match after {
+            None => {
+                assert_eq!(restored, None);
+                assert_eq!(record.get(run.to_string()), None, "{record}");
+            }
+            Some(after) => {
+                let restored = restored.expect("the fresh conversation's cache");
+                assert_eq!(restored.cost.tokens, after);
+                // From the task's end, which it keeps to the second.
+                let from = restored.expires_at - chrono::Duration::minutes(30);
+                assert!(chrono::Utc::now() - from < chrono::Duration::seconds(10));
+                assert_eq!(record[run.to_string()]["input"], after);
+                assert!(record[run.to_string()]["calls"].is_u64(), "{record}");
+            }
+        }
+        crew.shutdown().await;
+    }
+}
+
+/// A worker's end seals its record with its run's model calls only while
+/// the run's result is the one that ended: told late, after the run went on
+/// and ended again, an end leaves the record as it is.
+#[tokio::test]
+async fn an_end_told_after_the_run_went_on_seals_nothing() {
+    let seen: Seen = Arc::default();
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let server = serve(seen.clone(), notify.clone(), notify).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    turn(&mut harness, &mut inputs, "Start r1.").await;
+    let crew = harness.crew.clone().unwrap();
+    let run = harness
+        .workflow()
+        .subagents()
+        .into_iter()
+        .find(|run| run.handle == "r1")
+        .unwrap()
+        .run_id;
+    let first = crew.requests().get(run).unwrap();
+    let first_calls = first.calls.expect("sealed as r1 ended");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let between = chrono::Utc::now();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    // r1 goes on, and ends again with more calls.
+    turn(&mut harness, &mut inputs, "Continue r1.").await;
+    assert!(got(&seen, "r1", "More of the big task."));
+    let second = crew.requests().get(run).unwrap();
+    assert!(second.calls.unwrap() > first_calls, "{second:?}");
+    // As if the first end were told only now, with the record still at the
+    // first run's last request: it stays unsealed.
+    crew.requests().put([(
+        run,
+        crate::worker_cache::LastRequest {
+            calls: None,
+            ..first
+        },
+    )]);
+    let ended = |at| arko_workflows::subagents::SubagentEvent {
+        timestamp: at,
+        workflow_run_id: uuid::Uuid::nil(),
+        run_id: run,
+        handle: "r1".into(),
+        agent_name: WORKER.into(),
+        caller_run_id: uuid::Uuid::nil(),
+        caller_agent: MAIN.into(),
+        kind: arko_workflows::subagents::SubagentEventKind::Finished {
+            summary: "Big done.".into(),
+        },
+    };
+    assert!(crew.worker_event(Ok(ended(between))));
+    assert_eq!(crew.requests().get(run).unwrap().calls, None);
+    // The latest end seals it.
+    assert!(crew.worker_event(Ok(ended(chrono::Utc::now()))));
+    assert_eq!(crew.requests().get(run).unwrap().calls, second.calls);
+    crew.shutdown().await;
 }
