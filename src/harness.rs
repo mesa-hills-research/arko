@@ -41,6 +41,25 @@ pub(crate) struct Managers {
     pub(crate) jobs: Arc<TerminalManager>,
     /// When the shell's commands move to the background, and those running.
     pub(crate) background: Arc<shell::Background>,
+    /// Held while the monitor tools are defined as in a session with
+    /// workers, though the workflow runs no monitors (with -p).
+    no_workers: Option<Arc<NoWorkers>>,
+}
+
+/// Workers that never run, which a monitor can't outlast: with it the
+/// manager defines its monitor tools as a workflow with workers does, so
+/// that the stand-ins of a session continued with -p keep the definitions
+/// its conversations were offered (and their prompt cache).
+struct NoWorkers(tokio::sync::watch::Sender<u64>);
+
+impl arko_agents::terminal::WorkerLiveness for NoWorkers {
+    fn has_running_workers(&self, _owner: uuid::Uuid) -> bool {
+        false
+    }
+
+    fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.subscribe()
+    }
 }
 
 impl Managers {
@@ -57,7 +76,18 @@ impl Managers {
         Ok(Self {
             background: shell::Background::new(0, &jobs),
             jobs,
+            no_workers: None,
         })
+    }
+
+    /// The monitor tools are defined as in a session with workers from now
+    /// on, for a session whose workflow runs no monitors (-p) but whose
+    /// conversations were offered them with workers.
+    pub(crate) fn define_monitors_with_workers(&mut self) {
+        let no_workers = Arc::new(NoWorkers(tokio::sync::watch::channel(0).0));
+        let weak: std::sync::Weak<NoWorkers> = Arc::downgrade(&no_workers);
+        self.jobs.add_worker_liveness(weak);
+        self.no_workers = Some(no_workers);
     }
 
     pub(crate) fn list(&self) -> Vec<Arc<TerminalManager>> {
