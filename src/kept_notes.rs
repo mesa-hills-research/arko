@@ -48,9 +48,9 @@ pub(crate) const FILE: &str = "kept-notes.json";
 
 /// The most the notes take together in the main agent's list, in bytes. They
 /// come back after each handover and compaction, so they stay small, and
-/// well under the framework's limit for one note.
-pub const MAX_BYTES: usize = 8 * 1024;
-const _: () = assert!(MAX_BYTES < arko_workflows::notes::MAX_NOTE_BYTES);
+/// within the framework's limit for one note, which carries the list.
+pub const MAX_BYTES: usize = 16 * 1024;
+const _: () = assert!(MAX_BYTES <= arko_workflows::notes::MAX_NOTE_BYTES);
 
 /// What the worker is told above its notes.
 const WORKER_HEADING: &str = "The main agent's notes for you. This list replaces any earlier one.";
@@ -148,6 +148,7 @@ pub struct Note {
     pub id: u32,
     pub text: String,
     pub audience: Audience,
+    /// When it was kept, or last replaced.
     pub created: DateTime<Utc>,
 }
 
@@ -179,6 +180,48 @@ fn lead_text(notes: &[Note]) -> Option<String> {
             items.join("\n")
         )
     })
+}
+
+/// A note's text as the framework reads a note: every kind of line break is
+/// one, so every line is indented when the note is shown. An error when it
+/// is empty.
+fn note_text(text: &str) -> Result<String, String> {
+    let text = text
+        .replace("\r\n", "\n")
+        .replace(['\r', '\u{85}', '\u{2028}', '\u{2029}'], "\n");
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("The note is empty.".into());
+    }
+    Ok(text.to_string())
+}
+
+/// Refuses a change that takes the main agent's list from the notes
+/// `before` to the notes `after` past [`MAX_BYTES`]. The refusal lists each
+/// note with its number, size and age, so the agent sees which to replace or
+/// forget.
+fn check_size(before: &[Note], after: &[Note]) -> Result<(), String> {
+    let size = |notes: &[Note]| lead_text(notes).map_or(0, |list| list.len());
+    let (held, total) = (size(before), size(after));
+    if total <= MAX_BYTES {
+        return Ok(());
+    }
+    let now = Utc::now();
+    let mut refusal = format!(
+        "Kept notes hold {} KB at most. They take {held} bytes now, and this would add {}. Replace a note (replaces), forget one, or shorten this one.",
+        MAX_BYTES / 1024,
+        total.saturating_sub(held)
+    );
+    for note in before {
+        let age = (now - note.created).to_std().unwrap_or_default();
+        refusal.push_str(&format!(
+            "\n- Note {}, {} bytes, {} old",
+            note.id,
+            note.text.len(),
+            crate::remote::duration_words(age)
+        ));
+    }
+    Err(refusal)
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -253,15 +296,7 @@ impl KeptNotes {
     /// Keeps a note. Refused when it is empty or the main agent's list would
     /// pass [`MAX_BYTES`].
     pub fn add(&self, text: &str, audience: Audience) -> Result<Note, String> {
-        // As the framework reads a note: every kind of line break is one, so
-        // every line is indented when the note is shown.
-        let text = text
-            .replace("\r\n", "\n")
-            .replace(['\r', '\u{85}', '\u{2028}', '\u{2029}'], "\n");
-        let text = text.trim();
-        if text.is_empty() {
-            return Err("The note is empty.".into());
-        }
+        let text = note_text(text)?;
         let _writing = crate::lock(&WRITING);
         let mut saved = self.read()?;
         let id = saved
@@ -272,23 +307,56 @@ impl KeptNotes {
             + 1;
         let note = Note {
             id,
-            text: text.to_string(),
+            text,
             audience,
             created: Utc::now(),
         };
-        let held = lead_text(&saved.notes).map_or(0, |list| list.len());
+        let mut notes = saved.notes.clone();
+        notes.push(note.clone());
+        check_size(&saved.notes, &notes)?;
         saved.next = id;
-        saved.notes.push(note.clone());
-        let after = lead_text(&saved.notes).map_or(0, |list| list.len());
-        if after > MAX_BYTES {
-            return Err(format!(
-                "Kept notes hold {} KB at most. They take {held} bytes now and this note would add {}. Shorten it, or forget a note first.",
-                MAX_BYTES / 1024,
-                after - held
-            ));
-        }
+        saved.notes = notes;
         self.write(&saved)?;
         Ok(note)
+    }
+
+    /// Replaces the text of note `id`, and its audience when `audience` is
+    /// given. It keeps its number and place, counts toward [`MAX_BYTES`] at
+    /// its new size, and dates from now. Returns the note as it was and as it
+    /// is now.
+    pub fn replace(
+        &self,
+        id: u32,
+        text: &str,
+        audience: Option<Audience>,
+    ) -> Result<(Note, Note), String> {
+        let text = note_text(text)?;
+        let _writing = crate::lock(&WRITING);
+        let mut saved = self.read()?;
+        let Some(index) = saved.notes.iter().position(|note| note.id == id) else {
+            let numbers: Vec<String> = saved.notes.iter().map(|note| note.id.to_string()).collect();
+            return Err(match numbers.as_slice() {
+                [] => format!("There is no kept note {id}, and no notes are kept."),
+                [one] => format!("There is no kept note {id}. The only kept note is {one}."),
+                _ => format!(
+                    "There is no kept note {id}. The kept notes are {}.",
+                    crate::and_list(&numbers)
+                ),
+            });
+        };
+        let was = saved.notes[index].clone();
+        let note = Note {
+            id,
+            text,
+            audience: audience.unwrap_or_else(|| was.audience.clone()),
+            created: Utc::now(),
+        };
+        let mut notes = saved.notes.clone();
+        notes[index] = note.clone();
+        check_size(&saved.notes, &notes)?;
+        saved.notes = notes;
+        self.write(&saved)?;
+        Ok((was, note))
     }
 
     /// Removes a note, returning it. The agents of a running session aren't
@@ -328,12 +396,16 @@ impl KeptNotes {
             .map(|list| format!("# Notes from the main agent\n\n{list}"))
     }
 
-    /// Sends the notes to each active worker the audience includes. A worker
-    /// reads them at its next step.
-    pub(crate) fn tell_workers(&self, workflow: &Workflow, audience: &Audience) -> Vec<String> {
+    /// Sends each active worker that `to` takes its notes. A worker reads
+    /// them at its next step.
+    pub(crate) fn tell_workers(
+        &self,
+        workflow: &Workflow,
+        to: impl Fn(&str) -> bool,
+    ) -> Vec<String> {
         let mut told = Vec::new();
         for record in workflow.subagents() {
-            if record.state.is_active() && audience.includes(&record.handle) {
+            if record.state.is_active() && to(&record.handle) {
                 told.extend(self.tell_worker(workflow, &record.handle));
             }
         }
@@ -510,14 +582,28 @@ impl crate::Harness {
     }
 }
 
-/// What `keep_note` answers: the note's number, and the workers that have it
-/// now.
-fn kept_result(id: u32, told: &[String]) -> String {
+/// What `keep_note` answers: the note's number, whether it replaced that
+/// note, and the workers that have it now.
+fn kept_result(id: u32, replaced: bool, told: &[String]) -> String {
+    let done = if replaced { "Replaced" } else { "Kept" };
     match told {
-        [] => format!("Kept note {id}."),
-        [one] => format!("Kept note {id}. {one} has it now."),
-        several => format!("Kept note {id}. {} have it now.", crate::and_list(several)),
+        [] => format!("{done} note {id}."),
+        [one] => format!("{done} note {id}. {one} has it now."),
+        several => format!(
+            "{done} note {id}. {} have it now.",
+            crate::and_list(several)
+        ),
     }
+}
+
+/// A note's number in a tool call, as a number or as text.
+fn note_number(value: &Value) -> Option<u32> {
+    match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
+    .and_then(|id| u32::try_from(id).ok())
 }
 
 /// `keep_note`, for the main agent.
@@ -587,7 +673,10 @@ impl Tool for KeepNote {
     fn definition(&self) -> ToolDefinition {
         definition(
             KEEP_NOTE,
-            "Keeps a note for yourself or for workers. It comes back by itself after a handover or a compaction, when you go back to a conversation, and in a new conversation's first message, so keep what must outlast this conversation, such as something the user asked you to do later. The notes hold 8 KB in all.",
+            &format!(
+                "Keeps a note for yourself or for workers. It comes back by itself after a handover or a compaction, when you go back to a conversation, and in a new conversation's first message, so keep what must outlast this conversation, such as something the user asked you to do later. The notes hold {} KB in all.",
+                MAX_BYTES / 1024
+            ),
             vec![
                 parameter(
                     "text",
@@ -599,6 +688,12 @@ impl Tool for KeepNote {
                     "audience",
                     "lead (default), workers for every worker, or worker IDs such as r1, r2. A mix such as lead, r1 works too. Your own list holds every note, including those for workers, so a note for workers is also yours. A worker gets its notes in its first message, as they are kept while it runs, and after its own handover or compaction.",
                     ToolParameterType::String,
+                    false,
+                ),
+                parameter(
+                    "replaces",
+                    "The number of a note to replace with this text, which keeps its number (and its audience unless you give one).",
+                    ToolParameterType::Integer,
                     false,
                 ),
             ],
@@ -615,12 +710,19 @@ impl Tool for KeepNote {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let audience = match params.get("audience") {
-            None | Some(Value::Null) => Audience::Lead,
-            Some(Value::String(audience)) => Audience::parse(audience).map_err(refused)?,
+            None | Some(Value::Null) => None,
+            Some(Value::String(audience)) => Some(Audience::parse(audience).map_err(refused)?),
             Some(_) => return Err(refused("audience must be text")),
         };
+        let replaces = match params.get("replaces") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                note_number(value)
+                    .ok_or_else(|| refused("replaces is the number of a kept note"))?,
+            ),
+        };
         let workflow = self.crew.as_ref().and_then(|crew| crew.workflow());
-        if let Audience::Workers(ids) = &audience {
+        if let Some(Audience::Workers(ids)) = &audience {
             let Some(workflow) = &workflow else {
                 return Err(refused(
                     "This session has no workers, so a note can only be for the lead.",
@@ -635,11 +737,33 @@ impl Tool for KeepNote {
                 return Err(refused(format!("There is no worker {unknown}.")));
             }
         }
-        let note = self.notes.add(text, audience).map_err(refused)?;
-        let told = workflow
-            .map(|workflow| self.notes.tell_workers(&workflow, &note.audience))
-            .unwrap_or_default();
-        Ok(kept_result(note.id, &told))
+        let Some(id) = replaces else {
+            let note = self
+                .notes
+                .add(text, audience.unwrap_or(Audience::Lead))
+                .map_err(refused)?;
+            let told = workflow
+                .map(|workflow| {
+                    self.notes
+                        .tell_workers(&workflow, |handle| note.audience.includes(handle))
+                })
+                .unwrap_or_default();
+            return Ok(kept_result(note.id, false, &told));
+        };
+        let (was, note) = self.notes.replace(id, text, audience).map_err(refused)?;
+        // The workers it was for get their list again too, without it when
+        // it is no longer theirs.
+        let told: Vec<String> = workflow
+            .map(|workflow| {
+                self.notes.tell_workers(&workflow, |handle| {
+                    was.audience.includes(handle) || note.audience.includes(handle)
+                })
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|handle| note.audience.includes(handle))
+            .collect();
+        Ok(kept_result(note.id, true, &told))
     }
 }
 
@@ -665,12 +789,7 @@ impl Tool for ForgetNote {
     ) -> Result<String, ToolError> {
         let id = params
             .get("id")
-            .and_then(|id| match id {
-                Value::Number(number) => number.as_u64(),
-                Value::String(text) => text.trim().parse().ok(),
-                _ => None,
-            })
-            .and_then(|id| u32::try_from(id).ok())
+            .and_then(note_number)
             .ok_or_else(|| refused("id is the number of a kept note"))?;
         let note = self.notes.remove(id).map_err(refused)?;
         if let Some(workflow) = self.crew.as_ref().and_then(|crew| crew.workflow()) {
@@ -726,12 +845,94 @@ mod tests {
         }
         assert!(kept > 1);
         let refused = notes.add(&"b".repeat(200), Audience::Lead).unwrap_err();
-        assert!(refused.contains("8 KB at most"), "{refused}");
+        assert!(refused.contains("16 KB at most"), "{refused}");
+        // Each note is listed with its number, size and age, so the agent
+        // sees which to replace or forget.
+        assert!(
+            refused.contains("Replace a note (replaces), forget one"),
+            "{refused}"
+        );
+        assert!(refused.contains("\n- Note 1, 30 bytes, "), "{refused}");
+        assert!(
+            refused.lines().last().unwrap().ends_with(" s old"),
+            "{refused}"
+        );
+        assert_eq!(refused.matches("\n- Note ").count(), kept);
         assert_eq!(notes.list().unwrap().len(), kept);
-        assert!(notes.for_lead().unwrap().len() <= MAX_BYTES);
+        let list = notes.for_lead().unwrap();
+        assert!(list.len() <= MAX_BYTES && list.len() <= arko_workflows::notes::MAX_NOTE_BYTES);
         // Forgetting makes room.
         notes.remove(1).unwrap();
         notes.add(&"b".repeat(20), Audience::Lead).unwrap();
+        // One note can take most of the 16 KB.
+        let (_temp, notes) = self::notes();
+        notes.add(&"c".repeat(15 * 1024), Audience::Lead).unwrap();
+    }
+
+    #[test]
+    fn a_note_is_replaced_in_place_and_counts_at_its_new_size() {
+        let (_temp, notes) = notes();
+        let status = notes.add("Status: building.", Audience::Lead).unwrap();
+        let shared = notes
+            .add("Use tabs.", Audience::parse("r1").unwrap())
+            .unwrap();
+        let (was, now) = notes
+            .replace(status.id, " Status: testing. ", None)
+            .unwrap();
+        assert_eq!(was, status);
+        assert_eq!(
+            (now.id, now.text.as_str(), &now.audience),
+            (1, "Status: testing.", &Audience::Lead)
+        );
+        // Its number and place stay, and an audience given replaces its own.
+        let (_, now) = notes
+            .replace(shared.id, "Use spaces.", Some(Audience::AllWorkers))
+            .unwrap();
+        let texts: Vec<(u32, String)> = notes
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|note| (note.id, note.text))
+            .collect();
+        assert_eq!(
+            texts,
+            [(1, "Status: testing.".into()), (2, "Use spaces.".into())]
+        );
+        assert_eq!(now.audience, Audience::AllWorkers);
+        assert!(notes.for_worker("r7").unwrap().contains("Use spaces."));
+        // An unknown number says which there are.
+        assert_eq!(
+            notes.replace(9, "x", None).unwrap_err(),
+            "There is no kept note 9. The kept notes are 1 and 2."
+        );
+        assert!(notes.replace(1, "  ", None).is_err());
+        // The new text counts in place of the old, so a note that fills the
+        // list can still be replaced by one as long.
+        let room = MAX_BYTES - notes.for_lead().unwrap().len();
+        let long = "d".repeat(room + "Status: testing.".len());
+        notes.replace(1, &long, None).unwrap();
+        assert_eq!(notes.for_lead().unwrap().len(), MAX_BYTES);
+        let refused = notes.replace(1, &format!("{long}e"), None).unwrap_err();
+        assert!(refused.contains("this would add 1."), "{refused}");
+        assert_eq!(notes.list().unwrap()[0].text, long);
+        assert!(notes.add("More.", Audience::Lead).is_err());
+    }
+
+    #[test]
+    fn keep_note_takes_the_number_of_a_note_to_replace() {
+        let (_temp, notes) = notes();
+        let keep = KeepNote { notes, crew: None }.definition();
+        let replaces = keep
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "replaces")
+            .unwrap();
+        assert!(!replaces.required);
+        assert!(keep.description.contains("The notes hold 16 KB in all."));
+        assert_eq!(note_number(&serde_json::json!(3)), Some(3));
+        assert_eq!(note_number(&serde_json::json!(" 4 ")), Some(4));
+        assert_eq!(note_number(&serde_json::json!(-1)), None);
+        assert_eq!(note_number(&serde_json::json!("four")), None);
     }
 
     #[test]
@@ -792,11 +993,20 @@ mod tests {
 
     #[test]
     fn keep_note_says_which_workers_have_the_note() {
-        let told =
-            |ids: &[&str]| kept_result(3, &ids.iter().map(|id| id.to_string()).collect::<Vec<_>>());
+        let told = |ids: &[&str]| {
+            kept_result(
+                3,
+                false,
+                &ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+            )
+        };
         assert_eq!(told(&[]), "Kept note 3.");
         assert_eq!(told(&["r1"]), "Kept note 3. r1 has it now.");
         assert_eq!(told(&["r1", "r2"]), "Kept note 3. r1 and r2 have it now.");
+        assert_eq!(
+            kept_result(3, true, &["r1".to_string()]),
+            "Replaced note 3. r1 has it now."
+        );
     }
 
     #[test]
