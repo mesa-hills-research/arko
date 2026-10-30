@@ -532,7 +532,8 @@ async fn workers_move_to_the_new_conversation_and_new_ones_follow_the_model() {
     // The worker's report starts a turn of the new conversation.
     hold.notify_one();
     let crew = harness.crew.clone().unwrap();
-    until(|| crew.has_mail()).await;
+    // (Its report, not only earlier news of it.)
+    until(|| crew.running().is_empty() && crew.has_mail()).await;
     assert!(matches!(
         tokio::time::timeout(Duration::from_secs(30), harness.deliver_news(&mut inputs))
             .await
