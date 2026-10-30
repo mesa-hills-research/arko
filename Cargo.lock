@@ -212,9 +212,9 @@ dependencies = [
 
 [[package]]
 name = "arko_agents"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f96cc738ddade95e9e372008056e18b58f8fc364bbd721293ca132056e4afcc"
+checksum = "332c97084062799c63120ff1fa08ac0eb9b8241430a0f7664bd46a6bb1a83dc9"
 dependencies = [
  "arko_ai",
  "async-trait",

@@ -8175,6 +8175,77 @@ pub(crate) mod tests {
         assert!(harness.waiting.is_empty());
     }
 
+    /// The words the user types beside a choice or "You decide" reach the
+    /// agent and the question's record.
+    #[tokio::test]
+    async fn words_typed_beside_a_pick_reach_the_agent_and_the_record() {
+        use crate::questions::{Answer, QuestionAnswer, QuestionState};
+        use arko_agents::questions::{AskedQuestion, Question as Asked};
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let asked = |id: &str, question: &str, choices: &[&str], default: &str| AskedQuestion {
+            id: id.into(),
+            question: Asked {
+                question: question.into(),
+                choices: choices.iter().map(|choice| choice.to_string()).collect(),
+                default: Some(default.into()),
+                ..Default::default()
+            },
+        };
+        harness.question_asked(Question {
+            run: uuid::Uuid::new_v4(),
+            asked: vec![
+                asked("q1", "Tabs or spaces?", &["Tabs", "Spaces"], "Spaces"),
+                asked("q2", "Push now?", &[], "not yet"),
+            ],
+            answer: None,
+        });
+        let note = harness
+            .answer_questions(answers(vec![
+                QuestionAnswer::new(
+                    "q1",
+                    Answer {
+                        choices: vec!["Tabs".into()],
+                        text: Some("2 wide".into()),
+                        you_decide: false,
+                    },
+                ),
+                QuestionAnswer::new(
+                    "q2",
+                    Answer {
+                        choices: Vec::new(),
+                        text: Some("ask Bob first".into()),
+                        you_decide: true,
+                    },
+                ),
+            ]))
+            .unwrap();
+        assert_eq!(
+            note,
+            "The user answered q1 and q2.\n\
+             q1 Tabs or spaces? Tabs, plus “2 wide”\n\
+             q2 Push now? You decide (you said you'd assume: not yet), plus “ask Bob first”"
+        );
+        let card = harness.feed.questions()[0].item;
+        let states: Vec<QuestionState> = harness
+            .feed
+            .card_questions(card)
+            .into_iter()
+            .map(|question| question.state)
+            .collect();
+        assert_eq!(
+            states,
+            [
+                QuestionState::Answered {
+                    answer: "Tabs, plus “2 wide”".into()
+                },
+                QuestionState::Answered {
+                    answer: "You decide, plus “ask Bob first”".into()
+                },
+            ]
+        );
+    }
+
     /// Requests that come together share the tray, and one answer settles
     /// them all: those selected are approved and the others rejected, each
     /// with the words the message box held, which the transcript shows as
