@@ -193,7 +193,10 @@ async fn a_switch_starts_a_new_conversation_from_the_old_models_report_and_a_bri
         said.contains("Asking gpt-6-luna for a report. Stopping skips it."),
         "{said}"
     );
-    assert!(!said.contains("Ctrl-C"), "the page and apps have no keys: {said}");
+    assert!(
+        !said.contains("Ctrl-C"),
+        "the page and apps have no keys: {said}"
+    );
     assert!(
         said.contains(
             "New conversation on gpt-6.1-sol (high effort), from gpt-6-luna's report and a brief of conversation 1."
@@ -867,5 +870,52 @@ async fn a_ctrl_c_before_the_report_starts_skips_it() {
         !again.contains("goes on from a report you write now"),
         "{again}"
     );
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// The brief waits for the new conversation's first run to be recorded.
+/// A first message whose run didn't start, or whose run Arko closed
+/// before it saved, leaves it for the next message, also after the
+/// session opens again. A plain `/new` after that starts clean.
+#[tokio::test]
+async fn the_brief_waits_for_the_new_conversations_first_run() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(reporting_model(bodies.clone())).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    say(&mut harness, &mut inputs, "First.").await;
+    switch(&mut harness, &mut inputs, "/model sol").await;
+    // The first message's configuration was made, and no run came of it.
+    assert!(harness.new_conversation_config().is_some());
+    harness.crew.as_ref().unwrap().shutdown().await;
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    assert!(
+        harness.conversations.carry.is_some(),
+        "kept with the session"
+    );
+
+    say(&mut harness, &mut inputs, "Go on.").await;
+    let first = turn_with(&bodies, "Go on.");
+    assert_eq!(model_in(&first), "gpt-6.1-sol");
+    assert!(last_user_of(&first).0.contains("# Earlier conversation"));
+    assert!(
+        tools_in(&first)
+            .iter()
+            .any(|tool| tool == crate::earlier::TOOL_NAME)
+    );
+    assert!(harness.conversations.carry.is_none(), "its run took it");
+    assert_eq!(harness.conversations.list[1].continues, Some(0));
+
+    harness.new_conversation();
+    say(&mut harness, &mut inputs, "Clean.").await;
+    let clean = turn_with(&bodies, "Clean.");
+    assert!(!last_user_of(&clean).0.contains("# Earlier conversation"));
+    assert!(
+        !tools_in(&clean)
+            .iter()
+            .any(|tool| tool == crate::earlier::TOOL_NAME)
+    );
+    assert_eq!(harness.conversations.list[2].continues, None);
     harness.crew.as_ref().unwrap().shutdown().await;
 }

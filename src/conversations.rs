@@ -44,13 +44,11 @@ pub struct Conversations {
     /// when the next message starts a new one.
     pub current: Option<usize>,
     /// What the next new conversation carries over from an earlier one: a
-    /// switch made it (see `switch`), and its first message hasn't started.
+    /// switch made it (see `switch`), and its first run isn't recorded yet.
+    /// It stays until that run is, so a first message that fails to start
+    /// one, or a session closed before, goes on with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carry: Option<crate::switch::Carry>,
-    /// The conversation the main agent's run that isn't recorded yet
-    /// continues: the next new conversation's first turn took the carry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub continuing: Option<usize>,
 }
 
 /// A conversation.
@@ -223,7 +221,7 @@ impl Conversations {
                         runs: vec![run.id],
                         title: run.title.clone(),
                         unread: Vec::new(),
-                        continues: self.continuing.take(),
+                        continues: self.carry.take().map(|carry| carry.from),
                         model: run.model.clone(),
                     });
                     self.current = Some(self.list.len() - 1);

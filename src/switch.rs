@@ -192,9 +192,7 @@ impl Earlier {
                 .iter()
                 .map(|record| (record.runs.clone(), record.continues))
                 .collect(),
-            pending: conversations
-                .continuing
-                .or(conversations.carry.as_ref().map(|carry| carry.from)),
+            pending: conversations.carry.as_ref().map(|carry| carry.from),
         };
     }
 }
@@ -756,21 +754,19 @@ impl Harness {
 
     /// The configuration the next new conversation starts on, when it isn't
     /// the one the workflow was built with: after a switch, and with
-    /// `earlier_conversation` when it carries an earlier one over. That one
-    /// takes the carry, and is recorded as continuing it.
-    pub(crate) fn new_conversation_config(&mut self) -> Option<arko_agents::AgentConfig> {
-        let carry = self.conversations.carry.take();
-        if carry.is_none() && !self.main_reconfigured {
+    /// `earlier_conversation` when it carries an earlier one over. (Its
+    /// record takes the carry once its run is recorded.)
+    pub(crate) fn new_conversation_config(&self) -> Option<arko_agents::AgentConfig> {
+        let carries = self.conversations.carry.is_some();
+        if !carries && !self.main_reconfigured {
             return None;
         }
         let mut config = self.main_config.clone();
-        if let Some(carry) = carry {
+        if carries {
             config
                 .tool_config
                 .available_tool_names
                 .push(earlier::TOOL_NAME.to_string());
-            self.conversations.continuing = Some(carry.from);
-            self.save_conversations();
         }
         Some(config)
     }
