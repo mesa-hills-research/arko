@@ -70,10 +70,13 @@ impl Command {
 
 /// Every command, in the order the help and the menu list them.
 pub const COMMANDS: &[Command] = &[
-    Command::session(
-        "/new",
-        "start a new conversation (/resume goes back to the old one)",
-    ),
+    Command {
+        name: "/new",
+        args: "[continue]",
+        about: "start a new conversation (/resume goes back to the old one). /new continue starts it from a brief of this one and the agent's report",
+        aliases: &[],
+        runs: Runs::Session,
+    },
     Command {
         name: "/resume",
         args: "[NUMBER]",
@@ -116,7 +119,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "/model",
         args: "[MODEL] [EFFORT] | worker [MODEL|main] [EFFORT]",
-        about: "the main agent's model and effort before the conversation starts, or the model of workers started from now on at any time. /model worker main has workers follow the main agent's model again",
+        about: "the main agent's model and effort, in a new conversation that carries this one over once it has started, or the model of workers started from now on. /model worker main has workers follow the main agent's model again",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -494,6 +497,7 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/extensions", &["keep-out-of-git"], ON_OFF),
     ("/profiles", &[], &["add", "remove"]),
     ("/jobs", &[], &["stop"]),
+    ("/new", &[], &["continue"]),
     ("/notes", &[], &["remove"]),
     ("/jobs", &["stop"], &["all"]),
     ("/text-replies", &[], ON_OFF),
@@ -632,13 +636,10 @@ pub fn dynamic_choices_typed(
 }
 
 /// Whether the next word of `/model` (after `words`) may be a model.
-/// The main agent keeps its model once the conversation has started.
-pub(crate) fn model_comes_next(models: &crate::remote::Models, words: &[&str]) -> bool {
-    match words {
-        [] => !models.started,
-        ["worker" | "workers"] => true,
-        _ => false,
-    }
+/// (Once the conversation has started, the main agent's starts a new
+/// conversation on it.)
+pub(crate) fn model_comes_next(_models: &crate::remote::Models, words: &[&str]) -> bool {
+    matches!(words, [] | ["worker" | "workers"])
 }
 
 /// `/model`'s words: `worker`, the models the picker offers, `main` for the
@@ -651,14 +652,6 @@ fn model_choices(models: &crate::remote::Models, words: &[&str]) -> Vec<String> 
     let names =
         || crate::models::names(models, |name| crate::models::needs(&models.reachable, name));
     match words {
-        // The main agent keeps its model once the conversation starts.
-        [] if !workers && models.started => {
-            if models.has_workers {
-                vec!["worker".into()]
-            } else {
-                Vec::new()
-            }
-        }
         [] if workers => std::iter::once("main".to_string()).chain(names()).collect(),
         [] => names()
             .into_iter()
@@ -864,10 +857,11 @@ mod tests {
         // Without a start of an OpenRouter model, nothing from the list.
         assert!(!typed(&before_start, &[], "").contains(&"openrouter:z-ai/glm-5".to_string()));
         assert!(!typed(&before_start, &[], "o").contains(&"openrouter:z-ai/glm-5".to_string()));
-        // The main agent keeps its model once the conversation starts.
+        // Once the conversation starts, the main agent's model chosen starts
+        // a new conversation on it.
         let started = reading(true);
         assert!(
-            !typed(&started, &[], "openrouter:z").contains(&"openrouter:z-ai/glm-5".to_string())
+            typed(&started, &[], "openrouter:z").contains(&"openrouter:z-ai/glm-5".to_string())
         );
         assert!(
             typed(&started, &["worker"], "openrouter:z")

@@ -2418,6 +2418,19 @@ impl Feed {
         });
     }
 
+    /// The main agent works on a report for a new conversation (`true`), or
+    /// it is done: the clients show it working meanwhile, and their stop
+    /// skips it.
+    pub(crate) fn reporting(&self, working: bool) {
+        self.set_activity(|activity| {
+            activity.working = working;
+            activity.since = working.then(now_ms);
+        });
+        if !working {
+            self.question_activity();
+        }
+    }
+
     /// The turn ended, and `summary` is what it took (time, cost, context).
     pub fn turn_ended(&self, summary: &str, plan_usage: Option<&str>) {
         {

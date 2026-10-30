@@ -43,6 +43,14 @@ pub struct Conversations {
     /// The one the next message goes to, by its place in `list`. `None`
     /// when the next message starts a new one.
     pub current: Option<usize>,
+    /// What the next new conversation carries over from an earlier one: a
+    /// switch made it (see `switch`), and its first message hasn't started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carry: Option<crate::switch::Carry>,
+    /// The conversation the main agent's run that isn't recorded yet
+    /// continues: the next new conversation's first turn took the carry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuing: Option<usize>,
 }
 
 /// A conversation.
@@ -57,6 +65,11 @@ pub struct Record {
     /// next message in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unread: Vec<String>,
+    /// The conversation it continues, by its place in `list`: a switch
+    /// started it with a brief of that one, which `earlier_conversation`
+    /// reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<usize>,
 }
 
 /// What the record needs of one of the main agent's runs.
@@ -149,12 +162,17 @@ impl Conversations {
                     runs: vec![run.id],
                     title: run.title.clone(),
                     unread: Vec::new(),
+                    continues: None,
                 }),
             }
             after_failure = run.failed;
         }
         let current = list.len().checked_sub(1);
-        Self { list, current }
+        Self {
+            list,
+            current,
+            ..Self::default()
+        }
     }
 
     /// Takes in the runs of `runs` the record doesn't have: each goes on
@@ -173,6 +191,7 @@ impl Conversations {
                         runs: vec![run.id],
                         title: run.title.clone(),
                         unread: Vec::new(),
+                        continues: self.continuing.take(),
                     });
                     self.current = Some(self.list.len() - 1);
                 }
@@ -341,6 +360,11 @@ impl Harness {
         if self.conversations.take_in(&runs) {
             self.save_conversations();
         }
+        // The workers' news goes to the conversation's run from now on,
+        // also when its first turn called no tool (a plain reply).
+        if let (Some(crew), Some(run)) = (&self.crew, self.conversations.current_run()) {
+            crew.lead_run(run);
+        }
         self.publish_conversations();
     }
 
@@ -361,6 +385,7 @@ impl Harness {
         let workflow = self.workflow().clone();
         *lock(&self.gauges.conversations) =
             self.conversations.entries(|run| last_used(&workflow, run));
+        self.update_earlier();
     }
 
     /// The current conversation is left: what the user typed during its
@@ -372,13 +397,30 @@ impl Harness {
         }
     }
 
-    /// `/new`: the next message starts a new conversation.
+    /// `/new`: the next message starts a new conversation, a clean one.
     pub(crate) fn new_conversation(&mut self) {
+        self.conversations.carry = None;
+        self.start_new_conversation();
+        self.feed.conversation("New conversation");
+        let mut text = "The next message starts a new conversation.".to_string();
+        if !self.conversations.list.is_empty() {
+            text.push_str(" /resume goes back to the last one.");
+        }
+        self.output.line(&self.output.dim(&text));
+    }
+
+    /// The current conversation is left, and the next message starts a new
+    /// one on the main agent's configuration: its handover size, compaction
+    /// and window from now on. (A switch then adds what it carries over.)
+    pub(crate) fn start_new_conversation(&mut self) {
         self.leave_conversation();
         self.switched = true;
         self.conversations.current = None;
         self.conversation = Conversation::New;
         self.handover.switch(None, None);
+        self.handover
+            .configure_for(&self.main_config, self.settings.openai_auth);
+        self.take_window(&self.main_config);
         {
             // Nothing of the new conversation is cached yet.
             let mut stats = lock(&self.stats);
@@ -389,13 +431,8 @@ impl Harness {
             self.save_conversations();
         }
         self.publish_conversations();
-        self.feed.conversation("New conversation");
+        self.publish_models();
         self.show_questions_of(None);
-        let mut text = "The next message starts a new conversation.".to_string();
-        if !self.conversations.list.is_empty() {
-            text.push_str(" /resume goes back to the last one.");
-        }
-        self.output.line(&self.output.dim(&text));
     }
 
     /// `/resume` lists the conversations, and `/resume N` goes back to
@@ -481,7 +518,22 @@ impl Harness {
                 );
                 return;
             }
+            // It goes on on its own model, which the session must reach.
+            let model = &result.info().agent_config.llm_config.model;
+            if let Some(needs) = self.needs(model) {
+                self.say(
+                    Level::Error,
+                    &format!(
+                        "Couldn't go back to conversation {}. {}",
+                        index + 1,
+                        crate::providers::needs_text(&crate::providers::model_name(model), &needs)
+                    ),
+                );
+                return;
+            }
         }
+        // A switch made before it is left with the conversation it was for.
+        self.conversations.carry = None;
         self.leave_conversation();
         self.switched = true;
         let record = &mut self.conversations.list[index];
@@ -503,12 +555,21 @@ impl Harness {
             .as_ref()
             .and_then(|result| result.task().ok()?.current_conversation_context_size());
         self.handover.switch(run, input);
+        // Its handover size, compaction and window are its configuration's.
+        let config = result.as_ref().map_or_else(
+            || self.main_config.clone(),
+            |result| result.info().agent_config.clone(),
+        );
+        self.handover
+            .configure_for(&config, self.settings.openai_auth);
+        self.take_window(&config);
         lock(&self.stats).context_tokens = input;
         // Its prompt cache, as the session's record has it.
         self.restore_cache(input.is_some());
         self.conversation = conversation_of(&workflow, run);
         self.save_conversations();
         self.publish_conversations();
+        self.publish_models();
         // What changed in the workflow (the notes skipped, the workers'
         // lead) is saved now, for a session resumed before the next turn.
         if let Err(error) = workflow.checkpoint().await {

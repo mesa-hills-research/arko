@@ -373,15 +373,7 @@ impl Handover {
         main: &arko_agents::AgentConfig,
         openai_auth: Option<OpenAiAuth>,
     ) {
-        *crate::lock(&self.openai_auth) = openai_auth;
-        self.configure(
-            main.handover
-                .as_ref()
-                .and_then(|handover| handover.at_input_tokens),
-            agents::max_handover(&main.llm_config.model, openai_auth),
-        );
-        self.compacts
-            .store(agents::compacts(main), Ordering::SeqCst);
+        self.configure_for(main, openai_auth);
         let mut events = workflow.subscribe_events_lossless();
         let handover = Arc::downgrade(self);
         let task = tokio::spawn(async move {
@@ -398,6 +390,23 @@ impl Handover {
         if let Some(old) = crate::lock(&self.watching).replace(task) {
             old.abort();
         }
+    }
+
+    /// The main agent's conversation runs on `main`, in a session that
+    /// reaches OpenAI models by `openai_auth`: its handover size, the most
+    /// the user can set, and whether it compacts in Claude Code go by it
+    /// from now on (the conversation the session opens in, one it goes back
+    /// to, a new one).
+    pub fn configure_for(&self, main: &arko_agents::AgentConfig, openai_auth: Option<OpenAiAuth>) {
+        *crate::lock(&self.openai_auth) = openai_auth;
+        self.configure(
+            main.handover
+                .as_ref()
+                .and_then(|handover| handover.at_input_tokens),
+            agents::max_handover(&main.llm_config.model, openai_auth),
+        );
+        self.compacts
+            .store(agents::compacts(main), Ordering::SeqCst);
     }
 
     fn event(&self, event: &WorkflowEvent) {

@@ -762,8 +762,10 @@ mod tests {
                 runs: vec![uuid::Uuid::new_v4()],
                 title: "Saved words".into(),
                 unread: Vec::new(),
+                continues: None,
             }],
             current: Some(0),
+            ..Default::default()
         };
         conversations.save(&session.dir).unwrap();
         let check = || {
@@ -874,8 +876,10 @@ mod tests {
                 runs: Vec::new(),
                 title: crate::conversations::title_of(line),
                 unread: Vec::new(),
+                continues: None,
             }],
             current: Some(0),
+            ..Default::default()
         };
         conversations.save(&session.dir).unwrap();
         let entry = listed();
@@ -917,6 +921,7 @@ mod tests {
             runs: Vec::new(),
             title: title.into(),
             unread: Vec::new(),
+            continues: None,
         };
         let session = Session::create(temp.path()).unwrap();
         session
@@ -928,6 +933,7 @@ mod tests {
         Conversations {
             list: vec![conversation(line)],
             current: Some(0),
+            ..Default::default()
         }
         .save(&session.dir)
         .unwrap();
@@ -945,6 +951,7 @@ mod tests {
         Conversations {
             list: vec![conversation(line), conversation("Rename the settings page")],
             current: Some(1),
+            ..Default::default()
         }
         .save(&session.dir)
         .unwrap();
@@ -985,8 +992,10 @@ mod tests {
                 runs: Vec::new(),
                 title: title.into(),
                 unread: Vec::new(),
+                continues: None,
             }],
             current: Some(0),
+            ..Default::default()
         };
         let name = || list(temp.path()).remove(0).title;
         // Before the conversation is saved, the name is the session's.

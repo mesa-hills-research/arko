@@ -371,16 +371,22 @@ pub struct ConversationEntry {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Models {
     /// The main agent's model as `/model` takes it (`gpt-6.1-sol`), and its
-    /// effort (`high`).
+    /// effort (`high`): the model new conversations start on.
     pub main: String,
     pub main_effort: String,
+    /// The model of the conversation the next message goes to, as `/model`
+    /// takes it. It differs from `main` in a conversation `/resume` went
+    /// back to that runs another model.
+    pub conversation: String,
     /// The model workers start on, and their effort.
     pub workers: String,
     pub workers_effort: String,
     /// The workers follow the main agent's model.
     pub workers_follow: bool,
-    /// The conversation has started, so the main agent keeps its model, and
-    /// `/model worker` changes the workers started from now on.
+    /// The conversation has started, so `/model MODEL` starts a new
+    /// conversation on the model that carries this one over (a switch, which
+    /// a front end may ask before), and `/model worker` changes the workers
+    /// started from now on.
     pub started: bool,
     /// The banner's rows for the main agent's model and the workers.
     pub banner_model: String,

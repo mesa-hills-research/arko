@@ -92,6 +92,7 @@ mod skills;
 mod skills_command;
 mod start;
 mod status;
+mod switch;
 #[cfg(feature = "tui")]
 mod term;
 #[cfg(feature = "tui")]

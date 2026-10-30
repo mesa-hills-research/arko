@@ -704,6 +704,11 @@ pub(crate) struct Harness {
     /// The user's message starting the next turn as the agent reads it,
     /// labelled with the questions it answers and those still open.
     pub(crate) labelled: Option<String>,
+    /// New conversations start on `main_config`, which isn't the one the
+    /// workflow was built with (a switch changed it since).
+    pub(crate) main_reconfigured: bool,
+    /// The conversations `earlier_conversation` reads.
+    pub(crate) earlier: Arc<crate::switch::Earlier>,
 }
 
 impl Harness {
@@ -828,6 +833,12 @@ impl Harness {
         ];
         // The main agent saves and removes skills.
         own.extend(skill_install::tools(self.skill_context(&main_config)));
+        // A conversation that carries an earlier one over reads it (see
+        // `switch`): its configuration lists the tool.
+        own.push(Arc::new(crate::earlier::EarlierConversation(
+            self.earlier.clone(),
+        )));
+        registered.insert(crate::earlier::TOOL_NAME.to_string());
         for tool in own {
             builder = if offers(&tool) {
                 builder.agent_tool(MAIN, tool)
@@ -985,6 +996,9 @@ impl Harness {
             }
         }
         let workflow = Arc::new(builder.build().map_err(|error| error.to_string())?);
+        // New conversations start on the configuration it was built with.
+        self.main_reconfigured = false;
+        self.earlier.attach(&workflow);
         let mut configs = vec![going_on, main_config];
         if self.settings.max_workers > 0 {
             configs.push(self.worker_config.clone());
@@ -1027,26 +1041,8 @@ impl Harness {
         {
             // What the main agent's model accepts, and (resumed) how much
             // of it the conversation takes, before its next request says.
-            let model = &configs[0].llm_config.model;
-            let chatgpt = model.provider == arko_ai::Provider::OpenAI
-                && self.settings.openai_auth == Some(providers::OpenAiAuth::ChatGpt);
+            self.take_window(&configs[0]);
             let mut stats = lock(&self.stats);
-            stats.context_window = arko_ai::input_limit::effective_max_input_tokens(model, chatgpt);
-            stats.main_model = Some(model.id.clone());
-            // How long its prompt cache lasts, as the provider says. Claude
-            // Code's shows in its cache writes.
-            let lifetime = arko_ai::prompt_cache::prompt_cache_lifetime(
-                model,
-                &configs[0].llm_config.generation_config,
-                chatgpt,
-            );
-            stats.learns_cache_lifetime = model.provider == arko_ai::Provider::ClaudeCode;
-            if !stats.learns_cache_lifetime || stats.cache_lifetime.is_none() {
-                stats.cache_lifetime = match lifetime {
-                    arko_ai::PromptCacheLifetime::Known(lifetime) => Some(lifetime),
-                    _ => None,
-                };
-            }
             let task = match &self.conversation {
                 Conversation::Answered(result) => result.task().ok(),
                 Conversation::Stopped(run) => run.result.task().ok(),
@@ -1070,9 +1066,36 @@ impl Harness {
         }
         self.workflow = Some(workflow);
         self.publish_conversations();
+        self.update_earlier();
         self.details.set_unoffered(self.unoffered.clone());
         self.publish_details();
         Ok(())
+    }
+
+    /// The status takes what the main agent's model in `config` accepts,
+    /// and how long its prompt cache lasts, as the provider says (Claude
+    /// Code's shows in its cache writes): for the conversation the session
+    /// opens in, one it goes back to, and a new one.
+    pub(crate) fn take_window(&self, config: &arko_agents::AgentConfig) {
+        let model = &config.llm_config.model;
+        let chatgpt = model.provider == arko_ai::Provider::OpenAI
+            && self.settings.openai_auth == Some(providers::OpenAiAuth::ChatGpt);
+        let mut stats = lock(&self.stats);
+        let changed = stats.main_model.as_deref() != Some(model.id.as_str());
+        stats.context_window = arko_ai::input_limit::effective_max_input_tokens(model, chatgpt);
+        stats.main_model = Some(model.id.clone());
+        let lifetime = arko_ai::prompt_cache::prompt_cache_lifetime(
+            model,
+            &config.llm_config.generation_config,
+            chatgpt,
+        );
+        stats.learns_cache_lifetime = model.provider == arko_ai::Provider::ClaudeCode;
+        if !stats.learns_cache_lifetime || stats.cache_lifetime.is_none() || changed {
+            stats.cache_lifetime = match lifetime {
+                arko_ai::PromptCacheLifetime::Known(lifetime) => Some(lifetime),
+                _ => None,
+            };
+        }
     }
 
     /// How many skills of the user's own the agents have, in the skill
@@ -1523,6 +1546,14 @@ impl Harness {
                     self.openrouter_live(command, argument, source).await;
                     continue;
                 }
+                // A new conversation that carries this one over.
+                if let Some(switch) = self.switch_of(command) {
+                    self.feed.user(command, source, Delivery::Command);
+                    if self.switch(switch, source, input).await {
+                        break;
+                    }
+                    continue;
+                }
                 if self.live_command(command, source) {
                     continue;
                 }
@@ -1538,7 +1569,10 @@ impl Harness {
                         false
                     }
                     other => {
-                        harness.command(other);
+                        match crate::switch::new_argument(other) {
+                            Some(Err(error)) => harness.output.line(&harness.output.error(&error)),
+                            _ => harness.command(other),
+                        }
                         false
                     }
                 });
@@ -3509,7 +3543,9 @@ impl Harness {
                     facts.project_workers,
                 )));
             }
-            "/new" => out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first.")),
+            other if crate::switch::new_argument(other).is_some() => {
+                out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first."))
+            }
             other if conversations::resume_argument(other).is_some() => {
                 out.line(&out.dim("Wait for the turn to end (or press Ctrl-C) first."))
             }
@@ -3731,6 +3767,12 @@ impl Harness {
         if let Some(index) = cut {
             options = options.cut_back_to(index);
         }
+        // The configuration a new conversation starts on, when it isn't the
+        // one the workflow was built with.
+        let new_config = match &conversation {
+            Conversation::New => self.new_conversation_config(),
+            _ => None,
+        };
         // The images the user's message sends.
         let images = std::mem::take(&mut self.pending_images);
         if !images.is_empty() {
@@ -3741,7 +3783,10 @@ impl Harness {
             tokio::spawn(async move {
                 match conversation {
                     Conversation::New => {
-                        let options = RunOptions::new().images(images);
+                        let mut options = RunOptions::new().images(images);
+                        if let Some(config) = new_config {
+                            options = options.config(config);
+                        }
                         workflow.run_agent_with(MAIN, &message, options).await
                     }
                     Conversation::Answered(previous) => {
@@ -4650,6 +4695,13 @@ impl Harness {
             | Prompt::Answers => None,
         };
         let mut parts = Vec::new();
+        // A new conversation that carries an earlier one over opens with its
+        // brief.
+        if matches!(self.conversation, Conversation::New)
+            && let Some(carry) = &self.conversations.carry
+        {
+            parts.push(carry.brief.clone());
+        }
         // (A conversation cut back to its first message starts over.)
         let starts = matches!(self.conversation, Conversation::New) || self.cut_back == Some(0);
         if starts && let Some(project) = self.project.for_main(self.settings.project_instructions) {
@@ -5155,6 +5207,13 @@ pub(crate) mod tests {
     mod model {
         use super::*;
         include!("model_tests.rs");
+    }
+
+    /// The end-to-end tests of switching the main agent's model in a
+    /// started conversation, and of `/new continue`, in their own file.
+    mod switching {
+        use super::*;
+        include!("switch_tests.rs");
     }
 
     /// `/keys`'s end-to-end tests, in their own file.
@@ -6344,6 +6403,8 @@ pub(crate) mod tests {
             user_active_at: std::time::SystemTime::now(),
             waiting: Vec::new(),
             labelled: None,
+            main_reconfigured: false,
+            earlier: Arc::default(),
         };
         harness.open(false).unwrap();
         let inputs = Inputs {

@@ -58,16 +58,31 @@ fn said(feed: &remote::Feed) -> String {
 
 /// Before the conversation starts, `/model` changes the main agent (and
 /// the workers that follow it), the session and the next default keep it,
-/// and the first request runs on it. Once it has started, the main agent
-/// keeps its model, after `/new` too.
+/// and the first request runs on it. Once it has started, `/model` opens a
+/// new conversation on the model whose first request holds a brief of the
+/// first, and `/resume 1` goes back to the first model.
 #[tokio::test]
-async fn before_the_start_model_sets_the_main_agent_and_after_it_says_it_keeps_it() {
+async fn before_the_start_model_sets_the_main_agent_and_after_it_opens_a_new_conversation() {
     let asked: Asked = Arc::default();
     let seen = asked.clone();
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let kept = bodies.clone();
     let server = ModelServer::start(Arc::new(move |_, body: String| {
         let (model, effort) = model_of(&body);
         seen.lock().unwrap().push(("main".into(), model, effort));
-        Box::pin(async move { complete("m", "Done.") })
+        kept.lock().unwrap().push(body.clone());
+        let (user, answers) = last_user(&body);
+        Box::pin(async move {
+            if !answers && user.contains("goes on from a report you write now") {
+                tool_call(
+                    "report",
+                    "handover_report",
+                    serde_json::json!({"report": "Said hello."}),
+                )
+            } else {
+                complete("m", "Done.")
+            }
+        })
     }))
     .await;
     let temp = tempfile::tempdir().unwrap();
@@ -122,14 +137,44 @@ async fn before_the_start_model_sets_the_main_agent_and_after_it_says_it_keeps_i
     );
     assert!(remote::Meter::read(harness.gauges.as_ref()).models.started);
 
-    // Once the conversation has started, the main agent keeps its model,
-    // and a new conversation (/new) is no different.
-    harness.conversation = Conversation::New;
+    // Once the conversation has started, `/model` says what it does.
+    assert!(harness.live_command("/model", Source::Terminal));
+    assert!(said(&harness.feed).contains(
+        "This conversation runs gpt-6.1-sol (high effort). /model MODEL [EFFORT] starts a new conversation on another model that carries this one over, and /model worker sets the workers' model."
+    ));
+    // Where the prompt doesn't make the switch (during a turn), it says to
+    // wait for the turn to end.
     assert!(harness.live_command("/model luna", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "The main agent keeps gpt-6.1-sol (high effort) for this session. /model worker sets the model for workers started from now on."
+        "Wait for the turn to end (or press Ctrl-C) first. Then /model luna starts a new conversation on it."
     ));
     assert_eq!(harness.settings.main.model, "gpt-6.1-sol");
+    // Between turns it opens a new conversation on luna, whose first
+    // request holds a brief of the first.
+    let switch = harness.switch_of("/model luna").expect("a switch");
+    assert!(!harness.switch(switch, Source::Terminal, &mut inputs).await);
+    assert_eq!(harness.settings.main.model, "gpt-6-luna");
+    assert!(matches!(
+        harness.turn(Prompt::User("Hello on luna.".into()), &mut inputs).await,
+        TurnEnd::Answered
+    ));
+    let (_, model, _) = asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(model, "gpt-6-luna");
+    let first = bodies.lock().unwrap().last().cloned().unwrap();
+    assert!(first.contains("# Earlier conversation"), "{first}");
+    assert!(first.contains("Said hello."), "{first}");
+    assert_eq!(
+        remote::Meter::read(harness.gauges.as_ref()).models.conversation,
+        "gpt-6-luna"
+    );
+    // `/resume 1` goes back to the first model.
+    harness.resume_command("1").await;
+    assert!(matches!(
+        harness.turn(Prompt::User("Back on sol.".into()), &mut inputs).await,
+        TurnEnd::Answered
+    ));
+    let (_, model, _) = asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(model, "gpt-6.1-sol");
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -231,7 +276,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
     // Workers started from now on run sol.
     assert!(harness.live_command("/model worker sol high", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "Workers that get no profile or model of their own now run gpt-6.1-sol (high effort). The main agent keeps gpt-6-luna (high effort) for this session, and the workers started before keep theirs."
+        "Workers that get no profile or model of their own now run gpt-6.1-sol (high effort). The main agent keeps gpt-6-luna (high effort), and the workers started before keep theirs."
     ));
     assert_eq!(harness.session.load_settings().unwrap().worker.model, "gpt-6.1-sol");
     let reading = remote::Meter::read(harness.gauges.as_ref());
@@ -315,7 +360,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
     // `/model worker main`: new workers follow the main agent again.
     assert!(harness.live_command("/model worker main", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "Workers started from now on follow the main agent's model, gpt-6-luna (high effort)."
+        "Workers started from now on follow the main agent's model, gpt-6-luna (high effort), and the workers started before keep theirs."
     ));
     assert!(harness.settings.workers_follow_main());
     harness.crew.as_ref().unwrap().shutdown().await;

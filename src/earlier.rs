@@ -16,9 +16,6 @@
 //! calls with their results, and context updates. `12.3` is turn 12's third
 //! part.
 
-// The model switch and `/new continue` start conversations with it.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;

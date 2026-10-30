@@ -485,8 +485,7 @@ impl App {
     }
 
     /// `/model`'s picker for `target`. Once the conversation has started,
-    /// `/model` (the main agent's) opens a note instead: the main agent
-    /// keeps its model, and the workers' picker is a key away.
+    /// the main agent's model chosen starts a new conversation on it.
     pub fn open_model(&mut self, target: Target) {
         let models = self.reading.models.clone();
         if models.main.is_empty() {
@@ -494,17 +493,6 @@ impl App {
             self.send(match target {
                 Target::Main => "/model",
                 Target::Workers => "/model worker",
-            });
-            return;
-        }
-        if target == Target::Main && models.started {
-            self.overlay = Some(Overlay::ModelNotice {
-                text: format!(
-                    "The main agent keeps {} ({} effort) for this session. /model worker sets the model for workers started from now on.",
-                    models.main, models.main_effort
-                ),
-                workers: models.has_workers,
-                choice: 0,
             });
             return;
         }
@@ -1671,30 +1659,6 @@ impl App {
                     self.send(&line);
                     None
                 }
-            },
-            Overlay::ModelNotice {
-                text,
-                workers,
-                choice,
-            } => match key.code {
-                _ if close => None,
-                KeyCode::Left | KeyCode::Right | KeyCode::Tab if workers => {
-                    Some(Overlay::ModelNotice {
-                        text,
-                        workers,
-                        choice: 1 - choice,
-                    })
-                }
-                KeyCode::Enter if workers && choice == 0 => {
-                    self.open_model(Target::Workers);
-                    return;
-                }
-                KeyCode::Enter => None,
-                _ => Some(Overlay::ModelNotice {
-                    text,
-                    workers,
-                    choice,
-                }),
             },
             // Esc is No. Yes saves a ticked box and quits, stopping the jobs
             // shown (drawn before any key is read) and the workers: should
@@ -4871,11 +4835,11 @@ pub(super) mod tests {
         assert_eq!(sent(&mut app), ["/model sol high"]);
     }
 
-    /// Once the conversation has started, `/model` says the main agent
-    /// keeps its model and offers the workers' picker, which can make them
-    /// follow the main agent or take a model typed.
+    /// Once the conversation has started, `/model` opens the picker of a
+    /// new conversation's model, and `/model worker` the workers' picker,
+    /// which can make them follow the main agent or take a model typed.
     #[test]
-    fn after_the_start_model_offers_the_workers_picker() {
+    fn after_the_start_model_picks_a_new_conversations_model() {
         let mut app = app();
         hermetic(&mut app);
         app.set_reading(Reading {
@@ -4884,9 +4848,12 @@ pub(super) mod tests {
         });
         type_text(&mut app, "/model");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(
-            matches!(&app.overlay, Some(Overlay::ModelNotice { text, workers: true, choice: 0 }) if text.starts_with("The main agent keeps gpt-6-luna (high effort) for this session."))
-        );
+        let main = picker(&app);
+        assert_eq!(main.title(), "New conversation's model");
+        assert!(main.new_conversation);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.overlay.is_none());
+        type_text(&mut app, "/model worker");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let workers = picker(&app);
         assert_eq!(workers.title(), "Workers' model");

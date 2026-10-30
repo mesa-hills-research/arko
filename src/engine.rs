@@ -1061,6 +1061,8 @@ impl Engine {
             user_active_at: std::time::SystemTime::now(),
             waiting: Vec::new(),
             labelled: None,
+            main_reconfigured: false,
+            earlier: Arc::default(),
         };
         // A chat has no project.
         if !chat {
