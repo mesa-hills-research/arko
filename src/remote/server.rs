@@ -3748,7 +3748,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        feed.ask(run, &[asked("q1"), asked("q2")], false);
+        let card = feed.ask(run, &[asked("q1"), asked("q2")], false);
         let response = served
             .post("/api/questions/answer", Some(&cookie), answer)
             .await;
@@ -3795,7 +3795,8 @@ mod tests {
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         // Answers too long for the note that carries them are refused before
-        // anything is taken: an answer, and a message that answers.
+        // anything is taken: an answer, a message that answers, and an
+        // answer to a question card as older pages send it.
         let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
         for (path, body) in [
             (
@@ -3805,6 +3806,10 @@ mod tests {
             (
                 "/api/message",
                 serde_json::json!({"text": long, "answers": ["q1"]}),
+            ),
+            (
+                "/api/answer",
+                serde_json::json!({"question": card, "text": long}),
             ),
         ] {
             let response = served.post(path, Some(&cookie), &body.to_string()).await;
