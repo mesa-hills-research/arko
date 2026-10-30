@@ -1694,6 +1694,11 @@ pub(crate) fn at_api_prices(usage: &UsageInfo, billed: f64) -> f64 {
 /// models by now (a run saved on the ChatGPT login stays the ChatGPT plan's
 /// after the session moved to an API key). `None` for calls billed per
 /// token.
+// shortcut: a run billed partly on a plan and partly per token reads as all
+// the plan's, since its tokens can't be told apart. Arko can't make such a
+// run on a plan's provider today (Claude Code bills every call to the plan,
+// and a session reaches OpenAI by one login or one key), so a split by
+// tokens would need the run's calls one by one.
 fn plan_that_paid(model: &Model, billing: BillingKind) -> Option<&'static str> {
     if !matches!(billing, BillingKind::Subscription | BillingKind::Mixed) {
         return None;
