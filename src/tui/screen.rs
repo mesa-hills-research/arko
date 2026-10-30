@@ -3329,18 +3329,21 @@ mod tests {
                 title: "Make the login page remember the user between visits, with a cookie that lasts a month".into(),
                 last_used: ago(0),
                 current: true,
+                ..Default::default()
             },
             ConversationEntry {
                 number: 2,
                 title: "Add a README with a usage section".into(),
                 last_used: ago(125),
                 current: false,
+                ..Default::default()
             },
             ConversationEntry {
                 number: 1,
                 title: "Fix the build on Windows".into(),
                 last_used: ago(190),
                 current: false,
+                ..Default::default()
             },
         ];
         let type_line = |app: &mut App, text: &str| {

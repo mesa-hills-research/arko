@@ -355,12 +355,16 @@ pub struct Page {
 }
 
 /// One of the session's conversations with the main agent.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConversationEntry {
     /// Its number, as `/resume` takes it, 1 for the session's first.
     pub number: usize,
     /// The first line of the user's first message.
     pub title: String,
+    /// The model it runs, as `/model` takes it (`gpt-6.1-sol`,
+    /// `cc:claude-opus-5-5`), or empty when that isn't known (a conversation
+    /// an older Arko recorded, in a session's list).
+    pub model: String,
     /// When its last turn ended.
     pub last_used: Option<chrono::DateTime<chrono::Utc>>,
     /// The next message goes to it.

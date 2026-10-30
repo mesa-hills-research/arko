@@ -252,6 +252,21 @@ async fn a_switch_starts_a_new_conversation_from_the_old_models_report_and_a_bri
         harness.conversations.list[1].title,
         "Go on with the docs. Look it up."
     );
+    // The clients' list says each conversation's model.
+    let listed: Vec<(usize, String)> = remote::Meter::read(harness.gauges.as_ref())
+        .conversations
+        .iter()
+        .map(|entry| (entry.number, entry.model.clone()))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (2, "gpt-6.1-sol".to_string()),
+            (1, "gpt-6-luna".to_string())
+        ]
+    );
+    assert_eq!(harness.conversations.list[0].model, "gpt-6-luna");
+    assert_eq!(harness.conversations.list[1].model, "gpt-6.1-sol");
     // Its next turn goes on without the brief again.
     say(&mut harness, &mut inputs, "And the changelog.").await;
     let next = turn_with(&bodies, "And the changelog.");
