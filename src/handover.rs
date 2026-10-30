@@ -294,17 +294,17 @@ impl Handover {
     /// The main agent's configuration, as the workflow runs it (the saved
     /// one in a resumed session), hands over at `configured`, and its model
     /// leaves room up to `most` (`None` when its limit isn't known: then
-    /// up to the configured size). The size the user set stays, up to
-    /// that, and so does a configured size over it (a session saved before
-    /// sizes were held under the model's room): the runs go by `most`.
+    /// up to the configured size). The size the user set stays as set, and
+    /// so does a configured size over `most` (a session saved before sizes
+    /// were held under the model's room): each run goes by at most what its
+    /// model leaves room for, and [`at`](Self::at) says the size the
+    /// current conversation goes by. (A conversation on a smaller model
+    /// doesn't lower the size for one on a larger model.)
     fn configure(&self, configured: Option<usize>, most: Option<usize>) {
         let configured = configured.unwrap_or(usize::MAX);
         let most = most.unwrap_or(configured);
         self.configured.store(configured, Ordering::SeqCst);
         self.most.store(most, Ordering::SeqCst);
-        if self.threshold.get().is_some_and(|at| at > most) {
-            self.threshold.set(Some(most));
-        }
     }
 
     /// The input of the main agent's latest request.
@@ -365,15 +365,9 @@ impl Handover {
     }
 
     /// Watches the main agent's events in `workflow` (in place of the
-    /// workflow watched before), whose main agent has configuration `main`,
-    /// in a session that reaches OpenAI models by `openai_auth`.
-    pub fn watch(
-        self: &Arc<Self>,
-        workflow: &Workflow,
-        main: &arko_agents::AgentConfig,
-        openai_auth: Option<OpenAiAuth>,
-    ) {
-        self.configure_for(main, openai_auth);
+    /// workflow watched before). [`configure_for`](Self::configure_for)
+    /// says which conversation's configuration its sizes go by.
+    pub fn watch(self: &Arc<Self>, workflow: &Workflow) {
         let mut events = workflow.subscribe_events_lossless();
         let handover = Arc::downgrade(self);
         let task = tokio::spawn(async move {
@@ -723,7 +717,9 @@ mod tests {
     /// The size the user set is the threshold the main agent's runs go by,
     /// larger or smaller than the configured one, up to what the model
     /// leaves room for. Unset (as a session starts without one), the
-    /// configured one applies, and a resumed session's size stays.
+    /// configured one applies, and a resumed session's size stays. A
+    /// conversation on a model with less room goes by that room, and the
+    /// size stays as set for one with more.
     #[test]
     fn the_size_set_is_the_runs_threshold_up_to_the_models_room() {
         let runs = Arc::new(Runs::default());
@@ -742,7 +738,10 @@ mod tests {
         handover.configure(Some(250_000), Some(950_000));
         assert_eq!(handover.at(), 600_000);
         handover.configure(Some(250_000), Some(400_000));
-        assert_eq!(handover.threshold().get(), Some(400_000));
+        assert_eq!(handover.at(), 400_000);
+        assert_eq!(handover.threshold().get(), Some(600_000));
+        handover.configure(Some(250_000), Some(950_000));
+        assert_eq!(handover.at(), 600_000);
         // A model whose limit isn't known: up to the configured size.
         handover.configure(Some(250_000), None);
         assert_eq!(handover.set_at(300_000), 250_000);

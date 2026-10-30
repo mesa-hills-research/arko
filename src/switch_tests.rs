@@ -1282,3 +1282,59 @@ async fn a_message_sent_while_held_ones_wait_goes_after_them() {
     }
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// A handover size the user set for a conversation on a large window
+/// stays when the session opens again in it, and when the session goes to
+/// a conversation on a smaller window and back: each goes by at most what
+/// its model leaves room for.
+#[tokio::test]
+async fn a_handover_size_set_stays_across_models_and_a_reopen() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(reporting_model(bodies.clone())).await;
+    let temp = tempfile::tempdir().unwrap();
+    let fake = temp.path().join("fake");
+    std::fs::create_dir_all(&fake).unwrap();
+    let script = serde_json::json!([
+        [
+            {"text": "Making the file.", "input_tokens": 1200},
+            {"tool": "mcp__arko__complete_task", "input": {"summary": "Made it."}},
+        ],
+        [
+            {"text": "REPORT: made the file with the shell.", "input_tokens": 1300},
+        ],
+    ]);
+    std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let cc = ModelSettings {
+        model: "cc:claude-opus-5-5".into(),
+        effort: Effort::High,
+        fast: false,
+        cache_1h: false,
+        handover_at: None,
+    };
+    let managers = on_models(&mut harness, &cc, &cc, &fake_claude_code(&fake));
+    say(&mut harness, &mut inputs, "Make a file.").await;
+    switch(&mut harness, &mut inputs, "/model luna").await;
+    say(&mut harness, &mut inputs, "Go on.").await;
+    let luna_most = agents::max_handover(&resolve_model("luna").unwrap(), None).unwrap();
+    assert!(luna_most < 920_000);
+
+    // In the Claude Code conversation, over what luna leaves room for.
+    harness.resume_command("1").await;
+    assert!(harness.live_command("/handover-at main 920k", Source::Terminal));
+    assert_eq!(harness.handover.at(), 920_000);
+    // On luna it goes by luna's room, and back it is as set.
+    harness.resume_command("2").await;
+    assert_eq!(harness.handover.at(), luna_most);
+    harness.resume_command("1").await;
+    assert_eq!(harness.handover.at(), 920_000);
+
+    // The session opens again in it, its latest run luna's.
+    harness.crew.as_ref().unwrap().shutdown().await;
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    assert_eq!(harness.conversations.current, Some(0));
+    assert_eq!(harness.handover.at(), 920_000);
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}

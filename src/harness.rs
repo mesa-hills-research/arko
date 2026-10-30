@@ -1010,8 +1010,8 @@ impl Harness {
                 .iter()
                 .chain(saved.iter().flat_map(|saved| saved.configs.values())),
         );
-        self.handover
-            .watch(&workflow, &configs[0], self.settings.openai_auth);
+        // (Its sizes go by the conversation the session goes on in, below.)
+        self.handover.watch(&workflow);
         self.kept.follow(&workflow);
         let (control, controls) = mpsc::unbounded_channel();
         let task = tokio::spawn(ui::print_events(
