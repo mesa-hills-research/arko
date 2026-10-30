@@ -1633,9 +1633,16 @@ const DIFF_LINES: usize = 200;
 /// The changed lines of `before` and `after`, `-` before each removed line
 /// and `+` before each added one, with up to two unchanged lines around
 /// them (two spaces before each), and `…` where unchanged lines are left
-/// out. Empty when the texts have the same lines.
+/// out. Lines are compared with their ends, so a changed line end or
+/// trailing space shows: a changed line's trailing spaces, tabs and
+/// carriage return show as `·`, `→` and `␍`, and a changed last line
+/// without a newline has a line after it that says so. Empty when the texts
+/// are the same.
 fn line_diff(before: &str, after: &str) -> String {
-    let (old, new): (Vec<&str>, Vec<&str>) = (before.lines().collect(), after.lines().collect());
+    let (old, new): (Vec<&str>, Vec<&str>) = (
+        before.split_inclusive('\n').collect(),
+        after.split_inclusive('\n').collect(),
+    );
     let start = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
     let end = old[start..]
         .iter()
@@ -1698,7 +1705,28 @@ fn line_diff(before: &str, after: &str) -> String {
             lines.push("…".to_string());
         }
         skipped = false;
-        lines.push(format!("{mark} {line}").trim_end().to_string());
+        let text = line.strip_suffix('\n').unwrap_or(line);
+        if *mark == ' ' {
+            lines.push(format!("  {text}").trim_end().to_string());
+            continue;
+        }
+        let kept = text.trim_end_matches([' ', '\t', '\r']);
+        let tail: String = text[kept.len()..]
+            .chars()
+            .map(|c| match c {
+                ' ' => '·',
+                '\t' => '→',
+                _ => '␍',
+            })
+            .collect();
+        lines.push(
+            format!("{mark} {kept}{tail}")
+                .trim_end_matches(' ')
+                .to_string(),
+        );
+        if !line.ends_with('\n') {
+            lines.push("\\ no newline at the end".to_string());
+        }
     }
     if lines.len() > DIFF_LINES {
         let more = lines.len() - DIFF_LINES;

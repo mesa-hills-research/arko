@@ -1205,6 +1205,41 @@ async fn an_updates_card_says_what_changes() {
     );
 }
 
+/// An update that changes only how SKILL.md ends (its last newline, or its
+/// line ends) is an update, compared byte for byte, and its card shows the
+/// change.
+#[tokio::test]
+async fn an_update_of_only_a_line_end_is_shown() {
+    let fixture = quiet();
+    fixture.review_project_skills();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    let source = draft.display().to_string();
+    fixture.add(params("notes", &source)).await.unwrap();
+    let text = skill_md("notes", "");
+    std::fs::write(draft.join("SKILL.md"), text.trim_end()).unwrap();
+    fixture.edit(params("notes", &source)).await.unwrap();
+    assert_eq!(
+        fixture.cards()[1].update.as_ref().unwrap().diff,
+        "  ---\n\n- Write notes well.\n+ Write notes well.\n\\ no newline at the end"
+    );
+    std::fs::write(draft.join("SKILL.md"), text.replace('\n', "\r\n")).unwrap();
+    fixture.edit(params("notes", &source)).await.unwrap();
+    assert!(
+        fixture.cards()[2]
+            .update
+            .as_ref()
+            .unwrap()
+            .diff
+            .contains("\n+ Write notes well.␍"),
+        "{:?}",
+        fixture.cards()[2].update
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.project().join("notes/SKILL.md")).unwrap(),
+        text.replace('\n', "\r\n")
+    );
+}
+
 /// An update's card comes from what the stamp of the saved skill read, which
 /// opens nothing through a link: a link in the skill to a folder or a file
 /// outside it is listed as going, and a file too big for a save is compared
@@ -1261,6 +1296,17 @@ fn a_diff_shows_the_changed_lines_with_two_around_them() {
         "  line 3\n  line 4\n- line 5\n+ line five\n  line 6\n  line 7\n…\n  line 13\n  line 14\n- line 15\n  line 16\n  line 17"
     );
     assert_eq!(line_diff(&before, &before), "");
+    // A last newline taken away, line ends turned to CRLF, and a Markdown
+    // line break's two spaces each show.
+    assert_eq!(
+        line_diff("a\nb\n", "a\nb"),
+        "  a\n- b\n+ b\n\\ no newline at the end"
+    );
+    assert_eq!(line_diff("a\nb\n", "a\r\nb\r\n"), "- a\n- b\n+ a␍\n+ b␍");
+    assert_eq!(
+        line_diff("Done.\nNext\n", "Done.  \nNext\n"),
+        "- Done.\n+ Done.··\n  Next"
+    );
     let many: String = (1..=300).map(|n| format!("new {n}\n")).collect();
     let diff = line_diff("", &many);
     assert_eq!(diff.lines().count(), DIFF_LINES + 1);
