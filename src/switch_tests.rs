@@ -981,3 +981,60 @@ async fn a_reopened_session_takes_the_size_and_window_of_its_conversation() {
     harness.crew.as_ref().unwrap().shutdown().await;
     managers.shutdown().await;
 }
+
+/// `/cost` counts the calls of a turn under way, before the turn records
+/// them in its run.
+#[tokio::test]
+async fn cost_counts_a_turn_under_way() {
+    let hold = Arc::new(Notify::new());
+    let server = ModelServer::start({
+        let hold = hold.clone();
+        Arc::new(move |_, body: String| {
+            let hold = hold.clone();
+            Box::pin(async move {
+                let (user, answers) = last_user_of(&body);
+                if answers {
+                    hold.notified().await;
+                    complete("m2", "Counted.")
+                } else if user.contains("Count.") {
+                    crate::mock_model::with_input(
+                        tool_call(
+                            "m1",
+                            message::MESSAGE_USER,
+                            serde_json::json!({"message": "Counting."}),
+                        ),
+                        7_777,
+                    )
+                } else {
+                    complete("m", "Done.")
+                }
+            })
+        })
+    })
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    say(&mut harness, &mut inputs, "Hello.").await;
+    harness.publish_details();
+    let details = harness.details.clone();
+    let before = details.cost().main.input;
+    let reading = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while details.cost().main.input < before + 7_777 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok()
+    });
+    let turn = harness.turn(Prompt::User("Count.".into()), &mut inputs);
+    let release = async {
+        let counted = reading.await.unwrap();
+        hold.notify_one();
+        counted
+    };
+    let (end, counted) = tokio::join!(turn, release);
+    assert!(matches!(end, TurnEnd::Answered));
+    assert!(counted, "the call under way counted before the turn ended");
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

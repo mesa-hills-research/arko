@@ -501,6 +501,42 @@ pub fn generation(
     Ok(generation)
 }
 
+/// The model settings an agent's configuration `config` runs, as `/model`
+/// names them: its model, the effort its reasoning was set up with (the
+/// first `generation` gives the same reasoning for, else `fallback`), its
+/// fast mode, long cache and handover size.
+pub fn settings_of(config: &arko_agents::AgentConfig, fallback: Effort) -> ModelSettings {
+    let model = &config.llm_config.model;
+    let generation = &config.llm_config.generation_config;
+    let have = serde_json::to_value(&generation.reasoning).ok();
+    let effort = efforts(model)
+        .iter()
+        .copied()
+        .find(|effort| {
+            [true, false].iter().any(|thinking_text| {
+                generation_of(model, *effort, *thinking_text)
+                    .is_some_and(|candidate| serde_json::to_value(&candidate.reasoning).ok() == have)
+            })
+        })
+        .unwrap_or_else(|| fit_effort(model, fallback));
+    ModelSettings {
+        model: model_name(model),
+        effort,
+        fast: generation.anthropic_fast_mode == Some(true)
+            || generation.openai_service_tier == Some(OpenAIServiceTier::Fast),
+        cache_1h: generation.long_prompt_cache == Some(true),
+        handover_at: config
+            .handover
+            .as_ref()
+            .and_then(|handover| handover.at_input_tokens),
+    }
+}
+
+/// [`generation`] at `effort`, without fast mode or a long cache.
+fn generation_of(model: &Model, effort: Effort, thinking_text: bool) -> Option<GenerationConfig> {
+    generation(model, effort, false, false, thinking_text).ok()
+}
+
 /// Gemini thinks at low, medium or high: higher efforts are high, and
 /// Gemini 3 Pro, which has no medium, thinks high at medium.
 fn gemini_level(model: &Model, effort: Effort) -> GeminiThinkingLevel {
@@ -1643,10 +1679,28 @@ pub fn plan_of(model: &Model, openai_auth: Option<OpenAiAuth>) -> Option<&'stati
 /// What a call would have cost at API list prices: its estimate when a
 /// plan covered it, else what it was billed.
 pub(crate) fn at_api_prices(usage: &UsageInfo, billed: f64) -> f64 {
-    if usage.billing == BillingKind::Subscription {
-        usage.total_cost
-    } else {
-        billed
+    match usage.billing {
+        BillingKind::Subscription => usage.total_cost,
+        // Calls billed in different ways: the estimate covers them all,
+        // those a plan paid for too.
+        BillingKind::Mixed => usage.total_cost.max(billed),
+        _ => billed,
+    }
+}
+
+/// The plan that paid for calls of `model` whose usage was billed as
+/// `billing`: by the model's provider, whatever the session reaches OpenAI
+/// models by now (a run saved on the ChatGPT login stays the ChatGPT plan's
+/// after the session moved to an API key). `None` for calls billed per
+/// token.
+fn plan_that_paid(model: &Model, billing: BillingKind) -> Option<&'static str> {
+    if !matches!(billing, BillingKind::Subscription | BillingKind::Mixed) {
+        return None;
+    }
+    match model.provider {
+        Provider::ClaudeCode => Some(plan_name(Some(SubscriptionPlan::ClaudeCode))),
+        Provider::OpenAI => Some(plan_name(Some(SubscriptionPlan::ChatGpt))),
+        _ => None,
     }
 }
 
@@ -1818,53 +1872,55 @@ pub fn cost_report(
     main_runs: &[RunCost],
     plans: &std::collections::BTreeMap<String, String>,
 ) -> Vec<CostLine> {
-    let (main, workers) = cost_shares(ledger, settings, main_runs);
+    let (main, workers) = cost_shares(ledger, settings, main_runs, None);
     cost_lines(&main, &workers, plans)
 }
 
 /// The main agent's part of the costs in `ledger`, one for each way its
 /// calls were paid for (a plan, or per token) in the order its runs first
-/// used it, and the workers' part. The main agent's runs `main_runs` say
-/// which plan paid for what, each by its own model, as conversations can
-/// run on different models. Without them (none is known) its calls in
-/// `ledger` go by the session's main model.
+/// used it, and the workers' part. The ledger says what the main agent
+/// used in all, its calls under way included. Its runs `main_runs` say
+/// which plan paid for what, each by its own model and billing, as
+/// conversations can run on different models. What the ledger has beyond
+/// what the runs recorded so far (a turn under way) is the current
+/// conversation's, on `current` (its model), paid for as the session pays
+/// for that model now. Without runs its calls go by `current`, else the
+/// session's main model.
 pub fn cost_shares(
     ledger: &CostLedger,
     settings: &Settings,
     main_runs: &[RunCost],
+    current: Option<&Model>,
 ) -> (Vec<CostShare>, CostShare) {
-    let plan_of_model = |model: &Model| plan_of(model, settings.openai_auth);
     let plan_of_settings = |model: &ModelSettings| {
         resolve_model(&model.model)
             .ok()
-            .and_then(|model| plan_of_model(&model))
+            .and_then(|model| plan_of(&model, settings.openai_auth))
+    };
+    let current_plan = match current {
+        Some(model) => plan_of(model, settings.openai_auth),
+        None => plan_of_settings(&settings.main),
     };
     let mut main = CostShare::default();
     let mut workers = CostShare::default();
+    let mut main_on_plan = false;
     for entry in &ledger.entries {
         let CostSource::Agent { agent_name, usage } = &entry.source else {
             continue;
         };
-        let (part, model) = if agent_name == crate::agents::MAIN {
-            (&mut main, &settings.main)
+        if agent_name == crate::agents::MAIN {
+            main.add(usage, entry.amount);
+            main_on_plan |= usage.billing == BillingKind::Subscription;
         } else {
-            (&mut workers, &settings.worker)
-        };
-        part.add(usage, entry.amount);
-        if usage.billing == BillingKind::Subscription {
-            part.plan = plan_of_settings(model);
+            workers.add(usage, entry.amount);
+            if usage.billing == BillingKind::Subscription {
+                workers.plan = plan_of_settings(&settings.worker);
+            }
         }
     }
     let mut parts: Vec<CostShare> = Vec::new();
-    for run in main_runs {
-        if run.usage.input_tokens + run.usage.output_tokens == 0 {
-            continue;
-        }
-        let plan = match run.usage.billing {
-            BillingKind::Subscription => plan_of_model(&run.model),
-            _ => None,
-        };
-        let at = match parts.iter().position(|part| part.plan == plan) {
+    let part_of = |parts: &mut Vec<CostShare>, plan: Option<&'static str>| -> usize {
+        match parts.iter().position(|part| part.plan == plan) {
             Some(at) => at,
             None => {
                 parts.push(CostShare {
@@ -1873,11 +1929,58 @@ pub fn cost_shares(
                 });
                 parts.len() - 1
             }
-        };
+        }
+    };
+    for run in main_runs
+        .iter()
+        .filter(|run| run.usage.input_tokens + run.usage.output_tokens > 0)
+    {
+        let at = part_of(&mut parts, plan_that_paid(&run.model, run.usage.billing));
         parts[at].add(&run.usage, run.usage.billed());
     }
     if parts.is_empty() {
-        parts.push(main);
+        main.plan = if main_on_plan { current_plan } else { None };
+        return (vec![main], workers);
+    }
+    // The runs split the ledger's total. What it has beyond them is the
+    // current conversation's, and a total the runs go past (they never do,
+    // as both count the same calls) holds them to it.
+    let recorded = CostShare::sum(&parts);
+    let rest = CostShare {
+        billed: (main.billed - recorded.billed).max(0.0),
+        api: (main.api - recorded.api).max(0.0),
+        input: main.input.saturating_sub(recorded.input),
+        output: main.output.saturating_sub(recorded.output),
+        plan: None,
+    };
+    if rest.used() || rest.billed > 0.0 || rest.api > 0.0 {
+        let at = part_of(&mut parts, current_plan);
+        let part = &mut parts[at];
+        part.billed += rest.billed;
+        part.api += rest.api;
+        part.input += rest.input;
+        part.output += rest.output;
+    }
+    let scale = |total: f64, sum: f64| {
+        if sum > total && sum > 0.0 {
+            total / sum
+        } else {
+            1.0
+        }
+    };
+    let (billed, api) = (
+        scale(main.billed, recorded.billed),
+        scale(main.api, recorded.api),
+    );
+    let tokens = |total: usize, sum: usize, part: usize| match sum > total {
+        true => (part as f64 * total as f64 / sum as f64).round() as usize,
+        false => part,
+    };
+    for part in &mut parts {
+        part.billed *= billed;
+        part.api *= api;
+        part.input = tokens(main.input, recorded.input, part.input);
+        part.output = tokens(main.output, recorded.output, part.output);
     }
     (parts, workers)
 }
@@ -3403,8 +3506,11 @@ mod tests {
                 .any(|(_, line)| line == "≈ $3.90 at API prices, which the ChatGPT plan covers")
         );
         // Runs of one plan, one of them before a switch, read as one part.
+        let ledger = |entries: &[&arko_workflows::budget::CostEntry]| CostLedger {
+            entries: entries.iter().map(|entry| (*entry).clone()).collect(),
+        };
         let both = [run("cc:opus", &on_claude), run("cc:fable", &on_claude)];
-        let (parts, _) = cost_shares(&CostLedger::default(), &switched, &both);
+        let (parts, _) = cost_shares(&ledger(&[&on_claude, &on_claude]), &switched, &both, None);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].plan, Some("Claude plan"));
         assert_eq!(parts[0].input, 240_000);
@@ -3412,7 +3518,7 @@ mod tests {
         let per_token = call(MAIN, 10_000, 1_000, 0.2, 0.2);
         let runs = [run("cc:opus", &on_claude), run("opus", &per_token)];
         let opus = settings(model("opus"), model("opus"));
-        let (parts, _) = cost_shares(&CostLedger::default(), &opus, &runs);
+        let (parts, _) = cost_shares(&ledger(&[&on_claude, &per_token]), &opus, &runs, None);
         assert_eq!(
             parts.iter().map(|part| part.plan).collect::<Vec<_>>(),
             [Some("Claude plan"), None]
@@ -3420,6 +3526,89 @@ mod tests {
         let total = CostShare::sum(&parts);
         assert!((total.billed - 0.2).abs() < 1e-9 && (total.api - 3.2).abs() < 1e-9);
         assert_eq!(total.plan, None);
+    }
+
+    /// The ledger says what the main agent used, calls under way included,
+    /// and its runs only split it. What the runs haven't recorded yet (a
+    /// turn under way) is the current conversation's, on its model's plan.
+    #[test]
+    fn calls_under_way_count_for_the_current_conversation() {
+        use crate::agents::MAIN;
+        let run = |name: &str, entry: &arko_workflows::budget::CostEntry| RunCost {
+            model: resolve_model(name).unwrap(),
+            usage: match &entry.source {
+                CostSource::Agent { usage, .. } => (**usage).clone(),
+                CostSource::Manual { .. } => unreachable!(),
+            },
+        };
+        let on_claude = call(MAIN, 120_000, 8_000, 3.0, 0.0);
+        let on_chatgpt = call(MAIN, 50_000, 1_000, 0.9, 0.0);
+        let under_way = call(MAIN, 20_000, 500, 0.3, 0.0);
+        let switched = settings(model("sol"), model("sol"));
+        let ledger = CostLedger {
+            entries: vec![on_claude.clone(), on_chatgpt.clone(), under_way],
+        };
+        let runs = [run("cc:opus", &on_claude), run("sol", &on_chatgpt)];
+        let sol = resolve_model("sol").unwrap();
+        let (parts, _) = cost_shares(&ledger, &switched, &runs, Some(&sol));
+        let shown: Vec<(Option<&str>, usize)> =
+            parts.iter().map(|part| (part.plan, part.input)).collect();
+        assert_eq!(
+            shown,
+            [
+                (Some("Claude plan"), 120_000),
+                (Some("ChatGPT plan"), 70_000)
+            ]
+        );
+        assert!(
+            (CostShare::sum(&parts).api - 4.2).abs() < 1e-9,
+            "the ledger's total"
+        );
+        // Back in the Claude Code conversation, its turn under way is its.
+        let opus = resolve_model("cc:opus").unwrap();
+        let (parts, _) = cost_shares(&ledger, &switched, &runs, Some(&opus));
+        assert_eq!(parts[0].input, 140_000);
+        assert_eq!(parts[1].input, 50_000);
+    }
+
+    /// A saved run's plan is its own model's and billing's, whatever the
+    /// session reaches OpenAI models by now, and a run billed in different
+    /// ways keeps the API price of what a plan paid for.
+    #[test]
+    fn a_saved_runs_plan_doesnt_follow_the_sessions_login_now() {
+        use crate::agents::MAIN;
+        let entry = call(MAIN, 50_000, 1_000, 0.9, 0.0);
+        let usage = match &entry.source {
+            CostSource::Agent { usage, .. } => (**usage).clone(),
+            CostSource::Manual { .. } => unreachable!(),
+        };
+        let mut on_key = settings(model("sol"), model("sol"));
+        on_key.openai_auth = Some(OpenAiAuth::ApiKey);
+        let runs = [RunCost {
+            model: resolve_model("sol").unwrap(),
+            usage: usage.clone(),
+        }];
+        let ledger = CostLedger {
+            entries: vec![entry.clone()],
+        };
+        let (parts, _) = cost_shares(&ledger, &on_key, &runs, None);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].plan, Some("ChatGPT plan"));
+        assert!((parts[0].api - 0.9).abs() < 1e-9);
+        // Some of a run's calls on the plan and some per token.
+        let mixed = UsageInfo {
+            billing: BillingKind::Mixed,
+            total_cost: 3.0,
+            billed_cost: Some(0.5),
+            ..usage
+        };
+        assert!((at_api_prices(&mixed, mixed.billed()) - 3.0).abs() < 1e-9);
+        let runs = [RunCost {
+            model: resolve_model("cc:opus").unwrap(),
+            usage: mixed,
+        }];
+        let (parts, _) = cost_shares(&CostLedger::default(), &on_key, &runs, None);
+        assert_eq!(parts[0].plan, Some("Claude plan"));
     }
 
     /// The picker offers only the efforts each model takes, and a model

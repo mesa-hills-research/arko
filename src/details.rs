@@ -543,11 +543,17 @@ impl Details {
         let workflow = lock(&self.gauges.workflow).clone();
         let stats = lock(&self.gauges.stats).clone();
         let (main_parts, workers) = match (&workflow, self.settings()) {
-            (Some(workflow), Some(settings)) => providers::cost_shares(
-                &workflow.cost_ledger(),
-                &settings,
-                &providers::main_run_costs(workflow),
-            ),
+            (Some(workflow), Some(settings)) => {
+                // (The current conversation's, which a turn under way uses.)
+                let current =
+                    providers::resolve_model(&lock(&self.gauges.models).conversation).ok();
+                providers::cost_shares(
+                    &workflow.cost_ledger(),
+                    &settings,
+                    &providers::main_run_costs(workflow),
+                    current.as_ref(),
+                )
+            }
             _ => (vec![CostShare::default()], CostShare::default()),
         };
         let main = CostShare::sum(&main_parts);
