@@ -1111,6 +1111,13 @@ impl Stream {
         }
     }
 
+    /// Sends the status even when it went out already.
+    fn send_status_again(&mut self) {
+        self.status = self.app.status(&self.app.feed.activity());
+        self.pending
+            .push_back(Event::default().event("status").data(self.status.clone()));
+    }
+
     fn take(&mut self, update: Update) {
         match update {
             Update::Item(item) => {
@@ -1122,9 +1129,11 @@ impl Stream {
                         .data(serde_json::to_string(&page_item).unwrap_or_default()),
                 );
                 // A command's answer comes as its setting changes, so the
-                // page shows the new value with it.
+                // page shows the new value with it. Always, since the check
+                // may have sent the new value a moment before the answer,
+                // and the page reads the status that follows the answer.
                 if matches!(item.kind, Kind::Output | Kind::Notice) {
-                    self.send_status();
+                    self.send_status_again();
                 }
             }
             Update::Append { id, text } => {
@@ -3364,6 +3373,32 @@ mod tests {
         assert!(answered.elapsed() < Duration::from_millis(500));
         assert_eq!((answer.len(), status.len()), (1, 1));
         assert_eq!(status[0].1["settings"]["extra_rules"], "all");
+    }
+
+    /// A setting can change, and the status check send the new value, just
+    /// before the command's answer is posted. The answer still has a status
+    /// after it, which the page reads as the answer's.
+    #[tokio::test]
+    async fn a_commands_answer_has_its_status_after_it_when_the_check_sent_it_first() {
+        use super::super::feed::Level;
+        let feed = Feed::new("main");
+        let meter = Arc::new(Moving(Mutex::new(Reading::default())));
+        let served = serve_with(&feed, "127.0.0.1:0", Info::default(), meter.clone());
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+
+        lock(&meter.0).settings.extra_rules = crate::agents::ExtraRules::All;
+        read_until(&mut stream, &mut buffer, |name, data| {
+            name == "status" && data["settings"]["extra_rules"] == "all"
+        })
+        .await;
+        feed.notice(Level::Info, "Extra rules for small models are set to all.");
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "status").await;
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["item", "status"]);
+        assert_eq!(events[1].1["settings"]["extra_rules"], "all");
     }
 
     /// The status carries the main agent's prompt cache once its lifetime
