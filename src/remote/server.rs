@@ -1367,7 +1367,7 @@ async fn message(
             let command = format!("/message {worker} {}", text.trim());
             continue_worker(&app, command, body.confirm_uncached)
         }
-        Some((text, _)) if text.trim().starts_with("/message ") => {
+        Some((text, _)) if crate::worker_cache::message_parts(&text).is_some() => {
             continue_worker(&app, text, body.confirm_uncached)
         }
         Some((text, _)) => {
@@ -1392,11 +1392,8 @@ fn continue_worker(app: &App, command: String, confirmed: bool) -> Response {
         return app.act(Action::Continue(command));
     }
     let now = chrono::Utc::now();
-    let cache = command
-        .trim()
-        .strip_prefix("/message")
-        .and_then(|argument| argument.trim().split_once(char::is_whitespace))
-        .and_then(|(to, _)| app.feed.worker_summary(to.trim()))
+    let cache = crate::worker_cache::message_parts(&command)
+        .and_then(|(to, _)| app.feed.worker_summary_named(to))
         .and_then(|worker| worker.cache())
         .filter(|cache| cache.asks(now));
     match cache {
@@ -4004,8 +4001,9 @@ mod tests {
 
     /// A message that continues a worker whose prompt cache expired gets a
     /// 409 with what continuing costs and `"confirm": "continue"`, from the
-    /// worker's view and as a `/message`. With `confirm_uncached` it goes,
-    /// marked confirmed. A warm cache sends it as before.
+    /// worker's view and as a `/message`, however the worker is typed. With
+    /// `confirm_uncached` it goes, marked confirmed. A warm cache sends it as
+    /// before.
     #[tokio::test]
     async fn continuing_a_worker_whose_cache_expired_waits_for_the_pages_confirmation() {
         use super::super::WorkerChange;
@@ -4030,9 +4028,13 @@ mod tests {
         feed.worker_cache("r3", Some(&cache(now - chrono::Duration::hours(2))));
         let mut served = serve(&feed);
         let cookie = served.login().await;
+        // (A tab, and the worker's name in capitals, as the session reads
+        // them.)
         for body in [
             serde_json::json!({"text": "Go on.", "to": "r3"}),
+            serde_json::json!({"text": "Go on.", "to": "R3"}),
             serde_json::json!({"text": "/message r3 Go on."}),
+            serde_json::json!({"text": "/message\tR3 Go on."}),
         ] {
             let response = served
                 .post("/api/message", Some(&cookie), &body.to_string())

@@ -702,9 +702,9 @@ impl Details {
     /// The prompt cache of worker `id` once it ended, and what continuing it
     /// costs, for an app that asks before it continues the worker (see
     /// [`WorkerCache::asks`](crate::worker_cache::WorkerCache::asks) and
-    /// [`warning`](crate::worker_cache::WorkerCache::warning)). It reads the
-    /// worker's task the first time, so call it off the UI thread. A
-    /// worker's summary has the same without reading
+    /// [`warning`](crate::worker_cache::WorkerCache::warning)), from the
+    /// session's record of the worker's latest request (nothing is read). A
+    /// worker's summary has the same
     /// ([`WorkerSummary::cache`](crate::remote::WorkerSummary::cache)).
     /// `None` while it runs, and when that isn't known.
     pub fn worker_cache(&self, id: &str) -> Option<crate::worker_cache::WorkerCache> {

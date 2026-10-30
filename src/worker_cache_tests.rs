@@ -67,10 +67,10 @@ fn lead(body: &str, step: &str) -> String {
     if answers {
         return complete(step, "Done.");
     }
-    let message = |to: &str, text: &str, confirm: bool| {
+    let message = |to: &str, text: &str, confirm: Option<serde_json::Value>| {
         let mut arguments = serde_json::json!({"to": to, "message": text});
-        if confirm {
-            arguments[crate::worker_cache::CONFIRM_PARAM] = true.into();
+        if let Some(confirm) = confirm {
+            arguments[crate::worker_cache::CONFIRM_PARAM] = confirm;
         }
         tool_call(step, crew::MESSAGE_AGENT, arguments)
     };
@@ -89,13 +89,15 @@ fn lead(body: &str, step: &str) -> String {
     } else if user.contains("List them.") {
         tool_call(step, crew::LIST_AGENTS, serde_json::json!({}))
     } else if user.contains("Continue r1 anyway.") {
-        message("r1", "Go on anyway.", true)
+        message("r1", "Go on anyway.", Some(true.into()))
+    } else if user.contains("Continue r1, confirmed in words.") {
+        message("r1", "Go on, in words.", Some("true".into()))
     } else if user.contains("Continue r1 while it runs.") {
-        message("r1", "And the docs.", false)
+        message("r1", "And the docs.", None)
     } else if user.contains("Continue r1.") {
-        message("r1", "More of the big task.", false)
+        message("r1", "More of the big task.", None)
     } else if user.contains("Continue r2.") {
-        message("r2", "More of the small task.", false)
+        message("r2", "More of the small task.", None)
     } else {
         complete(step, "Noted.")
     }
@@ -229,6 +231,27 @@ async fn message_agent_asks_before_continuing_a_large_worker_whose_cache_expired
     assert!(got(&seen, "r2", "More of the small task."));
     assert!(!main_output(&seen).contains("cache expired"));
 
+    // `confirm_uncached` given as the word "true" confirms too.
+    turn(
+        &mut harness,
+        &mut inputs,
+        "Continue r1, confirmed in words.",
+    )
+    .await;
+    assert!(got(&seen, "r1", "Go on, in words."));
+    assert!(!main_output(&seen).contains("cache expired"));
+    // (It went on and ended, and its cache expired again.)
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert!(
+        harness
+            .crew
+            .as_ref()
+            .unwrap()
+            .worker_cache("r1")
+            .unwrap()
+            .asks(chrono::Utc::now())
+    );
+
     // Confirmed, r1 continues. While it runs, a message reaches it at once.
     assert!(matches!(
         harness
@@ -290,11 +313,12 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
             .count()
     };
 
-    assert!(harness.live_command("/message r1 Check the docs.", Source::Terminal));
+    // (A tab and the worker's name in capitals are read as `/message r1`.)
+    assert!(harness.live_command("/message\tR1 Check the docs.", Source::Terminal));
     assert_eq!(warnings(&harness), 1);
     assert!(shown(&harness.feed).iter().any(|(_, text, _)| text
         == "r1's cache expired just now. Continuing re-reads about 50k tokens without it, using your ChatGPT plan. The same /message again continues it."));
-    // Another message asks again.
+    // Another message asks again, and the first again then asks again too.
     assert!(harness.live_command("/message r1 Check the tests.", Source::Terminal));
     assert_eq!(warnings(&harness), 2);
     assert!(!got(&seen, "r1", "Check the docs.") && !got(&seen, "r1", "Check the tests."));
@@ -321,4 +345,69 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
     assert_eq!(warnings(&harness), 2);
     until(|| got(&seen, "r1", "Check the build.")).await;
     harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A worker's cache counts from when its latest request went out, not from
+/// when its run ended, so a final request that took long leaves less of
+/// the cache, and continuing asks sooner.
+#[tokio::test]
+async fn a_workers_cache_counts_from_its_latest_request_not_its_end() {
+    let arrived: Arc<Mutex<Option<chrono::DateTime<chrono::Utc>>>> = Arc::default();
+    let seen = arrived.clone();
+    let server = ModelServer::start(Arc::new(move |index, body: String| {
+        let who = sender(&body);
+        let seen = seen.clone();
+        Box::pin(async move {
+            let step = format!("s{index}");
+            if who == "r1" {
+                // The model takes two seconds over r1's last request.
+                *seen.lock().unwrap() = Some(chrono::Utc::now());
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                with_input(complete(&step, "Big done."), 50_000)
+            } else {
+                lead(&body, &step)
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    turn(&mut harness, &mut inputs, "Start r1.").await;
+    let crew = harness.crew.clone().unwrap();
+    let cache = crew.worker_cache("r1").unwrap();
+    let arrived = arrived.lock().unwrap().unwrap();
+    // ChatGPT keeps the cache 30 minutes from the request's start.
+    let went_out = cache.expires_at - chrono::Duration::minutes(30);
+    assert!(
+        went_out <= arrived && arrived - went_out < chrono::Duration::seconds(1),
+        "{went_out} against {arrived}"
+    );
+    let workflow = harness.workflow().clone();
+    let run = workflow
+        .subagents()
+        .into_iter()
+        .find(|run| run.handle == "r1")
+        .unwrap();
+    let ended = workflow
+        .agent_result(run.run_id)
+        .unwrap()
+        .info()
+        .end_time
+        .unwrap();
+    assert!(ended - went_out >= chrono::Duration::seconds(2));
+    // With a one-second cache, it expired before the run ended, so
+    // continuing asks at once.
+    crew.shorten_cache("r1", Duration::from_secs(1));
+    let now = chrono::Utc::now();
+    assert!(crew.worker_cache("r1").unwrap().asks(now));
+    assert!(
+        harness
+            .feed
+            .worker_summary("r1")
+            .unwrap()
+            .cache()
+            .unwrap()
+            .asks(now)
+    );
+    crew.shutdown().await;
 }

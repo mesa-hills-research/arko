@@ -911,6 +911,7 @@ fn stopped_by(active: &[SubagentRecord], accepted: &[Uuid]) -> usize {
 /// start workers.
 struct StartHook {
     models: Arc<Mutex<WorkerRecords>>,
+    requests: Arc<crate::worker_cache::Requests>,
     workflow: Arc<Mutex<Weak<Workflow>>>,
     /// The starts that passed the hook and have no record yet, by run, with
     /// their starter and since when.
@@ -926,13 +927,12 @@ struct StartHook {
     hub: HubSlot,
 }
 
-/// The prompt cache of the worker run `record` in `workflow`, once it has
-/// ended, from its setup in `models`, its run's last request and its
-/// conversation's size then (its task is read for it once). `None` while it
-/// runs, and when its cache lifetime or size isn't known.
+/// The prompt cache of the worker run `record`, once it has ended, from its
+/// setup in `models` and its latest request in `requests`. `None` while it
+/// runs, and when its cache lifetime or latest request isn't known.
 fn cache_of(
     models: &Mutex<WorkerRecords>,
-    workflow: &Workflow,
+    requests: &crate::worker_cache::Requests,
     record: &SubagentRecord,
     openai_auth: Option<crate::providers::OpenAiAuth>,
 ) -> Option<crate::worker_cache::WorkerCache> {
@@ -946,10 +946,28 @@ fn cache_of(
         .get(&record.run_id)?
         .llm_config
         .clone();
-    let result = workflow.agent_result(record.run_id)?;
-    let last = result.info().end_time.unwrap_or(record.since);
-    let tokens = result.task().ok()?.current_conversation_context_size()?;
-    crate::worker_cache::of(&record.handle, &llm, last, tokens, openai_auth)
+    let request = requests.get(record.run_id)?;
+    let at = chrono::DateTime::from_timestamp_millis(request.at)?;
+    crate::worker_cache::of(&record.handle, &llm, at, request.input, openai_auth)
+}
+
+/// What the crew's events task received next: an agent's event (`None` once
+/// they ended), or a worker's.
+enum Next {
+    Agent(Option<Box<arko_workflows::WorkflowEvent>>),
+    Worker(
+        Result<arko_workflows::subagents::SubagentEvent, tokio::sync::broadcast::error::RecvError>,
+    ),
+}
+
+/// The next of the agents' `events`, and never once they ended (`None`).
+async fn next_agent_event(
+    events: &mut Option<arko_workflows::EventReceiver>,
+) -> Option<Box<arko_workflows::WorkflowEvent>> {
+    match events {
+        Some(events) => events.recv().await.map(Box::new),
+        None => std::future::pending().await,
+    }
 }
 
 /// Where the crew and its start hook share the session's MCP hub.
@@ -995,9 +1013,7 @@ impl SubagentHook for StartHook {
         drop(models);
         // Once it has ended, what continuing it re-reads, so that the
         // starter weighs that before continuing it.
-        if let Some(workflow) = self.workflow.lock().unwrap().upgrade()
-            && let Some(cache) = cache_of(&self.models, &workflow, record, self.openai_auth)
-        {
+        if let Some(cache) = cache_of(&self.models, &self.requests, record, self.openai_auth) {
             text.push_str(&format!(", {}", cache.line(chrono::Utc::now())));
         }
         Some(text)
@@ -1187,6 +1203,9 @@ fn describe_lines(worker: &WorkerFacts) -> String {
 pub struct Crew {
     setup: Setup,
     models: Arc<Mutex<WorkerRecords>>,
+    /// Each worker run's latest model request, which its prompt cache lasts
+    /// from.
+    requests: Arc<crate::worker_cache::Requests>,
     /// The project's instructions new workers get in their first message,
     /// if any (see `project`).
     project: Arc<Mutex<Option<String>>>,
@@ -1219,6 +1238,7 @@ impl Crew {
         (
             Arc::new(Self {
                 models: Arc::new(Mutex::new(WorkerRecords::load(&setup.session_dir))),
+                requests: Arc::new(crate::worker_cache::Requests::load(&setup.session_dir)),
                 project: Arc::default(),
                 kept: KeptNotes::new(&setup.session_dir),
                 spending,
@@ -1256,6 +1276,7 @@ impl Crew {
             ))
             .hook(Arc::new(StartHook {
                 models,
+                requests: self.requests.clone(),
                 workflow,
                 flight: Mutex::default(),
                 feed,
@@ -1475,12 +1496,15 @@ impl Crew {
             old.abort();
         }
         let mut events = workflow.subscribe_subagents();
+        let mut requests = Some(workflow.subscribe_events_lossless());
+        let runs = workflow.subagents();
+        self.record_old_requests(workflow, &runs);
         if let Some(feed) = &self.setup.feed {
             // The workers of a resumed session, for the clients' lists, with
-            // how long they ran and how many calls they made before.
+            // how long they ran and how many calls they made before, and the
+            // prompt caches of those that ended.
             let ran: BTreeMap<String, u64> = load_kept(&self.setup.session_dir, RUN_TIMES_FILE);
             let calls: BTreeMap<String, u32> = load_kept(&self.setup.session_dir, TOOL_CALLS_FILE);
-            let runs = workflow.subagents();
             for run in &runs {
                 let state = match run.state {
                     SubagentState::Queued => remote::WorkerState::Queued,
@@ -1493,7 +1517,8 @@ impl Crew {
                     SubagentState::Closed if run.report.is_some() => remote::WorkerState::Finished,
                     SubagentState::Closed => remote::WorkerState::Stopped,
                 };
-                feed.worker_restored(
+                let cache = cache_of(&self.models, &self.requests, run, self.setup.openai_auth);
+                feed.worker_restored_with_cache(
                     &run.handle,
                     &run.task,
                     state,
@@ -1502,29 +1527,13 @@ impl Crew {
                     run.since.timestamp_millis(),
                     ran.get(&run.handle).copied().unwrap_or(0),
                     calls.get(&run.handle).copied().unwrap_or(0),
+                    cache.as_ref(),
                 );
                 // Who started it, what it started with and what it cost before.
                 if let Some(parent) = started_by(&runs, run.run_id) {
                     feed.worker_under(&run.handle, &parent);
                 }
                 feed.worker_info(&run.handle, self.worker_info(workflow, run, true));
-            }
-            // The prompt caches of those that ended, read from their tasks
-            // off the async threads.
-            let ended: Vec<SubagentRecord> = runs
-                .into_iter()
-                .filter(|run| !run.state.is_active())
-                .collect();
-            if !ended.is_empty() {
-                let (models, workflow, feed) =
-                    (self.models.clone(), workflow.clone(), feed.clone());
-                let openai_auth = self.setup.openai_auth;
-                tokio::task::spawn_blocking(move || {
-                    for run in ended {
-                        let cache = cache_of(&models, &workflow, &run, openai_auth);
-                        feed.worker_cache(&run.handle, cache.as_ref());
-                    }
-                });
             }
         }
         if self.has_mail() {
@@ -1533,7 +1542,28 @@ impl Crew {
         let weak = Arc::downgrade(self);
         *self.events.lock().unwrap() = Some(tokio::spawn(async move {
             loop {
-                let event = match events.recv().await {
+                // The workers' requests come first, so the request that
+                // ended a run is in the record before the run's end, which
+                // reads it, is told.
+                let received = tokio::select! {
+                    biased;
+                    event = next_agent_event(&mut requests) => Next::Agent(event),
+                    event = events.recv() => Next::Worker(event),
+                };
+                let received = match received {
+                    Next::Agent(Some(event)) => {
+                        if let Some(crew) = weak.upgrade() {
+                            crew.note_request(&event);
+                        }
+                        continue;
+                    }
+                    Next::Agent(None) => {
+                        requests = None;
+                        continue;
+                    }
+                    Next::Worker(received) => received,
+                };
+                let event = match received {
                     Ok(event) => event,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         if let Some(crew) = weak.upgrade() {
@@ -1618,16 +1648,19 @@ impl Crew {
                 | WorkerChange::Failed { .. }
                 | WorkerChange::Stopped { .. }
         );
+        // Its prompt cache from its latest request on, once it ended, which
+        // a run that starts again renews. An end is told with its cache in
+        // place, so no client sees it ended without one.
+        let cache = record.filter(|_| ended).and_then(|record| {
+            cache_of(&self.models, &self.requests, record, self.setup.openai_auth)
+        });
+        if ended {
+            feed.worker_cache(handle, cache.as_ref());
+        }
         feed.worker(handle, &task, change);
-        // Its prompt cache from its last request on, once it ended, which
-        // a run that starts again renews.
-        let cache = match (ended, &workflow, record) {
-            (true, Some(workflow), Some(record)) => {
-                cache_of(&self.models, workflow, record, self.setup.openai_auth)
-            }
-            _ => None,
-        };
-        feed.worker_cache(handle, cache.as_ref());
+        if !ended {
+            feed.worker_cache(handle, None);
+        }
         if ended {
             self.save_worker_figures();
         }
@@ -1784,7 +1817,65 @@ impl Crew {
             .subagents()
             .into_iter()
             .find(|run| run.handle.eq_ignore_ascii_case(handle.trim()))?;
-        cache_of(&self.models, &workflow, &record, self.setup.openai_auth)
+        cache_of(
+            &self.models,
+            &self.requests,
+            &record,
+            self.setup.openai_auth,
+        )
+    }
+
+    /// Keeps a worker run's model request as its latest once it ended: when
+    /// it went out, and its input. (The requests of Claude Code's own
+    /// subagents aren't the worker's conversation.)
+    fn note_request(&self, event: &arko_workflows::WorkflowEvent) {
+        match &event.event {
+            arko_agents::AgentEvent::ModelRequestStarted { subagent: None, .. }
+                if self
+                    .models
+                    .lock()
+                    .unwrap()
+                    .runs
+                    .contains_key(&event.agent_run_id) =>
+            {
+                self.requests
+                    .started(event.agent_run_id, event.timestamp.timestamp_millis());
+            }
+            arko_agents::AgentEvent::ModelCallUsageReported(usage) if usage.subagent.is_none() => {
+                self.requests.ended(event.agent_run_id, usage.input_tokens);
+            }
+            _ => {}
+        }
+    }
+
+    /// Keeps the latest request of each ended worker run in `runs` that has
+    /// none in the record (a session an older Arko saved): its input as its
+    /// task has it, and the run's end as its time, the nearest the task
+    /// says. Each such task is read once, as the session opens.
+    fn record_old_requests(&self, workflow: &Workflow, runs: &[SubagentRecord]) {
+        let missing: Vec<(Uuid, crate::worker_cache::LastRequest)> = runs
+            .iter()
+            .filter(|run| {
+                !run.state.is_active()
+                    && self.requests.get(run.run_id).is_none()
+                    && self.models.lock().unwrap().runs.contains_key(&run.run_id)
+            })
+            .filter_map(|run| {
+                let result = workflow.agent_result(run.run_id)?;
+                let at = result.info().end_time.unwrap_or(run.since);
+                let input = result.task().ok()?.current_conversation_context_size()?;
+                Some((
+                    run.run_id,
+                    crate::worker_cache::LastRequest {
+                        at: at.timestamp_millis(),
+                        input,
+                    },
+                ))
+            })
+            .collect();
+        if !missing.is_empty() {
+            self.requests.put(missing);
+        }
     }
 
     /// Has worker `handle`'s prompt cache last `lifetime` after its run's
@@ -1807,7 +1898,12 @@ impl Crew {
             .generation_config
             .prompt_cache_lifetime_seconds = Some(lifetime.as_secs());
         if let Some(feed) = &self.setup.feed {
-            let cache = cache_of(&self.models, &workflow, &record, self.setup.openai_auth);
+            let cache = cache_of(
+                &self.models,
+                &self.requests,
+                &record,
+                self.setup.openai_auth,
+            );
             feed.worker_cache(handle, cache.as_ref());
         }
     }

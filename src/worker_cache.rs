@@ -8,14 +8,24 @@
 //! the hour). The agents, and the user, are asked before continuing a
 //! worker whose cache expired, when its conversation is large enough for
 //! that to matter ([`CONFIRM_TOKENS`]).
+//!
+//! The cache lasts from the run's latest model request, which [`Requests`]
+//! keeps for each worker run in the session's folder, with the request's
+//! input. So a session that resumes knows each worker's cache at once.
 
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use arko_ai::Provider;
 use arko_ai::prompt_cache::PromptCacheLifetime;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::details::SwitchCost;
+use crate::lock;
 use crate::providers::{self, OpenAiAuth};
 
 /// Below this many tokens, re-reading a worker's conversation without its
@@ -101,11 +111,11 @@ impl WorkerCache {
     }
 }
 
-/// The prompt cache of a worker run that ended at `last_request`, with
-/// `tokens` of input then, on `llm` (its model and generation settings), in
-/// a session that reaches OpenAI models by `openai_auth`. `None` when its
-/// cache lifetime isn't known (Gemini, OpenRouter models other than Claude)
-/// or it has none.
+/// The prompt cache of a worker run whose latest request went out at
+/// `last_request`, with `tokens` of input, on `llm` (its model and
+/// generation settings), in a session that reaches OpenAI models by
+/// `openai_auth`. `None` when its cache lifetime isn't known (Gemini,
+/// OpenRouter models other than Claude) or it has none.
 pub(crate) fn of(
     worker: &str,
     llm: &arko_agents::AgentLLMConfig,
@@ -158,6 +168,97 @@ pub(crate) fn reread_cost(
         tokens,
         dollars,
         plan,
+    }
+}
+
+/// The worker and the message of a `/message` line, as the session reads
+/// it: "/message r3 Go on." gives `r3` and "Go on.". A tab separates as a
+/// space does. `None` for any other line, and for a `/message` without both.
+pub fn message_parts(line: &str) -> Option<(&str, &str)> {
+    let (name, argument) = crate::harness::split_live_command(line.trim())?;
+    if name != "/message" {
+        return None;
+    }
+    let (to, text) = argument.split_once(char::is_whitespace)?;
+    let text = text.trim();
+    (!to.is_empty() && !text.is_empty()).then_some((to, text))
+}
+
+/// The file in the session's folder that keeps each worker run's latest
+/// request.
+const REQUESTS_FILE: &str = "worker-requests.json";
+
+/// A worker run's latest model request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LastRequest {
+    /// When it went out (Unix milliseconds). The cache lasts from then.
+    pub at: i64,
+    /// Its input, in tokens, which continuing the run sends again.
+    pub input: usize,
+}
+
+/// Each worker run's latest model request, kept in memory and in the
+/// session's folder. A request counts once it has ended (its usage came
+/// back), from the time it went out. So a run that stopped during a
+/// request counts from the one before, which can only say the cache lapses
+/// sooner than it does.
+#[derive(Debug)]
+pub(crate) struct Requests {
+    path: PathBuf,
+    /// The requests that went out and haven't ended, by run, with when they
+    /// went out.
+    going: Mutex<HashMap<Uuid, i64>>,
+    ended: Mutex<BTreeMap<Uuid, LastRequest>>,
+}
+
+impl Requests {
+    /// The record in the session's folder `dir`. A missing or damaged one is
+    /// empty, as for a session saved before the record existed.
+    pub(crate) fn load(dir: &Path) -> Self {
+        let path = dir.join(REQUESTS_FILE);
+        let ended = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        Self {
+            path,
+            going: Mutex::default(),
+            ended: Mutex::new(ended),
+        }
+    }
+
+    /// A request of `run` went out at `at` (Unix milliseconds).
+    pub(crate) fn started(&self, run: Uuid, at: i64) {
+        lock(&self.going).insert(run, at);
+    }
+
+    /// The request of `run` that went out last ended with `input` tokens of
+    /// input. It is kept, and the record saved.
+    pub(crate) fn ended(&self, run: Uuid, input: usize) {
+        let Some(at) = lock(&self.going).remove(&run) else {
+            return;
+        };
+        self.put([(run, LastRequest { at, input })]);
+    }
+
+    /// The latest request of `run` that ended.
+    pub(crate) fn get(&self, run: Uuid) -> Option<LastRequest> {
+        lock(&self.ended).get(&run).copied()
+    }
+
+    /// Keeps `requests` as their runs' latest, and saves the record.
+    pub(crate) fn put(&self, requests: impl IntoIterator<Item = (Uuid, LastRequest)>) {
+        let mut ended = lock(&self.ended);
+        ended.extend(requests);
+        let written = serde_json::to_vec_pretty(&*ended)
+            .map_err(std::io::Error::other)
+            .and_then(|text| crate::session::write_whole(&self.path, &text));
+        if let Err(error) = written {
+            log::warn!(
+                "could not keep the workers' latest requests in {} ({error})",
+                self.path.display()
+            );
+        }
     }
 }
 

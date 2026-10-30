@@ -1553,10 +1553,8 @@ impl App {
     /// (the same text) continues the worker.
     fn asks_to_continue(&mut self, line: &str) -> bool {
         let now = chrono::Utc::now();
-        let cache = line
-            .strip_prefix("/message")
-            .and_then(|argument| argument.trim().split_once(char::is_whitespace))
-            .and_then(|(to, _)| self.transcript.worker(to.trim()))
+        let cache = crate::worker_cache::message_parts(line)
+            .and_then(|(to, _)| self.transcript.worker_named(to))
             .and_then(|worker| worker.cache())
             .filter(|cache| cache.asks(now));
         let Some(cache) = cache else {
@@ -3408,6 +3406,34 @@ pub(super) mod tests {
             [("/message r3 Go on.".to_string(), true)]
         );
         assert!(app.editor.is_empty());
+
+        // The worker in capitals is the same worker. (The box takes no
+        // tabs.)
+        type_text(&mut app, "/message R3 Go on.");
+        enter(&mut app);
+        assert!(messages(&mut app).is_empty());
+        assert_eq!(app.hint(), Some(warning));
+        enter(&mut app);
+        assert_eq!(
+            messages(&mut app),
+            [("/message R3 Go on.".to_string(), true)]
+        );
+
+        // Enter again after the 30 seconds asks again.
+        type_text(&mut app, "/message r3 Go on.");
+        enter(&mut app);
+        let (line, _) = app.continue_asked.take().unwrap();
+        let long_ago = Instant::now()
+            .checked_sub(CONTINUE_CONFIRM_WITHIN + Duration::from_secs(1))
+            .expect("a clock that goes back 31 seconds");
+        app.continue_asked = Some((line, long_ago));
+        enter(&mut app);
+        assert!(messages(&mut app).is_empty());
+        enter(&mut app);
+        assert_eq!(
+            messages(&mut app),
+            [("/message r3 Go on.".to_string(), true)]
+        );
 
         // Esc in between, or other text, asks again.
         type_text(&mut app, "/message r3 Go on.");

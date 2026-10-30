@@ -1143,6 +1143,31 @@ fn monitor_outcome(job: &JobSummary) -> (CallStatus, String) {
 }
 
 /// A worker's title: its task's first line, in brief.
+/// Puts `cache` (a worker's prompt cache once it ended, or none) in its
+/// `summary`. Whether that changed it.
+fn set_cache(
+    summary: &mut WorkerSummary,
+    cache: Option<&crate::worker_cache::WorkerCache>,
+) -> bool {
+    let before = (
+        summary.cache_expires_at,
+        summary.reread_tokens,
+        summary.reread_dollars,
+        summary.reread_plan.clone(),
+    );
+    summary.cache_expires_at = cache.map(|cache| cache.expires_at.timestamp_millis());
+    summary.reread_tokens = cache.map(|cache| cache.cost.tokens as u64);
+    summary.reread_dollars = cache.and_then(|cache| cache.cost.dollars);
+    summary.reread_plan = cache.and_then(|cache| cache.cost.plan).map(str::to_string);
+    before
+        != (
+            summary.cache_expires_at,
+            summary.reread_tokens,
+            summary.reread_dollars,
+            summary.reread_plan.clone(),
+        )
+}
+
 fn title(task: &str) -> String {
     let line = task
         .lines()
@@ -2988,11 +3013,32 @@ impl Feed {
         ran_ms: u64,
         tool_calls: u32,
     ) {
+        self.worker_restored_with_cache(
+            id, task, was, report, error, since, ran_ms, tool_calls, None,
+        );
+    }
+
+    /// [`worker_restored`](Self::worker_restored), with the prompt cache it
+    /// ended with in the same update, so no client sees it ended without
+    /// its cache.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn worker_restored_with_cache(
+        &self,
+        id: &str,
+        task: &str,
+        was: WorkerState,
+        report: Option<&str>,
+        error: Option<&str>,
+        since: i64,
+        ran_ms: u64,
+        tool_calls: u32,
+        cache: Option<&crate::worker_cache::WorkerCache>,
+    ) {
         let mut state = self.lock();
         if state.worker(id).is_some() {
             return;
         }
-        let summary = WorkerSummary {
+        let mut summary = WorkerSummary {
             title: title(task),
             state: was,
             started_at: was.is_active().then_some(since),
@@ -3008,6 +3054,7 @@ impl Feed {
             tool_calls,
             ..WorkerSummary::new(id)
         };
+        set_cache(&mut summary, cache);
         state.workers.push(Worker {
             summary,
             placed: None,
@@ -3069,24 +3116,7 @@ impl Feed {
         let Some(worker) = state.worker(id) else {
             return;
         };
-        let summary = &mut worker.summary;
-        let before = (
-            summary.cache_expires_at,
-            summary.reread_tokens,
-            summary.reread_dollars,
-            summary.reread_plan.clone(),
-        );
-        summary.cache_expires_at = cache.map(|cache| cache.expires_at.timestamp_millis());
-        summary.reread_tokens = cache.map(|cache| cache.cost.tokens as u64);
-        summary.reread_dollars = cache.and_then(|cache| cache.cost.dollars);
-        summary.reread_plan = cache.and_then(|cache| cache.cost.plan).map(str::to_string);
-        let after = (
-            summary.cache_expires_at,
-            summary.reread_tokens,
-            summary.reread_dollars,
-            summary.reread_plan.clone(),
-        );
-        if after != before {
+        if set_cache(&mut worker.summary, cache) {
             self.worker_changed(&mut state, id, false);
         }
     }
@@ -3123,6 +3153,18 @@ impl Feed {
     /// The summary of the worker `id`, as the clients have it.
     pub fn worker_summary(&self, id: &str) -> Option<WorkerSummary> {
         self.lock().worker(id).map(|worker| worker.summary.clone())
+    }
+
+    /// The summary of the worker `handle` as the user may type it: `R3`
+    /// finds `r3`, as `/message` does.
+    pub fn worker_summary_named(&self, handle: &str) -> Option<WorkerSummary> {
+        let handle = handle.trim();
+        let state = self.lock();
+        state
+            .workers
+            .iter()
+            .find(|worker| worker.summary.id.eq_ignore_ascii_case(handle))
+            .map(|worker| worker.summary.clone())
     }
 
     /// Makes sure the worker `id` has a summary; true when it is new.

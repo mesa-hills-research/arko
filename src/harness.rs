@@ -2860,10 +2860,8 @@ impl Harness {
     /// The `/message` in `text` continues its worker without asking, though
     /// its prompt cache expired: the user confirmed it in a front end.
     pub(crate) fn confirm_continue(&mut self, text: &str) {
-        if let Some(argument) = text.trim().strip_prefix("/message")
-            && let Some((to, words)) = argument.trim().split_once(char::is_whitespace)
-        {
-            self.continue_asked = Some((to.trim().to_ascii_lowercase(), words.trim().to_string()));
+        if let Some((to, words)) = crate::worker_cache::message_parts(text) {
+            self.continue_asked = Some((to.to_ascii_lowercase(), words.to_string()));
         }
     }
 
@@ -5207,8 +5205,6 @@ pub(crate) fn handover_text(asked: handover::Asked, compacts: bool) -> &'static 
     }
 }
 
-/// A live command, alone or with its argument: the command and the
-/// argument.
 /// `/openrouter`'s words, when the line is that command, which the session
 /// runs where it can wait.
 pub(crate) fn openrouter_words(text: &str) -> Option<&str> {
@@ -5217,8 +5213,10 @@ pub(crate) fn openrouter_words(text: &str) -> Option<&str> {
         .map(|(_, argument)| argument)
 }
 
+/// A live command, alone or with its argument (after a space or a tab):
+/// the command and the argument.
 pub(crate) fn split_live_command(text: &str) -> Option<(&str, &str)> {
-    let (name, argument) = text.split_once(' ').unwrap_or((text, ""));
+    let (name, argument) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
     LIVE_COMMANDS
         .contains(&name)
         .then_some((name, argument.trim()))

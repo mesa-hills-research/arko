@@ -4,11 +4,16 @@ use crate::agents::{Effort, ModelSettings};
 /// The generation settings of a worker on `name`, with the long cache when
 /// `long`, and the short one asked for outright when `short`.
 fn llm(name: &str, long: bool, short: bool) -> arko_agents::AgentLLMConfig {
+    llm_of(name, long, short, false)
+}
+
+/// [`llm`], in fast mode when `fast`.
+fn llm_of(name: &str, long: bool, short: bool, fast: bool) -> arko_agents::AgentLLMConfig {
     let model = providers::resolve_model(name).unwrap();
     let settings = ModelSettings {
         model: providers::model_name(&model),
         effort: Effort::High,
-        fast: false,
+        fast,
         cache_1h: long,
         handover_at: None,
     };
@@ -149,4 +154,88 @@ fn the_words_say_when_it_expired_and_what_continuing_costs() {
     assert_eq!(short_tokens(820), "820");
     assert_eq!(short_tokens(8_200), "8.2k");
     assert_eq!(short_tokens(1_200_000), "1.2M");
+}
+
+/// A worker run in fast mode costs what its fast mode's cache writes cost,
+/// from the run's own settings: Claude's fast mode and OpenAI's Fast tier.
+#[test]
+fn a_fast_runs_re_read_costs_its_fast_price() {
+    let key = Some(OpenAiAuth::ApiKey);
+    for name in ["opus", "sol"] {
+        let model = providers::resolve_model(name).unwrap();
+        let dollars = |fast| {
+            of("r1", &llm_of(name, false, false, fast), at(0), 100_000, key)
+                .unwrap()
+                .cost
+                .dollars
+                .unwrap()
+        };
+        let (fast_write, _) = providers::cache_prices(&model, 100_000, true, false);
+        let (write, _) = providers::cache_prices(&model, 100_000, false, false);
+        assert!(fast_write > write, "{name} has a fast price");
+        assert!((dollars(true) - 0.1 * fast_write).abs() < 1e-9, "{name}");
+        assert!((dollars(false) - 0.1 * write).abs() < 1e-9, "{name}");
+    }
+}
+
+/// `/message` takes the worker and the message after a space or a tab, as
+/// the session reads the line, and the worker as typed.
+#[test]
+fn a_message_line_gives_its_worker_and_text() {
+    assert_eq!(message_parts("/message r3 Go on."), Some(("r3", "Go on.")));
+    assert_eq!(
+        message_parts("  /message\tR3\t Go on. \n"),
+        Some(("R3", "Go on."))
+    );
+    assert_eq!(
+        message_parts("/message r3 Two\nlines."),
+        Some(("r3", "Two\nlines."))
+    );
+    for line in [
+        "/message r3",
+        "/message",
+        "/messages r3 Go on.",
+        "Go on.",
+        "/model r3 Go on.",
+    ] {
+        assert_eq!(message_parts(line), None, "{line}");
+    }
+}
+
+/// A worker run's request counts once it ended, from when it went out, and
+/// the session's folder keeps it for a resume. A request that never ended
+/// leaves the one before.
+#[test]
+fn the_latest_request_that_ended_is_kept_in_the_sessions_folder() {
+    let temp = tempfile::tempdir().unwrap();
+    let requests = Requests::load(temp.path());
+    let (run, other) = (Uuid::new_v4(), Uuid::new_v4());
+    assert_eq!(requests.get(run), None);
+    requests.started(run, 1_000);
+    assert_eq!(requests.get(run), None, "under way");
+    requests.ended(run, 40_000);
+    let first = LastRequest {
+        at: 1_000,
+        input: 40_000,
+    };
+    assert_eq!(requests.get(run), Some(first));
+    // One that went out and never ended (Arko stopped) leaves it.
+    requests.started(run, 9_000);
+    // A usage without a request of its own is no request.
+    requests.ended(other, 5);
+    let reloaded = Requests::load(temp.path());
+    assert_eq!(reloaded.get(run), Some(first));
+    assert_eq!(reloaded.get(other), None);
+    // The next that ends replaces it.
+    requests.ended(run, 41_000);
+    assert_eq!(
+        Requests::load(temp.path()).get(run),
+        Some(LastRequest {
+            at: 9_000,
+            input: 41_000
+        })
+    );
+    // A damaged record is an empty one.
+    std::fs::write(temp.path().join(REQUESTS_FILE), "{ not json").unwrap();
+    assert_eq!(Requests::load(temp.path()).get(run), None);
 }

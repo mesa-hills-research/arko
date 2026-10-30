@@ -478,6 +478,15 @@ impl Transcript {
         self.workers.iter().find(|worker| worker.id == id)
     }
 
+    /// The worker `handle` as the user may type it: `R3` finds `r3`, as
+    /// `/message` does.
+    pub fn worker_named(&self, handle: &str) -> Option<&WorkerSummary> {
+        let handle = handle.trim();
+        self.workers
+            .iter()
+            .find(|worker| worker.id.eq_ignore_ascii_case(handle))
+    }
+
     /// The main agent's last reply.
     pub fn last_reply(&self) -> Option<&str> {
         self.entries
