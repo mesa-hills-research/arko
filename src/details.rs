@@ -699,6 +699,19 @@ impl Details {
             .unwrap_or_default()
     }
 
+    /// The prompt cache of worker `id` once it ended, and what continuing it
+    /// costs, for an app that asks before it continues the worker (see
+    /// [`WorkerCache::asks`](crate::worker_cache::WorkerCache::asks) and
+    /// [`warning`](crate::worker_cache::WorkerCache::warning)). It reads the
+    /// worker's task the first time, so call it off the UI thread. A
+    /// worker's summary has the same without reading
+    /// ([`WorkerSummary::cache`](crate::remote::WorkerSummary::cache)).
+    /// `None` while it runs, and when that isn't known.
+    pub fn worker_cache(&self, id: &str) -> Option<crate::worker_cache::WorkerCache> {
+        let crew = lock(&self.gauges.crew).clone()?;
+        crew.worker_cache(id)
+    }
+
     /// What switching the session to `to` (`Request::SwitchMode`) costs.
     /// Its next request writes the whole conversation to the prompt cache
     /// again, under the new mode's tools and instructions. `None` when the
@@ -727,25 +740,19 @@ pub struct SwitchCost {
 }
 
 fn switch_cost(settings: &Settings, tokens: usize) -> SwitchCost {
-    let model = providers::resolve_model(&settings.main.model).ok();
-    let plan = match model.as_ref().map(|model| &model.provider) {
-        Some(arko_ai::Provider::ClaudeCode) => Some("your Claude plan"),
-        Some(arko_ai::Provider::OpenAI)
-            if settings.openai_auth == Some(providers::OpenAiAuth::ChatGpt) =>
-        {
-            Some("your ChatGPT plan")
-        }
-        _ => None,
-    };
-    let dollars = model.filter(|_| plan.is_none()).map(|model| {
-        let (write, _) =
-            providers::cache_prices(&model, tokens, settings.main.fast, settings.main.cache_1h);
-        tokens as f64 * write / 1e6
-    });
-    SwitchCost {
-        tokens,
-        dollars,
-        plan,
+    match providers::resolve_model(&settings.main.model) {
+        Ok(model) => crate::worker_cache::reread_cost(
+            &model,
+            tokens,
+            settings.main.fast,
+            settings.main.cache_1h,
+            settings.openai_auth == Some(providers::OpenAiAuth::ChatGpt),
+        ),
+        Err(_) => SwitchCost {
+            tokens,
+            dollars: None,
+            plan: None,
+        },
     }
 }
 

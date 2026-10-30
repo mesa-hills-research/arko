@@ -366,6 +366,23 @@ pub struct WorkerSummary {
     pub family_cost_billed: f64,
     /// What it and the workers under it would cost at API list prices.
     pub family_cost_list: f64,
+    /// Once it ended, when its prompt cache expires or expired (Unix
+    /// milliseconds): its last request plus the cache lifetime its run
+    /// used, when that is known. Continuing it after then re-reads its
+    /// conversation without the cache (see [`crate::worker_cache`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_expires_at: Option<i64>,
+    /// What continuing it re-reads: its conversation's input at its last
+    /// request, in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reread_tokens: Option<u64>,
+    /// What re-reading them and writing them to the cache again costs at
+    /// its model's price, in dollars, when it is billed per token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reread_dollars: Option<f64>,
+    /// The plan that pays for that instead ("your Claude plan").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reread_plan: Option<String>,
 }
 
 impl WorkerSummary {
@@ -396,7 +413,33 @@ impl WorkerSummary {
             cost_list: 0.0,
             family_cost_billed: 0.0,
             family_cost_list: 0.0,
+            cache_expires_at: None,
+            reread_tokens: None,
+            reread_dollars: None,
+            reread_plan: None,
         }
+    }
+
+    /// Its prompt cache, once it ended, and what continuing it costs, as
+    /// [`cache_expires_at`](Self::cache_expires_at) and the re-read fields
+    /// say. `None` while it runs, and when they aren't known.
+    pub fn cache(&self) -> Option<crate::worker_cache::WorkerCache> {
+        if self.state.is_active() {
+            return None;
+        }
+        Some(crate::worker_cache::WorkerCache {
+            worker: self.id.clone(),
+            expires_at: chrono::DateTime::from_timestamp_millis(self.cache_expires_at?)?,
+            cost: crate::details::SwitchCost {
+                tokens: usize::try_from(self.reread_tokens?).ok()?,
+                dollars: self.reread_dollars,
+                plan: match self.reread_plan.as_deref() {
+                    Some("your Claude plan") => Some("your Claude plan"),
+                    Some("your ChatGPT plan") => Some("your ChatGPT plan"),
+                    _ => None,
+                },
+            },
+        })
     }
 
     /// How long it has run in all its runs at `now` (Unix milliseconds),
@@ -3017,6 +3060,35 @@ impl Feed {
             self.worker_changed(&mut state, id, false);
         }
         self.add_up_families(&mut state);
+    }
+
+    /// The prompt cache of worker `id` once it ended, and what continuing it
+    /// costs (`None` while it runs again, or when that isn't known).
+    pub(crate) fn worker_cache(&self, id: &str, cache: Option<&crate::worker_cache::WorkerCache>) {
+        let mut state = self.lock();
+        let Some(worker) = state.worker(id) else {
+            return;
+        };
+        let summary = &mut worker.summary;
+        let before = (
+            summary.cache_expires_at,
+            summary.reread_tokens,
+            summary.reread_dollars,
+            summary.reread_plan.clone(),
+        );
+        summary.cache_expires_at = cache.map(|cache| cache.expires_at.timestamp_millis());
+        summary.reread_tokens = cache.map(|cache| cache.cost.tokens as u64);
+        summary.reread_dollars = cache.and_then(|cache| cache.cost.dollars);
+        summary.reread_plan = cache.and_then(|cache| cache.cost.plan).map(str::to_string);
+        let after = (
+            summary.cache_expires_at,
+            summary.reread_tokens,
+            summary.reread_dollars,
+            summary.reread_plan.clone(),
+        );
+        if after != before {
+            self.worker_changed(&mut state, id, false);
+        }
     }
 
     /// Adds up what each worker and the workers under it cost, and sends

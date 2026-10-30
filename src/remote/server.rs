@@ -1300,6 +1300,10 @@ struct MessageBody {
     /// "Replying to" chip).
     #[serde(default)]
     answers: Vec<String>,
+    /// The user confirmed continuing a worker whose prompt cache expired,
+    /// after the 409 that said what it costs.
+    #[serde(default)]
+    confirm_uncached: bool,
 }
 
 /// The text as typed: line ends as `\n`, and not blank.
@@ -1360,10 +1364,11 @@ async fn message(
                 && !worker.is_empty()
                 && !worker.contains(char::is_whitespace) =>
         {
-            app.act(Action::Message(format!(
-                "/message {worker} {}",
-                text.trim()
-            )))
+            let command = format!("/message {worker} {}", text.trim());
+            continue_worker(&app, command, body.confirm_uncached)
+        }
+        Some((text, _)) if text.trim().starts_with("/message ") => {
+            continue_worker(&app, text, body.confirm_uncached)
         }
         Some((text, _)) => {
             // While the agent waits, a message is the answer.
@@ -1375,6 +1380,35 @@ async fn message(
             app.act(Action::Message(text))
         }
         None => (StatusCode::BAD_REQUEST, error_body("send {\"text\": ...}")).into_response(),
+    }
+}
+
+/// The `/message` `command` to a worker. One that continues a worker whose
+/// prompt cache expired, and re-reads enough to matter, waits for the
+/// page's confirmation (`confirmed`): until then the page gets a 409 with
+/// what it costs and `"confirm": "continue"`, and keeps the text.
+fn continue_worker(app: &App, command: String, confirmed: bool) -> Response {
+    if confirmed {
+        return app.act(Action::Continue(command));
+    }
+    let now = chrono::Utc::now();
+    let cache = command
+        .trim()
+        .strip_prefix("/message")
+        .and_then(|argument| argument.trim().split_once(char::is_whitespace))
+        .and_then(|(to, _)| app.feed.worker_summary(to.trim()))
+        .and_then(|worker| worker.cache())
+        .filter(|cache| cache.asks(now));
+    match cache {
+        Some(cache) => (
+            StatusCode::CONFLICT,
+            axum::Json(serde_json::json!({
+                "error": cache.warning(now),
+                "confirm": "continue",
+            })),
+        )
+            .into_response(),
+        None => app.act(Action::Message(command)),
     }
 }
 
@@ -3966,6 +4000,77 @@ mod tests {
         // Without the session's cookie, nothing is answered.
         let response = served.post("/api/questions/answer", None, answer).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// A message that continues a worker whose prompt cache expired gets a
+    /// 409 with what continuing costs and `"confirm": "continue"`, from the
+    /// worker's view and as a `/message`. With `confirm_uncached` it goes,
+    /// marked confirmed. A warm cache sends it as before.
+    #[tokio::test]
+    async fn continuing_a_worker_whose_cache_expired_waits_for_the_pages_confirmation() {
+        use super::super::WorkerChange;
+        use crate::worker_cache::WorkerCache;
+        let feed = Feed::new("main");
+        feed.worker("r3", "Fix the flaky test", WorkerChange::Started);
+        feed.worker(
+            "r3",
+            "Fix the flaky test",
+            WorkerChange::Finished { report: "Done." },
+        );
+        let cache = |expires_at| WorkerCache {
+            worker: "r3".into(),
+            expires_at,
+            cost: crate::details::SwitchCost {
+                tokens: 340_000,
+                dollars: Some(1.36),
+                plan: None,
+            },
+        };
+        let now = chrono::Utc::now();
+        feed.worker_cache("r3", Some(&cache(now - chrono::Duration::hours(2))));
+        let mut served = serve(&feed);
+        let cookie = served.login().await;
+        for body in [
+            serde_json::json!({"text": "Go on.", "to": "r3"}),
+            serde_json::json!({"text": "/message r3 Go on."}),
+        ] {
+            let response = served
+                .post("/api/message", Some(&cookie), &body.to_string())
+                .await;
+            assert_eq!(response.status(), StatusCode::CONFLICT, "{body}");
+            let error: serde_json::Value =
+                serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            assert_eq!(
+                error,
+                serde_json::json!({
+                    "error": "r3's cache expired 2 hours ago. Continuing re-reads about 340k tokens without it (≈ $1.36 at API prices).",
+                    "confirm": "continue",
+                })
+            );
+        }
+        assert!(served.actions.try_recv().is_err());
+        for body in [
+            serde_json::json!({"text": "Go on.", "to": "r3", "confirm_uncached": true}),
+            serde_json::json!({"text": "/message r3 Go on.", "confirm_uncached": true}),
+        ] {
+            let response = served
+                .post("/api/message", Some(&cookie), &body.to_string())
+                .await;
+            assert_eq!(response.status(), StatusCode::ACCEPTED, "{body}");
+            assert_eq!(
+                served.actions.recv().await.unwrap(),
+                Action::Continue("/message r3 Go on.".into())
+            );
+        }
+        // While the cache lasts, the message goes as any other.
+        feed.worker_cache("r3", Some(&cache(now + chrono::Duration::minutes(5))));
+        let body = serde_json::json!({"text": "Go on.", "to": "r3"}).to_string();
+        let response = served.post("/api/message", Some(&cookie), &body).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::Message("/message r3 Go on.".into())
+        );
     }
 
     /// A stopped server ends its streams, and when it keeps its sessions in

@@ -89,6 +89,9 @@ pub enum Action {
     /// works, a new turn when it is idle, the answer to its question, or a
     /// command.
     Message(String),
+    /// A `/message` the user confirmed after the warning that the worker's
+    /// prompt cache expired: it continues the worker without asking.
+    Continue(String),
     /// `text` answers the open questions of the question card `question`
     /// (its item), as a message that answers them.
     Answer { question: u64, text: String },

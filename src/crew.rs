@@ -926,6 +926,32 @@ struct StartHook {
     hub: HubSlot,
 }
 
+/// The prompt cache of the worker run `record` in `workflow`, once it has
+/// ended, from its setup in `models`, its run's last request and its
+/// conversation's size then (its task is read for it once). `None` while it
+/// runs, and when its cache lifetime or size isn't known.
+fn cache_of(
+    models: &Mutex<WorkerRecords>,
+    workflow: &Workflow,
+    record: &SubagentRecord,
+    openai_auth: Option<crate::providers::OpenAiAuth>,
+) -> Option<crate::worker_cache::WorkerCache> {
+    if record.state.is_active() {
+        return None;
+    }
+    let llm = models
+        .lock()
+        .unwrap()
+        .runs
+        .get(&record.run_id)?
+        .llm_config
+        .clone();
+    let result = workflow.agent_result(record.run_id)?;
+    let last = result.info().end_time.unwrap_or(record.since);
+    let tokens = result.task().ok()?.current_conversation_context_size()?;
+    crate::worker_cache::of(&record.handle, &llm, last, tokens, openai_auth)
+}
+
 /// Where the crew and its start hook share the session's MCP hub.
 type HubSlot = Arc<Mutex<Option<Arc<arko_agents::McpHub>>>>;
 
@@ -965,6 +991,14 @@ impl SubagentHook for StartHook {
         }
         if let Some(left_out) = &setup.left_out {
             text.push_str(&format!(". {left_out}"));
+        }
+        drop(models);
+        // Once it has ended, what continuing it re-reads, so that the
+        // starter weighs that before continuing it.
+        if let Some(workflow) = self.workflow.lock().unwrap().upgrade()
+            && let Some(cache) = cache_of(&self.models, &workflow, record, self.openai_auth)
+        {
+            text.push_str(&format!(", {}", cache.line(chrono::Utc::now())));
         }
         Some(text)
     }
@@ -1475,6 +1509,23 @@ impl Crew {
                 }
                 feed.worker_info(&run.handle, self.worker_info(workflow, run, true));
             }
+            // The prompt caches of those that ended, read from their tasks
+            // off the async threads.
+            let ended: Vec<SubagentRecord> = runs
+                .into_iter()
+                .filter(|run| !run.state.is_active())
+                .collect();
+            if !ended.is_empty() {
+                let (models, workflow, feed) =
+                    (self.models.clone(), workflow.clone(), feed.clone());
+                let openai_auth = self.setup.openai_auth;
+                tokio::task::spawn_blocking(move || {
+                    for run in ended {
+                        let cache = cache_of(&models, &workflow, &run, openai_auth);
+                        feed.worker_cache(&run.handle, cache.as_ref());
+                    }
+                });
+            }
         }
         if self.has_mail() {
             let _ = self.wake.send(());
@@ -1568,6 +1619,15 @@ impl Crew {
                 | WorkerChange::Stopped { .. }
         );
         feed.worker(handle, &task, change);
+        // Its prompt cache from its last request on, once it ended, which
+        // a run that starts again renews.
+        let cache = match (ended, &workflow, record) {
+            (true, Some(workflow), Some(record)) => {
+                cache_of(&self.models, workflow, record, self.setup.openai_auth)
+            }
+            _ => None,
+        };
+        feed.worker_cache(handle, cache.as_ref());
         if ended {
             self.save_worker_figures();
         }
@@ -1714,6 +1774,60 @@ impl Crew {
         };
         workflow.message_subagent(&id, text, USER_MESSAGE_HEADING, &copy)?;
         Ok(id)
+    }
+
+    /// The prompt cache of worker `handle`, once it has ended, and what
+    /// continuing it costs (see [`worker_cache`](crate::worker_cache)).
+    pub fn worker_cache(&self, handle: &str) -> Option<crate::worker_cache::WorkerCache> {
+        let workflow = self.workflow()?;
+        let record = workflow
+            .subagents()
+            .into_iter()
+            .find(|run| run.handle.eq_ignore_ascii_case(handle.trim()))?;
+        cache_of(&self.models, &workflow, &record, self.setup.openai_auth)
+    }
+
+    /// Has worker `handle`'s prompt cache last `lifetime` after its run's
+    /// last request, so a test sees it expire.
+    #[cfg(test)]
+    pub(crate) fn shorten_cache(&self, handle: &str, lifetime: Duration) {
+        let workflow = self.workflow().unwrap();
+        let record = workflow
+            .subagents()
+            .into_iter()
+            .find(|run| run.handle == handle)
+            .unwrap();
+        self.models
+            .lock()
+            .unwrap()
+            .runs
+            .get_mut(&record.run_id)
+            .unwrap()
+            .llm_config
+            .generation_config
+            .prompt_cache_lifetime_seconds = Some(lifetime.as_secs());
+        if let Some(feed) = &self.setup.feed {
+            let cache = cache_of(&self.models, &workflow, &record, self.setup.openai_auth);
+            feed.worker_cache(handle, cache.as_ref());
+        }
+    }
+
+    /// Why a `message_agent` call with `params` doesn't continue its worker:
+    /// the worker has ended, its cache expired and continuing it re-reads
+    /// enough to matter, and the call didn't confirm it. `None` sends it.
+    pub fn uncached_refusal(&self, params: &HashMap<String, Value>) -> Option<String> {
+        let confirmed = match params.get(crate::worker_cache::CONFIRM_PARAM) {
+            Some(Value::Bool(yes)) => *yes,
+            Some(Value::String(text)) => text.trim().eq_ignore_ascii_case("true"),
+            _ => false,
+        };
+        if confirmed {
+            return None;
+        }
+        let to = params.get("to")?.as_str()?;
+        let cache = self.worker_cache(to)?;
+        let now = chrono::Utc::now();
+        cache.asks(now).then(|| cache.refusal(now))
     }
 
     pub fn has_mail(&self) -> bool {

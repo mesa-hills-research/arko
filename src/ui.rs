@@ -106,6 +106,10 @@ pub struct Message {
     /// message without them names the questions still open at its end,
     /// "(Still open: q5.)".
     pub answers: Vec<String>,
+    /// The message is a `/message` that the user confirmed after the
+    /// warning that the worker's prompt cache expired (see
+    /// [`crate::worker_cache`]), so it continues the worker without asking.
+    pub continue_uncached: bool,
 }
 
 /// A file attached to a message, with its bytes, its type and its name.

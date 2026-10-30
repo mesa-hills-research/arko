@@ -259,6 +259,10 @@ fn agent_works_since(activity: &Activity, waits: bool) -> Option<i64> {
     (activity.working && !waits).then(|| activity.since.unwrap_or(i64::MIN))
 }
 
+/// How soon after the warning that a worker's cache expired Enter again
+/// continues it.
+const CONTINUE_CONFIRM_WITHIN: Duration = Duration::from_secs(30);
+
 /// The view's state.
 pub struct App {
     pub transcript: Transcript,
@@ -291,6 +295,10 @@ pub struct App {
     pub overlay: Option<Overlay>,
     /// A word in the status line for a moment: "Copied", ...
     pub hint: Option<(String, Instant)>,
+    /// The `/message` to a worker whose prompt cache expired that the
+    /// status line just said the cost of, and when: Enter again soon after
+    /// continues the worker. Esc, or other text, asks again.
+    continue_asked: Option<(String, Instant)>,
     last_interrupt: Option<Instant>,
     /// The terminal window has the focus (as far as it says).
     pub focused: bool,
@@ -413,6 +421,7 @@ impl App {
             menu: Menu::default(),
             overlay: None,
             hint: None,
+            continue_asked: None,
             last_interrupt: None,
             focused: true,
             shift_enter: false,
@@ -1152,6 +1161,7 @@ impl App {
 
     /// Esc: closes what is open, nearest first.
     fn escape(&mut self) {
+        self.continue_asked = None;
         if !self.menu_items().is_empty() || self.ghost().is_some() {
             self.menu.dismissed = Some(self.editor.shown());
         } else if self.watching.is_some() {
@@ -1457,6 +1467,9 @@ impl App {
                 }
                 _ => false,
             };
+            if !handled && command.name == "/message" && self.asks_to_continue(trimmed) {
+                return;
+            }
             self.editor.take();
             self.menu = Menu::default();
             if !handled {
@@ -1494,6 +1507,14 @@ impl App {
             self.say(refusal);
             return;
         }
+        // In a worker's own view, continuing it when its cache expired
+        // asks first.
+        if self.panel.attached.is_empty()
+            && let Some(id) = self.watching.clone().filter(|_| !self.agent_waits())
+            && self.asks_to_continue(&format!("/message {id} {}", trimmed.trim()))
+        {
+            return;
+        }
         let text = self.editor.take();
         self.menu = Menu::default();
         self.transcript.follow();
@@ -1524,6 +1545,41 @@ impl App {
             }
             _ => self.send(text.trim_end()),
         }
+    }
+
+    /// Whether the `/message` in `line` waits for Enter again: it continues
+    /// a worker whose prompt cache expired, and the status line says what
+    /// that costs, with the text left in the box. Enter again soon after
+    /// (the same text) continues the worker.
+    fn asks_to_continue(&mut self, line: &str) -> bool {
+        let now = chrono::Utc::now();
+        let cache = line
+            .strip_prefix("/message")
+            .and_then(|argument| argument.trim().split_once(char::is_whitespace))
+            .and_then(|(to, _)| self.transcript.worker(to.trim()))
+            .and_then(|worker| worker.cache())
+            .filter(|cache| cache.asks(now));
+        let Some(cache) = cache else {
+            return false;
+        };
+        let confirmed = self
+            .continue_asked
+            .take()
+            .is_some_and(|(asked, at)| asked == line && at.elapsed() < CONTINUE_CONFIRM_WITHIN);
+        if confirmed {
+            self.editor.take();
+            self.menu = Menu::default();
+            self.effects
+                .push(Effect::Input(Input::Message(crate::ui::Message {
+                    text: line.to_string(),
+                    continue_uncached: true,
+                    ..Default::default()
+                })));
+            return true;
+        }
+        self.continue_asked = Some((line.to_string(), Instant::now()));
+        self.say(format!("{} Enter again continues it.", cache.warning(now)));
+        true
     }
 
     fn screen_command(&mut self, name: &str, rest: &str) {
@@ -3303,6 +3359,91 @@ pub(super) mod tests {
         click(&mut app, 5, 21);
         assert_eq!(app.watching.as_deref(), Some("r1"));
         assert!(app.take_effects().is_empty());
+    }
+
+    /// Continuing a worker whose cache expired, with `/message` or from its
+    /// view, keeps the text in the box and says what it costs. Enter again
+    /// sends it, marked confirmed. Esc, or other text, asks again, and a
+    /// warm cache or a small conversation sends at once.
+    #[test]
+    fn enter_twice_continues_a_worker_whose_cache_expired() {
+        use crate::remote::WorkerState::Finished;
+        let mut app = app();
+        let now = chrono::Utc::now().timestamp_millis();
+        let ended = |expires_at: i64, tokens: u64| crate::remote::WorkerSummary {
+            cache_expires_at: Some(expires_at),
+            reread_tokens: Some(tokens),
+            reread_dollars: Some(1.36),
+            ..worker("r3", Finished)
+        };
+        let two_hours_ago = now - 2 * 3_600_000;
+        app.update(
+            Update::Worker(ended(two_hours_ago, 340_000)),
+            Activity::default,
+        );
+        let messages = |app: &mut App| -> Vec<(String, bool)> {
+            app.take_effects()
+                .into_iter()
+                .filter_map(|effect| match effect {
+                    Effect::Input(Input::Message(message)) => {
+                        Some((message.text, message.continue_uncached))
+                    }
+                    Effect::Input(Input::Line(line)) => Some((line, false)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let warning = "r3's cache expired 2 hours ago. Continuing re-reads about 340k tokens without it (≈ $1.36 at API prices). Enter again continues it.";
+        let enter = |app: &mut App| press(app, KeyCode::Enter, KeyModifiers::NONE);
+
+        // `/message`: the first Enter asks, the second sends.
+        type_text(&mut app, "/message r3 Go on.");
+        enter(&mut app);
+        assert!(messages(&mut app).is_empty());
+        assert_eq!(app.editor.text(), "/message r3 Go on.");
+        assert_eq!(app.hint(), Some(warning));
+        enter(&mut app);
+        assert_eq!(
+            messages(&mut app),
+            [("/message r3 Go on.".to_string(), true)]
+        );
+        assert!(app.editor.is_empty());
+
+        // Esc in between, or other text, asks again.
+        type_text(&mut app, "/message r3 Go on.");
+        enter(&mut app);
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        enter(&mut app);
+        assert!(messages(&mut app).is_empty());
+        type_text(&mut app, " Now.");
+        enter(&mut app);
+        assert!(messages(&mut app).is_empty());
+        assert_eq!(app.editor.text(), "/message r3 Go on. Now.");
+        app.editor.clear();
+
+        // In r3's own view, the text goes to r3 the same way.
+        app.watch(Some("r3".into()));
+        type_text(&mut app, "Go on.");
+        enter(&mut app);
+        assert!(messages(&mut app).is_empty());
+        assert_eq!(app.editor.text(), "Go on.");
+        assert_eq!(app.hint(), Some(warning));
+        enter(&mut app);
+        assert_eq!(
+            messages(&mut app),
+            [("/message r3 Go on.".to_string(), true)]
+        );
+
+        // A warm cache, or a small conversation, sends at once.
+        for (expires_at, tokens) in [(now + 300_000, 340_000), (two_hours_ago, 20_000)] {
+            app.update(Update::Worker(ended(expires_at, tokens)), Activity::default);
+            type_text(&mut app, "Go on.");
+            enter(&mut app);
+            assert_eq!(
+                messages(&mut app),
+                [("/message r3 Go on.".to_string(), false)]
+            );
+        }
     }
 
     /// A click (pressed and let go) at column `x`, row `y`.

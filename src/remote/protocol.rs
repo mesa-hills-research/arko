@@ -1206,6 +1206,16 @@ pub struct WorkerData {
     pub family_cost_billed: f64,
     #[serde(default, deserialize_with = "lenient")]
     pub family_cost_list: f64,
+    /// Once it ended, when its prompt cache expires or expired (Unix
+    /// milliseconds), and what continuing it re-reads and costs.
+    #[serde(default)]
+    pub cache_expires_at: Option<i64>,
+    #[serde(default)]
+    pub reread_tokens: Option<u64>,
+    #[serde(default)]
+    pub reread_dollars: Option<f64>,
+    #[serde(default)]
+    pub reread_plan: Option<String>,
 }
 
 /// The part of the status (`status`, and in `reset`) the page reads. The

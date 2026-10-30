@@ -2171,6 +2171,7 @@ async fn the_users_message_to_a_worker_reaches_that_worker_only() {
                     text: line(SENT[1]),
                     images: Vec::new(),
                     answers: Vec::new(),
+                    continue_uncached: false,
                 }))
                 .unwrap();
             actions.send(Action::Message(line(SENT[2]))).unwrap();

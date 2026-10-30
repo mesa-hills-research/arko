@@ -795,9 +795,17 @@ impl Harness {
                 (input.coalesce(line).await, self.input_source, 0)
             }
             Event::Input(Some(Input::Message(message))) => {
+                if message.continue_uncached {
+                    self.confirm_continue(&message.text);
+                }
                 (message.text, self.input_source, message.images.len())
             }
             Event::Input(Some(Input::Answer { text, .. })) => (text, self.input_source, 0),
+            Event::Remote(Action::Continue(text)) => {
+                self.echo_web(&text);
+                self.confirm_continue(&text);
+                (text, Source::Web, 0)
+            }
             Event::Remote(
                 Action::Message(text) | Action::Reply { text, .. } | Action::Answer { text, .. },
             ) => {
