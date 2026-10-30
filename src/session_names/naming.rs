@@ -925,7 +925,7 @@ mod tests {
             name_with(&harness.root, fake.clone());
             first_message(&mut harness, &mut inputs).await;
             until(|| fake.ways_asked().len() == 1).await;
-            let dir = harness.session.dir.clone();
+            let (dir, run) = (harness.session.dir.clone(), harness.session.run_dir());
             harness.crew.as_ref().unwrap().shutdown().await;
             let open = if closed {
                 None
@@ -935,7 +935,17 @@ mod tests {
             std::fs::remove_dir_all(&dir).unwrap();
             gate.notify_one();
             settle().await;
-            assert!(!dir.exists(), "closed: {closed}");
+            // The workflow saves the run in the background, and its last
+            // save may land in the run's folder after the delete. Anything
+            // else there would be the naming's.
+            let made: Vec<PathBuf> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| *path != run)
+                .collect();
+            assert!(made.is_empty(), "closed: {closed}: {made:?}");
             drop(open);
         }
     }

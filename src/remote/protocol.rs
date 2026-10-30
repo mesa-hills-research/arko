@@ -452,15 +452,71 @@ pub struct SkillApproval {
     /// (`scripts/release.sh`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scripts: Vec<String>,
-    /// When an agent saved the skill of the same name it replaces, such as
-    /// "26 Oct".
+    /// What it changes when it updates a skill an agent saved before
+    /// (`edit_skill`). `None` for a new skill.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub replaces: Option<String>,
+    pub update: Option<SkillUpdate>,
     /// The agent's reason, for the user.
     pub why: String,
     /// Its files, `SKILL.md` first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<SkillFile>,
+}
+
+/// What an update changes in a skill an agent saved before.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub struct SkillUpdate {
+    /// When the skill was saved, such as "26 Oct".
+    pub saved: String,
+    /// `SKILL.md`'s changed lines with a few lines around them, each line
+    /// marked `-` (before), `+` (after) or a space, and `…` between the
+    /// parts. Empty when `SKILL.md` is the same.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub diff: String,
+    /// The other files it adds, removes and changes, by their paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed: Vec<String>,
+}
+
+impl SkillUpdate {
+    /// What changes, as a sentence: "It changes SKILL.md, adds
+    /// scripts/run.sh and removes notes.md."
+    pub fn sentence(&self) -> String {
+        let mut changed = Vec::new();
+        if !self.diff.is_empty() {
+            changed.push("SKILL.md".to_string());
+        }
+        changed.extend(self.changed.iter().cloned());
+        let parts: Vec<String> = [
+            ("changes", &changed),
+            ("adds", &self.added),
+            ("removes", &self.removed),
+        ]
+        .into_iter()
+        .filter(|(_, paths)| !paths.is_empty())
+        .map(|(verb, paths)| format!("{verb} {}", and_list(paths)))
+        .collect();
+        if parts.is_empty() {
+            return "Nothing changes.".to_string();
+        }
+        format!("It {}.", and_list(&parts))
+    }
+
+    /// What changes, in a few words for a row: "SKILL.md and 2 more files".
+    pub fn short(&self) -> String {
+        let others = self.added.len() + self.removed.len() + self.changed.len();
+        let files = |n: usize| if n == 1 { "file" } else { "files" };
+        match (self.diff.is_empty(), others) {
+            (false, 0) => "SKILL.md".to_string(),
+            (false, n) => format!("SKILL.md and {n} more {}", files(n)),
+            (true, n) => format!("{n} {}", files(n)),
+        }
+    }
 }
 
 /// Where a skill to save came from.
@@ -677,10 +733,12 @@ pub fn reject_label(count: usize) -> &'static str {
 }
 
 impl Approval {
-    /// What it is, in a word: Profile, Skill, Server or Worker.
+    /// What it is, in a word: Profile, Skill, Update (of a skill an agent
+    /// saved), Server or Worker.
     pub fn kind_word(&self) -> &'static str {
         match self {
             Approval::Profile(_) => "Profile",
+            Approval::Skill(skill) if skill.update.is_some() => "Update",
             Approval::Skill(_) => "Skill",
             Approval::McpServer(_) => "Server",
             Approval::WorkerBilling(_) => "Worker",
@@ -709,8 +767,20 @@ impl Approval {
         }
     }
 
+    /// Whether it applies to every project, which the tray's row shows in
+    /// the warning style.
+    pub fn every_project(&self) -> bool {
+        match self {
+            Approval::Profile(profile) => profile.scope == Scope::User.words(),
+            Approval::Skill(skill) => skill.scope == Scope::User,
+            Approval::McpServer(server) => server.scope == Scope::User,
+            Approval::WorkerBilling(_) => false,
+        }
+    }
+
     /// What its row says after its scope: a profile's model and effort, a
-    /// skill's description, a server's command, a worker's prices and the
+    /// skill's description (or what an update changes, "changes SKILL.md
+    /// and 2 more files"), a server's command, a worker's prices and the
     /// day's spend.
     pub fn summary(&self) -> String {
         match self {
@@ -718,7 +788,10 @@ impl Approval {
                 Some(effort) => format!("{} {effort}", profile.model),
                 None => profile.model.clone(),
             },
-            Approval::Skill(skill) => first_line(&skill.description),
+            Approval::Skill(skill) => match &skill.update {
+                Some(update) => format!("changes {}", update.short()),
+                None => first_line(&skill.description),
+            },
             Approval::McpServer(server) => first_line(&server.command),
             Approval::WorkerBilling(billing) => {
                 let mut parts = Vec::new();
@@ -745,6 +818,13 @@ impl Approval {
                 "Save the worker profile {} for {}?",
                 profile.name, profile.scope
             ),
+            Approval::Skill(skill) if skill.update.is_some() => {
+                format!(
+                    "Update the skill {} for {}?",
+                    skill.name,
+                    skill.scope.words()
+                )
+            }
             Approval::Skill(skill) => {
                 format!("Save the skill {} for {}?", skill.name, skill.scope.words())
             }
@@ -860,14 +940,19 @@ impl Approval {
                     ));
                 }
                 text(&mut lines, size_line.trim().to_string());
-                if let Some(when) = &skill.replaces {
+                if let Some(update) = &skill.update {
+                    lines.push(Detail::new(Look::Heading, "Changes"));
                     text(
                         &mut lines,
                         format!(
-                            "It replaces the skill {} an agent saved on {when}.",
-                            skill.name
+                            "{} An agent saved the skill on {}.",
+                            update.sentence(),
+                            update.saved
                         ),
                     );
+                    if !update.diff.is_empty() {
+                        lines.push(Detail::new(Look::Box, update.diff.trim_end()));
+                    }
                 }
                 if !skill.why.trim().is_empty() {
                     lines.push(Detail::new(Look::Heading, "Why"));

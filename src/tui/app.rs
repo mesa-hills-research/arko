@@ -1476,6 +1476,12 @@ impl App {
             }
             return;
         }
+        // A mistyped command stays in the box to put right, in a worker's
+        // view too, where the rest goes to the worker.
+        if let Some(why) = commands::unknown(text.trim_end(), commands::COMMANDS) {
+            self.say(why);
+            return;
+        }
         // An answer too long to send stays in the box, with how short to
         // make it: the questions attached, or those the agent waits for.
         let replied: Vec<String> = if self.panel.attached.is_empty() {
@@ -2610,11 +2616,14 @@ impl App {
         }
     }
 
-    /// Whether the status line's hint is still fresh.
+    /// Whether the status line's hint is still fresh: for 3 s, or for as
+    /// long as a longer one takes to read.
     pub fn hint(&self) -> Option<&str> {
         self.hint
             .as_ref()
-            .filter(|(_, at)| at.elapsed() < AGAIN)
+            .filter(|(text, at)| {
+                at.elapsed() < AGAIN.max(Duration::from_millis(60) * text.chars().count() as u32)
+            })
             .map(|(text, _)| text.as_str())
     }
 
@@ -2891,6 +2900,31 @@ pub(super) mod tests {
         type_text(&mut app, "Thanks.");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["Thanks."]);
+    }
+
+    /// A mistyped command isn't sent, from the main view or a worker's: it
+    /// stays in the box, and the status line says what it may be. A space
+    /// first sends it as a message.
+    #[test]
+    fn a_mistyped_command_stays_in_the_box() {
+        let mut app = app();
+        for watching in [None, Some("r1".to_string())] {
+            app.watch(watching);
+            type_text(&mut app, "/quiet");
+            press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+            assert!(sent(&mut app).is_empty());
+            assert_eq!(app.editor.text(), "/quiet");
+            assert_eq!(
+                app.hint(),
+                Some(
+                    "/quiet isn't a command. Did you mean /view quiet? Start with a space to send it as a message."
+                )
+            );
+            app.editor.clear();
+        }
+        type_text(&mut app, " /quiet");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/message r1 /quiet"]);
     }
 
     /// Open questions as the status has them: q1 with choices and a

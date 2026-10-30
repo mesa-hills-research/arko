@@ -12,7 +12,7 @@ fn skill() -> SkillApproval {
         workers: true,
         models: vec!["haiku".into(), "cc:haiku".into()],
         scripts: vec!["scripts/release.sh".into()],
-        replaces: Some("26 Oct".into()),
+        update: None,
         why: "The release checklist changed.".into(),
         files: vec![
             SkillFile {
@@ -107,17 +107,14 @@ fn a_skill_reads_as_its_card() {
         text(3),
         "SKILL.md is 3,210 characters (4 lines), with 2 more files. It has scripts an agent may run (scripts/release.sh)."
     );
+    assert_eq!(shown[4], (Look::Heading, "Why".into()));
+    assert_eq!(text(5), "The release checklist changed.");
+    assert_eq!(shown[6], (Look::Heading, "Files".into()));
+    assert_eq!(shown[7].0, Look::Box);
+    assert!(text(7).starts_with("---\nname: release-notes"));
+    assert!(approval.every_project());
     assert_eq!(
-        text(4),
-        "It replaces the skill release-notes an agent saved on 26 Oct."
-    );
-    assert_eq!(shown[5], (Look::Heading, "Why".into()));
-    assert_eq!(text(6), "The release checklist changed.");
-    assert_eq!(shown[7], (Look::Heading, "Files".into()));
-    assert_eq!(shown[8].0, Look::Box);
-    assert!(text(8).starts_with("---\nname: release-notes"));
-    assert_eq!(
-        shown[9..],
+        shown[8..],
         [
             (Look::File, "checklist.md (1 KB)".to_string()),
             (Look::File, "scripts/release.sh (300 bytes)".to_string()),
@@ -134,6 +131,52 @@ fn a_skill_reads_as_its_card() {
     let shown = lines(&own);
     assert_eq!(shown[1].1, "Written by the agent.");
     assert_eq!(shown[2].1, "Only the main agent gets it.");
+    assert!(!own.every_project());
+}
+
+/// An update of a skill an agent saved reads as one, in its row, its
+/// question and its details, which say what changes before the reason, with
+/// SKILL.md's changed lines in a box of their own.
+#[test]
+fn an_update_reads_as_what_it_changes() {
+    let mut update = skill();
+    update.update = Some(SkillUpdate {
+        saved: "26 Oct".into(),
+        diff: "  ---\n- Tag it.\n+ Tag it and push.".into(),
+        added: vec!["checklist.md".into()],
+        removed: vec!["old.md".into()],
+        changed: vec!["scripts/release.sh".into()],
+    });
+    let approval = Approval::Skill(update);
+    assert_eq!(
+        (approval.kind_word(), approval.summary()),
+        ("Update", "changes SKILL.md and 3 more files".to_string())
+    );
+    assert_eq!(
+        approval.title(),
+        "Update the skill release-notes for every project?"
+    );
+    let shown = lines(&approval);
+    assert_eq!(
+        shown[4..8],
+        [
+            (Look::Heading, "Changes".to_string()),
+            (
+                Look::Text,
+                "It changes SKILL.md and scripts/release.sh, adds checklist.md and removes old.md. An agent saved the skill on 26 Oct.".to_string()
+            ),
+            (Look::Box, "  ---\n- Tag it.\n+ Tag it and push.".to_string()),
+            (Look::Heading, "Why".to_string()),
+        ]
+    );
+    // Files only, and SKILL.md the same.
+    let files = SkillUpdate {
+        saved: "26 Oct".into(),
+        added: vec!["a.md".into()],
+        ..SkillUpdate::default()
+    };
+    assert_eq!(files.short(), "1 file");
+    assert_eq!(files.sentence(), "It adds a.md.");
 }
 
 /// A server's details give its command, the names of its environment and

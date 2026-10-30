@@ -318,8 +318,19 @@ pub fn current() -> Env {
     CURRENT
         .lock()
         .unwrap()
-        .get_or_insert_with(|| Env::for_folder(std::env::current_dir().ok().as_deref(), true))
+        .get_or_insert_with(first_env)
         .clone()
+}
+
+/// The process's `Env` until a session sets one: the current directory's.
+/// Tests read no file, so the settings of the computer they run on (its
+/// Arko folder's `.env`) don't change what they see, whichever test sets
+/// one first.
+fn first_env() -> Env {
+    if cfg!(test) {
+        return Env::default();
+    }
+    Env::for_folder(std::env::current_dir().ok().as_deref(), true)
 }
 
 /// Reads settings and keys from `env` from now on, such as the session's

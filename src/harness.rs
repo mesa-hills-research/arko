@@ -420,11 +420,10 @@ pub(crate) fn unoffered_with(
     }
     if skills {
         parts.push("skills".to_string());
-    } else if missing
-        .iter()
-        .any(|name| skill_install::TOOL_NAMES.contains(name))
-    {
-        parts.push("saving skills (add_skill)".to_string());
+    } else if missing.contains(&skill_install::ADD_SKILL) {
+        parts.push("saving skills (add_skill, edit_skill)".to_string());
+    } else if missing.contains(&skill_install::EDIT_SKILL) {
+        parts.push("updating skills (edit_skill)".to_string());
     }
     let named = |name: &str| {
         index::TOOL_NAMES.contains(&name)
@@ -1518,6 +1517,11 @@ impl Harness {
                 }
                 continue;
             }
+            if self.unknown_command(&line, source) {
+                self.pending_images.clear();
+                self.pending_refs.clear();
+                continue;
+            }
             // An answer too long to send isn't sent, and its questions stay
             // open.
             if let Some(refusal) = self.reply_refused(text, &attached) {
@@ -1586,11 +1590,25 @@ impl Harness {
         if source == Source::Web && commands::find(command).is_some_and(|c| c.terminal_only()) {
             self.say(
                 Level::Warn,
-                &format!("  {command} works at the terminal only, not from the web page."),
+                &format!("  {command} works only at the terminal."),
             );
             return true;
         }
         false
+    }
+
+    /// Whether `line` (as typed, its leading spaces kept) reads as a command
+    /// that isn't one, which is then said rather than sent to the agent
+    /// ([`commands::unknown`]), with the closest command where it was typed.
+    pub(crate) fn unknown_command(&self, line: &str, source: Source) -> bool {
+        let why = match source {
+            Source::Web => commands::unknown(line, commands::on_page()),
+            Source::Terminal | Source::App => commands::unknown(line, commands::of_session()),
+        };
+        if let Some(why) = &why {
+            self.say(Level::Warn, why);
+        }
+        why.is_some()
     }
 
     /// Runs `run` with what the harness prints shown on the remote page
@@ -3855,6 +3873,9 @@ impl Harness {
                             exit = true;
                             stopping |= self.stop(&workflow);
                         }
+                        continue;
+                    }
+                    if self.unknown_command(&line, source) {
                         continue;
                     }
                     if let Some(refusal) = self.reply_refused(&text, &attached) {
@@ -9564,6 +9585,62 @@ pub(crate) mod tests {
         harness.stop_remote().await;
     }
 
+    /// A line typed as a command that isn't one is said, not given to a
+    /// working agent as a note. A space before its slash sends it.
+    #[tokio::test]
+    async fn a_mistyped_command_is_said_and_not_sent_as_a_note() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let release = Arc::new(tokio::sync::Notify::new());
+        let hold = release.clone();
+        let asked: Arc<Mutex<Vec<String>>> = Arc::default();
+        let seen = asked.clone();
+        // The first request waits for the lines, and the next has the note.
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            let hold = hold.clone();
+            let first = {
+                let mut asked = lock(&seen);
+                asked.push(body);
+                asked.len() == 1
+            };
+            Box::pin(async move {
+                if first {
+                    hold.notified().await;
+                    tool_call("m1", crew::LIST_AGENTS, serde_json::json!({}))
+                } else {
+                    complete("m2", "Done.")
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        let feed = harness.feed.clone();
+        let typing = tokio::spawn(async move {
+            until(|| feed.activity().working).await;
+            sender.send(Input::Line("/quiet".into())).unwrap();
+            let said = "/quiet isn't a command. Start with a space to send it as a message.";
+            until(|| has(&feed, "notice", said, "")).await;
+            sender.send(Input::Line(" /quiet".into())).unwrap();
+            until(|| has(&feed, "user", "/quiet", "note")).await;
+            release.notify_one();
+            sender
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Count the files.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        drop(typing.await.unwrap());
+        let notes = shown(&harness.feed)
+            .into_iter()
+            .filter(|(kind, _, delivery)| kind == "user" && delivery == "note")
+            .count();
+        assert_eq!(notes, 1);
+        assert!(lock(&asked).last().unwrap().contains("/quiet"));
+    }
+
     /// A command's warning (or error) reaches the feed with its level, so
     /// the clients show it in its colour; its other lines stay plain.
     #[tokio::test]
@@ -9621,7 +9698,7 @@ pub(crate) mod tests {
             shown
                 .iter()
                 .any(|item| item.0 == "notice"
-                    && item.1.contains("/exit works at the terminal only")),
+                    && item.1.contains("/exit works only at the terminal.")),
             "{shown:?}"
         );
         assert!(has(&harness.feed, "user", "/workers", "command"));

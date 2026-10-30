@@ -3,7 +3,7 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use lucide_leptos::{Bot, ChevronDown, ChevronLeft, Settings};
+use lucide_leptos::{Bot, ChevronDown, ChevronLeft, Settings, ShieldOff};
 
 use crate::app::{self, STORE, Sheet, page, retry_now};
 use crate::layout::View;
@@ -145,10 +145,18 @@ pub fn Header() -> impl IntoView {
                     </span>
                     <span class="state-time">{time}</span>
                 </span>
-                <span class="figures" title=figures_title>{figures}</span>
-                {move || cache().map(|(label, warns, title)| view! { <span class="cache" class:warn=warns title=title>{label}</span> })}
-                {move || outside().then(|| view! { <span class="outside" title="The agents may work outside the workspace">"outside access"</span> })}
-                <span class="spacer"></span>
+                // As much as fits: outside access, then the figures and the
+                // cache timer, which give way first.
+                <span class="info">
+                    {move || outside().then(|| view! {
+                        <span class="outside" title="The agents may work outside the workspace">
+                            <ShieldOff size=16 />
+                            <span class="outside-words">"outside access"</span>
+                        </span>
+                    })}
+                    <span class="figures" title=figures_title>{figures}</span>
+                    {move || cache().map(|(label, warns, title)| view! { <span class="cache" class:warn=warns title=title>{label}</span> })}
+                </span>
                 {move || {
                     let (count, running) = workers();
                     let busy = running > 0;
@@ -159,7 +167,8 @@ pub fn Header() -> impl IntoView {
                             aria-haspopup="dialog"
                             on:click=move |_| page.sheet.set(Some(Sheet::Workers))>
                             <Bot size=16 />
-                            {words::plural(count as u32, "worker", "workers")}
+                            {count}
+                            <span class="workers-word">{if count == 1 { "worker" } else { "workers" }}</span>
                         </button>
                     })
                 }}
@@ -174,7 +183,7 @@ pub fn Header() -> impl IntoView {
                 <div class="view-pick">
                     <button type="button" class="btn ghost small" aria-haspopup="menu" aria-expanded=move || menu.get().to_string()
                         on:click=move |_| menu.update(|open| *open = !*open)>
-                        {move || page.view.get().name()}
+                        <span class="pick-name">{move || page.view.get().name()}</span>
                         <ChevronDown size=14 />
                     </button>
                     <Show when=move || menu.get()>

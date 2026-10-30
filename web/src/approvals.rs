@@ -221,7 +221,7 @@ fn Row(request: ApprovalRequest, rows: Rows, several: Signal<bool>) -> impl Into
                 <button type="button" class="tray-summary" aria-expanded=move || expanded().to_string() on:click=toggle>
                     <span class="tray-kind">{approval.kind_word()}</span>
                     <span class="tray-name">{approval.name().to_string()}</span>
-                    <span class="tray-scope">{approval.scope().to_string()}</span>
+                    <span class="tray-scope" class:every=approval.every_project()>{approval.scope().to_string()}</span>
                     <span class="tray-text">{approval.summary()}</span>
                     <span class="tray-chevron">
                         {move || if chevron() {
@@ -252,6 +252,13 @@ fn Details(request: ApprovalRequest, rows: Rows) -> impl IntoView {
         Approval::Skill(skill) => Some(skill.files.clone()),
         _ => None,
     };
+    // The box of a skill's SKILL.md, which the files below show. (An
+    // update's changes have a box of their own.)
+    let main_text: Option<String> = files
+        .as_ref()
+        .and_then(|files| files.first())
+        .and_then(|file| file.text.as_deref())
+        .map(|text| text.trim_end().to_string());
     let lines = approval
         .details()
         .into_iter()
@@ -260,7 +267,8 @@ fn Details(request: ApprovalRequest, rows: Rows) -> impl IntoView {
             Look::Heading => Some(view! { <h3 class="tray-heading">{detail.text}</h3> }.into_any()),
             Look::Warning => Some(view! { <p class="tray-warning">{detail.text}</p> }.into_any()),
             // A skill's files show below, with the one chosen in the box.
-            Look::Box | Look::File if files.is_some() => None,
+            Look::Box if main_text.as_deref() == Some(detail.text.as_str()) => None,
+            Look::File if files.is_some() => None,
             Look::Box => Some(view! { <div class="tray-box">{detail.text}</div> }.into_any()),
             Look::File => Some(view! { <p>{detail.text}</p> }.into_any()),
         })

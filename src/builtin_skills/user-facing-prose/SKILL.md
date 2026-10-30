@@ -50,6 +50,7 @@ Colons are fine where they aren't prose.
 
 - **Semicolons.** Use a period, a comma or a dash, or rewrite.
 - **"It does X. It does not do Y."** Lists of what something doesn't do. Cut negatives a reader wouldn't assume in the first place.
+- **Emphatic negatives tacked on.** "Completes words from what you've typed, never from pasted text or replies" sounds like it's insisting. Give the scope a plain sentence of its own, such as "Completes words from what you've typed. Excludes pasted text and replies." A "not" that corrects a value in an error ("takes high, not max") is fine, and so is "never" where it's the plain fact.
 - **Stacked qualifiers and hedges.** Say what happens, plainly.
 - **Inflated words.** Prefer "use" to "leverage", "lets you" to "empowers", "shows" to "surfaces".
 

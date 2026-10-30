@@ -1111,6 +1111,13 @@ impl Stream {
         }
     }
 
+    /// Sends the status even when it went out already.
+    fn send_status_again(&mut self) {
+        self.status = self.app.status(&self.app.feed.activity());
+        self.pending
+            .push_back(Event::default().event("status").data(self.status.clone()));
+    }
+
     fn take(&mut self, update: Update) {
         match update {
             Update::Item(item) => {
@@ -1122,9 +1129,11 @@ impl Stream {
                         .data(serde_json::to_string(&page_item).unwrap_or_default()),
                 );
                 // A command's answer comes as its setting changes, so the
-                // page shows the new value with it.
+                // page shows the new value with it. Always, since the check
+                // may have sent the new value a moment before the answer,
+                // and the page reads the status that follows the answer.
                 if matches!(item.kind, Kind::Output | Kind::Notice) {
-                    self.send_status();
+                    self.send_status_again();
                 }
             }
             Update::Append { id, text } => {
@@ -1258,8 +1267,23 @@ impl Stream {
                         .push_back(Event::default().event("ping").data(count.to_string()));
                 }
                 // (The tick also wakes a quiet stream to see whether its
-                // session ended.)
-                _ = self.tick.tick() => self.send_status(),
+                // session ended.) What was posted before it goes first, so a
+                // command's answer comes before the status that shows its
+                // setting, and with it. Only that, so a steady stream of
+                // updates can't hold the stream here.
+                _ = self.tick.tick() => {
+                    for _ in 0..self.updates.len() {
+                        match self.updates.try_recv() {
+                            Ok(update) => self.take(update),
+                            Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                                self.reset();
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    self.send_status();
+                }
             }
         }
     }
@@ -1284,7 +1308,9 @@ fn typed(text: &str) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
-/// `POST /api/message` with `{"text": ...}`: as if typed at the prompt.
+/// `POST /api/message` with `{"text": ...}`: as if typed at the prompt. A
+/// line that reads as a command but isn't one is refused (422), with what
+/// to tell the user.
 async fn message(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1297,6 +1323,13 @@ async fn message(
     let Ok(body) = serde_json::from_slice::<MessageBody>(&body) else {
         return (StatusCode::BAD_REQUEST, error_body("send {\"text\": ...}")).into_response();
     };
+    // A mistyped command is said, and the page keeps the text to put right,
+    // in a worker's view too.
+    if let Some(why) = typed(&body.text)
+        .and_then(|text| crate::commands::unknown(&text, crate::commands::on_page()))
+    {
+        return (StatusCode::UNPROCESSABLE_ENTITY, error_body(&why)).into_response();
+    }
     // A reply to the main agent's questions.
     if !body.answers.is_empty()
         && body.to.is_none()
@@ -3342,6 +3375,32 @@ mod tests {
         assert_eq!(status[0].1["settings"]["extra_rules"], "all");
     }
 
+    /// A setting can change, and the status check send the new value, just
+    /// before the command's answer is posted. The answer still has a status
+    /// after it, which the page reads as the answer's.
+    #[tokio::test]
+    async fn a_commands_answer_has_its_status_after_it_when_the_check_sent_it_first() {
+        use super::super::feed::Level;
+        let feed = Feed::new("main");
+        let meter = Arc::new(Moving(Mutex::new(Reading::default())));
+        let served = serve_with(&feed, "127.0.0.1:0", Info::default(), meter.clone());
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+
+        lock(&meter.0).settings.extra_rules = crate::agents::ExtraRules::All;
+        read_until(&mut stream, &mut buffer, |name, data| {
+            name == "status" && data["settings"]["extra_rules"] == "all"
+        })
+        .await;
+        feed.notice(Level::Info, "Extra rules for small models are set to all.");
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "status").await;
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["item", "status"]);
+        assert_eq!(events[1].1["settings"]["extra_rules"], "all");
+    }
+
     /// The status carries the main agent's prompt cache once its lifetime
     /// and last use are known (the lifetime in milliseconds), which the
     /// page counts down in its header. Until then it carries none.
@@ -3487,6 +3546,26 @@ mod tests {
                 Action::Message(sent.into())
             );
         }
+        // A mistyped command is refused in either view, with the text left
+        // to put right, and a space first sends it.
+        for to in [None, Some("r1")] {
+            let body = serde_json::json!({ "text": "/sesion", "to": to }).to_string();
+            let response = served.post("/api/message", Some(&cookie), &body).await;
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let error: serde_json::Value =
+                serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            assert_eq!(
+                error["error"],
+                "/sesion isn't a command. Did you mean /session? Start with a space to send it as a message."
+            );
+        }
+        let body = serde_json::json!({ "text": " /sesion", "to": "r1" }).to_string();
+        let response = served.post("/api/message", Some(&cookie), &body).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::Message("/message r1 /sesion".into())
+        );
 
         let response = served
             .post(
@@ -3705,7 +3784,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        feed.ask(run, &[asked("q1"), asked("q2")], false);
+        let card = feed.ask(run, &[asked("q1"), asked("q2")], false);
         let response = served
             .post("/api/questions/answer", Some(&cookie), answer)
             .await;
@@ -3752,7 +3831,8 @@ mod tests {
             .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         // Answers too long for the note that carries them are refused before
-        // anything is taken: an answer, and a message that answers.
+        // anything is taken: an answer, a message that answers, and an
+        // answer to a question card as older pages send it.
         let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
         for (path, body) in [
             (
@@ -3762,6 +3842,10 @@ mod tests {
             (
                 "/api/message",
                 serde_json::json!({"text": long, "answers": ["q1"]}),
+            ),
+            (
+                "/api/answer",
+                serde_json::json!({"question": card, "text": long}),
             ),
         ] {
             let response = served.post(path, Some(&cookie), &body.to_string()).await;

@@ -38,25 +38,28 @@ The main agent saves a skill with `add_skill`, from a folder or Markdown file it
 skill folders, a `.zip` or `.skill` bundle, or an https URL of one. A skill for the project goes in
 its `.arko/skills`, which git ignores unless you say otherwise (see
 [the .arko folder](arko-folder.md)). A skill for every project goes in `skills` in Arko's folder.
+It updates a skill an agent saved with `edit_skill`, from a whole new version, in the same scope.
+`add_skill` refuses a name an agent's skill has, and `edit_skill` one none has.
 
-| Save | Asks you |
+| Save or update | Asks you |
 |---|---|
 | For every project | Always |
 | From a URL | Always |
 | For the project | Only with `review-skills` on (see [Approvals](approvals.md#what-asks-first)) |
 
-`review-skills` covers the saves made with `add_skill`, while a skill folder an agent writes into the
+`review-skills` covers the saves made with `add_skill` and `edit_skill`, while a skill folder an agent writes into the
 project with its file tools or the shell loads like any other project file, as before.
 
 The [approval tray](approvals.md) shows the skill's text and files, where it came from and who gets
-it. Arko checks the skill before it asks and refuses one with `auto_load`, a link, more than 200
-files or more than 1 MB, or the name of a skill you made. A skill the agent saved before under that
-name is replaced, and the request says so, unless a folder was put in its place since, which counts
-as yours. Nothing is written before you approve, and what's saved is the copy the tray showed, even
-if the source changes meanwhile. If a skill of that name appears while you decide, or the agent's
-skill it would replace is edited, Arko doesn't save it and the agent asks again. An edit in the
-last moment keeps the old skill's folder, hidden beside the new one, and the agent is told where.
-An agent's skill you filled with more than 1,000 files and folders or 16 MB isn't replaced. A
+it. An update shows as one, with the files it adds, removes and changes and the changed lines of
+`SKILL.md`. Arko checks the skill before it asks and refuses one with `auto_load`, a link, more than
+200 files or more than 1 MB, or the name of a skill you made. A skill an agent saved counts as
+yours once a folder was put in its place. Nothing is written before you approve, and what's saved is
+the copy the tray showed, even if the source changes meanwhile. If a skill of that name appears
+while you decide, or the skill an update replaces is edited, Arko doesn't save it and the agent asks
+again. An edit in the last moment keeps the old skill's folder, hidden beside the new one, and the
+agent is told where. An agent's skill you filled with more than 1,000 files and folders or 16 MB
+isn't updated. A
 `.arko`, `.arko/skills` or `skills` folder that is a link is refused, so a save can't land outside
 its place. The agent's `load_skill` finds the skill at once, and its skill list shows it from the
 next conversation. Workers started after the save get it unless it says `workers: false`.

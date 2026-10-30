@@ -473,9 +473,19 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
         given(&harness.worker_config),
         ["user-facing-prose", "ponytail"]
     );
+    assert!(harness.live_command("/builtin-skills", Source::Terminal));
+    assert!(
+        last_said(&harness.feed).starts_with(
+            "Built-in skills are on, so the agents get user-facing-prose and ponytail. repo-docs-style is left out. /builtin-skills"
+        )
+    );
     assert!(harness.live_command("/builtin-skills ponytail off", Source::Terminal));
     assert_eq!(last_said(&harness.feed), "ponytail is now off.");
     assert_eq!(given(&harness.main_config), ["user-facing-prose"]);
+    assert!(harness.live_command("/builtin-skills", Source::Terminal));
+    assert!(last_said(&harness.feed).starts_with(
+        "Built-in skills are on, so the agents get user-facing-prose. repo-docs-style and ponytail are left out."
+    ));
     let saved = harness.session.load_settings().unwrap().builtin_skills;
     assert_eq!(saved, harness.settings.builtin_skills);
     assert_eq!(saved.off, ["repo-docs-style", "ponytail"]);

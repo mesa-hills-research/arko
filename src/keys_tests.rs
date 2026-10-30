@@ -177,7 +177,7 @@ async fn keys_are_listed_and_added_only_at_the_terminal() {
     assert!(text.contains("Add or remove keys at the terminal."), "{text}");
     assert!(harness.live_command("/keys add openai", Source::Web));
     assert!(said(&harness.feed).contains(
-        "API keys are added and removed at the terminal, not from the web page."
+        "API keys are added and removed at the terminal."
     ));
     assert!(harness.live_command("/keys add openai", Source::Terminal));
     assert!(said(&harness.feed).contains("/keys add reads the key with the input hidden"));
@@ -238,7 +238,7 @@ async fn chatgpt_logins_are_listed_everywhere_and_changed_only_at_the_terminal()
     assert!(said(&harness.feed).contains("There is no login 5."));
     assert!(harness.live_command(&format!("/chatgpt add {}", two.display()), Source::Web));
     assert!(said(&harness.feed).contains(
-        "ChatGPT logins are changed at the terminal, not from the web page."
+        "ChatGPT logins are changed at the terminal."
     ));
     assert_eq!(files(), std::slice::from_ref(&one));
     // A file that holds no login is "not usable", and the page leaves out

@@ -319,7 +319,13 @@ fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize) {
             theme.dim(),
         ));
         spans.push(Span::styled(pad(approval.name(), names), style));
-        spans.push(Span::styled(pad(approval.scope(), scopes), theme.text()));
+        // Every project stands out.
+        let reach = if approval.every_project() {
+            theme.warning()
+        } else {
+            theme.text()
+        };
+        spans.push(Span::styled(pad(approval.scope(), scopes), reach));
         let used: usize = spans.iter().map(|span| wrap::width(&span.content)).sum();
         let summary = cut_end(&approval.summary(), width.saturating_sub(used));
         spans.push(Span::styled(summary, theme.dim()));
