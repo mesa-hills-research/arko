@@ -472,6 +472,8 @@ pub fn cli_main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    #[cfg(unix)]
+    runtime.spawn(end_on_signals());
     let code = runtime.block_on(run(args));
     // A name a model is still being asked for ends with the process, and so
     // does the Claude Code it runs.
@@ -487,10 +489,36 @@ pub fn cli_main() -> ExitCode {
     };
     // Background jobs and stray tasks don't hold the process open.
     runtime.shutdown_timeout(Duration::from_secs(2));
+    // What a task left behind at the shutdown didn't stop runs in a process
+    // group of its own, which would outlive Arko.
+    arko_agents::kill_stop_aware_commands();
+    arko_agents::kill_mcp_servers();
     // Again, last: the line editor's thread may have gone back into raw
     // mode while the runtime shut down.
     term::restore();
     code
+}
+
+/// A SIGTERM, or a SIGHUP when the terminal closes, ends Arko at once, as
+/// their default does. The MCP servers and the commands it started run in
+/// process groups of their own, so it ends them first.
+#[cfg(unix)]
+async fn end_on_signals() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (Ok(mut terminate), Ok(mut hangup)) = (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::hangup()),
+    ) else {
+        return;
+    };
+    let number = tokio::select! {
+        _ = terminate.recv() => libc::SIGTERM,
+        _ = hangup.recv() => libc::SIGHUP,
+    };
+    term::restore();
+    arko_agents::kill_stop_aware_commands();
+    arko_agents::kill_mcp_servers();
+    std::process::exit(128 + number);
 }
 
 pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
