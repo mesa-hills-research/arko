@@ -796,8 +796,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 
 /* The approval tray right above the message box: a row for each request
    that waits for the user's approval, which opens to its details, and the
-   buttons that answer them all. Its edge in the accent colour sets it apart
-   from the answer panel. */
+   buttons that answer them all, with the answer panel's look. */
 .tray {
   display: flex;
   flex-direction: column;
@@ -806,7 +805,6 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   margin-bottom: 8px;
   padding: 10px 12px;
   border: 1px solid var(--line);
-  border-left: 3px solid var(--accent);
   border-radius: var(--r-lg);
   background: var(--popover);
   color: var(--popover-text);
