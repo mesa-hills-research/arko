@@ -23,6 +23,43 @@ thread_local! {
     static NOTES: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::new());
 }
 
+/// A message as it was sent: its text, and the worker whose view it was
+/// sent from (none for the main agent's).
+#[derive(Debug, Clone, PartialEq)]
+struct Draft {
+    text: String,
+    to: Option<String>,
+}
+
+/// Arko's question before a message continues a worker whose prompt cache
+/// expired: its words, and the message it was asked for.
+#[derive(Debug, Clone)]
+struct ContinueAsk {
+    words: String,
+    body: serde_json::Value,
+    draft: Draft,
+}
+
+impl ContinueAsk {
+    /// The question for Arko's answer `words` to `body`, sent as `draft`,
+    /// while the box holds `now`. None once the text or the view changed
+    /// while the message was on its way, since the answer is about a
+    /// message that is no longer there.
+    fn new(words: String, body: serde_json::Value, draft: Draft, now: &Draft) -> Option<Self> {
+        (draft == *now).then_some(Self { words, body, draft })
+    }
+
+    /// What Continue sends while the box holds `now`: the message, marked
+    /// confirmed. None once the text or the view changed.
+    fn confirmed(&self, now: &Draft) -> Option<serde_json::Value> {
+        (self.draft == *now).then(|| {
+            let mut body = self.body.clone();
+            body["confirm_uncached"] = serde_json::Value::Bool(true);
+            body
+        })
+    }
+}
+
 #[component]
 pub fn Composer() -> impl IntoView {
     let page = page();
@@ -37,7 +74,19 @@ pub fn Composer() -> impl IntoView {
     let command_typed = RwSignal::new(false);
     // Arko asks before a message continues a worker whose prompt cache
     // expired: what it said, and the message to send again on Continue.
-    let continue_asked = RwSignal::new(None::<(String, serde_json::Value)>);
+    let continue_asked = RwSignal::new(None::<ContinueAsk>);
+    // What the box holds now, in the view shown.
+    let draft_now = move || {
+        input.get_untracked().map(|area| Draft {
+            text: area.value(),
+            to: page.worker.get_untracked(),
+        })
+    };
+    // Another view drops the question.
+    Effect::new(move |_| {
+        page.worker.track();
+        continue_asked.set(None);
+    });
     let stopping = RwSignal::new(false);
     let menu = RwSignal::new(None::<Menu>);
     let selected = RwSignal::new(None::<usize>);
@@ -144,6 +193,10 @@ pub fn Composer() -> impl IntoView {
             return;
         }
         sending.set(true);
+        let sent = Draft {
+            text: text.clone(),
+            to: page.worker.get_untracked(),
+        };
         // In a worker's view, it goes to that worker. With questions
         // attached, it answers them (and while the agent waits on a
         // question, a message answers it).
@@ -167,26 +220,29 @@ pub fn Composer() -> impl IntoView {
                     // What one sends is what one wants to see next.
                     scroll::jump_to_latest();
                 }
-                Posted::Confirm(why) => continue_asked.set(Some((why, body))),
+                Posted::Confirm(why) => continue_asked
+                    .set(draft_now().and_then(|now| ContinueAsk::new(why, body, sent, &now))),
                 Posted::Kept => {}
             }
             sending.set(false);
             refresh_menu();
         });
     };
-    // Continue sends it again, confirmed. (Cancel, or a change to the
-    // text, leaves it in the box.)
+    // Continue sends it again, confirmed, while the box holds it in the same
+    // view. (Cancel, or a change to the text, leaves it in the box.)
     let continue_anyway = move |_| {
-        let (Some((_, mut body)), Some(area)) =
-            (continue_asked.get_untracked(), input.get_untracked())
-        else {
+        let asked = continue_asked.get_untracked();
+        continue_asked.set(None);
+        let (Some(asked), Some(area)) = (asked, input.get_untracked()) else {
             return;
         };
-        continue_asked.set(None);
-        body["confirm_uncached"] = serde_json::Value::Bool(true);
+        let Some(body) = draft_now().and_then(|now| asked.confirmed(&now)) else {
+            return;
+        };
         sending.set(true);
         spawn_local(async move {
-            if post("/api/message", body).await {
+            // (What was typed meanwhile stays.)
+            if post("/api/message", body).await && draft_now() == Some(asked.draft) {
                 area.set_value("");
                 expanded.set(false);
                 resize();
@@ -271,9 +327,9 @@ pub fn Composer() -> impl IntoView {
                 <Show when=reporting>
                     <p class="note-line" role="status">{crate::words::REPORTING}</p>
                 </Show>
-                {move || continue_asked.get().map(|(why, _)| view! {
+                {move || continue_asked.get().map(|asked| view! {
                     <div class="confirm-line" role="alertdialog" aria-label="Continue the worker">
-                        <p class="note-line">{why}</p>
+                        <p class="note-line">{asked.words}</p>
                         <button type="button" class="btn ghost small" on:click=move |_| continue_asked.set(None)>"Cancel"</button>
                         <button type="button" class="btn primary small" on:click=continue_anyway>"Continue"</button>
                     </div>
@@ -494,4 +550,39 @@ fn fit(area: &HtmlTextAreaElement, tall: RwSignal<bool>, expanded: bool) {
         }
         tall.set(over || expanded);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn draft(text: &str, to: Option<&str>) -> Draft {
+        Draft {
+            text: text.into(),
+            to: to.map(str::to_string),
+        }
+    }
+
+    /// Arko's question stands for the message it was asked about: once the
+    /// text or the view changed while the message was on its way, or before
+    /// Continue, nothing is sent, and the new draft stays.
+    #[test]
+    fn the_question_holds_only_for_the_draft_it_was_asked_about() {
+        let body = serde_json::json!({"text": "Go on.", "to": "r3"});
+        let sent = draft("Go on.", Some("r3"));
+        let ask = |now: &Draft| ContinueAsk::new("Words.".into(), body.clone(), sent.clone(), now);
+        // Edited before Arko's answer came, or another view: no question.
+        assert!(ask(&draft("Go on. Now.", Some("r3"))).is_none());
+        assert!(ask(&draft("Go on.", None)).is_none());
+        assert!(ask(&draft("Go on.", Some("r4"))).is_none());
+        // Unchanged: Continue sends it, confirmed, while it stays so.
+        let asked = ask(&draft("Go on.", Some("r3"))).unwrap();
+        assert_eq!(asked.words, "Words.");
+        assert_eq!(
+            asked.confirmed(&draft("Go on.", Some("r3"))),
+            Some(serde_json::json!({"text": "Go on.", "to": "r3", "confirm_uncached": true}))
+        );
+        assert_eq!(asked.confirmed(&draft("Something else.", Some("r3"))), None);
+        assert_eq!(asked.confirmed(&draft("Go on.", None)), None);
+    }
 }
