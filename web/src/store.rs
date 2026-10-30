@@ -238,6 +238,10 @@ pub mod tests {
             cost_list: 0.0,
             family_cost_billed: 0.0,
             family_cost_list: 0.0,
+            cache_expires_at: None,
+            reread_tokens: None,
+            reread_dollars: None,
+            reread_plan: None,
         }
     }
 

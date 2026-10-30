@@ -8,7 +8,7 @@ use leptos::task::spawn_local;
 use lucide_leptos::{ArrowUp, Maximize2, Minimize2, Square};
 use web_sys::HtmlTextAreaElement;
 
-use crate::app::{DRAFT, get_json, page, post, session_get, session_set};
+use crate::app::{DRAFT, Posted, get_json, page, post, post_asking, session_get, session_set};
 use crate::scroll;
 use crate::slash::{self, Menu};
 
@@ -35,6 +35,9 @@ pub fn Composer() -> impl IntoView {
     let sending = RwSignal::new(false);
     // The box holds a command, which goes while the report is written.
     let command_typed = RwSignal::new(false);
+    // Arko asks before a message continues a worker whose prompt cache
+    // expired: what it said, and the message to send again on Continue.
+    let continue_asked = RwSignal::new(None::<(String, serde_json::Value)>);
     let stopping = RwSignal::new(false);
     let menu = RwSignal::new(None::<Menu>);
     let selected = RwSignal::new(None::<usize>);
@@ -153,14 +156,40 @@ pub fn Composer() -> impl IntoView {
             None => serde_json::json!({ "text": text }),
         };
         spawn_local(async move {
-            if post("/api/message", body).await {
-                if page.worker.get_untracked().is_none() {
-                    ask.attached.set(Vec::new());
+            match post_asking("/api/message", body.clone()).await {
+                Posted::Taken => {
+                    if page.worker.get_untracked().is_none() {
+                        ask.attached.set(Vec::new());
+                    }
+                    area.set_value("");
+                    expanded.set(false);
+                    resize();
+                    // What one sends is what one wants to see next.
+                    scroll::jump_to_latest();
                 }
+                Posted::Confirm(why) => continue_asked.set(Some((why, body))),
+                Posted::Kept => {}
+            }
+            sending.set(false);
+            refresh_menu();
+        });
+    };
+    // Continue sends it again, confirmed. (Cancel, or a change to the
+    // text, leaves it in the box.)
+    let continue_anyway = move |_| {
+        let (Some((_, mut body)), Some(area)) =
+            (continue_asked.get_untracked(), input.get_untracked())
+        else {
+            return;
+        };
+        continue_asked.set(None);
+        body["confirm_uncached"] = serde_json::Value::Bool(true);
+        sending.set(true);
+        spawn_local(async move {
+            if post("/api/message", body).await {
                 area.set_value("");
                 expanded.set(false);
                 resize();
-                // What one sends is what one wants to see next.
                 scroll::jump_to_latest();
             }
             sending.set(false);
@@ -242,6 +271,13 @@ pub fn Composer() -> impl IntoView {
                 <Show when=reporting>
                     <p class="note-line" role="status">{crate::words::REPORTING}</p>
                 </Show>
+                {move || continue_asked.get().map(|(why, _)| view! {
+                    <div class="confirm-line" role="alertdialog" aria-label="Continue the worker">
+                        <p class="note-line">{why}</p>
+                        <button type="button" class="btn ghost small" on:click=move |_| continue_asked.set(None)>"Cancel"</button>
+                        <button type="button" class="btn primary small" on:click=continue_anyway>"Continue"</button>
+                    </div>
+                })}
                 <crate::questions::Replying />
                 <crate::approvals::Tray />
                 <form
@@ -297,7 +333,7 @@ pub fn Composer() -> impl IntoView {
                             aria-expanded=move || menu.with(|open| open.as_ref().is_some_and(|open| !open.entries.is_empty())).to_string()
                             aria-activedescendant=move || selected.get().map(|at| format!("slash-{at}"))
                             enterkeyhint=if enter_sends { "send" } else { "enter" }
-                            on:input=move |_| { resize(); refresh_menu(); }
+                            on:input=move |_| { continue_asked.set(None); resize(); refresh_menu(); }
                             on:focus=move |_| refresh_menu()
                             on:blur=move |_| { menu.set(None); CHOICES.with(|choices| choices.borrow_mut().clear()); }
                             on:keydown=keydown
