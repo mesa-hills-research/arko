@@ -515,6 +515,10 @@ async fn end_on_signals() {
         _ = terminate.recv() => libc::SIGTERM,
         _ = hangup.recv() => libc::SIGHUP,
     };
+    // The full-screen view's modes too (the alternate screen, the mouse,
+    // focus and paste reports, the keyboard protocol, the title, the
+    // cursor), not only the line editor's.
+    tui::give_back_terminal();
     term::restore();
     arko_agents::kill_stop_aware_commands();
     arko_agents::kill_mcp_servers();
