@@ -206,24 +206,64 @@ kbd {
   min-height: 48px;
 }
 
-.state { display: inline-flex; align-items: baseline; gap: 6px; font-size: 14px; font-weight: 600; white-space: nowrap; }
+.state { display: inline-flex; flex: none; align-items: baseline; gap: 6px; font-size: 14px; font-weight: 600; white-space: nowrap; }
 .state:empty, .state-label:empty { display: none; }
 .state.asking { color: var(--warn); }
 .state.offline, .state.failed { color: var(--error); }
 .state.connecting { color: var(--muted); }
 .state-time { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
-.figures, .cache {
+/* What the state carries, on one line that takes the room left. An item
+   that doesn't fit wraps to a second line out of sight, whole and with its
+   gap, the last first. The first item takes no room, so a wide one goes
+   too rather than show in part. */
+.info {
+  display: flex;
+  flex: 1 1 0;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  height: 20px;
+  margin-left: -10px;
   overflow: hidden;
+  line-height: 20px;
+}
+/* (Its height keeps the first line whole, so the second is out of sight.) */
+.info::before { content: ""; height: 20px; }
+.info > * { flex: none; margin-left: 10px; white-space: nowrap; }
+.figures:empty { display: none; }
+.figures, .cache {
   color: var(--muted);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.figures { min-width: 0; }
 .cache.warn { color: var(--warn); font-weight: 600; }
-.outside { color: var(--warn); font-size: 13px; font-weight: 600; white-space: nowrap; }
-.spacer { flex: 1; }
+.outside { display: inline-flex; align-items: center; color: var(--warn); font-size: 13px; font-weight: 600; }
+.outside svg { display: none; }
+/* On a phone, outside access is its icon, and the workers button its count,
+   with the words for screen readers. The header's gaps and buttons are
+   tighter there too. */
+@media (max-width: 719px) {
+  .outside svg { display: block; }
+  .outside-words, .workers-word {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .bar { gap: 6px; }
+  .info { margin-left: -6px; }
+  .info > * { margin-left: 6px; }
+  .bar .btn.small { padding: 0 4px; }
+}
+@media (max-width: 359px) {
+  .bar, .state { gap: 4px; }
+  .info { margin-left: -4px; }
+  .info > * { margin-left: 4px; }
+  .bar .btn.small { padding: 0 2px; }
+  .bar > .btn.icon { width: 28px; }
+}
 
 /* The views, as one segmented control on a wide screen, and a button with a
    menu on a phone. */
@@ -242,7 +282,10 @@ kbd {
   border-color: var(--outline, color-mix(in oklab, var(--muted) 50%, var(--line)));
   background: var(--muted-bg);
 }
-.view-pick { position: relative; }
+/* Its name gives way last, when nothing else in the header can. */
+.view-pick { position: relative; display: flex; min-width: 0; }
+.view-pick > .btn { flex: 0 1 auto; min-width: 0; }
+.pick-name { overflow: hidden; text-overflow: ellipsis; }
 @media (min-width: 720px) {
   .views { display: flex; }
   .view-pick { display: none; }
