@@ -1205,6 +1205,49 @@ async fn an_updates_card_says_what_changes() {
     );
 }
 
+/// An update's card comes from what the stamp of the saved skill read, which
+/// opens nothing through a link: a link in the skill to a folder or a file
+/// outside it is listed as going, and a file too big for a save is compared
+/// by its hash. What the links lead to stays as it was.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_update_reads_the_saved_skill_through_its_stamp() {
+    use std::os::unix::fs::symlink;
+    let fixture = quiet();
+    fixture.review_project_skills();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[("big.md", "Big.")]);
+    let source = draft.display().to_string();
+    fixture.add(params("notes", &source)).await.unwrap();
+    let saved = fixture.project().join("notes");
+    let outside = fixture.workspace.join("outside");
+    std::fs::create_dir_all(outside.join("dir")).unwrap();
+    std::fs::write(outside.join("dir/secret.md"), "Secret.").unwrap();
+    std::fs::write(outside.join("secret.md"), "Secret.").unwrap();
+    symlink(outside.join("dir"), saved.join("linked")).unwrap();
+    symlink(outside.join("secret.md"), saved.join("linked.md")).unwrap();
+    // (A sparse file, so nothing is written to the disk.)
+    std::fs::File::create(saved.join("big.md"))
+        .unwrap()
+        .set_len(MAX_BYTES + 1)
+        .unwrap();
+    fixture.edit(params("notes", &source)).await.unwrap();
+    let card = fixture.cards()[1].clone();
+    let update = card.update.clone().unwrap();
+    assert_eq!(update.changed, ["big.md"]);
+    assert_eq!(update.removed, ["linked", "linked.md"]);
+    assert!(update.added.is_empty() && update.diff.is_empty());
+    assert!(!serde_json::to_string(&card).unwrap().contains("Secret"));
+    assert_eq!(files_in(&saved), ["SKILL.md", "big.md"]);
+    assert_eq!(
+        std::fs::read_to_string(outside.join("secret.md")).unwrap(),
+        "Secret."
+    );
+    assert_eq!(
+        std::fs::read_to_string(outside.join("dir/secret.md")).unwrap(),
+        "Secret."
+    );
+}
+
 /// A diff shows the changed lines with two lines around them, `…` where
 /// lines are left out, and at most [`DIFF_LINES`] lines.
 #[test]

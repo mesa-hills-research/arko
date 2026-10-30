@@ -325,21 +325,43 @@ const STAMP_ENTRIES: usize = 1_000;
 const STAMP_BYTES: u64 = 4 * MAX_UNPACKED;
 const STAMP_DEPTH: usize = 16;
 
+/// What a stamp saw in a skill's folder, for an update's card, so the card
+/// shows what the stamp read and nothing read again: each file by its path
+/// in the folder (`/` between folders) with a hash of its bytes, anything
+/// else (a link, a pipe) by its path alone, unopened, and the top
+/// `SKILL.md`'s bytes while they are at most [`MAX_BYTES`].
+#[derive(Debug, Default)]
+struct Seen {
+    entries: HashMap<String, Option<[u8; 32]>>,
+    skill_md: Option<Vec<u8>>,
+}
+
 /// The stamp of the folder `name` in `folder`, read within the limits
 /// above (`FileTooLarge` past them). Files are read in small pieces, and
 /// only regular files are opened.
 fn stamp(folder: &Folder, name: &str) -> std::io::Result<Stamp> {
+    stamp_seeing(folder, name, false).map(|(stamp, _)| stamp)
+}
+
+/// [`stamp`], with what it saw when `see` is set.
+fn stamp_seeing(folder: &Folder, name: &str, see: bool) -> std::io::Result<(Stamp, Option<Seen>)> {
     use sha2::Digest;
     use std::io::Read;
     struct Reading {
         hasher: sha2::Sha256,
         entries: usize,
         bytes: u64,
+        seen: Option<Seen>,
     }
     fn too_big() -> std::io::Error {
         std::io::Error::from(std::io::ErrorKind::FileTooLarge)
     }
-    fn hash(folder: &Folder, reading: &mut Reading, depth: usize) -> std::io::Result<()> {
+    fn hash(
+        folder: &Folder,
+        reading: &mut Reading,
+        depth: usize,
+        inside: &str,
+    ) -> std::io::Result<()> {
         if depth > STAMP_DEPTH {
             return Err(too_big());
         }
@@ -354,13 +376,17 @@ fn stamp(folder: &Folder, name: &str) -> std::io::Result<Stamp> {
             }
             reading.hasher.update(name.as_encoded_bytes());
             reading.hasher.update([0]);
+            let path = match inside {
+                "" => name.to_string_lossy().to_string(),
+                inside => format!("{inside}/{}", name.to_string_lossy()),
+            };
             match entry.kind {
                 Kind::Folder => {
                     reading.hasher.update(b"d");
                     if let Some((inner, _)) =
                         folder.open(&name, false).map_err(std::io::Error::other)?
                     {
-                        hash(&inner, reading, depth + 1)?;
+                        hash(&inner, reading, depth + 1, &path)?;
                     }
                     reading.hasher.update(b"/");
                 }
@@ -369,6 +395,8 @@ fn stamp(folder: &Folder, name: &str) -> std::io::Result<Stamp> {
                     let mut file = folder.open_file(&name)?;
                     let mut buffer = [0u8; 64 * 1024];
                     let mut length = 0u64;
+                    let mut own = sha2::Sha256::new();
+                    let mut kept = (reading.seen.is_some() && path == "SKILL.md").then(Vec::new);
                     loop {
                         let read = file.read(&mut buffer)?;
                         if read == 0 {
@@ -380,14 +408,30 @@ fn stamp(folder: &Folder, name: &str) -> std::io::Result<Stamp> {
                             return Err(too_big());
                         }
                         reading.hasher.update(&buffer[..read]);
+                        own.update(&buffer[..read]);
+                        if length > MAX_BYTES {
+                            kept = None;
+                        }
+                        if let Some(kept) = &mut kept {
+                            kept.extend_from_slice(&buffer[..read]);
+                        }
                     }
                     reading.hasher.update(length.to_le_bytes());
+                    if let Some(seen) = &mut reading.seen {
+                        seen.entries.insert(path, Some(own.finalize().into()));
+                        if kept.is_some() {
+                            seen.skill_md = kept;
+                        }
+                    }
                 }
                 Kind::Link | Kind::Other => {
                     reading.hasher.update(b"l");
                     if let Some((device, inode)) = entry.id {
                         reading.hasher.update(device.to_le_bytes());
                         reading.hasher.update(inode.to_le_bytes());
+                    }
+                    if let Some(seen) = &mut reading.seen {
+                        seen.entries.insert(path, None);
                     }
                 }
             }
@@ -404,12 +448,14 @@ fn stamp(folder: &Folder, name: &str) -> std::io::Result<Stamp> {
         hasher: sha2::Sha256::new(),
         entries: 0,
         bytes: 0,
+        seen: see.then(Seen::default),
     };
-    hash(&inner, &mut reading, 0)?;
-    Ok(Stamp {
+    hash(&inner, &mut reading, 0, "")?;
+    let stamp = Stamp {
         id,
         hash: reading.hasher.finalize().into(),
-    })
+    };
+    Ok((stamp, reading.seen))
 }
 
 /// How putting a staged skill in place of an agent's went wrong.
@@ -1112,9 +1158,13 @@ impl AddSkill {
             }
             _ => {}
         }
-        let found = found_at(target.as_ref(), name, &dest, replaces.is_some()).map_err(refused)?;
+        let (found, seen) = found_seeing(target.as_ref(), name, &dest, replaces.is_some(), true)
+            .map_err(refused)?;
         let update = match &replaces {
-            Some(record) => Some(changes(&dest, &draft, &skill_md, record).map_err(refused)?),
+            Some(record) => {
+                let seen = seen.unwrap_or_default();
+                Some(changes(&dest, &seen, &draft, &skill_md, record).map_err(refused)?)
+            }
             None => None,
         };
         // (A path as the user reads it.)
@@ -1453,8 +1503,19 @@ fn found_at(
     dest: &Path,
     replaces: bool,
 ) -> Result<Option<Stamp>, String> {
+    found_seeing(target, name, dest, replaces, false).map(|(found, _)| found)
+}
+
+/// [`found_at`], with what the stamp saw when `see` is set.
+fn found_seeing(
+    target: Option<&Folder>,
+    name: &str,
+    dest: &Path,
+    replaces: bool,
+    see: bool,
+) -> Result<(Option<Stamp>, Option<Seen>), String> {
     let Some(target) = target else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let unread = |error: std::io::Error| {
         if error.kind() == std::io::ErrorKind::FileTooLarge {
@@ -1470,13 +1531,15 @@ fn found_at(
         }
     };
     match target.entry(name).map_err(unread)? {
-        None => Ok(None),
+        None => Ok((None, None)),
         Some(Entry {
             kind: Kind::Link, ..
         }) => Err(format!("{} Choose another name.", link_refused(dest))),
         Some(Entry {
             kind: Kind::Folder, ..
-        }) if replaces => stamp(target, name).map(Some).map_err(unread),
+        }) if replaces => stamp_seeing(target, name, see)
+            .map(|(stamp, seen)| (Some(stamp), seen))
+            .map_err(unread),
         Some(_) => Err(format!(
             "{} is there already. Choose another name.",
             dest.display()
@@ -1493,27 +1556,27 @@ fn scope_word(scope: Scope) -> &'static str {
 }
 
 /// What saving `draft` (with `skill_md` as its SKILL.md) in `dest` changes
-/// in the skill an agent saved there (`record`), for the card. Refuses an
-/// update that changes nothing, and a saved skill that can't be read.
+/// in the skill an agent saved there (`record`), by what the stamp of that
+/// skill `seen`, for the card. Files are compared byte for byte, apart from
+/// how the diff shows them. Refuses an update that changes nothing.
 fn changes(
     dest: &Path,
+    seen: &Seen,
     draft: &Draft,
     skill_md: &str,
     record: &SkillRecord,
 ) -> Result<SkillUpdate, String> {
-    let before = saved_files(dest).map_err(|error| {
-        format!(
-            "Arko couldn't read the saved skill to show what changes ({}).",
-            reason_of(&error)
-        )
-    })?;
+    use sha2::Digest;
     let mut after: HashMap<&str, &[u8]> = draft
         .files
         .iter()
         .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
         .collect();
     after.insert("SKILL.md", skill_md.as_bytes());
-    let others = |paths: &mut dyn Iterator<Item = &str>| {
+    let hash = |bytes: &[u8]| -> [u8; 32] { sha2::Sha256::digest(bytes).into() };
+    // (A link or a pipe is never the same as a file.)
+    let same = |path: &str, bytes: &[u8]| seen.entries.get(path) == Some(&Some(hash(bytes)));
+    let sorted = |paths: &mut dyn Iterator<Item = &str>| {
         let mut paths: Vec<String> = paths
             .filter(|path| *path != "SKILL.md")
             .map(String::from)
@@ -1521,32 +1584,34 @@ fn changes(
         paths.sort();
         paths
     };
-    let old_skill_md = before
-        .get("SKILL.md")
-        .and_then(Option::as_deref)
-        .unwrap_or_default();
+    let mut changed = sorted(&mut after.iter().filter_map(|(path, bytes)| {
+        (seen.entries.contains_key(*path) && !same(path, bytes)).then_some(*path)
+    }));
+    let mut diff = String::new();
+    if !same("SKILL.md", skill_md.as_bytes()) {
+        match &seen.skill_md {
+            Some(before) => diff = line_diff(&String::from_utf8_lossy(before), skill_md),
+            // Too long (or not a file) to show line by line.
+            None => changed.insert(0, "SKILL.md".to_string()),
+        }
+    }
     let update = SkillUpdate {
         saved: day(&record.added),
-        diff: line_diff(&String::from_utf8_lossy(old_skill_md), skill_md),
-        added: others(
+        diff,
+        added: sorted(
             &mut after
                 .keys()
                 .copied()
-                .filter(|path| !before.contains_key(*path)),
+                .filter(|path| !seen.entries.contains_key(*path)),
         ),
-        removed: others(
-            &mut before
+        removed: sorted(
+            &mut seen
+                .entries
                 .keys()
                 .map(String::as_str)
                 .filter(|path| !after.contains_key(path)),
         ),
-        // (What wasn't read counts as changed.)
-        changed: others(&mut after.iter().filter_map(|(path, bytes)| {
-            before
-                .get(*path)
-                .filter(|old| old.as_deref() != Some(*bytes))
-                .map(|_| *path)
-        })),
+        changed,
     };
     if update.diff.is_empty()
         && update.added.is_empty()
@@ -1559,51 +1624,6 @@ fn changes(
         ));
     }
     Ok(update)
-}
-
-/// The files of the saved skill in `dest`, by their paths (`/` between
-/// folders), each with its bytes while they come to at most [`MAX_BYTES`]
-/// in all. Anything else in it (a link, a pipe) is listed without being
-/// opened, and a hidden name is left out. The folder was stamped, so it is
-/// small enough to walk.
-fn saved_files(dest: &Path) -> std::io::Result<HashMap<String, Option<Vec<u8>>>> {
-    fn walk(
-        folder: &Path,
-        inside: &str,
-        files: &mut HashMap<String, Option<Vec<u8>>>,
-        total: &mut u64,
-    ) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(folder)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
-                continue;
-            }
-            let path = if inside.is_empty() {
-                name
-            } else {
-                format!("{inside}/{name}")
-            };
-            let kind = entry.file_type()?;
-            if kind.is_dir() {
-                walk(&entry.path(), &path, files, total)?;
-                continue;
-            }
-            let bytes = if kind.is_file() {
-                *total += entry.metadata()?.len();
-                (*total <= MAX_BYTES)
-                    .then(|| std::fs::read(entry.path()))
-                    .transpose()?
-            } else {
-                None
-            };
-            files.insert(path, bytes);
-        }
-        Ok(())
-    }
-    let mut files = HashMap::new();
-    walk(dest, "", &mut files, &mut 0)?;
-    Ok(files)
 }
 
 /// The most lines a diff shows. A longer one ends with how many more there
