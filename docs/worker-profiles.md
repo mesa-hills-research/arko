@@ -149,6 +149,10 @@ worker, with its next news and without a turn of its own. With it off, that agen
 messages. A change applies from the next message, and a session saved before the setting existed has
 it on.
 
+A worker answers your message with `message_user`, as the main agent answers what you type while it
+works, and tells the agent that started it only what that agent needs. The answer shows in the
+worker's own view and in the main transcript under "r1 to you", in every view and on the web page.
+
 ## Worker billing
 
 `cc:` models run on your Claude plan, and OpenAI models on your ChatGPT plan when the session uses
