@@ -3030,8 +3030,7 @@ async fn workers_hear_of_a_removed_note(by_agent: bool) {
                 .await;
             } else {
                 until(|| both_wait(&bodies)).await;
-                let note = kept.remove(1).unwrap();
-                kept.tell_removed(&workflow, &note, true);
+                kept.remove_and_tell(1, Some(&workflow), true).unwrap();
             }
             hold.add_permits(2);
         }
@@ -3073,6 +3072,268 @@ async fn workers_hear_of_a_removed_note(by_agent: bool) {
     let mains = count(&mains, "removed kept note");
     assert!(mains.iter().all(|n| *n <= usize::from(!by_agent)));
     assert_eq!(mains.contains(&1), !by_agent);
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// `keep_note` with `replaces` updates note 1 in place while r1, which read
+/// it, and r2 work. r1, which it was for, gets its list without it, and r2,
+/// which it is for now, gets the new text. A new conversation starts with
+/// the note as it is now.
+#[cfg(unix)]
+#[tokio::test]
+async fn keep_note_replaces_a_note_for_the_workers_it_was_and_is_for() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(tokio::sync::Semaphore::new(0));
+    fn both_wait(bodies: &Bodies) -> bool {
+        let bodies = bodies.lock().unwrap();
+        ["You are agent run r1", "You are agent run r2"]
+            .iter()
+            .all(|worker| bodies.iter().any(|body| body.contains(worker)))
+    }
+    let server = ModelServer::start(Arc::new({
+        let (bodies, hold) = (bodies.clone(), hold.clone());
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let (bodies, hold) = (bodies.clone(), hold.clone());
+            Box::pin(async move {
+                let start = |id: &str, task: &str| {
+                    tool_call(
+                        id,
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": task}),
+                    )
+                };
+                let shell =
+                    |id: &str| tool_call(id, SHELL_TOOL, serde_json::json!({"command": "echo hi"}));
+                if body.contains("You are agent run r1") {
+                    if body.contains("call_w1") {
+                        complete("w2", "First done.")
+                    } else {
+                        hold.acquire().await.unwrap().forget();
+                        shell("w1")
+                    }
+                } else if body.contains("You are agent run r2") {
+                    if body.contains("call_v1") {
+                        complete("v2", "Second done.")
+                    } else {
+                        hold.acquire().await.unwrap().forget();
+                        shell("v1")
+                    }
+                } else if body.contains("First done.") && body.contains("Second done.") {
+                    complete("m5", "All done.")
+                } else if body.contains("call_m3") {
+                    let n = body.matches("call_m4").count();
+                    tool_call(
+                        &format!("m4_{n}"),
+                        crew::WAIT_FOR_AGENTS,
+                        serde_json::json!({"timeout_seconds": 20}),
+                    )
+                } else if body.contains("call_m2") {
+                    until(|| both_wait(&bodies)).await;
+                    tool_call(
+                        "m3",
+                        kept_notes::KEEP_NOTE,
+                        serde_json::json!({"text": "Use spaces.", "replaces": 1, "audience": "r2"}),
+                    )
+                } else if body.contains("call_m1") {
+                    start("m2", "Second worker.")
+                } else {
+                    start("m1", "First worker.")
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    harness
+        .kept
+        .add(
+            "Use tabs.",
+            kept_notes::Audience::Workers(vec!["r1".into()]),
+        )
+        .unwrap();
+    let releasing = tokio::spawn({
+        let bodies = bodies.clone();
+        async move {
+            // The main agent has the result of the replacement.
+            until(|| {
+                bodies
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|body| body.contains("call_m3"))
+            })
+            .await;
+            hold.add_permits(2);
+        }
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(40),
+        harness.turn(Prompt::User("Start the workers.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    releasing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "All done.");
+    assert!(
+        body(&bodies, "call_m3", "You are agent run").contains("Replaced note 1. r2 has it now.")
+    );
+    // r1 read the note in its first message, and its next step has its list
+    // without it.
+    let first = body(&bodies, "You are agent run r1", "call_w1");
+    assert!(first.contains("# Notes from the main agent") && first.contains("Use tabs."));
+    let later = body(&bodies, "call_w1", "");
+    assert!(later.contains("The main agent's notes for you. This list replaces any earlier one."));
+    assert!(later.contains("No notes are kept now.") && !later.contains("Use spaces."));
+    // r2 had no notes, and its next step has the new text.
+    assert!(
+        !body(&bodies, "You are agent run r2", "call_v1").contains("# Notes from the main agent")
+    );
+    let later = body(&bodies, "call_v1", "");
+    assert!(later.contains("This list replaces any earlier one.") && later.contains("Use spaces."));
+    assert!(!later.contains("Use tabs."));
+    // The note keeps its number, and a new conversation (as after a resume)
+    // starts with it as it is now.
+    let kept = kept_notes::KeptNotes::new(&harness.session.dir)
+        .list()
+        .unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!((kept[0].id, kept[0].text.as_str()), (1, "Use spaces."));
+    harness.new_conversation();
+    let message = harness.compose(Prompt::User("Next.".into()));
+    assert!(message.starts_with("# Your kept notes"), "{message}");
+    assert!(message.contains("- Kept note 1, for r2,") && message.contains("Use spaces."));
+    assert!(!message.contains("Use tabs."));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A change to the notes reaches a worker after the change before it. The
+/// user removes note 2 while the lists that replace note 1 are on their way
+/// to r1, and r1 gets those lists first and the removal after them, so the
+/// removal stands.
+#[cfg(unix)]
+#[tokio::test]
+async fn changes_to_the_notes_reach_a_worker_in_the_order_they_were_made() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies: Bodies = Arc::default();
+    let hold = Arc::new(Notify::new());
+    let server = ModelServer::start(Arc::new({
+        let (bodies, hold) = (bodies.clone(), hold.clone());
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let hold = hold.clone();
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    if body.contains("call_w1") {
+                        complete("w2", "First done.")
+                    } else {
+                        hold.notified().await;
+                        tool_call("w1", SHELL_TOOL, serde_json::json!({"command": "echo hi"}))
+                    }
+                } else if body.contains("First done.") {
+                    complete("m3", "All done.")
+                } else if body.contains("call_m1") {
+                    let n = body.matches("call_m2").count();
+                    tool_call(
+                        &format!("m2_{n}"),
+                        crew::WAIT_FOR_AGENTS,
+                        serde_json::json!({"timeout_seconds": 20}),
+                    )
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "First worker."}),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, false);
+    let r1 = || kept_notes::Audience::Workers(vec!["r1".into()]);
+    harness.kept.add("Use tabs.", r1()).unwrap();
+    harness.kept.add("Skip the slow tests.", r1()).unwrap();
+    let changing = tokio::spawn({
+        let (kept, workflow) = (harness.kept.clone(), harness.workflow().clone());
+        let bodies = bodies.clone();
+        async move {
+            until(|| {
+                bodies
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|body| body.contains("You are agent run r1"))
+            })
+            .await;
+            // The removal starts between the replacement's list being read
+            // and sent, on another thread, and the list goes once the removal
+            // waits for it (or, were the changes not one step each, once the
+            // removal is done).
+            let removing = Arc::new(Mutex::new(None));
+            *crate::lock(&kept.before_sending) = Some(Box::new({
+                let (kept, workflow, removing) = (kept.clone(), workflow.clone(), removing.clone());
+                let runtime = tokio::runtime::Handle::current();
+                move || {
+                    let removal = {
+                        let kept = kept.clone();
+                        std::thread::spawn(move || {
+                            let _runtime = runtime.enter();
+                            kept.remove_and_tell(2, Some(&workflow), true).unwrap();
+                        })
+                    };
+                    let start = std::time::Instant::now();
+                    while kept.waited.load(std::sync::atomic::Ordering::SeqCst) == 0
+                        && !removal.is_finished()
+                    {
+                        assert!(start.elapsed() < Duration::from_secs(10), "no removal");
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    *removing.lock().unwrap() = Some(removal);
+                }
+            }));
+            kept.replace_and_tell(1, "Use tabs, 4 wide.", None, Some(&workflow))
+                .unwrap();
+            until(|| {
+                removing
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(std::thread::JoinHandle::is_finished)
+            })
+            .await;
+            hold.notify_one();
+        }
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(40),
+        harness.turn(Prompt::User("Start the worker.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    changing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "All done.");
+    let later = body(&bodies, "call_w1", "");
+    let list = later.find("Use tabs, 4 wide.").expect("the new list");
+    let removed = later
+        .find("The user removed kept note 2")
+        .expect("the removal");
+    assert!(list < removed, "{later}");
+    assert_eq!(
+        harness
+            .kept
+            .list()
+            .unwrap()
+            .iter()
+            .map(|note| note.id)
+            .collect::<Vec<_>>(),
+        [1]
+    );
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 

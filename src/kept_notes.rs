@@ -359,11 +359,29 @@ struct Saved {
 }
 
 /// A session's kept notes.
-#[derive(Debug)]
 pub struct KeptNotes {
     path: PathBuf,
     /// The task that follows the session's handovers and compactions.
     following: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Held from a change to the notes until the agents are told of it, and
+    /// while a list is read and sent, so the agents get the lists in the
+    /// order of the changes.
+    telling: Mutex<()>,
+    /// Runs once between a worker's list being read and sent, for tests that
+    /// change the notes there.
+    #[cfg(test)]
+    pub(crate) before_sending: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// How many times a change waited for `telling` while it was held.
+    #[cfg(test)]
+    pub(crate) waited: std::sync::atomic::AtomicUsize,
+}
+
+impl std::fmt::Debug for KeptNotes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeptNotes")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
 }
 
 impl KeptNotes {
@@ -372,6 +390,11 @@ impl KeptNotes {
         Arc::new(Self {
             path: session_dir.join(FILE),
             following: Mutex::new(None),
+            telling: Mutex::new(()),
+            #[cfg(test)]
+            before_sending: Mutex::new(None),
+            #[cfg(test)]
+            waited: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -559,13 +582,79 @@ impl KeptNotes {
             .collect()
     }
 
-    /// Sends each active worker that `to` takes its notes. A worker reads
-    /// them at its next step.
-    pub(crate) fn tell_workers(
+    /// Takes `telling`, which a change and what it sends the agents hold.
+    fn hold_telling(&self) -> std::sync::MutexGuard<'_, ()> {
+        #[cfg(test)]
+        if self.telling.try_lock().is_err() {
+            self.waited
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        crate::lock(&self.telling)
+    }
+
+    /// Keeps a note and sends it to the active workers it is for, as one
+    /// step among the changes to the notes. Returns the note and the workers
+    /// that have it now.
+    pub(crate) fn keep_and_tell(
         &self,
-        workflow: &Workflow,
-        to: impl Fn(&str) -> bool,
-    ) -> Vec<String> {
+        text: &str,
+        audience: Audience,
+        workflow: Option<&Workflow>,
+    ) -> Result<(Note, Vec<String>), String> {
+        let _telling = self.hold_telling();
+        let note = self.add(text, audience)?;
+        let told = workflow
+            .map(|workflow| self.tell_workers(workflow, |handle| note.audience.includes(handle)))
+            .unwrap_or_default();
+        Ok((note, told))
+    }
+
+    /// Replaces note `id` ([`replace`](Self::replace)) and sends their list
+    /// again to the active workers it was or is for, so those that read it
+    /// have the new text, and those it is no longer for have it gone. One
+    /// step among the changes to the notes. Returns the note and the workers
+    /// that have it now.
+    pub(crate) fn replace_and_tell(
+        &self,
+        id: u32,
+        text: &str,
+        audience: Option<Audience>,
+        workflow: Option<&Workflow>,
+    ) -> Result<(Note, Vec<String>), String> {
+        let _telling = self.hold_telling();
+        let (was, note) = self.replace(id, text, audience)?;
+        let told = workflow
+            .map(|workflow| {
+                self.tell_workers(workflow, |handle| {
+                    was.audience.includes(handle) || note.audience.includes(handle)
+                })
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|handle| note.audience.includes(handle))
+            .collect();
+        Ok((note, told))
+    }
+
+    /// Removes note `id` and tells the agents ([`tell_removed`](Self::tell_removed)),
+    /// as one step among the changes to the notes. Returns the note.
+    pub(crate) fn remove_and_tell(
+        &self,
+        id: u32,
+        workflow: Option<&Workflow>,
+        by_user: bool,
+    ) -> Result<Note, String> {
+        let _telling = self.hold_telling();
+        let note = self.remove(id)?;
+        if let Some(workflow) = workflow {
+            self.tell_removed(workflow, &note, by_user);
+        }
+        Ok(note)
+    }
+
+    /// Sends each active worker that `to` takes its notes. A worker reads
+    /// them at its next step. The caller holds `telling`.
+    fn tell_workers(&self, workflow: &Workflow, to: impl Fn(&str) -> bool) -> Vec<String> {
         let mut told = Vec::new();
         for record in workflow.subagents() {
             if record.state.is_active() && to(&record.handle) {
@@ -576,10 +665,15 @@ impl KeptNotes {
     }
 
     /// Sends worker `handle` its notes ([`worker_messages`](Self::worker_messages)).
+    /// The caller holds `telling`.
     fn tell_worker(&self, workflow: &Workflow, handle: &str) -> Option<String> {
         let messages = self.worker_messages(handle);
         if messages.is_empty() {
             return None;
+        }
+        #[cfg(test)]
+        if let Some(pause) = crate::lock(&self.before_sending).take() {
+            pause();
         }
         for (heading, text) in messages {
             // No copy of it goes to the worker's lead: the main agent wrote it.
@@ -595,8 +689,8 @@ impl KeptNotes {
     /// unset) by the main agent. The main agent hears of it in a one-time
     /// note, unless it did it, and each active worker that had the note in a
     /// message. They keep what they read, and a handover or a compaction
-    /// gives them the current list.
-    pub(crate) fn tell_removed(&self, workflow: &Workflow, note: &Note, by_user: bool) {
+    /// gives them the current list. The caller holds `telling`.
+    fn tell_removed(&self, workflow: &Workflow, note: &Note, by_user: bool) {
         let by = if by_user {
             "The user"
         } else {
@@ -663,6 +757,12 @@ impl KeptNotes {
     /// kept replaces one the conversation may still hold, when notes were
     /// ever kept.
     pub(crate) fn tell_lead(&self, workflow: &Workflow) {
+        let _telling = self.hold_telling();
+        self.post_lead_list(workflow);
+    }
+
+    /// [`tell_lead`](Self::tell_lead), for a caller that holds `telling`.
+    fn post_lead_list(&self, workflow: &Workflow) {
         let mut parts = lead_parts(&self.notes());
         if parts.is_empty() && self.ever_kept() {
             parts.push(format!(
@@ -681,8 +781,9 @@ impl KeptNotes {
 
     /// Gives run `run` of `agent` its notes again, in its fresh conversation.
     fn again(&self, workflow: &Workflow, agent: &str, run: uuid::Uuid) {
+        let _telling = self.hold_telling();
         if agent == MAIN {
-            self.tell_lead(workflow);
+            self.post_lead_list(workflow);
         } else if let Some(record) = workflow.subagents().iter().find(|r| r.run_id == run) {
             self.tell_worker(workflow, &record.handle);
         }
@@ -731,9 +832,11 @@ impl crate::Harness {
                     }
                 },
             },
-            ["remove", number] => match number.parse().map(|id| self.kept.remove(id)) {
+            ["remove", number] => match number
+                .parse()
+                .map(|id| self.kept.remove_and_tell(id, Some(self.workflow()), true))
+            {
                 Ok(Ok(note)) => {
-                    self.kept.tell_removed(self.workflow(), &note, true);
                     format!(
                         "Removed note {}. The agents that have it are told.",
                         note.id
@@ -907,33 +1010,18 @@ impl Tool for KeepNote {
                 return Err(refused(format!("There is no worker {unknown}.")));
             }
         }
-        let Some(id) = replaces else {
-            let note = self
+        let (note, told) = match replaces {
+            None => self.notes.keep_and_tell(
+                text,
+                audience.unwrap_or(Audience::Lead),
+                workflow.as_deref(),
+            ),
+            Some(id) => self
                 .notes
-                .add(text, audience.unwrap_or(Audience::Lead))
-                .map_err(refused)?;
-            let told = workflow
-                .map(|workflow| {
-                    self.notes
-                        .tell_workers(&workflow, |handle| note.audience.includes(handle))
-                })
-                .unwrap_or_default();
-            return Ok(kept_result(note.id, false, &told));
-        };
-        let (was, note) = self.notes.replace(id, text, audience).map_err(refused)?;
-        // The workers it was for get their list again too, without it when
-        // it is no longer theirs.
-        let told: Vec<String> = workflow
-            .map(|workflow| {
-                self.notes.tell_workers(&workflow, |handle| {
-                    was.audience.includes(handle) || note.audience.includes(handle)
-                })
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|handle| note.audience.includes(handle))
-            .collect();
-        Ok(kept_result(note.id, true, &told))
+                .replace_and_tell(id, text, audience, workflow.as_deref()),
+        }
+        .map_err(refused)?;
+        Ok(kept_result(note.id, replaces.is_some(), &told))
     }
 }
 
@@ -961,10 +1049,11 @@ impl Tool for ForgetNote {
             .get("id")
             .and_then(note_number)
             .ok_or_else(|| refused("id is the number of a kept note"))?;
-        let note = self.notes.remove(id).map_err(refused)?;
-        if let Some(workflow) = self.crew.as_ref().and_then(|crew| crew.workflow()) {
-            self.notes.tell_removed(&workflow, &note, false);
-        }
+        let workflow = self.crew.as_ref().and_then(|crew| crew.workflow());
+        let note = self
+            .notes
+            .remove_and_tell(id, workflow.as_deref(), false)
+            .map_err(refused)?;
         Ok(format!("Forgot note {}.", note.id))
     }
 }
