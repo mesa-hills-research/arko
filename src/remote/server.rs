@@ -1284,7 +1284,9 @@ fn typed(text: &str) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
-/// `POST /api/message` with `{"text": ...}`: as if typed at the prompt.
+/// `POST /api/message` with `{"text": ...}`: as if typed at the prompt. A
+/// line that reads as a command but isn't one is refused (422), with what
+/// to tell the user.
 async fn message(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1297,6 +1299,13 @@ async fn message(
     let Ok(body) = serde_json::from_slice::<MessageBody>(&body) else {
         return (StatusCode::BAD_REQUEST, error_body("send {\"text\": ...}")).into_response();
     };
+    // A mistyped command is said, and the page keeps the text to put right,
+    // in a worker's view too.
+    if let Some(why) = typed(&body.text)
+        .and_then(|text| crate::commands::unknown(&text, crate::commands::on_page()))
+    {
+        return (StatusCode::UNPROCESSABLE_ENTITY, error_body(&why)).into_response();
+    }
     // A reply to the main agent's questions.
     if !body.answers.is_empty()
         && body.to.is_none()
@@ -3487,6 +3496,26 @@ mod tests {
                 Action::Message(sent.into())
             );
         }
+        // A mistyped command is refused in either view, with the text left
+        // to put right, and a space first sends it.
+        for to in [None, Some("r1")] {
+            let body = serde_json::json!({ "text": "/sesion", "to": to }).to_string();
+            let response = served.post("/api/message", Some(&cookie), &body).await;
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let error: serde_json::Value =
+                serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            assert_eq!(
+                error["error"],
+                "/sesion isn't a command. Did you mean /session? Start with a space to send it as a message."
+            );
+        }
+        let body = serde_json::json!({ "text": " /sesion", "to": "r1" }).to_string();
+        let response = served.post("/api/message", Some(&cookie), &body).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::Message("/message r1 /sesion".into())
+        );
 
         let response = served
             .post(

@@ -345,6 +345,107 @@ pub fn find(text: &str) -> Option<&'static Command> {
         .find(|command| command.named(name) && (rest.is_empty() || !command.args.is_empty()))
 }
 
+/// What to tell the user when `text` (a message as typed, its leading
+/// spaces kept) reads as a command that isn't one: one line that starts
+/// with a slash and a word (`/quiet`) that names no command, or names one
+/// that takes nothing after it (`/cost please`). It names the closest of
+/// `offered` (the commands where it was typed) when one is near, and how to
+/// send the line as a message instead, which a space before the slash does.
+/// A path (`/usr/bin is missing`), a lone slash and text of several lines
+/// are messages.
+pub fn unknown<'a>(text: &str, offered: impl IntoIterator<Item = &'a Command>) -> Option<String> {
+    let text = text.trim_end();
+    let rest = text.strip_prefix('/')?;
+    if text.contains('\n') || find(text).is_some() {
+        return None;
+    }
+    let (word, after) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    let mut chars = word.chars();
+    if !chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    let name = format!("/{word}");
+    const AS_MESSAGE: &str = "Start with a space to send it as a message.";
+    if !after.trim().is_empty() && find(&name).is_some() {
+        return Some(format!("{name} takes nothing after it. {AS_MESSAGE}"));
+    }
+    Some(match closest(&word.to_ascii_lowercase(), offered) {
+        Some(near) => format!("{name} isn't a command. Did you mean {near}? {AS_MESSAGE}"),
+        None => format!("{name} isn't a command. {AS_MESSAGE}"),
+    })
+}
+
+/// The command of `offered` nearest to `word` (a name typed without its
+/// slash): the one whose name it starts, else the one that takes it as its
+/// first word (`quiet` is `/view quiet`), else the one it misspells, if any
+/// is near enough.
+fn closest<'a>(word: &str, offered: impl IntoIterator<Item = &'a Command>) -> Option<String> {
+    let offered: Vec<&Command> = offered.into_iter().collect();
+    let name = |command: &Command| command.name.trim_start_matches('/').to_string();
+    let started: Vec<&&Command> = offered
+        .iter()
+        .filter(|command| name(command).starts_with(word))
+        .collect();
+    if let [command] = started[..] {
+        return Some(command.name.to_string());
+    }
+    let taking: Vec<&str> = CHOICES
+        .iter()
+        .filter(|(command, before, words)| {
+            before.is_empty()
+                && words.contains(&word)
+                && offered.iter().any(|offer| offer.name == *command)
+        })
+        .map(|(command, _, _)| *command)
+        .collect();
+    if let [command] = taking[..] {
+        return Some(format!("{command} {word}"));
+    }
+    // A typo or two, by the word's length.
+    let most = (word.chars().count() / 3).max(1);
+    offered
+        .iter()
+        .map(|command| (edits(word, &name(command)), command.name))
+        .filter(|(edits, _)| *edits <= most)
+        .min_by_key(|(edits, _)| *edits)
+        .map(|(_, name)| name.to_string())
+}
+
+/// How many letters to add, remove, change or swap with the next to turn
+/// `a` into `b`.
+fn edits(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut rows = vec![vec![0; b.len() + 1]; a.len() + 1];
+    for (i, row) in rows.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in rows[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let change = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (rows[i - 1][j] + 1)
+                .min(rows[i][j - 1] + 1)
+                .min(rows[i - 1][j - 1] + change);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(rows[i - 2][j - 2] + 1);
+            }
+            rows[i][j] = best;
+        }
+    }
+    rows[a.len()][b.len()]
+}
+
+/// The commands the session runs wherever it was typed, the line prompt's.
+pub fn of_session() -> impl Iterator<Item = &'static Command> {
+    COMMANDS
+        .iter()
+        .filter(|command| command.runs == Runs::Session)
+}
+
 /// The commands the web page runs, for its menu: the session's, except
 /// those only the terminal runs.
 pub fn on_page() -> impl Iterator<Item = &'static Command> {
@@ -787,6 +888,58 @@ mod tests {
         assert!(find("/cost please").is_none());
         assert!(find("/usr/bin is missing").is_none());
         assert!(find("/remotely").is_none());
+    }
+
+    /// A slash and a word that names no command is refused with the
+    /// nearest command where it was typed, and a space first sends it.
+    /// Paths, a lone slash and longer texts are messages.
+    #[test]
+    fn a_word_after_a_slash_that_names_no_command_is_unknown() {
+        let everywhere = || COMMANDS.iter();
+        let space = "Start with a space to send it as a message.";
+        assert_eq!(
+            unknown("/quiet", everywhere()).unwrap(),
+            format!("/quiet isn't a command. Did you mean /view quiet? {space}")
+        );
+        // The line prompt has no views, and an alias isn't offered.
+        assert_eq!(
+            unknown("/quiet", of_session()).unwrap(),
+            format!("/quiet isn't a command. {space}")
+        );
+        let near = |text: &str| {
+            let said = unknown(text, everywhere()).unwrap();
+            let start = said.find("Did you mean ")? + "Did you mean ".len();
+            Some(said[start..said.find('?').unwrap()].to_string())
+        };
+        assert_eq!(near("/setings").as_deref(), Some("/settings"));
+        assert_eq!(near("/modle").as_deref(), Some("/model"));
+        assert_eq!(near("/Worker").as_deref(), Some("/workers"));
+        assert_eq!(near("/stop").as_deref(), Some("/stop-workers"));
+        assert_eq!(near("/zdr on").as_deref(), Some("/openrouter zdr"));
+        assert_eq!(near("/tmp is full"), None);
+        // A command that takes nothing more says so.
+        assert_eq!(
+            unknown("/cost please", everywhere()).unwrap(),
+            format!("/cost takes nothing after it. {space}")
+        );
+        for message in [
+            "/home/me/x",
+            "/usr/bin is missing",
+            "/",
+            "/ there",
+            "/2 of them",
+            " /quiet",
+            "/quiet\nand more",
+            "quiet",
+            "/cost",
+            "/view quiet",
+            "/remote off",
+        ] {
+            assert_eq!(unknown(message, everywhere()), None, "{message:?}");
+        }
+        assert_eq!(edits("modle", "model"), 1);
+        assert_eq!(edits("quiet", "quit"), 1);
+        assert_eq!(edits("", "new"), 3);
     }
 
     #[test]
