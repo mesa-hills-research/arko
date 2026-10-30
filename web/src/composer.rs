@@ -33,6 +33,8 @@ pub fn Composer() -> impl IntoView {
     let tall = RwSignal::new(false);
     let expanded = RwSignal::new(false);
     let sending = RwSignal::new(false);
+    // The box holds a command, which goes while the report is written.
+    let command_typed = RwSignal::new(false);
     let stopping = RwSignal::new(false);
     let menu = RwSignal::new(None::<Menu>);
     let selected = RwSignal::new(None::<usize>);
@@ -61,6 +63,10 @@ pub fn Composer() -> impl IntoView {
         page.status.with(|status| status.working)
             && page.connection.get() == crate::words::Connection::Live
     };
+    // The old model writes its report for a switch: a message to the main
+    // agent waits in the box. (A command, and a message to a worker, go.)
+    let reporting =
+        move || page.status.with(|status| status.reporting) && page.worker.get().is_none();
 
     let refresh_menu = move || {
         let Some(area) = input.get_untracked() else {
@@ -104,6 +110,7 @@ pub fn Composer() -> impl IntoView {
         };
         fit(&area, tall, expanded.get_untracked());
         empty.set(area.value().trim().is_empty());
+        command_typed.set(area.value().starts_with('/'));
         session_set(DRAFT, Some(&area.value()));
     };
     Effect::new(move |_| {
@@ -125,6 +132,12 @@ pub fn Composer() -> impl IntoView {
         };
         let text = area.value();
         if text.trim().is_empty() || sending.get_untracked() {
+            return;
+        }
+        if page.status.with_untracked(|status| status.reporting)
+            && page.worker.get_untracked().is_none()
+            && !text.starts_with('/')
+        {
             return;
         }
         sending.set(true);
@@ -226,6 +239,9 @@ pub fn Composer() -> impl IntoView {
                 <crate::questions::QuestionsChip />
                 {move || page.ask.note.get().map(|note| view! { <p class="note-line" role="status">{note}</p> })}
                 {move || page.error.get().map(|error| view! { <p class="error" role="alert">{error}</p> })}
+                <Show when=reporting>
+                    <p class="note-line" role="status">{crate::words::REPORTING}</p>
+                </Show>
                 <crate::questions::Replying />
                 <crate::approvals::Tray />
                 <form
@@ -305,7 +321,7 @@ pub fn Composer() -> impl IntoView {
                         </button>
                     </div>
                     <Show when=working>
-                        <button type="button" class="btn stop" title="Stop the turn" disabled=move || stopping.get() on:click=stop>
+                        <button type="button" class="btn stop" title=move || if reporting() { "Skip the report" } else { "Stop the turn" } disabled=move || stopping.get() on:click=stop>
                             <Square size=14 />
                             <span>"Stop"</span>
                         </button>
@@ -315,7 +331,7 @@ pub fn Composer() -> impl IntoView {
                         class="btn primary icon send"
                         aria-label=move || if replying() != 0 { "Answer" } else { "Send" }
                         title=move || if replying() != 0 { "Answer" } else { "Send" }
-                        disabled=move || empty.get() || sending.get()
+                        disabled=move || empty.get() || sending.get() || (reporting() && !command_typed.get())
                     >
                         <ArrowUp size=20 />
                     </button>

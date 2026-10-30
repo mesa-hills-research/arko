@@ -1217,6 +1217,9 @@ pub struct WorkerData {
 pub struct StatusData {
     #[serde(deserialize_with = "lenient")]
     pub working: bool,
+    /// The old model writes its report for a switch (see `Activity`).
+    #[serde(deserialize_with = "lenient")]
+    pub reporting: bool,
     pub question: Option<Question>,
     pub since: Option<i64>,
     #[serde(deserialize_with = "lenient")]
