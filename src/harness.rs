@@ -1039,9 +1039,18 @@ impl Harness {
         }
         self.conversation = conversation_of(&workflow, lead);
         {
+            // The conversation the session goes on in hands over and holds
+            // as its own configuration says (it may run another model than
+            // the session's latest), and a new one as the main agent's.
+            let current = lead.and_then(|run| workflow.agent_result(run)).map_or_else(
+                || self.main_config.clone(),
+                |result| result.info().agent_config.clone(),
+            );
+            self.handover
+                .configure_for(&current, self.settings.openai_auth);
             // What the main agent's model accepts, and (resumed) how much
             // of it the conversation takes, before its next request says.
-            self.take_window(&configs[0]);
+            self.take_window(&current);
             let mut stats = lock(&self.stats);
             let task = match &self.conversation {
                 Conversation::Answered(result) => result.task().ok(),

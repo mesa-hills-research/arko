@@ -919,3 +919,65 @@ async fn the_brief_waits_for_the_new_conversations_first_run() {
     assert_eq!(harness.conversations.list[2].continues, None);
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// A session that opens again goes on with the handover size and the
+/// window of the conversation it was in: the next one's model after a
+/// switch whose first message hasn't come, and the model of an older
+/// conversation `/resume` went back to.
+#[tokio::test]
+async fn a_reopened_session_takes_the_size_and_window_of_its_conversation() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(reporting_model(bodies.clone())).await;
+    let temp = tempfile::tempdir().unwrap();
+    let fake = temp.path().join("fake");
+    std::fs::create_dir_all(&fake).unwrap();
+    let script = serde_json::json!([
+        [
+            {"text": "Making the file.", "input_tokens": 1200},
+            {"tool": "mcp__arko__complete_task", "input": {"summary": "Made it."}},
+        ],
+        [
+            {"text": "REPORT: made the file with the shell.", "input_tokens": 1300},
+        ],
+    ]);
+    std::fs::write(fake.join("script.json"), script.to_string()).unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let cc = ModelSettings {
+        model: "cc:claude-opus-5-5".into(),
+        effort: Effort::High,
+        fast: false,
+        cache_1h: false,
+        handover_at: None,
+    };
+    let managers = on_models(&mut harness, &cc, &cc, &fake_claude_code(&fake));
+    say(&mut harness, &mut inputs, "Make a file.").await;
+    let luna = resolve_model("luna").unwrap();
+    let opus = resolve_model("cc:opus").unwrap();
+    let window =
+        |model: &arko_ai::Model| arko_ai::input_limit::effective_max_input_tokens(model, false);
+    assert_ne!(window(&luna), window(&opus), "they differ");
+    let reopen = |harness: &mut Harness| {
+        harness.open(true).unwrap();
+        harness.start_new_workers();
+        (harness.handover.most(), lock(&harness.stats).context_window)
+    };
+
+    // A switch, and Arko closes before the next message.
+    switch(&mut harness, &mut inputs, "/model luna").await;
+    harness.crew.as_ref().unwrap().shutdown().await;
+    assert_eq!(
+        reopen(&mut harness),
+        (agents::max_handover(&luna, None).unwrap(), window(&luna))
+    );
+
+    // Back in the older conversation, on Claude Code, and Arko closes.
+    say(&mut harness, &mut inputs, "Go on.").await;
+    harness.resume_command("1").await;
+    harness.crew.as_ref().unwrap().shutdown().await;
+    assert_eq!(
+        reopen(&mut harness),
+        (agents::max_handover(&opus, None).unwrap(), window(&opus))
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
