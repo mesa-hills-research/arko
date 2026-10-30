@@ -497,44 +497,94 @@ impl Harness {
         self.feed.reporting(true);
         let mut skipped = false;
         let mut quit = false;
+        // What the user sends meanwhile goes to the new conversation, read
+        // once the switch is made, in the order it came.
+        let mut held: Vec<Event> = Vec::new();
         let outcome = loop {
             tokio::select! {
                 outcome = &mut asking => break outcome,
-                event = input.next_event(false) => match event {
-                    Event::Input(Some(Input::Interrupt)) | Event::Remote(Action::Stop) => {
-                        if !skipped {
-                            skipped = true;
-                            workflow.stop_run(
-                                run,
-                                StopRequest::new(StopKind::Operator, "The user skipped the report."),
-                                RunStopIntent::Relaunch,
-                            );
+                event = input.next_event(false) => {
+                    let skip = match event {
+                        Event::Input(Some(Input::Interrupt)) | Event::Remote(Action::Stop) => true,
+                        Event::Input(Some(Input::Eof) | None) => {
+                            quit = true;
+                            true
+                        }
+                        Event::Input(Some(Input::Quit(agreed))) => {
+                            quit = self.mirrored(|harness| harness.may_exit(agreed));
+                            quit
+                        }
+                        Event::Request(request) => {
+                            Box::pin(self.request(request, input.waiting())).await;
+                            false
+                        }
+                        Event::Question(question) => {
+                            if !question.answer.as_ref().is_some_and(|answer| answer.is_closed()) {
+                                self.question_asked(question);
+                            }
+                            false
+                        }
+                        Event::Input(Some(Input::Background(agent))) => {
+                            self.move_to_background(&agent);
+                            false
+                        }
+                        Event::Input(Some(Input::AnswerApprovals(answers))) => {
+                            self.answer_approvals(answers, Some(self.input_source));
+                            false
+                        }
+                        Event::Remote(Action::AnswerApprovals(answers)) => {
+                            self.answer_approvals(answers, Some(Source::Web));
+                            false
+                        }
+                        Event::Remote(
+                            action @ (Action::Background { .. } | Action::StopJob { .. }),
+                        ) => {
+                            self.page_job_action(action);
+                            false
+                        }
+                        Event::Woken | Event::Finished(_) | Event::Alert(_) => false,
+                        // Messages, answers and lines: for the new conversation.
+                        event @ (Event::Input(Some(
+                            Input::Line(_)
+                            | Input::Message(_)
+                            | Input::Answer { .. }
+                            | Input::AnswerQuestions(_)
+                            | Input::DismissQuestions(_),
+                        ))
+                        | Event::Remote(
+                            Action::Message(_)
+                            | Action::Reply { .. }
+                            | Action::Answer { .. }
+                            | Action::AnswerQuestions(_)
+                            | Action::DismissQuestions(_),
+                        )) => {
+                            if held.is_empty() {
+                                self.say(
+                                    Level::Info,
+                                    "  (what you send goes to the new conversation, once the report is in or skipped)",
+                                );
+                            }
+                            held.push(event);
+                            false
+                        }
+                    };
+                    // A stop that doesn't take (the report's run isn't under
+                    // way yet) ends the request before it starts.
+                    if skip && !skipped {
+                        skipped = true;
+                        let reason = if quit { "The user quit." } else { "The user skipped the report." };
+                        if !workflow.stop_run(
+                            run,
+                            StopRequest::new(StopKind::Operator, reason),
+                            RunStopIntent::Relaunch,
+                        ) {
+                            asking.abort();
                         }
                     }
-                    Event::Input(Some(Input::Eof) | None) => {
-                        quit = true;
-                        if !skipped {
-                            skipped = true;
-                            workflow.stop_run(
-                                run,
-                                StopRequest::new(StopKind::Operator, "The user quit."),
-                                RunStopIntent::Relaunch,
-                            );
-                        }
-                    }
-                    Event::Request(request) => {
-                        Box::pin(self.request(request, input.waiting())).await;
-                    }
-                    // What else comes waits for the report: it isn't read now.
-                    Event::Input(Some(other)) => {
-                        if matches!(other, Input::Line(_) | Input::Message(_)) {
-                            self.say(Level::Info, "  (wait for the report, or press Ctrl-C to skip it)");
-                        }
-                    }
-                    _ => {}
-                },
+                }
             }
         };
+        input.held.extend(held);
         self.feed.reporting(false);
         self.flush_printer().await;
         let outcome = outcome.unwrap_or_else(|error| {

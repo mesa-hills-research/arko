@@ -4476,7 +4476,7 @@ impl Harness {
 
     /// The web page's Move to background or Stop: done, and what didn't
     /// work said.
-    fn page_job_action(&mut self, action: Action) {
+    pub(crate) fn page_job_action(&mut self, action: Action) {
         match action {
             Action::Background { item } => {
                 if let Err(why) = self.move_call(item) {
@@ -6418,6 +6418,7 @@ pub(crate) mod tests {
             late: None,
             alerts: None,
             late_alert: None,
+            held: Default::default(),
         };
         (harness, inputs, input_sender)
     }

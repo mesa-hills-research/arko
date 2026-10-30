@@ -715,3 +715,156 @@ async fn cost_keeps_each_conversations_plan_after_a_switch_across_plans() {
     harness.crew.as_ref().unwrap().shutdown().await;
     managers.shutdown().await;
 }
+
+/// A model whose report waits for `release`, and which ends every other
+/// turn with "Done.".
+fn held_report_model(bodies: Bodies, release: Arc<Notify>) -> Arc<crate::mock_model::Respond> {
+    Arc::new(move |_, body: String| {
+        bodies.lock().unwrap().push(body.clone());
+        let release = release.clone();
+        Box::pin(async move {
+            if asks_report(&body) {
+                release.notified().await;
+                tool_call(
+                    "report",
+                    "handover_report",
+                    serde_json::json!({ "report": REPORT }),
+                )
+            } else {
+                complete("m", "Done.")
+            }
+        })
+    })
+}
+
+/// While the old model writes its report, what the page and an app send
+/// waits for the new conversation and isn't lost, and the approval tray's
+/// answers are acted on at once.
+#[tokio::test]
+async fn what_is_sent_during_the_report_goes_to_the_new_conversation() {
+    let bodies: Bodies = Arc::default();
+    let release = Arc::new(Notify::new());
+    let server = ModelServer::start(held_report_model(bodies.clone(), release.clone())).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let feed = harness.feed.clone();
+    let page = harness.remote_actions.clone();
+    let seen = bodies.clone();
+    let typing = tokio::spawn(async move {
+        sender.send(Input::Line("First.".into())).unwrap();
+        until(|| has(&feed, "reply", "Done.", "")).await;
+        sender.send(Input::Line("/model sol".into())).unwrap();
+        until(|| lines(&feed).contains("Asking gpt-6-luna for a report")).await;
+        page.send(Action::Message("Hello from the page.".into()))
+            .unwrap();
+        sender
+            .send(Input::Message(crate::ui::Message {
+                text: "Hello from the app.".into(),
+                ..Default::default()
+            }))
+            .unwrap();
+        sender
+            .send(Input::AnswerApprovals(crate::approvals::ApprovalAnswers {
+                choices: Vec::new(),
+                words: None,
+            }))
+            .unwrap();
+        until(|| lines(&feed).contains("Those approvals are no longer open.")).await;
+        assert!(feed.activity().working, "still writing its report");
+        release.notify_one();
+        let reached = |text: &str| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|body| body.contains(text) && model_in(body) == "gpt-6.1-sol")
+        };
+        until(|| reached("Hello from the page.") && reached("Hello from the app.")).await;
+        until(|| !feed.activity().working).await;
+        sender.send(Input::Eof).unwrap();
+        sender
+    });
+    tokio::time::timeout(Duration::from_secs(60), harness.repl(&mut inputs))
+        .await
+        .unwrap();
+    let _sender = typing.await.unwrap();
+    // Both reached the new conversation, the first with the brief and the
+    // other as a note of that turn, as a message typed during a turn does.
+    // (The page's and the app's arrive by different ways, in either order.)
+    let all = bodies.lock().unwrap().clone();
+    let first = all
+        .iter()
+        .find(|body| last_user_of(body).0.contains("# Earlier conversation"))
+        .expect("the new conversation started");
+    assert_eq!(model_in(first), "gpt-6.1-sol");
+    let (message, _) = last_user_of(first);
+    assert!(message.contains(REPORT), "{message}");
+    assert!(
+        message.contains("Hello from the page.") || message.contains("Hello from the app."),
+        "{message}"
+    );
+    for text in ["Hello from the page.", "Hello from the app."] {
+        let with = all
+            .iter()
+            .rfind(|body| body.contains(text))
+            .unwrap_or_else(|| panic!("{text} reached the agent"));
+        assert_eq!(model_in(with), "gpt-6.1-sol", "{text}");
+    }
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// Quitting while the old model writes its report stops it and quits.
+#[tokio::test]
+async fn quitting_during_the_report_quits() {
+    let bodies: Bodies = Arc::default();
+    let release = Arc::new(Notify::new());
+    let server = ModelServer::start(held_report_model(bodies.clone(), release)).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let feed = harness.feed.clone();
+    let typing = tokio::spawn(async move {
+        sender.send(Input::Line("First.".into())).unwrap();
+        until(|| has(&feed, "reply", "Done.", "")).await;
+        sender.send(Input::Line("/model sol".into())).unwrap();
+        until(|| lines(&feed).contains("Asking gpt-6-luna for a report")).await;
+        sender.send(Input::Quit(Some(Vec::new()))).unwrap();
+        sender
+    });
+    tokio::time::timeout(Duration::from_secs(30), harness.repl(&mut inputs))
+        .await
+        .expect("it quits without the report");
+    let _sender = typing.await.unwrap();
+    assert!(!harness.feed.activity().working);
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A Ctrl-C that comes before the report's request is under way (read at
+/// once, on a runtime of one thread) still skips it.
+#[tokio::test]
+async fn a_ctrl_c_before_the_report_starts_skips_it() {
+    let bodies: Bodies = Arc::default();
+    let release = Arc::new(Notify::new());
+    let server = ModelServer::start(held_report_model(bodies.clone(), release)).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    say(&mut harness, &mut inputs, "First.").await;
+    sender.send(Input::Interrupt).unwrap();
+    switch(&mut harness, &mut inputs, "/model sol").await;
+    let said = lines(&harness.feed);
+    assert!(said.contains("Skipped gpt-6-luna's report."), "{said}");
+    assert!(
+        said.contains(
+            "New conversation on gpt-6.1-sol (high effort), from a brief of conversation 1."
+        ),
+        "{said}"
+    );
+    // The old conversation goes on as it was.
+    harness.resume_command("1").await;
+    say(&mut harness, &mut inputs, "First again.").await;
+    let again = turn_with(&bodies, "First again.");
+    assert_eq!(model_in(&again), "gpt-6-luna");
+    assert!(
+        !again.contains("goes on from a report you write now"),
+        "{again}"
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

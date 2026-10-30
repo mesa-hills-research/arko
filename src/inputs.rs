@@ -39,6 +39,10 @@ pub(crate) struct Inputs {
     /// A monitor's news that came during the agent's last request, too late
     /// for it to read (see `alert_waits`).
     pub(crate) late_alert: Option<Alert>,
+    /// What was read while Arko couldn't act on it yet (the old model's
+    /// report for a switch), in the order it came: it is read first again
+    /// between turns.
+    pub(crate) held: std::collections::VecDeque<Event>,
 }
 
 /// A monitor's news for an idle agent.
@@ -87,6 +91,11 @@ impl Inputs {
     /// The next input, question, action from the remote page, or (when
     /// `woken`) wake-up, job finished or monitor's alert. It's cancel-safe.
     pub(crate) async fn next_event(&mut self, woken: bool) -> Event {
+        // (Between turns only, so that each message held is a turn of its
+        // own, as it would have been.)
+        if woken && let Some(event) = self.held.pop_front() {
+            return event;
+        }
         if let Some(input) = self.pending.take() {
             return Event::Input(Some(input));
         }
@@ -111,7 +120,8 @@ impl Inputs {
     /// sent, or a finished job's update or a monitor's news the agent
     /// hasn't had.
     pub(crate) fn waiting(&self) -> bool {
-        self.pending.is_some()
+        !self.held.is_empty()
+            || self.pending.is_some()
             || self.late.is_some()
             || self.late_alert.is_some()
             || self
