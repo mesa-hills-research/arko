@@ -741,24 +741,27 @@ fn held_report_model(bodies: Bodies, release: Arc<Notify>) -> Arc<crate::mock_mo
     })
 }
 
-/// While the old model writes its report, what the page and an app send
-/// waits for the new conversation and isn't lost, and the approval tray's
-/// answers are acted on at once.
+/// While the old model writes its report, the session says so
+/// (`reporting`), and a message that reaches it anyway (sent as the report
+/// began) isn't sent, with its words in the notice. The approval tray's
+/// answers and commands act at once, and Stop skips the report.
 #[tokio::test]
-async fn what_is_sent_during_the_report_goes_to_the_new_conversation() {
+async fn messages_during_the_report_are_refused_and_controls_still_work() {
     let bodies: Bodies = Arc::default();
     let release = Arc::new(Notify::new());
-    let server = ModelServer::start(held_report_model(bodies.clone(), release.clone())).await;
+    let server = ModelServer::start(held_report_model(bodies.clone(), release)).await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
     let feed = harness.feed.clone();
     let page = harness.remote_actions.clone();
-    let seen = bodies.clone();
     let typing = tokio::spawn(async move {
         sender.send(Input::Line("First.".into())).unwrap();
         until(|| has(&feed, "reply", "Done.", "")).await;
+        assert!(!feed.activity().reporting);
         sender.send(Input::Line("/model sol".into())).unwrap();
         until(|| lines(&feed).contains("Asking gpt-6-luna for a report")).await;
+        let activity = feed.activity();
+        assert!(activity.reporting && activity.working, "{activity:?}");
         page.send(Action::Message("Hello from the page.".into()))
             .unwrap();
         sender
@@ -767,23 +770,25 @@ async fn what_is_sent_during_the_report_goes_to_the_new_conversation() {
                 ..Default::default()
             }))
             .unwrap();
+        sender.send(Input::Line("/workers".into())).unwrap();
         sender
             .send(Input::AnswerApprovals(crate::approvals::ApprovalAnswers {
                 choices: Vec::new(),
                 words: None,
             }))
             .unwrap();
-        until(|| lines(&feed).contains("Those approvals are no longer open.")).await;
-        assert!(feed.activity().working, "still writing its report");
-        release.notify_one();
-        let reached = |text: &str| {
-            seen.lock()
-                .unwrap()
-                .iter()
-                .any(|body| body.contains(text) && model_in(body) == "gpt-6.1-sol")
-        };
-        until(|| reached("Hello from the page.") && reached("Hello from the app.")).await;
-        until(|| !feed.activity().working).await;
+        until(|| {
+            let said = lines(&feed);
+            said.contains("“Hello from the page.” wasn't sent. The report is being written. Stopping skips it.")
+                && said.contains("“Hello from the app.” wasn't sent. The report is being written. Stopping skips it.")
+                && said.contains("Those approvals are no longer open.")
+                && said.contains("No workers yet.")
+        })
+        .await;
+        assert!(feed.activity().reporting, "still writing its report");
+        page.send(Action::Stop).unwrap();
+        until(|| lines(&feed).contains("Skipped gpt-6-luna's report.")).await;
+        assert!(!feed.activity().reporting);
         sender.send(Input::Eof).unwrap();
         sender
     });
@@ -791,28 +796,15 @@ async fn what_is_sent_during_the_report_goes_to_the_new_conversation() {
         .await
         .unwrap();
     let _sender = typing.await.unwrap();
-    // Both reached the new conversation, the first with the brief and the
-    // other as a note of that turn, as a message typed during a turn does.
-    // (The page's and the app's arrive by different ways, in either order.)
-    let all = bodies.lock().unwrap().clone();
-    let first = all
-        .iter()
-        .find(|body| last_user_of(body).0.contains("# Earlier conversation"))
-        .expect("the new conversation started");
-    assert_eq!(model_in(first), "gpt-6.1-sol");
-    let (message, _) = last_user_of(first);
-    assert!(message.contains(REPORT), "{message}");
     assert!(
-        message.contains("Hello from the page.") || message.contains("Hello from the app."),
-        "{message}"
-    );
-    for text in ["Hello from the page.", "Hello from the app."] {
-        let with = all
+        bodies
+            .lock()
+            .unwrap()
             .iter()
-            .rfind(|body| body.contains(text))
-            .unwrap_or_else(|| panic!("{text} reached the agent"));
-        assert_eq!(model_in(with), "gpt-6.1-sol", "{text}");
-    }
+            .all(|body| !body.contains("Hello from the page.")
+                && !body.contains("Hello from the app.")),
+        "neither went to a model"
+    );
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -1095,191 +1087,6 @@ async fn a_resumed_conversation_says_its_own_model_and_effort() {
     );
     say(&mut harness, &mut inputs, "Carried over.").await;
     assert_eq!(effort_in(&turn_with(&bodies, "Carried over.")), "high");
-    harness.crew.as_ref().unwrap().shutdown().await;
-}
-
-/// The requests whose last user message holds one of `texts`, as the
-/// indices of those texts, in the order the model got them.
-fn order_of(bodies: &Bodies, texts: &[&str]) -> Vec<usize> {
-    bodies
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|body| !last_user_of(body).1)
-        .filter_map(|body| {
-            let (user, _) = last_user_of(body);
-            texts.iter().position(|text| user.contains(text))
-        })
-        .collect()
-}
-
-/// What the page and an app send while the old model writes its report is
-/// kept with the session. A quit then doesn't lose it: the session opened
-/// again sends each in its own turn of the new conversation, once and in
-/// the order it came. The transcript shows each as waiting when it comes.
-#[tokio::test]
-async fn messages_sent_during_the_report_outlast_a_quit() {
-    let bodies: Bodies = Arc::default();
-    let release = Arc::new(Notify::new());
-    let server = ModelServer::start(held_report_model(bodies.clone(), release)).await;
-    let temp = tempfile::tempdir().unwrap();
-    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
-    let feed = harness.feed.clone();
-    let page = harness.remote_actions.clone();
-    let typing = tokio::spawn(async move {
-        sender.send(Input::Line("First.".into())).unwrap();
-        until(|| has(&feed, "reply", "Done.", "")).await;
-        sender.send(Input::Line("/model sol".into())).unwrap();
-        until(|| lines(&feed).contains("Asking gpt-6-luna for a report")).await;
-        page.send(Action::Message("From the page.".into())).unwrap();
-        sender
-            .send(Input::Message(crate::ui::Message {
-                text: "From the app.".into(),
-                ..Default::default()
-            }))
-            .unwrap();
-        until(|| {
-            has(&feed, "user", "From the page.", "queued")
-                && has(&feed, "user", "From the app.", "queued")
-        })
-        .await;
-        sender.send(Input::Quit(Some(Vec::new()))).unwrap();
-        sender
-    });
-    tokio::time::timeout(Duration::from_secs(30), harness.repl(&mut inputs))
-        .await
-        .expect("it quits");
-    let sender = typing.await.unwrap();
-    let kept: Vec<String> = harness
-        .conversations
-        .held
-        .iter()
-        .map(|held| held.text.clone())
-        .collect();
-    let mut sorted = kept.clone();
-    sorted.sort();
-    assert_eq!(sorted, ["From the app.", "From the page."]);
-    assert!(
-        bodies
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|body| !body.contains("From the page.") && !body.contains("From the app.")),
-        "nothing went to the model yet"
-    );
-
-    // Arko opens the session again.
-    harness.crew.as_ref().unwrap().shutdown().await;
-    harness.open(true).unwrap();
-    harness.start_new_workers();
-    assert_eq!(harness.conversations.held.len(), 2, "kept with the session");
-    let seen = bodies.clone();
-    let waiting = tokio::spawn(async move {
-        until(|| order_of(&seen, &["From the page.", "From the app."]).len() == 2).await;
-        sender.send(Input::Eof).unwrap();
-        sender
-    });
-    tokio::time::timeout(Duration::from_secs(30), harness.repl(&mut inputs))
-        .await
-        .unwrap();
-    let _sender = waiting.await.unwrap();
-    let texts: Vec<&str> = kept.iter().map(String::as_str).collect();
-    assert_eq!(order_of(&bodies, &texts), [0, 1], "each once, in order");
-    let first = bodies
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|body| last_user_of(body).0.contains(texts[0]))
-        .cloned()
-        .unwrap();
-    assert_eq!(model_in(&first), "gpt-6.1-sol");
-    assert!(last_user_of(&first).0.contains("# Earlier conversation"));
-    assert!(harness.conversations.held.is_empty());
-    harness.crew.as_ref().unwrap().shutdown().await;
-}
-
-/// A message sent while held ones still wait goes after them: the model
-/// gets A, then B, then C, each in a turn of its own.
-#[tokio::test]
-async fn a_message_sent_while_held_ones_wait_goes_after_them() {
-    let bodies: Bodies = Arc::default();
-    let release = Arc::new(Notify::new());
-    let after_a = Arc::new(Notify::new());
-    let server = ModelServer::start({
-        let bodies = bodies.clone();
-        let release = release.clone();
-        let after_a = after_a.clone();
-        Arc::new(move |_, body: String| {
-            bodies.lock().unwrap().push(body.clone());
-            let release = release.clone();
-            let after_a = after_a.clone();
-            Box::pin(async move {
-                let (user, answers) = last_user_of(&body);
-                if asks_report(&body) {
-                    release.notified().await;
-                    tool_call(
-                        "report",
-                        "handover_report",
-                        serde_json::json!({ "report": REPORT }),
-                    )
-                } else if !answers && user.contains("Message A.") {
-                    after_a.notified().await;
-                    complete("a", "Done.")
-                } else {
-                    complete("m", "Done.")
-                }
-            })
-        })
-    })
-    .await;
-    let temp = tempfile::tempdir().unwrap();
-    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
-    let feed = harness.feed.clone();
-    let seen = bodies.clone();
-    let message = |text: &str| {
-        Input::Message(crate::ui::Message {
-            text: text.into(),
-            ..Default::default()
-        })
-    };
-    let typing = tokio::spawn(async move {
-        sender.send(Input::Line("First.".into())).unwrap();
-        until(|| has(&feed, "reply", "Done.", "")).await;
-        sender.send(Input::Line("/model sol".into())).unwrap();
-        until(|| lines(&feed).contains("Asking gpt-6-luna for a report")).await;
-        sender.send(message("Message A.")).unwrap();
-        sender.send(message("Message B.")).unwrap();
-        until(|| has(&feed, "user", "Message B.", "queued")).await;
-        release.notify_one();
-        // A's turn runs, and C comes during it.
-        until(|| order_of(&seen, &["Message A."]).len() == 1).await;
-        sender.send(message("Message C.")).unwrap();
-        until(|| has(&feed, "user", "Message C.", "queued")).await;
-        after_a.notify_one();
-        until(|| order_of(&seen, &["Message A.", "Message B.", "Message C."]).len() == 3).await;
-        until(|| !feed.activity().working).await;
-        sender.send(Input::Eof).unwrap();
-        sender
-    });
-    tokio::time::timeout(Duration::from_secs(60), harness.repl(&mut inputs))
-        .await
-        .unwrap();
-    let _sender = typing.await.unwrap();
-    assert_eq!(
-        order_of(&bodies, &["Message A.", "Message B.", "Message C."]),
-        [0, 1, 2]
-    );
-    // Each in its own turn: none came as a note of another.
-    for (text, not) in [("Message A.", "Message C."), ("Message B.", "Message C.")] {
-        let body = bodies
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|body| last_user_of(body).0.contains(text))
-            .cloned()
-            .unwrap();
-        assert!(!body.contains(not), "{text}'s turn had {not}");
-    }
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 

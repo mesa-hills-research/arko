@@ -22,7 +22,6 @@ use uuid::Uuid;
 use crate::agents::{Effort, ModelSettings};
 use crate::conversations::Conversations;
 use crate::earlier;
-use crate::harness::{News, Prompt, TurnEnd};
 use crate::inputs::{Event, Inputs};
 use crate::remote::{Action, Delivery, Level, Source};
 use crate::session::Settings;
@@ -38,21 +37,6 @@ pub(crate) struct Carry {
     pub from: usize,
 }
 
-/// A message that waits for a turn of its own: one the user sent while the
-/// old model wrote its report for a switch, or after such a one, while it
-/// still waited. The session's record keeps it until its turn starts.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Held {
-    pub text: String,
-    pub source: Source,
-    /// The images it sends, checked for the model when its turn comes.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<arko_ai::Image>,
-    /// The transcript showed it as it came (not in a session opened since).
-    #[serde(skip)]
-    pub shown: bool,
-}
-
 /// A new conversation that carries the current one over.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Switch {
@@ -64,6 +48,14 @@ pub(crate) enum Switch {
     /// `/new continue`.
     Continue,
 }
+
+/// Why a message isn't sent while the old model writes its report for a
+/// switch, as the page, apps and the full-screen view say it (they stop it
+/// their own way).
+pub(crate) const REPORTING: &str = "The report is being written. Stopping skips it.";
+
+/// [`REPORTING`] at the line prompt.
+pub(crate) const REPORTING_AT_PROMPT: &str = "The report is being written. Ctrl-C skips it.";
 
 /// What `/new` asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,6 +511,7 @@ impl Harness {
             &format!("Asking {old_model} for a report. Stopping skips it."),
         );
         self.feed.reporting(true);
+        crate::ui::set_reporting(true);
         let mut skipped = false;
         let mut quit = false;
         let outcome = loop {
@@ -599,6 +592,7 @@ impl Harness {
             }
         };
         self.feed.reporting(false);
+        crate::ui::set_reporting(false);
         self.flush_printer().await;
         let outcome = outcome.unwrap_or_else(|error| {
             Err(WorkflowError::Channel(format!(
@@ -763,46 +757,28 @@ impl Harness {
     }
 
     /// What the user sent while the old model writes its report: a command
-    /// runs now, as during a turn, and a message waits for the new
-    /// conversation (see [`hold`](Self::hold)). Returns whether the user
-    /// quit.
+    /// runs now, as during a turn, and a message is refused. The clients
+    /// keep a message in their box while the report is written (see
+    /// `Activity::reporting`), so one only comes here when it was sent as
+    /// the report began, and the notice repeats its words. Returns whether
+    /// the user quit.
     async fn sent_during_report(&mut self, event: Event, input: &mut Inputs) -> bool {
-        let (text, source, images, refs) = match event {
-            Event::Input(Some(Input::Line(line))) => (
-                input.coalesce(line).await,
-                self.input_source,
-                Vec::new(),
-                Vec::new(),
-            ),
-            Event::Input(Some(Input::Message(message))) => {
-                // (Checked for the new conversation's model when it comes.)
-                let mut images = Vec::new();
-                let mut refs = Vec::new();
-                for attachment in message.images {
-                    images.push(arko_ai::Image::from_bytes(
-                        &attachment.bytes,
-                        &attachment.mime,
-                    ));
-                    let label = attachment.name.as_deref().unwrap_or("image");
-                    refs.push(self.images.add(attachment.bytes, &attachment.mime, label));
-                }
-                (message.text, self.input_source, images, refs)
+        let (text, source) = match event {
+            Event::Input(Some(Input::Line(line))) => {
+                (input.coalesce(line).await, self.input_source)
             }
-            // An answer to the old conversation's question goes to the new
-            // one as a message.
-            Event::Input(Some(Input::Answer { text, .. })) => {
-                (text, self.input_source, Vec::new(), Vec::new())
-            }
+            Event::Input(Some(Input::Message(message))) => (message.text, self.input_source),
+            Event::Input(Some(Input::Answer { text, .. })) => (text, self.input_source),
             Event::Remote(
                 Action::Message(text) | Action::Reply { text, .. } | Action::Answer { text, .. },
             ) => {
                 self.echo_web(&text);
-                (text, Source::Web, Vec::new(), Vec::new())
+                (text, Source::Web)
             }
             _ => return false,
         };
         let text = text.trim().to_string();
-        if text.is_empty() && images.is_empty() {
+        if text.is_empty() {
             return false;
         }
         self.user_present();
@@ -834,77 +810,15 @@ impl Harness {
         if self.unknown_command(&text, source) {
             return false;
         }
-        if !self.holds() {
-            self.say(
-                Level::Info,
-                "  (what you send waits for the new conversation, once the report is in or skipped)",
-            );
-        }
-        self.hold(text, source, images, refs);
+        let words = crate::ui::cut(&text, 200);
+        self.output.echo(
+            &self
+                .output
+                .warn(&format!("“{words}” wasn't sent. {REPORTING_AT_PROMPT}")),
+        );
+        self.feed
+            .notice(Level::Warn, &format!("“{words}” wasn't sent. {REPORTING}"));
         false
-    }
-
-    /// Keeps the message `text` from `source`, with `images` (shown as
-    /// `refs`), for a turn of its own after those held before it: in the
-    /// session's record, so that it outlasts a quit, and in the transcript
-    /// as waiting.
-    pub(crate) fn hold(
-        &mut self,
-        text: String,
-        source: Source,
-        images: Vec<arko_ai::Image>,
-        refs: Vec<crate::images::ImageRef>,
-    ) {
-        self.feed.user_with(&text, source, Delivery::Queued, refs);
-        self.conversations.held.push(Held {
-            text,
-            source,
-            images,
-            shown: true,
-        });
-        self.save_conversations();
-    }
-
-    /// Whether messages wait for their turns, which what comes after them
-    /// waits behind.
-    pub(crate) fn holds(&self) -> bool {
-        !self.conversations.held.is_empty()
-    }
-
-    /// The turn of the message held longest, which leaves the record as it
-    /// starts, so that it is sent once. Returns whether the user quit.
-    pub(crate) async fn held_turn(&mut self, input: &mut Inputs) -> bool {
-        if self.conversations.held.is_empty() {
-            return false;
-        }
-        let held = self.conversations.held.remove(0);
-        self.save_conversations();
-        let model = &self.main_config.llm_config.model;
-        if let Some(why) = held
-            .images
-            .iter()
-            .find_map(|image| model.image_refusal(image))
-        {
-            self.say(
-                Level::Error,
-                &format!(
-                    "Your message \"{}\" wasn't sent ({why}). Send it without images, or switch to a model that takes them.",
-                    crate::ui::cut(&held.text, 60)
-                ),
-            );
-            return false;
-        }
-        // (Shown as it came, unless the session opened again since.)
-        if !held.shown {
-            self.feed.user(&held.text, held.source, Delivery::Turn);
-        }
-        self.user_present();
-        self.pending_images = held.images;
-        self.pending_refs.clear();
-        if let TurnEnd::Exit = self.turn(Prompt::User(held.text), input).await {
-            return true;
-        }
-        matches!(self.deliver_news(input).await, News::Exit)
     }
 
     /// The configuration the next new conversation starts on, when it isn't

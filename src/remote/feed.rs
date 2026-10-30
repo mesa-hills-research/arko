@@ -2424,6 +2424,7 @@ impl Feed {
     pub(crate) fn reporting(&self, working: bool) {
         self.set_activity(|activity| {
             activity.working = working;
+            activity.reporting = working;
             activity.since = working.then(now_ms);
         });
         if !working {
@@ -5049,6 +5050,7 @@ mod tests {
         assert_eq!(
             feed.activity(),
             Activity {
+                reporting: false,
                 working: true,
                 since,
                 question: Some(Question {

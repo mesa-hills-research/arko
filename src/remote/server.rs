@@ -1330,6 +1330,15 @@ async fn message(
     {
         return (StatusCode::UNPROCESSABLE_ENTITY, error_body(&why)).into_response();
     }
+    // While the old model writes its report for a switch, a message to the
+    // main agent isn't sent, and the page keeps it. (Commands, and messages
+    // to a worker, go.)
+    if app.feed.activity().reporting
+        && body.to.as_deref().is_none_or(str::is_empty)
+        && typed(&body.text).is_some_and(|text| crate::harness::command(text.trim()).is_none())
+    {
+        return reporting();
+    }
     // A reply to the main agent's questions.
     if !body.answers.is_empty()
         && body.to.is_none()
@@ -1429,7 +1438,17 @@ async fn answer(
     if let Some(refusal) = crate::questions::reply_refusal(&open, &ids, &text) {
         return too_long(&refusal);
     }
+    // (An answer in words is a message, which waits for the report.)
+    if app.feed.activity().reporting {
+        return reporting();
+    }
     app.act(Action::Answer { question, text })
+}
+
+/// The 409 for a message sent while the old model writes its report for a
+/// switch.
+fn reporting() -> Response {
+    (StatusCode::CONFLICT, error_body(crate::switch::REPORTING)).into_response()
 }
 
 /// The 413 for answers too long to send, with what to shorten them to.
@@ -3565,6 +3584,43 @@ mod tests {
         assert_eq!(
             served.actions.recv().await.unwrap(),
             Action::Message("/message r1 /sesion".into())
+        );
+        // While the old model writes its report for a switch, a message to
+        // the main agent is refused, with the words to show, and the page
+        // keeps it. A command and a message to a worker go.
+        feed.reporting(true);
+        let response = served
+            .post("/api/message", Some(&cookie), r#"{"text": "Hello."}"#)
+            .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let error: serde_json::Value =
+            serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(
+            error["error"],
+            "The report is being written. Stopping skips it."
+        );
+        for (body, sent) in [
+            (r#"{"text": "/workers"}"#, "/workers"),
+            (
+                r#"{"text": "Use tabs.", "to": "r1"}"#,
+                "/message r1 Use tabs.",
+            ),
+        ] {
+            let response = served.post("/api/message", Some(&cookie), body).await;
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            assert_eq!(
+                served.actions.recv().await.unwrap(),
+                Action::Message(sent.into())
+            );
+        }
+        feed.reporting(false);
+        let response = served
+            .post("/api/message", Some(&cookie), r#"{"text": "Hello."}"#)
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            served.actions.recv().await.unwrap(),
+            Action::Message("Hello.".into())
         );
 
         let response = served

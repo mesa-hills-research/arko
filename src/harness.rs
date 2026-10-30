@@ -1368,14 +1368,6 @@ impl Harness {
     pub(crate) async fn repl(&mut self, input: &mut Inputs) {
         let mut last_interrupt: Option<Instant> = None;
         loop {
-            // The messages that wait for turns of their own go first, oldest
-            // first, before anything newer is read.
-            if self.holds() {
-                if self.held_turn(input).await {
-                    break;
-                }
-                continue;
-            }
             let (line, source, attached) = match input.next_event(true).await {
                 Event::Woken => {
                     if let News::Exit = self.deliver_news(input).await {
@@ -3968,12 +3960,6 @@ impl Harness {
                         continue;
                     }
                     if self.unknown_command(&line, source) {
-                        continue;
-                    }
-                    // While messages wait for turns of their own (sent
-                    // during a switch's report), this one waits behind them.
-                    if attached.is_empty() && self.holds() {
-                        self.hold(text, source, images, shown);
                         continue;
                     }
                     if let Some(refusal) = self.reply_refused(&text, &attached) {

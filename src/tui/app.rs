@@ -1470,6 +1470,13 @@ impl App {
             self.say(why);
             return;
         }
+        // While the old model writes its report for a switch, a message to
+        // the main agent stays in the box. (One to a worker, in its view,
+        // goes.)
+        if self.activity.reporting && (self.watching.is_none() || self.agent_waits()) {
+            self.say(crate::switch::REPORTING);
+            return;
+        }
         // An answer too long to send stays in the box, with how short to
         // make it: the questions attached, or those the agent waits for.
         let replied: Vec<String> = if self.panel.attached.is_empty() {
@@ -2663,9 +2670,39 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn a_message_stays_in_the_box_while_the_report_is_written() {
+        let mut app = app();
+        app.set_activity(Activity {
+            reporting: true,
+            working: true,
+            since: None,
+            question: None,
+        });
+        type_text(&mut app, "Hello.");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(sent(&mut app).is_empty(), "not sent");
+        assert_eq!(app.editor.text(), "Hello.");
+        assert_eq!(
+            app.hint.as_ref().map(|(text, _)| text.as_str()),
+            Some("The report is being written. Stopping skips it.")
+        );
+        // A command still goes.
+        app.editor.take();
+        type_text(&mut app, "/workers");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["/workers"]);
+        // Once it is in, the message goes.
+        app.set_activity(Activity::default());
+        type_text(&mut app, "Hello.");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(sent(&mut app), ["Hello."]);
+    }
+
+    #[test]
     fn ctrl_c_stops_clears_and_quits_twice() {
         let mut app = app();
         app.set_activity(Activity {
+            reporting: false,
             working: true,
             since: None,
             question: None,

@@ -353,6 +353,16 @@ pub fn stop_reading() {
     CLOSING.store(true, Ordering::SeqCst);
 }
 
+/// The old model writes its report for a switch, so the line prompt keeps
+/// a message in the box meanwhile, as the full-screen view does.
+static REPORTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the old model writes its report for a switch, for the line
+/// prompt (see [`REPORTING`]).
+pub(crate) fn set_reporting(on: bool) {
+    REPORTING.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Starts reading the user's input on its own thread. With a terminal, the
 /// prompt is a line editor with history, and the returned printer prints
 /// above it; without one, lines are read from standard input as they come.
@@ -395,14 +405,31 @@ pub fn spawn_input(
                 .map(|printer| Box::new(LinePrinter(Box::new(printer))) as Box<dyn Printer>);
             let _ = printer_sender.send(printer);
             let prompt = glyphs::render(PROMPT).into_owned();
+            // A message kept in the box, to send once the report is in.
+            let mut kept: Option<String> = None;
             while !CLOSING.load(Ordering::SeqCst) {
                 let mut entry = None;
-                let input = match editor.readline(prompt.as_str()) {
+                let read = match kept.take() {
+                    Some(line) => editor.readline_with_initial(prompt.as_str(), (&line, "")),
+                    None => editor.readline(prompt.as_str()),
+                };
+                let input = match read {
                     Ok(line) => {
                         if let Some(keys) = &keys
                             && let Some(key) = crate::keys::added_at_prompt(&line)
                         {
                             crate::keys::add_at_prompt(keys, key);
+                            continue;
+                        }
+                        // While the old model writes its report for a
+                        // switch, a message stays in the box. (A command
+                        // goes.)
+                        if REPORTING.load(Ordering::SeqCst)
+                            && !line.trim().is_empty()
+                            && crate::harness::command(joined(&line).trim()).is_none()
+                        {
+                            println!("{}", crate::switch::REPORTING_AT_PROMPT);
+                            kept = Some(line);
                             continue;
                         }
                         let input = Input::Line(joined(&line));

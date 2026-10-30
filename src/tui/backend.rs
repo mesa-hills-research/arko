@@ -466,6 +466,7 @@ mod tests {
         watch.frames("idle", &mut app, 3);
 
         let mut activity = Activity {
+            reporting: false,
             working: true,
             since: Some(0),
             question: None,
