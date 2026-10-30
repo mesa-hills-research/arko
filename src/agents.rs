@@ -1045,12 +1045,26 @@ fn profile_names(profiles: &[ProfileName]) -> String {
     )
 }
 
+/// What continuing a worker after its cache expired costs, against a fresh
+/// worker, and how `message_agent` asks first (see `worker_cache`), for the
+/// end of [`cache_paragraph`].
+fn uncached_continue_words() -> String {
+    format!(
+        "A cached read of a worker's conversation costs about a tenth of the input price. Once its cache has expired, continuing it reads the whole conversation again at the full input price and writes it to the cache again (on Claude 1.25 times the input price, twice with the long cache), and on a plan that uses more of its limits. A fresh worker costs only its task and what it reads to do it. So when a finished worker's cache has expired and its conversation is past {}k tokens, start a fresh worker, unless you really need its context. `list_agents` says each finished worker's cache and size. `message_agent` to such a worker says what continuing it costs instead of sending, and the same call with `{}: true` continues it.",
+        crate::worker_cache::CONFIRM_TOKENS / 1000,
+        crate::worker_cache::CONFIRM_PARAM
+    )
+}
+
 /// How a worker's prompt cache works on the session's worker model, for
 /// the main agent that chooses `start_agent`'s `cache`.
 fn cache_paragraph(settings: &AgentSettings) -> String {
     let openai = settings.worker.provider() == Ok(Provider::OpenAI);
     if settings.worker.in_claude_code() {
-        "\nA worker runs in Claude Code and keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `long` (an hour) for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` (5 minutes) for a quick one-off such as a research task. Without `cache`, Claude Code uses an hour on a Claude plan. Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the plan's limits. If it finished more than an hour ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
+        format!(
+            "\nA worker runs in Claude Code and keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `long` (an hour) for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` (5 minutes) for a quick one-off such as a research task. Without `cache`, Claude Code uses an hour on a Claude plan. {}\n",
+            uncached_continue_words()
+        )
     } else if let Ok(model) = resolve_model(&settings.worker.model)
         && settings
             .worker
@@ -1058,7 +1072,7 @@ fn cache_paragraph(settings: &AgentSettings) -> String {
     {
         let choice = providers::CacheChoice::of(&model);
         format!(
-            "\nA worker keeps a prompt cache of its conversation for {} after its last step, or {} with a long cache. Set `start_agent`'s `cache` to `long` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` for a quick one-off such as a research task. A long cache costs more to write, {} the input price instead of 1.25 times, and reads cost the same. The default is `{}`. Continuing a worker after its cache has expired rereads its whole conversation at full price. If it finished longer ago than its cache lasts, start a fresh worker instead, unless its context is worth that.\n",
+            "\nA worker keeps a prompt cache of its conversation for {} after its last step, or {} with a long cache. Set `start_agent`'s `cache` to `long` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` for a quick one-off such as a research task. A long cache costs more to write, {} the input price instead of 1.25 times, and reads cost the same. The default is `{}`. {}\n",
             choice.short_words,
             choice.long_words,
             choice.long_write,
@@ -1066,10 +1080,14 @@ fn cache_paragraph(settings: &AgentSettings) -> String {
                 "long"
             } else {
                 "short"
-            }
+            },
+            uncached_continue_words()
         )
     } else if openai && settings.providers.openai_auth != Some(OpenAiAuth::ApiKey) {
-        "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). Continuing a worker after its cache has expired rereads its whole conversation uncached, which uses more of the ChatGPT plan's limits. If it finished more than 30 minutes ago, start a fresh worker instead, unless its context is worth that.\n".to_string()
+        format!(
+            "\nA worker keeps a prompt cache of its conversation for 30 minutes after its last step (ChatGPT's cache, which no setting changes). {}\n",
+            uncached_continue_words()
+        )
     } else {
         String::new()
     }

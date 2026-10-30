@@ -633,6 +633,9 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 
 .error { margin: 0 0 6px; color: var(--error); font-size: 14px; }
 .note-line { margin: 0 0 6px; color: var(--muted); font-size: 14px; }
+/* Arko's question before a message continues a worker whose cache expired. */
+.confirm-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 6px; }
+.confirm-line .note-line { flex: 1 1 100%; margin: 0; }
 
 .compose { position: relative; display: flex; align-items: flex-end; gap: 8px; }
 

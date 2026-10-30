@@ -366,6 +366,23 @@ pub struct WorkerSummary {
     pub family_cost_billed: f64,
     /// What it and the workers under it would cost at API list prices.
     pub family_cost_list: f64,
+    /// Once it ended, when its prompt cache expires or expired (Unix
+    /// milliseconds): its last request plus the cache lifetime its run
+    /// used, when that is known. Continuing it after then re-reads its
+    /// conversation without the cache (see [`crate::worker_cache`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_expires_at: Option<i64>,
+    /// What continuing it re-reads: its conversation's input at its last
+    /// request, in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reread_tokens: Option<u64>,
+    /// What re-reading them and writing them to the cache again costs at
+    /// its model's price, in dollars, when it is billed per token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reread_dollars: Option<f64>,
+    /// The plan that pays for that instead ("your Claude plan").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reread_plan: Option<String>,
 }
 
 impl WorkerSummary {
@@ -396,7 +413,33 @@ impl WorkerSummary {
             cost_list: 0.0,
             family_cost_billed: 0.0,
             family_cost_list: 0.0,
+            cache_expires_at: None,
+            reread_tokens: None,
+            reread_dollars: None,
+            reread_plan: None,
         }
+    }
+
+    /// Its prompt cache, once it ended, and what continuing it costs, as
+    /// [`cache_expires_at`](Self::cache_expires_at) and the re-read fields
+    /// say. `None` while it runs, and when they aren't known.
+    pub fn cache(&self) -> Option<crate::worker_cache::WorkerCache> {
+        if self.state.is_active() {
+            return None;
+        }
+        Some(crate::worker_cache::WorkerCache {
+            worker: self.id.clone(),
+            expires_at: chrono::DateTime::from_timestamp_millis(self.cache_expires_at?)?,
+            cost: crate::details::SwitchCost {
+                tokens: usize::try_from(self.reread_tokens?).ok()?,
+                dollars: self.reread_dollars,
+                plan: match self.reread_plan.as_deref() {
+                    Some("your Claude plan") => Some("your Claude plan"),
+                    Some("your ChatGPT plan") => Some("your ChatGPT plan"),
+                    _ => None,
+                },
+            },
+        })
     }
 
     /// How long it has run in all its runs at `now` (Unix milliseconds),
@@ -1097,6 +1140,31 @@ fn monitor_outcome(job: &JobSummary) -> (CallStatus, String) {
         JobState::Interrupted => (CallStatus::Failed, "interrupted".to_string()),
         _ => (CallStatus::Ok, format!("stopped{alerts}")),
     }
+}
+
+/// Puts `cache` (a worker's prompt cache once it ended, or none) in its
+/// `summary`. Whether that changed it.
+fn set_cache(
+    summary: &mut WorkerSummary,
+    cache: Option<&crate::worker_cache::WorkerCache>,
+) -> bool {
+    let before = (
+        summary.cache_expires_at,
+        summary.reread_tokens,
+        summary.reread_dollars,
+        summary.reread_plan.clone(),
+    );
+    summary.cache_expires_at = cache.map(|cache| cache.expires_at.timestamp_millis());
+    summary.reread_tokens = cache.map(|cache| cache.cost.tokens as u64);
+    summary.reread_dollars = cache.and_then(|cache| cache.cost.dollars);
+    summary.reread_plan = cache.and_then(|cache| cache.cost.plan).map(str::to_string);
+    before
+        != (
+            summary.cache_expires_at,
+            summary.reread_tokens,
+            summary.reread_dollars,
+            summary.reread_plan.clone(),
+        )
 }
 
 /// A worker's title: its task's first line, in brief.
@@ -2945,11 +3013,32 @@ impl Feed {
         ran_ms: u64,
         tool_calls: u32,
     ) {
+        self.worker_restored_with_cache(
+            id, task, was, report, error, since, ran_ms, tool_calls, None,
+        );
+    }
+
+    /// [`worker_restored`](Self::worker_restored), with the prompt cache it
+    /// ended with in the same update, so no client sees it ended without
+    /// its cache.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn worker_restored_with_cache(
+        &self,
+        id: &str,
+        task: &str,
+        was: WorkerState,
+        report: Option<&str>,
+        error: Option<&str>,
+        since: i64,
+        ran_ms: u64,
+        tool_calls: u32,
+        cache: Option<&crate::worker_cache::WorkerCache>,
+    ) {
         let mut state = self.lock();
         if state.worker(id).is_some() {
             return;
         }
-        let summary = WorkerSummary {
+        let mut summary = WorkerSummary {
             title: title(task),
             state: was,
             started_at: was.is_active().then_some(since),
@@ -2965,6 +3054,7 @@ impl Feed {
             tool_calls,
             ..WorkerSummary::new(id)
         };
+        set_cache(&mut summary, cache);
         state.workers.push(Worker {
             summary,
             placed: None,
@@ -3019,6 +3109,18 @@ impl Feed {
         self.add_up_families(&mut state);
     }
 
+    /// The prompt cache of worker `id` once it ended, and what continuing it
+    /// costs (`None` while it runs again, or when that isn't known).
+    pub(crate) fn worker_cache(&self, id: &str, cache: Option<&crate::worker_cache::WorkerCache>) {
+        let mut state = self.lock();
+        let Some(worker) = state.worker(id) else {
+            return;
+        };
+        if set_cache(&mut worker.summary, cache) {
+            self.worker_changed(&mut state, id, false);
+        }
+    }
+
     /// Adds up what each worker and the workers under it cost, and sends
     /// the summaries whose totals changed.
     fn add_up_families(&self, state: &mut State) {
@@ -3051,6 +3153,18 @@ impl Feed {
     /// The summary of the worker `id`, as the clients have it.
     pub fn worker_summary(&self, id: &str) -> Option<WorkerSummary> {
         self.lock().worker(id).map(|worker| worker.summary.clone())
+    }
+
+    /// The summary of the worker `handle` as the user may type it: `R3`
+    /// finds `r3`, as `/message` does.
+    pub fn worker_summary_named(&self, handle: &str) -> Option<WorkerSummary> {
+        let handle = handle.trim();
+        let state = self.lock();
+        state
+            .workers
+            .iter()
+            .find(|worker| worker.summary.id.eq_ignore_ascii_case(handle))
+            .map(|worker| worker.summary.clone())
     }
 
     /// Makes sure the worker `id` has a summary; true when it is new.

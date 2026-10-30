@@ -861,6 +861,7 @@ mod tests {
                 text: "Hi.".into(),
                 images: Vec::new(),
                 answers: Vec::new(),
+                continue_uncached: false,
             }))
             .unwrap();
         let line = tokio::time::timeout(std::time::Duration::from_secs(30), async {

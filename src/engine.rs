@@ -1063,6 +1063,7 @@ impl Engine {
             labelled: None,
             main_reconfigured: false,
             earlier: Arc::default(),
+            continue_asked: None,
         };
         // A chat has no project.
         if !chat {
@@ -2751,6 +2752,7 @@ mod tests {
                 text: "Indent the file.".into(),
                 images: Vec::new(),
                 answers: Vec::new(),
+                continue_uncached: false,
             }))
             .unwrap();
         let question = tokio::time::timeout(wait, async {
@@ -2854,6 +2856,7 @@ mod tests {
                     text: text.into(),
                     images: Vec::new(),
                     answers: Vec::new(),
+                    continue_uncached: false,
                 }))
                 .unwrap();
             let replies = || {
@@ -3052,6 +3055,7 @@ mod tests {
             text: text.into(),
             images: Vec::new(),
             answers: Vec::new(),
+            continue_uncached: false,
         }
     }
 
@@ -3654,6 +3658,7 @@ mod tests {
                 text: "Look at this.".into(),
                 images: vec![attachment],
                 answers: Vec::new(),
+                continue_uncached: false,
             }))
             .unwrap();
         let first = answered(&seam, &bodies, 1).await;
@@ -3934,6 +3939,7 @@ mod tests {
                     text: text.into(),
                     images: Vec::new(),
                     answers: Vec::new(),
+                    continue_uncached: false,
                 }))
                 .unwrap();
             let feed = seam.feed.clone();
@@ -3972,6 +3978,7 @@ mod tests {
                 text: "Slowly.".into(),
                 images: Vec::new(),
                 answers: Vec::new(),
+                continue_uncached: false,
             }))
             .unwrap();
         tokio::time::timeout(wait, async {
@@ -5133,6 +5140,7 @@ note("stop")
                     text: text.into(),
                     images: Vec::new(),
                     answers: Vec::new(),
+                    continue_uncached: false,
                 }))
                 .unwrap();
             tokio::time::timeout(wait, async {
@@ -5157,6 +5165,7 @@ note("stop")
                 text: "Hello again. And more.".into(),
                 images: Vec::new(),
                 answers: Vec::new(),
+                continue_uncached: false,
             }))
             .unwrap();
         tokio::time::timeout(wait, async {

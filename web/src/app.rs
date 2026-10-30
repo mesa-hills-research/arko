@@ -279,20 +279,35 @@ async fn login(key: Option<String>) -> Login {
 /// Posts an action. A session cookie that ended is traded again once.
 /// Returns whether Arko took it, and says why not in the error line.
 pub async fn post(path: &str, body: serde_json::Value) -> bool {
+    matches!(post_asking(path, body).await, Posted::Taken)
+}
+
+/// What became of a post.
+pub enum Posted {
+    Taken,
+    /// Not taken, and the error line says why.
+    Kept,
+    /// Arko asks the user first, with these words (a message that continues
+    /// a worker whose prompt cache expired).
+    Confirm(String),
+}
+
+/// [`post`], with Arko's question when it asks the user before it takes it.
+pub async fn post_asking(path: &str, body: serde_json::Value) -> Posted {
     let page = page();
     for attempt in 0..2 {
         let Some((status, text)) = request("POST", path, Some(body.to_string())).await else {
             page.error.set(Some(
                 "Not sent, because Arko is out of reach. Your text is kept.".into(),
             ));
-            return false;
+            return Posted::Kept;
         };
         if status == 401 && attempt == 0 {
             match login(None).await {
                 Login::Ok => continue,
                 result => {
                     lock(page, result);
-                    return false;
+                    return Posted::Kept;
                 }
             }
         }
@@ -300,12 +315,22 @@ pub async fn post(path: &str, body: serde_json::Value) -> bool {
             #[derive(Deserialize)]
             struct Why {
                 error: String,
+                #[serde(default)]
+                confirm: Option<String>,
             }
-            let why = serde_json::from_str::<Why>(&text).ok().map(|why| why.error);
+            let why = serde_json::from_str::<Why>(&text).ok();
+            if status == 409
+                && let Some(why) = why.as_ref().filter(|why| why.confirm.is_some())
+            {
+                page.error.set(None);
+                return Posted::Confirm(why.error.clone());
+            }
+            let why = why.map(|why| why.error);
             page.error.set(Some(match why {
                 // Answers too long for the agent (Arko says what to shorten),
-                // and a mistyped command (Arko says what it may be).
-                Some(why) if matches!(status, 413 | 422) => why,
+                // a mistyped command (Arko says what it may be), and what
+                // Arko says in a sentence of its own.
+                Some(why) if matches!(status, 413 | 422) || why.ends_with('.') => why,
                 Some(why) => format!("Not sent ({why})."),
                 // A proxy in front of Arko (Tailscale Serve, say) answers for it.
                 None if matches!(status, 502..=504) => {
@@ -313,12 +338,12 @@ pub async fn post(path: &str, body: serde_json::Value) -> bool {
                 }
                 None => format!("Not sent ({status})."),
             }));
-            return false;
+            return Posted::Kept;
         }
         page.error.set(None);
-        return true;
+        return Posted::Taken;
     }
-    false
+    Posted::Kept
 }
 
 fn lock(page: Page, result: Login) {

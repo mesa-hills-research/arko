@@ -181,9 +181,7 @@ pub fn tool_calls(id: &str, calls: &[(&str, Value)]) -> String {
         .collect()
 }
 
-/// `turn` (a model turn), reporting `tokens` of input. (Only the live
-/// tests that run on Unix use it.)
-#[cfg_attr(not(unix), allow(dead_code))]
+/// `turn` (a model turn), reporting `tokens` of input.
 pub fn with_input(turn: String, tokens: usize) -> String {
     turn.replace("\"input_tokens\":10", &format!("\"input_tokens\":{tokens}"))
 }

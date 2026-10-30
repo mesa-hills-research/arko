@@ -709,6 +709,10 @@ pub(crate) struct Harness {
     pub(crate) main_reconfigured: bool,
     /// The conversations `earlier_conversation` reads.
     pub(crate) earlier: Arc<crate::switch::Earlier>,
+    /// The `/message` (its worker and words) that continues a worker whose
+    /// prompt cache expired without asking again: the one Arko just asked
+    /// about, or one the user confirmed in a front end.
+    pub(crate) continue_asked: Option<(String, String)>,
 }
 
 impl Harness {
@@ -927,6 +931,23 @@ impl Harness {
                         HookResult::Continue
                     }),
                 );
+            // Any agent's `message_agent` to a worker whose cache expired
+            // says what continuing it costs first, unless the call
+            // confirms it.
+            let weak = Arc::downgrade(crew);
+            builder = builder.hook(
+                HookPoint::PreToolExecution,
+                Arc::new(move |hook| {
+                    if hook.tool_name.as_deref() == Some(crew::MESSAGE_AGENT)
+                        && let Some(params) = &hook.tool_params
+                        && let Some(crew) = weak.upgrade()
+                        && let Some(why) = crew.uncached_refusal(params)
+                    {
+                        return HookResult::Reject(why);
+                    }
+                    HookResult::Continue
+                }),
+            );
         }
         // A saved run resumes with each tool it offers. Those this session
         // doesn't have (a server that doesn't run, and a chat runs none, the
@@ -1459,6 +1480,9 @@ impl Harness {
                 }
                 Event::Input(Some(Input::Message(message))) => {
                     let answers = message.answers.clone();
+                    if message.continue_uncached {
+                        self.confirm_continue(&message.text);
+                    }
                     match self.message_text(message) {
                         Some(text) => (text, self.input_source, answers),
                         None => continue,
@@ -1496,6 +1520,11 @@ impl Harness {
                 }
                 Event::Remote(Action::Message(text)) => {
                     self.echo_web(&text);
+                    (text, Source::Web, Vec::new())
+                }
+                Event::Remote(Action::Continue(text)) => {
+                    self.echo_web(&text);
+                    self.confirm_continue(&text);
                     (text, Source::Web, Vec::new())
                 }
                 Event::Remote(Action::Reply { text, answers }) => {
@@ -2788,6 +2817,25 @@ impl Harness {
             );
             return;
         }
+        // Continuing a worker whose prompt cache expired re-reads its whole
+        // conversation, so Arko says what that costs first, and the same
+        // `/message` again continues it.
+        let now = chrono::Utc::now();
+        let asked = (to.trim().to_ascii_lowercase(), text.to_string());
+        if let Some(cache) = self.crew.as_ref().and_then(|crew| crew.worker_cache(to))
+            && cache.asks(now)
+            && self.continue_asked.take() != Some(asked.clone())
+        {
+            self.continue_asked = Some(asked);
+            self.say(
+                Level::Warn,
+                &format!(
+                    "{} The same /message again continues it.",
+                    cache.warning(now)
+                ),
+            );
+            return;
+        }
         let sent = match &self.crew {
             Some(crew) => crew.message(to, text, self.settings.message_copies),
             None => Err("this session has no workers".to_string()),
@@ -2806,6 +2854,14 @@ impl Harness {
                     why.split("; ").next().unwrap_or_default()
                 ),
             ),
+        }
+    }
+
+    /// The `/message` in `text` continues its worker without asking, though
+    /// its prompt cache expired: the user confirmed it in a front end.
+    pub(crate) fn confirm_continue(&mut self, text: &str) {
+        if let Some((to, words)) = crate::worker_cache::message_parts(text) {
+            self.continue_asked = Some((to.to_ascii_lowercase(), words.to_string()));
         }
     }
 
@@ -3849,6 +3905,9 @@ impl Harness {
                         }
                         Event::Input(Some(Input::Message(message))) => {
                             let answers = message.answers.clone();
+                            if message.continue_uncached {
+                                self.confirm_continue(&message.text);
+                            }
                             match self.message_text(message) {
                                 Some(text) => (text, self.input_source, answers),
                                 None => continue,
@@ -3856,6 +3915,11 @@ impl Harness {
                         }
                         Event::Remote(Action::Message(text)) => {
                             self.echo_web(&text);
+                            (text, Source::Web, Vec::new())
+                        }
+                        Event::Remote(Action::Continue(text)) => {
+                            self.echo_web(&text);
+                            self.confirm_continue(&text);
                             (text, Source::Web, Vec::new())
                         }
                         Event::Remote(Action::Reply { text, answers }) => {
@@ -4657,6 +4721,7 @@ impl Harness {
                 }
                 Event::Remote(
                     Action::Message(_)
+                    | Action::Continue(_)
                     | Action::Answer { .. }
                     | Action::Reply { .. }
                     | Action::AnswerQuestions(_)
@@ -5140,8 +5205,6 @@ pub(crate) fn handover_text(asked: handover::Asked, compacts: bool) -> &'static 
     }
 }
 
-/// A live command, alone or with its argument: the command and the
-/// argument.
 /// `/openrouter`'s words, when the line is that command, which the session
 /// runs where it can wait.
 pub(crate) fn openrouter_words(text: &str) -> Option<&str> {
@@ -5150,8 +5213,10 @@ pub(crate) fn openrouter_words(text: &str) -> Option<&str> {
         .map(|(_, argument)| argument)
 }
 
+/// A live command, alone or with its argument (after a space or a tab):
+/// the command and the argument.
 pub(crate) fn split_live_command(text: &str) -> Option<(&str, &str)> {
-    let (name, argument) = text.split_once(' ').unwrap_or((text, ""));
+    let (name, argument) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
     LIVE_COMMANDS
         .contains(&name)
         .then_some((name, argument.trim()))
@@ -5290,6 +5355,13 @@ pub(crate) mod tests {
     mod nested_workers {
         use super::*;
         include!("nested_worker_tests.rs");
+    }
+
+    /// Continuing a worker whose prompt cache expired, end to end, in
+    /// their own file.
+    mod worker_cache {
+        use super::*;
+        include!("worker_cache_tests.rs");
     }
 
     /// File editing's end-to-end tests, in their own file.
@@ -6414,6 +6486,7 @@ pub(crate) mod tests {
             labelled: None,
             main_reconfigured: false,
             earlier: Arc::default(),
+            continue_asked: None,
         };
         harness.open(false).unwrap();
         let inputs = Inputs {
