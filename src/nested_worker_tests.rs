@@ -521,8 +521,8 @@ async fn only_a_worker_started_to_nest_below_the_depth_is_offered_the_start_tool
             .count()
     };
 
-    // A worker started with no `nested` has `message_agent` and
-    // `wait_for_agents` and none of the start tools.
+    // A worker started with no `nested` has `message_agent`,
+    // `wait_for_agents` and `message_user`, and none of the start tools.
     let mut plain = Script::new(false);
     plain.r1_start = serde_json::json!({});
     plain.r1_plain = true;
@@ -569,6 +569,10 @@ async fn only_a_worker_started_to_nest_below_the_depth_is_offered_the_start_tool
     );
     let r2 = tools(&nesting, "r2");
     assert_eq!(starts(&r2), 0, "{r2:?}");
+    // Every worker answers the user with `message_user`, at any level.
+    for tool in crew::WORKER_TOOL_NAMES {
+        assert!(r2.iter().any(|name| name == tool), "{tool}");
+    }
     assert!(!first_message(&nesting.requests("r2")[0]).contains("Workers of your own"));
     // The summaries say it too.
     let nested = |id| harness.feed.worker_summary(id).unwrap().nested;
