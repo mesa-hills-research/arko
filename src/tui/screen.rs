@@ -641,10 +641,18 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     }
     let left = Line::from(left);
     let right = Line::from(right);
+    let (lw, rw) = (left.width() as u16, right.width() as u16);
+    // A hint too long to show beside the status shows in its place while
+    // it lasts.
+    if app.hint().is_some() && lw + rw + 2 > area.width {
+        frame
+            .buffer_mut()
+            .set_line(area.x, area.y, &right, area.width);
+        return;
+    }
     frame
         .buffer_mut()
         .set_line(area.x, area.y, &left, area.width);
-    let (lw, rw) = (left.width() as u16, right.width() as u16);
     if lw + rw + 2 <= area.width {
         frame
             .buffer_mut()
@@ -1782,6 +1790,33 @@ mod tests {
             rows[2].ends_with("Ctrl+B  background   Esc  back"),
             "{}",
             rows[2]
+        );
+    }
+
+    /// A hint too long to show beside the status takes the line while it
+    /// lasts, and the status comes back after it.
+    #[test]
+    fn a_long_hint_takes_the_status_lines_place() {
+        let mut app = app();
+        app.set_activity(Activity {
+            working: true,
+            since: None,
+            question: None,
+        });
+        app.reading.context_tokens = Some(142_000);
+        app.reading.cost = 3.2;
+        let hint = "/quiet isn't a command. Did you mean /view quiet? Start with a space to send it as a message.";
+        app.say(hint);
+        let rows = screen(&mut app, 120, 6);
+        assert_eq!(status_row(&rows).trim(), hint);
+        let long_ago = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(10))
+            .unwrap();
+        app.hint = Some((hint.into(), long_ago));
+        let rows = screen(&mut app, 120, 6);
+        assert!(
+            status_row(&rows).starts_with(" ● working 0s · 142k/250k"),
+            "{rows:?}"
         );
     }
 

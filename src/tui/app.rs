@@ -2610,11 +2610,14 @@ impl App {
         }
     }
 
-    /// Whether the status line's hint is still fresh.
+    /// Whether the status line's hint is still fresh: for 3 s, or for as
+    /// long as a longer one takes to read.
     pub fn hint(&self) -> Option<&str> {
         self.hint
             .as_ref()
-            .filter(|(_, at)| at.elapsed() < AGAIN)
+            .filter(|(text, at)| {
+                at.elapsed() < AGAIN.max(Duration::from_millis(60) * text.chars().count() as u32)
+            })
             .map(|(text, _)| text.as_str())
     }
 
