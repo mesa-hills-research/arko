@@ -353,26 +353,19 @@ pub fn stop_reading() {
     CLOSING.store(true, Ordering::SeqCst);
 }
 
-/// The old model writes its report for a switch, so the line prompt keeps
-/// a message in the box meanwhile, as the full-screen view does.
-static REPORTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Whether the old model writes its report for a switch, for the line
-/// prompt (see [`REPORTING`]).
-pub(crate) fn set_reporting(on: bool) {
-    REPORTING.store(on, std::sync::atomic::Ordering::SeqCst);
-}
-
 /// Starts reading the user's input on its own thread. With a terminal, the
 /// prompt is a line editor with history, and the returned printer prints
 /// above it; without one, lines are read from standard input as they come.
 /// `/keys add PROVIDER` is read here, with the key's input hidden, and
-/// added to `keys`: neither reaches the session as a line.
+/// added to `keys`: neither reaches the session as a line. While the
+/// session's `feed` says the old model writes its report for a switch, a
+/// message stays in the box.
 #[cfg(feature = "tui")]
 pub fn spawn_input(
     history: PathBuf,
     sender: mpsc::UnboundedSender<Input>,
     keys: Option<Arc<crate::keys::Keys>>,
+    feed: Option<crate::remote::Feed>,
 ) -> Option<Box<dyn Printer>> {
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         let (printer_sender, printer_receiver) = std::sync::mpsc::channel();
@@ -424,7 +417,7 @@ pub fn spawn_input(
                         // While the old model writes its report for a
                         // switch, a message stays in the box. (A command
                         // goes.)
-                        if REPORTING.load(Ordering::SeqCst)
+                        if feed.as_ref().is_some_and(|feed| feed.activity().reporting)
                             && !line.trim().is_empty()
                             && crate::harness::command(joined(&line).trim()).is_none()
                         {

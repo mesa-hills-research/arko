@@ -770,6 +770,17 @@ async fn messages_during_the_report_are_refused_and_controls_still_work() {
                 ..Default::default()
             }))
             .unwrap();
+        // An app's message of an image alone.
+        sender
+            .send(Input::Message(crate::ui::Message {
+                images: vec![crate::ui::Attachment {
+                    bytes: Arc::from(&b"not really a picture"[..]),
+                    mime: "image/png".into(),
+                    name: None,
+                }],
+                ..Default::default()
+            }))
+            .unwrap();
         sender.send(Input::Line("/workers".into())).unwrap();
         sender
             .send(Input::AnswerApprovals(crate::approvals::ApprovalAnswers {
@@ -781,6 +792,7 @@ async fn messages_during_the_report_are_refused_and_controls_still_work() {
             let said = lines(&feed);
             said.contains("“Hello from the page.” wasn't sent. The report is being written. Stopping skips it.")
                 && said.contains("“Hello from the app.” wasn't sent. The report is being written. Stopping skips it.")
+                && said.contains("Your message wasn't sent. The report is being written. Stopping skips it.")
                 && said.contains("Those approvals are no longer open.")
                 && said.contains("No workers yet.")
         })
@@ -1144,4 +1156,39 @@ async fn a_handover_size_set_stays_across_models_and_a_reopen() {
     assert_eq!(harness.handover.at(), 920_000);
     harness.crew.as_ref().unwrap().shutdown().await;
     managers.shutdown().await;
+}
+
+/// What awaits a switch dropped while the old model writes its report
+/// (the session closing) ends the report: the session no longer says one
+/// is being written, and the old conversation goes on as it was.
+#[tokio::test]
+async fn a_switch_dropped_during_the_report_ends_it() {
+    let bodies: Bodies = Arc::default();
+    let release = Arc::new(Notify::new());
+    let server = ModelServer::start(held_report_model(bodies.clone(), release)).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    say(&mut harness, &mut inputs, "First.").await;
+    let feed = harness.feed.clone();
+    {
+        let switch = harness.switch_of("/model sol").unwrap();
+        let switching = harness.switch(switch, Source::Terminal, &mut inputs);
+        tokio::pin!(switching);
+        tokio::select! {
+            _ = &mut switching => panic!("the report waits"),
+            () = until(|| feed.activity().reporting) => {}
+        }
+    }
+    let activity = feed.activity();
+    assert!(!activity.reporting && !activity.working, "{activity:?}");
+    // (The request ends as its task does.)
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    say(&mut harness, &mut inputs, "First again.").await;
+    let again = turn_with(&bodies, "First again.");
+    assert_eq!(model_in(&again), "gpt-6-luna");
+    assert!(
+        !again.contains("goes on from a report you write now"),
+        "{again}"
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
 }

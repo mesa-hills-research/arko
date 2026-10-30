@@ -120,9 +120,12 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
             eprintln!(
                 "arko: the full-screen view couldn't start ({error}), so Arko uses the line prompt"
             );
-            if let Some(printer) =
-                ui::spawn_input(history, setup.input.clone(), Some(setup.keys.clone()))
-            {
+            if let Some(printer) = ui::spawn_input(
+                history,
+                setup.input.clone(),
+                Some(setup.keys.clone()),
+                Some(setup.feed.clone()),
+            ) {
                 output.attach(printer);
             }
             return None;

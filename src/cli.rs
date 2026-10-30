@@ -579,6 +579,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
                 seam.session.root.join("history.txt"),
                 seam.input.clone(),
                 Some(seam.keys.clone()),
+                Some(seam.feed.clone()),
             )
         {
             output.attach(printer);

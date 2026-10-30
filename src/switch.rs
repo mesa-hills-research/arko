@@ -57,6 +57,33 @@ pub(crate) const REPORTING: &str = "The report is being written. Stopping skips 
 /// [`REPORTING`] at the line prompt.
 pub(crate) const REPORTING_AT_PROMPT: &str = "The report is being written. Ctrl-C skips it.";
 
+/// The old model writes its report for a switch, as the session's feed
+/// says (`Activity::reporting`), from its start until this is dropped:
+/// when the report is in or skipped, or when what awaits it is dropped,
+/// which ends the report's request too.
+struct Reporting {
+    feed: crate::remote::Feed,
+    request: tokio::task::AbortHandle,
+}
+
+impl Reporting {
+    fn start(feed: &crate::remote::Feed, request: tokio::task::AbortHandle) -> Self {
+        feed.reporting(true);
+        Self {
+            feed: feed.clone(),
+            request,
+        }
+    }
+}
+
+impl Drop for Reporting {
+    fn drop(&mut self) {
+        // (A request that ended or was stopped is left as it is.)
+        self.request.abort();
+        self.feed.reporting(false);
+    }
+}
+
 /// What `/new` asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum New {
@@ -510,8 +537,9 @@ impl Harness {
             Level::Info,
             &format!("Asking {old_model} for a report. Stopping skips it."),
         );
-        self.feed.reporting(true);
-        crate::ui::set_reporting(true);
+        // (Until the report is in or skipped, also when what awaits this
+        // is dropped: then the request ends with it.)
+        let reporting = Reporting::start(&self.feed, asking.abort_handle());
         let mut skipped = false;
         let mut quit = false;
         let outcome = loop {
@@ -567,8 +595,7 @@ impl Harness {
                             self.dismiss_questions(ids);
                             false
                         }
-                        // Messages and lines: for the new conversation, and
-                        // commands now.
+                        // Commands run now, and messages aren't sent.
                         event => {
                             let quits = Box::pin(self.sent_during_report(event, input)).await;
                             quit |= quits;
@@ -591,8 +618,7 @@ impl Harness {
                 }
             }
         };
-        self.feed.reporting(false);
-        crate::ui::set_reporting(false);
+        drop(reporting);
         self.flush_printer().await;
         let outcome = outcome.unwrap_or_else(|error| {
             Err(WorkflowError::Channel(format!(
@@ -763,22 +789,25 @@ impl Harness {
     /// the report began, and the notice repeats its words. Returns whether
     /// the user quit.
     async fn sent_during_report(&mut self, event: Event, input: &mut Inputs) -> bool {
-        let (text, source) = match event {
+        // (With how many images an app's message sends.)
+        let (text, source, images) = match event {
             Event::Input(Some(Input::Line(line))) => {
-                (input.coalesce(line).await, self.input_source)
+                (input.coalesce(line).await, self.input_source, 0)
             }
-            Event::Input(Some(Input::Message(message))) => (message.text, self.input_source),
-            Event::Input(Some(Input::Answer { text, .. })) => (text, self.input_source),
+            Event::Input(Some(Input::Message(message))) => {
+                (message.text, self.input_source, message.images.len())
+            }
+            Event::Input(Some(Input::Answer { text, .. })) => (text, self.input_source, 0),
             Event::Remote(
                 Action::Message(text) | Action::Reply { text, .. } | Action::Answer { text, .. },
             ) => {
                 self.echo_web(&text);
-                (text, Source::Web)
+                (text, Source::Web, 0)
             }
             _ => return false,
         };
         let text = text.trim().to_string();
-        if text.is_empty() {
+        if text.is_empty() && images == 0 {
             return false;
         }
         self.user_present();
@@ -810,14 +839,18 @@ impl Harness {
         if self.unknown_command(&text, source) {
             return false;
         }
-        let words = crate::ui::cut(&text, 200);
+        // (Its words, so that they aren't lost.)
+        let what = match text.is_empty() {
+            true => "Your message".to_string(),
+            false => format!("“{}”", crate::ui::cut(&text, 200)),
+        };
         self.output.echo(
             &self
                 .output
-                .warn(&format!("“{words}” wasn't sent. {REPORTING_AT_PROMPT}")),
+                .warn(&format!("{what} wasn't sent. {REPORTING_AT_PROMPT}")),
         );
         self.feed
-            .notice(Level::Warn, &format!("“{words}” wasn't sent. {REPORTING}"));
+            .notice(Level::Warn, &format!("{what} wasn't sent. {REPORTING}"));
         false
     }
 
