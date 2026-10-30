@@ -184,6 +184,22 @@ struct Watch {
     warned: bool,
 }
 
+/// The most a run of `config` hands over at, in a session that reaches
+/// OpenAI models by `openai_auth`: what its model leaves room for, else (a
+/// model whose window isn't known) its configured size, as
+/// [`Handover::at`] says it.
+pub(crate) fn run_most(
+    config: &arko_agents::AgentConfig,
+    openai_auth: Option<OpenAiAuth>,
+) -> Option<usize> {
+    agents::max_handover(&config.llm_config.model, openai_auth).or_else(|| {
+        config
+            .handover
+            .as_ref()
+            .and_then(|handover| handover.at_input_tokens)
+    })
+}
+
 impl Drop for Handover {
     fn drop(&mut self) {
         if let Some(task) = crate::lock(&self.watching).take() {
@@ -206,9 +222,7 @@ impl Handover {
         // Each run goes by at most what its model leaves room for.
         let most = |threshold: HandoverThreshold| {
             let auth = openai_auth.clone();
-            threshold.with_most(move |config| {
-                agents::max_handover(&config.llm_config.model, *crate::lock(&auth))
-            })
+            threshold.with_most(move |config| run_most(config, *crate::lock(&auth)))
         };
         Self {
             runs,
@@ -750,6 +764,33 @@ mod tests {
         handover.configure(Some(240_000), Some(190_000));
         assert_eq!(handover.at(), 190_000);
         assert_eq!(handover.set_at(1_000_000), 190_000);
+    }
+
+    /// A run goes by at most what its model leaves room for, and by its
+    /// configured size on a model whose window isn't known, as the size
+    /// shown says.
+    #[test]
+    fn a_run_on_an_unknown_window_goes_by_its_configured_size() {
+        let opus = crate::agents::ModelSettings {
+            model: "claude-opus-5-5".into(),
+            effort: crate::agents::Effort::High,
+            fast: false,
+            cache_1h: false,
+            handover_at: None,
+        };
+        let mut config =
+            crate::agents::main_config(&crate::agents::AgentSettings::for_test(&opus, &opus))
+                .unwrap();
+        assert_eq!(run_most(&config, None), Some(950_000));
+        config.llm_config.model =
+            crate::providers::resolve_model("openrouter:acme/unknown").unwrap();
+        config.llm_config.model.max_input_tokens = 0;
+        config.handover = Some(arko_agents::HandoverConfig::at_input_tokens(100_000));
+        assert_eq!(run_most(&config, None), Some(100_000));
+        let runs = Arc::new(Runs::default());
+        let (handover, _) = handover_at(&runs, None);
+        handover.configure(Some(100_000), None);
+        assert_eq!(handover.set_at(920_000), 100_000, "as the size shown says");
     }
 
     /// The watch leaves the size to the runtime: it asks for no handover
