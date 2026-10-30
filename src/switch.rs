@@ -269,15 +269,17 @@ impl Harness {
         }
     }
 
-    /// The model of the conversation the next message goes to, as `/model`
-    /// takes it: the current conversation's, else the one a new conversation
-    /// starts on.
-    pub(crate) fn conversation_model(&self) -> String {
+    /// The model settings of the conversation the next message goes to,
+    /// its effort included: the current conversation's own configuration's,
+    /// else those a new conversation starts on.
+    pub(crate) fn conversation_settings(&self) -> ModelSettings {
         self.conversations
             .current_run()
             .and_then(|run| self.workflow.as_ref()?.agent_result(run))
-            .map(|result| providers::model_name(&result.info().agent_config.llm_config.model))
-            .unwrap_or_else(|| self.settings.main.model.clone())
+            .map(|result| {
+                providers::settings_of(&result.info().agent_config, self.settings.main.effort)
+            })
+            .unwrap_or_else(|| self.settings.main.clone())
     }
 
     /// Makes `switch`: a new conversation that carries the current one
@@ -306,8 +308,10 @@ impl Harness {
                     });
                     return false;
                 };
-                let model = &latest.info().agent_config.llm_config.model;
-                (providers::model_name(model), None)
+                // On its own model and effort.
+                let own =
+                    providers::settings_of(&latest.info().agent_config, self.settings.main.effort);
+                (own.model, Some(own.effort))
             }
         };
         let target = match self.switch_target(&model, effort) {
@@ -393,7 +397,8 @@ impl Harness {
                 ));
             }
             Some(effort) => effort,
-            None => providers::fit_effort(&resolved, self.settings.main.effort),
+            // (As near as the model goes to the conversation's own.)
+            None => providers::fit_effort(&resolved, self.conversation_settings().effort),
         };
         let (settings, workers_follow) = self.main_switched(&resolved, effort);
         let setup = providers::Setup {

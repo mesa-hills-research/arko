@@ -1038,3 +1038,62 @@ async fn cost_counts_a_turn_under_way() {
     assert!(counted, "the call under way counted before the turn ended");
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// The reasoning effort a request asks for.
+fn effort_in(body: &str) -> String {
+    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+    body["reasoning"]["effort"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A conversation `/resume` went back to says its own model and effort,
+/// where they differ from those new conversations start on: in the
+/// banner, `/model` and the models published, and `/new continue` and a
+/// switch go on from its effort.
+#[tokio::test]
+async fn a_resumed_conversation_says_its_own_model_and_effort() {
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(reporting_model(bodies.clone())).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    say(&mut harness, &mut inputs, "At high.").await;
+    switch(&mut harness, &mut inputs, "/model luna low").await;
+    say(&mut harness, &mut inputs, "At low.").await;
+    assert_eq!(effort_in(&turn_with(&bodies, "At low.")), "low");
+    assert_eq!(harness.settings.main.effort, Effort::Low);
+
+    harness.resume_command("1").await;
+    let models = remote::Meter::read(harness.gauges.as_ref()).models;
+    assert_eq!(
+        (
+            models.conversation.as_str(),
+            models.conversation_effort.as_str()
+        ),
+        ("gpt-6-luna", "high")
+    );
+    assert_eq!(models.main_effort, "low", "new conversations start on it");
+    assert!(
+        models.banner_model.starts_with("gpt-6-luna (high effort)"),
+        "{}",
+        models.banner_model
+    );
+    assert!(harness.live_command("/model", Source::Terminal));
+    assert!(
+        lines(&harness.feed).contains("This conversation runs gpt-6-luna (high effort)."),
+        "{}",
+        lines(&harness.feed)
+    );
+    // It goes on at its own effort, and so does what carries it over.
+    switch(&mut harness, &mut inputs, "/new continue").await;
+    assert!(
+        lines(&harness.feed)
+            .contains("New conversation, from gpt-6-luna's report and a brief of conversation 1."),
+        "{}",
+        lines(&harness.feed)
+    );
+    say(&mut harness, &mut inputs, "Carried over.").await;
+    assert_eq!(effort_in(&turn_with(&bodies, "Carried over.")), "high");
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

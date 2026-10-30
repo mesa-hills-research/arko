@@ -379,9 +379,11 @@ pub struct Models {
     pub main: String,
     pub main_effort: String,
     /// The model of the conversation the next message goes to, as `/model`
-    /// takes it. It differs from `main` in a conversation `/resume` went
-    /// back to that runs another model.
+    /// takes it, and its effort (empty for a model that takes none). They
+    /// differ from `main` and `main_effort` in a conversation `/resume` went
+    /// back to that runs another model or effort.
     pub conversation: String,
+    pub conversation_effort: String,
     /// The model workers start on, and their effort.
     pub workers: String,
     pub workers_effort: String,

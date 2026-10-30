@@ -144,12 +144,7 @@ impl Harness {
         let started = self.conversation_started();
         match request {
             Request::Show(Target::Main) => Ok(if started {
-                let model = self.conversation_model();
-                let model = if model == self.settings.main.model {
-                    shown(&self.settings.main)
-                } else {
-                    model
-                };
+                let model = shown(&self.conversation_settings());
                 format!(
                     "This conversation runs {model}. /model MODEL [EFFORT] starts a new conversation on another model that carries this one over, and /model worker sets the workers' model."
                 )
@@ -809,16 +804,22 @@ impl Harness {
             self.settings.project_instructions,
             self.settings.worker_project_instructions,
         );
+        let conversation = self.conversation_settings();
         *lock(&self.gauges.models) = remote::Models {
             main: self.settings.main.model.clone(),
             main_effort: self.settings.main.effort.to_string(),
-            conversation: self.conversation_model(),
+            conversation: conversation.model.clone(),
+            conversation_effort: match providers::resolve_model(&conversation.model) {
+                Ok(model) if providers::efforts(&model).is_empty() => String::new(),
+                _ => conversation.effort.to_string(),
+            },
             workers: self.settings.worker.model.clone(),
             workers_effort: self.settings.worker.effort.to_string(),
             workers_follow: self.settings.workers_follow_main(),
             started: self.conversation_started(),
             main_fast: self.settings.main.fast,
-            banner_model: self.settings.describe(&self.settings.main),
+            // (The conversation's, which `/resume` may have gone back to.)
+            banner_model: self.settings.describe(&conversation),
             banner_workers: self.workers_summary(),
             reachable: self.keys.reachable(),
             openai_auth: self

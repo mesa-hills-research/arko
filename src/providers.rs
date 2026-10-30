@@ -514,8 +514,9 @@ pub fn settings_of(config: &arko_agents::AgentConfig, fallback: Effort) -> Model
         .copied()
         .find(|effort| {
             [true, false].iter().any(|thinking_text| {
-                generation_of(model, *effort, *thinking_text)
-                    .is_some_and(|candidate| serde_json::to_value(&candidate.reasoning).ok() == have)
+                generation_of(model, *effort, *thinking_text).is_some_and(|candidate| {
+                    serde_json::to_value(&candidate.reasoning).ok() == have
+                })
             })
         })
         .unwrap_or_else(|| fit_effort(model, fallback));
