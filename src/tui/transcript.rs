@@ -579,16 +579,7 @@ impl Transcript {
     /// its calls: its thinking as it streams, or else "Working…" while it
     /// waits on its model with nothing else to show.
     fn motion(&self, filter: &Filter) -> Motion {
-        let (agent, since) = match filter {
-            Filter::Main(_) => (MAIN_AGENT, self.working),
-            Filter::Worker(id) => (
-                id.as_str(),
-                self.worker(id)
-                    .filter(|worker| worker.state == WorkerState::Running)
-                    .map(|_| i64::MIN),
-            ),
-        };
-        let Some(since) = since else {
+        let Some((agent, since)) = self.under_way(filter) else {
             return Motion::default();
         };
         // (The Messages view leaves the agent's thinking out.)
@@ -607,6 +598,30 @@ impl Transcript {
             Busy::Thinking(_) => working(true),
             Busy::Tool | Busy::Done => Motion::default(),
         }
+    }
+
+    /// The agent of `filter`'s view and when its turn began (Unix
+    /// milliseconds), while it works.
+    fn under_way<'a>(&self, filter: &'a Filter) -> Option<(&'a str, i64)> {
+        match filter {
+            Filter::Main(_) => self.working.map(|since| (MAIN_AGENT, since)),
+            Filter::Worker(id) => self
+                .worker(id)
+                .filter(|worker| worker.state == WorkerState::Running)
+                .map(|_| (id.as_str(), i64::MIN)),
+        }
+    }
+
+    /// Whether `agent` made a call or thought in its turn that began at
+    /// `since`: its own run of calls has begun. Before that, the calls of
+    /// its workers and their cards don't make one.
+    fn calls_begun(&self, agent: &str, since: i64) -> bool {
+        self.entries.iter().rev().any(|entry| {
+            let item = &entry.item;
+            item.agent == agent
+                && item.at >= since
+                && matches!(item.kind, Kind::Call | Kind::Result | Kind::Thinking)
+        })
     }
 
     /// The blocks of `filter`'s view of the items, at `width`.
@@ -748,13 +763,19 @@ impl Transcript {
             // which runs together and stands against the status line's rule,
             // none on either side. After anything else (the user's message,
             // the agent's text, a message, a notice, a command's output) it
-            // is a paragraph of its own, a blank line on each side. The notes
-            // it stands above (they wait at the end) set it apart below with
-            // their own blank line, so it has one above too.
+            // is a paragraph of its own, a blank line on each side. So it is
+            // before the agent's first call of the turn, under the calls of
+            // its workers or the card of one that started from the queue,
+            // as it is under the user's message. The notes it stands above
+            // (they wait at the end) set it apart below with their own blank
+            // line, so it has one above too.
             let notes_below = at < blocks.len();
             let among_calls = at
                 .checked_sub(1)
-                .is_some_and(|last| self.is_call_run(&blocks[last]));
+                .is_some_and(|last| self.is_call_run(&blocks[last]))
+                && self
+                    .under_way(filter)
+                    .is_some_and(|(agent, since)| self.calls_begun(agent, since));
             let apart = at > 0 && (notes_below || !among_calls);
             blocks.insert(
                 at,

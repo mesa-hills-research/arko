@@ -8,7 +8,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use crate::glyphs::{Symbols, tests::choose_symbols};
-    use crate::remote::{Activity, CallStatus, Delivery, Item, Kind, Update, WorkerState};
+    use crate::remote::{Activity, CallStatus, Delivery, Item, Kind, Level, Update, WorkerState};
     use crate::tui::app::{App, Info, tests::worker};
     use crate::tui::input::{Editor, History};
     use crate::tui::screen::draw;
@@ -108,62 +108,84 @@ mod tests {
     fn working(above: Above, note: bool, view: View) -> App {
         let mut app = new_app();
         app.view = view;
-        let mut id = 0;
-        let mut add = |app: &mut App, item: fn(u64) -> Item| {
-            id += 1;
-            app.transcript.apply(Update::Item(item(id)));
+        earlier_turns(&mut app, above != Above::Nothing);
+        // (A turn the agent started by itself begins after the last one's.)
+        let since = chrono::Utc::now().timestamp_millis() + 5_000;
+        // What this turn adds comes after it began.
+        let add = |app: &mut App, mut item: Item| {
+            item.at = since;
+            app.transcript.apply(Update::Item(item));
         };
-        if above != Above::Nothing {
-            for _ in 0..12 {
-                add(&mut app, |id| item(id, Kind::Reply, "Earlier."));
-                add(&mut app, |id| item(id, Kind::Turn, "3 s"));
-            }
-        }
         match above {
             Above::User => {
                 let mut user = item(100, Kind::User, "Fix the tests.");
                 user.delivery = Some(Delivery::Turn);
-                app.transcript.apply(Update::Item(user));
+                add(&mut app, user);
             }
-            Above::Notice => add(&mut app, |id| item(id, Kind::Notice, "r1 reported")),
+            Above::Notice => add(&mut app, item(100, Kind::Notice, "r1 reported")),
             Above::Worker => {
-                let mut line = item(100, Kind::WorkerLine, "");
+                // The agent's call that started the worker, which the
+                // worker's line stands for in the Quiet view.
+                let mut start = call(100, "start r1", CallStatus::Ok);
+                start.started = Some("r1".into());
+                add(&mut app, start);
+                let mut line = item(101, Kind::WorkerLine, "");
                 line.worker = Some("r1".into());
-                app.transcript.apply(Update::Item(line));
+                add(&mut app, line);
                 app.transcript
                     .apply(Update::Worker(worker("r1", WorkerState::Finished)));
             }
             Above::Text => {
-                add(&mut app, |id| item(id, Kind::Text, "Looking at it."));
+                add(&mut app, item(100, Kind::Text, "Looking at it."));
                 app.transcript.quiet_text();
             }
-            Above::Message => add(&mut app, |id| item(id, Kind::Message, "Halfway there.")),
-            Above::Output => add(&mut app, |id| item(id, Kind::Output, "3 files changed")),
-            Above::Call => add(&mut app, |id| call(id, "$ make", CallStatus::Ok)),
+            Above::Message => add(&mut app, item(100, Kind::Message, "Halfway there.")),
+            Above::Output => add(&mut app, item(100, Kind::Output, "3 files changed")),
+            Above::Call => add(&mut app, call(100, "$ make", CallStatus::Ok)),
             Above::Result => {
-                app.transcript
-                    .apply(Update::Item(call(100, "$ make", CallStatus::Ok)));
+                add(&mut app, call(100, "$ make", CallStatus::Ok));
                 let mut result = item(101, Kind::Result, "12 passed");
                 result.call = Some(100);
-                app.transcript.apply(Update::Item(result));
+                add(&mut app, result);
             }
             Above::Reply | Above::Nothing => {}
         }
         if note {
-            let mut note = item(200, Kind::User, "Use tabs.");
-            note.delivery = Some(Delivery::Note);
-            note.pending = true;
-            app.transcript.apply(Update::Item(note));
+            add(&mut app, unread_note(200));
         }
-        // (A turn the agent started by itself begins after the last one's.)
-        let since = chrono::Utc::now().timestamp_millis() + 5_000;
+        works_since(&mut app, since);
+        app
+    }
+
+    /// Enough earlier turns to fill the screen, when `fill`, each a reply.
+    fn earlier_turns(app: &mut App, fill: bool) {
+        if fill {
+            for turn in 0..12 {
+                let id = 1 + turn * 2;
+                app.transcript
+                    .apply(Update::Item(item(id, Kind::Reply, "Earlier.")));
+                app.transcript
+                    .apply(Update::Item(item(id + 1, Kind::Turn, "3 s")));
+            }
+        }
+    }
+
+    /// A note the agent hasn't read, which waits under the line.
+    fn unread_note(id: u64) -> Item {
+        let mut note = item(id, Kind::User, "Use tabs.");
+        note.delivery = Some(Delivery::Note);
+        note.pending = true;
+        note
+    }
+
+    /// The main agent works, on a turn that began at `since`.
+    fn works_since(app: &mut App, since: i64) {
         app.set_activity(Activity {
             reporting: false,
             working: true,
             since: Some(since),
             question: None,
         });
-        app
     }
 
     /// Whether `row` is the "Working…" line.
@@ -260,6 +282,222 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// What starts a turn: the user's message, or what Arko starts one for
+    /// while the agent waits for the user.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Start {
+        /// The user's message, whose spacing the others have.
+        Message,
+        /// A worker's report, with the notice that opens the turn.
+        Report,
+        /// A background job that finished.
+        Job,
+        /// A monitor's alert.
+        Alert,
+        /// A monitor that ends soon.
+        EndsSoon,
+        /// The user's answers from the panel, which open the turn without a
+        /// notice.
+        Answers,
+        /// What the user typed that the agent didn't read, which waits
+        /// under the line.
+        Unread,
+        /// A model switch's new conversation.
+        Switch,
+    }
+
+    impl Start {
+        const ALL: [Start; 8] = [
+            Start::Message,
+            Start::Report,
+            Start::Job,
+            Start::Alert,
+            Start::EndsSoon,
+            Start::Answers,
+            Start::Unread,
+            Start::Switch,
+        ];
+
+        /// The notice that opens the turn, as `Opening::notice` words it.
+        fn notice(self) -> Option<&'static str> {
+            match self {
+                Start::Report => Some("r1 reported"),
+                Start::Job => Some("Job 4 finished"),
+                Start::Alert => Some("Monitor 2 alerted"),
+                Start::EndsSoon => Some("Monitor 2 ends in 3 min"),
+                _ => None,
+            }
+        }
+    }
+
+    /// What comes in after the turn starts, before the agent's own output.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Then {
+        Nothing,
+        /// The calls of a worker that runs, which the Full view shows.
+        WorkerCalls,
+        /// A queued worker starts, and its card is placed in the new turn.
+        WorkerStarts,
+        /// A worker's warning.
+        WorkerWarns,
+    }
+
+    /// What docks between the transcript and the status line's rule.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Below {
+        Nothing,
+        /// The chip of the agent's open questions.
+        Chip,
+        /// The panel that answers them.
+        Panel,
+        /// The command menu.
+        Menu,
+    }
+
+    /// An app whose agent works on a turn that `start` began, after
+    /// earlier turns that fill the screen, with `then` coming in after the
+    /// start and `below` docked under the transcript.
+    fn started(start: Start, then: Then, below: Below, view: View) -> App {
+        let mut app = new_app();
+        app.view = view;
+        earlier_turns(&mut app, true);
+        let since = chrono::Utc::now().timestamp_millis() + 5_000;
+        let add = |app: &mut App, mut item: Item| {
+            item.at = since;
+            app.transcript.apply(Update::Item(item));
+        };
+        // The agent's question, before its reply, when the user answers it.
+        if start == Start::Answers || below != Below::Nothing {
+            app.transcript
+                .apply(Update::Item(item(90, Kind::Question, "Tabs or spaces?")));
+            app.transcript
+                .apply(Update::Item(item(91, Kind::Reply, "Asked.")));
+            app.transcript
+                .apply(Update::Item(item(92, Kind::Turn, "3 s")));
+        }
+        // A worker that runs, and one that waits for a place.
+        let mut running = worker("r2", WorkerState::Running);
+        running.started_at = Some(since - 60_000);
+        app.transcript.apply(Update::Worker(running));
+        app.transcript
+            .apply(Update::Worker(worker("r3", WorkerState::Queued)));
+        match start {
+            Start::Message => {
+                let mut user = item(100, Kind::User, "Fix the tests.");
+                user.delivery = Some(Delivery::Turn);
+                add(&mut app, user);
+            }
+            Start::Unread => add(&mut app, unread_note(100)),
+            Start::Switch => {
+                add(
+                    &mut app,
+                    item(100, Kind::Conversation, "New conversation on sol"),
+                );
+                add(
+                    &mut app,
+                    item(101, Kind::Notice, "Switched to sol").level(Level::Info),
+                );
+            }
+            Start::Answers => {}
+            _ => {
+                let notice = item(100, Kind::Notice, start.notice().unwrap_or_default())
+                    .level(Level::Info)
+                    .opens_turn();
+                add(&mut app, notice);
+            }
+        }
+        match then {
+            Then::Nothing => {}
+            Then::WorkerCalls => {
+                for (id, status) in [(110, CallStatus::Ok), (111, CallStatus::Running)] {
+                    let mut call = call(id, "$ cargo test", status);
+                    call.agent = "r2".into();
+                    add(&mut app, call);
+                }
+            }
+            Then::WorkerStarts => {
+                let mut line = item(110, Kind::WorkerLine, "Review the parser");
+                line.worker = Some("r3".into());
+                add(&mut app, line);
+                let mut r3 = worker("r3", WorkerState::Running);
+                r3.started_at = Some(since);
+                app.transcript.apply(Update::Worker(r3));
+            }
+            Then::WorkerWarns => {
+                let mut warning =
+                    item(110, Kind::Notice, "rate limited, retrying").level(Level::Warn);
+                warning.agent = "r2".into();
+                add(&mut app, warning);
+            }
+        }
+        match below {
+            Below::Nothing => {}
+            Below::Chip => {
+                app.set_reading(crate::tui::app::tests::asking());
+                app.panel.open = false;
+            }
+            Below::Panel => {
+                app.set_reading(crate::tui::app::tests::asking());
+                app.panel.open = true;
+            }
+            Below::Menu => app.editor.insert('/'),
+        }
+        works_since(&mut app, since);
+        app
+    }
+
+    /// Whatever starts the turn (a worker's report, a job or a monitor, the
+    /// user's answers, the notes they typed, a model switch), and whatever
+    /// comes in before the agent's own output (a worker's calls, a queued
+    /// worker's card, a worker's warning), the line has the room the
+    /// user's message gives it: a blank row above and one below, before
+    /// the note that waits, the chip, the panel, the menu or the status
+    /// line's rule.
+    #[test]
+    fn a_turn_that_starts_by_itself_gives_the_line_the_room_a_message_does() {
+        let (width, height) = (80, 30);
+        // Every case that fails, and the screen of the first.
+        let mut failed: Vec<String> = Vec::new();
+        let mut first = None;
+        for view in View::ALL {
+            for then in [
+                Then::Nothing,
+                Then::WorkerCalls,
+                Then::WorkerStarts,
+                Then::WorkerWarns,
+            ] {
+                for below in [Below::Nothing, Below::Chip, Below::Panel, Below::Menu] {
+                    for start in Start::ALL {
+                        let mut app = started(start, then, below, view);
+                        let rows = screen(&mut app, width, height);
+                        let case = format!("{start:?}, then {then:?}, below {below:?}, {view:?}");
+                        let room = padding(&rows).map(|(before, after, next)| {
+                            let next = &rows[next];
+                            let follows = match (start, below) {
+                                (Start::Unread, _) => next.contains("Use tabs."),
+                                (_, Below::Nothing) => is_rule(next, width),
+                                (_, Below::Chip) => next.contains("Alt+Q"),
+                                _ => !is_rule(next, width),
+                            };
+                            (before, after, follows)
+                        });
+                        if room != Some((1, 1, true)) {
+                            failed.push(format!("{case}: {room:?}"));
+                            first.get_or_insert_with(|| format!("{case}\n{}", rows.join("\n")));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            failed.is_empty(),
+            "{} cases fail (blank rows above, below, and what follows them):\n{}\n\n{}",
+            failed.len(),
+            failed.join("\n"),
+            first.unwrap_or_default()
+        );
     }
 
     /// The command menu docked above the status line's rule leaves the
