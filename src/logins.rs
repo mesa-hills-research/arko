@@ -357,9 +357,9 @@ impl crate::Harness {
                 });
                 return;
             }
-            "add" | "remove" | "first" if source == Source::Web => Outcome::Failed(
-                "ChatGPT logins are changed at the terminal, not from the web page.".to_string(),
-            ),
+            "add" | "remove" | "first" if source == Source::Web => {
+                Outcome::Failed("ChatGPT logins are changed at the terminal.".to_string())
+            }
             "add" if rest.is_empty() => Outcome::Failed(USAGE.to_string()),
             "add" => self.keys.add_login(&credentials::expand_home(rest)),
             "remove" => match named(rest) {

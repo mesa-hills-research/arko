@@ -1591,7 +1591,7 @@ impl Harness {
         if source == Source::Web && commands::find(command).is_some_and(|c| c.terminal_only()) {
             self.say(
                 Level::Warn,
-                &format!("  {command} works at the terminal only, not from the web page."),
+                &format!("  {command} works only at the terminal."),
             );
             return true;
         }
@@ -9699,7 +9699,7 @@ pub(crate) mod tests {
             shown
                 .iter()
                 .any(|item| item.0 == "notice"
-                    && item.1.contains("/exit works at the terminal only")),
+                    && item.1.contains("/exit works only at the terminal.")),
             "{shown:?}"
         );
         assert!(has(&harness.feed, "user", "/workers", "command"));

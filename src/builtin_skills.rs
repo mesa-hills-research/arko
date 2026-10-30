@@ -265,16 +265,17 @@ impl Harness {
             "Built-in skills are on, but every one is left out.".to_string()
         } else {
             let mut text = format!(
-                "Built-in skills are on, so the agents get {}",
+                "Built-in skills are on, so the agents get {}.",
                 crate::and_list(&given)
             );
-            if !choice.off.is_empty() {
+            let left_out = choice.left_out();
+            if !left_out.is_empty() {
                 text.push_str(&format!(
-                    ", and not {}",
-                    crate::and_list(&choice.left_out())
+                    " {} {} left out.",
+                    crate::and_list(&left_out),
+                    if left_out.len() == 1 { "is" } else { "are" }
                 ));
             }
-            text.push('.');
             text
         };
         text.push_str(

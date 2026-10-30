@@ -814,7 +814,7 @@ impl crate::Harness {
                 return;
             }
             ["add" | "remove", ..] if source == Source::Web => Err(
-                "API keys are added and removed at the terminal, not from the web page."
+                "API keys are added and removed at the terminal."
                     .to_string(),
             ),
             ["add", word] => key(word).and_then(|_| {
