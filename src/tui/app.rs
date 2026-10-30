@@ -3033,17 +3033,17 @@ pub(super) mod tests {
         let mut app = app();
         app.set_reading(asking());
         assert!(app.panel.open);
-        assert_eq!(app.chip(), None);
+        assert!(app.chips().is_empty());
 
         let mut app = super::tests::app();
         type_text(&mut app, "Hel");
         app.set_reading(asking());
         assert!(!app.panel.open);
-        assert_eq!(app.chip(), Some(super::super::questions::Chip::Asks(2)));
-        assert_eq!(app.chip().unwrap().text(), "Arko asks 2 questions");
+        assert_eq!(app.chips(), [super::super::questions::Chip::Asks(2)]);
+        assert_eq!(app.chips()[0].text(), "Arko asks 2 questions");
         press(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
         assert!(app.panel.open);
-        assert_eq!(app.chip(), None);
+        assert!(app.chips().is_empty());
         // What was typed stays in the box.
         assert_eq!(app.editor.shown(), "Hel");
         // Without questions, Alt+Q says so.
@@ -3214,11 +3214,11 @@ pub(super) mod tests {
         app.set_reading(asking());
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(!app.panel.open);
-        assert_eq!(app.chip(), Some(Chip::Replying(2)));
-        assert_eq!(app.chip().unwrap().text(), "Replying to 2 questions ×");
+        assert_eq!(app.chips(), [Chip::Replying(2)]);
+        assert_eq!(app.chips()[0].text(), "Replying to 2 questions ×");
         press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(app.chip(), Some(Chip::Open(2)));
-        assert_eq!(app.chip().unwrap().text(), "2 open questions");
+        assert_eq!(app.chips(), [Chip::Open(2)]);
+        assert_eq!(app.chips()[0].text(), "2 open questions");
         // Attached again, the message answers them.
         press(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -3232,7 +3232,7 @@ pub(super) mod tests {
                 ..Default::default()
             })]
         );
-        assert_eq!(app.chip(), Some(Chip::Open(2)));
+        assert_eq!(app.chips(), [Chip::Open(2)]);
         // A message without them is a plain one.
         type_text(&mut app, "Hello.");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);

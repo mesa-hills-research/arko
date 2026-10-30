@@ -333,6 +333,69 @@ fn chat_dismiss_and_reopen_keep_their_keys() {
         Effect::Input(Input::DismissQuestions(ids)) if ids.len() == 4)));
 }
 
+/// "Answer in chat" attaches the questions open then. One asked after it
+/// waits in a chip of its own beside them, even while the box is empty,
+/// and stays open when the message goes. Ctrl+N dismisses it alone.
+#[test]
+fn a_question_asked_after_answer_in_chat_stays_out_of_the_message() {
+    let reading = |questions: &[&AgentQuestion]| crate::remote::Reading {
+        questions: questions.iter().map(|&question| question.clone()).collect(),
+        ..Default::default()
+    };
+    let first = question("q1", &["Spaces", "Tabs"]);
+    let mut second = question("q2", &[]);
+    second.item = 8;
+    let mut app = super::super::app::tests::app();
+    app.set_reading(reading(&[&first]));
+    assert!(app.panel.open);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.panel.attached, ["q1"]);
+    app.panel.last_key = None;
+    app.set_reading(reading(&[&first, &second]));
+    assert!(!app.panel.open);
+    assert_eq!(app.panel.attached, ["q1"]);
+    let (screen, _) = capture(&mut app, 80, 12);
+    assert!(
+        screen.contains(
+            "Arko asks 1 question    Alt+Q  answer   Ctrl+N  not now\n  Replying to 1 question ×"
+        ),
+        "{screen}"
+    );
+    for c in "Spaces.".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    press(&mut app, KeyCode::Enter);
+    let sent: Vec<Input> = app
+        .take_effects()
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::Input(input) => Some(input),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [Input::Message(crate::ui::Message {
+            text: "Spaces.".into(),
+            answers: vec!["q1".into()],
+            ..Default::default()
+        })]
+    );
+    app.set_reading(reading(&[&second]));
+    let (screen, _) = capture(&mut app, 80, 12);
+    assert!(screen.contains("1 open question"), "{screen}");
+
+    // Ctrl+N beside the questions attached dismisses only the new one.
+    let mut app = super::super::app::tests::app();
+    app.set_reading(reading(&[&first]));
+    press(&mut app, KeyCode::Esc);
+    app.set_reading(reading(&[&first, &second]));
+    app.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+    assert!(app.take_effects().iter().any(|effect| matches!(effect,
+        Effect::Input(Input::DismissQuestions(ids)) if *ids == ["q2"])));
+    assert_eq!(app.panel.attached, ["q1"]);
+}
+
 #[test]
 fn answer_panel_goldens() {
     for (width, height) in [(80, 24), (140, 40)] {

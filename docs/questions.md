@@ -11,10 +11,10 @@ worker billed per token, goes to the [approval tray](approvals.md) instead.
 
 ## Answering in the full-screen view
 
-New questions open the answer panel above the message box when you aren't typing. While you type,
-a chip says "Arko asks 2 questions" instead, and Alt+Q opens the panel. The questions of one ask are
-numbered 1, 2, 3, and a question asked alone has no number. A question that takes more than one of
-its suggested answers says "Choose any" after its text.
+New questions open the answer panel above the message box when you aren't typing or replying to
+questions. Otherwise a chip says "Arko asks 2 questions" instead, and Alt+Q opens the panel. The
+questions of one ask are numbered 1, 2, 3, and a question asked alone has no number. A question that
+takes more than one of its suggested answers says "Choose any" after its text.
 
 | Key | In the answer panel |
 |---|---|
@@ -24,13 +24,14 @@ its suggested answers says "Choose any" after its text.
 | Typing | An answer of your own (Other). A question without suggested answers takes typing at once |
 | PgUp, PgDn | Scroll a long question |
 | Enter | Send what you filled in. The questions you left out stay open |
-| Esc | Answer in a message instead. The questions go with your next message ("Replying to 2 questions"), and Backspace in the empty message box takes them off |
+| Esc | Answer in a message instead. The questions open now go with your next message ("Replying to 2 questions"), and Backspace in the empty message box takes them off |
 | Ctrl+N | Not now. The agent goes on with its defaults |
 
-Open questions you haven't answered show as a quiet chip, "2 open questions", where Alt+Q and
-Ctrl+N work too. Alt+Q works over the settings and other windows, which come back when the panel
-closes. The terminal's bell rings for new questions while its window isn't focused. On a Mac, Alt+Q
-is Option+Q, which needs Option to work as Alt. In the Terminal app, turn on Use Option as Meta key.
+Open questions you haven't answered show as a quiet chip, "2 open questions", where Alt+Q and Ctrl+N
+work too. Beside questions you're replying to, Ctrl+N dismisses only the others. Alt+Q works over
+the settings and other windows, which come back when the panel closes. The terminal's bell rings for
+new questions while its window isn't focused. On a Mac, Alt+Q is Option+Q, which needs Option to
+work as Alt. In the Terminal app, turn on Use Option as Meta key.
 
 A question shows in one place at a time. While it is open it is in the answer panel, and the
 transcript has one quiet line where it was asked ("Arko asked 2 questions"). Click that line to
