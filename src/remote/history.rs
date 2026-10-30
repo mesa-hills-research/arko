@@ -73,8 +73,7 @@ fn items_from(
         items.push(item);
         items.len() - 1
     };
-    let mut turn: Option<u64> = None;
-    let mut ended = true;
+    let turns = message_turns(messages, text_replies);
     // The runs the agent started and hasn't been told are over, which a
     // wait without ids waits for. (A run that reported in a note, between
     // two waits, stays in until a wait's result lists what still runs.)
@@ -83,21 +82,6 @@ fn items_from(
     let answers = waited_answers(messages);
     for (index, message) in messages.iter().enumerate() {
         let start = items.len();
-        if starts_turn(message)
-            && !answers.contains(&index)
-            && (ended
-                || message
-                    .content
-                    .iter()
-                    .filter_map(Content::as_text)
-                    .any(|text| {
-                        !text.trim_start().starts_with("# Workflow context update")
-                            || reopened(text)
-                    }))
-        {
-            turn = Some(turn.map_or(1, |turn| turn + 1));
-            ended = false;
-        }
         match message.role {
             Role::System => {}
             Role::User => {
@@ -235,6 +219,36 @@ fn items_from(
                 }
             }
         }
+        for item in &mut items[start..] {
+            item.turn = turns[index];
+        }
+    }
+    items
+}
+
+/// The turn each message of `messages` came in, from 1, by the rule
+/// [`items`] describes. Messages before the first turn have none.
+pub(crate) fn message_turns(messages: &[Message], text_replies: bool) -> Vec<Option<u64>> {
+    let answers = waited_answers(messages);
+    let mut turn: Option<u64> = None;
+    let mut ended = true;
+    let mut turns = Vec::with_capacity(messages.len());
+    for (index, message) in messages.iter().enumerate() {
+        if starts_turn(message)
+            && !answers.contains(&index)
+            && (ended
+                || message
+                    .content
+                    .iter()
+                    .filter_map(Content::as_text)
+                    .any(|text| {
+                        !text.trim_start().starts_with("# Workflow context update")
+                            || reopened(text)
+                    }))
+        {
+            turn = Some(turn.map_or(1, |turn| turn + 1));
+            ended = false;
+        }
         if message.role == Role::Assistant {
             ended = message
                 .tool_calls
@@ -242,11 +256,9 @@ fn items_from(
                 .any(|call| call.name == "complete_task")
                 || (text_replies && is_reply(messages, index, &answers));
         }
-        for item in &mut items[start..] {
-            item.turn = turn;
-        }
+        turns.push(turn);
     }
-    items
+    turns
 }
 
 /// The card of an `ask_user` call that asked `questions` (a list, or one
