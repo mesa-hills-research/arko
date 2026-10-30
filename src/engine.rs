@@ -5310,7 +5310,7 @@ note("stop")
             );
         }
         assert!(
-            bodies[1].contains("This session's saved conversations and workers started without monitors (monitor_start), so they don't get them, even after a handover. New conversations (/new) and new workers do."),
+            bodies[1].contains("This session's saved conversations and workers started without monitors (monitor_start), so they get them only from their next handover. New conversations (/new) and new workers have them from the start."),
             "{}",
             bodies[1]
         );

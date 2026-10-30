@@ -173,7 +173,7 @@ fn a_session_saved_before_skill_saves_is_told_it_lacks_them() {
     };
     assert_eq!(
         unoffered(&saved, &[(MAIN, &fresh)]).unwrap(),
-        "This session's saved conversations and workers started without saving skills (add_skill, edit_skill), so they don't get them, even after a handover. New conversations (/new) and new workers do."
+        "This session's saved conversations and workers started without saving skills (add_skill, edit_skill), so they get them only from their next handover. New conversations (/new) and new workers have them from the start."
     );
     // One saved with add_skill but before edit_skill.
     let mut older = fresh.clone();
@@ -188,7 +188,7 @@ fn a_session_saved_before_skill_saves_is_told_it_lacks_them() {
     };
     assert_eq!(
         unoffered(&saved, &[(MAIN, &fresh)]).unwrap(),
-        "This session's saved conversations and workers started without updating skills (edit_skill), so they don't get them, even after a handover. New conversations (/new) and new workers do."
+        "This session's saved conversations and workers started without updating skills (edit_skill), so they get them only from their next handover. New conversations (/new) and new workers have them from the start."
     );
     // Workers never save skills, and their Skills section says nothing of
     // it.

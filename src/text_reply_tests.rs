@@ -646,7 +646,7 @@ fn a_session_saved_before_text_replies_had_message_user_is_told_it_lacks_it() {
     assert_eq!(
         unoffered(&saved(&before), &[(MAIN, &replying)]).as_deref(),
         Some(
-            "This session's saved conversations and workers started without answers to you while it works (message_user), so they don't get them, even after a handover. New conversations (/new) and new workers do."
+            "This session's saved conversations and workers started without answers to you while it works (message_user), so they get them only from their next handover. New conversations (/new) and new workers have them from the start."
         )
     );
 }
