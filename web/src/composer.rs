@@ -413,18 +413,33 @@ pub async fn gloo_wait(ms: i32) {
 
 /// Sizes the box to its text, up to its cap (CSS's `max-height`), and
 /// shows a scrollbar only past the cap. An empty box never scrolls.
+///
+/// Where the browser has `field-sizing`, it sizes the box at every layout,
+/// so text drawn without an input event (iOS's inline predictions) or a
+/// narrower box (Stop showing, a rotation) still fits, and this only notes
+/// whether the text is past the cap.
 fn fit(area: &HtmlTextAreaElement, tall: RwSignal<bool>, expanded: bool) {
     // (Sizing shrinks the box for a moment, which would scroll the
     // transcript up.)
     scroll::keeping_bottom(|| {
+        let sizes_itself = window()
+            .get_computed_style(area)
+            .ok()
+            .flatten()
+            .and_then(|style| style.get_property_value("field-sizing").ok())
+            .is_some_and(|value| value == "content");
         let style = web_sys::HtmlElement::style(area);
-        let _ = style.set_property("height", "auto");
-        let needed = area.scroll_height();
-        let _ = style.set_property("height", &format!("{needed}px"));
+        if !sizes_itself {
+            let _ = style.set_property("height", "auto");
+            let needed = area.scroll_height();
+            let _ = style.set_property("height", &format!("{needed}px"));
+        }
         // `height` is capped by `max-height`, so a box that holds less than
         // it needs is past the cap.
-        let over = needed > area.client_height() + 1;
-        let _ = style.set_property("overflow-y", if over { "auto" } else { "hidden" });
+        let over = area.scroll_height() > area.client_height() + 1;
+        if !sizes_itself {
+            let _ = style.set_property("overflow-y", if over { "auto" } else { "hidden" });
+        }
         tall.set(over || expanded);
     });
 }
