@@ -46,7 +46,7 @@ impl Draft {
                 .iter()
                 .filter_map(|at| question.choices.get(*at).cloned())
                 .collect(),
-            text: other_on(self, question).then(|| self.other.trim().to_string()),
+            text: other_on(self).then(|| self.other.trim().to_string()),
             you_decide: self.you_decide,
         }
     }
@@ -389,9 +389,7 @@ impl App {
             return;
         };
         self.panel.row = options(&question).len() - 1;
-        let draft = self.draft_mut(&question.id);
-        field_paste(draft, text);
-        pick(draft, &question, Opt::Other, false);
+        field_paste(self.draft_mut(&question.id), text);
     }
 
     /// The panel's own keys, before the message box gets them.
@@ -454,25 +452,23 @@ const PLACEHOLDER: &str = "Type your own answer";
 
 // ----- what is picked -----
 
-/// Whether Other's words are the answer, or one of them. A question that
-/// takes one answer takes them while nothing else is picked.
-fn other_on(draft: &Draft, question: &AgentQuestion) -> bool {
+/// Whether Other has words, which go with the answer beside any choice or
+/// "You decide".
+fn other_on(draft: &Draft) -> bool {
     !draft.other.trim().is_empty()
-        && !draft.you_decide
-        && (question.multiple || draft.chosen.is_empty())
 }
 
-fn is_on(draft: &Draft, question: &AgentQuestion, opt: Opt) -> bool {
+fn is_on(draft: &Draft, opt: Opt) -> bool {
     match opt {
         Opt::Choice(at) => draft.chosen.contains(&at),
         Opt::YouDecide => draft.you_decide,
-        Opt::Other => other_on(draft, question),
+        Opt::Other => other_on(draft),
     }
 }
 
 /// Picks `opt`. With `toggle`, picking what is picked unpicks it (Space).
-/// A question that takes one answer has one: a choice, "You decide" or
-/// the words in Other (which stay, unpicked, when something else is).
+/// A question that takes one answer has one choice or "You decide". The
+/// words in Other stay with either.
 fn pick(draft: &mut Draft, question: &AgentQuestion, opt: Opt, toggle: bool) {
     match opt {
         Opt::Choice(at) => {
@@ -497,38 +493,35 @@ fn pick(draft: &mut Draft, question: &AgentQuestion, opt: Opt, toggle: bool) {
                 draft.chosen.clear();
             }
         }
-        Opt::Other => {
-            draft.you_decide = false;
-            if !question.multiple {
-                draft.chosen.clear();
-            }
-        }
+        // Words in Other are on while there are any.
+        Opt::Other => {}
     }
-}
-
-/// Words were typed in Other: the answer of a question that takes one.
-fn typed(draft: &mut Draft, question: &AgentQuestion) {
-    pick(draft, question, Opt::Other, false);
 }
 
 /// The answer in a few words, for a summary: "Spaces", "You decide
-/// (Spaces)", the words typed.
+/// (Spaces)", the words typed, or a pick with them ("Spaces, plus “2
+/// wide”").
 fn answer_text(draft: &Draft, question: &AgentQuestion) -> Option<String> {
-    if draft.you_decide {
-        return Some(match &question.default {
+    let picked = if draft.you_decide {
+        match &question.default {
             Some(default) => format!("You decide ({})", default.trim()),
             None => "You decide".to_string(),
-        });
+        }
+    } else {
+        draft
+            .chosen
+            .iter()
+            .filter_map(|at| question.choices.get(*at).cloned())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let words = draft.other.trim();
+    match (picked.is_empty(), words.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(picked),
+        (true, false) => Some(words.to_string()),
+        (false, false) => Some(format!("{picked}, plus “{words}”")),
     }
-    let mut parts: Vec<String> = draft
-        .chosen
-        .iter()
-        .filter_map(|at| question.choices.get(*at).cloned())
-        .collect();
-    if other_on(draft, question) {
-        parts.push(draft.other.trim().to_string());
-    }
-    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 /// The option the cursor starts on: what is picked, else the first (Other
@@ -540,7 +533,7 @@ fn picked_row(draft: Option<&Draft>, question: &AgentQuestion) -> Option<usize> 
         Opt::Choice(*first)
     } else if draft.you_decide {
         Opt::YouDecide
-    } else if other_on(draft, question) {
+    } else if other_on(draft) {
         Opt::Other
     } else {
         return None;
@@ -728,7 +721,7 @@ fn list_rows(
     let digits = options.len().to_string().len();
     for (at, opt) in options.iter().copied().enumerate() {
         let here = row == Some(at);
-        let on = is_on(draft, question, opt);
+        let on = is_on(draft, opt);
         let first = rows.lines.len();
         let mut lead: Vec<Span<'static>> = Vec::new();
         if opt == Opt::Other {
@@ -1157,17 +1150,9 @@ impl App {
         self.panel.drafts.entry(id.to_string()).or_default()
     }
 
-    /// Types `key` into the focused question's Other field; true when the
-    /// text changed (its words become the answer).
-    fn type_key(&mut self, question: &AgentQuestion, key: KeyEvent) -> bool {
-        let draft = self.draft_mut(&question.id);
-        let before = draft.other.clone();
-        field_key(draft, key);
-        let changed = draft.other != before;
-        if changed {
-            typed(draft, question);
-        }
-        changed
+    /// Types `key` into the focused question's Other field.
+    fn type_key(&mut self, question: &AgentQuestion, key: KeyEvent) {
+        field_key(self.draft_mut(&question.id), key);
     }
 
     /// A character typed away from Other: the cursor moves there, and it
@@ -1209,11 +1194,7 @@ impl App {
             }
             KeyCode::Enter if plain => {
                 let draft = self.draft_mut(&question.id);
-                if on_other {
-                    if !draft.other.trim().is_empty() {
-                        pick(draft, &question, Opt::Other, false);
-                    }
-                } else if !(question.multiple && !draft.chosen.is_empty()) {
+                if !on_other && !(question.multiple && !draft.chosen.is_empty()) {
                     pick(draft, &question, options[row], false);
                 }
                 self.step_on(at);
