@@ -1240,6 +1240,40 @@ async fn an_update_of_only_a_line_end_is_shown() {
     );
 }
 
+/// An update whose SKILL.md differs only in bytes its text can't show (bytes
+/// that aren't UTF-8, against the replacement character) is an update, and
+/// its card says SKILL.md changes, with a note in place of the lines.
+#[tokio::test]
+async fn an_update_of_bytes_the_text_doesnt_show_is_shown() {
+    let fixture = quiet();
+    fixture.review_project_skills();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    let source = draft.display().to_string();
+    fixture.add(params("notes", &source)).await.unwrap();
+    let saved = fixture.project().join("notes/SKILL.md");
+    let text = skill_md("notes", "");
+    let mut bytes = text.replace("well.", "well").into_bytes();
+    bytes.insert(bytes.len() - 1, 0xFF);
+    std::fs::write(&saved, &bytes).unwrap();
+    let replaced = text.replace("well.", "well\u{FFFD}");
+    std::fs::write(draft.join("SKILL.md"), &replaced).unwrap();
+    fixture.edit(params("notes", &source)).await.unwrap();
+    let card = fixture.cards()[1].clone();
+    let update = card.update.clone().unwrap();
+    assert_eq!(update.diff, UNSHOWN_CHANGE);
+    let approval = Approval::Skill(card);
+    assert_eq!(approval.summary(), "changes SKILL.md");
+    assert!(
+        approval
+            .details()
+            .iter()
+            .any(|detail| detail.text.starts_with("It changes SKILL.md. ")),
+        "{:?}",
+        approval.details()
+    );
+    assert_eq!(std::fs::read_to_string(&saved).unwrap(), replaced);
+}
+
 /// An update's card comes from what the stamp of the saved skill read, which
 /// opens nothing through a link: a link in the skill to a folder or a file
 /// outside it is listed as going, and a file too big for a save is compared

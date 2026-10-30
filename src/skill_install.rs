@@ -1590,7 +1590,14 @@ fn changes(
     let mut diff = String::new();
     if !same("SKILL.md", skill_md.as_bytes()) {
         match &seen.skill_md {
-            Some(before) => diff = line_diff(&String::from_utf8_lossy(before), skill_md),
+            Some(before) => {
+                diff = line_diff(&String::from_utf8_lossy(before), skill_md);
+                // The bytes differ where the text shows the same, so the
+                // card says so in place of the lines.
+                if diff.is_empty() {
+                    diff = UNSHOWN_CHANGE.to_string();
+                }
+            }
             // Too long (or not a file) to show line by line.
             None => changed.insert(0, "SKILL.md".to_string()),
         }
@@ -1626,6 +1633,11 @@ fn changes(
     Ok(update)
 }
 
+/// What an update's card shows in place of SKILL.md's changed lines when
+/// its bytes changed but its text shows the same.
+const UNSHOWN_CHANGE: &str =
+    "The change is in bytes that don't show as text, such as bytes that aren't UTF-8.";
+
 /// The most lines a diff shows. A longer one ends with how many more there
 /// are.
 const DIFF_LINES: usize = 200;
@@ -1634,7 +1646,7 @@ const DIFF_LINES: usize = 200;
 /// and `+` before each added one, with up to two unchanged lines around
 /// them (two spaces before each), and `…` where unchanged lines are left
 /// out. Lines are compared with their ends, so a changed line end or
-/// trailing space shows: a changed line's trailing spaces, tabs and
+/// trailing space shows. A changed line's trailing spaces, tabs and
 /// carriage return show as `·`, `→` and `␍`, and a changed last line
 /// without a newline has a line after it that says so. Empty when the texts
 /// are the same.
