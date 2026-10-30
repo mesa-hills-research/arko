@@ -515,13 +515,16 @@ async fn end_on_signals() {
         _ = terminate.recv() => libc::SIGTERM,
         _ = hangup.recv() => libc::SIGHUP,
     };
+    // As the usual end does: the line editor stops first, so that it can't
+    // take the terminal back, and the terminal's modes come back last.
+    ui::stop_reading();
     // The full-screen view's modes too (the alternate screen, the mouse,
     // focus and paste reports, the keyboard protocol, the title, the
     // cursor), not only the line editor's.
     tui::give_back_terminal();
-    term::restore();
     arko_agents::kill_stop_aware_commands();
     arko_agents::kill_mcp_servers();
+    term::restore();
     std::process::exit(128 + number);
 }
 
