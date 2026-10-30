@@ -480,7 +480,7 @@ pub(crate) fn unoffered_with(
         return None;
     }
     Some(format!(
-        "This session's saved conversations and workers started without {}, so they get them only from their next handover. New conversations (/new) and new workers have them from the start.",
+        "This session's saved conversations and workers started without {}, so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start.",
         and_list(&parts)
     ))
 }
@@ -5654,7 +5654,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main), (WORKER, &worker)]).unwrap(),
-            "This session's saved conversations and workers started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so they get them only from their next handover. New conversations (/new) and new workers have them from the start."
+            "This session's saved conversations and workers started without workers that run in parallel, the file tools, questions to you (ask_user), and answers to you while it works (message_user), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
     }
 
@@ -5681,7 +5681,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session's saved conversations and workers started without monitors (monitor_start), so they get them only from their next handover. New conversations (/new) and new workers have them from the start."
+            "This session's saved conversations and workers started without monitors (monitor_start), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
     }
 
@@ -5710,7 +5710,7 @@ pub(crate) mod tests {
         let lacks = unoffered_with(&saved(&now), &[(MAIN, &main)], false);
         assert_eq!(
             lacks.unwrap(),
-            "This session's saved conversations and workers started without workers that start workers of their own (nested), so they get them only from their next handover. New conversations (/new) and new workers have them from the start."
+            "This session's saved conversations and workers started without workers that start workers of their own (nested), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
         // A session made since has it.
         assert_eq!(unoffered_with(&saved(&now), &[(MAIN, &main)], true), None);
@@ -5778,7 +5778,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session's saved conversations and workers started without the worker profile tools (worker_options and save_worker_profile), so they get them only from their next handover. New conversations (/new) and new workers have them from the start."
+            "This session's saved conversations and workers started without the worker profile tools (worker_options and save_worker_profile), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
         // Without workers at all, that is what it says instead.
         old.tool_config
@@ -5791,7 +5791,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             unoffered(&saved, &[(MAIN, &main)]).unwrap(),
-            "This session's saved conversations and workers started without workers that run in parallel, so they get them only from their next handover. New conversations (/new) and new workers have them from the start."
+            "This session's saved conversations and workers started without workers that run in parallel, so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
     }
 
@@ -6200,7 +6200,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             fresh(&saved, &with).unwrap(),
-            "This session's saved conversations and workers started without the search index tools and skills, so they get them only from their next handover. New conversations (/new) and new workers have them from the start."
+            "This session's saved conversations and workers started without the search index tools and skills, so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
         // Saved before `mcp`: with a tool for each MCP tool, nothing is said
         // of it, and without, it is.
@@ -6223,7 +6223,7 @@ pub(crate) mod tests {
         });
         assert_eq!(
             fresh(&before, &plain).unwrap(),
-            "This session's saved conversations and workers started without MCP servers (mcp), so they get them only from their next handover. New conversations (/new) and new workers have them from the start."
+            "This session's saved conversations and workers started without MCP servers (mcp), so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
     }
 

@@ -701,7 +701,7 @@ async fn a_saved_conversation_takes_the_current_tools_at_its_next_handover() {
         harness
             .unoffered
             .as_deref()
-            .is_some_and(|notice| notice.contains("kept notes (keep_note), so they get them only from their next handover.")),
+            .is_some_and(|notice| notice.contains("kept notes (keep_note), so they get them only from their next handover (")),
         "{:?}",
         harness.unoffered
     );
