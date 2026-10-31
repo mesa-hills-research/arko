@@ -423,13 +423,7 @@ pub fn spawn_input(
                             continue;
                         }
                         if line.trim() == "/dictate" {
-                            let words = match (&feed, &details) {
-                                (Some(feed), Some(details)) => {
-                                    crate::dictation::session_words(feed, details)
-                                }
-                                _ => Vec::new(),
-                            };
-                            kept = dictate_at_prompt(&root, words);
+                            kept = dictate_at_prompt(&root, feed.as_ref().zip(details.as_ref()));
                             continue;
                         }
                         // While the old model writes its report for a
@@ -470,11 +464,12 @@ pub fn spawn_input(
 
 /// `/dictate` at the line prompt: records until Enter, printing the words
 /// as they settle, and returns them to edit at the prompt. A missing model
-/// is asked about first. The recording favours `special_words`.
+/// is asked about first. The recording favours the words of the `session`
+/// its feed and details describe.
 #[cfg(feature = "tui")]
 fn dictate_at_prompt(
     root: &std::path::Path,
-    special_words: Vec<crate::dictation::SessionWord>,
+    session: Option<(&crate::remote::Feed, &Arc<crate::details::Details>)>,
 ) -> Option<String> {
     use crate::dictation::{
         self, DictationError, DictationEvent, DictationOptions, DictationService, Sink, Source,
@@ -489,11 +484,7 @@ fn dictate_at_prompt(
         let sink: Sink = Box::new(move |update| {
             let _ = sender.send(Heard::Update(update));
         });
-        let options = DictationOptions {
-            download,
-            special_words: special_words.clone(),
-        };
-        DictationService::shared(root).open(options, sink)
+        DictationService::shared(root).open(DictationOptions { download }, sink)
     };
     let mut stdout = std::io::stdout();
     let opened = match open(false) {
@@ -514,7 +505,12 @@ fn dictate_at_prompt(
         opened => opened,
     };
     let mut open_dictation = match opened {
-        Ok(dictation) => Some(dictation),
+        Ok(dictation) => {
+            if let Some((feed, details)) = session {
+                dictation::favour_session_words(&dictation, root, feed, details);
+            }
+            Some(dictation)
+        }
         Err(error) => {
             println!("{error}");
             return None;

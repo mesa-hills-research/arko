@@ -22,8 +22,9 @@ Each recording favours words from its session that a speech model would otherwis
 they come out as the session writes them. They are the identifiers, file names and names in the
 transcript (such as `DictationOptions`, `Cargo.toml` or `gpt-6`), the workspace's folder and package
 names and its top-level files, and the session's models, skills and worker profiles. Recent and
-repeated words count most, up to 300 of them. A word said differently from how it's written, such
-as "engine x" for nginx, still comes out as the model hears it.
+repeated words count most, up to 300 of them. The recording starts at once, and the words apply as
+soon as they're ready. A word said differently from how it's written, such as "engine x" for
+nginx, still comes out as the model hears it.
 
 ## The speech model
 
@@ -79,5 +80,5 @@ WAV file, played in real time, in place of the microphone.
 An app opens a dictation with `arko::dictation::DictationService::shared`, giving it a `Sink` that
 takes the events to the recording client, and hands it audio with `Dictation::push` or
 `Dictation::record`. It keeps the `Dictation` until `Done` or `Failed` comes, since dropping it
-cancels the dictation. `arko::dictation::session_words` makes the session's words for the
-`special_words` of `DictationOptions`.
+cancels the dictation. `arko::dictation::favour_session_words` gives the dictation the session's
+words once they're built, on a thread of their own.

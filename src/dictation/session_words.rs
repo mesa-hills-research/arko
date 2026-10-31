@@ -1,15 +1,24 @@
 //! The words a dictation favours: those of its session that a speech model
 //! would otherwise misspell, such as identifiers, file names, project names
-//! and the session's models. Every front end builds the list with
-//! [`session_words`] when a recording starts, so they all favour the same
-//! words.
+//! and the session's models. Every front end gives a recording its list
+//! with [`favour_session_words`], which builds it with [`session_words`]
+//! on a thread of its own, so they all favour the same words.
+//!
+//! Building it reads a bounded part of everything: the newest part of the
+//! transcript, the listings of the workspace and of the skill and profile
+//! folders, and small manifests.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use arko_workflows::services::RUN_WORKFLOW_AGENT_TOOL_NAME;
 
+use super::Dictation;
+use super::settings::Settings;
+use crate::builtin_skills::BuiltinSkills;
 use crate::details::Details;
+use crate::profiles::Roots;
 use crate::remote::{Feed, Item, Kind};
 
 /// The most words a list holds, the size Telmo's accuracy was measured
@@ -30,9 +39,12 @@ const HALF_LIFE_BYTES: f64 = 32.0 * 1024.0;
 const PROJECT_WEIGHT: f64 = 2.0;
 const TOP_LEVEL_WEIGHT: f64 = 0.5;
 const SESSION_WEIGHT: f64 = 1.0;
-/// Top-level files and folders read at most, for a workspace such as the
-/// home directory.
-const TOP_LEVEL_ENTRIES: usize = 200;
+/// The entries a folder's listing visits at most (the workspace's top
+/// level, a folder of skills or profiles), for a folder such as the home
+/// directory.
+const LISTED: usize = 200;
+/// The largest manifest or ignore file read, in bytes.
+const SMALL_FILE_BYTES: u64 = 64 * 1024;
 
 /// A word to favour, in its spelling. (A spoken form, such as "engine x"
 /// for nginx, would join it here.)
@@ -42,8 +54,32 @@ pub struct SessionWord {
     /// 5.5").
     pub text: String,
     /// It comes from code (an identifier, a file name, a name with digits),
-    /// so it's kept even with one or two letters or digits.
+    /// so it's kept even with two letters or digits.
     pub code: bool,
+}
+
+/// Gives `dictation` the words of the session `feed` and `details` describe
+/// ([`session_words`]), built on a thread of their own, unless the settings
+/// in Arko's folder `root` turn session words off. The recording goes on
+/// meanwhile and favours them from the next utterance, or from the first
+/// when they come before it. A dictation that ended or was cancelled drops
+/// them.
+pub fn favour_session_words(
+    dictation: &Dictation,
+    root: &Path,
+    feed: &Feed,
+    details: &Arc<Details>,
+) {
+    let words = dictation.words_sender();
+    let (root, feed, details) = (root.to_path_buf(), feed.clone(), details.clone());
+    // (Without a thread for it, the recording goes on without them.)
+    let _ = std::thread::Builder::new()
+        .name("arko-session-words".into())
+        .spawn(move || {
+            if words.wanted() && Settings::load(&root).session_words {
+                words.send(session_words(&feed, &details));
+            }
+        });
 }
 
 /// The words of the session `feed` and `details` describe, best first, at
@@ -56,35 +92,93 @@ pub struct SessionWord {
 /// - The session's models, skills and worker profiles, and the tools its
 ///   agents called.
 pub fn session_words(feed: &Feed, details: &Details) -> Vec<SessionWord> {
-    let snapshot = feed.subscribe().0;
     let facts = details.session();
+    let mut tail = Tail::default();
+    feed.read_newest(|item| tail.take(item));
     let models: Vec<String> = std::iter::once(facts.main.model)
         .chain(facts.workers.map(|workers| workers.model.model))
-        .chain(
-            snapshot
-                .workers
-                .into_iter()
-                .filter_map(|worker| worker.model),
-        )
         .collect();
-    let mut names: Vec<String> = details
-        .skills()
-        .map(|facts| facts.skills.into_iter().map(|skill| skill.name).collect())
-        .unwrap_or_default();
-    names.extend(
-        details
-            .profiles()
-            .active
-            .into_iter()
-            .map(|found| found.profile.name),
-    );
-    rank(&snapshot.items, &facts.workspace, &models, &names)
+    let mut names = skill_names(details.skill_folders(), &details.builtin_skills());
+    names.extend(profile_names(&details.profile_roots()));
+    rank(&tail, &facts.workspace, &models, &names)
 }
 
-/// The words of a transcript (`items`, oldest first), a workspace, the
-/// models the agents run (as the session names them) and the skills and
-/// profiles they have, best first.
-fn rank(items: &[Item], workspace: &Path, models: &[String], names: &[String]) -> Vec<SessionWord> {
+/// The newest part of a transcript, up to [`TRANSCRIPT_BYTES`] of text,
+/// and the tools its calls called.
+#[derive(Default)]
+struct Tail {
+    texts: Vec<Text>,
+    tools: BTreeSet<String>,
+    /// The bytes of text taken so far.
+    read: usize,
+}
+
+/// A text of the transcript, whether it's code (a call's line), and what a
+/// mention in it counts.
+struct Text {
+    text: String,
+    code: bool,
+    weight: f64,
+}
+
+impl Tail {
+    /// Takes `item`, the next newest, and says whether to go on. A text
+    /// that doesn't fit keeps its end from the first whole line in it, since
+    /// a cut through a line can take away what tells a word.
+    fn take(&mut self, item: &Item) -> bool {
+        if let Some(tool) = &item.tool
+            && !self.tools.contains(tool)
+        {
+            self.tools.insert(tool.clone());
+        }
+        let Some((text, code)) = readable(item) else {
+            return true;
+        };
+        let weight = 0.5f64.powf(self.read as f64 / HALF_LIFE_BYTES);
+        let left = TRANSCRIPT_BYTES - self.read;
+        let kept = match text.len().checked_sub(left) {
+            None | Some(0) => text,
+            Some(cut) => text.as_bytes()[cut..]
+                .iter()
+                .position(|&byte| byte == b'\n')
+                .map_or("", |at| &text[cut + at + 1..]),
+        };
+        self.read += text.len().min(left);
+        if !kept.is_empty() {
+            self.texts.push(Text {
+                text: kept.to_string(),
+                code,
+                weight,
+            });
+        }
+        self.read < TRANSCRIPT_BYTES
+    }
+}
+
+/// The text of `item` that's read, and whether it's code. Command output,
+/// Arko's notices, the agents' thinking and the code a call writes aren't
+/// read.
+fn readable(item: &Item) -> Option<(&str, bool)> {
+    let task = matches!(
+        item.tool.as_deref(),
+        Some(crate::crew::START_AGENT | crate::crew::MESSAGE_AGENT | RUN_WORKFLOW_AGENT_TOOL_NAME)
+    );
+    Some(match item.kind {
+        Kind::User | Kind::Text | Kind::Message | Kind::Reply | Kind::Question => {
+            (&item.text, false)
+        }
+        // A worker's task or a message to one, whole when the line has only
+        // its start.
+        Kind::Call if task => (item.detail.as_deref().unwrap_or(&item.text), false),
+        Kind::Call => (&item.text, true),
+        _ => return None,
+    })
+}
+
+/// The words of a transcript's tail, a workspace, the models the agents run
+/// (as the session names them) and the skills and profiles they have, best
+/// first.
+fn rank(tail: &Tail, workspace: &Path, models: &[String], names: &[String]) -> Vec<SessionWord> {
     let mut scores = Scores {
         home: std::env::home_dir()
             .map(|home| {
@@ -121,39 +215,16 @@ fn rank(items: &[Item], workspace: &Path, models: &[String], names: &[String]) -
         }
     }
     // (Each once: a tool called often isn't said more for it.)
-    let tools = items.iter().filter_map(|item| item.tool.as_deref());
-    let names: BTreeSet<&str> = names.iter().map(String::as_str).chain(tools).collect();
+    let names: BTreeSet<&str> = names
+        .iter()
+        .chain(&tail.tools)
+        .map(String::as_str)
+        .collect();
     for name in names {
         scores.add(name, true, SESSION_WEIGHT);
     }
-    let mut read = 0;
-    for item in items.iter().rev() {
-        if read > TRANSCRIPT_BYTES {
-            break;
-        }
-        let task = matches!(
-            item.tool.as_deref(),
-            Some(
-                crate::crew::START_AGENT
-                    | crate::crew::MESSAGE_AGENT
-                    | RUN_WORKFLOW_AGENT_TOOL_NAME
-            )
-        );
-        // The text, and whether it's code. Command output, Arko's notices,
-        // the agents' thinking and the code a call writes aren't read.
-        let (text, code) = match item.kind {
-            Kind::User | Kind::Text | Kind::Message | Kind::Reply | Kind::Question => {
-                (&item.text, false)
-            }
-            // A worker's task or a message to one, whole when the line has
-            // only its start.
-            Kind::Call if task => (item.detail.as_ref().unwrap_or(&item.text), false),
-            Kind::Call => (&item.text, true),
-            _ => continue,
-        };
-        let weight = 0.5f64.powf(read as f64 / HALF_LIFE_BYTES);
-        scores.read(text, code, weight);
-        read += text.len();
+    for text in &tail.texts {
+        scores.read(&text.text, text.code, text.weight);
     }
     scores.best()
 }
@@ -471,7 +542,7 @@ fn trimmed(word: &str) -> &str {
 // shortcut: the top-level manifests only, not a Cargo workspace's members;
 // read them too if members' names turn out to be said.
 fn project_names(workspace: &Path) -> Vec<String> {
-    let read = |file: &str| std::fs::read_to_string(workspace.join(file)).ok();
+    let read = |file: &str| read_small(&workspace.join(file));
     let mut names: Vec<String> = workspace
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -494,6 +565,30 @@ fn project_names(workspace: &Path) -> Vec<String> {
         Some(module.trim().rsplit('/').next()?.to_string())
     }));
     names
+}
+
+/// The text of `path` when it's a regular file of at most
+/// [`SMALL_FILE_BYTES`], opened without following a symbolic link or
+/// waiting on a FIFO.
+// shortcut: elsewhere than on Unix a link is followed; open it without
+// following there too if a manifest turns out to be one.
+fn read_small(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(
+        &mut options,
+        libc::O_NONBLOCK | libc::O_NOFOLLOW,
+    );
+    let file = options.open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > SMALL_FILE_BYTES {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(SMALL_FILE_BYTES).read_to_string(&mut text).ok()?;
+    Some(text)
 }
 
 /// The `name` in the first of `tables` that has one, in a TOML file read
@@ -519,18 +614,73 @@ fn toml_name(text: &str, tables: &[&str]) -> Option<String> {
     None
 }
 
+/// The entries of `folder`, of the first [`LISTED`] it lists.
+fn listed(folder: &Path) -> Vec<std::fs::DirEntry> {
+    std::fs::read_dir(folder)
+        .map(|entries| entries.take(LISTED).flatten().collect())
+        .unwrap_or_default()
+}
+
 /// The names of the workspace's top-level files and folders, leaving out
-/// hidden ones and those its ignore files leave out (build output).
+/// hidden ones and those its `.gitignore` leaves out (build output).
+// shortcut: the workspace's own .gitignore, not those above it or git's
+// other ignore files; read those too if their entries turn out to show.
 fn top_level_names(workspace: &Path) -> Vec<String> {
-    ignore::WalkBuilder::new(workspace)
-        .max_depth(Some(1))
-        .git_global(false)
-        .require_git(false)
+    let mut rules = ignore::gitignore::GitignoreBuilder::new(workspace);
+    for line in read_small(&workspace.join(".gitignore"))
+        .unwrap_or_default()
+        .lines()
+    {
+        let _ = rules.add_line(None, line);
+    }
+    let ignored = rules
         .build()
-        .flatten()
-        .filter(|entry| entry.depth() == 1)
-        .take(TOP_LEVEL_ENTRIES)
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ignore::gitignore::Gitignore::empty());
+    listed(workspace)
+        .into_iter()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let folder = entry.file_type().is_ok_and(|kind| kind.is_dir());
+            let shown =
+                !name.starts_with('.') && !ignored.matched(entry.path(), folder).is_ignore();
+            shown.then_some(name)
+        })
+        .collect()
+}
+
+/// The names of the skills in `folders` and of the built-in ones `builtin`
+/// gives, without reading the skills: each folder's subfolders that hold a
+/// `SKILL.md`, by name.
+// shortcut: a skill goes by its folder's name here, though its SKILL.md may
+// name it otherwise; read the names once arko_agents can list skills
+// without loading them.
+fn skill_names(folders: &[PathBuf], builtin: &BuiltinSkills) -> Vec<String> {
+    let mut names: Vec<String> = builtin
+        .given()
+        .map(|skill| skill.name.to_string())
+        .collect();
+    for folder in folders {
+        names.extend(
+            listed(folder)
+                .into_iter()
+                .filter(|entry| entry.path().join("SKILL.md").is_file())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned()),
+        );
+    }
+    names
+}
+
+/// The names of the worker profiles `roots` has, from their folders'
+/// listings: each `.md` file's name without it.
+fn profile_names(roots: &Roots) -> Vec<String> {
+    crate::profiles::folders(roots)
+        .into_iter()
+        .flat_map(|(_, folder)| listed(&folder))
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(".md").map(String::from)
+        })
         .collect()
 }
 
@@ -538,17 +688,38 @@ fn top_level_names(workspace: &Path) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// The tail of `items`, oldest first, as a feed gives it.
+    fn tail(items: &[Item]) -> Tail {
+        let mut tail = Tail::default();
+        for item in items.iter().rev() {
+            if !tail.take(item) {
+                break;
+            }
+        }
+        tail
+    }
+
     fn texts(words: &[SessionWord]) -> Vec<&str> {
         words.iter().map(|word| word.text.as_str()).collect()
     }
 
+    /// The words of `items`, with no workspace or session.
+    fn words_of(items: &[Item]) -> Vec<SessionWord> {
+        rank(&tail(items), Path::new(""), &[], &[])
+    }
+
     /// The words of `text` as one message, with no workspace or session.
     fn of(text: &str) -> Vec<String> {
-        let items = [Item::new(Kind::User, text)];
-        texts(&rank(&items, Path::new(""), &[], &[]))
+        texts(&words_of(&[Item::new(Kind::User, text)]))
             .into_iter()
             .map(String::from)
             .collect()
+    }
+
+    fn call(tool: &str, text: &str, detail: &str) -> Item {
+        let mut item = Item::new(Kind::Call, text).detail(detail);
+        item.tool = Some(tool.into());
+        item
     }
 
     #[test]
@@ -605,8 +776,7 @@ mod tests {
             "Ask Telmo first. Then the Granite model runs, and Telmo spells it as \
              Granite does. Press Stop, then Stop again to stop it, stop it, stop it. \
              Commit e4d3e79 of session 20261029-184736-7e8f took 10ms on the 2nd \
-             run, at 4K and 1e-9, e.g. with x2 and MB. Keys like \
-             sk-Abcdefghijklmnop1234 stay out.",
+             run, at 4K and 1e-9, e.g. with x2 and MB.",
         );
         // "Ask", "Then", "Press" and "Commit" start sentences, and "Stop" is
         // more often lowercase.
@@ -635,25 +805,19 @@ mod tests {
             Kind::Reply,
             "RepeatedName and RepeatedName, NewName.",
         ));
-        let ranked = texts(&rank(&items, Path::new(""), &[], &[])).join(" ");
+        let ranked = texts(&words_of(&items)).join(" ");
         assert_eq!(ranked, "RepeatedName NewName OldName");
 
         let many: String = (0..MAX_WORDS + 50).map(|n| format!("Word{n}x ")).collect();
-        let items = [Item::new(Kind::User, many)];
-        assert_eq!(rank(&items, Path::new(""), &[], &[]).len(), MAX_WORDS);
+        assert_eq!(words_of(&[Item::new(Kind::User, many)]).len(), MAX_WORDS);
     }
 
     #[test]
     fn output_thinking_and_written_code_are_left_out() {
-        let call = |tool: &str, text: &str, detail: &str| {
-            let mut item = Item::new(Kind::Call, text).detail(detail);
-            item.tool = Some(tool.into());
-            item
-        };
         let items = [
             Item::new(Kind::Output, "OutputWord"),
             Item::new(Kind::Thinking, "ThinkingWord"),
-            call("shell", "cargo test -p arko-tui", ""),
+            call("shell", "cargo build --package arko-tui", ""),
             call("shell", "cat src/long_file_na…", ""),
             call("edit_file", "edit src/lib.rs", "fn CodeWritten() {}"),
             call(
@@ -662,7 +826,7 @@ mod tests {
                 "Fix TaskWord now.",
             ),
         ];
-        let words = rank(&items, Path::new(""), &[], &[]);
+        let words = words_of(&items);
         let found = texts(&words);
         for word in ["arko-tui", "lib.rs", "TaskWord", "shell", "edit_file"] {
             assert!(found.contains(&word), "{word}: {found:?}");
@@ -671,6 +835,24 @@ mod tests {
             assert!(!found.contains(&word), "{word}: {found:?}");
         }
         assert!(words.iter().all(|word| word.code));
+    }
+
+    /// The tail stops once its budget is full, and of the text that doesn't
+    /// fit it keeps the whole lines after the cut.
+    #[test]
+    fn the_tail_keeps_whole_lines_within_its_budget() {
+        let newest = Item::new(Kind::Reply, "w ".repeat((TRANSCRIPT_BYTES - 24) / 2));
+        let cut = Item::new(Kind::User, "FirstLine CutWord éé\nSeenWord");
+        let oldest = Item::new(Kind::User, "OldestWord");
+        let tail = tail(&[oldest, cut, newest]);
+        assert_eq!(tail.read, TRANSCRIPT_BYTES);
+        assert_eq!(tail.texts.len(), 2);
+        assert_eq!(tail.texts[1].text, "SeenWord");
+        let found = texts(&rank(&tail, Path::new(""), &[], &[]))
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        assert_eq!(found, ["SeenWord"]);
     }
 
     #[test]
@@ -692,10 +874,10 @@ mod tests {
         )
         .unwrap();
         let words = rank(
-            &[Item::new(
+            &tail(&[Item::new(
                 Kind::User,
                 "Ask the reviewer, then the reviewer again.",
-            )],
+            )]),
             &workspace,
             &["claude-opus-5-5".into(), "gpt-6.1-sol".into()],
             &["root-cause".into(), "reviewer".into()],
@@ -713,7 +895,6 @@ mod tests {
             "GPT-6.1 Sol",
             "Sol",
             "root-cause",
-            "reviewer",
         ] {
             assert!(found.contains(&word), "{word}: {found:?}");
         }
@@ -732,14 +913,78 @@ mod tests {
         assert!(!model.code);
     }
 
-    /// Prints the list of a recorded session, with how long building it
-    /// took. `ARKO_SESSION_WORDS` names the session's folder, whose
-    /// `run/events.jsonl` is replayed into a feed and whose `session.json`
-    /// gives the workspace and the models.
+    /// A manifest is read only when it's a small regular file: a link isn't
+    /// followed, a FIFO isn't waited on and a large file isn't read.
+    #[cfg(unix)]
+    #[test]
+    fn manifests_are_read_only_when_small_and_regular() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("project");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let elsewhere = temp.path().join("linked.toml");
+        std::fs::write(&elsewhere, "[package]\nname = \"linked\"\n").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, workspace.join("Cargo.toml")).unwrap();
+        let fifo = std::ffi::CString::new(
+            workspace
+                .join("package.json")
+                .into_os_string()
+                .into_encoded_bytes(),
+        )
+        .unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let large = format!(
+            "[project]\nname = \"large\"\n{}",
+            "# padding\n".repeat(8 * 1024)
+        );
+        std::fs::write(workspace.join("pyproject.toml"), large).unwrap();
+        std::fs::write(workspace.join("go.mod"), "module example.com/org/gomod\n").unwrap();
+        assert_eq!(project_names(&workspace), ["project", "gomod"]);
+    }
+
+    #[test]
+    fn listings_stop_at_their_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        for n in 0..LISTED + 30 {
+            std::fs::write(temp.path().join(format!("file{n}.txt")), "").unwrap();
+        }
+        assert_eq!(top_level_names(temp.path()).len(), LISTED);
+    }
+
+    #[test]
+    fn skills_and_profiles_go_by_their_files_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let skills = temp.path().join("skills");
+        std::fs::create_dir_all(skills.join("alpha")).unwrap();
+        std::fs::write(skills.join("alpha/SKILL.md"), "---\nname: alpha\n---\n").unwrap();
+        std::fs::create_dir_all(skills.join("notes")).unwrap();
+        std::fs::write(skills.join("readme.md"), "").unwrap();
+        let none = BuiltinSkills {
+            none: true,
+            off: Vec::new(),
+        };
+        assert_eq!(skill_names(&[skills], &none), ["alpha"]);
+        assert!(skill_names(&[], &BuiltinSkills::default()).contains(&"ponytail".to_string()));
+
+        let (root, workspace) = (temp.path().join("arko"), temp.path().join("project"));
+        std::fs::create_dir_all(root.join("profiles")).unwrap();
+        std::fs::write(root.join("profiles/reviewer.md"), "").unwrap();
+        std::fs::write(root.join("profiles/notes.txt"), "").unwrap();
+        std::fs::create_dir_all(workspace.join(".arko/profiles")).unwrap();
+        std::fs::write(workspace.join(".arko/profiles/impl-light.md"), "").unwrap();
+        let mut profiles = profile_names(&Roots::new(&root).workspace(&workspace));
+        profiles.sort();
+        assert_eq!(profiles, ["impl-light", "reviewer"]);
+    }
+
+    /// Counts the list of a recorded session by kind, with how long each
+    /// step took, and prints no word. `ARKO_SESSION_WORDS` names the
+    /// session's folder, whose `run/events.jsonl` is replayed into a feed
+    /// and whose `session.json` gives the workspace and the models.
     #[test]
     #[ignore = "needs a recorded session"]
     fn a_recorded_sessions_words() {
-        let Some(dir) = std::env::var_os("ARKO_SESSION_WORDS").map(std::path::PathBuf::from) else {
+        use std::time::Instant;
+        let Some(dir) = std::env::var_os("ARKO_SESSION_WORDS").map(PathBuf::from) else {
             return;
         };
         let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap();
@@ -760,35 +1005,46 @@ mod tests {
             .collect();
         // (Arko's folder holds `sessions/<id>`.)
         let root = dir.parent().and_then(Path::parent).unwrap().to_path_buf();
+        let started = Instant::now();
+        let mut tail = Tail::default();
+        feed.read_newest(|item| tail.take(item));
+        let tail_took = started.elapsed();
+        let names_started = Instant::now();
         let folders =
             crate::skills::folders_in(Some(workspace), &root, std::env::home_dir().as_deref());
-        let mut names: Vec<String> = crate::skills::scan(&folders, &Default::default(), workspace)
-            .into_iter()
-            .map(|skill| skill.name)
-            .collect();
-        let roots = crate::profiles::Roots::new(&root)
-            .workspace(workspace)
-            .session(&dir);
-        names.extend(
-            crate::profiles::list(&roots)
-                .active
-                .into_iter()
-                .map(|found| found.profile.name),
-        );
-        let started = std::time::Instant::now();
-        let snapshot = feed.subscribe().0;
-        let snapshot_took = started.elapsed();
-        let words = rank(&snapshot.items, workspace, &models, &names);
-        let took = started.elapsed();
-        let transcript = std::time::Instant::now();
-        rank(&snapshot.items, Path::new(""), &[], &[]);
-        eprintln!(
-            "{} items, snapshot {snapshot_took:?}, list {took:?}, of which the transcript {:?}",
-            snapshot.items.len(),
-            transcript.elapsed()
-        );
+        let mut names = skill_names(&folders, &BuiltinSkills::default());
+        names.extend(profile_names(
+            &Roots::new(&root).workspace(workspace).session(&dir),
+        ));
+        let names_took = names_started.elapsed();
+        let rank_started = Instant::now();
+        let words = rank(&tail, workspace, &models, &names);
+        let rank_took = rank_started.elapsed();
+        let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
         for word in &words {
-            eprintln!("{}{}", word.text, if word.code { "" } else { "  (name)" });
+            let kind = match shape(&word.text) {
+                _ if word.text.contains(' ') => "several words",
+                _ if word.text.chars().filter(|c| c.is_alphanumeric()).count() < 3 => "short",
+                Some(Shape::Code) => "code",
+                Some(Shape::Hyphenated) => "hyphenated",
+                Some(Shape::Capitalized) => "capitalized",
+                Some(Shape::Plain) => "plain",
+                None => "other",
+            };
+            *kinds.entry(kind).or_default() += 1;
         }
+        eprintln!(
+            "{} texts ({} bytes), {} tools, {} skill and profile names; {} words, {} added as code; by kind {kinds:?}",
+            tail.texts.len(),
+            tail.read,
+            tail.tools.len(),
+            names.len(),
+            words.len(),
+            words.iter().filter(|word| word.code).count(),
+        );
+        eprintln!(
+            "took {:?} in all: tail {tail_took:?}, names {names_took:?}, workspace and ranking {rank_took:?}",
+            started.elapsed()
+        );
     }
 }

@@ -63,15 +63,7 @@ fn an_agreed_download_that_fails_says_why() {
         let root = root_with(settings);
         let service = DictationService::downloading_from(root.path(), NO_SERVER);
         let (sink, updates) = sink();
-        let dictation = service
-            .open(
-                DictationOptions {
-                    download,
-                    ..DictationOptions::default()
-                },
-                sink,
-            )
-            .unwrap();
+        let dictation = service.open(DictationOptions { download }, sink).unwrap();
         let update = updates.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(update.id, dictation.id());
         assert_eq!(
@@ -85,15 +77,7 @@ fn an_agreed_download_that_fails_says_why() {
 fn one_dictation_at_a_time() {
     let root = root_with(r#"{"model": "granite"}"#);
     let service = DictationService::downloading_from(root.path(), NO_SERVER);
-    let open = || {
-        service.open(
-            DictationOptions {
-                download: true,
-                ..DictationOptions::default()
-            },
-            sink().0,
-        )
-    };
+    let open = || service.open(DictationOptions { download: true }, sink().0);
     let first = open().unwrap();
     assert!(matches!(open(), Err(DictationError::Busy)));
     let first_id = first.id();
@@ -232,24 +216,12 @@ fn a_cancelled_dictation_sends_nothing_more() {
     let service = DictationService::downloading_from(root.path(), &base);
     let (first_sink, first) = sink();
     service
-        .open(
-            DictationOptions {
-                download: true,
-                ..DictationOptions::default()
-            },
-            first_sink,
-        )
+        .open(DictationOptions { download: true }, first_sink)
         .unwrap()
         .cancel();
     let (second_sink, second) = sink();
     let next = service
-        .open(
-            DictationOptions {
-                download: true,
-                ..DictationOptions::default()
-            },
-            second_sink,
-        )
+        .open(DictationOptions { download: true }, second_sink)
         .unwrap();
     std::thread::sleep(Duration::from_millis(500));
     assert!(first.try_recv().is_err(), "the cancelled one spoke");
@@ -316,6 +288,28 @@ fn a_batch_of_the_engines_events_is_one_text_event() {
     assert_eq!(shown.take(vec![tentative(1, " Then")]), None);
 }
 
+/// Words given to a dictation go to it, and nowhere once it's cancelled.
+#[test]
+fn words_go_to_their_dictation_while_it_lasts() {
+    let (sender, received) = mpsc::channel();
+    let intake = Arc::new(Intake::default());
+    let words = || WordsSender {
+        sender: sender.clone(),
+        intake: intake.clone(),
+    };
+    let word = vec![SessionWord {
+        text: "Telmo".into(),
+        code: false,
+    }];
+    assert!(words().wanted());
+    words().send(word.clone());
+    assert!(matches!(received.try_recv(), Ok(Message::Words(given)) if given == word));
+    intake.cancelled.store(true, Ordering::SeqCst);
+    assert!(!words().wanted());
+    words().send(word);
+    assert!(received.try_recv().is_err());
+}
+
 #[test]
 fn the_words_telmo_refuses_are_left_out() {
     let word = |text: &str, code| SessionWord {
@@ -361,11 +355,12 @@ fn granite_and_clip(settings: &str) -> Option<(tempfile::TempDir, Source)> {
     Some((root, Source::File(wav.into())))
 }
 
-/// The words settled when the clip is dictated through `service` with
-/// `options`.
-fn dictated(service: &DictationService, source: &Source, options: DictationOptions) -> String {
+/// The words settled when the clip is dictated through `service`, given
+/// `words` to favour as a front end gives them, once the dictation opened.
+fn dictated(service: &DictationService, source: &Source, words: &[SessionWord]) -> String {
     let (sink, updates) = sink();
-    let mut dictation = service.open(options, sink).unwrap();
+    let mut dictation = service.open(DictationOptions::default(), sink).unwrap();
+    dictation.words_sender().send(words.to_vec());
     let next = || {
         updates
             .recv_timeout(Duration::from_secs(60))
@@ -401,7 +396,8 @@ fn dictated(service: &DictationService, source: &Source, options: DictationOptio
 
 /// The session's words reach the streamer. Given the clip's "Hamburg" in
 /// another spelling, the words come out in it, and not once the settings
-/// turn session words off. It runs with the clip and the pack, as
+/// turn session words off, which the service checks whatever a front end
+/// sends. It runs with the clip and the pack, as
 /// [`a_wav_file_is_dictated_end_to_end`] does.
 #[test]
 fn the_session_words_reach_the_streamer() {
@@ -409,21 +405,18 @@ fn the_session_words_reach_the_streamer() {
         return;
     };
     let service = DictationService::downloading_from(root.path(), NO_SERVER);
-    let options = DictationOptions {
-        special_words: vec![SessionWord {
-            text: "Hamburgh".into(),
-            code: false,
-        }],
-        ..DictationOptions::default()
-    };
-    let text = dictated(&service, &source, options.clone());
+    let words = [SessionWord {
+        text: "Hamburgh".into(),
+        code: false,
+    }];
+    let text = dictated(&service, &source, &words);
     assert!(text.contains("Hamburgh"), "{text:?}");
     std::fs::write(
         root.path().join(super::super::settings::FILE),
         r#"{"model": "granite", "session_words": false}"#,
     )
     .unwrap();
-    let text = dictated(&service, &source, options);
+    let text = dictated(&service, &source, &words);
     assert!(
         text.contains("Hamburg") && !text.contains("Hamburgh"),
         "{text:?}"

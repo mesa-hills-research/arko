@@ -1494,6 +1494,27 @@ impl Feed {
         (self.snapshot(&state), Batches { updates })
     }
 
+    /// Calls `read` with the items, the newest first (the main agent's and
+    /// the workers' together, by ID), until it returns false or none are
+    /// left. The feed is locked meanwhile, so `read` should be quick.
+    pub fn read_newest(&self, mut read: impl FnMut(&Item) -> bool) {
+        let state = self.lock();
+        let mut main = state.main.items.iter().rev().peekable();
+        let mut workers = state.workers_lane.items.iter().rev().peekable();
+        loop {
+            let newest = match (main.peek(), workers.peek()) {
+                (Some(item), Some(other)) if item.id > other.id => main.next(),
+                (_, Some(_)) => workers.next(),
+                (Some(_), None) => main.next(),
+                (None, None) => None,
+            };
+            match newest {
+                Some(item) if read(item) => {}
+                _ => return,
+            }
+        }
+    }
+
     /// A number that tells this feed from any other, made at random as it
     /// is made. Each snapshot carries it ([`Snapshot::feed`]), so a client
     /// that connects again can tell whether it is the feed it had.
@@ -7101,5 +7122,28 @@ mod tests {
         let end = feed.subscribe().0;
         assert_eq!(end.seq, snapshot.seq + 1);
         assert_eq!(client.difference(&FeedMirror::new(&end)), None);
+    }
+
+    /// Reading the newest items goes back from the latest, the main agent's
+    /// and the workers' together, and stops when asked.
+    #[test]
+    fn the_newest_items_are_read_first_until_reading_stops() {
+        let feed = Feed::new("main");
+        feed.output("first");
+        feed.event(&event("worker", shell(Uuid::new_v4(), "ls")), Some("r1"));
+        feed.output("third");
+        let mut read = Vec::new();
+        feed.read_newest(|item| {
+            read.push(item.text.clone());
+            true
+        });
+        // (The worker's line in the main transcript comes before its call.)
+        assert_eq!(read, ["third", "$ ls", "r1", "first"]);
+        let mut two = 0;
+        feed.read_newest(|_| {
+            two += 1;
+            two < 2
+        });
+        assert_eq!(two, 2);
     }
 }

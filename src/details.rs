@@ -684,13 +684,16 @@ impl Details {
         })
     }
 
-    /// The worker profiles the agents have, as `/profiles` lists them.
-    pub fn profiles(&self) -> crate::profiles::Profiles {
-        crate::profiles::list(
-            &crate::profiles::Roots::new(&self.root)
-                .workspace(self.session().workspace)
-                .session(&self.session_dir),
-        )
+    /// The folders skills are read from.
+    pub(crate) fn skill_folders(&self) -> &[PathBuf] {
+        &self.skill_folders
+    }
+
+    /// Where the worker profiles are read from.
+    pub(crate) fn profile_roots(&self) -> crate::profiles::Roots {
+        crate::profiles::Roots::new(&self.root)
+            .workspace(self.session().workspace)
+            .session(&self.session_dir)
     }
 
     /// The search indexes of the session's workspace, by name, as the

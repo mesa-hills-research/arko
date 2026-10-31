@@ -56,8 +56,8 @@ struct Job {
     intake: Arc<Intake>,
     sink: Sink,
     idle: Duration,
-    /// The words to favour, none when the settings turn them off.
-    special_words: Vec<SessionWord>,
+    /// The settings favour the session's words, when they come.
+    session_words: bool,
 }
 
 enum Message {
@@ -69,6 +69,8 @@ enum Message {
     Overloaded,
     /// The microphone stopped, for this reason.
     CaptureFailed(String),
+    /// The words to favour, from the next utterance on ([`WordsSender`]).
+    Words(Vec<SessionWord>),
     Finish,
 }
 
@@ -173,11 +175,7 @@ impl DictationService {
             intake: intake.clone(),
             sink,
             idle: settings.idle(),
-            special_words: if settings.session_words {
-                options.special_words
-            } else {
-                Vec::new()
-            },
+            session_words: settings.session_words,
         };
         let dictation = Dictation {
             id,
@@ -253,6 +251,15 @@ impl Dictation {
         )
     }
 
+    /// Gives this dictation the words to favour from another thread, once
+    /// they're ready ([`super::favour_session_words`]).
+    pub(crate) fn words_sender(&self) -> WordsSender {
+        WordsSender {
+            sender: self.sender.clone(),
+            intake: self.intake.clone(),
+        }
+    }
+
     /// Ends the audio. The last words settle, then [`DictationEvent::Done`]
     /// comes.
     pub fn finish(&mut self) {
@@ -262,6 +269,27 @@ impl Dictation {
     /// Ends it at once, with no more events (a download stops, and resumes
     /// with the next dictation).
     pub fn cancel(self) {}
+}
+
+/// Gives a dictation the words to favour, which it takes from the next
+/// utterance on, or from the first when they come before it. It's tied to
+/// its dictation: once that ended or was cancelled, they go nowhere.
+pub(crate) struct WordsSender {
+    sender: mpsc::Sender<Message>,
+    intake: Arc<Intake>,
+}
+
+impl WordsSender {
+    /// Whether the dictation still wants them.
+    pub(crate) fn wanted(&self) -> bool {
+        !self.intake.is_cancelled()
+    }
+
+    pub(crate) fn send(self, words: Vec<SessionWord>) {
+        if self.wanted() {
+            let _ = self.sender.send(Message::Words(words));
+        }
+    }
 }
 
 impl Drop for Dictation {
@@ -379,8 +407,7 @@ fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
         return;
     }
     send(DictationEvent::Listening);
-    let words = special_words(&job.special_words);
-    listen(&job.audio, &intake, model, &words, &mut send);
+    listen(&job.audio, &intake, model, job.session_words, &mut send);
 }
 
 /// The words in Telmo's list, best first. Those it refuses are left out.
@@ -406,15 +433,18 @@ fn wait_for(next_pass: Option<Instant>, now: Instant) -> Duration {
 }
 
 /// Takes the audio, running passes as Telmo's `Stream` does, until the
-/// dictation finishes, fails or is cancelled. The passes favour `words`.
+/// dictation finishes, fails or is cancelled. The passes favour the words
+/// that come, if the settings favour the session's words
+/// (`session_words`).
 fn listen(
     audio: &mpsc::Receiver<Message>,
     intake: &Intake,
     model: Arc<Model>,
-    words: &SpecialWords,
+    session_words: bool,
     send: &mut dyn FnMut(DictationEvent),
 ) {
     let mut streamer: Option<Streamer> = None;
+    let mut words = SpecialWords::new();
     let mut shown = Shown::default();
     let mut lag = Lag::default();
     let mut next_pass: Option<Instant> = None;
@@ -441,13 +471,20 @@ fn listen(
                                 ..StreamConfig::default()
                             },
                         );
-                        streamer.set_special_words(words);
+                        streamer.set_special_words(&words);
                         streamer
                     });
                     // (Only voice activity's events, which change no text.)
                     let events = streamer.push(&samples);
                     lag.took(samples.len() as f64 / f64::from(rate.max(1)), &events);
                 }
+                Ok(Message::Words(given)) if session_words => {
+                    words = special_words(&given);
+                    if let Some(streamer) = &mut streamer {
+                        streamer.set_special_words(&words);
+                    }
+                }
+                Ok(Message::Words(_)) => {}
                 Ok(Message::Overloaded) => return send(DictationEvent::Failed(OVERLOADED.into())),
                 Ok(Message::CaptureFailed(why)) => {
                     return send(DictationEvent::Failed(format!(

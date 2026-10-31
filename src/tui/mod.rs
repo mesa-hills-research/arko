@@ -622,12 +622,14 @@ fn carry_out(
     match dictate {
         dictation::Dictate::Open { download } => {
             let sink = recording_sink(events.clone());
-            let options = DictationOptions {
-                download,
-                special_words: crate::dictation::session_words(&setup.feed, &setup.details),
-            };
-            match DictationService::shared(&setup.root).open(options, sink) {
+            match DictationService::shared(&setup.root).open(DictationOptions { download }, sink) {
                 Ok(dictation) => {
+                    crate::dictation::favour_session_words(
+                        &dictation,
+                        &setup.root,
+                        &setup.feed,
+                        &setup.details,
+                    );
                     app.dictation_opened(dictation.id());
                     *open = Some(dictation);
                 }
