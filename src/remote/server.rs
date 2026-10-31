@@ -3689,8 +3689,8 @@ mod tests {
     async fn sends_from_another_feed_or_to_a_closed_session_are_refused() {
         let feed = Feed::new("main");
         let mut served = serve(&feed);
-        let cookie = served.login().await;
-        let cookie = Some(cookie.as_str());
+        let session = served.login().await;
+        let cookie = Some(session.as_str());
         let stale = serde_json::json!({ "text": "Hello.", "feed": "0000000000000001" });
         let response = served
             .post("/api/message", cookie, &stale.to_string())
@@ -3742,7 +3742,7 @@ mod tests {
             .http
             .post(format!("{}/api/message", served.base))
             .header(header::CONTENT_TYPE, "application/json")
-            .header(header::COOKIE, cookie.unwrap())
+            .header(header::COOKIE, session.as_str())
             .body(r#"{"text": "Hello."}"#);
         let response = tokio::spawn(request.send());
         drop(served.actions.recv().await.unwrap());

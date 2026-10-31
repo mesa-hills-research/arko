@@ -549,7 +549,7 @@ impl Harness {
         reply.accept_partly(
             Delivery::Answer,
             item,
-            (!named.is_empty()).then(|| Partial {
+            (!named.is_empty()).then_some(Partial {
                 dropped: named,
                 words: None,
             }),
@@ -606,7 +606,7 @@ fn dropped(ids: &[String], settled: &[crate::questions::AgentQuestion]) -> Optio
         .filter(|id| !settled.iter().any(|question| &question.id == *id))
         .cloned()
         .collect();
-    (!dropped.is_empty()).then(|| Partial {
+    (!dropped.is_empty()).then_some(Partial {
         dropped,
         words: None,
     })
