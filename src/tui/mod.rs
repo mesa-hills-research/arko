@@ -233,10 +233,17 @@ impl Command for EnableMouse {
 fn open() -> std::io::Result<(Terminal<CursorBackend<Stdout>>, bool)> {
     crossterm::terminal::enable_raw_mode()?;
     OPEN.store(true, std::sync::atomic::Ordering::SeqCst);
-    // A panic restores the terminal before its message prints (as
-    // ratatui's init does, ratatui/src/init.rs:566).
+    // A panic that ends the view restores the terminal before its message
+    // prints (as ratatui's init does, ratatui/src/init.rs:566). Another
+    // thread's, which dictation's thread recovers from (and the speech
+    // engine's workers, whose panics it rethrows there), goes to the log
+    // and leaves the screen.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        if !ends_the_view(std::thread::current().name()) {
+            log::error!("{info}");
+            return;
+        }
         close();
         previous(info);
     }));
@@ -278,6 +285,13 @@ fn clear_new_screen(writer: &mut impl Write) -> std::io::Result<()> {
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         cursor::MoveTo(0, 0)
     )
+}
+
+/// Whether a panic on the thread named `thread` ends the view: the main
+/// thread's, or the runtime's, which runs the view (tokio's default name,
+/// which the command's runtime keeps).
+fn ends_the_view(thread: Option<&str>) -> bool {
+    matches!(thread, Some("main" | "tokio-runtime-worker"))
 }
 
 /// The keyboard protocol was pushed: it is popped as the view closes.
@@ -843,6 +857,37 @@ mod tests {
         );
         assert_eq!(app.editor.text(), "a\nb");
         assert!(app.take_effects().is_empty());
+    }
+
+    /// Only panics on the threads that run the view give the terminal back.
+    /// Dictation's thread recovers from its own, and the speech engine's
+    /// workers' come back to it.
+    #[test]
+    fn only_the_views_threads_panics_give_the_terminal_back() {
+        assert!(ends_the_view(Some("main")));
+        assert!(ends_the_view(Some("tokio-runtime-worker")));
+        for other in [
+            Some("arko-dictation"),
+            Some("speech-worker-3"),
+            Some("arko-microphone"),
+            None,
+        ] {
+            assert!(!ends_the_view(other), "{other:?}");
+        }
+        // The names the threads have.
+        let dictation = std::thread::Builder::new()
+            .name("arko-dictation".into())
+            .spawn(|| ends_the_view(std::thread::current().name()))
+            .unwrap();
+        assert!(!dictation.join().unwrap());
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let ended = runtime
+            .block_on(runtime.spawn(async { ends_the_view(std::thread::current().name()) }))
+            .unwrap();
+        assert!(ended, "the view's runtime");
     }
 
     /// A view far behind the feed still gets every update, its recording's
