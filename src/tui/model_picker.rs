@@ -1,12 +1,12 @@
 //! `/model`'s picker, for the model of the main agent (before the conversation
 //! starts) or of new workers, in two steps. The first lists the models by
-//! the way they are reached, the ways that can be used first; a way that
+//! the way they are reached, the ways that can be used first. A way that
 //! can't is one dim row saying what it needs, so the list shows what Arko
 //! can reach without a menu that changes shape from one machine to the
 //! next. OpenRouter's group lists the models picked, with their context and
 //! prices, and a row that opens all of OpenRouter's models to filter and
 //! choose from. The second step lists the efforts that model takes, on the
-//! one it ran at last. Enter applies: the picker sends the session the
+//! one it ran at last. Enter applies. The picker sends the session the
 //! `/model` line a user would type, so the line prompt, the page and the
 //! picker change models one way.
 

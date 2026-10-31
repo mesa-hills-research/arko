@@ -1,6 +1,6 @@
-//! The transcript: the feed's items as the reader sees them. It keeps the
+//! The transcript, the feed's items as the reader sees them. It keeps the
 //! items (and the workers' summaries) as the feed sends them, and draws
-//! them through a view: a filter and grouping over the items, so changing
+//! them through a view, a filter and grouping over the items, so changing
 //! the view changes no item.
 //!
 //! - **Full** shows everything, the workers' calls inline.

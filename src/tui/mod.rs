@@ -303,7 +303,7 @@ static ENHANCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// The view has the terminal, and [`close`] gives it back once.
 static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The terminal as it was: safe to call more than once, and from the panic
+/// The terminal as it was, safe to call more than once, and from the panic
 /// hook. (Only once, because leaving the alternate screen again would put the
 /// cursor back where the view started, over what was printed since.)
 fn close() {
@@ -839,7 +839,7 @@ fn handle(
 }
 
 /// A frame, drawn as one update where the terminal can (synchronized
-/// output, CSI ?2026, crossterm/src/terminal.rs:433-450; others ignore it),
+/// output, CSI ?2026, crossterm/src/terminal.rs:433-450, and others ignore it),
 /// so it doesn't flicker.
 fn draw(terminal: &mut Terminal<CursorBackend<Stdout>>, app: &mut App) {
     let _ = queue!(terminal.backend_mut(), BeginSynchronizedUpdate);

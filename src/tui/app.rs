@@ -2809,13 +2809,13 @@ impl App {
                         self.watch(id);
                     }
                 }
-                // The count of the workers below, the list moves on to the
+                // The count of the workers below moves the list on to the
                 // next of them (after the last, back to the first).
                 Some(ListRow::More(_) | ListRow::Both(..)) => {
                     let count = self.list().len();
                     self.list_focus = Some(if last + 1 < count { last + 1 } else { 1 });
                 }
-                // The count of those above, the list moves back to the one
+                // The count of those above moves the list back to the one
                 // before the first shown.
                 Some(ListRow::Above(_)) => {
                     self.list_focus = Some(first.saturating_sub(1).max(1));
@@ -3811,7 +3811,7 @@ pub(super) mod tests {
         summary
     }
 
-    /// The list's rows: the main agent and up to five workers, with a count
+    /// The list's rows, the main agent and up to five workers, with a count
     /// of the workers above them and one of those below, when there are.
     /// The workers shown follow the focus, and a short screen shows fewer.
     #[test]
@@ -3912,10 +3912,10 @@ pub(super) mod tests {
         }
         app.list_focus = Some(6);
         assert!(app.list_rows(7).contains(&ListRow::Agent(6)));
-        // A worker arrives, the selected one stays.
+        // A worker arrives and the selected one stays.
         add(&mut app, 7);
         assert!(app.list_rows(7).contains(&ListRow::Agent(6)));
-        // The area shrinks, it stays too.
+        // The area shrinks and it stays too.
         assert!(app.list_rows(4).contains(&ListRow::Agent(6)));
         assert!(app.list_rows(3).contains(&ListRow::Agent(6)));
         // The wheel moves the list away from it, and it stays where the
@@ -4843,7 +4843,7 @@ pub(super) mod tests {
     }
 
     /// The web page's overlay waits for the page until its status has it.
-    /// the view reads the status again as the page's links come in the feed.
+    /// The view reads the status again as the page's links come in the feed.
     #[test]
     fn the_page_overlay_waits_for_the_page() {
         let mut app = app();
@@ -4996,7 +4996,7 @@ pub(super) mod tests {
     }
 
     /// A check of what the ways lack that is slow doesn't hold the menu.
-    /// it opens and closes without it, closing ends the check, and what it
+    /// It opens and closes without it, closing ends the check, and what it
     /// finds after the menu closed is dropped, also by a menu opened again.
     #[test]
     fn a_slow_check_of_the_ways_does_not_hold_the_menu() {

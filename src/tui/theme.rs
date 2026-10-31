@@ -146,7 +146,7 @@ pub enum Depth {
     Ansi16,
 }
 
-/// The colours this terminal shows: 24-bit where COLORTERM says so
+/// The colours this terminal shows, 24-bit where COLORTERM says so
 /// (GNOME Terminal sets it) or where Windows' console takes escape codes
 /// (Windows Terminal, and Windows 10's console, where crossterm turns them on,
 /// style.rs:163-170). 256 where TERM says so without COLORTERM (macOS

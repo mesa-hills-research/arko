@@ -82,7 +82,7 @@ pub struct Panel {
     pub behind: Option<Overlay>,
     /// The cursor among the focused question's options.
     pub row: usize,
-    /// One at a time, the summary shows, with this row highlighted (the
+    /// One at a time, and the summary shows, with this row highlighted (the
     /// questions, then Send).
     pub review: Option<usize>,
     /// One at a time, and an answer changed from the summary goes back to it.
