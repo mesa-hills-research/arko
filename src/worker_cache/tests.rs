@@ -29,23 +29,32 @@ fn at(minutes: i64) -> DateTime<Utc> {
 }
 
 /// How long each run's cache lasts, by its provider and the cache it
-/// asked for.
+/// asked for, or the lifetime its last request's writes showed, each 30
+/// seconds short for the safety margin.
 #[test]
 fn a_workers_cache_lasts_as_its_run_set_it_up() {
-    let lasts = |llm: &arko_agents::AgentLLMConfig, auth| {
-        of("r1", llm, at(0), 100_000, auth).map(|cache| (cache.expires_at - at(0)).num_minutes())
+    let lasts_as = |llm: &arko_agents::AgentLLMConfig, recorded: Option<u64>, auth| {
+        let recorded = recorded.map(|minutes| Duration::from_secs(minutes * 60));
+        of("r1", llm, at(0), 100_000, recorded, auth)
+            .map(|cache| (cache.expires_at - at(0)).num_seconds())
     };
+    let lasts = |llm: &arko_agents::AgentLLMConfig, auth| lasts_as(llm, None, auth);
     let key = Some(OpenAiAuth::ApiKey);
     // Claude by API key: 5 minutes, or the hour.
-    assert_eq!(lasts(&llm("opus", false, false), key), Some(5));
-    assert_eq!(lasts(&llm("opus", true, false), key), Some(60));
+    assert_eq!(lasts(&llm("opus", false, false), key), Some(270));
+    assert_eq!(lasts(&llm("opus", true, false), key), Some(3_570));
     // Claude Code: an hour on a Claude plan, unless the short one was asked.
-    assert_eq!(lasts(&llm("cc:opus", false, false), None), Some(60));
-    assert_eq!(lasts(&llm("cc:opus", false, true), None), Some(5));
+    assert_eq!(lasts(&llm("cc:opus", false, false), None), Some(3_570));
+    assert_eq!(lasts(&llm("cc:opus", false, true), None), Some(270));
+    // Claude Code's writes say what it chose, which wins.
+    assert_eq!(
+        lasts_as(&llm("cc:opus", false, false), Some(5), None),
+        Some(270)
+    );
     // The ChatGPT login keeps its own 30 minutes.
     assert_eq!(
         lasts(&llm("sol", false, false), Some(OpenAiAuth::ChatGpt)),
-        Some(30)
+        Some(1_770)
     );
     // Gemini documents none, so nothing is said.
     assert_eq!(lasts(&llm("gemini", false, false), key), None);
@@ -63,8 +72,9 @@ fn continuing_costs_the_re_read_and_the_cache_write() {
         .pricing
         .at(std::time::SystemTime::now())
         .input_cost_per_million;
-    let cost =
-        |llm: &arko_agents::AgentLLMConfig, auth| of("r1", llm, at(0), 400_000, auth).unwrap().cost;
+    let cost = |llm: &arko_agents::AgentLLMConfig, auth| {
+        of("r1", llm, at(0), 400_000, None, auth).unwrap().cost
+    };
     let key = Some(OpenAiAuth::ApiKey);
     let short = cost(&llm("opus", false, false), key);
     assert_eq!((short.tokens, short.plan), (400_000, None));
@@ -96,13 +106,13 @@ fn continuing_costs_the_re_read_and_the_cache_write() {
 #[test]
 fn continuing_asks_only_after_the_cache_expired_and_past_the_threshold() {
     let llm = llm("cc:opus", false, false);
-    let big = of("r3", &llm, at(0), 340_000, None).unwrap();
+    let big = of("r3", &llm, at(0), 340_000, None, None).unwrap();
     assert!(!big.asks(at(59)), "warm");
     assert!(big.asks(at(60)));
-    let small = of("r3", &llm, at(0), CONFIRM_TOKENS - 1, None).unwrap();
+    let small = of("r3", &llm, at(0), CONFIRM_TOKENS - 1, None, None).unwrap();
     assert!(small.expired(at(180)) && !small.asks(at(180)));
     assert!(
-        of("r3", &llm, at(0), CONFIRM_TOKENS, None)
+        of("r3", &llm, at(0), CONFIRM_TOKENS, None, None)
             .unwrap()
             .asks(at(180))
     );
@@ -111,7 +121,15 @@ fn continuing_asks_only_after_the_cache_expired_and_past_the_threshold() {
 /// The warning, the agent's refusal and the line `list_agents` shows.
 #[test]
 fn the_words_say_when_it_expired_and_what_continuing_costs() {
-    let cc = of("r3", &llm("cc:opus", false, false), at(0), 340_000, None).unwrap();
+    let cc = of(
+        "r3",
+        &llm("cc:opus", false, false),
+        at(0),
+        340_000,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(
         cc.warning(at(180)),
         "r3's cache expired 2 hours ago. Continuing re-reads about 340k tokens without it, using your Claude plan."
@@ -125,7 +143,7 @@ fn the_words_say_when_it_expired_and_what_continuing_costs() {
         "cache expired 2 h ago, continuing re-reads about 340k tokens"
     );
     assert_eq!(
-        cc.line(at(48)),
+        cc.line(at(47)),
         "cache lasts 12 min more, about 340k tokens"
     );
     let opus = WorkerCache {
@@ -156,6 +174,21 @@ fn the_words_say_when_it_expired_and_what_continuing_costs() {
     assert_eq!(short_tokens(1_200_000), "1.2M");
 }
 
+/// A worker an older Arko saved has no recorded request, so continuing it
+/// asks first, whatever its size, and says why.
+#[test]
+fn a_worker_whose_cache_isnt_known_asks_first() {
+    let unknown = WorkerCacheState::Unknown("r3".into());
+    assert!(unknown.asks(at(0)));
+    assert_eq!(
+        unknown.refusal(at(0)),
+        "r3's cache isn't known, because an older Arko saved it. Continuing may re-read its whole conversation without it. Start a fresh worker for this, or call message_agent again with confirm_uncached: true to continue r3."
+    );
+    let llm = llm("cc:opus", false, false);
+    let known = WorkerCacheState::Known(of("r3", &llm, at(0), 340_000, None, None).unwrap());
+    assert!(!known.asks(at(59)) && known.asks(at(60)));
+}
+
 /// A worker run in fast mode costs what its fast mode's cache writes cost,
 /// from the run's own settings: Claude's fast mode and OpenAI's Fast tier.
 #[test]
@@ -164,11 +197,18 @@ fn a_fast_runs_re_read_costs_its_fast_price() {
     for name in ["opus", "sol"] {
         let model = providers::resolve_model(name).unwrap();
         let dollars = |fast| {
-            of("r1", &llm_of(name, false, false, fast), at(0), 100_000, key)
-                .unwrap()
-                .cost
-                .dollars
-                .unwrap()
+            of(
+                "r1",
+                &llm_of(name, false, false, fast),
+                at(0),
+                100_000,
+                None,
+                key,
+            )
+            .unwrap()
+            .cost
+            .dollars
+            .unwrap()
         };
         let (fast_write, _) = providers::cache_prices(&model, 100_000, true, false);
         let (write, _) = providers::cache_prices(&model, 100_000, false, false);
@@ -200,51 +240,4 @@ fn a_message_line_gives_its_worker_and_text() {
     ] {
         assert_eq!(message_parts(line), None, "{line}");
     }
-}
-
-/// A worker run's request counts once it ended, from when it went out, and
-/// the session's folder keeps it for a resume. A request that never ended
-/// leaves the one before. The run's end seals the record, the next request
-/// unseals it, and a handover or a compaction takes it away.
-#[test]
-fn the_latest_request_that_ended_is_kept_in_the_sessions_folder() {
-    let temp = tempfile::tempdir().unwrap();
-    let requests = Requests::load(temp.path());
-    let (run, other) = (Uuid::new_v4(), Uuid::new_v4());
-    let request = |at, input, calls| LastRequest { at, input, calls };
-    assert_eq!(requests.get(run), None);
-    requests.started(run, 1_000);
-    assert_eq!(requests.get(run), None, "under way");
-    requests.ended(run, 40_000);
-    assert_eq!(requests.get(run), Some(request(1_000, 40_000, None)));
-    // One that went out and never ended (Arko stopped) leaves it.
-    requests.started(run, 9_000);
-    // A usage without a request of its own is no request.
-    requests.ended(other, 5);
-    let reloaded = Requests::load(temp.path());
-    assert_eq!(reloaded.get(run), Some(request(1_000, 40_000, None)));
-    assert_eq!(reloaded.get(other), None);
-    // The next that ends replaces it, and the run's end seals it.
-    requests.ended(run, 41_000);
-    requests.seal(run, 7);
-    requests.seal(other, 3);
-    let reloaded = Requests::load(temp.path());
-    assert_eq!(reloaded.get(run), Some(request(9_000, 41_000, Some(7))));
-    assert_eq!(reloaded.get(other), None, "nothing to seal");
-    // Going on, the run's next request unseals it.
-    requests.started(run, 12_000);
-    requests.ended(run, 42_000);
-    assert_eq!(requests.get(run), Some(request(12_000, 42_000, None)));
-    // A handover or a compaction replaces the conversation: no request of
-    // the new one has ended, and one under way is forgotten too.
-    requests.started(run, 13_000);
-    requests.forget(run);
-    requests.ended(run, 43_000);
-    assert_eq!(requests.get(run), None);
-    assert_eq!(Requests::load(temp.path()).get(run), None);
-    // A damaged record is an empty one.
-    requests.started(run, 14_000);
-    requests.ended(run, 1_000);
-    std::fs::write(temp.path().join(REQUESTS_FILE), "{ not json").unwrap();
-    assert_eq!(Requests::load(temp.path()).get(run), None);
 }

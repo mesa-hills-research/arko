@@ -28,6 +28,7 @@ use crate::chooser;
 use crate::kept_notes::KeptNotes;
 use crate::remote;
 use crate::ui::{self, Output};
+use crate::worker_cache::WorkerCacheState;
 
 pub use arko_workflows::subagents::{
     LIST_AGENTS_TOOL_NAME as LIST_AGENTS, MESSAGE_AGENT_TOOL_NAME as MESSAGE_AGENT,
@@ -917,7 +918,6 @@ fn stopped_by(active: &[SubagentRecord], accepted: &[Uuid]) -> usize {
 /// start workers.
 struct StartHook {
     models: Arc<Mutex<WorkerRecords>>,
-    requests: Arc<crate::worker_cache::Requests>,
     workflow: Arc<Mutex<Weak<Workflow>>>,
     /// The starts that passed the hook and have no record yet, by run, with
     /// their starter and since when.
@@ -934,14 +934,16 @@ struct StartHook {
 }
 
 /// The prompt cache of the worker run `record`, once it has ended, from its
-/// setup in `models` and its latest request in `requests`. `None` while it
-/// runs, and when its cache lifetime or latest request isn't known.
+/// setup in `models` and the latest request its task in `workflow` records.
+/// `None` while it runs, when its conversation has no request (a handover
+/// or a compaction replaced it), and when its cache lifetime isn't known.
+/// Unknown for a run an older Arko saved, which has no record.
 fn cache_of(
     models: &Mutex<WorkerRecords>,
-    requests: &crate::worker_cache::Requests,
+    workflow: &Workflow,
     record: &SubagentRecord,
     openai_auth: Option<crate::providers::OpenAiAuth>,
-) -> Option<crate::worker_cache::WorkerCache> {
+) -> Option<WorkerCacheState> {
     if record.state.is_active() {
         return None;
     }
@@ -952,100 +954,28 @@ fn cache_of(
         .get(&record.run_id)?
         .llm_config
         .clone();
-    let request = requests.get(record.run_id)?;
-    let at = chrono::DateTime::from_timestamp_millis(request.at)?;
-    crate::worker_cache::of(&record.handle, &llm, at, request.input, openai_auth)
-}
-
-/// What the crew's events task received next: an agent's event (`None` once
-/// they ended), or a worker's.
-enum Next {
-    Agent(Option<Box<arko_workflows::WorkflowEvent>>),
-    Worker(
-        Result<arko_workflows::subagents::SubagentEvent, tokio::sync::broadcast::error::RecvError>,
-    ),
-}
-
-/// Where the crew reads the agents' events: the workflow's lossless stream
-/// (or a test's).
-trait AgentEvents {
-    /// The next event, waiting for one. `None` once they ended.
-    async fn next(&mut self) -> Option<arko_workflows::WorkflowEvent>;
-    /// How many events wait.
-    fn waiting(&self) -> usize;
-    /// The next event if one waits.
-    fn take(&mut self) -> Option<arko_workflows::WorkflowEvent>;
-}
-
-impl AgentEvents for arko_workflows::EventReceiver {
-    async fn next(&mut self) -> Option<arko_workflows::WorkflowEvent> {
-        self.recv().await
-    }
-
-    fn waiting(&self) -> usize {
-        self.len()
-    }
-
-    fn take(&mut self) -> Option<arko_workflows::WorkflowEvent> {
-        self.try_recv()
-    }
-}
-
-/// The next of the agents' `events`, and never once they ended (`None`).
-async fn next_agent_event<A: AgentEvents>(
-    events: &mut Option<A>,
-) -> Option<Box<arko_workflows::WorkflowEvent>> {
-    match events {
-        Some(events) => events.next().await.map(Box::new),
-        None => std::future::pending().await,
-    }
-}
-
-/// Follows the agents' events (`agents`) and the workers' (`workers`) for
-/// the crew. `request` takes each agent event (it keeps the workers'
-/// requests), and `worker` each worker event, until either says to stop
-/// (false). The two take turns, so a busy agent doesn't hold up the
-/// workers' news, and a long run of agent events lets other tasks run.
-///
-/// A worker's event comes after the agent events that were waiting when it
-/// came. The engine publishes a run's events before its end, so its last
-/// request is in the record before its end reads it.
-async fn follow<A: AgentEvents>(
-    agents: A,
-    mut workers: tokio::sync::broadcast::Receiver<arko_workflows::subagents::SubagentEvent>,
-    mut request: impl FnMut(&arko_workflows::WorkflowEvent) -> bool,
-    mut worker: impl FnMut(
-        Result<arko_workflows::subagents::SubagentEvent, tokio::sync::broadcast::error::RecvError>,
-    ) -> bool,
-) {
-    let mut agents = Some(agents);
-    loop {
-        let received = tokio::select! {
-            event = next_agent_event(&mut agents) => Next::Agent(event),
-            event = workers.recv() => Next::Worker(event),
-        };
-        match received {
-            Next::Agent(Some(event)) => {
-                if !request(&event) {
-                    return;
-                }
-                tokio::task::coop::consume_budget().await;
-            }
-            Next::Agent(None) => agents = None,
-            Next::Worker(received) => {
-                if let Some(agents) = agents.as_mut() {
-                    for _ in 0..agents.waiting() {
-                        let Some(event) = agents.take() else { break };
-                        if !request(&event) {
-                            return;
-                        }
-                    }
-                }
-                if !worker(received) {
-                    return;
-                }
-            }
+    match &workflow.agent_result(record.run_id)?.info().latest_request {
+        arko_agents::RequestRecord::Latest(request) => crate::worker_cache::of(
+            &record.handle,
+            &llm,
+            request.sent_at,
+            request.input_tokens,
+            request.cache_lifetime(),
+            openai_auth,
+        )
+        .map(WorkerCacheState::Known),
+        arko_agents::RequestRecord::Unrecorded => {
+            Some(WorkerCacheState::Unknown(record.handle.clone()))
         }
+        _ => None,
+    }
+}
+
+/// The cache of `state`, when it is known.
+fn known(state: Option<WorkerCacheState>) -> Option<crate::worker_cache::WorkerCache> {
+    match state? {
+        WorkerCacheState::Known(cache) => Some(cache),
+        WorkerCacheState::Unknown(_) => None,
     }
 }
 
@@ -1092,7 +1022,10 @@ impl SubagentHook for StartHook {
         drop(models);
         // Once it has ended, what continuing it re-reads, so that the
         // starter weighs that before continuing it.
-        if let Some(cache) = cache_of(&self.models, &self.requests, record, self.openai_auth) {
+        let workflow = self.workflow.lock().unwrap().upgrade();
+        if let Some(cache) = workflow
+            .and_then(|workflow| known(cache_of(&self.models, &workflow, record, self.openai_auth)))
+        {
             text.push_str(&format!(", {}", cache.line(chrono::Utc::now())));
         }
         Some(text)
@@ -1282,9 +1215,6 @@ fn describe_lines(worker: &WorkerFacts) -> String {
 pub struct Crew {
     setup: Setup,
     models: Arc<Mutex<WorkerRecords>>,
-    /// Each worker run's latest model request, which its prompt cache lasts
-    /// from.
-    requests: Arc<crate::worker_cache::Requests>,
     /// The project's instructions new workers get in their first message,
     /// if any (see `project`).
     project: Arc<Mutex<Option<String>>>,
@@ -1317,7 +1247,6 @@ impl Crew {
         (
             Arc::new(Self {
                 models: Arc::new(Mutex::new(WorkerRecords::load(&setup.session_dir))),
-                requests: Arc::new(crate::worker_cache::Requests::load(&setup.session_dir)),
                 project: Arc::default(),
                 kept: KeptNotes::new(&setup.session_dir),
                 spending,
@@ -1355,7 +1284,6 @@ impl Crew {
             ))
             .hook(Arc::new(StartHook {
                 models,
-                requests: self.requests.clone(),
                 workflow,
                 flight: Mutex::default(),
                 feed,
@@ -1574,10 +1502,8 @@ impl Crew {
         if let Some(old) = self.events.lock().unwrap().take() {
             old.abort();
         }
-        let events = workflow.subscribe_subagents();
-        let requests = workflow.subscribe_events_lossless();
+        let mut events = workflow.subscribe_subagents();
         let runs = workflow.subagents();
-        self.reconcile_requests(workflow, &runs);
         if let Some(feed) = &self.setup.feed {
             // The workers of a resumed session, for the clients' lists, with
             // how long they ran and how many calls they made before, and the
@@ -1596,7 +1522,12 @@ impl Crew {
                     SubagentState::Closed if run.report.is_some() => remote::WorkerState::Finished,
                     SubagentState::Closed => remote::WorkerState::Stopped,
                 };
-                let cache = cache_of(&self.models, &self.requests, run, self.setup.openai_auth);
+                let cache = known(cache_of(
+                    &self.models,
+                    workflow,
+                    run,
+                    self.setup.openai_auth,
+                ));
                 feed.worker_restored_with_cache(
                     &run.handle,
                     &run.task,
@@ -1618,20 +1549,18 @@ impl Crew {
         if self.has_mail() {
             let _ = self.wake.send(());
         }
-        let (weak, also) = (Arc::downgrade(self), Arc::downgrade(self));
-        *self.events.lock().unwrap() = Some(tokio::spawn(follow(
-            requests,
-            events,
-            move |event| {
-                weak.upgrade()
-                    .map(|crew| crew.note_request(event))
-                    .is_some()
-            },
-            move |received| {
-                also.upgrade()
+        let weak = Arc::downgrade(self);
+        *self.events.lock().unwrap() = Some(tokio::spawn(async move {
+            loop {
+                let received = events.recv().await;
+                if !weak
+                    .upgrade()
                     .is_some_and(|crew| crew.worker_event(received))
-            },
-        )));
+                {
+                    return;
+                }
+            }
+        }));
     }
 
     /// What the crew does with a worker's event `received`: says it, tells
@@ -1671,45 +1600,11 @@ impl Crew {
                 .output
                 .echo(&self.setup.output.dim(&format!("  ↳ {text}")));
         }
-        self.seal_ended(&event);
         if let Some(feed) = &self.setup.feed {
             self.tell_feed(feed, &event.handle, event.run_id, &event.kind);
         }
         let _ = self.wake.send(());
         true
-    }
-
-    /// Seals the record of the run that `event` says ended as the run's
-    /// last, with the run's model calls. Only while the run's result is the
-    /// one the event came from: not once the run went on, or ended again,
-    /// after it. (Its next end seals it then, or the next open reconciles it
-    /// with its task.)
-    fn seal_ended(&self, event: &arko_workflows::subagents::SubagentEvent) {
-        if !matches!(
-            event.kind,
-            SubagentEventKind::Finished { .. }
-                | SubagentEventKind::Failed { .. }
-                | SubagentEventKind::Stopped { .. }
-        ) {
-            return;
-        }
-        let Some(workflow) = self.workflow() else {
-            return;
-        };
-        let ended = workflow
-            .subagents()
-            .iter()
-            .any(|run| run.run_id == event.run_id && !run.state.is_active());
-        let Some(result) = workflow.agent_result(event.run_id) else {
-            return;
-        };
-        let its_own = result
-            .info()
-            .end_time
-            .is_some_and(|end| end <= event.timestamp);
-        if ended && its_own {
-            self.requests.seal(event.run_id, result.info().model_calls);
-        }
     }
 
     /// The worker `handle` (run `run`) as a notice names it: `r2`, or `r2
@@ -1760,7 +1655,12 @@ impl Crew {
         // a run that starts again renews. An end is told with its cache in
         // place, so no client sees it ended without one.
         let cache = record.filter(|_| ended).and_then(|record| {
-            cache_of(&self.models, &self.requests, record, self.setup.openai_auth)
+            known(cache_of(
+                &self.models,
+                workflow.as_deref()?,
+                record,
+                self.setup.openai_auth,
+            ))
         });
         if ended {
             feed.worker_cache(handle, cache.as_ref());
@@ -1918,125 +1818,22 @@ impl Crew {
     }
 
     /// The prompt cache of worker `handle`, once it has ended, and what
-    /// continuing it costs (see [`worker_cache`](crate::worker_cache)).
+    /// continuing it costs (see [`worker_cache`](crate::worker_cache)), when
+    /// it is known.
     pub fn worker_cache(&self, handle: &str) -> Option<crate::worker_cache::WorkerCache> {
+        known(self.cache_state(handle))
+    }
+
+    /// The prompt cache of worker `handle` as the session knows it, once it
+    /// has ended: known, or unknown for a worker an older Arko saved.
+    /// Continuing it asks first when [`WorkerCacheState::asks`].
+    pub fn cache_state(&self, handle: &str) -> Option<WorkerCacheState> {
         let workflow = self.workflow()?;
         let record = workflow
             .subagents()
             .into_iter()
             .find(|run| run.handle.eq_ignore_ascii_case(handle.trim()))?;
-        cache_of(
-            &self.models,
-            &self.requests,
-            &record,
-            self.setup.openai_auth,
-        )
-    }
-
-    /// Keeps a worker run's model request as its latest once it ended: when
-    /// it went out, and its input. (The requests of Claude Code's own
-    /// subagents aren't the worker's conversation.)
-    pub(crate) fn note_request(&self, event: &arko_workflows::WorkflowEvent) {
-        match &event.event {
-            arko_agents::AgentEvent::ModelRequestStarted { subagent: None, .. }
-                if self
-                    .models
-                    .lock()
-                    .unwrap()
-                    .runs
-                    .contains_key(&event.agent_run_id) =>
-            {
-                self.requests
-                    .started(event.agent_run_id, event.timestamp.timestamp_millis());
-            }
-            arko_agents::AgentEvent::ModelCallUsageReported(usage) if usage.subagent.is_none() => {
-                self.requests.ended(event.agent_run_id, usage.input_tokens);
-            }
-            // A fresh conversation, which no cache holds yet.
-            arko_agents::AgentEvent::ConversationHandedOver { .. }
-            | arko_agents::AgentEvent::ConversationCompacted { .. } => {
-                self.requests.forget(event.agent_run_id);
-            }
-            _ => {}
-        }
-    }
-
-    /// Brings the record of each ended worker run in `runs` up to its task
-    /// where the record may be behind it. That is a record its run's end
-    /// didn't seal (a crash can leave one a request behind, and a session an
-    /// older Arko saved has none), one sealed with fewer model calls than
-    /// the task has, and any record of a run that didn't complete cleanly.
-    /// The saved task decides. A conversation it replaced (a
-    /// handover or a compaction) with no request of the new one leaves no
-    /// record. A latest input other than the record's is taken from the
-    /// task, with the task's end standing for its time, the nearest the task
-    /// says. The record's time stays only with the same input. Each such
-    /// task is read once, as the session opens, and its record sealed.
-    fn reconcile_requests(&self, workflow: &Workflow, runs: &[SubagentRecord]) {
-        let mut reconciled = Vec::new();
-        let mut replaced = Vec::new();
-        for run in runs.iter().filter(|run| {
-            !run.state.is_active() && self.models.lock().unwrap().runs.contains_key(&run.run_id)
-        }) {
-            let Some(result) = workflow.agent_result(run.run_id) else {
-                continue;
-            };
-            let calls = result.info().model_calls;
-            let kept = self.requests.get(run.run_id);
-            // A record sealed with the task's model calls is its run's last
-            // only for a run that completed cleanly, whose saved task is the
-            // one that completed (and is read only when needed). Its
-            // conversation replaced after the seal (a handover, or Claude
-            // Code's compaction, which makes no model call) means a
-            // continuation, which either completed with more model calls or
-            // left the run not completed. Any other run's task is read as
-            // the session opens, so its record is checked against it at no
-            // cost.
-            let completed = result.status == arko_workflows::AgentRunStatus::Completed
-                && result.stopped_by.is_none();
-            if completed && kept.is_some_and(|kept| kept.calls == Some(calls)) {
-                continue;
-            }
-            let latest = result
-                .task()
-                .ok()
-                .and_then(|task| task.current_conversation_context_size());
-            let end = result
-                .info()
-                .end_time
-                .unwrap_or(run.since)
-                .timestamp_millis();
-            let Some(latest) = latest else {
-                if kept.is_some() {
-                    replaced.push(run.run_id);
-                }
-                continue;
-            };
-            let at = match kept {
-                Some(kept) if kept.input == latest => kept.at,
-                _ => end,
-            };
-            reconciled.push((
-                run.run_id,
-                crate::worker_cache::LastRequest {
-                    at,
-                    input: latest,
-                    calls: Some(calls),
-                },
-            ));
-        }
-        for run in replaced {
-            self.requests.forget(run);
-        }
-        if !reconciled.is_empty() {
-            self.requests.put(reconciled);
-        }
-    }
-
-    /// The record of the workers' latest requests, for a test.
-    #[cfg(test)]
-    pub(crate) fn requests(&self) -> &crate::worker_cache::Requests {
-        &self.requests
+        cache_of(&self.models, &workflow, &record, self.setup.openai_auth)
     }
 
     /// Has worker `handle`'s prompt cache last `lifetime` after its run's
@@ -2059,19 +1856,20 @@ impl Crew {
             .generation_config
             .prompt_cache_lifetime_seconds = Some(lifetime.as_secs());
         if let Some(feed) = &self.setup.feed {
-            let cache = cache_of(
+            let cache = known(cache_of(
                 &self.models,
-                &self.requests,
+                &workflow,
                 &record,
                 self.setup.openai_auth,
-            );
+            ));
             feed.worker_cache(handle, cache.as_ref());
         }
     }
 
     /// Why a `message_agent` call with `params` doesn't continue its worker:
     /// the worker has ended, its cache expired and continuing it re-reads
-    /// enough to matter, and the call didn't confirm it. `None` sends it.
+    /// enough to matter (or an older Arko saved it, so its cache isn't
+    /// known), and the call didn't confirm it. `None` sends it.
     pub fn uncached_refusal(&self, params: &HashMap<String, Value>) -> Option<String> {
         let confirmed = match params.get(crate::worker_cache::CONFIRM_PARAM) {
             Some(Value::Bool(yes)) => *yes,
@@ -2082,7 +1880,7 @@ impl Crew {
             return None;
         }
         let to = params.get("to")?.as_str()?;
-        let cache = self.worker_cache(to)?;
+        let cache = self.cache_state(to)?;
         let now = chrono::Utc::now();
         cache.asks(now).then(|| cache.refusal(now))
     }
@@ -3912,116 +3710,5 @@ mod tests {
         ask.set_new_workers(new);
         assert_eq!(start_on(&ask, &base, "opus").await.unwrap(), Ok(()));
         assert!(tray.approvals().is_empty());
-    }
-
-    /// Agent events for [`follow`]: those in `waiting` wait (only taking
-    /// them reaches them), and `busy` comes each time the next is asked
-    /// for, as from an agent that streams without a pause. Without `busy`,
-    /// none comes.
-    struct Agents {
-        waiting: std::collections::VecDeque<arko_workflows::WorkflowEvent>,
-        busy: Option<arko_workflows::WorkflowEvent>,
-    }
-
-    impl AgentEvents for Agents {
-        async fn next(&mut self) -> Option<arko_workflows::WorkflowEvent> {
-            match &self.busy {
-                Some(event) => Some(event.clone()),
-                None => std::future::pending().await,
-            }
-        }
-
-        fn waiting(&self) -> usize {
-            self.waiting.len()
-        }
-
-        fn take(&mut self) -> Option<arko_workflows::WorkflowEvent> {
-            self.waiting.pop_front()
-        }
-    }
-
-    fn agent_event(event: arko_agents::AgentEvent) -> arko_workflows::WorkflowEvent {
-        arko_workflows::WorkflowEvent {
-            timestamp: chrono::Utc::now(),
-            workflow_run_id: Uuid::nil(),
-            agent_name: "worker".into(),
-            agent_run_id: Uuid::nil(),
-            event,
-        }
-    }
-
-    /// r1's end, as the workers' events say it.
-    fn r1_finished() -> arko_workflows::subagents::SubagentEvent {
-        arko_workflows::subagents::SubagentEvent {
-            timestamp: chrono::Utc::now(),
-            workflow_run_id: Uuid::nil(),
-            run_id: Uuid::nil(),
-            handle: "r1".into(),
-            agent_name: "worker".into(),
-            caller_run_id: Uuid::nil(),
-            caller_agent: MAIN.into(),
-            kind: SubagentEventKind::Finished {
-                summary: "Done.".into(),
-            },
-        }
-    }
-
-    /// While an agent streams without a pause, a worker's end still gets
-    /// its turn.
-    #[tokio::test]
-    async fn a_busy_agent_does_not_hold_up_the_workers_news() {
-        let (sender, workers) = tokio::sync::broadcast::channel(16);
-        sender.send(r1_finished()).unwrap();
-        let agents = Agents {
-            waiting: Default::default(),
-            busy: Some(agent_event(
-                arko_agents::AgentEvent::AssistantResponseChunk("more".into()),
-            )),
-        };
-        let told = std::sync::atomic::AtomicBool::new(false);
-        let followed = follow(
-            agents,
-            workers,
-            |_| true,
-            |received| {
-                assert_eq!(received.unwrap().handle, "r1");
-                told.store(true, std::sync::atomic::Ordering::SeqCst);
-                false
-            },
-        );
-        tokio::time::timeout(Duration::from_secs(10), followed)
-            .await
-            .expect("the worker's end was told");
-        assert!(told.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    /// The agent events that wait when a worker's event comes are taken
-    /// first, so a run's last request is in the record before its end.
-    #[tokio::test]
-    async fn the_requests_that_wait_go_before_a_workers_end() {
-        let (sender, workers) = tokio::sync::broadcast::channel(16);
-        let usage = agent_event(arko_agents::AgentEvent::TaskStreamEnd);
-        let agents = Agents {
-            waiting: [usage.clone(), usage].into(),
-            busy: None,
-        };
-        sender.send(r1_finished()).unwrap();
-        let seen = Mutex::new(Vec::new());
-        let followed = follow(
-            agents,
-            workers,
-            |_| {
-                seen.lock().unwrap().push("request");
-                true
-            },
-            |_| {
-                seen.lock().unwrap().push("end");
-                false
-            },
-        );
-        tokio::time::timeout(Duration::from_secs(10), followed)
-            .await
-            .unwrap();
-        assert_eq!(*seen.lock().unwrap(), ["request", "request", "end"]);
     }
 }

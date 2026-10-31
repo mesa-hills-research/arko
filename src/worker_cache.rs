@@ -9,23 +9,18 @@
 //! worker whose cache expired, when its conversation is large enough for
 //! that to matter ([`CONFIRM_TOKENS`]).
 //!
-//! The cache lasts from the run's latest model request, which [`Requests`]
-//! keeps for each worker run in the session's folder, with the request's
-//! input. So a session that resumes knows each worker's cache at once.
+//! The cache lasts from the run's latest model request, which the run's
+//! task records with its input (`TaskInfo::latest_request`). So a session
+//! that resumes knows each worker's cache at once. A worker an older Arko
+//! saved has no record, so continuing it asks first ([`WorkerCacheState`]).
 
-use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use arko_ai::Provider;
 use arko_ai::prompt_cache::PromptCacheLifetime;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::details::SwitchCost;
-use crate::lock;
 use crate::providers::{self, OpenAiAuth};
 
 /// Below this many tokens, re-reading a worker's conversation without its
@@ -46,7 +41,8 @@ pub struct WorkerCache {
     /// The worker, such as `r3`.
     pub worker: String,
     /// When its cache expires, or expired: its last request, plus the
-    /// cache lifetime its run used.
+    /// cache lifetime its run used, less the safety margin
+    /// ([`lapses_at`](crate::cache_timer::lapses_at)).
     pub expires_at: DateTime<Utc>,
     /// What continuing it re-reads, and writes to the cache again: its
     /// conversation's input at its last request, and what that costs at its
@@ -111,34 +107,81 @@ impl WorkerCache {
     }
 }
 
-/// The prompt cache of a worker run whose latest request went out at
+/// A finished worker's prompt cache as the session knows it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkerCacheState {
+    /// Its latest request is recorded, so its cache is known.
+    Known(WorkerCache),
+    /// The worker (such as `r3`) was saved by an older Arko, which didn't
+    /// record its latest request, so continuing it asks first.
+    Unknown(String),
+}
+
+impl WorkerCacheState {
+    /// Whether continuing the worker at `now` asks first.
+    pub fn asks(&self, now: DateTime<Utc>) -> bool {
+        match self {
+            Self::Known(cache) => cache.asks(now),
+            Self::Unknown(_) => true,
+        }
+    }
+
+    /// What continuing it costs, as the warning says it.
+    pub fn warning(&self, now: DateTime<Utc>) -> String {
+        match self {
+            Self::Known(cache) => cache.warning(now),
+            Self::Unknown(worker) => format!(
+                "{worker}'s cache isn't known, because an older Arko saved it. Continuing may re-read its whole conversation without it."
+            ),
+        }
+    }
+
+    /// Why `message_agent` didn't continue it, and what to do instead.
+    pub fn refusal(&self, now: DateTime<Utc>) -> String {
+        match self {
+            Self::Known(cache) => cache.refusal(now),
+            Self::Unknown(worker) => format!(
+                "{} Start a fresh worker for this, or call message_agent again with {CONFIRM_PARAM}: true to continue {worker}.",
+                self.warning(now)
+            ),
+        }
+    }
+}
+
+/// The prompt cache of a worker run whose latest request was sent at
 /// `last_request`, with `tokens` of input, on `llm` (its model and
 /// generation settings), in a session that reaches OpenAI models by
-/// `openai_auth`. `None` when its cache lifetime isn't known (Gemini,
-/// OpenRouter models other than Claude) or it has none.
+/// `openai_auth`. Its lifetime is the one the request's cache writes showed
+/// (`recorded_lifetime`, a Claude Code model's), else the one its settings
+/// give. `None` when its cache lifetime isn't known (Gemini, OpenRouter
+/// models other than Claude) or it has none.
 pub(crate) fn of(
     worker: &str,
     llm: &arko_agents::AgentLLMConfig,
     last_request: DateTime<Utc>,
     tokens: usize,
+    recorded_lifetime: Option<Duration>,
     openai_auth: Option<OpenAiAuth>,
 ) -> Option<WorkerCache> {
     let model = &llm.model;
     let generation = &llm.generation_config;
     let chatgpt = model.provider == Provider::OpenAI && openai_auth != Some(OpenAiAuth::ApiKey);
-    let lifetime = match arko_ai::prompt_cache::prompt_cache_lifetime(model, generation, chatgpt) {
-        PromptCacheLifetime::Known(lifetime) => lifetime,
-        PromptCacheLifetime::Unknown if model.provider == Provider::ClaudeCode => {
-            CLAUDE_CODE_DEFAULT
-        }
-        _ => return None,
-    };
+    let configured =
+        || match arko_ai::prompt_cache::prompt_cache_lifetime(model, generation, chatgpt) {
+            PromptCacheLifetime::Known(lifetime) => Some(lifetime),
+            PromptCacheLifetime::Unknown if model.provider == Provider::ClaudeCode => {
+                Some(CLAUDE_CODE_DEFAULT)
+            }
+            _ => None,
+        };
+    let lifetime = recorded_lifetime.or_else(configured)?;
     let fast = generation.anthropic_fast_mode == Some(true)
         || generation.openai_service_tier == Some(arko_ai::OpenAIServiceTier::Fast);
     let long_cache = generation.long_prompt_cache == Some(true);
+    let lapses = crate::cache_timer::lapses_at(last_request.timestamp_millis(), lifetime);
     Some(WorkerCache {
         worker: worker.to_string(),
-        expires_at: last_request + chrono::Duration::from_std(lifetime).ok()?,
+        expires_at: DateTime::from_timestamp_millis(lapses)?,
         cost: reread_cost(model, tokens, fast, long_cache, chatgpt),
     })
 }
@@ -182,125 +225,6 @@ pub fn message_parts(line: &str) -> Option<(&str, &str)> {
     let (to, text) = argument.split_once(char::is_whitespace)?;
     let text = text.trim();
     (!to.is_empty() && !text.is_empty()).then_some((to, text))
-}
-
-/// The file in the session's folder that keeps each worker run's latest
-/// request.
-const REQUESTS_FILE: &str = "worker-requests.json";
-
-/// A worker run's latest model request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LastRequest {
-    /// When it went out (Unix milliseconds). The cache lasts from then.
-    pub at: i64,
-    /// Its input, in tokens, which continuing the run sends again.
-    pub input: usize,
-    /// How many model calls its run had made when it ended
-    /// (`TaskInfo::model_calls`), which says the record is its run's last.
-    /// None while the run goes on, and in a record a crash left behind.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub calls: Option<usize>,
-}
-
-/// Each worker run's latest model request, kept in memory and in the
-/// session's folder. A request counts once it has ended (its usage came
-/// back), from the time it went out. So a run that stopped during a
-/// request counts from the one before, which can only say the cache lapses
-/// sooner than it does. A handover or a compaction replaces the
-/// conversation, so the run has none until its next request ends.
-#[derive(Debug)]
-pub(crate) struct Requests {
-    path: PathBuf,
-    /// The requests that went out and haven't ended, by run, with when they
-    /// went out.
-    going: Mutex<HashMap<Uuid, i64>>,
-    ended: Mutex<BTreeMap<Uuid, LastRequest>>,
-}
-
-impl Requests {
-    /// The record in the session's folder `dir`. A missing or damaged one is
-    /// empty, as for a session saved before the record existed.
-    pub(crate) fn load(dir: &Path) -> Self {
-        let path = dir.join(REQUESTS_FILE);
-        let ended = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            going: Mutex::default(),
-            ended: Mutex::new(ended),
-        }
-    }
-
-    /// A request of `run` went out at `at` (Unix milliseconds).
-    pub(crate) fn started(&self, run: Uuid, at: i64) {
-        lock(&self.going).insert(run, at);
-    }
-
-    /// The request of `run` that went out last ended with `input` tokens of
-    /// input. It is kept, and the record saved.
-    pub(crate) fn ended(&self, run: Uuid, input: usize) {
-        let Some(at) = lock(&self.going).remove(&run) else {
-            return;
-        };
-        self.put([(
-            run,
-            LastRequest {
-                at,
-                input,
-                calls: None,
-            },
-        )]);
-    }
-
-    /// `run`'s conversation was replaced (a handover or a compaction), so
-    /// no request of it is cached until its next one. Saves the record when
-    /// it had one.
-    pub(crate) fn forget(&self, run: Uuid) {
-        lock(&self.going).remove(&run);
-        let mut ended = lock(&self.ended);
-        if ended.remove(&run).is_some() {
-            self.save(&ended);
-        }
-    }
-
-    /// `run` ended after `calls` model calls, so its record (if it has one)
-    /// is its last, and is saved so.
-    pub(crate) fn seal(&self, run: Uuid, calls: usize) {
-        let mut ended = lock(&self.ended);
-        if let Some(request) = ended.get_mut(&run)
-            && request.calls != Some(calls)
-        {
-            request.calls = Some(calls);
-            self.save(&ended);
-        }
-    }
-
-    /// The latest request of `run` that ended.
-    pub(crate) fn get(&self, run: Uuid) -> Option<LastRequest> {
-        lock(&self.ended).get(&run).copied()
-    }
-
-    /// Keeps `requests` as their runs' latest, and saves the record.
-    pub(crate) fn put(&self, requests: impl IntoIterator<Item = (Uuid, LastRequest)>) {
-        let mut ended = lock(&self.ended);
-        ended.extend(requests);
-        self.save(&ended);
-    }
-
-    /// Writes the record whole.
-    fn save(&self, ended: &BTreeMap<Uuid, LastRequest>) {
-        let written = serde_json::to_vec_pretty(ended)
-            .map_err(std::io::Error::other)
-            .and_then(|text| crate::session::write_whole(&self.path, &text));
-        if let Err(error) = written {
-            log::warn!(
-                "could not keep the workers' latest requests in {} ({error})",
-                self.path.display()
-            );
-        }
-    }
 }
 
 /// A count of tokens, short: "820", "8.2k", "340k", "1.2M".

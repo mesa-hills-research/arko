@@ -2825,7 +2825,7 @@ impl Harness {
         // `/message` again continues it.
         let now = chrono::Utc::now();
         let asked = (to.trim().to_ascii_lowercase(), text.to_string());
-        if let Some(cache) = self.crew.as_ref().and_then(|crew| crew.worker_cache(to))
+        if let Some(cache) = self.crew.as_ref().and_then(|crew| crew.cache_state(to))
             && cache.asks(now)
             && self.continue_asked.take() != Some(asked.clone())
         {
