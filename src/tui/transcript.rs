@@ -579,16 +579,7 @@ impl Transcript {
     /// its calls: its thinking as it streams, or else "Working…" while it
     /// waits on its model with nothing else to show.
     fn motion(&self, filter: &Filter) -> Motion {
-        let (agent, since) = match filter {
-            Filter::Main(_) => (MAIN_AGENT, self.working),
-            Filter::Worker(id) => (
-                id.as_str(),
-                self.worker(id)
-                    .filter(|worker| worker.state == WorkerState::Running)
-                    .map(|_| i64::MIN),
-            ),
-        };
-        let Some(since) = since else {
+        let Some((agent, since)) = self.under_way(filter) else {
             return Motion::default();
         };
         // (The Messages view leaves the agent's thinking out.)
@@ -607,6 +598,30 @@ impl Transcript {
             Busy::Thinking(_) => working(true),
             Busy::Tool | Busy::Done => Motion::default(),
         }
+    }
+
+    /// The agent of `filter`'s view and when its turn began (Unix
+    /// milliseconds), while it works.
+    fn under_way<'a>(&self, filter: &'a Filter) -> Option<(&'a str, i64)> {
+        match filter {
+            Filter::Main(_) => self.working.map(|since| (MAIN_AGENT, since)),
+            Filter::Worker(id) => self
+                .worker(id)
+                .filter(|worker| worker.state == WorkerState::Running)
+                .map(|_| (id.as_str(), i64::MIN)),
+        }
+    }
+
+    /// Whether `agent` made a call or thought in its turn that began at
+    /// `since`: its own run of calls has begun. Before that, the calls of
+    /// its workers and their cards don't make one.
+    fn calls_begun(&self, agent: &str, since: i64) -> bool {
+        self.entries.iter().rev().any(|entry| {
+            let item = &entry.item;
+            item.agent == agent
+                && item.at >= since
+                && matches!(item.kind, Kind::Call | Kind::Result | Kind::Thinking)
+        })
     }
 
     /// The blocks of `filter`'s view of the items, at `width`.
@@ -748,13 +763,19 @@ impl Transcript {
             // which runs together and stands against the status line's rule,
             // none on either side. After anything else (the user's message,
             // the agent's text, a message, a notice, a command's output) it
-            // is a paragraph of its own, a blank line on each side. The notes
-            // it stands above (they wait at the end) set it apart below with
-            // their own blank line, so it has one above too.
+            // is a paragraph of its own, a blank line on each side. So it is
+            // before the agent's first call of the turn, under the calls of
+            // its workers or the card of one that started from the queue,
+            // as it is under the user's message. The notes it stands above
+            // (they wait at the end) set it apart below with their own blank
+            // line, so it has one above too.
             let notes_below = at < blocks.len();
             let among_calls = at
                 .checked_sub(1)
-                .is_some_and(|last| self.is_call_run(&blocks[last]));
+                .is_some_and(|last| self.is_call_run(&blocks[last]))
+                && self
+                    .under_way(filter)
+                    .is_some_and(|(agent, since)| self.calls_begun(agent, since));
             let apart = at > 0 && (notes_below || !among_calls);
             blocks.insert(
                 at,
@@ -1644,8 +1665,13 @@ fn entry_lines(
                 let tag = cut_end(&tag, inner);
                 let tag_width = text_width(&tag);
                 let style = theme.dim().add_modifier(Modifier::ITALIC);
+                // At the right of the first row, two columns from its text,
+                // where the message doesn't wrap. A message that wraps
+                // keeps its rows whole, and the tag has a row of its own
+                // under the last.
+                let wraps = lines.iter().any(|line| line.join != Join::Break);
                 match lines.first_mut() {
-                    Some(first) if spans_width(&first.spans) + 2 + tag_width <= inner => {
+                    Some(first) if !wraps && spans_width(&first.spans) + 2 + tag_width <= inner => {
                         let tail = inner - spans_width(&first.spans);
                         let gap = " ".repeat(tail - tag_width);
                         first.spans.push(Span::styled(format!("{gap}{tag}"), style));
@@ -1656,7 +1682,7 @@ fn entry_lines(
                         let mut line =
                             Wrapped::line(vec![Span::styled(format!("{gap}{tag}"), style)]);
                         line.bare = true;
-                        lines.insert(1, line);
+                        lines.push(line);
                     }
                 }
             }
@@ -2947,26 +2973,46 @@ mod tests {
         }
     }
 
+    /// The rows of `lines` as drawn.
+    fn shown(lines: &[Wrapped]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect()
+    }
+
     #[test]
-    fn a_full_first_line_puts_the_tag_on_the_next_line() {
+    fn a_message_without_room_beside_its_tag_has_it_on_a_row_under_it() {
         let theme = Theme::terminal();
-        for (text, tag_line) in [
-            ("123456789", 0),  // Exactly two spaces before the tag.
-            ("1234567890", 1), // One space isn't enough.
-            ("123456789012345678", 1),
+        let under = format!("▎ {}pending", " ".repeat(11));
+        for (text, rows) in [
+            // Exactly two spaces before the tag.
+            ("123456789", vec!["▎ 123456789  pending".to_string()]),
+            // One space isn't enough.
+            (
+                "1234567890",
+                vec!["▎ 1234567890".to_string(), under.clone()],
+            ),
+            (
+                "One two three four five six",
+                vec![
+                    "▎ One two three four".to_string(),
+                    "▎ five six".to_string(),
+                    under.clone(),
+                ],
+            ),
         ] {
             let mut user = item(1, Kind::User, text);
             user.delivery = Some(Delivery::Note);
             user.pending = true;
             let lines = entry_lines(&user, &theme, 20, false, None, false, None);
-            assert_eq!(lines.len(), tag_line + 1, "{text}");
-            assert_eq!(spans_width(&lines[tag_line].spans), 20);
-            let shown: String = lines[tag_line]
-                .spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect();
-            assert!(shown.ends_with("pending"));
+            assert_eq!(shown(&lines), rows, "{text}");
+            assert_eq!(lines.last().unwrap().bare, rows.len() > 1, "{text}");
             assert_eq!(
                 copied(
                     lines.iter().enumerate().map(|(n, line)| ((0, n), line)),
@@ -2978,50 +3024,81 @@ mod tests {
         }
     }
 
+    /// Whatever the tag, the width and the rows the message wraps to: a
+    /// message that doesn't wrap has its tag at the right of its first row
+    /// when it fits there. Else the message's rows are as they are without
+    /// it (the full width), and the tag has a row of its own under the
+    /// last, never between them. A copy takes the message without it.
     #[test]
-    fn a_wrapped_user_message_keeps_its_tag_near_the_first_line() {
+    fn a_user_messages_tag_never_comes_between_its_rows() {
         let theme = Theme::terminal();
-        let mut user = item(1, Kind::User, "One two three four five six");
-        user.delivery = Some(Delivery::Note);
-        user.pending = true;
-        let lines = entry_lines(&user, &theme, 20, false, None, false, None);
-        let shown: Vec<String> = lines
-            .iter()
-            .map(|line| {
-                line.spans
+        let long = "Look at the parser and the tests that cover it. ".repeat(12);
+        let texts = [
+            "Fix it.",
+            "Fix the tests.",
+            "Fix the tests that fail on the CI since the last merge, then tell me why.",
+            "Fix the tests that fail on the CI since the last merge, then tell me why \
+             they failed and whether the fix should go in the release that ships on Friday.",
+            long.trim(),
+            "Hi.\nSecond line.",
+            "Two lines.\nThe second one is long enough to wrap at the narrower widths here.",
+            "A_word_too_long_for_any_row_at_all_so_it_breaks_in_the_middle_of_itself_twice.",
+        ];
+        let tags: [(Delivery, bool, Option<Source>); 5] = [
+            (Delivery::Turn, false, Some(Source::Web)),
+            (Delivery::Note, true, Some(Source::Web)),
+            (Delivery::Note, true, None),
+            (Delivery::Answer, false, None),
+            (Delivery::Queued, false, Some(Source::App)),
+        ];
+        for width in [5, 12, 24, 30, 40, 60, 80, 120] {
+            let inner = width - MARGIN;
+            for text in texts {
+                // The message's rows without a tag.
+                let alone: Vec<String> = plain(text, Style::default(), inner)
                     .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect()
-            })
-            .collect();
-        assert_eq!(
-            shown,
-            [
-                "▎ One two three four".to_string(),
-                format!("▎ {}pending", " ".repeat(11)),
-                "▎ five six".to_string(),
-            ]
-        );
-        assert!(lines[1].bare);
-        assert_eq!(
-            copied(
-                lines.iter().enumerate().map(|(n, line)| ((0, n), line)),
-                ((0, 0, 0), (0, 2, 19)),
-            )
-            .as_deref(),
-            Some(user.text.as_str())
-        );
-        // A narrow screen clips the decoration, not the copied message.
-        let narrow = entry_lines(&user, &theme, 5, false, None, false, None);
-        assert!(narrow.iter().all(|line| spans_width(&line.spans) <= 5));
-        assert_eq!(
-            copied(
-                narrow.iter().enumerate().map(|(n, line)| ((0, n), line)),
-                ((0, 0, 0), (0, narrow.len() - 1, 4)),
-            )
-            .as_deref(),
-            Some(user.text.as_str())
-        );
+                    .map(|line| format!("▎ {}", shown(std::slice::from_ref(line))[0]))
+                    .collect();
+                let wraps = alone.len() > text.split('\n').count();
+                for (delivery, pending, source) in tags {
+                    let mut user = item(1, Kind::User, text);
+                    user.delivery = Some(delivery);
+                    user.pending = pending;
+                    user.source = source;
+                    let tag = cut_end(&user_tag(&user).unwrap(), inner);
+                    let lines = entry_lines(&user, &theme, width, false, None, false, None);
+                    let rows = shown(&lines);
+                    let case = format!("{width} {tag:?} {text:?}\n{}", rows.join("\n"));
+                    assert!(
+                        lines.iter().all(|line| spans_width(&line.spans) <= width),
+                        "{case}"
+                    );
+                    let first = text_width(text.split('\n').next().unwrap());
+                    if !wraps && first + 2 + text_width(&tag) <= inner {
+                        assert_eq!(rows.len(), alone.len(), "{case}");
+                        assert!(rows[0].starts_with(&alone[0]), "{case}");
+                        assert!(rows[0].ends_with(&format!("  {tag}")), "{case}");
+                        assert_eq!(rows[1..], alone[1..], "{case}");
+                        assert!(lines.iter().all(|line| !line.bare), "{case}");
+                    } else {
+                        assert_eq!(rows[..rows.len() - 1], alone, "{case}");
+                        let last = rows.last().unwrap();
+                        assert_eq!(last.trim_start_matches(['▎', ' ']), tag, "{case}");
+                        assert_eq!(spans_width(&lines.last().unwrap().spans), width, "{case}");
+                        assert!(lines.last().unwrap().bare, "{case}");
+                    }
+                    assert_eq!(
+                        copied(
+                            lines.iter().enumerate().map(|(n, line)| ((0, n), line)),
+                            ((0, 0, 0), (0, lines.len() - 1, width - 1)),
+                        )
+                        .as_deref(),
+                        Some(text),
+                        "{case}"
+                    );
+                }
+            }
+        }
     }
 
     /// "Working…" stands where the agent's output comes next: above a
