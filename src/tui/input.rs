@@ -36,6 +36,9 @@ pub struct Editor {
     recall: Option<Recall>,
     /// The column ↑ and ↓ keep to.
     goal: Option<usize>,
+    /// Dictation's words that may still change, shown dimmed after the
+    /// cursor. They aren't part of the text.
+    tentative: Vec<char>,
 }
 
 impl Editor {
@@ -48,7 +51,52 @@ impl Editor {
             history,
             recall: None,
             goal: None,
+            tentative: Vec::new(),
         }
+    }
+
+    /// Shows dictation's tentative words after the cursor, in place of
+    /// those shown before.
+    pub fn set_tentative(&mut self, text: &str) {
+        self.tentative = text.chars().filter(|c| !c.is_control()).collect();
+    }
+
+    pub fn has_tentative(&self) -> bool {
+        !self.tentative.is_empty()
+    }
+
+    /// Inserts `text` at the cursor as typed (dictated text: never a chip).
+    pub fn insert_text(&mut self, text: &str) {
+        for c in text.chars().filter(|c| *c == '\n' || !c.is_control()) {
+            self.text.insert(self.cursor, c);
+            self.cursor += 1;
+        }
+        self.edited();
+    }
+
+    /// The character before the cursor.
+    pub fn before_cursor(&self) -> Option<char> {
+        self.cursor.checked_sub(1).map(|at| self.text[at])
+    }
+
+    /// The characters from `from` to `to`, if the text has them.
+    pub fn slice(&self, from: usize, to: usize) -> Option<String> {
+        self.text.get(from..to).map(|chars| chars.iter().collect())
+    }
+
+    /// Removes the characters from `from` to `to`; the cursor keeps its
+    /// place in what's left.
+    pub fn remove(&mut self, from: usize, to: usize) {
+        if from >= to || to > self.text.len() {
+            return;
+        }
+        self.text.drain(from..to);
+        if self.cursor >= to {
+            self.cursor -= to - from;
+        } else if self.cursor > from {
+            self.cursor = from;
+        }
+        self.edited();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -349,13 +397,30 @@ impl Editor {
     /// past its edge), so the next row starts with the word. A chip is a
     /// word of its own.
     fn rows(&self, width: usize) -> Vec<Vec<usize>> {
+        self.rows_of(&self.text, width)
+    }
+
+    /// The text as the box shows it: with the tentative words at the
+    /// cursor.
+    fn laid_out(&self) -> std::borrow::Cow<'_, [char]> {
+        if self.tentative.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.text);
+        }
+        let mut shown = self.text[..self.cursor].to_vec();
+        shown.extend_from_slice(&self.tentative);
+        shown.extend_from_slice(&self.text[self.cursor..]);
+        std::borrow::Cow::Owned(shown)
+    }
+
+    /// [`rows`](Self::rows) of `text`.
+    fn rows_of(&self, text: &[char], width: usize) -> Vec<Vec<usize>> {
         let width = width.max(2);
         let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
         let mut used = 0;
         // The word being laid out: where it starts in the row, and the
         // width of the row before it.
         let mut word: Option<(usize, usize)> = None;
-        for (index, c) in self.text.iter().enumerate() {
+        for (index, c) in text.iter().enumerate() {
             if *c == '\n' {
                 rows.last_mut().unwrap().push(index);
                 rows.push(Vec::new());
@@ -410,9 +475,11 @@ impl Editor {
         }
     }
 
-    /// The cursor's row and column at `width`.
+    /// The cursor's row and column at `width`, as the box shows the text
+    /// (tentative words after the cursor).
     pub fn position(&self, width: usize) -> (usize, usize) {
-        let rows = self.rows(width);
+        let text = self.laid_out();
+        let rows = self.rows_of(&text, width);
         let last = rows.len() - 1;
         for (row, indices) in rows.into_iter().enumerate() {
             let mut column = 0;
@@ -420,8 +487,8 @@ impl Editor {
                 if index == self.cursor {
                     return (row, column);
                 }
-                if self.text[index] != '\n' {
-                    column += self.width_of(self.text[index]);
+                if text[index] != '\n' {
+                    column += self.width_of(text[index]);
                 }
             }
             // After the last character. A full row leaves the cursor no
@@ -519,31 +586,42 @@ impl Editor {
         true
     }
 
-    /// The box's lines at `width` as spans (a chip in `chip` style), and
-    /// the cursor's row and column.
-    pub fn lines(&self, width: usize, text: Style, chip: Style) -> Vec<Vec<Span<'static>>> {
-        self.rows(width)
+    /// The box's lines at `width` as spans (a chip in `chip` style, the
+    /// tentative words in `tentative` style).
+    pub fn lines(
+        &self,
+        width: usize,
+        text: Style,
+        chip: Style,
+        tentative: Style,
+    ) -> Vec<Vec<Span<'static>>> {
+        let shown = self.laid_out();
+        let dictated = self.cursor..self.cursor + self.tentative.len();
+        self.rows_of(&shown, width)
             .into_iter()
             .map(|indices| {
                 let mut spans = Vec::new();
+                // The run of characters in one style, and that style.
                 let mut run = String::new();
+                let mut style = text;
                 for index in indices {
-                    let c = self.text[index];
+                    let c = shown[index];
                     if c == '\n' {
                         continue;
                     }
-                    match self.chip(c) {
-                        Some(label) => {
-                            if !run.is_empty() {
-                                spans.push(Span::styled(std::mem::take(&mut run), text));
-                            }
-                            spans.push(Span::styled(label, chip));
-                        }
-                        None => run.push(c),
+                    let (piece, piece_style) = match self.chip(c) {
+                        _ if dictated.contains(&index) => (c.to_string(), tentative),
+                        Some(label) => (label, chip),
+                        None => (c.to_string(), text),
+                    };
+                    if piece_style != style && !run.is_empty() {
+                        spans.push(Span::styled(std::mem::take(&mut run), style));
                     }
+                    style = piece_style;
+                    run.push_str(&piece);
                 }
                 if !run.is_empty() {
-                    spans.push(Span::styled(run, text));
+                    spans.push(Span::styled(run, style));
                 }
                 spans
             })

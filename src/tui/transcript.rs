@@ -410,6 +410,8 @@ impl Transcript {
             }
             // A moved call's line follows its job through its changes.
             Update::Job(_) => {}
+            // (The message box's, `App::dictation_event`.)
+            Update::Dictation(_) => {}
         }
     }
 

@@ -719,6 +719,9 @@ pub enum Update {
     /// The whole summary of a background job that started, changed or
     /// ended.
     Job(JobSummary),
+    /// A dictation's event, for the client that records (by its `id`). The
+    /// history doesn't keep it.
+    Dictation(crate::dictation::DictationUpdate),
 }
 
 /// A batched client's updates, from [`Feed::subscribe_batched`].
@@ -827,6 +830,8 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
                 }
                 out.push(Some(Update::Activity));
             }
+            // Each carries settled text to append.
+            Update::Dictation(update) => out.push(Some(Update::Dictation(update))),
             Update::Truncate { from } => {
                 // What the batch had of the main agent's items cut goes with
                 // them (a worker's stay: their appends too).
@@ -1344,6 +1349,12 @@ impl Feed {
             return;
         }
         self.push(state, Item::new(kind, chunk).agent(agent));
+    }
+
+    /// A dictation's event, for the clients ([`Update::Dictation`]): the
+    /// sink front ends give `DictationService::open`.
+    pub fn dictation(&self, update: crate::dictation::DictationUpdate) {
+        self.send(Update::Dictation(update));
     }
 
     /// Whether the agents' thinking is left out (`--hide-thinking`).

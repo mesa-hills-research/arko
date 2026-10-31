@@ -49,6 +49,12 @@ pub enum Overlay {
     /// asks first: `row` is the settings row to go back to and `choice` the
     /// button on (0: Turn off, 1: Cancel).
     AskOff { row: usize, choice: usize },
+    /// Dictation's first recording asks before it downloads `model`:
+    /// `choice` is the button on (0: Download, 1: Cancel).
+    Download {
+        model: &'static crate::dictation::SpeechModel,
+        choice: usize,
+    },
 }
 
 /// A setting.
@@ -217,7 +223,60 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
         Overlay::Resume(picker) => super::resume_picker::draw(frame, &app.theme, area, picker),
         Overlay::Quit { choice, dont_ask } => quit(frame, app, area, *choice, *dont_ask),
         Overlay::AskOff { choice, .. } => ask_off(frame, app, area, *choice),
+        Overlay::Download { model, choice } => download(frame, app, area, model, *choice),
     }
+}
+
+/// The question before dictation downloads its model: which model, its
+/// sizes and licence, and Download or Cancel.
+fn download(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    model: &crate::dictation::SpeechModel,
+    choice: usize,
+) {
+    let theme = &app.theme;
+    let width = 60.min(area.width.saturating_sub(4)).max(20);
+    let inner = width.saturating_sub(4) as usize;
+    let mut lines: Vec<Line<'static>> =
+        wrap::wrap(&[Span::styled(model.offer(), theme.text())], inner, 0)
+            .into_iter()
+            .map(Line::from)
+            .collect();
+    lines.push(Line::default());
+    let mut buttons = Vec::new();
+    for (n, option) in [crate::dictation::DOWNLOAD, crate::dictation::CANCEL]
+        .into_iter()
+        .enumerate()
+    {
+        if n > 0 {
+            buttons.push(Span::raw("  "));
+        }
+        let style = if n == choice {
+            theme.chosen()
+        } else {
+            theme.key()
+        };
+        buttons.push(Span::styled(format!(" {option} "), style));
+    }
+    lines.push(Line::from(buttons));
+    let height = (lines.len() as u16 + 4).min(area.height);
+    let rect = centred(area, width, height);
+    let inner_rect = frame_box(frame, rect, theme, crate::dictation::DOWNLOAD_TITLE);
+    let body = Rect::new(
+        inner_rect.x + 1,
+        inner_rect.y + 1,
+        inner_rect.width.saturating_sub(2),
+        inner_rect.height.saturating_sub(2),
+    );
+    put(frame, body, &lines, 0);
+    footer(
+        frame,
+        rect,
+        theme,
+        &[("← →", "choose"), ("Enter", "go on"), ("Esc", "cancel")],
+    );
 }
 
 /// The question before "Ask before adding MCP servers" goes off.
@@ -405,6 +464,10 @@ pub const KEYS: &[(&str, &str)] = &[
         "move the agent's running call to the background, else back a character",
     ),
     ("Ctrl+O", "the next view (full, quiet, messages)"),
+    (
+        "Ctrl+R",
+        "dictate into the box, and again to stop and edit the words (Enter stops too, Esc takes them out)",
+    ),
     (
         "Ctrl+T",
         "the agent list, where Tab and Shift+Tab move through it and Enter shows a worker's own work",

@@ -16,6 +16,7 @@ mod approvals;
 mod backend;
 mod cache;
 mod clipboard;
+mod dictation;
 mod input;
 mod keys_menu;
 mod markdown;
@@ -121,7 +122,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
                 "arko: the full-screen view couldn't start ({error}), so Arko uses the line prompt"
             );
             if let Some(printer) = ui::spawn_input(
-                history,
+                setup.root.clone(),
                 setup.input.clone(),
                 Some(setup.keys.clone()),
                 Some(setup.feed.clone()),
@@ -375,6 +376,11 @@ async fn run(
     // one after another, and their results come back here.
     let settings_worker = openrouter_menu::Worker::start();
     let (settings_done, mut settings_results) = mpsc::unbounded_channel();
+    // The view's dictation and its microphone, while it records.
+    let mut recording: (
+        Option<crate::dictation::Dictation>,
+        Option<crate::dictation::Capture>,
+    ) = (None, None);
     loop {
         if draw_now {
             draw(&mut terminal, &mut app);
@@ -549,6 +555,7 @@ async fn run(
                         let _ = done.send(openrouter_menu::make(&root, &edit));
                     });
                 }
+                Effect::Dictate(dictate) => carry_out(dictate, &mut app, &setup, &mut recording),
                 Effect::CheckNames(cancel) => {
                     let found = names_found.clone();
                     tokio::task::spawn_blocking(move || {
@@ -565,6 +572,55 @@ async fn run(
     let reply = app.transcript.last_reply().map(str::to_string);
     close();
     reply
+}
+
+/// Carries out what the view's recording needs of the dictation service
+/// and the microphone. Its events come back through the feed.
+fn carry_out(
+    dictate: dictation::Dictate,
+    app: &mut App,
+    setup: &Setup,
+    (open, capture): &mut (
+        Option<crate::dictation::Dictation>,
+        Option<crate::dictation::Capture>,
+    ),
+) {
+    use crate::dictation::{DictationOptions, DictationService, Source};
+    match dictate {
+        dictation::Dictate::Open { download } => {
+            let feed = setup.feed.clone();
+            let sink = Box::new(move |update| feed.dictation(update));
+            match DictationService::shared(&setup.root).open(DictationOptions { download }, sink) {
+                Ok(dictation) => {
+                    app.dictation_opened(dictation.id());
+                    *open = Some(dictation);
+                }
+                Err(error) => app.dictation_refused(error),
+            }
+        }
+        dictation::Dictate::Record => {
+            if let Some(dictation) = open.as_ref() {
+                match dictation.record(&Source::from_env()) {
+                    Ok(recording) => *capture = Some(recording),
+                    Err(why) => {
+                        *open = None;
+                        app.dictation_failed(why);
+                    }
+                }
+            }
+        }
+        dictation::Dictate::Finish => {
+            *capture = None;
+            if let Some(dictation) = open.take() {
+                dictation.finish();
+            }
+        }
+        // (Dropping the dictation cancels it, if it hasn't ended.)
+        dictation::Dictate::Cancel | dictation::Dictate::Close => {
+            *capture = None;
+            *open = None;
+        }
+    }
 }
 
 fn clear_for_redraw<B: ratatui::backend::Backend>(

@@ -19,6 +19,9 @@ pub enum Runs {
     Session,
     /// The full-screen view itself, since it means nothing anywhere else.
     Screen,
+    /// The terminal's front end, the full-screen view or the line prompt,
+    /// since it records from this computer's microphone.
+    Terminal,
 }
 
 /// A command, with its name, what may follow it, and what it does.
@@ -111,6 +114,13 @@ pub const COMMANDS: &[Command] = &[
         "how much of the work the transcript shows",
     ),
     Command::screen("/copy", "", "copy the agent's last reply"),
+    Command {
+        name: "/dictate",
+        args: "",
+        about: "dictate into the message box, and again to stop and edit the words (Ctrl+R in the full-screen view)",
+        aliases: &[],
+        runs: Runs::Terminal,
+    },
     Command::screen(
         "/settings",
         "",
@@ -446,11 +456,12 @@ fn edits(a: &str, b: &str, most: usize) -> Option<usize> {
     (count <= most).then_some(count)
 }
 
-/// The commands the session runs wherever it was typed, the line prompt's.
+/// The commands the line prompt takes: the session's, which it runs
+/// wherever it was typed, and the terminal's.
 pub fn of_session() -> impl Iterator<Item = &'static Command> {
     COMMANDS
         .iter()
-        .filter(|command| command.runs == Runs::Session)
+        .filter(|command| command.runs != Runs::Screen)
 }
 
 /// The commands the web page runs, for its menu: the session's, except
@@ -467,7 +478,7 @@ pub fn on_page() -> impl Iterator<Item = &'static Command> {
 pub fn matching(prefix: &str, screen: bool) -> Vec<&'static Command> {
     COMMANDS
         .iter()
-        .filter(|command| screen || command.runs == Runs::Session)
+        .filter(|command| screen || command.runs != Runs::Screen)
         .filter(|command| command.name.starts_with(prefix))
         .collect()
 }
@@ -678,12 +689,10 @@ pub fn choices(name: &str, before: &[&str]) -> &'static [&'static str] {
         .map_or(&[], |(_, _, choices)| choices)
 }
 
-/// The help's lines for the session's commands, as the line prompt shows
-/// them, with each name, padded, then what it does and what may follow it.
+/// The help's lines for the line prompt's commands, with each name,
+/// padded, then what it does and what may follow it.
 pub fn help_lines() -> Vec<String> {
-    COMMANDS
-        .iter()
-        .filter(|command| command.runs == Runs::Session)
+    of_session()
         .map(|command| {
             let line = format!("{:<14} {}", command.name, command.about);
             match command.args {
