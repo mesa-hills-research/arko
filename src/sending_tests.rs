@@ -342,13 +342,27 @@ async fn sends_while_arko_only_waits_for_the_workers_are_refused() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
-/// A send's verdict dropped unanswered is a mistake in Arko, which tests
-/// see.
+/// A send's verdict dropped unanswered is a mistake in Arko, which a build
+/// with debug assertions (the tests') stops at.
+#[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "dropped unanswered")]
 fn a_verdict_dropped_unanswered_is_seen() {
     let (sender, _verdict) = oneshot::channel();
     drop(crate::sending::Reply::to(Some(sender)));
+}
+
+/// Without debug assertions, a send's verdict dropped unanswered leaves
+/// its client with none, which it shows as an outcome it doesn't know.
+#[cfg(not(debug_assertions))]
+#[test]
+fn a_verdict_dropped_unanswered_leaves_its_client_without_one() {
+    let (sender, mut verdict) = oneshot::channel();
+    drop(crate::sending::Reply::to(Some(sender)));
+    assert!(matches!(
+        verdict.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
 }
 
 /// The words a verdict gives for what of the send didn't go.
