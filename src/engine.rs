@@ -1092,6 +1092,8 @@ impl Engine {
             main_reconfigured: false,
             earlier: Arc::default(),
             continue_asked: None,
+            #[cfg(test)]
+            notes_refused: false,
         };
         // A chat has no project.
         if !chat {
