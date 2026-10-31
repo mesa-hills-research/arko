@@ -376,26 +376,40 @@ fn scroll_for(scroll_top: f64, top: f64, offset: f64) -> f64 {
     scroll_top + top - offset
 }
 
-/// The row of the item `id`, or the nearest one before it.
-fn row_of(log: &Element, id: u64) -> Option<Element> {
-    let rows = log.query_selector("#rows").ok().flatten()?.children();
-    let mut best: Option<(u64, Element)> = None;
-    for at in 0..rows.length() {
-        let Some(row) = rows.item(at) else { continue };
-        let Some(row_id) = row
-            .get_attribute("data-id")
-            .and_then(|id| id.parse::<u64>().ok())
-        else {
-            continue;
-        };
-        if row_id == id {
-            return Some(row);
-        }
-        if row_id < id && best.as_ref().is_none_or(|(best, _)| row_id > *best) {
-            best = Some((row_id, row));
-        }
-    }
-    best.map(|(_, row)| row)
+/// The rows of the transcript, with their items.
+fn rows(log: &Element) -> Vec<(u64, Element)> {
+    let Some(rows) = log.query_selector("#rows").ok().flatten() else {
+        return Vec::new();
+    };
+    let rows = rows.children();
+    (0..rows.length())
+        .filter_map(|at| {
+            let row = rows.item(at)?;
+            let id = row.get_attribute("data-id")?.parse().ok()?;
+            Some((id, row))
+        })
+        .collect()
+}
+
+/// Which of the rows, by their items in order, a place at the item `id`
+/// goes back to, and whether at the place's offset: its own row, else the
+/// nearest before it, else (the history let go of all those) the earliest
+/// left, from its top.
+fn anchor_row(ids: &[u64], id: u64) -> Option<(usize, bool)> {
+    let before = ids
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| **row <= id)
+        .max_by_key(|(_, row)| **row)
+        .map(|(at, _)| (at, true));
+    before.or_else(|| (!ids.is_empty()).then_some((0, false)))
+}
+
+/// The offset a row goes back to, now `height` tall: `offset`, unless the
+/// row got too short to show from there (a disclosure in it closed while
+/// it was away), when its top goes to the top.
+fn bounded_offset(offset: f64, height: f64) -> f64 {
+    if offset + height > 1.0 { offset } else { 0.0 }
 }
 
 /// Keeps the reader's place at the item `id` (or the nearest row before it)
@@ -406,16 +420,21 @@ pub fn keep_place(id: u64) {
         return;
     };
     let top = log.get_bounding_client_rect().top();
-    let offset = row_of(&log, id)
-        .map(|row| row.get_bounding_client_rect().top() - top)
+    let rows = rows(&log);
+    let ids: Vec<u64> = rows.iter().map(|(id, _)| *id).collect();
+    let offset = anchor_row(&ids, id)
+        .filter(|(_, at_offset)| *at_offset)
+        .map(|(at, _)| rows[at].1.get_bounding_client_rect().top() - top)
         .filter(|offset| *offset >= 0.0 && *offset < log.client_height() as f64)
         .unwrap_or(log.client_height() as f64 / 3.0);
     restore_place((id, offset));
 }
 
 /// Puts the reader back at `place`, from [`first_visible`], once the layout
-/// that's about to change is drawn: its item's row (or the nearest one
-/// before it) as far below the scroller's top as it was.
+/// that's about to change is drawn. Its item's row (or the nearest one
+/// before it) goes as far below the scroller's top as it was, or to the
+/// top when it got too short for that. With all those let go of, the
+/// earliest row left goes to the top.
 pub fn restore_place((id, offset): (u64, f64)) {
     let Some(log) = STATE.with(|state| state.borrow().log.clone()) else {
         return;
@@ -427,8 +446,16 @@ pub fn restore_place((id, offset): (u64, f64)) {
         }
     });
     let restore = Closure::once_into_js(move || {
-        if let Some(row) = row_of(&log, id) {
-            let top = row.get_bounding_client_rect().top() - log.get_bounding_client_rect().top();
+        let rows = rows(&log);
+        let ids: Vec<u64> = rows.iter().map(|(id, _)| *id).collect();
+        if let Some((at, at_offset)) = anchor_row(&ids, id) {
+            let rect = rows[at].1.get_bounding_client_rect();
+            let top = rect.top() - log.get_bounding_client_rect().top();
+            let offset = if at_offset {
+                bounded_offset(offset, rect.height())
+            } else {
+                0.0
+            };
             scroll_to(&log, scroll_for(log.scroll_top() as f64, top, offset));
         }
         on_scroll();
@@ -485,5 +512,28 @@ mod tests {
         }
         // A row whose bottom is less than a pixel down is passed over.
         assert_eq!(place_among(rows_at(&heights, 39.5)), Some((1, 0.5)));
+    }
+
+    #[test]
+    fn a_place_goes_back_to_its_row_or_the_nearest_left() {
+        // Its own row, at the place's offset, wherever pending rows put it.
+        assert_eq!(anchor_row(&[3, 4, 5, 9, 7], 5), Some((2, true)));
+        // Gone, the nearest row before it.
+        assert_eq!(anchor_row(&[3, 4, 6, 9, 7], 5), Some((1, true)));
+        // The history let go of it and of every row before it: the earliest
+        // row left, from its top.
+        assert_eq!(anchor_row(&[8, 9, 10], 5), Some((0, false)));
+        assert_eq!(anchor_row(&[], 5), None);
+    }
+
+    #[test]
+    fn a_row_that_got_shorter_while_away_shows_from_its_top() {
+        // A row as tall as it was keeps the pixel.
+        assert_eq!(bounded_offset(-189.5, 260.0), -189.5);
+        assert_eq!(bounded_offset(12.0, 30.0), 12.0);
+        // Its open disclosure closed, it's now shorter than the part that was
+        // above the top, so it would scroll out of sight.
+        assert_eq!(bounded_offset(-189.5, 40.0), 0.0);
+        assert_eq!(bounded_offset(-189.5, 190.5), 0.0);
     }
 }
