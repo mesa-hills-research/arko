@@ -546,7 +546,7 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
 
 thread_local! {
     /// Where the reader was in the main transcript, to come back to.
-    static MAIN_PLACE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    static MAIN_PLACE: std::cell::Cell<Option<(u64, f64)>> = const { std::cell::Cell::new(None) };
 }
 
 /// Shows the worker `id`'s own transcript (none for the main one) in a new
@@ -611,7 +611,7 @@ fn switch_view(page: Page, id: Option<String>) {
     };
     page.worker.set(id);
     match back_to {
-        Some(at) => scroll::keep_place(at),
+        Some(place) => scroll::restore_place(place),
         None => {
             page.pinned.set(true);
             let frame = wasm_bindgen::closure::Closure::once_into_js(scroll::to_bottom_now);

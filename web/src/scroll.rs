@@ -348,17 +348,54 @@ fn tick(now: f64) {
     }
 }
 
-/// The item of the first row whose bottom shows, as the reader's place.
-pub fn first_visible() -> Option<u64> {
+/// The reader's place: the item of the first row whose bottom shows, and
+/// how far its top is below the scroller's (above it when negative).
+pub fn first_visible() -> Option<(u64, f64)> {
     let log = STATE.with(|state| state.borrow().log.clone())?;
     let top = log.get_bounding_client_rect().top();
     let rows = log.query_selector("#rows").ok().flatten()?.children();
-    (0..rows.length())
-        .filter_map(|at| rows.item(at))
-        .find_map(|row| {
-            let id = row.get_attribute("data-id")?.parse().ok()?;
-            (row.get_bounding_client_rect().bottom() > top + 1.0).then_some(id)
-        })
+    place_among((0..rows.length()).filter_map(|at| {
+        let row = rows.item(at)?;
+        let id = row.get_attribute("data-id")?.parse().ok()?;
+        let rect = row.get_bounding_client_rect();
+        Some((id, rect.top() - top, rect.bottom() - top))
+    }))
+}
+
+/// The place among `rows`, each an item and its top and bottom below the
+/// scroller's top.
+fn place_among(rows: impl IntoIterator<Item = (u64, f64, f64)>) -> Option<(u64, f64)> {
+    rows.into_iter()
+        .find(|&(_, _, bottom)| bottom > 1.0)
+        .map(|(id, top, _)| (id, top))
+}
+
+/// The scroll position that moves a row from `top` below the scroller's
+/// top, at the scroll position `scroll_top`, to `offset` below it.
+fn scroll_for(scroll_top: f64, top: f64, offset: f64) -> f64 {
+    scroll_top + top - offset
+}
+
+/// The row of the item `id`, or the nearest one before it.
+fn row_of(log: &Element, id: u64) -> Option<Element> {
+    let rows = log.query_selector("#rows").ok().flatten()?.children();
+    let mut best: Option<(u64, Element)> = None;
+    for at in 0..rows.length() {
+        let Some(row) = rows.item(at) else { continue };
+        let Some(row_id) = row
+            .get_attribute("data-id")
+            .and_then(|id| id.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        if row_id == id {
+            return Some(row);
+        }
+        if row_id < id && best.as_ref().is_none_or(|(best, _)| row_id > *best) {
+            best = Some((row_id, row));
+        }
+    }
+    best.map(|(_, row)| row)
 }
 
 /// Keeps the reader's place at the item `id` (or the nearest row before it)
@@ -368,31 +405,21 @@ pub fn keep_place(id: u64) {
     let Some(log) = STATE.with(|state| state.borrow().log.clone()) else {
         return;
     };
-    let row_of = move |log: &Element, id: u64| -> Option<Element> {
-        let rows = log.query_selector("#rows").ok().flatten()?.children();
-        let mut best: Option<(u64, Element)> = None;
-        for at in 0..rows.length() {
-            let Some(row) = rows.item(at) else { continue };
-            let Some(row_id) = row
-                .get_attribute("data-id")
-                .and_then(|id| id.parse::<u64>().ok())
-            else {
-                continue;
-            };
-            if row_id == id {
-                return Some(row);
-            }
-            if row_id < id && best.as_ref().is_none_or(|(best, _)| row_id > *best) {
-                best = Some((row_id, row));
-            }
-        }
-        best.map(|(_, row)| row)
-    };
     let top = log.get_bounding_client_rect().top();
     let offset = row_of(&log, id)
         .map(|row| row.get_bounding_client_rect().top() - top)
         .filter(|offset| *offset >= 0.0 && *offset < log.client_height() as f64)
         .unwrap_or(log.client_height() as f64 / 3.0);
+    restore_place((id, offset));
+}
+
+/// Puts the reader back at `place`, from [`first_visible`], once the layout
+/// that's about to change is drawn: its item's row (or the nearest one
+/// before it) as far below the scroller's top as it was.
+pub fn restore_place((id, offset): (u64, f64)) {
+    let Some(log) = STATE.with(|state| state.borrow().log.clone()) else {
+        return;
+    };
     STATE.with(|state| {
         let state = state.borrow();
         if let Some(pinned) = state.pinned {
@@ -401,8 +428,8 @@ pub fn keep_place(id: u64) {
     });
     let restore = Closure::once_into_js(move || {
         if let Some(row) = row_of(&log, id) {
-            let now = row.get_bounding_client_rect().top() - log.get_bounding_client_rect().top();
-            scroll_to(&log, log.scroll_top() as f64 + now - offset);
+            let top = row.get_bounding_client_rect().top() - log.get_bounding_client_rect().top();
+            scroll_to(&log, scroll_for(log.scroll_top() as f64, top, offset));
         }
         on_scroll();
     });
@@ -424,5 +451,39 @@ mod tests {
         assert_eq!(settle_action(false, false, false), Settle::Stay);
         // The wheel's spring is moving.
         assert_eq!(settle_action(true, true, false), Settle::Stay);
+    }
+
+    /// Rows of `heights`, each an item and its top and bottom below the
+    /// scroller's top at the scroll position `scroll_top`.
+    fn rows_at(heights: &[f64], scroll_top: f64) -> Vec<(u64, f64, f64)> {
+        let mut top = -scroll_top;
+        let mut rows = Vec::new();
+        for (id, height) in heights.iter().enumerate() {
+            rows.push((id as u64, top, top + height));
+            top += height;
+        }
+        rows
+    }
+
+    #[test]
+    fn the_readers_place_comes_back_to_the_same_pixel_however_often_it_is_left() {
+        let heights = [
+            40.0, 120.5, 18.0, 64.0, 300.0, 22.0, 90.0, 41.0, 700.0, 30.0,
+        ];
+        let mut scroll_top = 205.0;
+        // The first row whose bottom shows, its top above the scroller's.
+        let place = place_among(rows_at(&heights, scroll_top)).unwrap();
+        assert_eq!(place, (3, -26.5));
+        for _ in 0..5 {
+            // A worker's view opens at its latest, and the main one lays out
+            // again from wherever the scroller is.
+            scroll_top = 1200.0;
+            let (_, top, _) = rows_at(&heights, scroll_top)[place.0 as usize];
+            scroll_top = scroll_for(scroll_top, top, place.1);
+            assert_eq!(scroll_top, 205.0);
+            assert_eq!(place_among(rows_at(&heights, scroll_top)), Some(place));
+        }
+        // A row whose bottom is less than a pixel down is passed over.
+        assert_eq!(place_among(rows_at(&heights, 39.5)), Some((1, 0.5)));
     }
 }
