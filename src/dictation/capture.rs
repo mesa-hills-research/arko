@@ -1,5 +1,5 @@
 //! Audio capture behind an interface of Arko's own, so the microphone crate
-//! (cpal) can be replaced: [`open`] starts a [`Source`] and hands its audio,
+//! (cpal) can be replaced. [`open`] starts a [`Source`] and hands its audio,
 //! mono at the source's own rate, to a callback until the [`Capture`] is
 //! dropped. A source that fails once started says why, once.
 
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use super::Source;
 
-/// What takes the audio: mono samples, and their rate.
+/// What takes the audio, meaning mono samples and their rate.
 pub type OnAudio = Box<dyn FnMut(&[f32], u32) + Send>;
 /// What hears that the source stopped after it started, and why.
 pub type OnFailure = Box<dyn FnMut(String) + Send>;
@@ -149,7 +149,7 @@ where
     let channels = config.channels.max(1) as usize;
     let rate = config.sample_rate.0;
     let mut mono = Vec::new();
-    // (Told once: the microphone is gone, or its stream broke.)
+    // (Told once, when the microphone is gone or its stream broke.)
     let mut on_failure = Some(on_failure);
     device
         .build_input_stream(

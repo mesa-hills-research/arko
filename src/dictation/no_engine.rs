@@ -1,4 +1,4 @@
-//! The service in a build without the `dictation` feature: it opens
+//! The service in a build without the `dictation` feature. It opens
 //! nothing, and says this build has no dictation.
 
 use std::convert::Infallible;

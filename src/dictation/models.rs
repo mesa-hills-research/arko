@@ -1,5 +1,5 @@
 //! The speech models Arko downloads, each from a pinned revision on Hugging
-//! Face, and where they're kept: `models/speech/<model>/` in Arko's folder,
+//! Face, and where they're kept, `models/speech/<model>/` in Arko's folder,
 //! with the pack the engine loads (`model.pack`), what it was made from
 //! (`source.json`) and who made it under which licence (`NOTICE.txt`).
 
@@ -46,7 +46,7 @@ pub struct SpeechModel {
     pub licence_url: &'static str,
 }
 
-/// IBM's Granite Speech, the default: English, French, German, Spanish,
+/// IBM's Granite Speech, the default, for English, French, German, Spanish,
 /// Portuguese, Italian and Japanese.
 pub const GRANITE: SpeechModel = SpeechModel {
     name: "granite",
@@ -176,7 +176,7 @@ impl SpeechModel {
         )
     }
 
-    /// `NOTICE.txt` in its folder: who made it, its licence, and what Arko
+    /// `NOTICE.txt` in its folder, meaning who made it, its licence, and what Arko
     /// did to it.
     pub fn notice(&self) -> String {
         format!(

@@ -1,4 +1,4 @@
-//! Downloading a speech model and packing it: each file from the model's
+//! Downloading a speech model and packing it, meaning each file from the model's
 //! pinned revision, resumed where an earlier try stopped, checked against
 //! its SHA-256, then converted into the engine's pack in the model's 8-bit
 //! precision. The downloaded files go once the pack is written. One
@@ -69,7 +69,7 @@ pub(super) fn install(
     }
     fs::create_dir_all(&downloads).map_err(unsaved)?;
     download_files(model, &downloads, base, progress, cancel)?;
-    // The notices first: the pack is what makes the model installed.
+    // The notices first, because the pack is what makes the model installed.
     fs::write(dir.join("NOTICE.txt"), model.notice()).map_err(unsaved)?;
     fs::write(dir.join("source.json"), source_json(model)).map_err(unsaved)?;
     let source = model
@@ -200,7 +200,7 @@ async fn fetch(
             }
             true
         }
-        // The whole file: the server ignored the range.
+        // The whole file, because the server ignored the range.
         reqwest::StatusCode::OK => false,
         status => return Err(failed(format!("Hugging Face answered {status}"))),
     };
@@ -311,7 +311,7 @@ fn downloaded(model: &SpeechModel, downloads: &Path) -> u64 {
         .sum()
 }
 
-/// A model's install lock, while this process holds it: the operating
+/// A model's install lock, while this process holds it, meaning the operating
 /// system's lock on the model's `install.lock`, which it lets go when the
 /// lock is dropped or the process ends, however it ends.
 struct InstallLock {
@@ -415,7 +415,7 @@ fn pack_model(
     })
 }
 
-/// `source.json`: what the pack was made from.
+/// `source.json` says what the pack was made from.
 fn source_json(model: &SpeechModel) -> String {
     let files: Vec<serde_json::Value> = model
         .files

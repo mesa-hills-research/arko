@@ -33,10 +33,10 @@ pub const TOOL_NAMES: &[&str] = &[
 pub const SNIPPET_LINES: usize = 3;
 /// Characters of a snippet line.
 const SNIPPET_WIDTH: usize = 140;
-/// Bytes of whole definitions one search shows: the results past it show
+/// Bytes of whole definitions one search shows. The results past it show
 /// their snippet.
 const FULL_BUDGET: usize = 24_000;
-/// Lines of one whole definition: a longer one shows the part that matched.
+/// Lines of one whole definition. A longer one shows the part that matched.
 const FULL_MAX_LINES: usize = 200;
 /// Characters of a line of a whole definition.
 const FULL_WIDTH: usize = 300;
@@ -47,11 +47,11 @@ pub enum Detail {
     /// The location and this many lines of the chunk that matched.
     Brief(usize),
     /// The whole definition (function, type, doc section) of the top results,
-    /// with line numbers, up to [`FULL_BUDGET`]; the rest as `Brief`.
+    /// with line numbers, up to [`FULL_BUDGET`], and the rest as `Brief`.
     Full,
 }
 
-/// The definitions of the tools, which don't depend on the indexes: what a
+/// The definitions of the tools, which don't depend on the indexes, meaning what a
 /// conversation saved with them was offered, for a session that has no
 /// indexes.
 pub fn definitions() -> Vec<ToolDefinition> {
@@ -92,7 +92,7 @@ fn invalid(name: &str, message: impl Into<String>) -> ToolError {
     }
 }
 
-/// A string parameter: a string (trimmed; empty is none), or a number or bool
+/// A string parameter, meaning a string (trimmed, with empty as none), or a number or bool
 /// as text.
 pub(crate) fn str_param(params: &HashMap<String, Value>, name: &str) -> Option<String> {
     match params.get(name)? {
@@ -112,7 +112,7 @@ pub(crate) fn required_str(
     })
 }
 
-/// A boolean: true/false, yes/no, on/off, 1/0, as JSON or text.
+/// A boolean, as true/false, yes/no, on/off, 1/0, as JSON or text.
 pub(crate) fn bool_param(
     params: &HashMap<String, Value>,
     name: &str,
@@ -137,7 +137,7 @@ pub(crate) fn bool_param(
     }
 }
 
-/// A count: a JSON number, or text like `5000000`, `5,000,000`, `5_000_000`,
+/// A count, as a JSON number, or text like `5000000`, `5,000,000`, `5_000_000`,
 /// `200k`, `5M`.
 pub(crate) fn parse_count(text: &str) -> Option<u64> {
     let text: String = text
@@ -184,7 +184,7 @@ pub(crate) fn count_param(
     }
 }
 
-/// A list: a JSON array of strings, or text separated by commas or newlines.
+/// A list, as a JSON array of strings, or text separated by commas or newlines.
 pub(crate) fn list_param(params: &HashMap<String, Value>, name: &str) -> Vec<String> {
     let split = |text: &str| -> Vec<String> {
         text.split([',', '\n'])
@@ -276,7 +276,7 @@ async fn blocking<T: Send + 'static>(
 
 // ----- parsed arguments -----
 
-/// `detail`: `full` (the default) or `brief`.
+/// `detail` is `full` (the default) or `brief`.
 pub(crate) fn parse_detail(params: &HashMap<String, Value>) -> Result<Detail, ToolError> {
     match str_param(params, "detail").map(|text| text.to_ascii_lowercase()) {
         None => Ok(Detail::Full),
@@ -424,7 +424,7 @@ pub(crate) struct Definition {
     pub matched: (usize, usize),
 }
 
-/// The whole definition `hit` lies in: its file chunked again as an index of
+/// The whole definition `hit` lies in, meaning its file chunked again as an index of
 /// `kind` chunks it, and the chunks next to the hit's that share its symbol
 /// (a long function is split into several). When the file changed after it
 /// was indexed, the chunk with the hit's symbol. None when the file can't be
@@ -459,7 +459,7 @@ pub(crate) fn whole_definition(hit: &engine::Hit, kind: Kind) -> Option<Definiti
 }
 
 /// Lines `start..=end` of `text` as `read_file` shows them (`12 | line`),
-/// without trailing blank lines; long lines are cut at [`FULL_WIDTH`].
+/// without trailing blank lines, and long lines are cut at [`FULL_WIDTH`].
 fn numbered(text: &str, start: usize, end: usize) -> (String, usize) {
     let lines: Vec<&str> = text
         .lines()
@@ -488,7 +488,7 @@ fn numbered(text: &str, start: usize, end: usize) -> (String, usize) {
     (out, start.max(1) + kept.saturating_sub(1))
 }
 
-/// A result's header: `[index] path:start-end · scope`.
+/// A result's header, as `[index] path:start-end · scope`.
 fn result_header(hit: &engine::Hit, several: bool, lines: (usize, usize)) -> String {
     let mut header = String::new();
     if several {
@@ -509,7 +509,7 @@ fn result_header(hit: &engine::Hit, several: bool, lines: (usize, usize)) -> Str
     header
 }
 
-/// A result shown whole: its header and numbered lines, and the lines shown.
+/// A result shown whole, meaning its header and numbered lines, and the lines shown.
 fn whole_result(
     hit: &engine::Hit,
     found: &Definition,
@@ -517,7 +517,7 @@ fn whole_result(
 ) -> Option<(String, (usize, usize))> {
     let text = String::from_utf8_lossy(&std::fs::read(&hit.file).ok()?).into_owned();
     let lines = found.end_line + 1 - found.start_line.min(found.end_line);
-    // A definition too long to show whole: the part that matched.
+    // A definition too long to show whole, so it shows the part that matched.
     let partial = lines > FULL_MAX_LINES;
     let (start, last) = if partial {
         let (start, end) = found.matched;
@@ -570,7 +570,7 @@ fn search_header(query: &str, searched: &[String], hits: usize) -> String {
 }
 
 /// What the first line of a search's result says, as [`search_header`]
-/// writes it: the indexes searched and how many results there were.
+/// writes it, meaning the indexes searched and how many results there were.
 pub fn read_search_header(line: &str) -> Option<(Vec<String>, usize)> {
     let names = |list: &str| -> Vec<String> {
         list.split("), ")
@@ -603,14 +603,14 @@ pub fn read_search_header(line: &str) -> Option<(Vec<String>, usize)> {
     Some((names(list), hits))
 }
 
-/// A search's results: a header line, then per result `path:start-end · scope`
+/// A search's results, meaning a header line, then per result `path:start-end · scope`
 /// and its snippet, then notes.
 #[cfg(test)]
 pub fn format_search(query: &str, output: &SearchOutput, snippet_lines: usize) -> String {
     format_search_detail(query, output, Detail::Brief(snippet_lines))
 }
 
-/// A search's results with `detail`: a header line, then per result
+/// A search's results with `detail`, meaning a header line, then per result
 /// `path:start-end · scope` and its lines, then notes.
 pub fn format_search_detail(query: &str, output: &SearchOutput, detail: Detail) -> String {
     let mut out = String::new();
@@ -629,7 +629,7 @@ pub fn format_search_detail(query: &str, output: &SearchOutput, detail: Detail) 
             .map(|(name, kind, _)| (name.as_str(), *kind))
             .collect();
         let mut budget = FULL_BUDGET;
-        // The whole definitions shown: file and lines.
+        // The whole definitions shown, meaning file and lines.
         let mut shown: Vec<(&Path, (usize, usize))> = Vec::new();
         for hit in &output.hits {
             let lines = match detail {

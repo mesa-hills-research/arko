@@ -1,4 +1,4 @@
-//! `kind: auto`: a census of the file types under the index's rules (ignore
+//! With `kind: auto`, a census of the file types under the index's rules (ignore
 //! files honoured as arko_index honours them) decides between code and docs.
 
 use std::path::Path;
@@ -8,7 +8,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use super::store::{Kind, Rules};
 
-/// Files counted at most: enough to tell a tree's character.
+/// Files counted at most, enough to tell a tree's character.
 pub const CENSUS_LIMIT: usize = 20_000;
 
 /// What a census counted.
@@ -25,8 +25,8 @@ pub struct Census {
 }
 
 impl Census {
-    /// Docs when at least two thirds of the prose and source files are prose;
-    /// otherwise (an empty tree included) code.
+    /// Docs when at least two thirds of the prose and source files are prose.
+    /// Otherwise (an empty tree included) code.
     pub fn kind(&self) -> Kind {
         if self.prose > 0 && self.prose * 3 >= (self.prose + self.code) * 2 {
             Kind::Docs
@@ -117,7 +117,7 @@ fn matcher(root: &Path, patterns: &[String]) -> Result<Option<Gitignore>, String
     builder.build().map(Some).map_err(|error| error.to_string())
 }
 
-/// Counts the files under `root` that `rules` select, up to `limit`: `.git`
+/// Counts the files under `root` that `rules` select, up to `limit`. `.git`
 /// folders and folders with a `CACHEDIR.TAG` are skipped, ignore files are
 /// read when the rules honour them (not those above the root, nor the global
 /// one), and symbolic links aren't followed.

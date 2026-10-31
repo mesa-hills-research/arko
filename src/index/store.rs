@@ -1,8 +1,8 @@
-//! Where indexes live and what is saved with them: one folder per index under
+//! Where indexes live and what is saved with them, as one folder per index under
 //! `<data root>/indexes/`, named after the indexed directory, its kind and a short
 //! hash of both, with the manifest (`index.json`), arko_index's index state
 //! (`state/`) and the watcher's state (`watch2/` on Linux, `watch/` for the polling
-//! watcher). The two states are separate directories: each takes its own lock.
+//! watcher). The two states are separate directories, and each takes its own lock.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -23,10 +23,10 @@ pub const WATCH2_DIR: &str = "watch2";
 pub const WATCH_DIR: &str = "watch";
 /// The manifest format this version writes.
 pub const MANIFEST_VERSION: u32 = 1;
-/// The default cap on the tokens one embedding run may spend (voyage-code-4:
+/// The default cap on the tokens one embedding run may spend (voyage-code-4,
 /// $0.60).
 pub const DEFAULT_MAX_EMBED_TOKENS: u64 = 5_000_000;
-/// Excluded from every index besides what `.gitignore` excludes: lock files and
+/// Excluded from every index besides what `.gitignore` excludes, meaning lock files and
 /// minified or generated assets, which cost embedding tokens and find nothing.
 pub const DEFAULT_EXCLUDES: &[&str] = &[
     "*.lock",
@@ -42,10 +42,10 @@ pub const DEFAULT_EXCLUDES: &[&str] = &[
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
-    /// Source code: voyage-code-4.
+    /// Source code uses voyage-code-4.
     #[default]
     Code,
-    /// Prose (Markdown, reStructuredText, text): voyage-4.
+    /// Prose (Markdown, reStructuredText, text) uses voyage-4.
     Docs,
 }
 
@@ -57,7 +57,7 @@ impl Kind {
         }
     }
 
-    /// `code` or `docs`; `None` for anything else (`auto` included).
+    /// `code` or `docs`, and `None` for anything else (`auto` included).
     pub fn parse(text: &str) -> Option<Self> {
         match text.trim().to_ascii_lowercase().as_str() {
             "code" => Some(Kind::Code),
@@ -67,14 +67,14 @@ impl Kind {
     }
 }
 
-/// Which files an index holds (saved with it; arko_index's `FileRules`).
+/// Which files an index holds (saved with it, as arko_index's `FileRules`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Rules {
     /// Honour `.gitignore`, `.ignore` and `.git/info/exclude` (always on for
     /// indexes Arko creates).
     pub respect_ignore: bool,
-    /// Gitignore-syntax patterns: when any, only matching files are indexed.
+    /// Gitignore-syntax patterns. When any, only matching files are indexed.
     pub include: Vec<String>,
     /// Gitignore-syntax patterns of files and folders left out.
     pub exclude: Vec<String>,
@@ -138,11 +138,11 @@ pub struct BuildRecord {
     /// Files indexed.
     pub files: u64,
     pub seconds: f64,
-    /// arko_index's one-line report: files indexed, skipped, ignored.
+    /// arko_index's one-line report, with files indexed, skipped, ignored.
     pub summary: String,
 }
 
-/// `index.json`: an index's settings and history. Every field has a default, and
+/// `index.json` holds an index's settings and history. Every field has a default, and
 /// unknown fields are ignored, so manifests of other versions load.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -170,7 +170,7 @@ pub struct Manifest {
     pub embed_tokens: u64,
     /// Their cost in dollars.
     pub embed_cost: f64,
-    /// The last embedding run stopped at its cap: automatic runs (after
+    /// The last embedding run stopped at its cap. Automatic runs (after
     /// rebuilds) wait for an explicit one, so a large tree doesn't spend the cap
     /// again and again.
     pub cap_reached: bool,
@@ -218,7 +218,7 @@ impl Layout {
     pub fn watch(&self) -> PathBuf {
         self.dir.join(WATCH_DIR)
     }
-    /// The folder's name: the index's id.
+    /// The folder's name, the index's id.
     pub fn id(&self) -> String {
         self.dir
             .file_name()
@@ -231,7 +231,7 @@ pub fn indexes_dir(data_root: &Path) -> PathBuf {
     data_root.join(INDEXES_DIR)
 }
 
-/// The folder name of the index of `root` (canonical) and `kind`:
+/// The folder name of the index of `root` (canonical) and `kind`, as
 /// `<slug>-<kind>-<hash>`, where the hash covers the root and the kind, so the
 /// same directory and kind always map to the same folder.
 pub fn index_id(root: &Path, kind: Kind) -> String {
@@ -265,7 +265,7 @@ pub fn slug(root: &Path) -> String {
     if out.is_empty() { "root".into() } else { out }
 }
 
-/// 64-bit FNV-1a: stable across versions and platforms.
+/// 64-bit FNV-1a, stable across versions and platforms.
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in bytes {
@@ -359,7 +359,7 @@ pub fn absolute(path: &Path, cwd: &Path) -> PathBuf {
     out
 }
 
-/// The directory to index: `path` (relative to `cwd`) canonicalized. Refused:
+/// The directory to index, meaning `path` (relative to `cwd`) canonicalized. Refused for
 /// a missing path or a file, the file system root (or a drive root), the home
 /// directory and the directories that contain it, and Arko's own index folders.
 pub fn validate_root(
@@ -410,7 +410,7 @@ pub fn validate_root(
     Ok(root)
 }
 
-/// A name for an index: trimmed, 1 to 64 characters, no `/`, `\` or control
+/// A name for an index, trimmed, 1 to 64 characters, no `/`, `\` or control
 /// characters.
 pub fn validate_name(name: &str) -> Result<String, String> {
     let name = name.trim();

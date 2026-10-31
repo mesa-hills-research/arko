@@ -1,4 +1,4 @@
-//! Embedding models: Voyage through arko_ai (kind `code` → `voyage-code-4`, `docs`
+//! Embedding models, meaning Voyage through arko_ai (kind `code` → `voyage-code-4`, `docs`
 //! → `voyage-4`), and arko_index's offline `HashEmbedder` for tests.
 //!
 //! arko_index's `Embedder` trait is synchronous and is called from blocking
@@ -45,9 +45,9 @@ pub fn voyage_model(kind: Kind) -> &'static str {
 /// Where embeddings come from.
 #[derive(Clone)]
 pub enum Backend {
-    /// Voyage, with Arko's key (none: lexical indexes and search only).
+    /// Voyage, with Arko's key (none means lexical indexes and search only).
     Voyage { key: Option<String> },
-    /// arko_index's `HashEmbedder`: offline and deterministic, for tests.
+    /// arko_index's `HashEmbedder`, offline and deterministic, for tests.
     #[cfg(test)]
     Hash,
 }
@@ -66,7 +66,7 @@ impl std::fmt::Debug for Backend {
 }
 
 impl Backend {
-    /// A Voyage backend; a blank key counts as none.
+    /// A Voyage backend. A blank key counts as none.
     pub fn voyage(key: Option<String>) -> Self {
         Backend::Voyage {
             key: key
@@ -93,7 +93,7 @@ impl Backend {
         }
     }
 
-    /// Whether vectors of `descriptor` can be made now: its provider is available.
+    /// Whether vectors of `descriptor` can be made now, meaning its provider is available.
     pub fn can_embed(&self, descriptor: &ModelDescriptor) -> bool {
         match descriptor.provider.as_str() {
             "hash" => true,
@@ -164,7 +164,7 @@ fn voyage_details(model: &str) -> Result<EmbeddingModelDetails, String> {
         .map_err(|error| format!("unknown embedding model {model:?} ({error})"))
 }
 
-/// Voyage's total tokens per request where arko_ai's model table has none:
+/// Voyage's total tokens per request where arko_ai's model table has none, since
 /// voyage-code-4 answered "The max allowed tokens per submitted batch is 320000"
 /// (arko_index's Voyage notes). Other models without a figure get the smallest
 /// documented limit.
@@ -177,12 +177,12 @@ fn request_token_limit(details: &EmbeddingModelDetails) -> u64 {
 }
 
 /// arko_index's `Embedder` on arko_ai's Voyage client (adapted from arko_index's
-/// `examples/support/voyage.rs`): documents use `input_type: document` and queries
+/// `examples/support/voyage.rs`). Documents use `input_type: document` and queries
 /// `input_type: query`, the output dimension is always sent, and nothing is
 /// truncated. Transient and capacity errors are retried (4 times, with backoff).
 /// Without a key it still names its vectors and counts tokens (with the model's
 /// tokenizer, cached by Hugging Face's hub after the first download), so builds
-/// and free estimates work; embedding fails.
+/// and free estimates work, but embedding fails.
 pub struct VoyageEmbedder {
     client: Option<EmbeddingClient>,
     details: EmbeddingModelDetails,
@@ -253,7 +253,7 @@ impl VoyageEmbedder {
         Ok(counter)
     }
 
-    /// Sleeps `wait`, or less when the run is stopped; whether it was stopped.
+    /// Sleeps `wait`, or less when the run is stopped, and returns whether it was stopped.
     fn pause(&self, wait: Duration) -> bool {
         let until = Instant::now() + wait;
         loop {

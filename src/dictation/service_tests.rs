@@ -1,4 +1,4 @@
-//! The service: asking before a download, one dictation at a time,
+//! The service, covering asking before a download, one dictation at a time,
 //! cancelling, and (with a real model) a recording from a WAV file end to
 //! end.
 
@@ -424,7 +424,7 @@ fn the_session_words_reach_the_streamer() {
 }
 
 /// A recording from a WAV file, through the service and Granite Speech's
-/// real pack: the model loads, the words come and settle, and `finish`
+/// real pack. The model loads, the words come and settle, and `finish`
 /// ends it. A second recording finds the model loaded. It runs only with
 /// the pack and the clip ([`granite_and_clip`]).
 #[test]
@@ -494,7 +494,7 @@ fn a_wav_file_is_dictated_end_to_end() {
         let after = updates.recv_timeout(Duration::from_secs(3));
         assert!(after.is_err(), "{after:?}");
     };
-    // Cancelled while the last words come: no Done.
+    // Cancelled while the last words come, so no Done.
     let (mut dictation, updates) = listening();
     let capture = dictation.record(&source).unwrap();
     std::thread::sleep(Duration::from_secs(3));

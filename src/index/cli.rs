@@ -1,4 +1,4 @@
-//! `arko index ...`: the indexes from the command line.
+//! `arko index ...` covers the indexes from the command line.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -128,8 +128,8 @@ fn count_arg(text: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("{text:?} is not a token count (200k, 5M, 5000000)"))
 }
 
-/// Runs an `arko index` command: `data_root` is Arko's data folder, `voyage_key`
-/// the key Arko found (none: lexical only). Call it in Arko's tokio runtime.
+/// Runs an `arko index` command. `data_root` is Arko's data folder, `voyage_key`
+/// the key Arko found (none means lexical only). Call it in Arko's tokio runtime.
 pub async fn run_command(
     cmd: IndexCommand,
     data_root: &Path,
@@ -493,7 +493,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
     }
 }
 
-/// An embedding run in the foreground: progress on stderr, Ctrl-C stops it after
+/// An embedding run in the foreground, with progress on stderr. Ctrl-C stops it after
 /// its current request (the vectors paid for are kept).
 async fn embed_with_progress(
     indexes: &Arc<Indexes>,

@@ -1,10 +1,10 @@
-//! The words a dictation favours: those of its session that a speech model
+//! The words a dictation favours, meaning those of its session that a speech model
 //! would otherwise misspell, such as identifiers, file names, project names
 //! and the session's models. Every front end gives a recording its list
 //! with [`favour_session_words`], which builds it with [`session_words`]
 //! on a thread of its own, so they all favour the same words.
 //!
-//! Building it reads a bounded part of everything: the newest part of the
+//! Building it reads a bounded part of everything, meaning the newest part of the
 //! transcript (the main transcript's before the workers'), the listings of
 //! the workspace and of the skill and profile folders, and small manifests.
 //!
@@ -259,7 +259,7 @@ fn rank(
             scores.add(word, false, SESSION_WEIGHT);
         }
     }
-    // (Each once: a tool called often isn't said more for it.)
+    // (Each once, so a tool called often isn't said more for it.)
     let names: BTreeSet<&str> = names
         .iter()
         .chain(&tail.tools)
@@ -600,7 +600,7 @@ const EXTENSIONS: &[&str] = &[
     "co",
 ];
 
-/// Whether `word` could be said: it has a letter, two letters or digits or
+/// Whether `word` could be said, meaning it has a letter, two letters or digits or
 /// more, at most [`LONGEST`] characters, and nothing [`hard_to_say`].
 fn sayable(word: &str) -> bool {
     word.chars().any(char::is_alphabetic)
@@ -611,7 +611,7 @@ fn sayable(word: &str) -> bool {
 
 /// Whether `word` holds a part (between characters other than letters and
 /// digits) that can't be said, being a key, a token, a hash, a UUID or an
-/// ID rather than a name: one of 32 characters or more, letters and digits
+/// ID rather than a name, meaning one of 32 characters or more, letters and digits
 /// at random (16 or more, hexadecimal of 7 or more, or switching between
 /// letters and digits three times in 8 or more), a number of 6 digits or
 /// more, letters in mixed case at random, or letters with no vowel pattern
@@ -634,7 +634,7 @@ fn hard_to_say(word: &str) -> bool {
     })
 }
 
-/// The words a CamelCase or camelCase part holds: `XMLHttpRequest` holds
+/// The words a CamelCase or camelCase part holds. `XMLHttpRequest` holds
 /// `XML`, `Http` and `Request`, and `Win32Error` `Win32` and `Error`.
 fn camel_words(part: &str) -> Vec<&str> {
     let chars: Vec<(usize, char)> = part.char_indices().collect();
@@ -660,7 +660,7 @@ fn camel_words(part: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Letters in mixed case at random, as in a key (`xKqzPwRtmB`): ten or
+/// Letters in mixed case at random, as in a key (`xKqzPwRtmB`), meaning ten or
 /// more, in three or more camel words averaging under two and a half
 /// letters.
 fn random_case(part: &str) -> bool {
@@ -669,7 +669,7 @@ fn random_case(part: &str) -> bool {
 }
 
 /// A word of eight letters or more (of the English alphabet) with no vowel
-/// pattern a word has: under one in five a vowel (with y), or seven
+/// pattern a word has, meaning under one in five a vowel (with y), or seven
 /// consonants in a row.
 fn unpronounceable(word: &str) -> bool {
     if word.len() < 8 || !word.chars().all(|c| c.is_ascii_alphabetic()) {
@@ -696,7 +696,7 @@ fn trimmed(word: &str) -> &str {
 
 /// The workspace's folder name and the package names its manifests give
 /// (Cargo.toml, package.json, pyproject.toml, go.mod).
-// shortcut: the top-level manifests only, not a Cargo workspace's members;
+// shortcut: the top-level manifests only, not a Cargo workspace's members,
 // read them too if members' names turn out to be said.
 fn project_names(workspace: &Path) -> Vec<String> {
     let read = |file: &str| read_small(&workspace.join(file));
@@ -727,7 +727,7 @@ fn project_names(workspace: &Path) -> Vec<String> {
 /// The text of `path` when it's a regular file of at most
 /// [`SMALL_FILE_BYTES`], opened without following a symbolic link or
 /// waiting on a FIFO.
-// shortcut: elsewhere than on Unix a link is followed; open it without
+// shortcut: elsewhere than on Unix a link is followed. Open it without
 // following there too if a manifest turns out to be one.
 fn read_small(path: &Path) -> Option<String> {
     use std::io::Read;
@@ -781,7 +781,7 @@ fn listed(folder: &Path) -> Vec<std::fs::DirEntry> {
 /// The names of the workspace's top-level files and folders, leaving out
 /// hidden ones and those its `.gitignore` leaves out (build output).
 // shortcut: the workspace's own .gitignore, not those above it or git's
-// other ignore files; read those too if their entries turn out to show.
+// other ignore files. Read those too if their entries turn out to show.
 fn top_level_names(workspace: &Path) -> Vec<String> {
     let mut rules = ignore::gitignore::GitignoreBuilder::new(workspace);
     for line in read_small(&workspace.join(".gitignore"))
@@ -806,10 +806,10 @@ fn top_level_names(workspace: &Path) -> Vec<String> {
 }
 
 /// The names of the skills in `folders` and of the built-in ones `builtin`
-/// gives, without reading the skills: each folder's subfolders that hold a
+/// gives, without reading the skills, meaning each folder's subfolders that hold a
 /// `SKILL.md`, by name.
 // shortcut: a skill goes by its folder's name here, though its SKILL.md may
-// name it otherwise; read the names once arko_agents can list skills
+// name it otherwise. Read the names once arko_agents can list skills
 // without loading them.
 fn skill_names(folders: &[PathBuf], builtin: &BuiltinSkills) -> Vec<String> {
     let mut names: Vec<String> = builtin
@@ -828,7 +828,7 @@ fn skill_names(folders: &[PathBuf], builtin: &BuiltinSkills) -> Vec<String> {
 }
 
 /// The names of the worker profiles `roots` has, from their folders'
-/// listings: each `.md` file's name without it.
+/// listings, meaning each `.md` file's name without it.
 fn profile_names(roots: &Roots) -> Vec<String> {
     crate::profiles::folders(roots)
         .into_iter()
@@ -1234,7 +1234,7 @@ mod tests {
         assert!(!model.code);
     }
 
-    /// A manifest is read only when it's a small regular file: a link isn't
+    /// A manifest is read only when it's a small regular file. A link isn't
     /// followed, a FIFO isn't waited on and a large file isn't read.
     #[cfg(unix)]
     #[test]

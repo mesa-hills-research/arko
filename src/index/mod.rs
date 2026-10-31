@@ -2,27 +2,27 @@
 //! (local tree-sitter chunking, `.gitignore` respected) with Voyage embeddings
 //! (`voyage-code-4` for code, `voyage-4` for docs).
 //!
-//! This module is self-contained: Arko passes in its data folder and the Voyage
-//! key; nothing here reads the process environment for keys.
+//! This module is self-contained. Arko passes in its data folder and the Voyage
+//! key, and nothing here reads the process environment for keys.
 //!
 //! Entry points:
-//! - [`Indexes`]: one per Arko process (`Indexes::open`), shared by the agent
-//!   tools ([`Indexes::tools`], named in [`TOOL_NAMES`]); it watches monitored
+//! - [`Indexes`] is one per Arko process (`Indexes::open`), shared by the agent
+//!   tools ([`Indexes::tools`], named in [`TOOL_NAMES`]). It watches monitored
 //!   indexes related to the workspace while Arko runs, counts embedding spend
 //!   ([`Indexes::spent`]) and stops its threads in [`Indexes::shutdown`].
-//! - [`IndexCommand`] + [`run_command`]: the `arko index ...` subcommands.
+//! - [`IndexCommand`] + [`run_command`] are the `arko index ...` subcommands.
 //!
-//! Wiring (Arko's main.rs): in an interactive session, once the workspace and
+//! Wiring (Arko's main.rs), in an interactive session, once the workspace and
 //! data folder are known, `let indexes = index::Indexes::open(&data_root,
 //! &workspace, voyage_key, !one_shot)?;`, add `indexes.tools()` to the agent's
 //! tools, show `indexes.summary()` in the banner and `indexes.spent()` in
 //! `/cost`, and `indexes.shutdown().await` before returning. `arko index ...`
 //! runs `index::run_command(cmd, &data_root, voyage_key).await`.
 //!
-//! Storage: `<data root>/indexes/<slug>-<kind>-<hash>/` holds `index.json` (the
+//! For storage, `<data root>/indexes/<slug>-<kind>-<hash>/` holds `index.json` (the
 //! manifest), `state/` (the arko_index state) and the watcher state (`watch2/`
 //! for inotify on Linux, `watch/` for the polling watcher). Indexes are shared by
-//! all Arko processes; the one that holds an index's watch lock keeps it current.
+//! all Arko processes, and the one that holds an index's watch lock keeps it current.
 
 mod census;
 #[cfg(feature = "tui")]

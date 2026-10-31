@@ -1,4 +1,4 @@
-//! Dictation: speech typed into the message box, recognized on this
+//! Dictation is speech typed into the message box, recognized on this
 //! computer. One [`DictationService`] per process runs the speech engine on
 //! a thread of its own, one recording at a time. A front end opens a
 //! [`Dictation`], hands it the microphone's audio (its [`Dictation::record`]
@@ -37,11 +37,11 @@ pub use no_engine::{Capture, Dictation, DictationService};
 pub use service::{Dictation, DictationService};
 pub use session_words::{SessionWord, favour_session_words, session_words};
 
-/// What a dictation reports, in order: preparing steps, `Listening`, text as
+/// What a dictation reports, in order, meaning preparing steps, `Listening`, text as
 /// it's recognized, then `Done` (or `Failed` at any point).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DictationEvent {
-    /// The model is being made ready: downloaded, packed or loaded.
+    /// The model is being made ready, by being downloaded, packed or loaded.
     Preparing(Preparing),
     /// The model is ready and the audio is taken from now on.
     Listening,
@@ -136,7 +136,7 @@ impl std::error::Error for DictationError {}
 pub enum Source {
     /// The computer's default microphone.
     Microphone,
-    /// A WAV file played in real time, then silence: for tests, and for a
+    /// A WAV file played in real time, then silence, for tests and for a
     /// computer without a microphone.
     File(PathBuf),
 }

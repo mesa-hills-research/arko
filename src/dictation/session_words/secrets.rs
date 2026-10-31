@@ -1,4 +1,4 @@
-//! What the `leave_out_secrets` setting leaves out of the session's words:
+//! What the `leave_out_secrets` setting leaves out of the session's words, meaning
 //! the values that context marks as secret. Only what such a marker shows
 //! is caught. A secret written with nothing marking it, such as a bare
 //! `Cookies$123`, can't be told from any other word, and the names stay
@@ -9,7 +9,7 @@ use std::ops::Range;
 /// Spans a value in quotes may run on for, to its closing quote.
 const QUOTED_SPANS: usize = 16;
 
-/// Programs whose flags take a password: `sshpass -p`, `mysql -p…`, `curl
+/// Programs whose flags take a password, such as `sshpass -p`, `mysql -p…`, `curl
 /// -u user:…`.
 const PASSWORD_PROGRAMS: &[&str] = &[
     "sshpass",
@@ -24,10 +24,10 @@ const PASSWORD_PROGRAMS: &[&str] = &[
 ///
 /// - the value after a password, key or token name (`API_KEY=…`,
 ///   `password: …`, `--token …`, `"client_secret": "…"`, `?token=…`), to its
-///   closing quote when it's quoted;
+///   closing quote when it's quoted.
 /// - the rest of an `Authorization`, `Proxy-Authorization` or `Cookie`
-///   header's line, and what follows `Bearer`;
-/// - the password `sshpass -p`, `mysql -p…` and `curl -u user:…` take;
+///   header's line, and what follows `Bearer`.
+/// - the password `sshpass -p`, `mysql -p…` and `curl -u user:…` take.
 /// - emails, the user (and password) in a URL, and PEM blocks.
 pub(super) fn secret_ranges(text: &str) -> Vec<Range<usize>> {
     let spans = spans(text);
@@ -84,7 +84,7 @@ pub(super) fn secret_ranges(text: &str) -> Vec<Range<usize>> {
             }
             Pending::Line => {
                 ranges.push(range.clone());
-                // (A header in quotes ends with them: -H "Authorization: …".)
+                // (A header in quotes ends with them, as in -H "Authorization: …".)
                 if span.ends_with(['"', '\'']) {
                     pending = Pending::Nothing;
                 }
@@ -140,7 +140,7 @@ pub(super) fn secret_ranges(text: &str) -> Vec<Range<usize>> {
             ranges.push(range.clone());
             continue;
         }
-        // Names with their values: `NAME=value`, `name: value`, `--name=value`,
+        // Names with their values, such as `NAME=value`, `name: value`, `--name=value`,
         // `"name": "value"`, `a=1&token=…`.
         let mut start = 0;
         for piece in span.split_inclusive(['&', '?', ';', ',']) {
@@ -219,13 +219,13 @@ enum Pem {
 /// What a name marks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Marker {
-    /// A secret value: a password, a key, a token.
+    /// A secret value, meaning a password, a key or a token.
     Value,
     /// A header whose value runs to the line's end.
     Header,
 }
 
-/// What the name `name` marks, by its last word: `API_KEY`, `apiKey`,
+/// What the name `name` marks, by its last word, such as `API_KEY`, `apiKey`,
 /// `client_secret`, `GITHUB_TOKEN`, `password`, `--auth`. A key needs a word
 /// before it (`key` alone is too common), and a name whose last word says
 /// what else it is isn't one (`password_hash`, `--password-file`,

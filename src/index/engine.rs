@@ -1,20 +1,20 @@
-//! [`Indexes`]: Arko's indexes in one process. It finds them (the folders under
+//! [`Indexes`] covers Arko's indexes in one process. It finds them (the folders under
 //! `<data root>/indexes/`), creates, builds, embeds and searches them, keeps the
 //! monitored ones current with watcher threads, and counts what embedding costs.
 //!
 //! Everything here blocks (arko_index works on files and calls the embedder
-//! synchronously): async callers go through `spawn_blocking`, background work
+//! synchronously), so async callers go through `spawn_blocking`, background work
 //! runs on its own `std::thread`s, which [`Indexes::shutdown`] stops and joins.
 //!
 //! Freshness:
 //! - A monitored index this process watches is rebuilt in the background once
 //!   its tree has been quiet for [`Timing::quiet`] (2 s), at most every
-//!   [`Timing::min_interval`] (30 s); the chunks that changed are embedded next.
+//!   [`Timing::min_interval`] (30 s). The chunks that changed are embedded next.
 //!   A search that finds changes not yet built rebuilds first when the last build
-//!   took at most [`Timing::sync_rebuild_max`] (5 s); otherwise it notes them.
+//!   took at most [`Timing::sync_rebuild_max`] (5 s). Otherwise it notes them.
 //! - Any other index (Arko's one-shot `-p` mode, an index of another tree, or one
 //!   not monitored) is reconciled when first searched (and again after
-//!   [`Timing::reconcile_interval`]): its watcher state is opened, which finds
+//!   [`Timing::reconcile_interval`]). Its watcher state is opened, which finds
 //!   what changed since it was last acknowledged, and the index is rebuilt when
 //!   anything did. An index another Arko process watches is left to it (a
 //!   monitoring Arko takes over once the other stops).
@@ -39,11 +39,11 @@ use super::embed::{self, Backend};
 use super::monitor::{self, OpenError};
 use super::store::{self, BuildRecord, Kind, Layout, Manifest, Rules};
 
-/// Receives progress lines of background work (the CLI prints them; Arko logs them).
+/// Receives progress lines of background work (the CLI prints them, and Arko logs them).
 pub type Events = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Tokens a search in Arko's one-shot mode may embed to bring the chunks changed
-/// since the last build up to date (about $0.02 with voyage-code-4); the rest stay
+/// since the last build up to date (about $0.02 with voyage-code-4). The rest stay
 /// lexical until Arko monitors the index or `arko index embed` runs.
 pub const FRESHEN_EMBED_TOKENS: u64 = 200_000;
 /// The most results a search returns.
@@ -61,7 +61,7 @@ pub struct Timing {
     /// How long an inotify watcher waits for a change per loop.
     pub poll: Duration,
     /// The polling watcher's interval between looks at the tree (longer for
-    /// trees whose look takes long: ten times its duration).
+    /// trees whose look takes long, at ten times its duration).
     pub poll_interval: Duration,
     /// A search rebuilds first when changes are pending and the last build took
     /// at most this many seconds.
@@ -109,7 +109,7 @@ pub enum WatchState {
     /// of this one tries again every [`Timing::busy_retry`], and a status taken
     /// without one probes the lock.
     Elsewhere,
-    /// The watcher failed; the thread retries.
+    /// The watcher failed, and the thread retries.
     Failed(String),
 }
 
@@ -178,7 +178,7 @@ struct WatchThread {
 /// One index's runtime state in this process.
 struct Entry {
     layout: Layout,
-    /// Serializes builds (and watcher opens) in this process; arko_index's own
+    /// Serializes builds (and watcher opens) in this process, since arko_index's own
     /// lock refuses a second concurrent build.
     build_lock: Mutex<()>,
     live: Mutex<Live>,
@@ -196,9 +196,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Caller {
-    /// A tool call or command: waits for another process's build.
+    /// A tool call or command waits for another process's build.
     Interactive,
-    /// A watcher thread: half the threads, no waiting.
+    /// A watcher thread gets half the threads, with no waiting.
     Background,
 }
 
@@ -245,9 +245,9 @@ impl ModeArg {
 #[derive(Clone, Debug)]
 pub struct SearchArgs {
     pub query: String,
-    /// An index name, id or root path; none: every index of the directory.
+    /// An index name, id or root path. None means every index of the directory.
     pub index: Option<String>,
-    /// None: hybrid where the index has vectors and a key is set, else lexical.
+    /// None means hybrid where the index has vectors and a key is set, else lexical.
     pub mode: Option<ModeArg>,
     pub limit: usize,
     /// A path (relative to `cwd`, or absolute) results must be under.
@@ -261,7 +261,7 @@ pub struct SearchArgs {
 pub struct Hit {
     /// The index's name.
     pub index: String,
-    /// The file as shown: relative to the search's directory when under it.
+    /// The file as shown, as relative to the search's directory when under it.
     pub display: String,
     pub file: PathBuf,
     pub start_line: usize,
@@ -278,7 +278,7 @@ pub struct Hit {
 #[derive(Clone, Debug, Default)]
 pub struct SearchOutput {
     pub hits: Vec<Hit>,
-    /// Each index searched: its name, kind and the mode used.
+    /// Each index searched, meaning its name, kind and the mode used.
     pub searched: Vec<(String, Kind, Mode)>,
     pub notes: Vec<String>,
     /// Tokens billed for query embeddings.
@@ -294,7 +294,7 @@ pub struct IndexReport {
     /// The manifest, or why it couldn't be read.
     pub manifest: Result<Manifest, String>,
     pub watch: WatchState,
-    /// Chunks in the current generation (none: never built).
+    /// Chunks in the current generation (none means never built).
     pub chunks: Option<u64>,
     pub status_error: Option<String>,
     pub dense: Option<DenseIndexInfo>,
@@ -306,7 +306,7 @@ pub struct IndexReport {
     pub has_key: bool,
 }
 
-/// A free estimate (a run with a cap of 0 tokens): what embedding the chunks
+/// A free estimate (a run with a cap of 0 tokens), meaning what embedding the chunks
 /// without a vector would take.
 #[derive(Clone, Debug)]
 pub struct Estimate {
@@ -356,7 +356,7 @@ pub struct CreateOutcome {
     #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     pub layout: Layout,
     pub manifest: Manifest,
-    /// The index existed (same directory and kind): its settings were updated.
+    /// The index existed (same directory and kind), so its settings were updated.
     pub updated: bool,
     pub census: Option<Census>,
     pub record: BuildRecord,
@@ -371,18 +371,18 @@ pub struct CreateOutcome {
 pub struct CreateArgs {
     pub path: PathBuf,
     pub cwd: PathBuf,
-    /// None: by a census of the files.
+    /// None means by a census of the files.
     pub kind: Option<Kind>,
     pub name: Option<String>,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
     pub monitor: bool,
-    /// None: the existing index's setting, else whether a key is set.
+    /// None means the existing index's setting, else whether a key is set.
     pub embed: Option<bool>,
     pub max_embed_tokens: Option<u64>,
     /// Embed before returning (else in the background).
     pub wait: bool,
-    /// Estimate only: the caller embeds (the CLI, with progress).
+    /// Estimate only, and the caller embeds (the CLI, with progress).
     pub defer_embed: bool,
 }
 
@@ -396,13 +396,13 @@ pub enum Action {
     Remove,
 }
 
-/// Arko's indexes, for one process: shared by the tools (through an `Arc`), the
+/// Arko's indexes, for one process, shared by the tools (through an `Arc`), the
 /// watcher threads and the embedding threads.
 pub struct Indexes {
     data_root: PathBuf,
     workspace: PathBuf,
     home: Option<PathBuf>,
-    /// Where embeddings come from: the Voyage key changes while Arko runs
+    /// Where embeddings come from. The Voyage key changes while Arko runs
     /// ([`Indexes::set_voyage_key`]).
     backend: RwLock<Backend>,
     monitor: bool,
@@ -429,11 +429,11 @@ impl std::fmt::Debug for Indexes {
 
 impl Indexes {
     /// Arko's indexes, with their data under `data_root` (Arko's data folder),
-    /// `workspace` the directory Arko works in, and the Voyage key (none:
+    /// `workspace` the directory Arko works in, and the Voyage key (none means
     /// lexical indexes and search only). Call it in Arko's tokio runtime. With
     /// `monitor`, every monitored index whose root contains the workspace or lies
     /// in it gets a watcher thread at once (it reconciles what changed while Arko
-    /// wasn't running); without (Arko's one-shot `-p` mode), indexes are
+    /// wasn't running), and without (Arko's one-shot `-p` mode), indexes are
     /// reconciled when first searched.
     pub fn open(
         data_root: &Path,
@@ -508,7 +508,7 @@ impl Indexes {
     }
 
     /// Starts watching the monitored indexes of the workspace (when this
-    /// instance monitors); the number started.
+    /// instance monitors), and returns the number started.
     pub(crate) fn watch_related(self: &Arc<Self>) -> usize {
         if !self.monitor {
             return 0;
@@ -537,8 +537,8 @@ impl Indexes {
             .clone()
     }
 
-    /// Sets the Voyage key (none: lexical indexes and search only) for what
-    /// starts from now on: searches, builds and embedding runs. With a key,
+    /// Sets the Voyage key (none means lexical indexes and search only) for what
+    /// starts from now on, meaning searches, builds and embedding runs. With a key,
     /// the watched indexes that lack vectors start embedding, as when their
     /// watchers started.
     pub fn set_voyage_key(self: &Arc<Self>, key: Option<String>) {
@@ -561,7 +561,7 @@ impl Indexes {
         }
     }
 
-    /// One line for Arko's banner: the indexes of the workspace, e.g.
+    /// One line for Arko's banner, meaning the indexes of the workspace, e.g.
     /// `index arko (code, monitored)`. None when there are none.
     pub fn summary(&self) -> Option<String> {
         let related = self.related(&self.workspace);
@@ -615,7 +615,7 @@ impl Indexes {
     }
 
     /// Stops the watcher threads and embedding runs (a run stops after its
-    /// current request; the vectors paid for are kept) and joins the threads,
+    /// current request, and the vectors paid for are kept) and joins the threads,
     /// waiting at most 15 seconds (a build in progress can't be interrupted).
     pub async fn shutdown(&self) {
         let threads = self.stop_all();
@@ -691,7 +691,7 @@ impl Indexes {
             .collect()
     }
 
-    /// Every readable index, for the agents' instructions: those of the
+    /// Every readable index, for the agents' instructions, meaning those of the
     /// working directory (`workspace`) first, then the others, each group by
     /// name, so the same indexes give the same list.
     pub fn known(&self, workspace: &Path) -> Vec<Known> {
@@ -737,15 +737,15 @@ impl Indexes {
             .collect()
     }
 
-    /// The index `name` names: its name, its id, or a path (relative to `cwd`)
-    /// in its root: the root itself, or a directory or file in it, which names
+    /// The index `name` names, meaning its name, its id, or a path (relative to `cwd`)
+    /// in its root, meaning the root itself, or a directory or file in it, which names
     /// the index with the deepest root that holds it. Ambiguous when that
     /// directory has a code and a docs index.
     pub fn resolve(&self, name: &str, cwd: &Path) -> Result<Found, String> {
         self.resolve_in(name, cwd, true)
     }
 
-    /// [`Self::resolve`]; `inside` false takes only an index's own root as a
+    /// [`Self::resolve`], and `inside` false takes only an index's own root as a
     /// path (for removing one).
     pub(crate) fn resolve_in(&self, name: &str, cwd: &Path, inside: bool) -> Result<Found, String> {
         let name = name.trim();
@@ -893,7 +893,7 @@ impl Indexes {
         self.build_locked(entry, manifest, caller)
     }
 
-    /// Builds with the build lock held: records what the build covers, and the
+    /// Builds with the build lock held. It records what the build covers, and the
     /// result in the manifest.
     fn build_locked(
         &self,
@@ -943,9 +943,9 @@ impl Indexes {
             Caller::Interactive => arko_index::threads(),
             Caller::Background => (arko_index::threads() / 2).max(1),
         };
-        // An embedding index is built with its model (named only: a run embeds
+        // An embedding index is built with its model (named only, since a run embeds
         // the chunks afterwards), which keeps its vectors and reuses the cached
-        // ones; a build without a model would remove them.
+        // ones, and a build without a model would remove them.
         let embedder = if manifest.embed {
             let descriptor = Backend::descriptor(&manifest.model)?;
             Some(self.backend().embedder(&descriptor, &self.handle, None)?)
@@ -1000,7 +1000,7 @@ impl Indexes {
     // ----- embedding -----
 
     /// One embedding run of the index's current generation, with a cap of `cap`
-    /// tokens (0: a free estimate). `record` saves the run in the manifest.
+    /// tokens (0 means a free estimate). `record` saves the run in the manifest.
     fn run_embed(
         &self,
         entry: &Entry,
@@ -1103,7 +1103,7 @@ impl Indexes {
         })
     }
 
-    /// Starts (or queues) a background embedding run of the index; whether one
+    /// Starts (or queues) a background embedding run of the index, and returns whether one
     /// will run. Automatic runs (`explicit` false) don't follow a run that
     /// stopped at its cap.
     fn request_embed(
@@ -1245,7 +1245,7 @@ impl Indexes {
         Some(watch.thread)
     }
 
-    /// A watcher thread: opens the watcher (reconciling the tree), then marks
+    /// A watcher thread opens the watcher (reconciling the tree), then marks
     /// the index dirty on each change, rebuilds it once the tree is quiet (and
     /// the last build is long enough ago), queues the embedding of what changed,
     /// and acknowledges the changes a successful build covers.
@@ -1307,7 +1307,7 @@ impl Indexes {
                             self.request_embed(entry, None, false);
                         }
                     }
-                    // Another process holds the watcher state: another Arko
+                    // Another process holds the watcher state, either another Arko
                     // watching it (this one takes over when it exits), or one
                     // reconciling it for a moment.
                     Err(OpenError::Busy) => {
@@ -1414,7 +1414,7 @@ impl Indexes {
         }
     }
 
-    /// Brings an index no watcher of this process keeps current up to date: opens
+    /// Brings an index no watcher of this process keeps current up to date. It opens
     /// its watcher state (finding what changed since it was last acknowledged),
     /// rebuilds when anything did, and acknowledges. Skipped when this process
     /// watches it, when another process does, or when it was reconciled recently.
@@ -1482,7 +1482,7 @@ impl Indexes {
         }
     }
 
-    /// Before a search: rebuilds a watched index with pending changes when its
+    /// Before a search, rebuilds a watched index with pending changes when its
     /// builds are quick, or reconciles an unwatched one. Notes go to `notes`.
     fn freshen(self: &Arc<Self>, entry: &Arc<Entry>, manifest: &Manifest, notes: &mut Vec<String>) {
         let (watch, dirty, last_secs) = {
@@ -1531,7 +1531,7 @@ impl Indexes {
             Ok(None) => {}
             Err(error) => notes.push(format!("Couldn't check {name} for changes ({error})")),
         }
-        // A monitored index outside the workspace has no watcher yet: once
+        // A monitored index outside the workspace has no watcher yet, so once
         // searched, it is kept current too.
         if self.monitor && manifest.monitor {
             self.start_watch(entry);
@@ -1631,7 +1631,7 @@ impl Indexes {
         }
         output.hits.truncate(limit);
         // A language that matched nothing was often a wrong guess (`rust` in
-        // a Python project): the search goes on without it, and says so.
+        // a Python project). The search goes on without it, and says so.
         if output.hits.is_empty()
             && let Some(language) = language
         {
@@ -1946,13 +1946,13 @@ impl Indexes {
                 }
             },
         };
-        // Embeddings are on unless asked otherwise (or turned off before): without
+        // Embeddings are on unless asked otherwise (or turned off before). Without
         // a key the index is lexical until one is set, then Arko embeds it.
         let embed = args
             .embed
             .unwrap_or_else(|| existing.as_ref().is_none_or(|manifest| manifest.embed));
         let entry = self.entry(&layout);
-        // A watcher with the old settings stops; it restarts with the new ones.
+        // A watcher with the old settings stops, and it restarts with the new ones.
         if let Some(thread) = self.stop_watch(&entry) {
             let _ = thread.join();
         }
@@ -2192,7 +2192,7 @@ impl Indexes {
     }
 
     /// Turns embeddings on for an index built without them (rebuilding it with
-    /// its model); the manifest, and the build if one ran.
+    /// its model). Returns the manifest, and the build if one ran.
     pub(crate) fn ensure_dense(
         &self,
         found: &Found,
@@ -2226,7 +2226,7 @@ impl Indexes {
         }
         let thread = lock(&entry.embed).thread.take();
         if let Some(thread) = thread {
-            // A run may have started meanwhile: it stops after its current request.
+            // A run may have started meanwhile, and it stops after its current request.
             for run in lock(&entry.runs).iter() {
                 run.stop("the index is being removed");
             }
@@ -2274,7 +2274,7 @@ impl Indexes {
         )
     }
 
-    /// Starts watching `found` (the CLI's `watch`; needs a monitoring instance).
+    /// Starts watching `found` (the CLI's `watch`, which needs a monitoring instance).
     #[cfg(feature = "tui")]
     pub(crate) fn watch_index(self: &Arc<Self>, found: &Found) {
         let entry = self.entry(&found.layout);
@@ -2380,7 +2380,7 @@ pub fn fmt_count(n: u64) -> String {
     out
 }
 
-/// Dollars: `$0.14`, `$0.0012`, `<$0.0001`, `$0`.
+/// Dollars, as `$0.14`, `$0.0012`, `<$0.0001`, `$0`.
 pub fn fmt_dollars(dollars: f64) -> String {
     if dollars <= 0.0 {
         "$0".into()
@@ -2393,7 +2393,7 @@ pub fn fmt_dollars(dollars: f64) -> String {
     }
 }
 
-/// How long ago `at` was: `just now`, `5 min ago`, `3 h ago`, `2 days ago`.
+/// How long ago `at` was, as `just now`, `5 min ago`, `3 h ago`, `2 days ago`.
 pub fn fmt_ago(at: DateTime<Utc>) -> String {
     let seconds = (Utc::now() - at).num_seconds().max(0);
     match seconds {
