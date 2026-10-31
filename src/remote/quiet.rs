@@ -619,7 +619,12 @@ fn words(group: &Group) -> Words {
             )
         }
         ActKind::Search => {
-            let indexes = targets();
+            let indexes = distinct(
+                calls
+                    .iter()
+                    .flat_map(|call| call.act.target.split(", "))
+                    .map(str::trim),
+            );
             let verb = tense("Searching", "Searched");
             match indexes.as_slice() {
                 [] => format!("{verb} {count} times"),
@@ -775,18 +780,18 @@ fn phrases(member: &Member) -> Phrases {
         ),
         ActKind::Search => {
             let query = format!("“{}”", act.query);
-            match name {
-                "" => three(
-                    format!("Searching for {query}"),
-                    format!("Searched for {query}"),
-                    format!("search for {query}"),
-                ),
-                index => three(
-                    format!("Searching the {index} index for {query}"),
-                    format!("Searched the {index} index for {query}"),
-                    format!("search the {index} index for {query}"),
-                ),
-            }
+            let indexes: Vec<String> = indexes(name);
+            let which = match indexes.as_slice() {
+                [] => String::new(),
+                [one] => format!(" the {one} index"),
+                [a, b] => format!(" the {a} and {b} indexes"),
+                many => format!(" {} indexes", many.len()),
+            };
+            three(
+                format!("Searching{which} for {query}"),
+                format!("Searched{which} for {query}"),
+                format!("search{which} for {query}"),
+            )
         }
         ActKind::Skill => three(
             format!("Loading the {name} skill"),
@@ -853,6 +858,11 @@ fn phrases(member: &Member) -> Phrases {
             three(doing, done, verb)
         }
     }
+}
+
+/// The indexes a search's target names ("arko, gpui").
+fn indexes(target: &str) -> Vec<String> {
+    distinct(target.split(", ").map(str::trim))
 }
 
 fn lower_first(text: &str) -> String {

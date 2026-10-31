@@ -110,9 +110,7 @@ fn items_from(
                                 track_runs(&mut running, &tool, &result.output);
                             }
                             let call = &mut items[index];
-                            call.status = Some(outcome.status);
-                            outcome.settled.apply(&mut call.act);
-                            call.outcome = outcome.text;
+                            call.settle(outcome.status, outcome.text, &outcome.settled);
                             call.started = outcome.started.clone();
                             call.output = outcome.output;
                             // The job a moved call went on in, which may

@@ -102,10 +102,13 @@ fn act(tool: &str, parameters: &Parameters, running: &[String]) -> Act {
         "Write" => on(ActKind::Write, path("file_path")),
         EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => on(ActKind::Edit, path("path")),
         "Edit" | "MultiEdit" => on(ActKind::Edit, path("file_path")),
-        SHELL_TOOL_NAME | "Bash" => on(
-            ActKind::Command,
-            command_words(&text("command"), &text("cwd")),
-        ),
+        SHELL_TOOL_NAME | "Bash" => Act {
+            alone: runs_tests(&text("command")),
+            ..on(
+                ActKind::Command,
+                command_words(&text("command"), &text("cwd")),
+            )
+        },
         "index_search" => Act {
             query: cut(&text("query"), 60),
             ..on(ActKind::Search, index_name(&text("index")))
@@ -674,10 +677,12 @@ pub struct Outcome {
 /// What a call's result adds to its act ([`Act`]).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Settled {
-    news: String,
+    /// What its row says of how it went, replacing what it said (empty, it
+    /// says nothing more).
+    news: Option<String>,
     alone: bool,
     ran: bool,
-    /// The index a search searched, as its result names it.
+    /// The indexes a search searched, as the search says.
     index: Option<String>,
     came: Option<Came>,
     /// The call's words once it ended, when the result decides them.
@@ -734,14 +739,34 @@ impl Outcome {
 }
 
 impl Settled {
+    /// How a job a call started (a command that went on in the background,
+    /// a monitor) went on: what its result first said no longer stands.
+    pub fn job() -> Self {
+        Self {
+            news: Some(String::new()),
+            ..Self::default()
+        }
+    }
+
+    /// What the search of a call found: the indexes it searched, and
+    /// "no results" when it had none.
+    pub fn found(&mut self, found: crate::index::Found) {
+        if !found.indexes.is_empty() {
+            self.index = Some(found.indexes.join(", "));
+        }
+        if found.hits == 0 {
+            self.news = Some("no results".into());
+        }
+    }
+
     /// Completes `act`, the act of the call whose result this is.
     pub fn apply(&self, act: &mut Option<Act>) {
         let Some(act) = act.as_mut() else {
             return;
         };
         let settled = self;
-        if !settled.news.is_empty() {
-            act.news.clone_from(&settled.news);
+        if let Some(news) = &settled.news {
+            act.news.clone_from(news);
         }
         act.alone |= settled.alone;
         act.ran |= settled.ran;
@@ -892,18 +917,6 @@ fn brief(tool: &str, output: &str) -> Outcome {
             outcome.settled.came = Some(came(output));
             outcome
         }
-        "index_search" => {
-            let mut outcome = Outcome::ok(cut(
-                output.lines().next().unwrap_or_default(),
-                OUTCOME_CHARS,
-            ));
-            let (index, none) = searched(output);
-            outcome.settled.index = index;
-            if none {
-                outcome.settled.news = "no results".into();
-            }
-            outcome
-        }
         RUN_WORKFLOW_AGENT_TOOL_NAME => {
             Outcome::ok(format!("reported ({})", plural(lines(), "line", "lines")))
         }
@@ -917,9 +930,13 @@ fn brief(tool: &str, output: &str) -> Outcome {
     }
 }
 
-/// What reached a wait, from its result: the mail it holds, by its
-/// headings ("r1 (agent `worker`) finished. Its report:"), and the update
-/// (a note, a terminal update, a monitor's alert) that ended it early.
+/// What reached a wait, from its result. That is the mail it holds, each
+/// item between its `[mail N]` and `[end of mail N]` markers and known by
+/// its heading ("r1 (agent `worker`) finished. Its report:"), and the
+/// update (a note, a terminal update, a monitor's alert) that ended it
+/// early. A report that quotes mail inside it counts once.
+// shortcut: reads the framework's markers and headings, until
+// wait_for_agents gives the mail it returns as data.
 fn came(output: &str) -> Came {
     let mut came = Came::default();
     let first = output.lines().next().unwrap_or_default();
@@ -927,13 +944,22 @@ fn came(output: &str) -> Came {
     {
         came.updates += 1;
     }
+    // The item being read, by its number.
+    let mut inside: Option<&str> = None;
     for line in output.lines() {
-        let Some((_, heading)) = line
+        if let Some(number) = inside {
+            if line.trim() == format!("[end of mail {number}]") {
+                inside = None;
+            }
+            continue;
+        }
+        let Some((number, heading)) = line
             .strip_prefix("[mail ")
             .and_then(|rest| rest.split_once("] "))
         else {
             continue;
         };
+        inside = Some(number);
         let run = heading.split_whitespace().next().unwrap_or_default();
         if heading.contains(") finished. Its report") {
             came.finished.push(run.to_string());
@@ -946,20 +972,46 @@ fn came(output: &str) -> Came {
     came
 }
 
-/// The index a search's result says it searched ("6 results from arko
-/// (code, hybrid):"), the first of several, and whether it found nothing.
-fn searched(output: &str) -> (Option<String>, bool) {
-    let first = output.lines().next().unwrap_or_default();
-    let (names, none) = match first.strip_prefix("No results for ") {
-        Some(rest) => (rest.split_once(" in ").map(|(_, names)| names), true),
-        None => (first.split_once(" from ").map(|(_, names)| names), false),
-    };
-    let index = names
-        .and_then(|names| names.split(" (").next())
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_string);
-    (index, none)
+/// Whether `command` runs tests (`cargo test`, `go test`, `pytest`, `npm
+/// test` and the like), whose run has a row of its own in the Quiet view
+/// whatever it prints.
+fn runs_tests(command: &str) -> bool {
+    let words: Vec<&str> = command
+        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')'))
+        .filter(|word| !word.is_empty())
+        .map(|word| word.rsplit('/').next().unwrap_or(word))
+        .collect();
+    let alone = [
+        "pytest", "jest", "vitest", "mocha", "rspec", "phpunit", "ctest", "tox", "nox",
+    ];
+    words.iter().any(|word| alone.contains(word))
+        || words.windows(2).any(|pair| match pair {
+            [runner, "test" | "nextest"] => matches!(
+                *runner,
+                "cargo"
+                    | "cargo-locked"
+                    | "go"
+                    | "npm"
+                    | "pnpm"
+                    | "yarn"
+                    | "bun"
+                    | "deno"
+                    | "dotnet"
+                    | "mvn"
+                    | "gradle"
+                    | "./gradlew"
+                    | "gradlew"
+                    | "make"
+                    | "swift"
+                    | "mix"
+                    | "zig"
+            ),
+            ["-m", "pytest" | "unittest"] => true,
+            _ => false,
+        })
+        || words
+            .windows(3)
+            .any(|three| matches!(three, ["npm" | "pnpm" | "yarn" | "bun", "run", "test"]))
 }
 
 /// A shell command's outcome: its tests' counts when it ran tests, else
@@ -984,12 +1036,12 @@ fn command_outcome(output: &str) -> Outcome {
     let tests = tests(&rest);
     // Its row says how its tests went, or how it failed, and that it ran.
     let settled = Settled {
-        news: match (&tests, how.strip_prefix("exit code ")) {
+        news: Some(match (&tests, how.strip_prefix("exit code ")) {
             (Some(tests), _) => tests.clone(),
             (None, _) if ok => String::new(),
             (None, Some(code)) => format!("exit {code}"),
             (None, None) => how.to_string(),
-        },
+        }),
         alone: tests.is_some(),
         ran: true,
         ..Settled::default()
@@ -1411,26 +1463,46 @@ mod tests {
             (tested.news.as_str(), tested.alone, tested.ran),
             ("1 failed, 4 passed", true, true)
         );
+        // A job that goes on in the background says how it ended instead.
+        let mut moved = Some(tested.clone());
+        Settled::job().apply(&mut moved);
+        assert_eq!(moved.map(|act| act.news).as_deref(), Some(""));
+        // (It runs tests, so it stands alone even when it prints no counts.)
         let built = settled(SHELL_TOOL_NAME, "exit code 2, 3.0 s\nerror", shell.clone());
-        assert_eq!((built.news.as_str(), built.alone), ("exit 2", false));
+        assert_eq!((built.news.as_str(), built.alone), ("exit 2", true));
         let quiet = settled(SHELL_TOOL_NAME, "exit code 0, 0.1 s\n(no output)", shell);
         assert_eq!((quiet.news.as_str(), quiet.ran), ("", true));
-        let search = act("index_search", &[("query", "cache timer".into())]);
-        let found = settled(
-            "index_search",
-            "6 results from arko (code, hybrid):\n...",
-            search.clone(),
-        );
-        assert_eq!((found.target.as_str(), found.news.as_str()), ("arko", ""));
-        let none = settled(
-            "index_search",
-            "No results for \"x\" in gpui (code, hybrid). Try other words.",
-            search,
-        );
+        // A search's indexes and its count come from the search itself.
+        let search = act("index_search", &[("query", "state in session".into())]);
+        let found = |indexes: &[&str], hits: usize| {
+            let mut found = Settled::default();
+            found.found(crate::index::Found {
+                indexes: indexes.iter().map(|index| index.to_string()).collect(),
+                hits,
+            });
+            let mut act = Some(search.clone());
+            found.apply(&mut act);
+            act.unwrap()
+        };
+        let some = found(&["arko"], 6);
+        assert_eq!((some.target.as_str(), some.news.as_str()), ("arko", ""));
+        let none = found(&["gpui", "docs"], 0);
         assert_eq!(
             (none.target.as_str(), none.news.as_str()),
-            ("gpui", "no results")
+            ("gpui, docs", "no results")
         );
+        // A command that runs tests has a row of its own whatever it prints.
+        for (command, tests) in [
+            ("cargo test -p arko > test.log", true),
+            ("go test ./...", true),
+            ("cd web && npm run test", true),
+            ("python3 -m pytest -q", true),
+            ("cargo build", false),
+            ("rg test src", false),
+        ] {
+            let shell = act(SHELL_TOOL_NAME, &[("command", command.into())]);
+            assert_eq!(shell.alone, tests, "{command}");
+        }
         let waited = settled(
             crew::WAIT_FOR_AGENTS,
             "Still running: r4.\n\n[mail 2] r3 (agent `worker`) finished. Its report:\n\nDone.\n\n[end of mail 2]\n\n[mail 3] r4 (agent `worker`) sent you a message:\n\nHalfway.\n\n[end of mail 3]",
@@ -1441,6 +1513,19 @@ mod tests {
             Some(Came {
                 finished: vec!["r3".into()],
                 messages: 1,
+                ..Came::default()
+            })
+        );
+        // Mail a report quotes is part of that report.
+        let quoted = settled(
+            crew::WAIT_FOR_AGENTS,
+            "None of your agent runs is running now.\n\n[mail 4] r3 (agent `worker`) finished. Its report:\n\nThe wait printed:\n[mail 9] r7 (agent `worker`) finished. Its report:\n[end of mail 9]\n\n[end of mail 4]",
+            wait.clone(),
+        );
+        assert_eq!(
+            quoted.came,
+            Some(Came {
+                finished: vec!["r3".into()],
                 ..Came::default()
             })
         );

@@ -859,13 +859,63 @@ impl Tool for SearchTool {
         let detail = parse_detail(&params)?;
         let indexes = Arc::clone(&self.indexes);
         let query = args.query.clone();
+        let call = context.tool_call_id;
         // Chunking the results' files again is blocking work too.
         blocking(move || {
             let output = indexes.search_blocking(&args)?;
+            if let Some(call) = call {
+                found(
+                    call,
+                    Found {
+                        indexes: output
+                            .searched
+                            .iter()
+                            .map(|(name, ..)| name.clone())
+                            .collect(),
+                        hits: output.hits.len(),
+                    },
+                );
+            }
             Ok(format_search_detail(&query, &output, detail))
         })
         .await
     }
+}
+
+/// What a search found, for its call's line in the transcript: the indexes
+/// it searched and how many results it had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub indexes: Vec<String>,
+    pub hits: usize,
+}
+
+/// What the latest searches found, by their calls, until the transcript
+/// takes it when the call's result comes.
+static FOUND: std::sync::Mutex<std::collections::VecDeque<(uuid::Uuid, Found)>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// The most searches whose findings wait for the transcript. A search no
+/// transcript took (a run without one) gives way to newer ones.
+const FOUND_KEPT: usize = 64;
+
+fn found(call: uuid::Uuid, found: Found) {
+    let mut kept = FOUND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if kept.len() >= FOUND_KEPT {
+        kept.pop_front();
+    }
+    kept.push_back((call, found));
+}
+
+/// What the search of the call `call` found, once.
+pub fn take_found(call: uuid::Uuid) -> Option<Found> {
+    let mut kept = FOUND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let at = kept.iter().position(|(id, _)| *id == call)?;
+    kept.remove(at).map(|(_, found)| found)
 }
 
 #[derive(Debug)]

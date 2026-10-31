@@ -277,6 +277,20 @@ impl Item {
         }
     }
 
+    /// How a call ended, or how the job it started went on: its status,
+    /// its outcome's words and what its act learns, together, so that what
+    /// its row says agrees with its line in every view.
+    pub(crate) fn settle(
+        &mut self,
+        status: CallStatus,
+        outcome: Option<String>,
+        settled: &render::Settled,
+    ) {
+        self.status = Some(status);
+        self.outcome = outcome;
+        settled.apply(&mut self.act);
+    }
+
     fn size(&self) -> usize {
         96 + self.text.len()
             + self.detail.as_ref().map_or(0, String::len)
@@ -1660,9 +1674,7 @@ impl Feed {
             lane.call_output(call.item, output, budget);
         }
         if let Some(item) = lane.find(call.item) {
-            outcome.settled.apply(&mut item.act);
-            item.status = Some(outcome.status);
-            item.outcome = outcome.text;
+            item.settle(outcome.status, outcome.text, &outcome.settled);
             item.started = outcome.started;
             if let Some(job) = outcome.job {
                 item.job = Some(job.to_string());
@@ -1936,7 +1948,12 @@ impl Feed {
                     .calls
                     .get_mut(tool_call_id)
                     .and_then(|call| call.message.take());
-                self.settle(&mut state, tool_call_id, render::outcome(tool_name, output));
+                let mut outcome = render::outcome(tool_name, output);
+                // What a search found comes from the search itself.
+                if let Some(found) = crate::index::take_found(*tool_call_id) {
+                    outcome.settled.found(found);
+                }
+                self.settle(&mut state, tool_call_id, outcome);
                 // The worker that got a message shows it in its own
                 // transcript (a message to the lead is its call's line).
                 if let (Some(message), Some(to)) = (message, render::sent_to(output)) {
@@ -2273,8 +2290,7 @@ impl Feed {
             JobState::Stopped => (CallStatus::Ok, "stopped"),
             _ => (CallStatus::Ok, "ended"),
         };
-        call.status = Some(status);
-        call.outcome = Some(text.to_string());
+        call.settle(status, Some(text.to_string()), &render::Settled::job());
         let call = call.clone();
         self.publish(state, Update::Change(call));
     }
@@ -2493,8 +2509,7 @@ impl Feed {
         if call.outcome.as_deref() == Some(text.as_str()) && call.status == Some(status) {
             return;
         }
-        call.status = Some(status);
-        call.outcome = Some(text);
+        call.settle(status, Some(text), &render::Settled::job());
         let call = call.clone();
         self.publish(state, Update::Change(call));
     }
@@ -2540,8 +2555,7 @@ impl Feed {
             JobState::Interrupted => (CallStatus::Failed, "interrupted".to_string()),
             _ => (CallStatus::Failed, "stopped".to_string()),
         };
-        call.status = Some(status);
-        call.outcome = Some(text);
+        call.settle(status, Some(text), &render::Settled::job());
         let call = call.clone();
         self.publish(state, Update::Change(call));
     }
