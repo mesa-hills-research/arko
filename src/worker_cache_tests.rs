@@ -748,3 +748,92 @@ async fn a_worker_an_older_arko_saved_asks_before_continuing() {
     );
     crew.shutdown().await;
 }
+
+/// A client's `/message` to a worker an older Arko saved, sent to the
+/// running session, is refused with the question and what confirming
+/// takes, and the transcript stays as it was. The same send again asks
+/// again, because a refusal confirms nothing. A fresh send, confirmed,
+/// continues the worker, whose task then records its latest request, so
+/// its cache is known.
+#[tokio::test]
+async fn a_client_continues_a_worker_an_older_arko_saved_once_it_confirms() {
+    use crate::remote::{Confirm, Refusal, RefusalKind, Verdict};
+    use crate::worker_cache::WorkerCacheState;
+    let seen: Seen = Arc::default();
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let server = serve(seen.clone(), notify.clone(), notify).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    turn(&mut harness, &mut inputs, "Start r1.").await;
+    harness.crew.clone().unwrap().shutdown().await;
+    harness.workflow().checkpoint().await.unwrap();
+    saved_by_an_older_arko(&harness);
+    harness.open(true).unwrap();
+    let crew = harness.crew.clone().unwrap();
+    assert_eq!(
+        crew.cache_state("r1"),
+        Some(WorkerCacheState::Unknown("r1".into()))
+    );
+    let (requests, receiver) = mpsc::unbounded_channel();
+    inputs.requests = receiver;
+    let send = move |continue_uncached: bool| {
+        let (reply, verdict) = oneshot::channel();
+        let input = Input::Message(ui::Message {
+            text: "/message r1 Check the docs.".into(),
+            continue_uncached,
+            ..Default::default()
+        });
+        requests
+            .send(crate::engine::Request::Send { input, reply })
+            .unwrap();
+        async move {
+            tokio::time::timeout(Duration::from_secs(20), verdict)
+                .await
+                .expect("a verdict in time")
+                .expect("a verdict")
+        }
+    };
+    let feed = harness.feed.clone();
+    let client = {
+        let seen = seen.clone();
+        async move {
+            let before = shown(&feed);
+            let asks = Verdict::Refused(Refusal {
+                kind: RefusalKind::Uncached {
+                    worker: "r1".into(),
+                },
+                words: "r1's cache isn't known, because an older Arko saved it. Continuing may re-read its whole conversation without it.".into(),
+                confirm: Some(Confirm::ContinueUncached),
+            });
+            assert_eq!(send(false).await, asks);
+            assert_eq!(send(false).await, asks);
+            assert_eq!(shown(&feed), before);
+            assert!(!got(&seen, "r1", "Check the docs."));
+            match send(true).await {
+                Verdict::Accepted {
+                    delivery: Delivery::Command,
+                    item: Some(item),
+                    ..
+                } => {
+                    let shown = feed.subscribe().0.items;
+                    let copy = shown.iter().find(|shown| shown.id == item).unwrap();
+                    assert_eq!(
+                        (copy.agent.as_str(), copy.text.as_str()),
+                        ("r1", "Check the docs.")
+                    );
+                }
+                other => panic!("{other:?}"),
+            }
+            until(|| got(&seen, "r1", "Check the docs.")).await;
+            sender.send(Input::Eof).unwrap();
+        }
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    until(|| matches!(crew.cache_state("r1"), Some(WorkerCacheState::Known(_)))).await;
+    crew.shutdown().await;
+}
