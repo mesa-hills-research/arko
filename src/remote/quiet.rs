@@ -7,10 +7,11 @@
 //! it is of the same kind, or reads a file the row edits or writes. A row
 //! holds calls that follow each other, so rows never reorder, and the
 //! thinking between two calls of one row goes inside it. A call that failed,
-//! that has a job or images, a test run, a call of another kind and a long
-//! call while it runs (a command, a wait, an MCP call) have rows of their
-//! own. A row keeps its calls once anything shows after it ([`rows`]), so
-//! only the last row changes as calls join it.
+//! a test run, a call of another kind and a long call while it runs (a
+//! command, a wait, an MCP call) have rows of their own. The images a call's
+//! tool returned and the buttons of its job show under its row's line, in
+//! whatever row it is. A row keeps its calls once anything shows after it
+//! ([`rows`]), so only the last row changes as calls join it.
 //!
 //! The web page compiles this file beside `protocol.rs` as a module of its
 //! own, so it depends on the standard library and that module alone.
@@ -55,8 +56,6 @@ pub struct Call<'a> {
     /// It made a job (it moved to the background, or started a terminal or
     /// a monitor), whose state its row says.
     pub job: bool,
-    /// Its tool returned images, which show under its row.
-    pub images: bool,
     pub turn: Option<u64>,
 }
 

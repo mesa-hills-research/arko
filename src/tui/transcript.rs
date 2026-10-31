@@ -1050,7 +1050,6 @@ impl Transcript {
                         status: item.status,
                         outcome: item.outcome.as_deref(),
                         job: item.job.is_some(),
-                        images: !item.images.is_empty(),
                         turn: item.turn,
                     }),
                     Kind::Thinking => quiet::Step::Thinking,

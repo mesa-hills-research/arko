@@ -129,8 +129,7 @@ pub fn moves_rows(old: &ItemData, new: &ItemData, view: View) -> bool {
             && (old.status != new.status
                 || old.act != new.act
                 || old.outcome != new.outcome
-                || old.job != new.job
-                || old.images.len() != new.images.len()))
+                || old.job != new.job))
 }
 
 /// What the Messages view keeps of the main transcript.
@@ -302,7 +301,6 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
                     status: item.status,
                     outcome: item.outcome.as_deref(),
                     job: item.job.is_some(),
-                    images: !item.images.is_empty(),
                     turn: item.turn,
                 }),
                 None => quiet::Step::Other(*id),
@@ -1187,6 +1185,18 @@ mod tests {
         assert_eq!(words.text, "Ran cargo test");
         assert_eq!(words.failed.as_deref(), Some("1 failed, 3 passed"));
         assert_eq!(calls, ["i5"]);
+        // Images that a call's result brings later leave the rows as they
+        // were, since they show under the row's line whatever row it is.
+        let mut with_images = items.clone();
+        with_images[2].images.push(crate::protocol::ImageData {
+            id: 1,
+            mime: "image/png".into(),
+            label: "shot.png".into(),
+            bytes: 10,
+            url: "/i/1".into(),
+        });
+        assert_eq!(layout(&with_images, View::Quiet, None), rows);
+        assert!(!moves_rows(&items[2], &with_images[2], View::Quiet));
         // Full keeps every call's row.
         assert_eq!(
             ids(&layout(&items, View::Full, None)),

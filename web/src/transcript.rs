@@ -215,9 +215,9 @@ fn count_row(id: u64, count: Count) -> AnyView {
 /// place in the page while calls join it and its words change, so focus and
 /// what's open inside it stay ([`QUIET`]). A click on its line (or Enter on
 /// it) opens it to the rows of its calls as Full shows them, which are made
-/// only then. A row of one call offers what that call's own row does (Move
-/// to background, Stop), and shows the images its tool returned outside the
-/// disclosure, as Full does.
+/// only then. Each of its calls keeps what its own row offers (Move to
+/// background, Stop) and the images its tool returned under the line, as
+/// Full does, whatever row it's in.
 fn quiet_row(
     id: u64,
     words: crate::quiet::Words,
@@ -235,17 +235,16 @@ fn quiet_row(
     let data = RwSignal::from(&shared);
     let open = move || page.quiet_open.with(|open| open.contains(&id));
     let words = move || data.with(|(words, _)| words.clone());
-    // The one call a row of one call is, by its cell.
-    let single = move || {
+    // The row's calls, by ID.
+    let members = move || {
         data.with(|(_, calls)| {
-            let mut ids = calls.iter().filter_map(|row| match row {
-                Row::Item(id, Kind::Call) => Some(*id),
-                _ => None,
-            });
-            match (ids.next(), ids.next()) {
-                (Some(call), None) => cell(call),
-                _ => None,
-            }
+            calls
+                .iter()
+                .filter_map(|row| match row {
+                    Row::Item(id, Kind::Call) => Some(*id),
+                    _ => None,
+                })
+                .collect::<Vec<u64>>()
         })
     };
     let class = move || {
@@ -259,30 +258,42 @@ fn quiet_row(
         }
         class
     };
+    // What each call's own row offers (Move to background while it runs,
+    // Stop while its job or monitor runs), whatever row it's in.
     let actions = move || {
-        let cell = single()?;
-        let (moves, stop) = cell.data.with(|item| {
-            call_actions(
-                item,
-                |id| page.movable.with(|movable| movable.contains(&id)),
-                |job| {
-                    page.running_jobs
-                        .with(|running| running.iter().any(|running| running == job))
-                },
-            )
-        });
-        let call = cell.data.with_untracked(|item| item.id);
-        Some(view! {
-            {moves.then(|| view! { <MoveButton id=call /> })}
-            {stop.map(|job| view! { <StopJobButton job=job /> })}
-        })
+        members()
+            .into_iter()
+            .filter_map(cell)
+            .map(|cell| {
+                let (moves, stop) = cell.data.with(|item| {
+                    call_actions(
+                        item,
+                        |id| page.movable.with(|movable| movable.contains(&id)),
+                        |job| {
+                            page.running_jobs
+                                .with(|running| running.iter().any(|running| running == job))
+                        },
+                    )
+                });
+                let call = cell.data.with_untracked(|item| item.id);
+                view! {
+                    {moves.then(|| view! { <MoveButton id=call /> })}
+                    {stop.map(|job| view! { <StopJobButton job=job /> })}
+                }
+            })
+            .collect_view()
     };
-    // (Open, the call's own row shows them.)
+    // The images the calls' tools returned, also those that come later,
+    // under the line as Full shows them. (Open, the calls' own rows show
+    // them.)
     let images = move || {
-        if open() {
-            return None;
-        }
-        single().map(|cell| view! { <Thumbnails data=cell.for_row().data /> })
+        (!open()).then(|| {
+            members()
+                .into_iter()
+                .filter_map(cell)
+                .map(|cell| view! { <Thumbnails data=cell.for_row().data /> })
+                .collect_view()
+        })
     };
     let inside = move || {
         open().then(|| {
