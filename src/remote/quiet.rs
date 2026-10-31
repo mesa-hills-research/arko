@@ -1,6 +1,6 @@
-//! The Quiet view's rows: each call in a few words, and neighbouring calls
-//! of a kind merged into one row ("Made 3 edits to app.rs", "Read 4 files
-//! in src/tui"), the same in every client.
+//! The Quiet view's rows, which say each call in a few words and merge
+//! neighbouring calls of a kind into one row ("Made 3 edits to app.rs",
+//! "Read 4 files in src/tui"), the same in every client.
 //!
 //! A run is the stretch of an agent's calls and thinking between two other
 //! things the view shows. Within a run a call joins the row before it when
@@ -9,8 +9,9 @@
 //! thinking between two calls of one row goes inside it. A call that failed,
 //! that has a job or images, a test run, a call of another kind and a long
 //! call while it runs (a command, a wait, an MCP call) have rows of their
-//! own. The rows are worked out again from the items at each change, and
-//! only those of the last run can change, as calls join them.
+//! own. Once anything else shows after a run, the run is sealed and its rows
+//! keep their calls ([`Planner`]), so only the last run's rows change as
+//! calls join them.
 //!
 //! The web page compiles this file beside `protocol.rs` as a module of its
 //! own, so it depends on the standard library and that module alone.
@@ -36,13 +37,18 @@ pub enum Step<'a> {
     Call(Call<'a>),
     /// The agent's thinking, which doesn't end a run.
     Thinking,
-    /// Anything else the view shows, which ends a run.
+    /// Anything else the view shows, which ends a run and seals it.
     Other,
+    /// What shows beside the agent's work without ending it (a note the
+    /// agent hasn't read, which waits at the end).
+    Aside,
 }
 
 /// A call, as its row needs it.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Call<'a> {
+    /// The item's ID, by which a sealed run keeps its rows.
+    pub id: u64,
     /// What it did. A call without one shows as it does in Full.
     pub act: Option<&'a Act>,
     pub status: Option<CallStatus>,
@@ -66,8 +72,8 @@ pub enum Piece {
 /// A row of calls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
-    /// The steps it holds, by index, in order: its calls and the thinking
-    /// between them.
+    /// The steps it holds, by index, in order. They are its calls and the
+    /// thinking between them.
     pub members: Vec<usize>,
     pub words: Words,
 }
@@ -78,7 +84,7 @@ pub struct Words {
     pub text: String,
     /// Why it failed, said after a ✗ in the error colour.
     pub failed: Option<String>,
-    /// More, said after it, muted: how a call's job is going.
+    /// More, said after it, muted, such as how a call's job is going.
     pub note: Option<String>,
     /// A call a stop or a compaction cut short, whose row is muted.
     pub muted: bool,
@@ -86,23 +92,73 @@ pub struct Words {
     pub running: bool,
 }
 
-/// The rows of `steps`, with the steps that show as they are.
-pub fn rows(steps: &[Step]) -> Vec<Piece> {
-    let mut out = Vec::new();
-    let mut names = Names::default();
-    let mut start = 0;
-    while start < steps.len() {
-        let end = steps[start..]
-            .iter()
-            .position(|step| matches!(step, Step::Other))
-            .map_or(steps.len(), |at| start + at);
-        run(steps, start, end, &mut names, &mut out);
-        if end < steps.len() {
-            out.push(Piece::Step(end));
+/// Works out the rows of a transcript as it grows. A run is sealed once
+/// anything else shows after it, and from then on its rows keep their
+/// calls. A call that settles later changes its row's words, never which
+/// row it's in, so a failure that comes late shows on the row it's in. Only
+/// the last run, which is still open, is worked out again.
+#[derive(Debug, Default)]
+pub struct Planner {
+    /// The rows of each sealed run, by the ID of the run's first call.
+    sealed: HashMap<u64, Vec<Frozen>>,
+}
+
+/// A sealed row, by its calls' IDs, those it counts and the reads it took
+/// in.
+#[derive(Debug, Clone)]
+struct Frozen {
+    kind: ActKind,
+    counted: Vec<u64>,
+    absorbed: Vec<u64>,
+}
+
+impl Planner {
+    /// The rows of `steps`, with the steps that show as they are.
+    pub fn rows(&mut self, steps: &[Step]) -> Vec<Piece> {
+        let mut out = Vec::new();
+        let mut names = Names::default();
+        let mut seen: Vec<u64> = Vec::new();
+        let mut start = 0;
+        while start < steps.len() {
+            let end = steps[start..]
+                .iter()
+                .position(|step| matches!(step, Step::Other))
+                .map_or(steps.len(), |at| start + at);
+            let slots = slots(steps, start, end, &mut names);
+            let first = steps[start..end].iter().find_map(|step| match step {
+                Step::Call(call) => Some(call.id),
+                _ => None,
+            });
+            let groups = match first {
+                Some(first) if end < steps.len() => {
+                    seen.push(first);
+                    match self.sealed.get(&first) {
+                        Some(frozen) => regroup(slots, frozen),
+                        None => {
+                            let groups = plan(slots);
+                            self.sealed
+                                .insert(first, groups.iter().map(Group::freeze).collect());
+                            groups
+                        }
+                    }
+                }
+                _ => plan(slots),
+            };
+            place(steps, start, end, &groups, &mut out);
+            if end < steps.len() {
+                out.push(Piece::Step(end));
+            }
+            start = end + 1;
         }
-        start = end + 1;
+        // (The runs no longer shown go.)
+        self.sealed.retain(|first, _| seen.contains(first));
+        out
     }
-    out
+}
+
+/// The rows of `steps` worked out at once, as a planner first sees them.
+pub fn rows(steps: &[Step]) -> Vec<Piece> {
+    Planner::default().rows(steps)
 }
 
 /// A call of a row.
@@ -120,6 +176,10 @@ impl Member<'_> {
         self.call.status == Some(CallStatus::Running)
     }
 
+    fn failed(&self) -> bool {
+        self.call.status == Some(CallStatus::Failed)
+    }
+
     /// Whether it has a row of its own.
     fn alone(&self) -> bool {
         let long = matches!(
@@ -130,9 +190,32 @@ impl Member<'_> {
             || self.act.alone
             || self.call.job
             || self.call.images
-            || self.call.status == Some(CallStatus::Failed)
+            || self.failed()
             || (long && self.running())
     }
+}
+
+/// A run's calls in order, each with its act, or `None` for a call without
+/// one, which shows as it is.
+fn slots<'a>(
+    steps: &[Step<'a>],
+    start: usize,
+    end: usize,
+    names: &mut Names,
+) -> Vec<Option<Member<'a>>> {
+    let mut slots = Vec::new();
+    for (index, step) in steps.iter().enumerate().take(end).skip(start) {
+        let Step::Call(call) = *step else {
+            continue;
+        };
+        slots.push(call.act.map(|act| Member {
+            index,
+            call,
+            act,
+            name: names.of(call.turn, act),
+        }));
+    }
+    slots
 }
 
 /// A row being made.
@@ -140,8 +223,9 @@ struct Group<'a> {
     kind: ActKind,
     /// The calls it counts.
     calls: Vec<Member<'a>>,
-    /// Every call in it, by step index (reads of a file it changes too).
-    members: Vec<usize>,
+    /// The reads of a file it changes, which it holds without counting.
+    absorbed: Vec<Member<'a>>,
+    /// It takes no more calls.
     alone: bool,
 }
 
@@ -150,8 +234,28 @@ impl<'a> Group<'a> {
         Self {
             kind: member.act.kind,
             alone: member.alone(),
-            members: vec![member.index],
             calls: vec![member],
+            absorbed: Vec::new(),
+        }
+    }
+
+    /// Its calls by step index, in order.
+    fn members(&self) -> Vec<usize> {
+        let mut members: Vec<usize> = self
+            .calls
+            .iter()
+            .chain(&self.absorbed)
+            .map(|member| member.index)
+            .collect();
+        members.sort_unstable();
+        members
+    }
+
+    fn freeze(&self) -> Frozen {
+        Frozen {
+            kind: self.kind,
+            counted: self.calls.iter().map(|member| member.call.id).collect(),
+            absorbed: self.absorbed.iter().map(|member| member.call.id).collect(),
         }
     }
 
@@ -174,53 +278,42 @@ impl<'a> Group<'a> {
             if one_target && self.calls[0].act.target != target {
                 return Err(member);
             }
-            self.members.push(member.index);
             self.calls.push(member);
             return Ok(());
         }
         // Reading back a file it changes is part of changing it.
         if changes && kind == ActKind::Read && self.files().any(|file| file == target) {
-            self.members.push(member.index);
+            self.absorbed.push(member);
             return Ok(());
         }
         // A row that only read one file becomes a row that changes it.
         let changing = matches!(kind, ActKind::Edit | ActKind::Write);
         if self.kind == ActKind::Read && changing && self.files().all(|file| file == target) {
             self.kind = kind;
-            self.members.push(member.index);
-            self.calls = vec![member];
+            self.absorbed.append(&mut self.calls);
+            self.calls.push(member);
             return Ok(());
         }
         Err(member)
     }
 
     /// Takes the calls of `next`, a row of the same kind after it.
-    fn absorb(&mut self, next: Group<'a>) {
-        self.members.extend(next.members);
-        self.calls.extend(next.calls);
+    fn absorb(&mut self, mut next: Group<'a>) {
+        self.calls.append(&mut next.calls);
+        self.absorbed.append(&mut next.absorbed);
     }
 }
 
-/// The rows of the run `steps[start..end]`, onto `out`.
-fn run<'a>(steps: &[Step<'a>], start: usize, end: usize, names: &mut Names, out: &mut Vec<Piece>) {
-    let mut groups: Vec<Group<'a>> = Vec::new();
-    for (index, step) in steps.iter().enumerate().take(end).skip(start) {
-        let Step::Call(call) = *step else {
-            continue;
-        };
-        let Some(act) = call.act else {
-            // It shows as it is, and ends the row before it.
+/// The rows of a run's calls `slots`, worked out from what they are now.
+fn plan(slots: Vec<Option<Member<'_>>>) -> Vec<Group<'_>> {
+    let mut groups: Vec<Group> = Vec::new();
+    for slot in slots {
+        let Some(member) = slot else {
+            // A call without an act ends the row before it.
             if let Some(last) = groups.last_mut() {
                 last.alone = true;
             }
             continue;
-        };
-        let name = names.of(call.turn, act);
-        let member = Member {
-            index,
-            call,
-            act,
-            name,
         };
         let member = match groups.last_mut() {
             Some(last) => match last.take(member) {
@@ -243,11 +336,50 @@ fn run<'a>(steps: &[Step<'a>], start: usize, end: usize, names: &mut Names, out:
         };
         groups.push(Group::new(member));
     }
+    groups
+}
+
+/// The rows of a sealed run's calls `slots`, as `frozen` keeps them. A call
+/// it doesn't hold has a row of its own.
+fn regroup<'a>(slots: Vec<Option<Member<'a>>>, frozen: &[Frozen]) -> Vec<Group<'a>> {
+    let mut members: HashMap<u64, Member<'a>> = slots
+        .into_iter()
+        .flatten()
+        .map(|member| (member.call.id, member))
+        .collect();
+    let mut groups: Vec<Group<'a>> = Vec::new();
+    for row in frozen {
+        let mut take = |ids: &[u64]| -> Vec<Member<'a>> {
+            ids.iter().filter_map(|id| members.remove(id)).collect()
+        };
+        let mut calls = take(&row.counted);
+        let mut absorbed = take(&row.absorbed);
+        if calls.is_empty() {
+            std::mem::swap(&mut calls, &mut absorbed);
+        }
+        if !calls.is_empty() {
+            groups.push(Group {
+                kind: row.kind,
+                calls,
+                absorbed,
+                alone: true,
+            });
+        }
+    }
+    groups.extend(members.into_values().map(Group::new));
+    groups.sort_by_key(|group| group.members().first().copied());
+    groups
+}
+
+/// Places a run's rows `groups` in `steps[start..end]`, onto `out`: each row
+/// where its first call is, with the thinking between two of its calls, and
+/// the rest as they are.
+fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut Vec<Piece>) {
     // Which row each call is in.
     let mut row_of: HashMap<usize, usize> = HashMap::new();
     for (at, group) in groups.iter().enumerate() {
-        for member in &group.members {
-            row_of.insert(*member, at);
+        for member in group.members() {
+            row_of.insert(member, at);
         }
     }
     let calls: Vec<usize> = (start..end)
@@ -275,7 +407,7 @@ fn run<'a>(steps: &[Step<'a>], start: usize, end: usize, names: &mut Names, out:
         let row = match step {
             Step::Call(_) => row_of.get(&index).copied(),
             Step::Thinking => inside(index),
-            Step::Other => None,
+            Step::Other | Step::Aside => None,
         };
         if let Some(row) = row
             && let Some(built) = rows[row].as_mut()
@@ -286,7 +418,6 @@ fn run<'a>(steps: &[Step<'a>], start: usize, end: usize, names: &mut Names, out:
             built.members.push(index);
         }
     }
-    // In order: each row where its first step was, and the rest as they are.
     for (index, step) in steps.iter().enumerate().take(end).skip(start) {
         if let Some(row) = first.get(&index) {
             if let Some(row) = rows[*row].take() {
@@ -297,7 +428,7 @@ fn run<'a>(steps: &[Step<'a>], start: usize, end: usize, names: &mut Names, out:
         let in_row = match step {
             Step::Call(_) => row_of.contains_key(&index),
             Step::Thinking => inside(index).is_some(),
-            Step::Other => false,
+            Step::Other | Step::Aside => false,
         };
         if !in_row {
             out.push(Piece::Step(index));
@@ -430,10 +561,22 @@ fn distinct<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<String> {
 /// What a row of `group` says.
 fn words(group: &Group) -> Words {
     let calls = &group.calls;
-    let running = calls.iter().any(Member::running);
+    let every = || calls.iter().chain(&group.absorbed);
+    let running = every().any(Member::running);
+    // (A sealed row keeps a call that failed after it was sealed, and says
+    // so.)
+    let failed = every().filter(|member| member.failed()).count();
+    let failures = |words: &mut Words| {
+        if failed > 0 && words.failed.is_none() {
+            words.failed = Some(format!("{failed} failed"));
+        }
+    };
     if calls.len() == 1 {
         let mut words = one(&calls[0]);
         words.running = running;
+        if !calls[0].failed() {
+            failures(&mut words);
+        }
         return words;
     }
     let now = calls.iter().all(Member::running);
@@ -550,11 +693,13 @@ fn words(group: &Group) -> Words {
         // (A call of another kind has a row of its own.)
         ActKind::Other => calls[0].act.done.clone(),
     };
-    Words {
+    let mut words = Words {
         text,
         running,
         ..Words::default()
-    }
+    };
+    failures(&mut words);
+    words
 }
 
 /// What came while waits waited, in a few words: "r91 finished, 3 updates".
@@ -794,8 +939,10 @@ mod tests {
     fn shown(calls: &[Option<(Act, CallStatus)>]) -> Vec<String> {
         let steps: Vec<Step> = calls
             .iter()
-            .map(|call| match call {
+            .enumerate()
+            .map(|(index, call)| match call {
                 Some((act, status)) => Step::Call(Call {
+                    id: index as u64 + 1,
                     act: Some(act),
                     status: Some(*status),
                     turn: Some(1),
@@ -808,7 +955,12 @@ mod tests {
     }
 
     fn said(steps: &[Step]) -> Vec<String> {
-        rows(steps)
+        planned(&mut Planner::default(), steps)
+    }
+
+    fn planned(planner: &mut Planner, steps: &[Step]) -> Vec<String> {
+        planner
+            .rows(steps)
             .into_iter()
             .map(|piece| match piece {
                 Piece::Step(index) => format!("step {index}"),
@@ -1092,6 +1244,64 @@ mod tests {
                 "Ran cargo build · in the background · job 4d2c1a9b",
                 "Ran cargo build"
             ]
+        );
+    }
+
+    /// Once anything else shows after a run, its rows keep their calls. A
+    /// long call that settles after that, or a call that fails, changes its
+    /// row's words where it is, and the open run is worked out again.
+    #[test]
+    fn a_sealed_run_keeps_its_rows() {
+        let (rg, build) = (act(Command, "rg x"), act(Command, "cargo build"));
+        let (a, b) = (act(Read, "a.rs"), act(Read, "b.rs"));
+        fn call(id: u64, act: &Act, status: CallStatus) -> Step<'_> {
+            Step::Call(Call {
+                id,
+                act: Some(act),
+                status: Some(status),
+                ..Call::default()
+            })
+        }
+        let mut planner = Planner::default();
+        // The build runs when a worker's message seals the run.
+        let running = [call(1, &rg, Ok), call(2, &build, Running), Step::Other];
+        assert_eq!(
+            planned(&mut planner, &running),
+            ["Ran rg x", "Running cargo build", "step 2"]
+        );
+        let settled = [call(1, &rg, Ok), call(2, &build, Ok), Step::Other];
+        assert_eq!(
+            planned(&mut planner, &settled),
+            ["Ran rg x", "Ran cargo build", "step 2"]
+        );
+        // While nothing came after them, they would merge.
+        assert_eq!(
+            planned(&mut planner, &settled[..2]),
+            ["Ran 2 commands (rg, cargo)"]
+        );
+        // A read that fails once its row is sealed stays in it.
+        let mut planner = Planner::default();
+        let reads = [call(3, &a, Running), call(4, &b, Running), Step::Other];
+        assert_eq!(
+            planned(&mut planner, &reads),
+            ["Reading a.rs and b.rs", "step 2"]
+        );
+        let failed = [call(3, &a, Ok), call(4, &b, Failed), Step::Other];
+        assert_eq!(
+            planned(&mut planner, &failed),
+            ["Read a.rs and b.rs · ✗ 1 failed", "step 2"]
+        );
+        // A note waiting at the end seals nothing.
+        let mut planner = Planner::default();
+        let waiting = [call(1, &rg, Ok), call(2, &build, Running), Step::Aside];
+        assert_eq!(
+            planned(&mut planner, &waiting),
+            ["Ran rg x", "Running cargo build", "step 2"]
+        );
+        let waiting = [call(1, &rg, Ok), call(2, &build, Ok), Step::Aside];
+        assert_eq!(
+            planned(&mut planner, &waiting),
+            ["Ran 2 commands (rg, cargo)", "step 2"]
         );
     }
 

@@ -196,7 +196,19 @@ fn place(view: View, item: &ItemData) -> Place {
 
 /// The rows `view` shows, in order. `worker` picks a worker's own
 /// transcript instead of the main one.
+#[cfg(test)]
 pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
+    layout_with(all, view, worker, &mut quiet::Planner::default())
+}
+
+/// [`layout`], with the planner that keeps the Quiet view's sealed runs as
+/// they were.
+pub fn layout_with(
+    all: &[ItemData],
+    view: View,
+    worker: Option<&str>,
+    planner: &mut quiet::Planner,
+) -> Vec<Row> {
     let items = pending_last(all);
     // A result shows under its call, which other items may have followed
     // by the time it came.
@@ -265,7 +277,7 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
         }
     }
     if view == View::Quiet {
-        rows = quiet_rows(rows, &items);
+        rows = quiet_rows(rows, &items, planner);
     }
     rows
 }
@@ -274,7 +286,7 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
 /// words ([`quiet::rows`], as the terminal makes them), and the rest as it
 /// is. A call's results go in its row, and show under the row only when
 /// the call failed alone.
-fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
+fn quiet_rows(rows: Vec<Row>, items: &[&ItemData], planner: &mut quiet::Planner) -> Vec<Row> {
     let by_id: HashMap<u64, &ItemData> = items.iter().map(|item| (item.id, *item)).collect();
     // The rows, each with the results of its own.
     let mut shown: Vec<(Row, Vec<Row>)> = Vec::new();
@@ -291,8 +303,13 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
     let steps: Vec<quiet::Step> = shown
         .iter()
         .map(|(row, _)| match row {
+            // (A note the agent hasn't read waits at the end.)
+            Row::Item(id, _) if by_id.get(id).is_some_and(|item| item.pending) => {
+                quiet::Step::Aside
+            }
             Row::Item(id, Kind::Call) => match by_id.get(id) {
                 Some(item) => quiet::Step::Call(quiet::Call {
+                    id: item.id,
                     act: item.act.as_ref(),
                     status: item.status,
                     outcome: item.outcome.as_deref(),
@@ -307,7 +324,7 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
         })
         .collect();
     let mut out = Vec::with_capacity(shown.len());
-    for piece in quiet::rows(&steps) {
+    for piece in planner.rows(&steps) {
         match piece {
             quiet::Piece::Step(at) => {
                 let (row, results) = &shown[at];

@@ -439,7 +439,7 @@ details.call > summary, details.thinking > summary, details.more > summary { cur
 details.call > summary::-webkit-details-marker,
 details.thinking > summary::-webkit-details-marker,
 details.more > summary::-webkit-details-marker { display: none; }
-.row.quiet > summary { display: block; }
+details.quiet > summary { display: block; }
 .row.quiet.muted .what { opacity: 0.6; }
 .quiet-calls { padding-left: 16px; }
 details.call[open] > summary .mark,

@@ -41,7 +41,7 @@ use crate::remote::{
 const KEPT: usize = 3000;
 
 /// How much of the work the transcript shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum View {
     Full,
     Quiet,
@@ -352,6 +352,8 @@ pub struct Transcript {
     /// The Quiet view's order as last worked out, for a view and a
     /// generation: it's worked out again only when the items change.
     quiet_order: Option<(Filter, u64, Arc<Vec<Placed>>)>,
+    /// What each view's sealed runs hold, which never changes.
+    planners: HashMap<Filter, quiet::Planner>,
     /// The row the keyboard is on (Ctrl+G), by its block's key: it shows in
     /// the selection's colour, and the view keeps it in sight.
     pub focus: Option<u64>,
@@ -386,6 +388,7 @@ impl Transcript {
             quiet_cache: HashMap::new(),
             generation: 0,
             quiet_order: None,
+            planners: HashMap::new(),
             focus: None,
             reveal: false,
         }
@@ -939,7 +942,7 @@ impl Transcript {
     /// as rows ([`quiet::rows`]), and the rest as it is. A call's results
     /// go in its row, and show under the row only when the call failed
     /// alone.
-    fn quiet_placed(&self, filter: &Filter) -> Vec<Placed> {
+    fn quiet_placed(&mut self, filter: &Filter) -> Vec<Placed> {
         // The entries shown, each with the results of its own.
         let mut shown: Vec<(usize, Vec<usize>)> = Vec::new();
         for index in self.order() {
@@ -962,7 +965,10 @@ impl Transcript {
             .map(|(index, _)| {
                 let item = &self.entries[*index].item;
                 match item.kind {
+                    // (A note the agent hasn't read waits at the end.)
+                    _ if item.pending => quiet::Step::Aside,
                     Kind::Call => quiet::Step::Call(quiet::Call {
+                        id: item.id,
                         act: item.act.as_ref(),
                         status: item.status,
                         outcome: item.outcome.as_deref(),
@@ -976,7 +982,12 @@ impl Transcript {
             })
             .collect();
         let mut placed = Vec::with_capacity(shown.len());
-        for piece in quiet::rows(&steps) {
+        let pieces = self
+            .planners
+            .entry(filter.clone())
+            .or_default()
+            .rows(&steps);
+        for piece in pieces {
             match piece {
                 quiet::Piece::Step(at) => {
                     let (index, results) = &shown[at];
@@ -1848,7 +1859,7 @@ fn folds(item: &Item) -> bool {
 }
 
 /// What a view shows.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Filter {
     /// The main transcript, in a view.
     Main(View),

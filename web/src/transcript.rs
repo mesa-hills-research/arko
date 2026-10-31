@@ -1,6 +1,6 @@
 //! The transcript: its rows, laid out for the view, and Latest.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use lucide_leptos::{ArrowDown, ChevronRight};
@@ -50,6 +50,8 @@ pub fn Transcript() -> impl IntoView {
         STORE.with(|store| (feed, layout::with_working(rows, working, &store.borrow())))
     });
     let thinking = Memo::new(move |_| motion.get().0);
+    // Quiet rows that stay follow their words and calls.
+    Effect::new(move |_| rows.with(|(_, rows)| sync_quiet(rows)));
     // The newest item the reader saw, while at the bottom.
     Effect::new(move |_| {
         rows.track();
@@ -134,10 +136,25 @@ fn laid_out(
         let worker = worker.get();
         STORE.with(|store| {
             let store = store.borrow();
-            let rows = layout::layout(&store.items, view, worker.as_deref());
+            let rows = PLANNERS.with(|planners| {
+                let mut planners = planners.borrow_mut();
+                // Another feed's items have other ids.
+                if planners.0 != store.feed {
+                    *planners = (store.feed, HashMap::new());
+                }
+                let planner = planners.1.entry(worker.clone()).or_default();
+                layout::layout_with(&store.items, view, worker.as_deref(), planner)
+            });
             (store.feed, rows)
         })
     })
+}
+
+thread_local! {
+    /// What each transcript's sealed Quiet runs hold, by the worker whose
+    /// transcript it is, for the feed they're of.
+    static PLANNERS: std::cell::RefCell<(Option<u64>, HashMap<Option<String>, crate::quiet::Planner>)> =
+        std::cell::RefCell::new((None, HashMap::new()));
 }
 
 /// A row's key in the transcript: the feed it's of, as another feed's
@@ -154,8 +171,6 @@ fn row_key(feed: Option<u64>, row: &Row) -> (Option<u64>, String) {
             count.failed,
             count.running
         ),
-        // What it says and how many rows it holds.
-        Row::Quiet { words, calls, .. } => format!("{}:{words:?}:{}", row.key(), calls.len()),
         _ => row.key(),
     };
     (feed, key)
@@ -202,10 +217,12 @@ fn count_row(id: u64, count: Count) -> AnyView {
     .into_any()
 }
 
-/// Calls in a few words (Quiet), by the first one's ID. A click on its line
-/// (or Enter on it) opens it to the rows of its calls as Full shows them,
-/// which are made only then. A row of one call that runs offers what the
-/// call's own row does (Move to background, Stop).
+/// Calls in a few words (Quiet), by the first one's ID. The row keeps its
+/// place in the page while calls join it and its words change, so focus and
+/// what's open inside it stay ([`QUIET`]). A click on its line (or Enter on
+/// it) opens it to the rows of its calls as Full shows them, which are made
+/// only then. A row of one call that runs offers what that call's own row
+/// does (Move to background, Stop).
 fn quiet_row(
     id: u64,
     words: crate::quiet::Words,
@@ -213,90 +230,128 @@ fn quiet_row(
     thinking: Memo<Option<u64>>,
 ) -> AnyView {
     let page = page();
+    let shared = QUIET.with(|quiet| {
+        quiet
+            .borrow_mut()
+            .entry(id)
+            .or_insert_with(|| ArcRwSignal::new((words.clone(), calls.clone())))
+            .clone()
+    });
+    let data = RwSignal::from(&shared);
     let open = move || page.quiet_open.with(|open| open.contains(&id));
-    let mut class = "row call quiet".to_string();
-    if words.failed.is_some() {
-        class.push_str(" failed");
-    }
-    if words.muted {
-        class.push_str(" muted");
-    }
-    let crate::quiet::Words {
-        text,
-        failed,
-        note,
-        running,
-        ..
-    } = words;
-    let single: Vec<u64> = calls
-        .iter()
-        .filter_map(|row| match row {
-            Row::Item(id, Kind::Call) => Some(*id),
-            _ => None,
-        })
-        .collect();
-    let actions = match (running, single.as_slice()) {
-        (true, [call]) => cell(*call).map(|cell| {
-            let data = cell.for_row().data;
-            let call = *call;
-            let actions = Memo::new(move |_| {
-                data.with(|item| {
-                    call_actions(
-                        item,
-                        |id| page.movable.with(|movable| movable.contains(&id)),
-                        |job| {
-                            page.running_jobs
-                                .with(|running| running.iter().any(|running| running == job))
-                        },
-                    )
-                })
+    let words = move || data.with(|(words, _)| words.clone());
+    // The one call a row of one call is, by its cell.
+    let single = move || {
+        data.with(|(_, calls)| {
+            let mut ids = calls.iter().filter_map(|row| match row {
+                Row::Item(id, Kind::Call) => Some(*id),
+                _ => None,
             });
-            move || {
-                let (moves, stop) = actions.get();
-                view! {
-                    {moves.then(|| view! { <MoveButton id=call /> })}
-                    {stop.map(|job| view! { <StopJobButton job=job /> })}
-                }
+            match (ids.next(), ids.next()) {
+                (Some(call), None) => cell(call),
+                _ => None,
             }
-        }),
-        _ => None,
+        })
+    };
+    let class = move || {
+        let words = words();
+        let mut class = "row call quiet".to_string();
+        if words.failed.is_some() {
+            class.push_str(" failed");
+        }
+        if words.muted {
+            class.push_str(" muted");
+        }
+        class
+    };
+    let actions = move || {
+        if !words().running {
+            return None;
+        }
+        let cell = single()?;
+        let (moves, stop) = cell.data.with(|item| {
+            call_actions(
+                item,
+                |id| page.movable.with(|movable| movable.contains(&id)),
+                |job| {
+                    page.running_jobs
+                        .with(|running| running.iter().any(|running| running == job))
+                },
+            )
+        });
+        let call = cell.data.with_untracked(|item| item.id);
+        Some(view! {
+            {moves.then(|| view! { <MoveButton id=call /> })}
+            {stop.map(|job| view! { <StopJobButton job=job /> })}
+        })
     };
     let inside = move || {
         open().then(|| {
-            calls
-                .iter()
-                .cloned()
-                .map(|row| row_view(row, thinking))
-                .collect_view()
+            view! {
+                <For
+                    each=move || data.with(|(_, calls)| calls.clone())
+                    key=|row| row_key(None, row)
+                    children=move |row| row_view(row, thinking)
+                />
+            }
         })
     };
     view! {
-        <details class=class data-id=id prop:open=open>
-            <summary on:click=move |event| {
-                event.prevent_default();
-                page.quiet_open.update(|open| {
-                    if !open.remove(&id) {
-                        open.insert(id);
-                    }
-                });
-            }>
-                <span class="call-line">
-                    <span class="mark">"▸"</span>
-                    <span class="what" title=text.clone()>{text.clone()}</span>
-                    {failed.map(|why| view! {
-                        <span class="outcome" title=why.clone()><span class="failed">"✗"</span>" "{why.clone()}</span>
-                    })}
-                    {note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
-                    {running.then(|| view! {
-                        <span class="outcome"><span class="running"><Spinner /></span></span>
-                    })}
-                    {actions}
-                </span>
-            </summary>
-            <div class="quiet-calls">{inside}</div>
-        </details>
+        <div class=class data-id=id>
+            <details class="call quiet" prop:open=open>
+                <summary on:click=move |event| {
+                    event.prevent_default();
+                    page.quiet_open.update(|open| {
+                        if !open.remove(&id) {
+                            open.insert(id);
+                        }
+                    });
+                }>
+                    <span class="call-line">
+                        <span class="mark">"▸"</span>
+                        <span class="what" title=move || words().text>{move || words().text}</span>
+                        {move || words().failed.map(|why| view! {
+                            <span class="outcome" title=why.clone()><span class="failed">"✗"</span>" "{why.clone()}</span>
+                        })}
+                        {move || words().note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
+                        {move || words().running.then(|| view! {
+                            <span class="outcome"><span class="running"><Spinner /></span></span>
+                        })}
+                        {actions}
+                    </span>
+                </summary>
+                <div class="quiet-calls">{inside}</div>
+            </details>
+        </div>
     }
     .into_any()
+}
+
+thread_local! {
+    /// What each Quiet row shows, by its first call, which the row reads
+    /// and a new layout updates ([`sync_quiet`]).
+    static QUIET: std::cell::RefCell<HashMap<u64, ArcRwSignal<(crate::quiet::Words, Vec<Row>)>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Gives each Quiet row of `rows` its words and calls as laid out now, and
+/// lets go of those of rows no longer shown.
+fn sync_quiet(rows: &[Row]) {
+    QUIET.with(|quiet| {
+        let mut quiet = quiet.borrow_mut();
+        let mut shown = HashSet::new();
+        for row in rows {
+            if let Row::Quiet { id, words, calls } = row {
+                shown.insert(*id);
+                if let Some(signal) = quiet.get(id)
+                    && signal.with_untracked(|(old, old_calls)| old != words || old_calls != calls)
+                {
+                    signal.set((words.clone(), calls.clone()));
+                }
+            }
+        }
+        quiet.retain(|id, _| shown.contains(id));
+    });
 }
 
 fn local_time(at: i64) -> String {
@@ -982,6 +1037,33 @@ mod tests {
             assert_eq!((first.len(), second.len()), (1, 1));
             assert_ne!(first, second);
         });
+    }
+
+    /// A Quiet row keeps its key while calls join it and its words change,
+    /// so the page keeps its element, its focus and what's open inside it.
+    #[test]
+    fn a_quiet_rows_key_is_its_first_call() {
+        let row = |text: &str, calls: Vec<Row>| Row::Quiet {
+            id: 2,
+            words: crate::quiet::Words {
+                text: text.into(),
+                ..Default::default()
+            },
+            calls,
+        };
+        assert_eq!(
+            row_key(
+                Some(1),
+                &row("Made 1 edit to app.rs", vec![Row::Item(2, Kind::Call)])
+            ),
+            row_key(
+                Some(1),
+                &row(
+                    "Made 2 edits to app.rs",
+                    vec![Row::Item(2, Kind::Call), Row::Item(3, Kind::Call)]
+                )
+            )
+        );
     }
 
     /// Switching the view while a worker is shown lays its transcript out
