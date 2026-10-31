@@ -1,13 +1,16 @@
 //! Downloading a speech model and packing it: each file from the model's
 //! pinned revision, resumed where an earlier try stopped, checked against
 //! its SHA-256, then converted into the engine's pack in the model's 8-bit
-//! precision. The downloaded files go once the pack is written.
+//! precision. The downloaded files go once the pack is written. One
+//! process at a time installs a model, holding a lock file in its folder,
+//! and cancelling stops the work at the next megabyte or tensor.
 
+use std::cell::Cell;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use sha2::{Digest, Sha256};
 use speech::pack::{self, FileSink};
@@ -29,6 +32,12 @@ const STALL: Duration = Duration::from_secs(60);
 const RESUME: &str = "Start dictation again to resume.";
 /// The folder, in the model's, the files download into.
 const DOWNLOAD_DIR: &str = "download";
+/// The lock file, in the model's folder, of the process installing it.
+const LOCK_FILE: &str = "install.lock";
+/// A lock untouched this long was left by a process that ended.
+const STALE: Duration = Duration::from_secs(120);
+/// The process holding a lock touches it this often while it works.
+const REFRESH: Duration = Duration::from_secs(10);
 
 fn failed(why: impl std::fmt::Display) -> Error {
     Error::Failed(format!(
@@ -47,21 +56,32 @@ pub(super) fn install(
 ) -> Result<(), Error> {
     let dir = model.dir(root);
     let downloads = dir.join(DOWNLOAD_DIR);
-    let unsaved = |error: std::io::Error| {
-        Error::Failed(format!(
-            "Couldn't save the speech model in {} ({error}).",
-            dir.display()
-        ))
-    };
+    let unsaved = |error: std::io::Error| unsaved(&dir, error);
+    fs::create_dir_all(&dir).map_err(unsaved)?;
+    // Another process installing it is followed by the size of its files.
+    let total = model.download_bytes();
+    let lock = InstallLock::take(&dir.join(LOCK_FILE), cancel, || {
+        progress(Preparing::Downloading {
+            done: downloaded(model, &downloads),
+            total,
+        })
+    })?;
+    if model.is_installed(root) {
+        return Ok(());
+    }
     fs::create_dir_all(&downloads).map_err(unsaved)?;
-    download_files(model, &downloads, base, progress, cancel)?;
+    let mut progress = |step: Preparing| {
+        lock.refresh();
+        progress(step)
+    };
+    download_files(model, &downloads, base, &mut progress, cancel)?;
     // The notices first: the pack is what makes the model installed.
     fs::write(dir.join("NOTICE.txt"), model.notice()).map_err(unsaved)?;
     fs::write(dir.join("source.json"), source_json(model)).map_err(unsaved)?;
     let source = model
         .source_file
         .map_or(downloads.clone(), |file| downloads.join(file));
-    pack_model(model, &source, &dir.join(PACK_FILE))?;
+    pack_model(model, &source, &dir.join(PACK_FILE), cancel, &lock)?;
     if let Err(error) = fs::remove_dir_all(&downloads) {
         log::warn!(
             "couldn't delete the downloaded files in {} ({error})",
@@ -113,12 +133,7 @@ fn download_files(
     progress(Preparing::Packing);
     for file in model.files {
         let path = downloads.join(file.name);
-        let digest = sha256(&path).map_err(|error| {
-            Error::Failed(format!(
-                "Couldn't read the speech model's download in {} ({error}).",
-                downloads.display()
-            ))
-        })?;
+        let digest = sha256(&path, cancel)?;
         if digest != file.sha256 {
             let _ = fs::remove_file(&path);
             return Err(Error::Failed(
@@ -178,7 +193,19 @@ async fn fetch(
         .await?
         .map_err(|error| failed(reason(error)))?;
     let resumed = match response.status() {
-        reqwest::StatusCode::PARTIAL_CONTENT => true,
+        reqwest::StatusCode::PARTIAL_CONTENT => {
+            let range = response
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(content_range);
+            if range != Some((have, file.bytes)) {
+                // The next try starts the file over.
+                let _ = fs::remove_file(path);
+                return Err(failed("Hugging Face sent the wrong part of the file"));
+            }
+            true
+        }
         // The whole file: the server ignored the range.
         reqwest::StatusCode::OK => false,
         status => return Err(failed(format!("Hugging Face answered {status}"))),
@@ -234,13 +261,39 @@ fn reason(error: reqwest::Error) -> String {
     }
 }
 
-/// A file's SHA-256, in hex.
-fn sha256(path: &Path) -> std::io::Result<String> {
-    let mut file = fs::File::open(path)?;
+/// The start of a 206 answer's `Content-Range` (`bytes 100-999/1000`) and
+/// the file's length, when the range runs to the file's end.
+fn content_range(value: &str) -> Option<(u64, u64)> {
+    let (range, total) = value.strip_prefix("bytes ")?.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    let (start, end, total): (u64, u64, u64) =
+        (start.parse().ok()?, end.parse().ok()?, total.parse().ok()?);
+    (end + 1 == total && start <= end).then_some((start, total))
+}
+
+fn unsaved(dir: &Path, error: std::io::Error) -> Error {
+    Error::Failed(format!(
+        "Couldn't save the speech model in {} ({error}).",
+        dir.display()
+    ))
+}
+
+/// A file's SHA-256, in hex, unless the dictation is cancelled first.
+fn sha256(path: &Path, cancel: &AtomicBool) -> Result<String, Error> {
+    let unread = |error: std::io::Error| {
+        Error::Failed(format!(
+            "Couldn't read the speech model's download {} ({error}).",
+            path.display()
+        ))
+    };
+    let mut file = fs::File::open(path).map_err(unread)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; 1 << 20];
     loop {
-        let read = file.read(&mut buffer)?;
+        if cancel.load(Ordering::SeqCst) {
+            return Err(Error::Cancelled);
+        }
+        let read = file.read(&mut buffer).map_err(unread)?;
         if read == 0 {
             break;
         }
@@ -253,22 +306,158 @@ fn sha256(path: &Path) -> std::io::Result<String> {
         .collect())
 }
 
+/// The bytes of `model`'s files in `downloads` so far.
+fn downloaded(model: &SpeechModel, downloads: &Path) -> u64 {
+    model
+        .files
+        .iter()
+        .map(|file| {
+            fs::metadata(downloads.join(file.name)).map_or(0, |meta| meta.len().min(file.bytes))
+        })
+        .sum()
+}
+
+/// A model's install lock, while this process holds it. Dropping it lets go.
+struct InstallLock {
+    path: PathBuf,
+    file: fs::File,
+    touched: Cell<Instant>,
+}
+
+impl InstallLock {
+    /// Takes the lock at `path`, waiting while another process holds it and
+    /// telling `waiting` every half second meanwhile. A lock left untouched
+    /// for [`STALE`] is taken over.
+    fn take(path: &Path, cancel: &AtomicBool, mut waiting: impl FnMut()) -> Result<Self, Error> {
+        loop {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "{}", std::process::id());
+                    return Ok(Self {
+                        path: path.to_path_buf(),
+                        file,
+                        touched: Cell::new(Instant::now()),
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // shortcut: two processes finding the same stale lock at
+                    // once could both take it, after a crash, in the same
+                    // instant. Upgrade to an OS file lock if that matters.
+                    if is_stale(path) {
+                        let _ = fs::remove_file(path);
+                        continue;
+                    }
+                }
+                Err(error) => return Err(unsaved(path.parent().unwrap_or(path), error)),
+            }
+            if cancel.load(Ordering::SeqCst) {
+                return Err(Error::Cancelled);
+            }
+            waiting();
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    /// Shows the lock is held, at most every [`REFRESH`].
+    fn refresh(&self) {
+        if self.touched.get().elapsed() >= REFRESH {
+            let _ = self.file.set_modified(SystemTime::now());
+            self.touched.set(Instant::now());
+        }
+    }
+}
+
+impl Drop for InstallLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Whether the lock at `path` was last touched longer than [`STALE`] ago.
+fn is_stale(path: &Path) -> bool {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|touched| SystemTime::now().duration_since(touched).ok())
+        .is_some_and(|age| age > STALE)
+}
+
+/// The engine's pack being written. It stops at the next tensor once the
+/// dictation is cancelled, and keeps the install lock fresh.
+struct PackWriter<'a> {
+    file: FileSink,
+    cancel: &'a AtomicBool,
+    lock: &'a InstallLock,
+}
+
+impl PackWriter<'_> {
+    fn go_on(&self) -> speech::Result<()> {
+        self.lock.refresh();
+        if self.cancel.load(Ordering::SeqCst) {
+            return Err(speech::Error::Model("Cancelled.".into()));
+        }
+        Ok(())
+    }
+}
+
+impl pack::Sink for PackWriter<'_> {
+    fn matrix(
+        &mut self,
+        name: &str,
+        rows: &speech::quant::Rows,
+        n: usize,
+        k: usize,
+        precision: speech::Precision,
+    ) -> speech::Result<()> {
+        self.go_on()?;
+        pack::Sink::matrix(&mut self.file, name, rows, n, k, precision)
+    }
+
+    fn f32(&mut self, name: &str, shape: &[usize], data: &[f32]) -> speech::Result<()> {
+        self.go_on()?;
+        pack::Sink::f32(&mut self.file, name, shape, data)
+    }
+
+    fn bytes(&mut self, name: &str, data: &[u8]) -> speech::Result<()> {
+        self.go_on()?;
+        pack::Sink::bytes(&mut self.file, name, data)
+    }
+}
+
 /// Converts the model at `source` into the pack `out`, in its 8-bit
 /// precision. The engine writes `out.partial` and renames it once whole.
-fn pack_model(model: &SpeechModel, source: &Path, out: &Path) -> Result<(), Error> {
+fn pack_model(
+    model: &SpeechModel,
+    source: &Path,
+    out: &Path,
+    cancel: &AtomicBool,
+    lock: &InstallLock,
+) -> Result<(), Error> {
     let engine = super::service::engine_type(model.family);
     let precision = engine.recommended_precision();
     let written = (|| {
         let metadata = pack::metadata_for(source, precision);
-        let mut sink = FileSink::create(out, engine.pack_model(), metadata)?;
-        engine.convert_path(source, precision, &mut sink)?;
-        sink.finish()
+        let mut writer = PackWriter {
+            file: FileSink::create(out, engine.pack_model(), metadata)?,
+            cancel,
+            lock,
+        };
+        engine.convert_path(source, precision, &mut writer)?;
+        writer.file.finish()
     })();
     written.map_err(|error| {
         let mut partial = out.as_os_str().to_owned();
         partial.push(".partial");
         let _ = fs::remove_file(partial);
-        Error::Failed(format!("Couldn't prepare the speech model ({error})."))
+        if cancel.load(Ordering::SeqCst) {
+            Error::Cancelled
+        } else {
+            Error::Failed(format!("Couldn't prepare the speech model ({error})."))
+        }
     })
 }
 

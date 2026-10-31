@@ -19,6 +19,8 @@ struct Behaviour {
     cut_next: Option<usize>,
     /// Answers 404 for every file.
     missing: bool,
+    /// Answers a range with the whole file, marked as a part of it.
+    wrong_range: bool,
     /// Each request's path and the start of its range.
     requests: Vec<(String, Option<u64>)>,
 }
@@ -84,10 +86,15 @@ fn serve(stream: TcpStream, files: &HashMap<String, PathBuf>, state: &Mutex<Beha
         }
     }
     let mut stream = stream;
-    let (ignore_ranges, cut, missing) = {
+    let (ignore_ranges, cut, missing, wrong_range) = {
         let mut state = state.lock().unwrap();
         state.requests.push((path.clone(), range));
-        (state.ignore_ranges, state.cut_next.take(), state.missing)
+        (
+            state.ignore_ranges,
+            state.cut_next.take(),
+            state.missing,
+            state.wrong_range,
+        )
     };
     let Some(file) = files.get(&path).filter(|_| !missing) else {
         let _ = stream
@@ -97,7 +104,13 @@ fn serve(stream: TcpStream, files: &HashMap<String, PathBuf>, state: &Mutex<Beha
     let mut body = std::fs::File::open(file).unwrap();
     let length = body.metadata().unwrap().len();
     let start = range.filter(|_| !ignore_ranges).unwrap_or(0);
-    let head = if start > 0 {
+    let head = if wrong_range && start > 0 {
+        let start = 0;
+        format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{}/{length}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n",
+            length - 1
+        )
+    } else if start > 0 {
         format!(
             "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{}/{length}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             length - 1,
@@ -109,6 +122,7 @@ fn serve(stream: TcpStream, files: &HashMap<String, PathBuf>, state: &Mutex<Beha
     if stream.write_all(head.as_bytes()).is_err() {
         return;
     }
+    let start = if wrong_range { 0 } else { start };
     std::io::Seek::seek(&mut body, std::io::SeekFrom::Start(start)).unwrap();
     let mut left = cut.unwrap_or(usize::MAX);
     let mut buffer = vec![0; 64 * 1024];
@@ -278,6 +292,37 @@ fn a_server_that_ignores_the_range_sends_the_whole_file_again() {
     assert_eq!(setup.server.requests()[0].1, Some(1000));
 }
 
+/// A part that doesn't start where the file stopped is refused, and the
+/// next try starts the file over.
+#[test]
+fn a_part_from_the_wrong_place_starts_the_file_over() {
+    let setup = setup();
+    std::fs::write(
+        setup.downloads.join("model.safetensors"),
+        &weights()[..1000],
+    )
+    .unwrap();
+    setup.server.behave(|b| b.wrong_range = true);
+    let error = download(&setup, &mut Vec::new()).unwrap_err();
+    assert_eq!(
+        error,
+        Error::Failed("Couldn't download the speech model (Hugging Face sent the wrong part of the file). Start dictation again to resume.".into())
+    );
+    assert!(!setup.downloads.join("model.safetensors").exists());
+    download(&setup, &mut Vec::new()).unwrap();
+    assert_eq!(saved(&setup), weights());
+}
+
+#[test]
+fn content_ranges_are_read_to_the_files_end() {
+    assert_eq!(content_range("bytes 100-999/1000"), Some((100, 1000)));
+    assert_eq!(content_range("bytes 0-0/1"), Some((0, 1)));
+    assert_eq!(content_range("bytes 100-499/1000"), None);
+    assert_eq!(content_range("bytes 100-999/*"), None);
+    assert_eq!(content_range("items 1-2/3"), None);
+    assert_eq!(content_range("bytes 5-4/5"), None);
+}
+
 #[test]
 fn a_file_already_whole_isnt_downloaded_again() {
     let setup = setup();
@@ -350,6 +395,88 @@ fn cancelling_stops_the_download_and_keeps_what_came() {
     assert_eq!(error, Error::Cancelled);
     let kept = saved(&setup).len();
     assert!(kept > 0 && kept < weights().len(), "{kept}");
+}
+
+/// Cancelling stops the checksum between megabytes, and the pack at the
+/// next tensor.
+#[test]
+fn cancelling_stops_checking_and_packing() {
+    let setup = setup();
+    let path = setup.downloads.join("model.safetensors");
+    std::fs::write(&path, weights()).unwrap();
+    let cancel = AtomicBool::new(true);
+    assert_eq!(sha256(&path, &cancel), Err(Error::Cancelled));
+    let lock = InstallLock::take(&setup.downloads.join(LOCK_FILE), &cancel, || {}).unwrap();
+    let out = setup.downloads.join("model.pack");
+    let mut writer = PackWriter {
+        file: FileSink::create(&out, "test", Vec::new()).unwrap(),
+        cancel: &cancel,
+        lock: &lock,
+    };
+    assert!(pack::Sink::bytes(&mut writer, "a", b"bytes").is_err());
+    cancel.store(false, Ordering::SeqCst);
+    pack::Sink::bytes(&mut writer, "a", b"bytes").unwrap();
+    assert_eq!(sha256(&path, &cancel).unwrap().len(), 64);
+}
+
+/// One process installs a model at a time. Another waits, following the
+/// first one's files, and finds the model installed once it's done.
+#[test]
+fn a_second_install_waits_for_the_first() {
+    let setup = setup();
+    let root = tempfile::tempdir().unwrap();
+    let dir = setup.model.dir(root.path());
+    std::fs::create_dir_all(dir.join(DOWNLOAD_DIR)).unwrap();
+    let held = InstallLock::take(&dir.join(LOCK_FILE), &AtomicBool::new(false), || {}).unwrap();
+    std::fs::write(dir.join(DOWNLOAD_DIR).join("config.json"), b"{}").unwrap();
+    let (model, base, root_path) = (
+        setup.model,
+        setup.server.base.clone(),
+        root.path().to_path_buf(),
+    );
+    let other = std::thread::spawn(move || {
+        let mut steps = Vec::new();
+        let done = install(
+            model,
+            &root_path,
+            &base,
+            &mut |step| steps.push(step),
+            &AtomicBool::new(false),
+        );
+        (done, steps)
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    // The first one finishes.
+    std::fs::write(setup.model.pack(root.path()), b"pack").unwrap();
+    drop(held);
+    let (done, steps) = other.join().unwrap();
+    assert_eq!(done, Ok(()));
+    assert_eq!(
+        steps.first(),
+        Some(&Preparing::Downloading {
+            done: 2,
+            total: setup.model.download_bytes()
+        })
+    );
+    assert!(setup.server.requests().is_empty(), "downloaded again");
+    assert!(!dir.join(LOCK_FILE).exists());
+}
+
+/// A lock its process left behind long ago is taken over, and one still
+/// held makes a cancelled wait end.
+#[test]
+fn a_stale_lock_is_taken_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(LOCK_FILE);
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_modified(SystemTime::now() - STALE * 2).unwrap();
+    let lock = InstallLock::take(&path, &AtomicBool::new(false), || panic!("waited")).unwrap();
+    assert_eq!(
+        InstallLock::take(&path, &AtomicBool::new(true), || {}).err(),
+        Some(Error::Cancelled)
+    );
+    drop(lock);
+    assert!(!path.exists());
 }
 
 /// A server that takes the connection and never answers: cancelling ends
