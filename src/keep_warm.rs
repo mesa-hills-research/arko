@@ -1448,5 +1448,11 @@ mod tests {
         assert_eq!(crate::keep_warm::NAME, "Keep warm");
         assert!(crate::commands::find("/keep-warm 8h").is_some());
         assert!(crate::commands::find(COMMAND).is_some());
+        // The web page's settings row calls it by the same name.
+        let page: &[u8] = include_bytes!("remote/page/arko-web_bg.wasm");
+        assert!(
+            page.windows(NAME.len())
+                .any(|bytes| bytes == NAME.as_bytes())
+        );
     }
 }
