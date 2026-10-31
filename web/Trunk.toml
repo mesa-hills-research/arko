@@ -6,9 +6,9 @@ target = "index.html"
 dist = "../src/remote/page"
 public_url = "/"
 filehash = false
-# No integrity attributes: the page's own server serves every file.
+# No integrity attributes, because the page's own server serves every file.
 no_sri = true
-# The page starts from boot.js: an inline script would need an exception in
+# The page starts from boot.js, because an inline script would need an exception in
 # the Content-Security-Policy.
 inject_scripts = false
 minify = "on_release"

@@ -38,7 +38,7 @@ fn note_of(feed: Option<u64>, word: &str) -> String {
     })
 }
 
-/// A message as it was sent: its text, and the worker whose view it was
+/// A message as it was sent, with its text, and the worker whose view it was
 /// sent from (none for the main agent's).
 #[derive(Debug, Clone, PartialEq)]
 struct Draft {
@@ -51,7 +51,7 @@ struct Draft {
 const STILL_SENDING: &str = "Still sending. Your text is kept.";
 
 /// Arko's question before a message continues a worker whose prompt cache
-/// expired: its words, and the message it was asked for.
+/// expired, with its words, and the message it was asked for.
 #[derive(Debug, Clone)]
 struct ContinueAsk {
     words: String,
@@ -67,7 +67,7 @@ impl ContinueAsk {
         (draft == *now).then_some(Self { words, draft })
     }
 
-    /// What Continue sends while the box holds `now`: the message as the
+    /// What Continue sends while the box holds `now`, namely the message as the
     /// box holds it, marked confirmed. None once the text or the view
     /// changed.
     fn confirmed(&self, now: &Draft) -> Option<serde_json::Value> {
@@ -95,7 +95,7 @@ pub fn Composer() -> impl IntoView {
     let tall = RwSignal::new(false);
     let expanded = RwSignal::new(false);
     let sending = RwSignal::new(false);
-    // The latest send, which owns the box: what becomes of an earlier one
+    // The latest send, which owns the box. What becomes of an earlier one
     // leaves it as it is.
     let latest = RwSignal::new(0u64);
     // A send of its own, which says so while its answer is long in coming.
@@ -114,7 +114,7 @@ pub fn Composer() -> impl IntoView {
         sender
     };
     // Arko asks before a message continues a worker whose prompt cache
-    // expired: what it said, and the message to send again on Continue.
+    // expired, with what it said, and the message to send again on Continue.
     let continue_asked = RwSignal::new(None::<ContinueAsk>);
     // What the box holds now, in the view shown.
     let draft_now = move || {
@@ -157,7 +157,7 @@ pub fn Composer() -> impl IntoView {
         page.status.with(|status| status.working)
             && page.connection.get() == crate::words::Connection::Live
     };
-    // The old model writes its report for a switch: a message to the main
+    // The old model writes its report for a switch, so a message to the main
     // agent waits in the box. (A command, and a message to a worker, go.)
     let reporting =
         move || page.status.with(|status| status.reporting) && page.worker.get().is_none();
@@ -270,7 +270,7 @@ pub fn Composer() -> impl IntoView {
                 }
                 Some(Posted::Confirm(why)) => continue_asked
                     .set(draft_now().and_then(|now| ContinueAsk::new(why, sent, &now))),
-                // Kept, or no longer the page's: the box keeps it.
+                // Kept, or no longer the page's, so the box keeps it.
                 _ => {}
             }
             sending.set(false);
@@ -655,7 +655,7 @@ mod tests {
         }
     }
 
-    /// Arko's question stands for the message it was asked about: once the
+    /// Arko's question stands for the message it was asked about. Once the
     /// text or the view changed while the message was on its way, or before
     /// Continue, nothing is sent, and the new draft stays. Continue sends
     /// the message as the box holds it, confirmed, from the main view too.
@@ -663,11 +663,11 @@ mod tests {
     fn the_question_holds_only_for_the_draft_it_was_asked_about() {
         let sent = draft("Go on.", Some("r3"));
         let ask = |now: &Draft| ContinueAsk::new("Words.".into(), sent.clone(), now);
-        // Edited before Arko's answer came, or another view: no question.
+        // Edited before Arko's answer came, or another view, so no question.
         assert!(ask(&draft("Go on. Now.", Some("r3"))).is_none());
         assert!(ask(&draft("Go on.", None)).is_none());
         assert!(ask(&draft("Go on.", Some("r4"))).is_none());
-        // Unchanged: Continue sends it, confirmed, while it stays so.
+        // Unchanged, so Continue sends it, confirmed, while it stays so.
         let asked = ask(&draft("Go on.", Some("r3"))).unwrap();
         assert_eq!(asked.words, "Words.");
         assert_eq!(

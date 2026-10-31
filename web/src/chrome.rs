@@ -1,4 +1,4 @@
-//! The page's chrome: the header, the worker view's banner, the connection
+//! The page's chrome, meaning the header, the worker view's banner, the connection
 //! line and the lock screen.
 
 use leptos::prelude::*;
@@ -177,7 +177,7 @@ pub fn Header() -> impl IntoView {
                     </span>
                     <span class="state-time">{time}</span>
                 </span>
-                // As much as fits: outside access, then the figures and the
+                // As much as fits, outside access, then the figures and the
                 // cache timer, which give way first.
                 <span class="info">
                     {move || outside().then(|| view! {
@@ -284,7 +284,7 @@ fn change_view(view: View) {
     page.set_view(view);
 }
 
-/// The worker view's banner: back to the main transcript, and the worker.
+/// The worker view's banner, back to the main transcript, and the worker.
 #[component]
 pub fn Banner() -> impl IntoView {
     let page = page();
@@ -343,7 +343,7 @@ pub fn ConnectionLine() -> impl IntoView {
     }
 }
 
-/// The lock screen: why the page can't get in, and a field for the key.
+/// The lock screen, saying why the page can't get in, and a field for the key.
 #[component]
 pub fn Lock() -> impl IntoView {
     let page = page();

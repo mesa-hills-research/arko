@@ -35,7 +35,7 @@
   --r-inner: max(0px, calc(var(--outer) - var(--inset)));
 }
 
-/* Laptops, desktops and landscape tablets: a column that grows with the
+/* Laptops, desktops and landscape tablets, a column that grows with the
    window, up to about 120 characters of text. */
 @media (min-width: 960px) {
   :root { --measure: min(max(820px, 76vw), 1100px); }
@@ -126,7 +126,7 @@ kbd {
   .btn::after { content: ""; position: absolute; inset: min(0px, (100% - 40px) / 2); }
 }
 
-/* The page's select: a button, and its list of choices over the page,
+/* The page's select, a button, and its list of choices over the page,
    anchored to it, drawn as the command menu is. */
 .select { position: relative; display: inline-block; max-width: 100%; }
 .select-button {
@@ -381,7 +381,7 @@ button.cache { padding: 0; border: 0; background: none; }
 
 .label { display: block; margin-bottom: 2px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .row.message .label { color: var(--link); }
-/* A question card: one quiet line where the agent asked, which opens the
+/* A question card, one quiet line where the agent asked, which opens the
    answer panel while all its questions are open, then the record of those
    settled, boxed as the panel is. */
 .asked { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; border: 0; background: none; color: var(--muted); font-size: 14px; cursor: pointer; }
@@ -471,7 +471,7 @@ details.call pre, .row.result pre {
 .row.output.level-warn pre { color: var(--warn); }
 .row.output.level-error pre { color: var(--error); }
 
-/* The other blocks of text: a reply's More, the workers in detail. */
+/* The other blocks of text, a reply's More, the workers in detail. */
 pre.block {
   max-height: 14em;
   margin: 4px 0 8px;
@@ -502,7 +502,7 @@ details.thinking > summary .first { min-width: 0; overflow: hidden; font-style: 
 details.thinking[open] > summary .first { display: none; }
 details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
 
-/* The agent waits on its model, or thinks: the word shimmers. "Working…"
+/* The agent waits on its model, or thinks, and the word shimmers. "Working…"
    starts at the left edge of the reply text. */
 .row.working { margin: 12px 0; color: var(--muted); font-size: 13.5px; }
 .row.working .what { font-weight: 600; }
@@ -789,7 +789,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   .slash-list li { min-height: 44px; }
 }
 
-/* The answer panel above the message box: a popover's look, at most 60 %
+/* The answer panel above the message box, with a popover's look, at most 60 %
    of the screen's height, its questions scrolling inside. */
 .answers {
   display: flex;
@@ -837,7 +837,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   .chip, .answers-chips .btn { min-height: 40px; }
 }
 
-/* The approval tray right above the message box: a row for each request
+/* The approval tray right above the message box, with a row for each request
    that waits for the user's approval, which opens to its details, and the
    buttons that answer them all, with the answer panel's look. */
 .tray {
@@ -1073,7 +1073,7 @@ html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
   }
 }
 
-/* ----- phones in landscape: less chrome, more transcript ----- */
+/* ----- phones in landscape, less chrome, more transcript ----- */
 
 @media (orientation: landscape) and (max-height: 500px) {
   .bar { min-height: 40px; }

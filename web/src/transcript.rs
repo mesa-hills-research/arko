@@ -1,4 +1,4 @@
-//! The transcript: its rows, laid out for the view, and Latest.
+//! The transcript, with its rows laid out for the view, and Latest.
 
 use std::collections::{HashMap, HashSet};
 
@@ -142,7 +142,7 @@ fn laid_out(
     })
 }
 
-/// A row's key in the transcript: the feed it's of, as another feed's
+/// A row's key in the transcript, with the feed it's of, as another feed's
 /// item 7 is another item, its identity, an item's kind, which decides how
 /// its row is drawn (a text becomes the reply), and a count's numbers,
 /// which its line shows.
@@ -547,7 +547,7 @@ fn kind_class(kind: Kind) -> &'static str {
     }
 }
 
-/// A call's line: its status, whose it is (a worker's in the main view),
+/// A call's line, with its status, whose it is (a worker's in the main view),
 /// what it does and its outcome, and Move to background or Stop while
 /// those apply. A long one opens to show itself whole. The line follows
 /// its own item, and its actions follow the status only while the call
@@ -577,7 +577,7 @@ fn call_row(cell: RowCell) -> AnyView {
     let line = move || {
         data.with(|item| {
             let who = (item.agent != MAIN && page.worker.get().is_none()).then(|| item.agent.clone());
-            // As on the earlier page: the status and the outcome after the call.
+            // As on the earlier page, the status and the outcome after the call.
             let outcome = match item.status {
                 Some(CallStatus::Running) => Some(
                     view! { <span class="outcome"><span class="running"><Spinner /></span></span> }
@@ -856,7 +856,7 @@ fn switch_view(page: Page, id: Option<String>) {
     }
 }
 
-/// Markdown that may still stream: its finished blocks stay as they are,
+/// Markdown that may still stream. Its finished blocks stay as they are,
 /// and only the open block at its end is read again as text comes. When the
 /// spans of its code blocks come (`code` moves), the blocks with code are
 /// painted again.
@@ -871,7 +871,7 @@ fn Md(
     let streaming = crate::app::streams(id);
     let mut blocks = Blocks::default();
     let (done, open) = text.with_untracked(|text| blocks.update(text, streaming.get_untracked()));
-    // Each finished block: its place, how often it was painted, its HTML.
+    // Each finished block, its place, how often it was painted, its HTML.
     let frozen = RwSignal::new(
         done.iter()
             .enumerate()

@@ -1,4 +1,4 @@
-//! The approval tray above the message box: the requests that wait for the
+//! The approval tray above the message box, with the requests that wait for the
 //! user's approval, a row each, which a tap opens to its details. With
 //! several, each row has a box, all checked at first. Approve approves the
 //! rows checked and rejects the others, and Reject all rejects them all.
@@ -157,7 +157,7 @@ fn message_box() -> Option<web_sys::HtmlTextAreaElement> {
         .ok()
 }
 
-/// Splits `text` at its backticks: the even parts are words, the odd ones
+/// Splits `text` at its backticks, so the even parts are words, the odd ones
 /// code.
 pub fn code_spans(text: &str) -> Vec<(bool, String)> {
     text.split('`')
@@ -181,7 +181,7 @@ fn words_view(text: &str) -> impl IntoView + use<> {
         .collect_view()
 }
 
-/// Sends the answer to `requests`: when `approve`, those checked are
+/// Sends the answer to `requests`. When `approve`, those checked are
 /// approved and the others rejected, else all are rejected. The message
 /// box's included words go with it. Once Arko has them, the box empties
 /// unless the user wrote something else there meanwhile.
@@ -389,7 +389,7 @@ pub fn Tray(draft: RwSignal<String>) -> impl IntoView {
     }
 }
 
-/// A request's row: its box (with several), and its kind, name, scope and
+/// A request's row, with its box (with several), and its kind, name, scope and
 /// summary, which open its details.
 #[component]
 fn Row(request: ApprovalRequest, rows: Rows, several: Signal<bool>) -> impl IntoView {
@@ -459,7 +459,7 @@ fn Row(request: ApprovalRequest, rows: Rows, several: Signal<bool>) -> impl Into
     }
 }
 
-/// A request's details, as its row opens to them: what it asks, its lines,
+/// A request's details, as its row opens to them, namely what it asks, its lines,
 /// a skill's files with the one chosen in a box, and its option.
 #[component]
 fn Details(request: ApprovalRequest, rows: Rows) -> impl IntoView {
