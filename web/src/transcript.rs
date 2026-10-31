@@ -127,7 +127,9 @@ pub fn Transcript() -> impl IntoView {
 fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
     match row {
         Row::Working => view! {
-            <div class="row working"><span class="what shimmer">"Working…"</span></div>
+            <div class="row working">
+                <span class="what shimmer">"Working…"<span class="shine" data-text="Working…" aria-hidden="true"></span></span>
+            </div>
         }
         .into_any(),
         Row::Count { id, count, .. } => count_row(id, count),
@@ -229,7 +231,7 @@ fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
                 <details class="thinking" class:streaming=move || thinking.get() == Some(id)>
                     <summary>
                         <span class="mark">"▸"</span>
-                        <span class="what">"Thinking"</span>
+                        <span class="what">"Thinking"<span class="shine" data-text="Thinking" aria-hidden="true"></span></span>
                         <span class="first">{first}</span>
                     </summary>
                     <Md id=id text=text code=cell.code class="thinking-text" />

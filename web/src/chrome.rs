@@ -142,6 +142,10 @@ pub fn Header() -> impl IntoView {
                 <span class=move || format!("state {}", state().0)>
                     <span class="state-label" class:shimmer=move || state().0 == "working">
                         {move || { let (key, label) = state(); (key != "idle").then_some(label) }}
+                        {move || {
+                            let (key, label) = state();
+                            (key == "working").then(|| view! { <span class="shine" data-text=label aria-hidden="true"></span> })
+                        }}
                     </span>
                     <span class="state-time">{time}</span>
                 </span>
