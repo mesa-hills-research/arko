@@ -51,7 +51,7 @@ use crossterm::terminal::{
 use crossterm::{Command, cursor, execute, queue};
 use futures_util::{FutureExt, StreamExt};
 use ratatui::Terminal;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::glyphs;
 use crate::remote;
@@ -136,9 +136,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     for warning in &catalog.warnings {
         setup.feed.notice(remote::Level::Warn, warning);
     }
-    // Every update, however far the view falls behind: a recording's events
-    // aren't in the history it would start over from.
-    let (snapshot, updates) = setup.feed.subscribe_batched();
+    let (snapshot, updates) = setup.feed.subscribe();
     let workspace = setup
         .workspace
         .file_name()
@@ -365,7 +363,7 @@ async fn run(
     mut terminal: Terminal<CursorBackend<Stdout>>,
     mut app: App,
     mut setup: Setup,
-    mut updates: remote::Batches,
+    mut updates: broadcast::Receiver<remote::Update>,
     mut stop: oneshot::Receiver<()>,
 ) -> Option<String> {
     let mut events = EventStream::new();
@@ -392,11 +390,13 @@ async fn run(
     // one after another, and their results come back here.
     let settings_worker = openrouter_menu::Worker::start();
     let (settings_done, mut settings_results) = mpsc::unbounded_channel();
-    // The view's dictation and its microphone, while it records.
+    // The view's dictation and its microphone, while it records, and where
+    // its events come.
     let mut recording: (
         Option<crate::dictation::Dictation>,
         Option<crate::dictation::Capture>,
     ) = (None, None);
+    let (recording_events, mut recording_received) = mpsc::unbounded_channel();
     loop {
         if draw_now {
             draw(&mut terminal, &mut app);
@@ -437,11 +437,16 @@ async fn run(
                 handle(&mut app, batch, &mut enter, &mut burst);
                 draw_now = true;
             }
-            batch = updates.next() => {
-                match batch {
-                    Some(batch) => {
-                        let (rings, asked) = take_updates(&mut app, batch, &setup.feed);
-                        bell |= rings;
+            update = updates.recv() => {
+                match update {
+                    Ok(update) => {
+                        let mut asked = asks(&update);
+                        bell |= app.update(update, || setup.feed.activity());
+                        // Those waiting too, before the next frame.
+                        while let Ok(update) = updates.try_recv() {
+                            asked |= asks(&update);
+                            bell |= app.update(update, || setup.feed.activity());
+                        }
                         // The web page just started says so in the feed:
                         // its links show at once. So do the agent's
                         // questions, in the answer panel.
@@ -449,8 +454,15 @@ async fn run(
                             app.set_reading(setup.meter.read());
                         }
                     }
-                    // (The feed outlives the view.)
-                    None => tokio::time::sleep(Duration::from_secs(3600)).await,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        let (snapshot, fresh) = setup.feed.subscribe();
+                        updates = fresh;
+                        app.reset(snapshot);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // (The feed outlives the view.)
+                        tokio::time::sleep(Duration::from_secs(3600)).await;
+                    }
                 }
                 // Drawn at the next frame: streaming text doesn't redraw at
                 // every chunk.
@@ -458,6 +470,13 @@ async fn run(
             }
             Some(result) = settings_results.recv() => {
                 app.openrouter_done(result);
+                draw_now = true;
+            }
+            Some(update) = recording_received.recv() => {
+                app.dictation_event(update);
+                while let Ok(update) = recording_received.try_recv() {
+                    app.dictation_event(update);
+                }
                 draw_now = true;
             }
             _ = frames.tick(), if dirty => draw_now = true,
@@ -569,7 +588,7 @@ async fn run(
                         });
                     }
                     Effect::Dictate(dictate) => {
-                        carry_out(dictate, &mut app, &setup, &mut recording)
+                        carry_out(dictate, &mut app, &setup, &mut recording, &recording_events)
                     }
                     Effect::CheckNames(cancel) => {
                         let found = names_found.clone();
@@ -591,17 +610,6 @@ async fn run(
     reply
 }
 
-/// A batch of the feed's updates, given to the view. Returns whether the
-/// bell rings, and whether the agent's questions changed.
-fn take_updates(app: &mut App, batch: Vec<remote::Update>, feed: &remote::Feed) -> (bool, bool) {
-    let (mut rings, mut asked) = (false, false);
-    for update in batch {
-        asked |= asks(&update);
-        rings |= app.update(update, || feed.activity());
-    }
-    (rings, asked)
-}
-
 /// Carries out what the view's recording needs of the dictation service
 /// and the microphone. Its events come back through the feed.
 fn carry_out(
@@ -612,12 +620,12 @@ fn carry_out(
         Option<crate::dictation::Dictation>,
         Option<crate::dictation::Capture>,
     ),
+    events: &mpsc::UnboundedSender<crate::dictation::DictationUpdate>,
 ) {
     use crate::dictation::{DictationOptions, DictationService, Source};
     match dictate {
         dictation::Dictate::Open { download } => {
-            let feed = setup.feed.clone();
-            let sink = Box::new(move |update| feed.dictation(update));
+            let sink = recording_sink(events.clone());
             match DictationService::shared(&setup.root).open(DictationOptions { download }, sink) {
                 Ok(dictation) => {
                     app.dictation_opened(dictation.id());
@@ -650,6 +658,17 @@ fn carry_out(
             *open = None;
         }
     }
+}
+
+/// Where the view's own recording's events go: to the view's loop, on a
+/// channel of their own. The feed's subscription drops what a lagging view
+/// misses and starts over from a history that holds no recording.
+fn recording_sink(
+    events: mpsc::UnboundedSender<crate::dictation::DictationUpdate>,
+) -> crate::dictation::Sink {
+    Box::new(move |update| {
+        let _ = events.send(update);
+    })
 }
 
 fn clear_for_redraw<B: ratatui::backend::Backend>(
@@ -891,29 +910,53 @@ mod tests {
         assert!(ended, "the view's runtime");
     }
 
-    /// A view far behind the feed still gets every update, its recording's
-    /// events too, which the history it could start over from lacks.
+    /// When the feed's subscription lags and the view starts over from the
+    /// history, its recording keeps its words and still gets every event,
+    /// which come on their own channel.
     #[test]
-    fn a_view_far_behind_gets_its_recordings_events() {
+    fn a_lagging_view_keeps_its_recording() {
         use crate::dictation::{DictationEvent, DictationUpdate};
         let feed = remote::Feed::new(remote::MAIN_AGENT);
-        let (_, mut updates) = feed.subscribe_batched();
+        let (_, mut updates) = feed.subscribe();
         let mut app = app::tests::app();
+        let (events, mut received) = mpsc::unbounded_channel();
+        let mut sink = recording_sink(events);
         app.toggle_dictation();
         app.dictation_opened(7);
         app.take_effects();
+        let text = |words: &str| DictationEvent::Text {
+            settled: words.into(),
+            tentative: String::new(),
+        };
+        let mut deliver = |app: &mut App| {
+            while let Ok(update) = received.try_recv() {
+                app.dictation_event(update);
+            }
+        };
+        sink(DictationUpdate {
+            id: 7,
+            event: DictationEvent::Listening,
+        });
+        sink(DictationUpdate {
+            id: 7,
+            event: text("Hello"),
+        });
+        deliver(&mut app);
         for n in 0..5000 {
             feed.notice(remote::Level::Info, &format!("note {n}"));
         }
-        let event = |event| DictationUpdate { id: 7, event };
-        feed.dictation(event(DictationEvent::Listening));
-        feed.dictation(event(DictationEvent::Text {
-            settled: "Hello".into(),
-            tentative: String::new(),
-        }));
-        let batch = updates.try_next().expect("the updates");
-        take_updates(&mut app, batch, &feed);
-        assert_eq!(app.editor.text(), "Hello");
+        sink(DictationUpdate {
+            id: 7,
+            event: text(" world"),
+        });
+        // The subscription lagged, and the view starts over as its loop does.
+        assert!(matches!(
+            updates.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+        ));
+        app.reset(feed.subscribe().0);
+        deliver(&mut app);
+        assert_eq!(app.editor.text(), "Hello world");
         assert_eq!(
             app.recording.as_ref().map(|recording| recording.phase),
             Some(dictation::Phase::Listening)

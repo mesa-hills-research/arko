@@ -888,13 +888,20 @@ impl App {
     /// Takes the feed's `update`; `activity` is the feed's activity now.
     /// Returns whether the bell should sound.
     pub fn update(&mut self, update: Update, activity: impl FnOnce() -> Activity) -> bool {
-        if let Update::Dictation(update) = update {
-            self.dictation_event(update);
+        // (Another client's recording. The view's own events come on a
+        // channel of their own, `App::dictation_event`.)
+        if let Update::Dictation(_) = update {
             return false;
         }
         let bell = matches!(update, Update::Activity) && self.set_activity(activity());
         self.transcript.apply(update);
         bell
+    }
+
+    /// Starts over from the feed's `snapshot` (the view fell behind it).
+    pub fn reset(&mut self, snapshot: Snapshot) {
+        self.set_activity(snapshot.activity.clone());
+        self.transcript.reset(snapshot);
     }
 
     /// The activity changed: returns whether the bell should sound (the
