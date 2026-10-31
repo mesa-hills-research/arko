@@ -34,6 +34,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let theme = app.theme.clone();
     frame.buffer_mut().set_style(area, theme.base());
     if area.height < 6 || area.width < 16 {
+        app.approvals_hidden();
         return;
     }
 

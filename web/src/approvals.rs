@@ -13,8 +13,7 @@ use wasm_bindgen::JsCast;
 
 use crate::app::{Posted, Sender, page, send as send_to_arko};
 use crate::protocol::{
-    Approval, ApprovalAnswers, ApprovalRequest, Look, SkillFile, approvals_heading, approve_label,
-    reject_label,
+    Approval, ApprovalAnswers, ApprovalRequest, Look, SkillFile, answer_labels, approvals_heading,
 };
 
 use crate::protocol::{MessageSwitch, ShownApprovals};
@@ -34,6 +33,7 @@ struct Rows {
     sending: RwSignal<bool>,
     message: RwSignal<MessageSwitch>,
     shown: RwSignal<ShownApprovals>,
+    now: RwSignal<u64>,
 }
 
 impl Rows {
@@ -46,6 +46,7 @@ impl Rows {
             sending: RwSignal::new(false),
             message: RwSignal::new(MessageSwitch::default()),
             shown: RwSignal::new(ShownApprovals::default()),
+            now: RwSignal::new(0),
         }
     }
 
@@ -107,9 +108,11 @@ fn now_ms() -> u64 {
 
 /// Only rows within the list and viewport have been shown to the reader.
 fn rendered_rows(list: &web_sys::Element, rows: Rows) {
+    let now = now_ms();
+    rows.now.set(now);
     if document().visibility_state() != web_sys::VisibilityState::Visible {
         rows.shown
-            .update(|shown| shown.visible(&HashSet::new(), now_ms()));
+            .update(|shown| shown.visible(&HashSet::new(), now));
         return;
     }
     let bounds = list.get_bounding_client_rect();
@@ -118,7 +121,6 @@ fn rendered_rows(list: &web_sys::Element, rows: Rows) {
         .ok()
         .and_then(|height| height.as_f64())
         .unwrap_or(0.0);
-    let now = now_ms();
     let children = list.children();
     let mut visible = HashSet::new();
     for at in 0..children.length() {
@@ -299,19 +301,55 @@ pub fn Tray(draft: RwSignal<String>) -> impl IntoView {
         let has_text = draft.with(|text| has_message(text));
         rows.message.update(|message| message.edited(has_text));
     });
+    let timeout = StoredValue::new(None::<leptos::leptos_dom::helpers::TimeoutHandle>);
+    Effect::new(move |_| {
+        let now = rows.now.get();
+        let ready_at = rows.shown.with(|shown| shown.ready_at_ms(now));
+        if let Some(previous) = timeout.get_value() {
+            previous.clear();
+        }
+        timeout.set_value(ready_at.and_then(|ready| {
+            leptos::leptos_dom::helpers::set_timeout_with_handle(
+                move || {
+                    rows.now.try_set(now_ms());
+                },
+                std::time::Duration::from_millis(ready.saturating_sub(now_ms()).max(1)),
+            )
+            .ok()
+        }));
+    });
+    on_cleanup(move || {
+        if let Some(timeout) = timeout.get_value() {
+            timeout.clear();
+        }
+    });
     let count = move || requests.with(Vec::len);
     let waiting = move || count() != 0;
     let several = Signal::derive(move || count() > 1);
-    let checked = move || {
+    let ready = Memo::new(move |_| {
+        let now = rows.now.get();
         requests.with(|requests| {
-            rows.unchecked.with(|unchecked| {
+            rows.shown.with(|shown| {
                 requests
                     .iter()
-                    .filter(|request| !unchecked.contains(&request.id))
-                    .count()
+                    .filter(|request| shown.can_answer(&request.id, now))
+                    .cloned()
+                    .collect::<Vec<_>>()
             })
         })
-    };
+    });
+    let labels = Memo::new(move |_| {
+        ready.with(|ready| {
+            rows.unchecked.with(|unchecked| {
+                let checked = ready
+                    .iter()
+                    .filter(|request| !unchecked.contains(&request.id))
+                    .count();
+                answer_labels(checked, ready.len(), count())
+            })
+        })
+    });
+    let disabled = move || rows.sending.get() || ready.with(Vec::is_empty);
     view! {
         <Show when=waiting>
             <section class="tray" aria-label=move || approvals_heading(count())>
@@ -337,13 +375,13 @@ pub fn Tray(draft: RwSignal<String>) -> impl IntoView {
                             </button>
                         </label>
                     </Show>
-                    <button type="button" class="btn outline small" disabled=move || rows.sending.get()
+                    <button type="button" class="btn outline small" disabled=disabled
                         on:click=move |_| answer(requests.get_untracked(), false, rows)>
-                        {move || reject_label(count())}
+                        {move || labels.with(|labels| labels.1.clone())}
                     </button>
-                    <button type="button" class="btn primary small" disabled=move || rows.sending.get()
+                    <button type="button" class="btn primary small" disabled=disabled
                         on:click=move |_| answer(requests.get_untracked(), true, rows)>
-                        {move || approve_label(checked(), count())}
+                        {move || labels.with(|labels| labels.0.clone())}
                     </button>
                 </div>
             </section>

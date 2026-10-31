@@ -25,8 +25,8 @@ use crate::remote::Feed;
 pub use crate::remote::protocol::{
     Approval, ApprovalAnswers, ApprovalChoice, ApprovalRequest, BillingApproval, Detail, EnvName,
     Look, MAX_APPROVAL_WORDS, ProfileApproval, Scope, ServerApproval, SkillApproval, SkillFile,
-    SkillSource, SkillUpdate, approval_words_refusal, approvals_heading, approve_label,
-    reject_label,
+    SkillSource, SkillUpdate, answer_labels, approval_words_refusal, approvals_heading,
+    approve_label, reject_label,
 };
 use crate::ui::Output;
 

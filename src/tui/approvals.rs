@@ -10,7 +10,7 @@
 //! the answer and the box empties.
 
 use std::collections::HashSet;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -25,9 +25,7 @@ use super::overlay::hints;
 use super::theme::Theme;
 use super::transcript::cut_end;
 use super::wrap;
-use crate::approvals::{
-    ApprovalAnswers, ApprovalRequest, Look, approvals_heading, approve_label, reject_label,
-};
+use crate::approvals::{ApprovalAnswers, ApprovalRequest, Look, answer_labels, approvals_heading};
 use crate::glyphs;
 use crate::remote::protocol::{MessageSwitch, ShownApprovals};
 use crate::ui::Input;
@@ -56,6 +54,8 @@ pub struct Tray {
     pub(super) message: MessageSwitch,
     shown: ShownApprovals,
     clock: Option<Instant>,
+    redraw_at: Option<Instant>,
+    rows_fit: Option<bool>,
 }
 
 impl Tray {
@@ -216,6 +216,18 @@ impl App {
         }
     }
 
+    /// Redraw labels when another shown request becomes answerable.
+    pub(super) fn approvals_due(&self) -> Option<Instant> {
+        self.tray.redraw_at
+    }
+
+    pub(super) fn approvals_hidden(&mut self) {
+        let now = self.tray.now_ms();
+        self.tray.shown.visible(&HashSet::new(), now);
+        self.tray.rows_fit = Some(false);
+        self.tray.redraw_at = None;
+    }
+
     pub(super) fn sync_message(&mut self) {
         if self.editor.take_emptied() {
             self.tray.message.edited(false);
@@ -239,6 +251,11 @@ impl App {
             .cloned()
             .collect();
         if requests.is_empty() {
+            self.say(if self.tray.rows_fit == Some(false) {
+                "Make the window larger to answer"
+            } else {
+                "Requests show for half a second before you can answer"
+            });
             return;
         }
         let words = if self.includes_message() {
@@ -277,21 +294,26 @@ struct TrayLines {
     requests: Vec<(usize, String)>,
 }
 
-fn tray_lines(app: &App, width: usize) -> TrayLines {
+fn tray_lines(app: &App, width: usize, now: u64) -> TrayLines {
     let theme = &app.theme;
     let requests = app.approvals();
     let count = requests.len();
     let tray = &app.tray;
     let cursor = app.tray_cursor();
-    let selected = requests
+    let ready: Vec<_> = requests
+        .iter()
+        .filter(|request| tray.shown.can_answer(&request.id, now))
+        .collect();
+    let selected = ready
         .iter()
         .filter(|request| !tray.unselected.contains(&request.id))
         .count();
     let mut lines = Vec::new();
     // The heading, with the keys at its end.
     let heading = format!(" {}", approvals_heading(count));
-    let approve = approve_label(selected, count).to_lowercase();
-    let reject = reject_label(count).to_lowercase();
+    let (approve, reject) = answer_labels(selected, ready.len(), count);
+    let approve = approve.to_lowercase();
+    let reject = reject.to_lowercase();
     let open = tray
         .open
         .as_ref()
@@ -541,17 +563,17 @@ fn fitting(theme: &Theme, pairs: &[(&str, &str)], width: usize) -> Vec<Span<'sta
 pub fn draw_tray(frame: &mut Frame, app: &mut App, above: Rect) -> u16 {
     app.sync_message();
     if app.approvals().is_empty() || above.height < 3 {
-        let now = app.tray.now_ms();
-        app.tray.shown.visible(&HashSet::new(), now);
+        app.approvals_hidden();
         return 0;
     }
+    let now = app.tray.now_ms();
     let width = above.width as usize;
     let TrayLines {
         lines,
         cursor: cursor_line,
         fixed,
         requests,
-    } = tray_lines(app, width.saturating_sub(1));
+    } = tray_lines(app, width.saturating_sub(1), now);
     let room = (above.height as usize * 2 / 3)
         .max(fixed + 1)
         .min(above.height as usize);
@@ -585,8 +607,7 @@ pub fn draw_tray(frame: &mut Frame, app: &mut App, above: Rect) -> u16 {
             .buffer_mut()
             .set_line(rect.x, rect.y + row as u16, line, rect.width);
     }
-    let now = app.tray.now_ms();
-    let visible = requests
+    let visible: HashSet<_> = requests
         .into_iter()
         .filter_map(|(line, id)| {
             (fixed + skip..fixed + skip + body)
@@ -594,7 +615,13 @@ pub fn draw_tray(frame: &mut Frame, app: &mut App, above: Rect) -> u16 {
                 .then_some(id)
         })
         .collect();
+    app.tray.rows_fit = Some(!visible.is_empty());
     app.tray.shown.visible(&visible, now);
+    app.tray.redraw_at = app.tray.shown.ready_at_ms(now).and_then(|ready| {
+        app.tray
+            .clock
+            .map(|clock| clock + Duration::from_millis(ready))
+    });
     height as u16
 }
 

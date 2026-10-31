@@ -234,6 +234,10 @@ fn answers_wait_for_rendering_and_leave_newer_requests_waiting() {
         app.tray.clock = Some(Instant::now() - std::time::Duration::from_secs(1));
         press(&mut app, key);
         assert!(sent(&mut app).is_empty(), "unrendered requests wait");
+        assert_eq!(
+            app.hint(),
+            Some("Requests show for half a second before you can answer")
+        );
         assert_eq!(app.editor.text(), "Reason");
         assert!(app.tray.focused);
         screen(&mut app, 120, 40);
@@ -264,6 +268,34 @@ fn answers_wait_for_rendering_and_leave_newer_requests_waiting() {
             [("a2", key == KeyCode::Enter, false)]
         );
     }
+}
+
+#[test]
+fn labels_count_only_ready_rows_and_schedule_their_redraw() {
+    let mut app = with(vec![request("a1", skill())]);
+    alt_a(&mut app);
+    app.set_reading(Reading {
+        approvals: vec![request("a1", skill()), request("a2", server())],
+        ..Reading::default()
+    });
+    let rows = flat(&screen(&mut app, 120, 40));
+    assert!(rows.contains("Enter approve 1 R reject 1"), "{rows}");
+    assert!(app.approvals_due().is_some());
+    let age = app.tray.now_ms() + 500;
+    app.tray.clock = Some(Instant::now() - Duration::from_millis(age));
+    let rows = flat(&screen(&mut app, 120, 40));
+    assert!(rows.contains("Enter approve all R reject all"), "{rows}");
+    assert!(app.approvals_due().is_none());
+}
+
+#[test]
+fn a_window_without_room_explains_why_answers_wait() {
+    let mut app = with(vec![request("a1", skill())]);
+    app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT));
+    screen(&mut app, 80, 5);
+    press(&mut app, KeyCode::Enter);
+    assert!(sent(&mut app).is_empty());
+    assert_eq!(app.hint(), Some("Make the window larger to answer"));
 }
 
 #[test]

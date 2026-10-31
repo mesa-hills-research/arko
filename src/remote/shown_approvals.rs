@@ -23,6 +23,15 @@ impl ShownApprovals {
         }
     }
 
+    /// The next time the visible requests change which answers are available.
+    pub fn ready_at_ms(&self, now_ms: u64) -> Option<u64> {
+        self.shown_at_ms
+            .values()
+            .map(|shown| shown.saturating_add(READ_MS))
+            .filter(|ready| *ready > now_ms)
+            .min()
+    }
+
     pub fn can_answer(&self, id: &str, now_ms: u64) -> bool {
         self.shown_at_ms
             .get(id)
@@ -41,6 +50,9 @@ mod tests {
         shown.visible(&HashSet::from(["a1".into()]), 1000);
         shown.visible(&HashSet::from(["a1".into()]), 1200);
         shown.visible(&HashSet::from(["a1".into(), "a2".into()]), 1400);
+        assert_eq!(shown.ready_at_ms(1400), Some(1500));
+        assert_eq!(shown.ready_at_ms(1500), Some(1900));
+        assert_eq!(shown.ready_at_ms(1900), None);
         assert!(!shown.can_answer("a1", 1499));
         assert!(shown.can_answer("a1", 1500));
         assert!(!shown.can_answer("a2", 1500));

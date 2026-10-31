@@ -860,6 +860,25 @@ pub fn approve_label(selected: usize, count: usize) -> String {
     }
 }
 
+/// Labels count only the requests this answer can cover.
+pub fn answer_labels(selected: usize, ready: usize, total: usize) -> (String, String) {
+    if ready == 0 {
+        return ("Approve".into(), "Reject".into());
+    }
+    if ready == total {
+        return (approve_label(selected, ready), reject_label(ready).into());
+    }
+    let reject = format!("Reject {ready}");
+    let approve = if selected == 0 {
+        reject.clone()
+    } else if selected == ready {
+        format!("Approve {ready}")
+    } else {
+        approve_label(selected, ready)
+    };
+    (approve, reject)
+}
+
 /// The button that rejects every request.
 pub fn reject_label(count: usize) -> &'static str {
     if count == 1 { "Reject" } else { "Reject all" }

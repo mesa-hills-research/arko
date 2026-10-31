@@ -50,8 +50,8 @@ request arrives or the box empties.
 
 With it on, the text goes to the agent with each answer and the box empties. With it off, the text
 stays. A message you send while requests wait is an ordinary message, which answers none of them.
-Approve and Reject answer only requests shown for at least half a second. Newer or unseen requests
-keep waiting.
+Approve and Reject answer only requests shown for at least half a second. Their labels count those
+requests, and the page enables the buttons once one is ready. Newer or unseen requests keep waiting.
 
 ## Keys in the full-screen view
 
