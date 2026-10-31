@@ -353,6 +353,10 @@ kbd {
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+/* At the bottom the page keeps the end in view itself. A browser's scroll
+   anchoring would move the view up as the oldest rows are trimmed, which
+   reads as the reader leaving the end, so following would stop. */
+.log.pinned { overflow-anchor: none; }
 
 .rows { padding: 16px 0 24px; }
 .empty { max-width: 520px; margin: 30vh auto 0; padding: 0 var(--gutter); color: var(--muted); text-align: center; white-space: pre-wrap; }

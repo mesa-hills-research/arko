@@ -96,7 +96,7 @@ pub fn Transcript() -> impl IntoView {
     };
     view! {
         <div class="stage">
-            <main id="log" class="log" aria-label="Transcript" node_ref=log on:scroll=move |_| scroll::on_scroll()>
+            <main id="log" class="log" class:pinned=move || page.pinned.get() aria-label="Transcript" node_ref=log on:scroll=move |_| scroll::on_scroll()>
                 <div id="rows" class="column rows">
                     <For
                         each=move || rows.get()
