@@ -1700,10 +1700,12 @@ impl Feed {
 
     /// The call `id` ended with `outcome`: its line says so, and a block
     /// follows it when there is one.
-    fn settle(&self, state: &mut State, id: &Uuid, outcome: Outcome) {
+    fn settle(&self, state: &mut State, id: &Uuid, mut outcome: Outcome) {
         let Some(call) = state.calls.remove(id) else {
             return;
         };
+        // What came before this point came while the call ran.
+        outcome.settled.ended(state.next_id + 1);
         let (lane, budget) = state.lane(&call.agent);
         if let Some(output) = outcome.output {
             lane.call_output(call.item, output, budget);
@@ -4872,6 +4874,74 @@ mod tests {
         assert!(
             matches!(merged.as_slice(), [Update::Job(last), Update::Activity] if last.state == JobState::Finished)
         );
+    }
+
+    /// A command that ends after the next call showed keeps its own Quiet
+    /// row, while one that ends first joins the row above. The feed records
+    /// where each result came, so the rows follow from the items alone.
+    #[test]
+    fn a_command_that_ends_after_the_next_call_keeps_its_quiet_row() {
+        let rows = |late: bool| {
+            let feed = Feed::new("main");
+            let (rg, build, read) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+            let ok = "exit code 0, 0.1 s\n(no output)";
+            feed.event(&event("main", shell(rg, "rg x")), None);
+            feed.event(&event("main", result(rg, ok)), None);
+            feed.event(&event("main", shell(build, "cargo build")), None);
+            if !late {
+                feed.event(&event("main", result(build, ok)), None);
+            }
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolCallFormatted {
+                        tool_call_id: read,
+                        tool_name: "read_file".into(),
+                        parameters: [("path".to_string(), "a.rs".into())].into(),
+                    },
+                ),
+                None,
+            );
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolResult {
+                        tool_call_id: read,
+                        tool_name: "read_file".into(),
+                        output: "1 | a".into(),
+                    },
+                ),
+                None,
+            );
+            if late {
+                feed.event(&event("main", result(build, ok)), None);
+            }
+            let items: Vec<Item> = items(&feed)
+                .into_iter()
+                .filter(|item| item.kind == Kind::Call)
+                .collect();
+            let steps: Vec<super::super::quiet::Step> = items
+                .iter()
+                .map(|item| {
+                    super::super::quiet::Step::Call(super::super::quiet::Call {
+                        id: item.id,
+                        act: item.act.as_ref(),
+                        status: item.status,
+                        outcome: item.outcome.as_deref(),
+                        ..Default::default()
+                    })
+                })
+                .collect();
+            super::super::quiet::rows(&steps)
+                .into_iter()
+                .map(|piece| match piece {
+                    super::super::quiet::Piece::Row(row) => row.words.text,
+                    super::super::quiet::Piece::Step(at) => format!("step {at}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rows(true), ["Ran rg x", "Ran cargo build", "Read a.rs"]);
+        assert_eq!(rows(false), ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
     }
 
     fn event(agent: &str, event: AgentEvent) -> WorkflowEvent {

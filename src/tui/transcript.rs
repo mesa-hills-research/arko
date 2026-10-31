@@ -397,8 +397,6 @@ pub struct Transcript {
     /// The Quiet view's order as last worked out, for a view and a
     /// generation. It's worked out again only when the items change.
     quiet_order: Option<(Filter, u64, Arc<Vec<Placed>>)>,
-    /// What each view's sealed runs hold, which never changes.
-    planners: HashMap<Filter, quiet::Planner>,
     /// The row the keyboard is on (Ctrl+G), by its block's key. It shows in
     /// the selection's colour, and the view keeps it in sight.
     pub focus: Option<u64>,
@@ -433,7 +431,6 @@ impl Transcript {
             quiet_cache: HashMap::new(),
             generation: 0,
             quiet_order: None,
-            planners: HashMap::new(),
             focus: None,
             reveal: false,
         }
@@ -1022,7 +1019,7 @@ impl Transcript {
     /// as rows ([`quiet::rows`]), and the rest as it is. A call's results
     /// go in its row, and show under the row only when the call failed
     /// alone.
-    fn quiet_placed(&mut self, filter: &Filter) -> Vec<Placed> {
+    fn quiet_placed(&self, filter: &Filter) -> Vec<Placed> {
         // The entries shown, each with the results of its own.
         let mut shown: Vec<(usize, Vec<usize>)> = Vec::new();
         for index in self.order() {
@@ -1057,16 +1054,12 @@ impl Transcript {
                         turn: item.turn,
                     }),
                     Kind::Thinking => quiet::Step::Thinking,
-                    _ => quiet::Step::Other,
+                    _ => quiet::Step::Other(item.id),
                 }
             })
             .collect();
         let mut placed = Vec::with_capacity(shown.len());
-        let pieces = self
-            .planners
-            .entry(filter.clone())
-            .or_default()
-            .rows(&steps);
+        let pieces = quiet::rows(&steps);
         for piece in pieces {
             match piece {
                 quiet::Piece::Step(at) => {
@@ -4485,6 +4478,71 @@ mod tests {
         // The agent's text stays, as on the web page.
         assert!(messages.iter().any(|r| r.contains("Thinking.")));
         assert_eq!(t.item(1).unwrap().agent, MAIN_AGENT);
+    }
+
+    /// The Quiet view's rows follow from the items alone, so switching to
+    /// Full and back while a command runs, and after it ended, shows the
+    /// rows a reader who stayed in Quiet saw.
+    #[test]
+    fn quiet_rows_survive_a_view_switch() {
+        use crate::remote::{Act, ActKind};
+        let mut t = Transcript::new();
+        let call = |id: u64, kind: ActKind, target: &str, status, ended| {
+            let mut call = item(id, Kind::Call, target);
+            call.turn = Some(1);
+            call.status = Some(status);
+            call.act = Some(Act {
+                kind,
+                target: target.into(),
+                ended,
+                ..Act::default()
+            });
+            call
+        };
+        t.apply(Update::Item(call(
+            1,
+            ActKind::Command,
+            "rg x",
+            CallStatus::Ok,
+            Some(2),
+        )));
+        t.apply(Update::Item(call(
+            2,
+            ActKind::Command,
+            "cargo build",
+            CallStatus::Running,
+            None,
+        )));
+        t.apply(Update::Item(call(
+            3,
+            ActKind::Read,
+            "a.rs",
+            CallStatus::Ok,
+            Some(4),
+        )));
+        let quiet = Filter::Main(View::Quiet);
+        let before = rows(&mut t, &quiet, 50, 4);
+        assert_eq!(
+            before[..3],
+            ["▸ Ran rg x", "▸ Running cargo build …", "▸ Read a.rs"]
+        );
+        rows(&mut t, &Filter::Main(View::Full), 50, 4);
+        assert_eq!(rows(&mut t, &quiet, 50, 4), before);
+        // It ends after the read came, so it keeps its own row.
+        t.apply(Update::Change(call(
+            2,
+            ActKind::Command,
+            "cargo build",
+            CallStatus::Ok,
+            Some(5),
+        )));
+        let after = rows(&mut t, &quiet, 50, 4);
+        assert_eq!(
+            after[..3],
+            ["▸ Ran rg x", "▸ Ran cargo build", "▸ Read a.rs"]
+        );
+        rows(&mut t, &Filter::Main(View::Full), 50, 4);
+        assert_eq!(rows(&mut t, &quiet, 50, 4), after);
     }
 
     /// The Messages view counts calls, so while one of the agent's runs,

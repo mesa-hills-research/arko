@@ -274,6 +274,10 @@ pub struct Act {
     /// What came while a wait waited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub came: Option<Came>,
+    /// When its result came, as the ID the transcript's next item had then.
+    /// What showed before that point showed while the call ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<u64>,
 }
 
 /// The kinds of call the Quiet view words and merges.

@@ -136,25 +136,10 @@ fn laid_out(
         let worker = worker.get();
         STORE.with(|store| {
             let store = store.borrow();
-            let rows = PLANNERS.with(|planners| {
-                let mut planners = planners.borrow_mut();
-                // Another feed's items have other ids.
-                if planners.0 != store.feed {
-                    *planners = (store.feed, HashMap::new());
-                }
-                let planner = planners.1.entry(worker.clone()).or_default();
-                layout::layout_with(&store.items, view, worker.as_deref(), planner)
-            });
+            let rows = layout::layout(&store.items, view, worker.as_deref());
             (store.feed, rows)
         })
     })
-}
-
-thread_local! {
-    /// What each transcript's sealed Quiet runs hold, by the worker whose
-    /// transcript it is, for the feed they're of.
-    static PLANNERS: std::cell::RefCell<(Option<u64>, HashMap<Option<String>, crate::quiet::Planner>)> =
-        std::cell::RefCell::new((None, HashMap::new()));
 }
 
 /// A row's key in the transcript: the feed it's of, as another feed's
