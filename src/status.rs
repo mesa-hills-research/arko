@@ -51,6 +51,9 @@ pub(crate) struct Gauges {
     /// The keep-warm setting for every session, as the harness last
     /// published it.
     pub(crate) keep_warm: Mutex<Option<crate::keep_warm::Limits>>,
+    /// What a refresh of the conversation's cache goes as, as the harness
+    /// last published it.
+    pub(crate) keep_warm_route: Mutex<Option<crate::keep_warm::Route>>,
     pub(crate) worker_depth: std::sync::atomic::AtomicU32,
     /// The worker retry cap, or 0 for none.
     pub(crate) worker_retry_cap: std::sync::atomic::AtomicU32,
@@ -327,7 +330,14 @@ impl remote::Meter for Gauges {
             .feed
             .as_ref()
             .is_some_and(|feed| feed.activity().working);
-        let cache = cache_status(&stats, &lock(&self.models), *lock(&self.keep_warm), turn);
+        let route = lock(&self.keep_warm_route).clone();
+        let cache = cache_status(
+            &stats,
+            &lock(&self.models),
+            route.as_ref(),
+            *lock(&self.keep_warm),
+            turn,
+        );
         let main_plan = {
             let models = lock(&self.models);
             let model = providers::resolve_model(&models.main).ok();
@@ -460,26 +470,25 @@ fn main_plan(
 
 /// The main agent's prompt cache, from what its latest request said, priced
 /// for its model, with keep-warm while it is on (under the keep-warm
-/// `setting`) and the conversation's model can refresh out of band. A `turn`
-/// running sends no refresh.
+/// `setting`) and a refresh of the conversation (`route`) goes out of band.
+/// A `turn` running sends no refresh.
 pub(crate) fn cache_status(
     stats: &crate::ui::Stats,
     models: &remote::Models,
+    route: Option<&crate::keep_warm::Route>,
     setting: Option<crate::keep_warm::Limits>,
     turn: bool,
 ) -> remote::CacheStatus {
+    let route = route.filter(|route| crate::keep_warm::refreshes_out_of_band(&route.model));
     let keep_warm = stats
         .keep_warm
         .limits(setting)
-        .filter(|_| {
-            crate::keep_warm::conversation_model(models)
-                .is_some_and(|model| crate::keep_warm::refreshes_out_of_band(&model))
-        })
-        .map(|limits| {
+        .zip(route)
+        .map(|(limits, route)| {
             let cache = crate::keep_warm::Cache {
                 used: stats.cache_used(),
                 lifetime: stats.cache_lifetime,
-                quote: refresh_quote(stats, models),
+                quote: refresh_quote(stats, route),
             };
             stats.keep_warm.status(
                 &limits,
@@ -526,23 +535,40 @@ fn long_cache(lifetime: Option<Duration>) -> bool {
     })
 }
 
-/// The most output a keep-warm refresh writes: arko_agents' output limit for
-/// one whose provider refused the smaller limit.
+/// The most output a keep-warm refresh writes on a key: arko_agents' output
+/// limit for one whose provider refused the smaller limit.
 const REFRESH_OUTPUT_TOKENS: usize = 1_024;
 
-/// The most keep-warm's next refresh costs at API prices (what it would on a
-/// key where a plan pays), from the conversation's model and size now. `None`
-/// where Arko has no price for the model, or nothing was sent yet.
+/// The ping a refresh asks after the conversation, with what goes around
+/// it, in tokens (generously).
+const PING_TOKENS: usize = 64;
+
+/// What keep-warm's next refresh of the conversation costs at API prices,
+/// sent as `route`, from the conversation now. The latest request's input is
+/// read from the cache, and what came after it (the reply, and the ping) is
+/// written to it, at the cache's lifetime's rate, with the refresh's output.
+/// On a key the output is capped, so that's a ceiling. On a plan nothing caps
+/// it, so it's an estimate, the larger of the cap and the most an earlier
+/// refresh wrote. `None` where Arko has no price for the model, or nothing
+/// was sent yet.
 // shortcut: priced here, before the refresh, from what the status knows,
 // until arko_workflows' refresh quotes its own price first.
-pub(crate) fn refresh_quote(stats: &crate::ui::Stats, models: &remote::Models) -> Option<f64> {
-    let model = crate::keep_warm::conversation_model(models)?;
+pub(crate) fn refresh_quote(
+    stats: &crate::ui::Stats,
+    route: &crate::keep_warm::Route,
+) -> Option<f64> {
+    let output = if route.plan {
+        REFRESH_OUTPUT_TOKENS.max(stats.keep_warm.most_output())
+    } else {
+        REFRESH_OUTPUT_TOKENS
+    };
     let quote = providers::refresh_price(
-        &model,
+        &route.model,
         stats.context_tokens?,
-        models.main_fast,
+        stats.reply_tokens.unwrap_or(0) + PING_TOKENS,
+        output,
+        route.fast,
         long_cache(stats.cache_lifetime),
-        REFRESH_OUTPUT_TOKENS,
     );
     (quote > 0.0).then_some(quote)
 }
@@ -609,6 +635,72 @@ mod tests {
     /// The cache's costs follow the model's prices and its lifetime: a miss
     /// writes the conversation again, keeping it warm reads it. A plan pays
     /// for both.
+    /// Keep-warm's quote prices the refresh that goes. The latest request's
+    /// input is read from the cache, and what came after it (a long reply,
+    /// and the ping) is written at the lifetime's rate, with the output, at
+    /// the conversation's own fast mode. On a key the output is its cap, and
+    /// on a plan the larger of that and the most an earlier refresh wrote.
+    #[test]
+    fn the_quote_prices_the_refresh_that_goes() {
+        let price = |model: &arko_ai::Model, fast: bool, output: usize| {
+            let (write, read) = providers::cache_prices(model, 150_064, fast, true);
+            let pricing = model.pricing.at(std::time::SystemTime::now());
+            let tier = fast.then_some(arko_ai::ServiceTier::Fast);
+            let output_rate =
+                pricing.output_cost_per_million * pricing.tier_multiplier(tier.as_ref(), false);
+            (100_000.0 * read + 50_064.0 * write + output as f64 * output_rate) / 1e6
+        };
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        let mut stats = Stats {
+            context_tokens: Some(100_000),
+            reply_tokens: Some(50_000),
+            cache_lifetime: Some(arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME),
+            ..Stats::default()
+        };
+        let opus = providers::resolve_model("opus").unwrap();
+        let key = crate::keep_warm::Route {
+            model: opus.clone(),
+            fast: false,
+            plan: false,
+        };
+        let quote = refresh_quote(&stats, &key).unwrap();
+        assert!(close(quote, price(&opus, false, 1_024)), "{quote}");
+        // More than reading the reply from the cache would cost.
+        let (_, read) = providers::cache_prices(&opus, 150_064, false, true);
+        assert!(quote > 150_064.0 * read / 1e6);
+        // Fast mode as the conversation runs it.
+        let sol = providers::resolve_model("sol").unwrap();
+        let fast = crate::keep_warm::Route {
+            model: sol.clone(),
+            fast: true,
+            plan: false,
+        };
+        let quote = refresh_quote(&stats, &fast).unwrap();
+        assert!(close(quote, price(&sol, true, 1_024)), "{quote}");
+        assert!(quote > price(&sol, false, 1_024));
+        // On a plan, an earlier refresh that wrote more sets the estimate.
+        let plan = crate::keep_warm::Route {
+            plan: true,
+            ..key.clone()
+        };
+        assert!(close(
+            refresh_quote(&stats, &plan).unwrap(),
+            price(&opus, false, 1_024)
+        ));
+        stats.keep_warm.sent(&arko_ai::UsageInfo {
+            output_tokens: 3_000,
+            ..arko_ai::UsageInfo::default()
+        });
+        assert!(close(
+            refresh_quote(&stats, &plan).unwrap(),
+            price(&opus, false, 3_000)
+        ));
+        assert!(close(
+            refresh_quote(&stats, &key).unwrap(),
+            price(&opus, false, 1_024)
+        ));
+    }
+
     #[test]
     fn the_cache_is_priced_for_the_model() {
         let stats = Stats {
@@ -622,7 +714,7 @@ mod tests {
             ..remote::Models::default()
         };
         let pricing = providers::resolve_model("opus").unwrap().pricing;
-        let cache = cache_status(&stats, &models, None, false);
+        let cache = cache_status(&stats, &models, None, None, false);
         let close = |a: Option<f64>, b: f64| (a.unwrap() - b).abs() < 1e-9;
         assert!(close(
             cache.miss_cost,
@@ -638,7 +730,7 @@ mod tests {
             main: "cc:opus".into(),
             ..models
         };
-        let cache = cache_status(&stats, &models, None, false);
+        let cache = cache_status(&stats, &models, None, None, false);
         assert_eq!((cache.miss_cost, cache.refresh_cost), (None, None));
         assert_eq!(cache.on_plan, Some("your Claude plan"));
         // Keep-warm shows for a model that refreshes out of band, with its
@@ -654,8 +746,17 @@ mod tests {
             refreshes: Some(3),
             ..Default::default()
         });
-        assert_eq!(cache_status(&kept, &models, None, false).keep_warm, None);
-        let status = cache_status(&kept, &models, setting, false)
+        let route = |name: &str| crate::keep_warm::Route {
+            model: providers::resolve_model(name).unwrap(),
+            fast: false,
+            plan: name.starts_with("cc:"),
+        };
+        let cc = route("cc:opus");
+        assert_eq!(
+            cache_status(&kept, &models, Some(&cc), None, false).keep_warm,
+            None
+        );
+        let status = cache_status(&kept, &models, Some(&cc), setting, false)
             .keep_warm
             .unwrap();
         assert_eq!(
@@ -663,18 +764,15 @@ mod tests {
             (Some(3), Some(used.at + 55 * 60_000))
         );
         assert_eq!(
-            cache_status(&kept, &models, setting, true)
+            cache_status(&kept, &models, Some(&cc), setting, true)
                 .keep_warm
                 .unwrap()
                 .next_at,
             None
         );
-        let openrouter = remote::Models {
-            main: "openrouter:anthropic/claude-opus-5.5".into(),
-            ..models.clone()
-        };
+        let openrouter = route("openrouter:anthropic/claude-opus-5.5");
         assert_eq!(
-            cache_status(&kept, &openrouter, setting, false).keep_warm,
+            cache_status(&kept, &models, Some(&openrouter), setting, false).keep_warm,
             None
         );
         // OpenAI's 12-hour cache on an API key costs 2.5 times the input
@@ -699,7 +797,7 @@ mod tests {
                 cache_lifetime: Some(lifetime),
                 ..stats.clone()
             };
-            let cache = cache_status(&stats, &models, None, false);
+            let cache = cache_status(&stats, &models, None, None, false);
             assert!(close(
                 cache.miss_cost,
                 0.2 * rate * sol.input_cost_per_million

@@ -412,6 +412,7 @@ async fn remote_page_demo() {
         billing: Default::default(),
         monitor_wakes: Default::default(),
         keep_warm: Default::default(),
+        keep_warm_route: Default::default(),
         worker_depth: Default::default(),
         worker_retry_cap: Default::default(),
         message_copies: Default::default(),

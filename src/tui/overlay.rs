@@ -796,7 +796,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     },
                 ),
                 if app.keep_warm_setting().and_then(|setting| setting.dollars).is_some() {
-                    "Keep-warm stops before a session's refreshes cost more, at API prices where a plan pays."
+                    "Keep-warm stops before a session's refreshes cost more at API prices, estimated on a plan."
                 } else {
                     "Only the hours stop keep-warm."
                 }

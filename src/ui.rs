@@ -660,6 +660,9 @@ pub struct Stats {
     /// The session's record of its prompt cache, kept as the main agent's
     /// requests end. None where nothing is kept (tests).
     pub(crate) cache_memory: Option<Arc<crate::cache_memory::Memory>>,
+    /// The output of the main agent's latest request, in tokens, which the
+    /// next request writes to the cache.
+    pub(crate) reply_tokens: Option<usize>,
     /// The main agent's model, as the session runs it (its id in the
     /// configuration). The record of the cache names it.
     pub(crate) main_model: Option<String>,
@@ -1144,6 +1147,7 @@ impl EventPrinter {
                     let mut stats = self.stats.lock().unwrap();
                     let written = usage.cache_write_tokens.unwrap_or(0);
                     stats.cache_use = Some((usage.cached_tokens.unwrap_or(0), written));
+                    stats.reply_tokens = Some(usage.output_tokens);
                     if stats.learns_cache_lifetime && written > 0 {
                         let hour = usage.cache_write_1h_tokens.unwrap_or(0) > 0;
                         stats.cache_lifetime = Some(if hour {

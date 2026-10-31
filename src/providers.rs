@@ -2088,19 +2088,22 @@ impl Setup {
     }
 }
 
-/// What a refresh of the conversation's `tokens` from the prompt cache costs
-/// on `model` now at most, in dollars: the tokens read from the cache, at
-/// [`cache_prices`], and up to `output` tokens of reply, at the long-context
-/// rate above its threshold and the fast mode's price when `fast`. 0 where
-/// the model has no price.
+/// What a refresh of the conversation costs on `model` now, in dollars:
+/// `cached` tokens read from the prompt cache and `written` tokens written to
+/// it, at [`cache_prices`] (the long cache's write rate when `long_cache`),
+/// and `output` tokens of reply, at the long-context rates above their
+/// threshold and the fast mode's price when `fast`. 0 where the model has no
+/// price.
 pub(crate) fn refresh_price(
     model: &Model,
-    tokens: usize,
+    cached: usize,
+    written: usize,
+    output: usize,
     fast: bool,
     long_cache: bool,
-    output: usize,
 ) -> f64 {
-    let (_, read) = cache_prices(model, tokens, fast, long_cache);
+    let tokens = cached + written;
+    let (write, read) = cache_prices(model, tokens, fast, long_cache);
     let pricing = model.pricing.at(std::time::SystemTime::now());
     let long = pricing
         .large_input_threshold
@@ -2111,7 +2114,7 @@ pub(crate) fn refresh_price(
         .unwrap_or(pricing.output_cost_per_million);
     let tier = fast.then_some(arko_ai::ServiceTier::Fast);
     let output_rate = output_rate * pricing.tier_multiplier(tier.as_ref(), long);
-    (tokens as f64 * read + output as f64 * output_rate) / 1e6
+    (cached as f64 * read + written as f64 * write + output as f64 * output_rate) / 1e6
 }
 
 /// What writing the conversation's `tokens` to the prompt cache, and reading

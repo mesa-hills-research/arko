@@ -60,7 +60,9 @@ pub struct Limits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_hours: Option<u32>,
     /// It ends before its refreshes cost more than this many dollars, at API
-    /// prices (what a plan's would cost on a key). Where Arko has no price
+    /// prices. On a key, where the framework caps a refresh's output, that's
+    /// a ceiling. On a plan it counts what the refreshes would cost on a key,
+    /// estimated, since nothing caps their output. Where Arko has no price
     /// for the model, it doesn't apply, and Arko says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dollars: Option<f64>,
@@ -105,15 +107,18 @@ pub(crate) fn refreshes_out_of_band(model: &arko_ai::Model) -> bool {
     )
 }
 
-/// The model of the conversation the next message goes to, as the status's
-/// `models` name it.
-pub(crate) fn conversation_model(models: &crate::remote::Models) -> Option<arko_ai::Model> {
-    let name = if models.conversation.is_empty() {
-        &models.main
-    } else {
-        &models.conversation
-    };
-    crate::providers::resolve_model(name).ok()
+/// What a refresh of the conversation's cache goes as, which keep-warm's
+/// quote and the refresh both take from the conversation's own settings
+/// ([`Harness::refresh_route`](crate::Harness::refresh_route)).
+#[derive(Debug, Clone)]
+pub(crate) struct Route {
+    /// The conversation's model.
+    pub(crate) model: arko_ai::Model,
+    /// The conversation runs it in fast mode.
+    pub(crate) fast: bool,
+    /// A plan pays (a `cc:` model, the ChatGPT login), where nothing caps a
+    /// refresh's output, so its price is an estimate.
+    pub(crate) plan: bool,
 }
 
 /// The setting, which keeps every session's cache warm while it waits for
@@ -176,8 +181,11 @@ pub fn setting_sentence(setting: Option<Limits>) -> String {
         Some((hours, most)) => format!(
             "Every session keeps its prompt cache warm while it waits for you, for up to {}{}.",
             hours_words(hours),
-            most.map(|most| format!(" after the last message or {}", dollars(most)))
-                .unwrap_or_else(|| " after the last message".into())
+            most.map(|most| format!(
+                " after the last message or {} (estimated on a plan)",
+                dollars(most)
+            ))
+            .unwrap_or_else(|| " after the last message".into())
         ),
         None => "Sessions keep their prompt cache warm only when you turn it on.".into(),
     }
@@ -468,6 +476,9 @@ pub(crate) struct KeepWarm {
     paused: Option<i64>,
     /// It said that Arko has no price for the refreshes.
     unpriced_told: bool,
+    /// The most output any of its refreshes wrote, in tokens, which a plan's
+    /// next one is taken to write too.
+    most_output: usize,
     /// When the session saw its `requested_at` on its monotonic clock, none
     /// where it didn't see it (it opened since, or its clocks disagreed).
     #[serde(skip)]
@@ -681,6 +692,12 @@ impl KeepWarm {
         self.totals.spent += usage.total_cost.max(billed);
         self.totals.billed += billed;
         self.totals.read += usage.cached_tokens.unwrap_or(0);
+        self.most_output = self.most_output.max(usage.output_tokens);
+    }
+
+    /// The most output its refreshes wrote, in tokens.
+    pub(crate) fn most_output(&self) -> usize {
+        self.most_output
     }
 
     /// Stops it for `stop`, and says why and what it sent since it last
@@ -948,29 +965,42 @@ impl crate::Harness {
         lock(&self.stats).keep_warm.limits(setting)
     }
 
-    /// The model of the conversation the next message goes to (which the
-    /// status has as [`conversation_model`]).
-    fn keep_warm_model(&self) -> Option<arko_ai::Model> {
-        crate::providers::resolve_model(&self.conversation_settings().model).ok()
+    /// What a refresh of the conversation the next message goes to goes as:
+    /// its model, from its own settings (a resumed one's may not be the
+    /// session's), and whether a plan pays. The status has it too.
+    pub(crate) fn refresh_route(&self) -> Option<Route> {
+        let settings = self.conversation_settings();
+        let model = crate::providers::resolve_model(&settings.model).ok()?;
+        let chatgpt = self.settings.openai_auth.or_else(|| self.openai_auth())
+            == Some(crate::providers::OpenAiAuth::ChatGpt);
+        let plan = match model.provider {
+            arko_ai::Provider::ClaudeCode => true,
+            arko_ai::Provider::OpenAI => chatgpt,
+            _ => false,
+        };
+        Some(Route {
+            model,
+            fast: settings.fast,
+            plan,
+        })
     }
 
     /// The cache keep-warm refreshes and what a refresh of it costs, while
     /// there is a conversation whose model refreshes it out of band.
     /// Otherwise none, and keep-warm waits for its end.
     fn keep_warm_cache(&self) -> Cache {
-        let refreshes = !matches!(self.conversation, crate::Conversation::New)
-            && self
-                .keep_warm_model()
-                .is_some_and(|model| refreshes_out_of_band(&model));
-        if !refreshes {
+        let route = self
+            .refresh_route()
+            .filter(|route| refreshes_out_of_band(&route.model));
+        let Some(route) = route.filter(|_| !matches!(self.conversation, crate::Conversation::New))
+        else {
             return Cache::default();
-        }
-        let quote = crate::status::refresh_quote(&lock(&self.stats), &lock(&self.gauges.models));
+        };
         let stats = lock(&self.stats);
         Cache {
             used: stats.cache_used(),
             lifetime: stats.cache_lifetime,
-            quote,
+            quote: crate::status::refresh_quote(&stats, &route),
         }
     }
 
@@ -1045,8 +1075,14 @@ impl crate::Harness {
     /// The plan that pays for the main agent's refreshes, as the status
     /// names it ("your Claude plan"), if one does.
     fn keep_warm_plan(&self) -> Option<&'static str> {
-        crate::status::cache_status(&lock(&self.stats), &lock(&self.gauges.models), None, false)
-            .on_plan
+        crate::status::cache_status(
+            &lock(&self.stats),
+            &lock(&self.gauges.models),
+            None,
+            None,
+            false,
+        )
+        .on_plan
     }
 
     /// `/keep-warm`, typed at the prompt or sent from the web page.
@@ -1082,17 +1118,21 @@ impl crate::Harness {
     /// of the setting. It's refused where the model can't refresh its cache
     /// out of band, and while the session waits with a cache that lapsed.
     pub(crate) fn keep_warm_on(&mut self, limits: Limits) -> Result<String, String> {
-        let model = self.keep_warm_model();
-        if let Some(model) = model.as_ref().filter(|model| !refreshes_out_of_band(model)) {
+        let route = self.refresh_route();
+        if let Some(route) = route
+            .as_ref()
+            .filter(|route| !refreshes_out_of_band(&route.model))
+        {
             return Err(format!(
                 "{} can't refresh its prompt cache without adding a message, so it can't be kept warm.",
-                crate::models::display_name(&crate::providers::model_name(model))
+                crate::models::display_name(&crate::providers::model_name(&route.model))
             ));
         }
         if limits.ends_at.is_none() && limits.refreshes.is_none() && limits.idle_hours.is_none() {
             return Err(format!("Give a time or a number of refreshes. {USAGE}"));
         }
-        let quote = crate::status::refresh_quote(&lock(&self.stats), &lock(&self.gauges.models));
+        let quote =
+            route.and_then(|route| crate::status::refresh_quote(&lock(&self.stats), &route));
         if let (Some(most), Some(quote)) = (limits.dollars, quote)
             && quote > most
         {
@@ -1180,9 +1220,11 @@ impl crate::Harness {
             text.push_str(", whichever comes first");
         }
         text.push('.');
+        let route = self.refresh_route();
         let cache = crate::status::cache_status(
             &lock(&self.stats),
             &lock(&self.gauges.models),
+            route.as_ref(),
             setting,
             false,
         );
@@ -1819,7 +1861,7 @@ mod tests {
         );
         assert_eq!(
             setting_sentence(Some(setting)),
-            "Every session keeps its prompt cache warm while it waits for you, for up to 15 hours after the last message or $5.00."
+            "Every session keeps its prompt cache warm while it waits for you, for up to 15 hours after the last message or $5.00 (estimated on a plan)."
         );
         save(temp.path(), None).unwrap();
         assert_eq!(load(temp.path()), None);
@@ -1960,6 +2002,32 @@ mod tests {
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
+    /// A refresh goes, and is priced, as the conversation runs: its model and
+    /// fast mode are the conversation's, whatever the session would start a
+    /// new one with.
+    #[tokio::test]
+    async fn the_route_is_the_conversations_own() {
+        let server = model(Arc::default(), false).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = answered(temp.path(), &server).await;
+        // New conversations would start in fast mode from now on.
+        harness.settings.main.fast = true;
+        let route = harness.refresh_route().unwrap();
+        assert_eq!(
+            route.model.id,
+            crate::providers::resolve_model("luna").unwrap().id
+        );
+        assert!(!route.fast, "the conversation runs without it");
+        assert!(!route.plan, "an API key pays");
+        harness.publish_models();
+        let published = lock(&harness.gauges.keep_warm_route).clone().unwrap();
+        assert_eq!(
+            (published.model.id, published.fast, published.plan),
+            (route.model.id, route.fast, route.plan)
+        );
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
     /// Clocks that disagree pause keep-warm with a notice and send nothing,
     /// and the next request starts it again.
     #[tokio::test]
@@ -2093,7 +2161,7 @@ mod tests {
         assert_eq!((setting.idle_hours, setting.dollars), (Some(15), Some(5.0)));
         assert!(
             said(&harness.feed).last().unwrap().starts_with(
-                "Changed from the web page. Every session keeps its prompt cache warm while it waits for you, for up to 15 hours after the last message or $5.00."
+                "Changed from the web page. Every session keeps its prompt cache warm while it waits for you, for up to 15 hours after the last message or $5.00 (estimated on a plan)."
             ),
             "{:?}",
             said(&harness.feed)

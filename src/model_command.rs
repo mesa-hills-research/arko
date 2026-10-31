@@ -505,7 +505,7 @@ impl Harness {
 
     /// How the session reaches OpenAI models when its models don't say: as
     /// its client does, else as a new session would.
-    fn openai_auth(&self) -> Option<OpenAiAuth> {
+    pub(crate) fn openai_auth(&self) -> Option<OpenAiAuth> {
         self.keys
             .openai_auth()
             .or_else(|| providers::spare_openai_auth(None))
@@ -804,6 +804,7 @@ impl Harness {
             self.settings.project_instructions,
             self.settings.worker_project_instructions,
         );
+        *lock(&self.gauges.keep_warm_route) = self.refresh_route();
         let conversation = self.conversation_settings();
         *lock(&self.gauges.models) = remote::Models {
             main: self.settings.main.model.clone(),
