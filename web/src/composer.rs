@@ -9,7 +9,7 @@ use lucide_leptos::{ArrowUp, Maximize2, Minimize2, Square};
 use web_sys::HtmlTextAreaElement;
 
 use crate::app::{
-    DRAFT, Posted, get_json, page, post, send as send_to_arko, session_get, session_set,
+    DRAFT, Posted, Sender, get_json, page, post, send as send_to_arko, session_get, session_set,
 };
 use crate::scroll;
 use crate::slash::{self, Menu};
@@ -96,17 +96,18 @@ pub fn Composer() -> impl IntoView {
     let latest = RwSignal::new(0u64);
     // A send of its own, which says so while its answer is long in coming.
     let begin_send = move || {
-        let id = latest.get_untracked() + 1;
-        latest.set(id);
+        let sender = Sender::from_view();
+        latest.set(sender.id());
         sending.set(true);
+        let waiting = sender.clone();
         spawn_local(async move {
             gloo_wait(5000).await;
-            if latest.try_get_untracked() == Some(id) && sending.get_untracked() {
+            if latest.try_get_untracked() == Some(waiting.id()) && sending.get_untracked() {
                 sending.set(false);
-                page.error.set(Some(STILL_SENDING.into()));
+                waiting.say(Some(STILL_SENDING.into()));
             }
         });
-        id
+        sender
     };
     // Arko asks before a message continues a worker whose prompt cache
     // expired: what it said, and the message to send again on Continue.
@@ -222,7 +223,7 @@ pub fn Composer() -> impl IntoView {
         if text.trim().is_empty() || sending.get_untracked() {
             return;
         }
-        let id = begin_send();
+        let sender = begin_send();
         let sent = Draft {
             text: text.clone(),
             to: page.worker.get_untracked(),
@@ -242,13 +243,13 @@ pub fn Composer() -> impl IntoView {
             None => serde_json::json!({ "text": text }),
         };
         spawn_local(async move {
-            let posted = send_to_arko("/api/message", body).await;
+            let outcome = send_to_arko("/api/message", body, &sender).await;
             // A later send owns the box now.
-            if latest.try_get_untracked() != Some(id) {
+            if latest.try_get_untracked() != Some(sender.id()) {
                 return;
             }
-            match posted {
-                Posted::Taken => {
+            match sender.take(outcome) {
+                Some(Posted::Taken) => {
                     // The questions it answered, and the text unless the
                     // box holds another meanwhile.
                     ask.attached
@@ -261,9 +262,10 @@ pub fn Composer() -> impl IntoView {
                     // What one sends is what one wants to see next.
                     scroll::jump_to_latest();
                 }
-                Posted::Confirm(why) => continue_asked
+                Some(Posted::Confirm(why)) => continue_asked
                     .set(draft_now().and_then(|now| ContinueAsk::new(why, sent, &now))),
-                Posted::Kept | Posted::Stale => {}
+                // Kept, or no longer the page's: the box keeps it.
+                _ => {}
             }
             sending.set(false);
             refresh_menu();
@@ -280,15 +282,15 @@ pub fn Composer() -> impl IntoView {
         let Some(body) = draft_now().and_then(|now| asked.confirmed(&now)) else {
             return;
         };
-        let id = begin_send();
+        let sender = begin_send();
         spawn_local(async move {
-            let posted = send_to_arko("/api/message", body).await;
+            let outcome = send_to_arko("/api/message", body, &sender).await;
             // (A later send owns the box now, and what was typed meanwhile
             // stays.)
-            if latest.try_get_untracked() != Some(id) {
+            if latest.try_get_untracked() != Some(sender.id()) {
                 return;
             }
-            if matches!(posted, Posted::Taken) && draft_now() == Some(asked.draft) {
+            if sender.take(outcome) == Some(Posted::Taken) && draft_now() == Some(asked.draft) {
                 area.set_value("");
                 expanded.set(false);
                 resize();

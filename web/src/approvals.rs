@@ -11,7 +11,7 @@ use leptos::task::spawn_local;
 use lucide_leptos::{ChevronDown, ChevronRight};
 use wasm_bindgen::JsCast;
 
-use crate::app::{Posted, page, send as send_to_arko};
+use crate::app::{Posted, Sender, page, send as send_to_arko};
 use crate::protocol::{
     Approval, ApprovalAnswers, ApprovalRequest, Look, SkillFile, approvals_heading, approve_label,
     reject_label,
@@ -84,9 +84,12 @@ fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
         })
     });
     rows.sending.set(true);
+    // (Its words are the message box's, of the view it's sent from.)
+    let sender = Sender::from_view();
     spawn_local(async move {
         let body = serde_json::to_value(&answers).unwrap_or_default();
-        if matches!(send_to_arko("/api/approvals", body).await, Posted::Taken)
+        let outcome = send_to_arko("/api/approvals", body, &sender).await;
+        if sender.take(outcome) == Some(Posted::Taken)
             && answers.words.is_some()
             && let Some(area) = area
             // (A draft begun while the answer was on its way stays.)

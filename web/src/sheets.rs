@@ -10,7 +10,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use crate::app::{
-    Posted, STORE, Sheet, feed, get_json, local_get, local_set, on_item, page, send as send_to_arko,
+    Posted, STORE, Sender, Sheet, feed, get_json, local_get, local_set, on_item, page,
+    send as send_to_arko,
 };
 use crate::composer::gloo_wait;
 use crate::layout::View;
@@ -256,11 +257,17 @@ impl Settings {
             })
         });
         self.shows.set(shows);
+        let sender = Sender::from_page();
         spawn_local(async move {
-            let sent = send_to_arko("/api/message", serde_json::json!({ "text": text })).await;
+            let body = serde_json::json!({ "text": text });
+            let outcome = send_to_arko("/api/message", body, &sender).await;
+            let why = outcome.words.clone();
             // (The last session's command, which waits no more, says
             // nothing of the new one's settings.)
-            if matches!(sent, Posted::Kept | Posted::Confirm(_)) {
+            if matches!(
+                sender.take(outcome),
+                Some(Posted::Kept | Posted::Confirm(_))
+            ) {
                 let mine = PENDING.with(|pending| {
                     let mut pending = pending.borrow_mut();
                     pending.take_if(|change| change.id == id)
@@ -268,11 +275,7 @@ impl Settings {
                 let Some(change) = mine else { return };
                 window().clear_timeout_with_handle(change.timer);
                 settings.shows.set(None);
-                let why = page()
-                    .error
-                    .get_untracked()
-                    .unwrap_or_else(|| "Not sent.".into());
-                settings.note(note, why, true);
+                settings.note(note, why.unwrap_or_else(|| "Not sent.".into()), true);
             }
         });
     }

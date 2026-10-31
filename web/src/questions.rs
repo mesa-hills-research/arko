@@ -11,7 +11,7 @@ use leptos::task::spawn_local;
 use lucide_leptos::{MessageCircleQuestionMark, X};
 use wasm_bindgen::JsCast;
 
-use crate::app::{Posted, RowCell, page, send as send_to_arko};
+use crate::app::{Posted, RowCell, Sender, page, send as send_to_arko};
 use crate::protocol::{CHOOSE_ANY, QuestionData};
 
 /// How long after a key the user still counts as typing, so a question
@@ -32,6 +32,9 @@ pub struct Draft {
 pub struct Asking {
     /// The answer panel shows.
     pub panel: RwSignal<bool>,
+    /// How many times it opened, which tells an answer sent from one opening
+    /// from what the panel shows since (`Asking::open`).
+    pub opening: RwSignal<u64>,
     /// The questions the next message answers ("Replying to 2 questions").
     pub attached: RwSignal<Vec<String>>,
     /// The questions the panel has shown, so the others are new.
@@ -53,6 +56,7 @@ impl Asking {
     pub fn new() -> Self {
         Self {
             panel: RwSignal::new(false),
+            opening: RwSignal::new(0),
             attached: RwSignal::new(Vec::new()),
             seen: RwSignal::new(Vec::new()),
             drafts: RwSignal::new(HashMap::new()),
@@ -61,6 +65,15 @@ impl Asking {
             focused: RwSignal::new(None),
             answering: RwSignal::new(Vec::new()),
             note: RwSignal::new(None),
+        }
+    }
+
+    /// Shows the answer panel. Opened again, it's another opening, so what
+    /// became of an answer sent from the last one leaves it as it is.
+    pub fn open(&self) {
+        if !self.panel.get_untracked() {
+            self.opening.update(|opening| *opening += 1);
+            self.panel.set(true);
         }
     }
 
@@ -266,8 +279,8 @@ pub fn follow() {
             ask.attached
                 .with_untracked(|attached| opens_by_itself(&open, seen, attached, typing))
         });
-        if opens && !ask.panel.get_untracked() {
-            ask.panel.set(true);
+        if opens {
+            ask.open();
         }
     });
     // What the panel shows is seen.
@@ -304,7 +317,7 @@ pub fn open_panel(card: Option<u64>) {
         return;
     }
     page.sheet.set(None);
-    page.ask.panel.set(true);
+    page.ask.open();
     let target = card
         .and_then(|card| open.iter().find(|question| question.item == card))
         .or(open.first())
@@ -386,9 +399,13 @@ fn send() {
     };
     ask.answering
         .update(|answering| answering.extend(ids.iter().cloned()));
+    let sender = Sender::from_page();
+    let opening = Some(ask.opening.get_untracked());
     spawn_local(async move {
-        let posted = send_to_arko("/api/questions/answer", body).await;
-        if answered(ask, &ids, posted) {
+        let outcome = send_to_arko("/api/questions/answer", body, &sender).await;
+        if let Some(posted) = sender.take(outcome)
+            && answered(ask, &ids, posted, opening)
+        {
             close_panel();
         }
     });
@@ -403,22 +420,26 @@ fn not_now(ids: Vec<String>) {
     let ask = page().ask;
     ask.answering
         .update(|answering| answering.extend(ids.iter().cloned()));
+    let sender = Sender::from_page();
     spawn_local(async move {
         let body = serde_json::json!({ "ids": ids.clone() });
-        answered(
-            ask,
-            &ids,
-            send_to_arko("/api/questions/dismiss", body).await,
-        );
+        let outcome = send_to_arko("/api/questions/dismiss", body, &sender).await;
+        if let Some(posted) = sender.take(outcome) {
+            answered(ask, &ids, posted, None);
+        }
     });
 }
 
 /// What became of answering or dismissing the questions `ids`, as Arko
-/// said (`posted`). Taken, their drafts go, and it's true, so the panel
-/// closes. Not taken, they can be answered again. What became of the last
-/// session's (Arko started again meanwhile) leaves the new one's questions,
-/// which have the same IDs, as they are.
-fn answered(ask: Asking, ids: &[String], posted: Posted) -> bool {
+/// said (`posted`), from the panel's opening `opening` when they were
+/// answered in it. Taken, their drafts go, and it's true, so the panel
+/// closes. Not taken, they can be answered again. Once the panel opened
+/// again (for other questions, perhaps of the same IDs), it leaves the
+/// questions as they are.
+fn answered(ask: Asking, ids: &[String], posted: Posted, opening: Option<u64>) -> bool {
+    if opening.is_some_and(|opening| ask.opening.get_untracked() != opening) {
+        return false;
+    }
     match posted {
         Posted::Taken => {
             ask.drafts
@@ -763,11 +784,13 @@ mod tests {
         serde_json::from_value(json).unwrap()
     }
 
-    /// The answer to the last session's q1, which comes once Arko started
-    /// again, leaves the new session's q1 as it is: its draft, and that the
-    /// page is answering it. The new one's own answer settles it.
+    /// An answer sent from one opening of the panel that comes once the
+    /// panel opened again, for other questions perhaps of the same IDs,
+    /// leaves the panel and its drafts as they are. In its own opening, taken,
+    /// its drafts go and the panel closes, and not taken, the questions can
+    /// be answered again.
     #[test]
-    fn an_answer_from_the_last_session_leaves_the_new_ones_questions_alone() {
+    fn an_answer_settles_only_the_panels_opening_it_was_sent_from() {
         let owner = Owner::new();
         owner.with(|| {
             let ask = Asking::new();
@@ -782,16 +805,26 @@ mod tests {
                 ask.answering.set(q1.clone());
             };
             fill();
-            assert!(!answered(ask, &q1, Posted::Stale));
+            ask.open();
+            let sent_from = Some(ask.opening.get_untracked());
+            ask.panel.set(false);
+            ask.open();
+            assert!(!answered(ask, &q1, Posted::Taken, sent_from));
+            assert!(!answered(ask, &q1, Posted::Kept, sent_from));
             assert_eq!(ask.drafts.get_untracked()["q1"], typed);
             assert_eq!(ask.answering.get_untracked(), q1);
-            // Its own: not taken, it can be answered again, and taken, its
-            // draft goes and the panel closes.
-            assert!(!answered(ask, &q1, Posted::Kept));
+            assert!(ask.panel.get_untracked());
+
+            let now = Some(ask.opening.get_untracked());
+            assert!(!answered(ask, &q1, Posted::Kept, now));
             assert!(ask.answering.get_untracked().is_empty());
             fill();
-            assert!(answered(ask, &q1, Posted::Taken));
+            assert!(answered(ask, &q1, Posted::Taken, now));
             assert!(ask.drafts.with_untracked(HashMap::is_empty));
+            // A dismissal from a chip belongs to no opening.
+            fill();
+            assert!(!answered(ask, &q1, Posted::Kept, None));
+            assert!(ask.answering.get_untracked().is_empty());
         });
     }
 
