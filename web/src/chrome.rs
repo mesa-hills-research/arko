@@ -202,7 +202,7 @@ pub fn Header() -> impl IntoView {
                         {move || if keep_on() {
                             view! {
                                 <button type="button" role="menuitem" on:click=move |_| keep_warm("/keep-warm off")>
-                                    <span class="name">"Stop keeping warm"</span>
+                                    <span class="name">"Stop"</span>
                                 </button>
                             }.into_any()
                         } else {
