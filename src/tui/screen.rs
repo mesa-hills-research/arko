@@ -2551,6 +2551,49 @@ mod tests {
         assert_eq!(screen(&mut app, 70, 24), rows);
     }
 
+    /// Opening a tall Quiet row at the bottom keeps its line under the
+    /// pointer, so the same click closes it again.
+    #[test]
+    fn opening_a_tall_quiet_row_keeps_its_line_in_place() {
+        use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Update};
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        app.set_view(crate::tui::transcript::View::Quiet);
+        let mut user = Item::new(Kind::User, "Edit it");
+        user.id = 1;
+        app.transcript.apply(Update::Item(user));
+        for id in 2..20 {
+            let mut call = Item::new(Kind::Call, "edit src/a.rs");
+            call.id = id;
+            call.status = Some(CallStatus::Ok);
+            call.act = Some(Act {
+                kind: ActKind::Edit,
+                target: "src/a.rs".into(),
+                ..Act::default()
+            });
+            app.transcript.apply(Update::Item(call));
+        }
+        let rows = screen(&mut app, 60, 14);
+        let y = rows
+            .iter()
+            .position(|row| row.contains("▸ Made 18 edits to a.rs"))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        let left = MouseButton::Left;
+        mouse(&mut app, MouseEventKind::Down(left), 4, y as u16);
+        mouse(&mut app, MouseEventKind::Up(left), 4, y as u16);
+        let open = screen(&mut app, 60, 14);
+        assert!(open[y].contains("▾ Made 18 edits to a.rs"), "{open:#?}");
+        mouse(&mut app, MouseEventKind::Down(left), 4, y as u16);
+        mouse(&mut app, MouseEventKind::Up(left), 4, y as u16);
+        let closed = screen(&mut app, 60, 14);
+        assert!(
+            closed
+                .iter()
+                .any(|row| row.contains("▸ Made 18 edits to a.rs")),
+            "{closed:#?}"
+        );
+    }
+
     /// Inside an open Quiet row, a command's whole output opens at its
     /// "more lines" line, by a click or from the keyboard, as it does on its
     /// own.

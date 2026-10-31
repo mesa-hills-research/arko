@@ -194,6 +194,28 @@ struct QuietCached {
     spans: Vec<(u64, std::ops::Range<usize>)>,
 }
 
+/// A line held on a row of the screen at the next draw, so the line a click
+/// opened or closed a fold at stays under the pointer.
+#[derive(Debug, Clone, Copy)]
+struct Pin {
+    /// The block it's in.
+    key: u64,
+    at: PinAt,
+    /// The row of the area it stays on.
+    row: usize,
+}
+
+/// Which line of its block a pin holds.
+#[derive(Debug, Clone, Copy)]
+enum PinAt {
+    /// The last, where an output or a thinking opens and closes.
+    Last,
+    /// This one, such as a Quiet row's line.
+    Line(usize),
+    /// The last line of this item inside an open Quiet row.
+    Inner(u64),
+}
+
 /// What a view shows in order, before it's laid out in blocks.
 #[derive(Clone)]
 enum Placed {
@@ -351,9 +373,9 @@ pub struct Transcript {
     pub drawn: Drawn,
     /// Lines a scroll moved while the screen was not drawn yet.
     pending_scroll: i64,
-    /// A fold was opened or closed: the next draw keeps its block's last
-    /// line (the one clicked) on this row of the area.
-    pin: Option<(u64, usize)>,
+    /// A fold was opened or closed, and the next draw keeps the line clicked
+    /// on the row of the area it was on.
+    pin: Option<Pin>,
     /// The agents' thinking shows whole from the start (`--show-thinking`),
     /// instead of folded to its first line.
     open_thinking: bool,
@@ -1117,10 +1139,15 @@ impl Transcript {
     /// and closes a call's output or thinking (its last).
     fn focus_line(&self, block: &Block) -> Option<usize> {
         let focus = self.focus?;
-        let gap = usize::from(block.gap);
         if block.key == focus {
-            return Some(gap);
+            return Some(usize::from(block.gap));
         }
+        self.inner_line(block, focus)
+    }
+
+    /// The line of `block`, an open Quiet row, that opens and closes the
+    /// output or the thinking `id` inside it (its last).
+    fn inner_line(&self, block: &Block, id: u64) -> Option<usize> {
         let Shown::Quiet(_) = block.shown else {
             return None;
         };
@@ -1128,8 +1155,8 @@ impl Transcript {
         cached
             .spans
             .iter()
-            .find(|(id, _)| *id == focus)
-            .map(|(_, lines)| gap + lines.end - 1)
+            .find(|(inner, _)| *inner == id)
+            .map(|(_, lines)| usize::from(block.gap) + lines.end - 1)
     }
 
     /// The entries in the order they are drawn: by ID, except that a
@@ -1226,10 +1253,18 @@ impl Transcript {
             }
         };
         // A fold opened or closed: the line clicked stays under the mouse.
-        if let Some((key, row)) = self.pin.take()
-            && let Some(index) = blocks.iter().position(|block| block.key == key)
+        if let Some(pin) = self.pin.take()
+            && let Some(index) = blocks.iter().position(|block| block.key == pin.key)
         {
-            top = (starts[index] + blocks[index].height()).saturating_sub(row + 1);
+            let block = &blocks[index];
+            let line = match pin.at {
+                PinAt::Last => Some(block.height().saturating_sub(1)),
+                PinAt::Line(line) => Some(line),
+                PinAt::Inner(id) => self.inner_line(block, id),
+            };
+            if let Some(line) = line {
+                top = (starts[index] + line).saturating_sub(pin.row);
+            }
         }
         if self.pending_scroll != 0 {
             top = (top as i64 + self.pending_scroll).clamp(0, bottom as i64) as usize;
@@ -1600,14 +1635,24 @@ impl Transcript {
     /// Opens or closes the fold of the block `key`, its fold line held on
     /// the screen's row `y` at the next draw. Returns that line.
     pub fn toggle(&mut self, key: u64, y: u16, filter: &Filter, theme: &Theme) -> Option<usize> {
-        // A Quiet row's line stays where it is: what it holds opens below.
+        let row = y.saturating_sub(self.drawn.area.y) as usize;
+        // A Quiet row's line stays where it is, and what it holds opens
+        // below it.
         if let Some(gap) = self.quiet_row(key, filter, theme) {
             if !self.quiet_open.remove(&key) {
                 self.quiet_open.insert(key);
             }
-            return Some(usize::from(gap));
+            let line = usize::from(gap);
+            self.pin = Some(Pin {
+                key,
+                at: PinAt::Line(line),
+                row,
+            });
+            return Some(line);
         }
         let quiet = filter.view() == View::Quiet;
+        // The open Quiet row an output or a thinking may be in.
+        let inside = self.quiet_holding(key, filter, theme);
         let entry = self.find_mut(key)?;
         if !folds(&entry.item) {
             return None;
@@ -1618,8 +1663,35 @@ impl Transcript {
             entry.open = !entry.open;
         }
         entry.touch();
-        self.pin = Some((key, y.saturating_sub(self.drawn.area.y) as usize));
+        self.pin = Some(match inside {
+            Some(block) => Pin {
+                key: block,
+                at: PinAt::Inner(key),
+                row,
+            },
+            None => Pin {
+                key,
+                at: PinAt::Last,
+                row,
+            },
+        });
         Some(self.rows_of(key, filter, theme)?.len() - 1)
+    }
+
+    /// The open Quiet row of `filter`'s view that shows the item `id`, by
+    /// its key.
+    fn quiet_holding(&mut self, id: u64, filter: &Filter, theme: &Theme) -> Option<u64> {
+        let width = self.drawn.area.width as usize;
+        let blocks = self.blocks(filter, theme, width);
+        blocks
+            .iter()
+            .filter(|block| matches!(block.shown, Shown::Quiet(_)))
+            .find(|block| {
+                self.quiet_cache
+                    .get(&block.key)
+                    .is_some_and(|cached| cached.spans.iter().any(|(inner, _)| *inner == id))
+            })
+            .map(|block| block.key)
     }
 
     /// Whether the block `key` is a Quiet row of `filter`'s view, and if
