@@ -222,10 +222,10 @@ pub type Refuse = Arc<dyn Fn(&arko_ai::Model) -> Option<String> + Send + Sync>;
 /// main agent's notes (see `agents::operator_note_hint`) it says text written
 /// only in thinking may never reach the user, and the worker answers with
 /// `message_user`, which shows in its own view and in the main transcript.
-/// shortcut: a worker saved before workers had `message_user` is told to use
-/// it too, and its call fails until its next handover gives it the tool. Tell
-/// such runs apart if the framework comes to say which tools a run has.
-pub const USER_MESSAGE_HEADING: &str = "The user sent you a message directly. Answer them with `message_user`, as text you write only in your thinking may never reach them:";
+/// A worker saved before workers had `message_user` lacks it until its next
+/// handover, and Arko can't tell which tools a saved run has, so such a
+/// worker is told to tell its lead instead.
+pub const USER_MESSAGE_HEADING: &str = "The user sent you a message directly. Answer them with `message_user`, or tell your lead if you don't have that tool. Never answer only in your thinking, which may never reach them:";
 
 /// How long each worker of the session ran, by its handle (milliseconds),
 /// in its folder.

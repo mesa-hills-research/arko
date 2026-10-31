@@ -2003,7 +2003,7 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
     assert_eq!(summary(&harness), "All done.");
     let worker = body(&bodies, "call_w1", "");
     assert!(
-        worker.contains("The user sent you a message directly. Answer them with `message_user`, as text you write only in your thinking may never reach them:\\n  Use tabs."),
+        worker.contains("The user sent you a message directly. Answer them with `message_user`, or tell your lead if you don't have that tool. Never answer only in your thinking, which may never reach them:\\n  Use tabs."),
         "{worker}"
     );
     // Its answer went through.
