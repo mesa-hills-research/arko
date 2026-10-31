@@ -354,14 +354,16 @@ pub async fn request(method: &str, path: &str, body: Option<String>) -> Option<(
     Some((status, text))
 }
 
-/// Gets JSON, or none.
+/// Gets JSON, or none. An answer that comes once the page shows another
+/// feed (Arko started again) is the last one's, so it's none too.
 pub async fn get_json<T: for<'a> Deserialize<'a>>(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Option<T> {
+    let asked = feed();
     let method = if body.is_some() { "POST" } else { "GET" };
     let (status, text) = request(method, path, body.map(|body| body.to_string())).await?;
-    if !(200..300).contains(&status) {
+    if !(200..300).contains(&status) || feed() != asked {
         return None;
     }
     serde_json::from_str(&text).ok()
@@ -405,8 +407,15 @@ async fn login(key: Option<String>) -> Login {
 /// line.
 pub async fn post(path: &str, body: serde_json::Value) -> bool {
     let page = page();
+    let asked = feed();
+    let body = of_feed(body, asked);
     for attempt in 0..2 {
-        let Some((status, text)) = request("POST", path, Some(body.to_string())).await else {
+        let answer = request("POST", path, Some(body.to_string())).await;
+        // What it acted on went with the feed it was pressed in.
+        if feed() != asked {
+            return false;
+        }
+        let Some((status, text)) = answer else {
             page.error.set(Some(
                 "Not sent, because Arko is out of reach. Your text is kept.".into(),
             ));
@@ -458,6 +467,25 @@ pub enum Posted {
     /// Arko asks the user first, with these words (a message that continues
     /// a worker whose prompt cache expired).
     Confirm(String),
+    /// It was sent from a feed the page no longer shows (Arko started
+    /// again), so it's the last session's, and nothing of the page now is
+    /// for it to change. The error line says so.
+    Stale,
+}
+
+/// What the error line says of a send that was the last session's, as
+/// Arko says it when it refuses one.
+const RESTARTED: &str = "Not sent, because Arko restarted. Your text is kept.";
+/// What it says when the last Arko took it before it started again.
+const SENT_BEFORE: &str = "Sent before Arko restarted. Your text is kept.";
+
+/// `body`, sent from the feed `feed`, which Arko refuses when it isn't its
+/// own.
+fn of_feed(mut body: serde_json::Value, feed: Option<u64>) -> serde_json::Value {
+    if let Some(feed) = feed {
+        body["feed"] = format!("{feed:016x}").into();
+    }
+    body
 }
 
 /// What the error line says when Arko didn't say what became of a send.
@@ -468,17 +496,13 @@ const UNKNOWN: &str =
 /// shows, and waits for what became of it however long Arko takes. A
 /// session cookie that ended is traded again once. The error line says why
 /// it didn't go, or that Arko didn't say.
-pub async fn send(path: &str, mut body: serde_json::Value) -> Posted {
+pub async fn send(path: &str, body: serde_json::Value) -> Posted {
     let page = page();
-    if let Some(feed) = STORE.with(|store| store.borrow().feed) {
-        body["feed"] = format!("{feed:016x}").into();
-    }
+    let asked = feed();
+    let body = of_feed(body, asked);
     for attempt in 0..2 {
-        let Some((status, text)) = request("POST", path, Some(body.to_string())).await else {
-            page.error.set(Some(UNKNOWN.into()));
-            return Posted::Kept;
-        };
-        if status == 401 && attempt == 0 {
+        let answer = request("POST", path, Some(body.to_string())).await;
+        if feed() == asked && attempt == 0 && matches!(answer, Some((401, _))) {
             match login(None).await {
                 Login::Ok => continue,
                 result => {
@@ -487,36 +511,62 @@ pub async fn send(path: &str, mut body: serde_json::Value) -> Posted {
                 }
             }
         }
-        let verdict = (status == 200)
-            .then(|| serde_json::from_str::<crate::protocol::Verdict>(&text).ok())
-            .flatten();
-        return match verdict {
-            Some(crate::protocol::Verdict::Accepted { partial, .. }) => {
-                page.error.set(partial.and_then(|partial| partial.words));
-                Posted::Taken
-            }
-            Some(crate::protocol::Verdict::Refused(refusal)) => match refusal.confirm {
-                Some(_) => {
-                    page.error.set(None);
-                    Posted::Confirm(refusal.words)
-                }
-                None => {
-                    page.error.set(Some(refusal.words));
-                    Posted::Kept
-                }
-            },
-            // (A body Arko can't read, for one Arko couldn't take.)
-            None if status == 400 => {
-                page.error.set(Some(not_sent(status, &text)));
-                Posted::Kept
-            }
-            None => {
-                page.error.set(Some(UNKNOWN.into()));
-                Posted::Kept
-            }
-        };
+        return settle(page, asked, answer);
     }
     Posted::Kept
+}
+
+/// What became of a send from the feed `asked`, by Arko's `answer` (none
+/// when Arko was out of reach), and the error line for it.
+pub(crate) fn settle(page: Page, asked: Option<u64>, answer: Option<(u16, String)>) -> Posted {
+    if feed() != asked {
+        return stale(page, answer);
+    }
+    let Some((status, text)) = answer else {
+        page.error.set(Some(UNKNOWN.into()));
+        return Posted::Kept;
+    };
+    let verdict = (status == 200)
+        .then(|| serde_json::from_str::<crate::protocol::Verdict>(&text).ok())
+        .flatten();
+    match verdict {
+        Some(crate::protocol::Verdict::Accepted { partial, .. }) => {
+            page.error.set(partial.and_then(|partial| partial.words));
+            Posted::Taken
+        }
+        Some(crate::protocol::Verdict::Refused(refusal)) => match refusal.confirm {
+            Some(_) => {
+                page.error.set(None);
+                Posted::Confirm(refusal.words)
+            }
+            None => {
+                page.error.set(Some(refusal.words));
+                Posted::Kept
+            }
+        },
+        // (A body Arko can't read, for one Arko couldn't take.)
+        None if status == 400 => {
+            page.error.set(Some(not_sent(status, &text)));
+            Posted::Kept
+        }
+        None => {
+            page.error.set(Some(UNKNOWN.into()));
+            Posted::Kept
+        }
+    }
+}
+
+/// What became of a send whose `answer` came once the page showed another
+/// feed: none of the page is for it to change, and the error line says
+/// whether the last Arko took it.
+fn stale(page: Page, answer: Option<(u16, String)>) -> Posted {
+    let taken = answer
+        .filter(|(status, _)| *status == 200)
+        .and_then(|(_, text)| serde_json::from_str::<crate::protocol::Verdict>(&text).ok())
+        .is_some_and(|verdict| matches!(verdict, crate::protocol::Verdict::Accepted { .. }));
+    page.error
+        .set(Some(if taken { SENT_BEFORE } else { RESTARTED }.into()));
+    Posted::Stale
 }
 
 fn lock(page: Page, result: Login) {
@@ -1253,6 +1303,49 @@ pub(crate) mod tests {
             assert!(page.grown.get_untracked().is_empty());
             assert!(page.pinned.get_untracked());
             assert_eq!(page.commands.get_untracked(), None);
+        });
+    }
+
+    /// What Arko answered to a send comes once the page shows another feed
+    /// (Arko started again), with the same text, to the same r1, from the
+    /// same q1 or a1. It's the last session's whatever it says, and the
+    /// error line says whether the last Arko took it. The page's own feed
+    /// reads the answer as it is.
+    #[test]
+    fn an_answer_from_the_last_feed_is_the_last_sessions() {
+        use crate::protocol::{Confirm, Delivery, Refusal, RefusalKind, Verdict};
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let accepted = || {
+                let verdict = Verdict::accepted(Delivery::Turn, Some(3));
+                Some((200, serde_json::to_string(&verdict).unwrap()))
+            };
+            let confirm = || {
+                let mut refusal = Verdict::refused(
+                    RefusalKind::Uncached {
+                        worker: "r1".into(),
+                    },
+                    "Continue r1?",
+                );
+                if let Verdict::Refused(Refusal { confirm, .. }) = &mut refusal {
+                    *confirm = Some(Confirm::ContinueUncached);
+                }
+                Some((200, serde_json::to_string(&refusal).unwrap()))
+            };
+            let a = vec![item(1, Kind::User, MAIN, "Go on.")];
+            take_reset(page, reset_of(0xa, a.clone(), Vec::new()), 0.0);
+            assert!(matches!(settle(page, Some(0xa), accepted()), Posted::Taken));
+            assert!(matches!(settle(page, Some(0xa), confirm()), Posted::Confirm(words) if words == "Continue r1?"));
+
+            take_reset(page, reset_of(0xb, a, Vec::new()), 0.0);
+            assert!(matches!(settle(page, Some(0xa), accepted()), Posted::Stale));
+            assert_eq!(page.error.get_untracked().as_deref(), Some(SENT_BEFORE));
+            assert!(matches!(settle(page, Some(0xa), confirm()), Posted::Stale));
+            assert_eq!(page.error.get_untracked().as_deref(), Some(RESTARTED));
+            assert!(matches!(settle(page, Some(0xa), None), Posted::Stale));
+            assert!(matches!(settle(page, Some(0xb), accepted()), Posted::Taken));
+            assert_eq!(page.error.get_untracked(), None);
         });
     }
 

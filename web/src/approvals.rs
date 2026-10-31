@@ -13,8 +13,8 @@ use wasm_bindgen::JsCast;
 
 use crate::app::{Posted, page, send as send_to_arko};
 use crate::protocol::{
-    Approval, ApprovalAnswers, ApprovalRequest, Look, SkillFile,
-    approvals_heading, approve_label, reject_label,
+    Approval, ApprovalAnswers, ApprovalRequest, Look, SkillFile, approvals_heading, approve_label,
+    reject_label,
 };
 
 /// What the tray remembers of its rows, by request.
@@ -98,7 +98,8 @@ fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
                 let _ = area.dispatch_event(&event);
             }
         }
-        rows.sending.set(false);
+        // (A new feed's tray took the place of this one meanwhile.)
+        rows.sending.try_set(false);
     });
 }
 

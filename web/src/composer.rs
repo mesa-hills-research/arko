@@ -8,7 +8,9 @@ use leptos::task::spawn_local;
 use lucide_leptos::{ArrowUp, Maximize2, Minimize2, Square};
 use web_sys::HtmlTextAreaElement;
 
-use crate::app::{DRAFT, Posted, get_json, page, post, send as send_to_arko, session_get, session_set};
+use crate::app::{
+    DRAFT, Posted, get_json, page, post, send as send_to_arko, session_get, session_set,
+};
 use crate::scroll;
 use crate::slash::{self, Menu};
 
@@ -228,11 +230,14 @@ pub fn Composer() -> impl IntoView {
         // In a worker's view, it goes to that worker. With questions
         // attached, it answers them (and while the agent waits on a
         // question, a message answers it).
-        let attached = ask.attached.get_untracked();
+        let answers = match page.worker.get_untracked() {
+            Some(_) => Vec::new(),
+            None => ask.attached.get_untracked(),
+        };
         let body = match page.worker.get_untracked() {
             Some(worker) => serde_json::json!({ "text": text, "to": worker }),
-            None if !attached.is_empty() => {
-                serde_json::json!({ "text": text, "answers": attached })
+            None if !answers.is_empty() => {
+                serde_json::json!({ "text": text, "answers": answers })
             }
             None => serde_json::json!({ "text": text }),
         };
@@ -244,18 +249,21 @@ pub fn Composer() -> impl IntoView {
             }
             match posted {
                 Posted::Taken => {
-                    if page.worker.get_untracked().is_none() {
-                        ask.attached.set(Vec::new());
+                    // The questions it answered, and the text unless the
+                    // box holds another meanwhile.
+                    ask.attached
+                        .update(|attached| attached.retain(|id| !answers.contains(id)));
+                    if draft_now().as_ref() == Some(&sent) {
+                        area.set_value("");
+                        expanded.set(false);
+                        resize();
                     }
-                    area.set_value("");
-                    expanded.set(false);
-                    resize();
                     // What one sends is what one wants to see next.
                     scroll::jump_to_latest();
                 }
                 Posted::Confirm(why) => continue_asked
                     .set(draft_now().and_then(|now| ContinueAsk::new(why, sent, &now))),
-                Posted::Kept => {}
+                Posted::Kept | Posted::Stale => {}
             }
             sending.set(false);
             refresh_menu();
@@ -351,7 +359,7 @@ pub fn Composer() -> impl IntoView {
             post("/api/stop", serde_json::json!({})).await;
             // The status hides it when the turn ends, and a second tap waits a moment.
             gloo_wait(1500).await;
-            stopping.set(false);
+            stopping.try_set(false);
         });
     };
 
@@ -549,7 +557,7 @@ fn choices_of(
                 (Some(words), js_sys::Date::now() - (CHOICES_FRESH - fresh)),
             )
         });
-        came.update(|count| *count += 1);
+        came.try_update(|count| *count += 1);
     });
     known
 }

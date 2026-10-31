@@ -387,17 +387,9 @@ fn send() {
     ask.answering
         .update(|answering| answering.extend(ids.iter().cloned()));
     spawn_local(async move {
-        // What's typed stays until Arko has it, and the panel with it.
-        if matches!(
-            send_to_arko("/api/questions/answer", body).await,
-            Posted::Taken
-        ) {
-            ask.drafts
-                .update(|drafts| drafts.retain(|id, _| !ids.contains(id)));
+        let posted = send_to_arko("/api/questions/answer", body).await;
+        if answered(ask, &ids, posted) {
             close_panel();
-        } else {
-            ask.answering
-                .update(|answering| answering.retain(|id| !ids.contains(id)));
         }
     });
 }
@@ -413,14 +405,33 @@ fn not_now(ids: Vec<String>) {
         .update(|answering| answering.extend(ids.iter().cloned()));
     spawn_local(async move {
         let body = serde_json::json!({ "ids": ids.clone() });
-        if !matches!(
+        answered(
+            ask,
+            &ids,
             send_to_arko("/api/questions/dismiss", body).await,
-            Posted::Taken
-        ) {
+        );
+    });
+}
+
+/// What became of answering or dismissing the questions `ids`, as Arko
+/// said (`posted`). Taken, their drafts go, and it's true, so the panel
+/// closes. Not taken, they can be answered again. What became of the last
+/// session's (Arko started again meanwhile) leaves the new one's questions,
+/// which have the same IDs, as they are.
+fn answered(ask: Asking, ids: &[String], posted: Posted) -> bool {
+    match posted {
+        Posted::Taken => {
+            ask.drafts
+                .update(|drafts| drafts.retain(|id, _| !ids.contains(id)));
+            true
+        }
+        Posted::Kept | Posted::Confirm(_) => {
             ask.answering
                 .update(|answering| answering.retain(|id| !ids.contains(id)));
+            false
         }
-    });
+        Posted::Stale => false,
+    }
 }
 
 fn update_draft(id: &str, change: impl FnOnce(&mut Draft)) {
@@ -750,6 +761,38 @@ mod tests {
 
     fn question(json: serde_json::Value) -> QuestionData {
         serde_json::from_value(json).unwrap()
+    }
+
+    /// The answer to the last session's q1, which comes once Arko started
+    /// again, leaves the new session's q1 as it is: its draft, and that the
+    /// page is answering it. The new one's own answer settles it.
+    #[test]
+    fn an_answer_from_the_last_session_leaves_the_new_ones_questions_alone() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let ask = Asking::new();
+            let q1 = vec!["q1".to_string()];
+            let typed = Draft {
+                other: "Blue".into(),
+                ..Draft::default()
+            };
+            let fill = || {
+                ask.drafts
+                    .set(HashMap::from([("q1".into(), typed.clone())]));
+                ask.answering.set(q1.clone());
+            };
+            fill();
+            assert!(!answered(ask, &q1, Posted::Stale));
+            assert_eq!(ask.drafts.get_untracked()["q1"], typed);
+            assert_eq!(ask.answering.get_untracked(), q1);
+            // Its own: not taken, it can be answered again, and taken, its
+            // draft goes and the panel closes.
+            assert!(!answered(ask, &q1, Posted::Kept));
+            assert!(ask.answering.get_untracked().is_empty());
+            fill();
+            assert!(answered(ask, &q1, Posted::Taken));
+            assert!(ask.drafts.with_untracked(HashMap::is_empty));
+        });
     }
 
     #[test]

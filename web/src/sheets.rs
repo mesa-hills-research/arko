@@ -171,6 +171,16 @@ impl Settings {
         }
     }
 
+    /// The command waiting was the last session's (Arko started again), so
+    /// it waits no more, and the settings show the new one's.
+    fn forget(&self) {
+        if let Some(change) = PENDING.with(|pending| pending.borrow_mut().take()) {
+            window().clear_timeout_with_handle(change.timer);
+            window().clear_timeout_with_handle(change.wait);
+        }
+        self.shows.set(None);
+    }
+
     /// What Arko says after the settings' command, for the settings.
     fn heard(&self, item: &ItemData) {
         let settings = *self;
@@ -248,7 +258,9 @@ impl Settings {
         self.shows.set(shows);
         spawn_local(async move {
             let sent = send_to_arko("/api/message", serde_json::json!({ "text": text })).await;
-            if !matches!(sent, Posted::Taken) {
+            // (The last session's command, which waits no more, says
+            // nothing of the new one's settings.)
+            if matches!(sent, Posted::Kept | Posted::Confirm(_)) {
                 let mine = PENDING.with(|pending| {
                     let mut pending = pending.borrow_mut();
                     pending.take_if(|change| change.id == id)
@@ -440,6 +452,12 @@ pub fn SettingsSheet() -> impl IntoView {
     };
     provide_context(settings);
     on_item(move |item| settings.heard(item));
+    Effect::new(move |seen: Option<()>| {
+        page.feeds.track();
+        if seen.is_some() {
+            settings.forget();
+        }
+    });
     // A command that took shows in the status.
     Effect::new(move |_| {
         page.status.with(|status| {
