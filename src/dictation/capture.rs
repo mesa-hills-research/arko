@@ -32,7 +32,8 @@ pub fn open(source: &Source, on_audio: OnAudio, on_failure: OnFailure) -> Result
 const PIECE: Duration = Duration::from_millis(20);
 
 /// Plays a WAV file in real time, in 20 ms pieces, then silence, as a
-/// microphone would.
+/// microphone would. Each piece ends where 20 ms more of the file does, so
+/// a rate that 50 doesn't divide keeps time.
 fn wav_file(path: &Path, mut on_audio: OnAudio) -> Result<Capture, String> {
     let audio = speech::wav::read(path).map_err(|error| match error {
         // (It names the file.)
@@ -44,12 +45,23 @@ fn wav_file(path: &Path, mut on_audio: OnAudio) -> Result<Capture, String> {
     std::thread::Builder::new()
         .name("arko-dictation-file".into())
         .spawn(move || {
-            let piece = (rate as usize / 50).max(1);
-            let silence = vec![0.0; piece];
-            let mut pieces = audio.samples.chunks(piece);
+            let silence = vec![0.0; rate as usize / 50 + 1];
+            let (mut sent, mut pieces) = (0usize, 1u64);
             let mut next = Instant::now();
             loop {
-                on_audio(pieces.next().unwrap_or(&silence), rate);
+                let end = (pieces * u64::from(rate) / 50) as usize;
+                let count = end - sent;
+                match audio.samples.get(sent..end) {
+                    Some(piece) => on_audio(piece, rate),
+                    None => {
+                        let left = audio.samples.get(sent..).unwrap_or_default();
+                        let mut piece = left.to_vec();
+                        piece.extend_from_slice(&silence[..count - left.len()]);
+                        on_audio(&piece, rate);
+                    }
+                }
+                sent = end;
+                pieces += 1;
                 next += PIECE;
                 match stopped.recv_timeout(next.saturating_duration_since(Instant::now())) {
                     Err(RecvTimeoutError::Timeout) => {}
@@ -224,6 +236,32 @@ mod tests {
         );
         assert!(pieces[..5].iter().all(|(_, _, silent)| !silent));
         assert!(pieces[5..].iter().all(|(_, _, silent)| *silent));
+    }
+
+    /// At a rate 50 doesn't divide, the pieces take turns being a sample
+    /// longer, so 20 ms of pieces hold 20 ms of audio.
+    #[test]
+    fn a_wav_file_keeps_time_at_any_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tone.wav");
+        tone_wav(&path, 11_025, 0.2);
+        let got: Arc<Mutex<Vec<usize>>> = Arc::default();
+        let into = got.clone();
+        let capture = open(
+            &Source::File(path),
+            Box::new(move |samples, _| into.lock().unwrap().push(samples.len())),
+            Box::new(|why| panic!("{why}")),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(260));
+        drop(capture);
+        let pieces = got.lock().unwrap().clone();
+        assert!(pieces.len() >= 10, "{pieces:?}");
+        assert!(
+            pieces.iter().all(|len| *len == 220 || *len == 221),
+            "{pieces:?}"
+        );
+        assert_eq!(pieces[..10].iter().sum::<usize>(), 2205);
     }
 
     #[test]
