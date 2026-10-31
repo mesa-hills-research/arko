@@ -3193,7 +3193,8 @@ impl Feed {
     /// [`worker_under`](Self::worker_under) named.
     pub fn worker_info(&self, id: &str, info: WorkerInfo) {
         let mut state = self.lock();
-        self.known_worker(&mut state, id);
+        // (A worker heard of first here goes out whatever it started with.)
+        let new = self.known_worker(&mut state, id);
         let parent = state.parents.get(id).cloned();
         let Some(worker) = state.worker(id) else {
             return;
@@ -3212,8 +3213,8 @@ impl Feed {
             summary.cost_billed = billed;
             summary.cost_list = list;
         }
-        if *summary != before {
-            self.worker_changed(&mut state, id, false);
+        if new || *summary != before {
+            self.worker_changed(&mut state, id, new);
         }
         self.add_up_families(&mut state);
     }
@@ -3491,6 +3492,20 @@ mod tests {
         let snapshot = feed.subscribe().0;
         let order: Vec<&str> = snapshot.workers.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(order, ["r1", "r2"]);
+    }
+
+    /// A worker the feed first hears of in what it started with goes out at
+    /// once, though that tells nothing new, as a snapshot has it.
+    #[test]
+    fn a_worker_first_heard_of_in_its_info_goes_out() {
+        let feed = Feed::new("main");
+        let (_, mut receiver) = feed.subscribe();
+        feed.worker_info("r1", WorkerInfo::new());
+        assert!(matches!(
+            updates(&mut receiver).as_slice(),
+            [Update::Worker(summary)] if summary.id == "r1"
+        ));
+        assert_eq!(feed.subscribe().0.workers.len(), 1);
     }
 
     /// A snapshot names its feed, which another feed doesn't share, and
