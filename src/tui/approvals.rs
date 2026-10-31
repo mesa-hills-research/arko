@@ -607,7 +607,7 @@ pub fn draw_tray(frame: &mut Frame, app: &mut App, above: Rect) -> u16 {
             .buffer_mut()
             .set_line(rect.x, rect.y + row as u16, line, rect.width);
     }
-    let visible: HashSet<_> = requests
+    let mut visible: HashSet<_> = requests
         .into_iter()
         .filter_map(|(line, id)| {
             (fixed + skip..fixed + skip + body)
@@ -616,6 +616,9 @@ pub fn draw_tray(frame: &mut Frame, app: &mut App, above: Rect) -> u16 {
         })
         .collect();
     app.tray.rows_fit = Some(!visible.is_empty());
+    if !app.focused || matches!(app.overlay, Some(super::overlay::Overlay::Remote { .. })) {
+        visible.clear();
+    }
     app.tray.shown.visible(&visible, now);
     app.tray.redraw_at = app.tray.shown.ready_at_ms(now).and_then(|ready| {
         app.tray

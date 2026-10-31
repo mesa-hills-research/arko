@@ -299,6 +299,47 @@ fn a_window_without_room_explains_why_answers_wait() {
 }
 
 #[test]
+fn unfocused_and_covered_requests_are_not_marked_seen() {
+    use ratatui::{Terminal, backend::TestBackend};
+    for covered in [false, true] {
+        let mut app = with(vec![request("a1", skill())]);
+        app.focused = covered;
+        if covered {
+            app.overlay = Some(crate::tui::overlay::Overlay::Remote {
+                link: 0,
+                since: Instant::now(),
+            });
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_tray(frame, &mut app, Rect::new(0, 0, 100, 20));
+            })
+            .unwrap();
+        app.tray.clock = Some(Instant::now() - Duration::from_secs(1));
+        terminal
+            .draw(|frame| {
+                draw_tray(frame, &mut app, Rect::new(0, 0, 100, 20));
+            })
+            .unwrap();
+        assert!(
+            !app.tray
+                .shown
+                .can_answer("a1", app.tray.clock.unwrap().elapsed().as_millis() as u64)
+        );
+        assert!(app.approvals_due().is_none());
+        app.focused = true;
+        app.overlay = None;
+        terminal
+            .draw(|frame| {
+                draw_tray(frame, &mut app, Rect::new(0, 0, 100, 20));
+            })
+            .unwrap();
+        assert!(app.approvals_due().is_some());
+    }
+}
+
+#[test]
 fn a_message_begun_before_the_newest_request_stays() {
     for key in [KeyCode::Enter, KeyCode::Char('r')] {
         let mut app = super::super::app::tests::app();
