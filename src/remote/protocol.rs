@@ -1386,6 +1386,13 @@ pub struct ResetData {
     pub jobs: Vec<JobSummary>,
     #[serde(default)]
     pub status: StatusData,
+    /// The feed it is of, 16 hex digits, which another feed (Arko started
+    /// again) doesn't share.
+    #[serde(default)]
+    pub feed: String,
+    /// How many updates the feed had sent when it was taken.
+    #[serde(default)]
+    pub seq: u64,
 }
 
 /// A command the page runs (`GET /api/commands`).

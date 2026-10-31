@@ -881,6 +881,14 @@ pub struct Snapshot {
     /// they started.
     pub jobs: Vec<JobSummary>,
     pub activity: Activity,
+    /// The feed it is of ([`Feed::id`]). A feed made again, as when Arko
+    /// starts again and resumes the session, has another, though its items'
+    /// IDs may be the same.
+    pub feed: u64,
+    /// How many updates the feed had sent when it was taken. Those a client
+    /// gets after it follow on from there, so applied to the snapshot they
+    /// leave it where a client that followed every update would be.
+    pub seq: u64,
 }
 
 /// The session's feed. It's cheap to clone, and every clone feeds the same
@@ -894,6 +902,8 @@ struct Inner {
     /// The main agent's name: its events are the conversation; the others'
     /// are workers'.
     main: String,
+    /// Tells this feed from any other ([`Feed::id`]).
+    id: u64,
     state: Mutex<State>,
     updates: broadcast::Sender<Update>,
     /// The batched clients' queues ([`Feed::subscribe_batched`]).
@@ -1197,6 +1207,7 @@ impl Feed {
         Self {
             inner: Arc::new(Inner {
                 main: main.to_string(),
+                id: Uuid::new_v4().as_u64_pair().0,
                 state: Mutex::new(State::default()),
                 updates,
                 batched: Mutex::default(),
@@ -1231,7 +1242,7 @@ impl Feed {
     /// from then on.
     pub fn subscribe(&self) -> (Snapshot, broadcast::Receiver<Update>) {
         let state = self.lock();
-        (Self::snapshot(&state), self.inner.updates.subscribe())
+        (self.snapshot(&state), self.inner.updates.subscribe())
     }
 
     /// The history, the workers and the activity now, and from then on
@@ -1249,10 +1260,17 @@ impl Feed {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(sender);
-        (Self::snapshot(&state), Batches { updates })
+        (self.snapshot(&state), Batches { updates })
     }
 
-    fn snapshot(state: &State) -> Snapshot {
+    /// A number that tells this feed from any other, made at random as it
+    /// is made. Each snapshot carries it ([`Snapshot::feed`]), so a client
+    /// that connects again can tell whether it is the feed it had.
+    pub fn id(&self) -> u64 {
+        self.inner.id
+    }
+
+    fn snapshot(&self, state: &State) -> Snapshot {
         let mut items: Vec<Item> = state
             .main
             .items
@@ -1267,6 +1285,8 @@ impl Feed {
             workers: state.workers.iter().map(|w| w.summary.clone()).collect(),
             jobs: state.jobs.clone(),
             activity: state.activity.clone(),
+            feed: self.inner.id,
+            seq: state.seq,
         }
     }
 
@@ -3388,6 +3408,25 @@ mod tests {
             merged.as_slice(),
             [Update::Append { id: 2, text }, Update::Truncate { from: 2 }] if text == " more"
         ));
+    }
+
+    /// A snapshot names its feed, which another feed doesn't share, and
+    /// counts the updates sent before it. A client gets the updates sent
+    /// after it, each once.
+    #[test]
+    fn a_snapshot_names_its_feed_and_counts_the_updates_before_it() {
+        let feed = Feed::new("main");
+        assert_ne!(feed.id(), Feed::new("main").id());
+        let (empty, mut first) = feed.subscribe();
+        assert_eq!((empty.feed, empty.seq), (feed.id(), 0));
+        feed.event(&event("main", chunk("Hel")), None);
+        feed.event(&event("main", chunk("lo")), None);
+        let (snapshot, mut second) = feed.subscribe();
+        assert_eq!(snapshot.seq, 2, "the item and its append");
+        feed.notice(Level::Info, "Done.");
+        assert_eq!(updates(&mut first).len(), 3);
+        assert_eq!(updates(&mut second).len(), 1);
+        assert_eq!(feed.subscribe().0.seq, 3);
     }
 
     /// A batched client misses nothing however far behind it falls: 10,000

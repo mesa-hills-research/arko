@@ -1096,6 +1096,10 @@ impl Stream {
                     "workers": snapshot.workers,
                     "jobs": snapshot.jobs,
                     "status": status,
+                    // In hex, as the page keeps it where a number past 2^53
+                    // loses digits.
+                    "feed": format!("{:016x}", snapshot.feed),
+                    "seq": snapshot.seq,
                 })
                 .to_string(),
             ),
@@ -2452,6 +2456,32 @@ mod tests {
         assert!(INDEX.contains("<link href=/icon-small.svg rel=icon"));
         assert!(INDEX.contains("<link href=/apple-touch-icon.png rel=apple-touch-icon>"));
         assert!(page_has("/icon.svg"));
+    }
+
+    /// The stream's start names the feed it is of, in hex, and how many
+    /// updates the feed had sent, so the page can tell a feed made again
+    /// (Arko started again) from the one it had.
+    #[tokio::test]
+    async fn the_streams_start_names_its_feed() {
+        use super::super::feed::{Delivery, Source};
+        use super::super::protocol::ResetData;
+        let feed = Feed::new("main");
+        feed.user("Hello.", Source::Web, Delivery::Turn);
+        let served = serve_all(
+            &feed,
+            Images::default(),
+            "127.0.0.1:0",
+            Info::default(),
+            Arc::new(Still),
+        );
+        let cookie = served.login().await;
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        assert_eq!(reset.feed, format!("{:016x}", feed.id()));
+        assert_eq!(reset.feed.len(), 16);
+        assert_eq!(reset.seq, 1, "the message's item");
     }
 
     /// An item's images reach the page with their addresses, and their bytes
