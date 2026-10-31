@@ -1986,12 +1986,7 @@ impl Feed {
                     .calls
                     .get_mut(tool_call_id)
                     .and_then(|call| call.message.take());
-                let mut outcome = render::outcome(tool_name, output);
-                // What a search found comes from the search itself.
-                if let Some(found) = crate::index::take_found(*tool_call_id) {
-                    outcome.settled.found(found);
-                }
-                self.settle(&mut state, tool_call_id, outcome);
+                self.settle(&mut state, tool_call_id, render::outcome(tool_name, output));
                 // The worker that got a message shows it in its own
                 // transcript (a message to the lead is its call's line).
                 if let (Some(message), Some(to)) = (message, render::sent_to(output)) {

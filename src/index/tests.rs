@@ -1459,6 +1459,18 @@ fn search_and_status_formatting() {
          [proj] src/net.rs:1-5 · fn retry (file changed since indexed)\n\
          [docs] src/net.rs:1-5 · retry"
     );
+    // The first line reads back as the indexes searched and the count, as
+    // the transcript reads it.
+    let names = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        tools::read_search_header(text.lines().next().unwrap()),
+        Some((names(&["proj", "docs"]), 2))
+    );
     let none = SearchOutput {
         searched: vec![("proj".into(), Kind::Code, Mode::Dense)],
         ..SearchOutput::default()
@@ -1467,6 +1479,16 @@ fn search_and_status_formatting() {
     assert!(
         text.starts_with("No results for \"zz\" in proj (code, semantic)."),
         "{text}"
+    );
+    assert_eq!(
+        tools::read_search_header(text.lines().next().unwrap()),
+        Some((names(&["proj"]), 0))
+    );
+    // A query with " in " and quotes in it doesn't move the indexes.
+    let text = tools::format_search("state \"in\" session in x", &several_none(), 3);
+    assert_eq!(
+        tools::read_search_header(text.lines().next().unwrap()),
+        Some((names(&["proj", "docs"]), 0))
     );
 
     assert_eq!(tools::snippet(&file, 0, 1000, 1), vec!["/// Retries."]);
@@ -1479,6 +1501,17 @@ fn search_and_status_formatting() {
 
     let text = tools::format_status(&[], None);
     assert!(text.contains("no indexes"), "{text}");
+}
+
+/// A search of two indexes that found nothing.
+fn several_none() -> SearchOutput {
+    SearchOutput {
+        searched: vec![
+            ("proj".into(), Kind::Code, Mode::Hybrid),
+            ("docs".into(), Kind::Docs, Mode::Lexical),
+        ],
+        ..SearchOutput::default()
+    }
 }
 
 /// The status line for the monitor says what the setting and the watcher

@@ -785,11 +785,11 @@ impl Settled {
 
     /// What the search of a call found, the indexes it searched, and
     /// "no results" when it had none.
-    pub fn found(&mut self, found: crate::index::Found) {
-        if !found.indexes.is_empty() {
-            self.index = Some(found.indexes.join(", "));
+    fn found(&mut self, indexes: &[String], hits: usize) {
+        if !indexes.is_empty() {
+            self.index = Some(indexes.join(", "));
         }
-        if found.hits == 0 {
+        if hits == 0 {
             self.news = Some("no results".into());
         }
     }
@@ -936,6 +936,17 @@ fn brief(tool: &str, output: &str) -> Outcome {
                 },
                 _ => Outcome::ok(cut(output, OUTCOME_CHARS)),
             }
+        }
+        // shortcut: reads the first line of the search's result, which
+        // one function of the search writes and reads back, until the
+        // framework gives a tool's result as data.
+        "index_search" => {
+            let first = output.lines().next().unwrap_or_default();
+            let mut outcome = Outcome::ok(cut(first, OUTCOME_CHARS));
+            if let Some((indexes, hits)) = crate::index::read_search_header(first) {
+                outcome.settled.found(&indexes, hits);
+            }
+            outcome
         }
         crew::MESSAGE_AGENT if output.starts_with("Sent") => Outcome::ok("sent"),
         // Its result is the mail that came: "[mail 2] r1 ... finished ...".
@@ -1570,10 +1581,8 @@ mod tests {
         let search = act("index_search", &[("query", "state in session".into())]);
         let found = |indexes: &[&str], hits: usize| {
             let mut found = Settled::default();
-            found.found(crate::index::Found {
-                indexes: indexes.iter().map(|index| index.to_string()).collect(),
-                hits,
-            });
+            let indexes: Vec<String> = indexes.iter().map(|index| index.to_string()).collect();
+            found.found(&indexes, hits);
             let mut act = Some(search.clone());
             found.apply(&mut act);
             act.unwrap()

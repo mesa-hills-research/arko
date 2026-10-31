@@ -544,6 +544,65 @@ fn whole_result(
     Some((format!("{header}\n{body}"), (start, end)))
 }
 
+/// How the first line of a search's result begins when it found nothing,
+/// and how that line ends.
+const NO_RESULTS: &str = "No results for ";
+const NO_RESULTS_HINT: &str = ". Try other words, a broader path_prefix, or rg for exact text.";
+
+/// The first line of a search's result, which says how many results it had
+/// from which indexes (`searched`, each `name (kind, mode)`).
+/// [`read_search_header`] reads it back.
+fn search_header(query: &str, searched: &[String], hits: usize) -> String {
+    if hits == 0 {
+        let within = if searched.is_empty() {
+            String::new()
+        } else {
+            format!(" in {}", searched.join(", "))
+        };
+        format!("{NO_RESULTS}{query:?}{within}{NO_RESULTS_HINT}")
+    } else {
+        format!(
+            "{hits} result{} from {}:",
+            if hits == 1 { "" } else { "s" },
+            searched.join(", ")
+        )
+    }
+}
+
+/// What the first line of a search's result says, as [`search_header`]
+/// writes it: the indexes searched and how many results there were.
+pub fn read_search_header(line: &str) -> Option<(Vec<String>, usize)> {
+    let names = |list: &str| -> Vec<String> {
+        list.split("), ")
+            .filter_map(|item| {
+                item.rsplit_once(" (")
+                    .map(|(name, _)| name.trim().to_string())
+            })
+            .filter(|name| !name.is_empty())
+            .collect()
+    };
+    if let Some(rest) = line.strip_prefix(NO_RESULTS) {
+        // Past the query, quoted as Rust quotes a string.
+        let rest = rest.strip_prefix('"')?;
+        let mut escaped = false;
+        let end = rest.char_indices().find_map(|(at, c)| {
+            let ends = c == '"' && !escaped;
+            escaped = c == '\\' && !escaped;
+            ends.then_some(at)
+        })?;
+        let rest = rest[end + 1..].strip_suffix(NO_RESULTS_HINT)?;
+        let list = rest.strip_prefix(" in ").unwrap_or_default();
+        return Some((names(list), 0));
+    }
+    let (count, rest) = line.split_once(' ')?;
+    let hits = count.parse().ok()?;
+    let list = rest
+        .strip_prefix("results from ")
+        .or_else(|| rest.strip_prefix("result from "))?
+        .strip_suffix(':')?;
+    Some((names(list), hits))
+}
+
 /// A search's results: a header line, then per result `path:start-end · scope`
 /// and its snippet, then notes.
 #[cfg(test)]
@@ -561,19 +620,9 @@ pub fn format_search_detail(query: &str, output: &SearchOutput, detail: Detail) 
         .map(|(name, kind, mode)| format!("{name} ({}, {})", kind.as_str(), mode_name(*mode)))
         .collect();
     let several = output.searched.len() > 1;
-    if output.hits.is_empty() {
-        out.push_str(&format!("No results for {query:?}"));
-        if !searched.is_empty() {
-            out.push_str(&format!(" in {}", searched.join(", ")));
-        }
-        out.push_str(". Try other words, a broader path_prefix, or rg for exact text.\n");
-    } else {
-        out.push_str(&format!(
-            "{} result{} from {}:\n",
-            output.hits.len(),
-            if output.hits.len() == 1 { "" } else { "s" },
-            searched.join(", ")
-        ));
+    out.push_str(&search_header(query, &searched, output.hits.len()));
+    out.push('\n');
+    if !output.hits.is_empty() {
         let kinds: HashMap<&str, Kind> = output
             .searched
             .iter()
@@ -859,63 +908,13 @@ impl Tool for SearchTool {
         let detail = parse_detail(&params)?;
         let indexes = Arc::clone(&self.indexes);
         let query = args.query.clone();
-        let call = context.tool_call_id;
         // Chunking the results' files again is blocking work too.
         blocking(move || {
             let output = indexes.search_blocking(&args)?;
-            if let Some(call) = call {
-                found(
-                    call,
-                    Found {
-                        indexes: output
-                            .searched
-                            .iter()
-                            .map(|(name, ..)| name.clone())
-                            .collect(),
-                        hits: output.hits.len(),
-                    },
-                );
-            }
             Ok(format_search_detail(&query, &output, detail))
         })
         .await
     }
-}
-
-/// What a search found, for its call's line in the transcript. That is the indexes
-/// it searched and how many results it had.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Found {
-    pub indexes: Vec<String>,
-    pub hits: usize,
-}
-
-/// What the latest searches found, by their calls, until the transcript
-/// takes it when the call's result comes.
-static FOUND: std::sync::Mutex<std::collections::VecDeque<(uuid::Uuid, Found)>> =
-    std::sync::Mutex::new(std::collections::VecDeque::new());
-
-/// The most searches whose findings wait for the transcript. A search no
-/// transcript took (a run without one) gives way to newer ones.
-const FOUND_KEPT: usize = 64;
-
-fn found(call: uuid::Uuid, found: Found) {
-    let mut kept = FOUND
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if kept.len() >= FOUND_KEPT {
-        kept.pop_front();
-    }
-    kept.push_back((call, found));
-}
-
-/// What the search of the call `call` found, once.
-pub fn take_found(call: uuid::Uuid) -> Option<Found> {
-    let mut kept = FOUND
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let at = kept.iter().position(|(id, _)| *id == call)?;
-    kept.remove(at).map(|(_, found)| found)
 }
 
 #[derive(Debug)]

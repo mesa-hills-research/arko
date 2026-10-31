@@ -41,4 +41,4 @@ pub use cli::{IndexCommand, run_command};
 pub(crate) use engine::WatchState;
 pub use engine::{Indexes, Known};
 pub(crate) use store::Kind;
-pub use tools::{Found, TOOL_NAMES, definitions as tool_definitions, take_found};
+pub use tools::{TOOL_NAMES, definitions as tool_definitions, read_search_header};
