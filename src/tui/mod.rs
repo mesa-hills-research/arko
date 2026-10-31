@@ -457,7 +457,7 @@ async fn run(
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         let (snapshot, fresh) = setup.feed.subscribe();
                         updates = fresh;
-                        app.reset(snapshot);
+                        bell |= app.reset(snapshot);
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         // (The feed outlives the view.)

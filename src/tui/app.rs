@@ -894,9 +894,12 @@ impl App {
     }
 
     /// Starts over from the feed's `snapshot` (the view fell behind it).
-    pub fn reset(&mut self, snapshot: Snapshot) {
-        self.set_activity(snapshot.activity.clone());
+    /// Returns whether the bell should sound, as when the turn ended while
+    /// the view was behind.
+    pub fn reset(&mut self, snapshot: Snapshot) -> bool {
+        let bell = self.set_activity(snapshot.activity.clone());
         self.transcript.reset(snapshot);
+        bell
     }
 
     /// The activity changed: returns whether the bell should sound (the
@@ -3325,6 +3328,25 @@ pub(super) mod tests {
         assert!(!app.take_ring());
         app.set_reading(asking());
         assert!(app.take_ring(), "q2 is new again");
+    }
+
+    /// A turn that ended while the view was behind the feed rings the bell
+    /// as the view starts over, as one it followed does, while the window
+    /// isn't focused.
+    #[test]
+    fn a_turn_that_ended_while_behind_rings_the_bell() {
+        let working = Activity {
+            working: true,
+            ..Activity::default()
+        };
+        for focused in [true, false] {
+            let mut app = app();
+            app.focused = focused;
+            app.update(Update::Activity, || working.clone());
+            // (A default snapshot's turn has ended.)
+            assert_eq!(app.reset(Snapshot::default()), !focused);
+            assert!(!app.reset(Snapshot::default()), "once");
+        }
     }
 
     #[test]
