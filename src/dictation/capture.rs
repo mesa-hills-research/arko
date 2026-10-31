@@ -32,8 +32,11 @@ const PIECE: Duration = Duration::from_millis(20);
 /// Plays a WAV file in real time, in 20 ms pieces, then silence, as a
 /// microphone would.
 fn wav_file(path: &Path, mut on_audio: OnAudio) -> Result<Capture, String> {
-    let audio = speech::wav::read(path)
-        .map_err(|error| format!("Couldn't read {} ({error}).", path.display()))?;
+    let audio = speech::wav::read(path).map_err(|error| match error {
+        // (It names the file.)
+        speech::Error::Io { .. } => format!("{error}."),
+        other => format!("Couldn't read {} ({other}).", path.display()),
+    })?;
     let rate = audio.sample_rate;
     let (stop, stopped) = mpsc::channel::<()>();
     std::thread::Builder::new()
@@ -224,5 +227,6 @@ mod tests {
             error.starts_with("Couldn't read /nowhere/clip.wav ("),
             "{error}"
         );
+        assert_eq!(error.matches("/nowhere/clip.wav").count(), 1, "{error}");
     }
 }

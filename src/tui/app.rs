@@ -114,6 +114,9 @@ pub enum Effect {
     CheckNames(Cancel),
     /// What a recording needs of the dictation service and the microphone.
     Dictate(super::dictation::Dictate),
+    /// A notice in the transcript, for what must outlast the status line's
+    /// hint (a failure).
+    Notice(crate::remote::Level, String),
 }
 
 /// A check that its asker can end: set to stop it.

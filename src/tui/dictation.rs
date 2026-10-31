@@ -16,6 +16,7 @@ use super::overlay::Overlay;
 use crate::dictation::{
     self, DictationError, DictationEvent, DictationUpdate, Preparing, SpeechModel,
 };
+use crate::remote::Level;
 
 /// What the view asks of the dictation service and the microphone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,15 +113,20 @@ impl App {
             DictationError::NeedsDownload(model) => {
                 self.overlay = Some(Overlay::Download { model, choice: 0 })
             }
-            other => self.say(other.to_string()),
+            DictationError::Busy | DictationError::Unavailable => {
+                self.effects_push(Effect::Notice(Level::Warn, error.to_string()))
+            }
+            DictationError::Stopped => {
+                self.effects_push(Effect::Notice(Level::Error, error.to_string()))
+            }
         }
     }
 
     /// The microphone couldn't start, and the loop let go of the
-    /// dictation: the recording ends, saying why.
+    /// dictation: the recording ends, saying why in the transcript.
     pub fn dictation_failed(&mut self, why: String) {
         self.end_recording();
-        self.say(why);
+        self.effects_push(Effect::Notice(Level::Error, why));
     }
 
     /// A dictation's event, from the feed: the view's own recording's
@@ -156,7 +162,7 @@ impl App {
             }
             DictationEvent::Failed(why) => {
                 self.end_recording();
-                self.say(why);
+                self.effects_push(Effect::Notice(Level::Error, why));
                 self.effects_push(Effect::Dictate(Dictate::Close));
             }
         }

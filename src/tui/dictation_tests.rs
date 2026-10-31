@@ -271,14 +271,21 @@ fn a_finished_download_waits_for_ctrl_r() {
     assert_eq!(app.hint(), Some(MODEL_READY));
 }
 
+/// Failures are notices in the transcript, which outlast the status line,
+/// and end the recording.
 #[test]
-fn failures_are_said_and_end_the_recording() {
+fn failures_are_noticed_and_end_the_recording() {
+    use crate::remote::Level;
     let mut app = app();
     ctrl_r(&mut app);
+    dictates(&mut app);
     app.dictation_refused(DictationError::Busy);
     assert_eq!(
-        app.hint(),
-        Some("Dictation is already running in another window.")
+        app.take_effects(),
+        [Effect::Notice(
+            Level::Warn,
+            "Dictation is already running in another window.".into()
+        )]
     );
     assert!(app.recording.is_none());
 
@@ -289,13 +296,21 @@ fn failures_are_said_and_end_the_recording() {
         7,
         DictationEvent::Failed("Speech recognition failed (no).".into()),
     );
-    assert_eq!(dictates(&mut app), [Dictate::Close]);
-    assert_eq!(app.hint(), Some("Speech recognition failed (no)."));
+    assert_eq!(
+        app.take_effects(),
+        [
+            Effect::Notice(Level::Error, "Speech recognition failed (no).".into()),
+            Effect::Dictate(Dictate::Close)
+        ]
+    );
     assert!(app.recording.is_none() && !app.editor.has_tentative());
 
     let mut app = listening("");
     app.dictation_failed("No microphone found.".into());
-    assert_eq!(app.hint(), Some("No microphone found."));
+    assert_eq!(
+        app.take_effects(),
+        [Effect::Notice(Level::Error, "No microphone found.".into())]
+    );
     assert!(app.recording.is_none());
 }
 

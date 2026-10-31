@@ -509,64 +509,77 @@ async fn run(
         if bell {
             let _ = std::io::stdout().write_all(b"\x07");
         }
-        for effect in app.take_effects() {
-            match effect {
-                Effect::Input(input) => {
-                    let _ = setup.input.send(input);
+        // (Carrying out one can ask for another, such as a dictation's
+        // notice.)
+        let mut effects = app.take_effects();
+        while !effects.is_empty() {
+            for effect in effects {
+                match effect {
+                    Effect::Notice(level, text) => setup.feed.notice(level, &text),
+                    Effect::Input(input) => {
+                        let _ = setup.input.send(input);
+                    }
+                    Effect::Copy { text, what } => {
+                        // The terminal's clipboard, and the system's: the status
+                        // line says "Copied" only when the system's took it.
+                        let mut stdout = std::io::stdout();
+                        let _ = execute!(
+                            stdout,
+                            crossterm::clipboard::CopyToClipboard::to_clipboard_from(
+                                text.as_bytes()
+                            )
+                        );
+                        app.say(match clipboard::copy(&text) {
+                            clipboard::Copied::System => format!("Copied {what}"),
+                            clipboard::Copied::Terminal => {
+                                "Sent to the terminal's clipboard".into()
+                            }
+                            clipboard::Copied::Failed(why) => why,
+                        });
+                    }
+                    Effect::Mouse(on) => {
+                        let _ = if on {
+                            execute!(std::io::stdout(), EnableMouse)
+                        } else {
+                            execute!(std::io::stdout(), DisableMouseCapture)
+                        };
+                    }
+                    Effect::Clear => {
+                        let _ = clear_for_redraw(&mut terminal);
+                    }
+                    Effect::AddKey { key, value } => {
+                        let outcome = setup.keys.add(key, value);
+                        app.keys_done(key, outcome);
+                        // The models it makes reachable, for `/model`'s picker.
+                        app.set_reading(setup.meter.read());
+                    }
+                    Effect::RemoveKey(key) => {
+                        let outcome = setup.keys.remove(key);
+                        app.keys_done(key, outcome);
+                        app.set_reading(setup.meter.read());
+                    }
+                    Effect::OpenRouter { root, edit } => {
+                        let done = settings_done.clone();
+                        settings_worker.submit(move || {
+                            let _ = done.send(openrouter_menu::make(&root, &edit));
+                        });
+                    }
+                    Effect::Dictate(dictate) => {
+                        carry_out(dictate, &mut app, &setup, &mut recording)
+                    }
+                    Effect::CheckNames(cancel) => {
+                        let found = names_found.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let missing = crate::session_names::missing_until(&cancel.0);
+                            if !cancel.0.load(std::sync::atomic::Ordering::Relaxed) {
+                                let _ = found.send((cancel, missing));
+                            }
+                        });
+                    }
                 }
-                Effect::Copy { text, what } => {
-                    // The terminal's clipboard, and the system's: the status
-                    // line says "Copied" only when the system's took it.
-                    let mut stdout = std::io::stdout();
-                    let _ = execute!(
-                        stdout,
-                        crossterm::clipboard::CopyToClipboard::to_clipboard_from(text.as_bytes())
-                    );
-                    app.say(match clipboard::copy(&text) {
-                        clipboard::Copied::System => format!("Copied {what}"),
-                        clipboard::Copied::Terminal => "Sent to the terminal's clipboard".into(),
-                        clipboard::Copied::Failed(why) => why,
-                    });
-                }
-                Effect::Mouse(on) => {
-                    let _ = if on {
-                        execute!(std::io::stdout(), EnableMouse)
-                    } else {
-                        execute!(std::io::stdout(), DisableMouseCapture)
-                    };
-                }
-                Effect::Clear => {
-                    let _ = clear_for_redraw(&mut terminal);
-                }
-                Effect::AddKey { key, value } => {
-                    let outcome = setup.keys.add(key, value);
-                    app.keys_done(key, outcome);
-                    // The models it makes reachable, for `/model`'s picker.
-                    app.set_reading(setup.meter.read());
-                }
-                Effect::RemoveKey(key) => {
-                    let outcome = setup.keys.remove(key);
-                    app.keys_done(key, outcome);
-                    app.set_reading(setup.meter.read());
-                }
-                Effect::OpenRouter { root, edit } => {
-                    let done = settings_done.clone();
-                    settings_worker.submit(move || {
-                        let _ = done.send(openrouter_menu::make(&root, &edit));
-                    });
-                }
-                Effect::Dictate(dictate) => carry_out(dictate, &mut app, &setup, &mut recording),
-                Effect::CheckNames(cancel) => {
-                    let found = names_found.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let missing = crate::session_names::missing_until(&cancel.0);
-                        if !cancel.0.load(std::sync::atomic::Ordering::Relaxed) {
-                            let _ = found.send((cancel, missing));
-                        }
-                    });
-                }
+                draw_now = true;
             }
-            draw_now = true;
+            effects = app.take_effects();
         }
     }
     let reply = app.transcript.last_reply().map(str::to_string);
