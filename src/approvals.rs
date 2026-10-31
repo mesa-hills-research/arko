@@ -7,7 +7,7 @@
 //! above its message box ([`Reading::approvals`](crate::remote::Reading::approvals)).
 //! Requests that come while others wait join them, and the user answers
 //! them all at once ([`Input::AnswerApprovals`](crate::Input::AnswerApprovals)):
-//! each is approved or rejected, and the words the message box held go to
+//! each is approved or rejected, and any words the user includes go to
 //! the agent with each answer. A request whose tool stops waiting (its turn
 //! stopped) leaves the tray. Nothing of the tray is kept with the session,
 //! since a tool that runs again after a resume asks again.
@@ -25,8 +25,8 @@ use crate::remote::Feed;
 pub use crate::remote::protocol::{
     Approval, ApprovalAnswers, ApprovalChoice, ApprovalRequest, BillingApproval, Detail, EnvName,
     Look, MAX_APPROVAL_WORDS, ProfileApproval, Scope, ServerApproval, SkillApproval, SkillFile,
-    SkillSource, SkillUpdate, approval_words_refusal, approvals_heading, approve_label,
-    reject_label,
+    SkillSource, SkillUpdate, answer_labels, approval_words_refusal, approvals_heading,
+    approve_label, reject_label,
 };
 use crate::ui::Output;
 

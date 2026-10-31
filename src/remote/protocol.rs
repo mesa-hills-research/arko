@@ -7,6 +7,13 @@
 
 use serde::{Deserialize, Serialize};
 
+#[path = "message_switch.rs"]
+mod message_switch;
+pub use message_switch::MessageSwitch;
+#[path = "shown_approvals.rs"]
+mod shown_approvals;
+pub use shown_approvals::ShownApprovals;
+
 /// What an item is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -737,11 +744,11 @@ fn yes() -> bool {
 }
 
 /// The user's answer to the requests in the tray, which a front end sends
-/// once for all it shows.
+/// for the requests it has shown long enough to read.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovalAnswers {
     pub choices: Vec<ApprovalChoice>,
-    /// What the message box held, which goes to the agent with each answer.
+    /// The message included by the user, which goes to the agent with each answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<String>,
 }
@@ -851,6 +858,25 @@ pub fn approve_label(selected: usize, count: usize) -> String {
         (selected, count) if selected >= count => "Approve all".to_string(),
         (selected, count) => format!("Approve {selected}, reject {}", count - selected),
     }
+}
+
+/// Labels count only the requests this answer can cover.
+pub fn answer_labels(selected: usize, ready: usize, total: usize) -> (String, String) {
+    if ready == 0 {
+        return ("Approve".into(), "Reject".into());
+    }
+    if ready == total {
+        return (approve_label(selected, ready), reject_label(ready).into());
+    }
+    let reject = format!("Reject {ready}");
+    let approve = if selected == 0 {
+        reject.clone()
+    } else if selected == ready {
+        format!("Approve {ready}")
+    } else {
+        approve_label(selected, ready)
+    };
+    (approve, reject)
 }
 
 /// The button that rejects every request.

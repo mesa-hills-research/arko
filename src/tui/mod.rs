@@ -418,6 +418,7 @@ async fn run(
         }
         let enter_at = enter.unwrap_or_else(Instant::now);
         let preview_at = app.preview_due();
+        let approvals_at = app.approvals_due();
         let burst_at = burst
             .as_ref()
             .map_or_else(Instant::now, |burst| burst.until);
@@ -495,6 +496,9 @@ async fn run(
                     // next key.
                     draw_now |= quitting;
                 }
+            }
+            _ = tokio::time::sleep_until(approvals_at.unwrap_or_else(Instant::now).into()), if approvals_at.is_some() => {
+                draw_now = true;
             }
             _ = tokio::time::sleep_until(preview_at.unwrap_or_else(Instant::now).into()), if preview_at.is_some() => {
                 // The theme picker's selection has rested: its preview.
@@ -926,11 +930,14 @@ mod tests {
         let sent = app.take_effects();
         assert_eq!(
             sent,
-            [Effect::Send(crate::tui::app::Sending::of_box(
-                Input::Line("one\ntwo".into()),
-                "one\ntwo",
-                Vec::new()
-            ))]
+            [Effect::Send(
+                crate::tui::app::Sending::of_box(
+                    Input::Line("one\ntwo".into()),
+                    "one\ntwo",
+                    Vec::new()
+                )
+                .with_message(Some(app.tray.message.clone()))
+            )]
         );
         // An Enter a key follows at once was a paste's.
         handle(

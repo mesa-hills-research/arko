@@ -42,8 +42,16 @@ colour. A row opens to its details.
 
 With several requests each row has a box, and all start checked. Approve approves the rows checked and
 rejects the others in the same answer ("Approve 2, reject 1"), and Reject all rejects them all.
-Whatever the message box holds when you answer goes to the agent with each answer, and the box
-empties. A message you send while requests wait is an ordinary message, which answers none of them.
+
+Include message appears beside Approve and Reject when the box has text. It starts off for a draft
+already there when the newest request appeared, even if you keep typing. It starts on if the box was
+empty, or you emptied it since, then wrote a message. Once you flip it, your choice stays until a new
+request arrives or the box empties.
+
+With it on, the text goes to the agent with each answer and the box empties. With it off, the text
+stays. A message you send while requests wait is an ordinary message, which answers none of them.
+Approve and Reject answer only requests shown for at least half a second. Their labels count those
+requests, and the page enables the buttons once one is ready. Newer or unseen requests keep waiting.
 
 ## Keys in the full-screen view
 
@@ -61,6 +69,7 @@ Alt. In the Terminal app, turn on Use Option as Meta key.
 | PgUp, PgDn | Scroll a profile's instructions or a skill's SKILL.md |
 | Enter | Approve the rows checked, and reject the others |
 | R | Reject all |
+| M | Turn Include message on or off |
 
 The status line says "needs approval" while requests wait, and the terminal's bell rings for new
 ones while its window isn't focused. On the web page the tray has the same rows, boxes and buttons,
@@ -96,7 +105,7 @@ its id (`a1`, `a2`, ...), its `batch` and its `approval`, tagged by `kind` (`pro
 shows, and `every_project` says when a row's scope stands out, and `approvals_heading`, `approve_label` and `reject_label` those of the tray's heading and
 buttons.
 
-`POST /api/approvals` answers them, naming every request the tray shows.
+`POST /api/approvals` answers the requests named in `choices`. Omit `words` to answer without a message.
 
 ```json
 {"choices": [{"id": "a1", "approve": true, "option": true}, {"id": "a2", "approve": false}], "words": "Keep it to this project."}

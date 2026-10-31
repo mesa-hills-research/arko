@@ -23,7 +23,7 @@ use std::path::Path;
 use serde_json::Value;
 
 // The highlight names, as Arko's server names a code block's spans.
-#[allow(dead_code)]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../src/remote/protocol.rs"]
 mod protocol;
 

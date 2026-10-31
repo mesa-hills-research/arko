@@ -168,8 +168,8 @@ that name on the web page, and it applies to the next worker started.
 | `api` | Starts without asking |
 
 Approve starts that worker, and with "Allow MODEL for this session" turned on in its details, that
-model's next workers in the session too. Reject refuses it. The main agent waits for your answer, and
-the words in the message box reach it with the answer. Only the main agent's starts can ask, so a worker's own
+model's next workers in the session too. Reject refuses it. With Include message on, the words in the
+box reach the main agent with your answer. Only the main agent's starts can ask, so a worker's own
 start on a model billed per token is refused unless you allowed that model for the session. With
 `plans`, `/model worker` and the profiles the main agent saves take a plan's model only. The main
 agent's own model stays your choice, and its instructions tell it to prefer your plans' models for

@@ -5,10 +5,12 @@
 //! to the message box. While it has them, ↑↓ move between the rows, Space
 //! selects one (all start selected), A selects all or none, V opens a row's
 //! details, O turns its option on, Enter approves those selected and rejects
-//! the others, and R rejects them all. Whatever the message box holds goes
-//! to the agent with the answer, and the box empties.
+//! the others, and R rejects them all. M flips Include message. It starts
+//! off for text begun before the newest request. When on, the words go with
+//! the answer and the box empties.
 
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -23,10 +25,9 @@ use super::overlay::hints;
 use super::theme::Theme;
 use super::transcript::cut_end;
 use super::wrap;
-use crate::approvals::{
-    ApprovalAnswers, ApprovalRequest, Look, approvals_heading, approve_label, reject_label,
-};
+use crate::approvals::{ApprovalAnswers, ApprovalRequest, Look, answer_labels, approvals_heading};
 use crate::glyphs;
+use crate::remote::protocol::{MessageSwitch, ShownApprovals};
 use crate::ui::Input;
 
 /// The rows of a box (a profile's instructions, a skill's SKILL.md) in
@@ -50,6 +51,20 @@ pub struct Tray {
     pub scroll: usize,
     /// The requests the bell rang for.
     pub rung: HashSet<String>,
+    pub(super) message: MessageSwitch,
+    shown: ShownApprovals,
+    clock: Option<Instant>,
+    redraw_at: Option<Instant>,
+    rows_fit: Option<bool>,
+}
+
+impl Tray {
+    fn now_ms(&mut self) -> u64 {
+        self.clock
+            .get_or_insert_with(Instant::now)
+            .elapsed()
+            .as_millis() as u64
+    }
 }
 
 impl App {
@@ -81,11 +96,13 @@ impl App {
     /// gone goes, the cursor stays on a row, and the bell rings for new ones
     /// while the window isn't focused.
     pub(super) fn approvals_changed(&mut self) {
+        self.sync_message();
         let ids: HashSet<String> = self
             .approvals()
             .iter()
             .map(|request| request.id.clone())
             .collect();
+        self.tray.shown.retain(&ids);
         self.tray.unselected.retain(|id| ids.contains(id));
         self.tray.options.retain(|id| ids.contains(id));
         if self.tray.open.as_ref().is_some_and(|id| !ids.contains(id)) {
@@ -95,6 +112,9 @@ impl App {
         if ids.iter().any(|id| !self.tray.rung.contains(id)) {
             self.panel.ring |= !self.focused;
         }
+        self.tray
+            .message
+            .requests(ids.clone(), self.editor.has_text());
         self.tray.rung = ids.clone();
         if ids.is_empty() {
             self.tray.focused = false;
@@ -126,6 +146,7 @@ impl App {
     /// The tray's keys, while it has them. False for the keys that work
     /// anywhere (Ctrl+C, Ctrl+L, Ctrl+O).
     pub(super) fn tray_key(&mut self, key: KeyEvent) -> bool {
+        self.sync_message();
         if !self.tray.focused || self.approvals().is_empty() {
             self.tray.focused = false;
             return false;
@@ -172,6 +193,9 @@ impl App {
                     self.tray.options.insert(id);
                 }
             }
+            KeyCode::Char('m') if self.editor.has_text() => {
+                self.tray.message.flip();
+            }
             KeyCode::PageDown => self.tray.scroll += BOX_ROWS / 2,
             KeyCode::PageUp => self.tray.scroll = self.tray.scroll.saturating_sub(BOX_ROWS / 2),
             KeyCode::Enter => self.answer_tray(true),
@@ -192,13 +216,53 @@ impl App {
         }
     }
 
-    /// Enter (`approve`: those selected are approved, the others rejected)
-    /// or R (all rejected). The message box's text goes with the answer,
-    /// and the box empties. When the session refuses it, the words come
-    /// back.
+    /// Redraw labels when another shown request becomes answerable.
+    pub(super) fn approvals_due(&self) -> Option<Instant> {
+        self.tray.redraw_at
+    }
+
+    pub(super) fn approvals_hidden(&mut self) {
+        let now = self.tray.now_ms();
+        self.tray.shown.visible(&HashSet::new(), now);
+        self.tray.rows_fit = Some(false);
+        self.tray.redraw_at = None;
+    }
+
+    pub(super) fn sync_message(&mut self) {
+        if self.editor.take_emptied() {
+            self.tray.message.edited(false);
+        }
+        self.tray.message.edited(self.editor.has_text());
+    }
+
+    fn includes_message(&mut self) -> bool {
+        self.sync_message();
+        self.tray.message.includes()
+    }
+
+    /// Enter approves those selected, R rejects all. Included words leave
+    /// the box and come back if the session refuses the answer.
     fn answer_tray(&mut self, approve: bool) {
-        let words = self.editor.text();
-        let requests = self.approvals().to_vec();
+        let now = self.tray.now_ms();
+        let requests: Vec<_> = self
+            .approvals()
+            .iter()
+            .filter(|request| self.tray.shown.can_answer(&request.id, now))
+            .cloned()
+            .collect();
+        if requests.is_empty() {
+            self.say(if self.tray.rows_fit == Some(false) {
+                "Make the window larger to answer"
+            } else {
+                "Requests show for half a second before you can answer"
+            });
+            return;
+        }
+        let words = if self.includes_message() {
+            self.editor.text()
+        } else {
+            String::new()
+        };
         let tray = &self.tray;
         let answers = ApprovalAnswers::of(
             &requests,
@@ -206,48 +270,64 @@ impl App {
             |id| tray.options.contains(id),
             &words,
         );
-        if !words.trim().is_empty() {
-            self.editor.take();
-        }
+        let message = if !words.trim().is_empty() {
+            self.take_box().1
+        } else {
+            None
+        };
         self.tray.focused = false;
-        self.effects_push(Effect::Send(super::app::Sending::of_box(
-            Input::AnswerApprovals(answers),
-            words,
-            Vec::new(),
-        )));
+        self.effects_push(Effect::Send(
+            super::app::Sending::of_box(Input::AnswerApprovals(answers), words, Vec::new())
+                .with_message(message),
+        ));
         self.transcript.follow();
     }
 }
 
 /// The tray's lines at `width`: its heading with the keys, a row for each
 /// request, and the details of the open one. Also the line the cursor's row
-/// is on.
-fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize) {
+/// is on, and how many heading lines stay in sight.
+struct TrayLines {
+    lines: Vec<Line<'static>>,
+    cursor: usize,
+    fixed: usize,
+    requests: Vec<(usize, String)>,
+}
+
+fn tray_lines(app: &App, width: usize, now: u64) -> TrayLines {
     let theme = &app.theme;
     let requests = app.approvals();
     let count = requests.len();
     let tray = &app.tray;
     let cursor = app.tray_cursor();
-    let selected = requests
+    let ready: Vec<_> = requests
+        .iter()
+        .filter(|request| tray.shown.can_answer(&request.id, now))
+        .collect();
+    let selected = ready
         .iter()
         .filter(|request| !tray.unselected.contains(&request.id))
         .count();
     let mut lines = Vec::new();
     // The heading, with the keys at its end.
     let heading = format!(" {}", approvals_heading(count));
-    let approve = approve_label(selected, count).to_lowercase();
-    let reject = reject_label(count).to_lowercase();
+    let (approve, reject) = answer_labels(selected, ready.len(), count);
+    let approve = approve.to_lowercase();
+    let reject = reject.to_lowercase();
     let open = tray
         .open
         .as_ref()
         .and_then(|id| requests.iter().find(|request| &request.id == id));
+    let has_message = app.editor.has_text();
     let mut pairs: Vec<(&str, &str)> = Vec::new();
     if tray.focused {
         if count > 1 {
             pairs.extend([("Space", "select"), ("A", "all")]);
         }
-        pairs.push(("Enter", approve.as_str()));
-        pairs.push(("R", reject.as_str()));
+        if !has_message {
+            pairs.push(("Enter", approve.as_str()));
+            pairs.push(("R", reject.as_str()));
+        }
         pairs.push(("V", if open.is_some() { "close" } else { "view" }));
         if requests[cursor].approval.option().is_some() && open.is_some() {
             pairs.push(("O", "option"));
@@ -270,6 +350,29 @@ fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize) {
         first.append(&mut keys);
     }
     lines.push(Line::from(first));
+    if has_message {
+        let mark = if app.tray.message.includes() {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        let label = format!("{mark} Include message");
+        let mut controls = vec![Span::raw(" ")];
+        if tray.focused {
+            controls.extend(hints(
+                theme,
+                &[("Enter", &approve), ("R", &reject), ("M", &label)],
+            ));
+        } else {
+            controls.push(Span::styled(label, theme.text()));
+        }
+        lines.extend(
+            wrap::wrap(&controls, width.max(1), 1)
+                .into_iter()
+                .map(Line::from),
+        );
+    }
+    let fixed = lines.len();
     // The rows.
     let names = requests
         .iter()
@@ -285,7 +388,9 @@ fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize) {
         .min(16);
     let pointer = glyphs::render("› ").into_owned();
     let mut cursor_line = 1;
+    let mut request_lines = Vec::new();
     for (at, request) in requests.iter().enumerate() {
+        request_lines.push((lines.len(), request.id.clone()));
         let approval = &request.approval;
         let here = tray.focused && at == cursor;
         if at == cursor {
@@ -334,7 +439,12 @@ fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize) {
             lines.extend(detail_lines(app, request, width));
         }
     }
-    (lines, cursor_line)
+    TrayLines {
+        lines,
+        cursor: cursor_line,
+        fixed,
+        requests: request_lines,
+    }
 }
 
 /// The details of `request`, under its row.
@@ -451,19 +561,29 @@ fn fitting(theme: &Theme, pairs: &[(&str, &str)], width: usize) -> Vec<Span<'sta
 /// Draws the tray at the bottom of `above` and returns its height (0 when
 /// no approvals wait).
 pub fn draw_tray(frame: &mut Frame, app: &mut App, above: Rect) -> u16 {
+    app.sync_message();
     if app.approvals().is_empty() || above.height < 3 {
+        app.approvals_hidden();
         return 0;
     }
+    let now = app.tray.now_ms();
     let width = above.width as usize;
-    let (lines, cursor_line) = tray_lines(app, width.saturating_sub(1));
-    let room = (above.height as usize * 2 / 3).max(2);
+    let TrayLines {
+        lines,
+        cursor: cursor_line,
+        fixed,
+        requests,
+    } = tray_lines(app, width.saturating_sub(1), now);
+    let room = (above.height as usize * 2 / 3)
+        .max(fixed + 1)
+        .min(above.height as usize);
     let height = lines.len().min(room);
-    // The heading stays, and the rest scrolls to keep the cursor's row and
-    // what follows it in sight.
-    let body = height - 1;
+    // The heading and message switch stay while the rows scroll.
+    let fixed = fixed.min(height);
+    let body = height - fixed;
     let skip = cursor_line
-        .saturating_sub(1)
-        .min(lines.len().saturating_sub(1 + body));
+        .saturating_sub(fixed)
+        .min(lines.len().saturating_sub(fixed + body));
     let rect = Rect::new(
         above.x,
         above.bottom() - height as u16,
@@ -478,12 +598,33 @@ pub fn draw_tray(frame: &mut Frame, app: &mut App, above: Rect) -> u16 {
         Style::new().bg(theme.raised)
     };
     frame.buffer_mut().set_style(rect, surface);
-    let shown = std::iter::once(&lines[0]).chain(lines.iter().skip(1 + skip).take(body));
+    let shown = lines
+        .iter()
+        .take(fixed)
+        .chain(lines.iter().skip(fixed + skip).take(body));
     for (row, line) in shown.enumerate() {
         frame
             .buffer_mut()
             .set_line(rect.x, rect.y + row as u16, line, rect.width);
     }
+    let mut visible: HashSet<_> = requests
+        .into_iter()
+        .filter_map(|(line, id)| {
+            (fixed + skip..fixed + skip + body)
+                .contains(&line)
+                .then_some(id)
+        })
+        .collect();
+    app.tray.rows_fit = Some(!visible.is_empty());
+    if !app.focused || matches!(app.overlay, Some(super::overlay::Overlay::Remote { .. })) {
+        visible.clear();
+    }
+    app.tray.shown.visible(&visible, now);
+    app.tray.redraw_at = app.tray.shown.ready_at_ms(now).and_then(|ready| {
+        app.tray
+            .clock
+            .map(|clock| clock + Duration::from_millis(ready))
+    });
     height as u16
 }
 

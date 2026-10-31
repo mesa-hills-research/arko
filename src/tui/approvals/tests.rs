@@ -83,6 +83,9 @@ fn press(app: &mut App, code: KeyCode) {
 
 fn alt_a(app: &mut App) {
     app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT));
+    screen(app, 120, 40);
+    let age = app.tray.now_ms() + 500;
+    app.tray.clock = Some(Instant::now() - std::time::Duration::from_millis(age));
 }
 
 fn screen(app: &mut App, width: u16, height: u16) -> String {
@@ -222,9 +225,375 @@ fn a_selects_all_or_none_and_r_rejects_all() {
     );
 }
 
-/// The words in the message box go with the answer, and the box empties.
-/// With an empty box nothing goes with it. Words too long to send stay,
-/// and the user is told.
+#[test]
+fn answers_wait_for_rendering_and_leave_newer_requests_waiting() {
+    for key in [KeyCode::Enter, KeyCode::Char('r')] {
+        let mut app = with(vec![request("a1", skill())]);
+        app.paste("Reason");
+        app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT));
+        app.tray.clock = Some(Instant::now() - std::time::Duration::from_secs(1));
+        press(&mut app, key);
+        assert!(sent(&mut app).is_empty(), "unrendered requests wait");
+        assert_eq!(
+            app.hint(),
+            Some("Requests show for half a second before you can answer")
+        );
+        assert_eq!(app.editor.text(), "Reason");
+        assert!(app.tray.focused);
+        screen(&mut app, 120, 40);
+        press(&mut app, key);
+        assert!(sent(&mut app).is_empty(), "newly rendered requests wait");
+        let age = app.tray.now_ms() + 500;
+        app.tray.clock = Some(Instant::now() - std::time::Duration::from_millis(age));
+        app.set_reading(Reading {
+            approvals: vec![request("a1", skill()), request("a2", server())],
+            ..Reading::default()
+        });
+        screen(&mut app, 120, 40);
+        press(&mut app, key);
+        let answers = sent(&mut app);
+        assert_eq!(choices(&answers[0]), [("a1", key == KeyCode::Enter, false)]);
+        assert_eq!(
+            answers[0].words, None,
+            "the newer request resets message intent"
+        );
+        app.set_reading(Reading {
+            approvals: vec![request("a2", server())],
+            ..Reading::default()
+        });
+        alt_a(&mut app);
+        press(&mut app, key);
+        assert_eq!(
+            choices(&sent(&mut app)[0]),
+            [("a2", key == KeyCode::Enter, false)]
+        );
+    }
+}
+
+#[test]
+fn labels_count_only_ready_rows_and_schedule_their_redraw() {
+    let mut app = with(vec![request("a1", skill())]);
+    alt_a(&mut app);
+    app.set_reading(Reading {
+        approvals: vec![request("a1", skill()), request("a2", server())],
+        ..Reading::default()
+    });
+    let rows = flat(&screen(&mut app, 120, 40));
+    assert!(rows.contains("Enter approve 1 R reject 1"), "{rows}");
+    assert!(app.approvals_due().is_some());
+    let age = app.tray.now_ms() + 500;
+    app.tray.clock = Some(Instant::now() - Duration::from_millis(age));
+    let rows = flat(&screen(&mut app, 120, 40));
+    assert!(rows.contains("Enter approve all R reject all"), "{rows}");
+    assert!(app.approvals_due().is_none());
+}
+
+#[test]
+fn a_window_without_room_explains_why_answers_wait() {
+    let mut app = with(vec![request("a1", skill())]);
+    app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT));
+    screen(&mut app, 80, 5);
+    press(&mut app, KeyCode::Enter);
+    assert!(sent(&mut app).is_empty());
+    assert_eq!(app.hint(), Some("Make the window larger to answer"));
+}
+
+#[test]
+fn unfocused_and_covered_requests_are_not_marked_seen() {
+    use ratatui::{Terminal, backend::TestBackend};
+    for covered in [false, true] {
+        let mut app = with(vec![request("a1", skill())]);
+        app.focused = covered;
+        if covered {
+            app.overlay = Some(crate::tui::overlay::Overlay::Remote {
+                link: 0,
+                since: Instant::now(),
+            });
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_tray(frame, &mut app, Rect::new(0, 0, 100, 20));
+            })
+            .unwrap();
+        app.tray.clock = Some(Instant::now() - Duration::from_secs(1));
+        terminal
+            .draw(|frame| {
+                draw_tray(frame, &mut app, Rect::new(0, 0, 100, 20));
+            })
+            .unwrap();
+        assert!(
+            !app.tray
+                .shown
+                .can_answer("a1", app.tray.clock.unwrap().elapsed().as_millis() as u64)
+        );
+        assert!(app.approvals_due().is_none());
+        app.focused = true;
+        app.overlay = None;
+        terminal
+            .draw(|frame| {
+                draw_tray(frame, &mut app, Rect::new(0, 0, 100, 20));
+            })
+            .unwrap();
+        assert!(app.approvals_due().is_some());
+    }
+}
+
+#[test]
+fn a_message_begun_before_the_newest_request_stays() {
+    for key in [KeyCode::Enter, KeyCode::Char('r')] {
+        let mut app = super::super::app::tests::app();
+        app.paste("Half-written message");
+        app.set_reading(Reading {
+            approvals: vec![request("a1", skill())],
+            ..Reading::default()
+        });
+        assert!(!app.includes_message());
+        assert!(screen(&mut app, 80, 24).contains("[ ] Include message"));
+        alt_a(&mut app);
+        press(&mut app, key);
+        let answers = sent(&mut app);
+        assert_eq!(answers[0].words, None);
+        assert_eq!(answers[0].choices[0].approve, key == KeyCode::Enter);
+        assert_eq!(app.editor.text(), "Half-written message");
+    }
+}
+
+#[test]
+fn edits_after_a_request_include_the_message_and_m_flips_it() {
+    for key in [KeyCode::Enter, KeyCode::Char('r')] {
+        for flips in 0..=2 {
+            let mut app = three();
+            app.paste("Reason");
+            assert!(app.includes_message());
+            alt_a(&mut app);
+            for _ in 0..flips {
+                press(&mut app, KeyCode::Char('m'));
+            }
+            let include = flips != 1;
+            let mark = if include { "[x]" } else { "[ ]" };
+            let rows = flat(&screen(&mut app, 80, 24));
+            assert!(
+                rows.contains(&format!("M {mark} Include message")),
+                "{rows}"
+            );
+            press(&mut app, key);
+            let answers = sent(&mut app);
+            assert_eq!(answers[0].words.as_deref(), include.then_some("Reason"));
+            assert_eq!(app.editor.text(), if include { "" } else { "Reason" });
+        }
+    }
+    // Pre-existing words can be included explicitly too.
+    let mut app = super::super::app::tests::app();
+    app.paste("Draft");
+    app.set_reading(Reading {
+        approvals: vec![request("a1", skill())],
+        ..Reading::default()
+    });
+    alt_a(&mut app);
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(sent(&mut app)[0].words.as_deref(), Some("Draft"));
+    assert!(app.editor.is_empty());
+}
+
+#[test]
+fn the_switch_follows_new_requests_but_not_refreshes_or_cursor_moves() {
+    let mut app = three();
+    app.paste("Draft");
+    app.set_reading(Reading {
+        approvals: vec![request("a1", skill()), request("a4", server())],
+        ..Reading::default()
+    });
+    assert!(!app.includes_message());
+    press(&mut app, KeyCode::Left);
+    assert!(!app.includes_message());
+    press(&mut app, KeyCode::Char('x'));
+    assert!(
+        !app.includes_message(),
+        "continuing the older draft keeps it out"
+    );
+    app.set_reading(Reading {
+        approvals: vec![request("a1", skill())],
+        ..Reading::default()
+    });
+    assert!(
+        !app.includes_message(),
+        "removing a request keeps the choice"
+    );
+    alt_a(&mut app);
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Esc);
+    app.newline();
+    assert!(
+        app.includes_message(),
+        "the manual choice wins over later edits"
+    );
+}
+
+#[test]
+fn history_and_cancelled_dictation_do_not_attach_an_older_draft() {
+    for dictation in [false, true] {
+        let mut app = super::super::app::tests::app();
+        app.editor.set("Earlier message");
+        app.editor.take();
+        app.paste("Draft");
+        app.set_reading(Reading {
+            approvals: vec![request("a1", skill())],
+            ..Reading::default()
+        });
+        if dictation {
+            use crate::dictation::{DictationEvent, DictationUpdate};
+            app.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+            app.dictation_opened(7);
+            app.dictation_event(DictationUpdate {
+                id: 7,
+                event: DictationEvent::Listening,
+            });
+            app.dictation_event(DictationUpdate {
+                id: 7,
+                event: DictationEvent::Text {
+                    settled: "More".into(),
+                    tentative: String::new(),
+                },
+            });
+            press(&mut app, KeyCode::Esc);
+        } else {
+            assert!(app.editor.history_back());
+            assert!(app.editor.history_forward());
+        }
+        assert_eq!(app.editor.text(), "Draft");
+        assert!(!app.includes_message());
+        alt_a(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(sent(&mut app)[0].words, None);
+        assert_eq!(app.editor.text(), "Draft");
+    }
+}
+
+#[test]
+fn a_request_during_a_refused_send_does_not_take_its_restored_draft() {
+    let mut app = super::super::app::tests::app();
+    app.paste("Draft");
+    press(&mut app, KeyCode::Enter);
+    let sending = app
+        .take_effects()
+        .into_iter()
+        .find_map(|effect| match effect {
+            Effect::Send(sending) => Some(sending),
+            _ => None,
+        })
+        .expect("sent");
+    app.set_reading(Reading {
+        approvals: vec![request("a1", skill())],
+        ..Reading::default()
+    });
+    screen(&mut app, 80, 24);
+    app.verdict(
+        sending,
+        crate::Verdict::refused(crate::RefusalKind::TooLong, "Shorten the message."),
+    );
+    assert_eq!(app.editor.text(), "Draft");
+    assert!(!app.includes_message());
+    alt_a(&mut app);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(sent(&mut app)[0].words, None);
+    assert_eq!(app.editor.text(), "Draft");
+}
+
+#[test]
+fn a_refused_send_restores_the_switch_with_its_draft() {
+    for manual in [false, true] {
+        let mut app = super::super::app::tests::app();
+        app.paste("Draft");
+        app.set_reading(Reading {
+            approvals: vec![request("a1", skill())],
+            ..Reading::default()
+        });
+        if manual {
+            alt_a(&mut app);
+            press(&mut app, KeyCode::Char('m'));
+            press(&mut app, KeyCode::Esc);
+        }
+        press(&mut app, KeyCode::Enter);
+        let sending = app
+            .take_effects()
+            .into_iter()
+            .find_map(|effect| match effect {
+                Effect::Send(sending) => Some(sending),
+                _ => None,
+            })
+            .expect("sent");
+        screen(&mut app, 80, 24);
+        app.verdict(
+            sending,
+            crate::Verdict::refused(crate::RefusalKind::TooLong, "Shorten the message."),
+        );
+        assert_eq!(app.editor.text(), "Draft");
+        assert_eq!(app.includes_message(), manual);
+    }
+}
+
+#[test]
+fn emptying_the_box_resets_its_manual_choice() {
+    for how in 0..4 {
+        let mut app = three();
+        app.paste("Reason");
+        alt_a(&mut app);
+        press(&mut app, KeyCode::Char('m'));
+        press(&mut app, KeyCode::Esc);
+        app.paste(" more");
+        assert!(!app.includes_message());
+        match how {
+            0 => app.editor.clear(),
+            1 => {
+                app.editor.take();
+            }
+            2 => app.editor.set(""),
+            _ => {
+                while !app.editor.is_empty() {
+                    press(&mut app, KeyCode::Backspace);
+                }
+            }
+        }
+        app.paste("Another reason");
+        assert!(app.includes_message());
+        alt_a(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(sent(&mut app)[0].words.as_deref(), Some("Another reason"));
+    }
+}
+
+#[test]
+fn the_message_switch_stays_visible_while_rows_scroll() {
+    let mut app = with(
+        (0..20)
+            .map(|n| request(&format!("a{n}"), skill()))
+            .collect(),
+    );
+    app.paste("Reason");
+    alt_a(&mut app);
+    for _ in 0..19 {
+        press(&mut app, KeyCode::Down);
+    }
+    let rows = flat(&screen(&mut app, 50, 24));
+    assert!(rows.contains("[x] Include message"), "{rows}");
+    assert!(rows.contains("R reject all"), "{rows}");
+}
+
+#[test]
+fn an_empty_message_has_no_switch() {
+    let mut app = three();
+    assert!(!screen(&mut app, 80, 24).contains("Include message"));
+    app.paste(" ");
+    assert!(!screen(&mut app, 80, 24).contains("Include message"));
+    app.editor.clear();
+    alt_a(&mut app);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(sent(&mut app)[0].words, None);
+}
+
+/// Included words leave the box and come back on refusal.
 #[test]
 fn the_message_box_gives_the_answer_its_words() {
     let mut app = three();

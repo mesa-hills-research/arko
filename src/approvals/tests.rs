@@ -322,6 +322,23 @@ fn the_buttons_count_the_selection() {
     assert_eq!(approve_label(0, 3), "Reject all");
     assert_eq!(reject_label(1), "Reject");
     assert_eq!(reject_label(2), "Reject all");
+    assert_eq!(answer_labels(0, 0, 20), ("Approve".into(), "Reject".into()));
+    assert_eq!(
+        answer_labels(2, 2, 20),
+        ("Approve 2".into(), "Reject 2".into())
+    );
+    assert_eq!(
+        answer_labels(1, 2, 20),
+        ("Approve 1, reject 1".into(), "Reject 2".into())
+    );
+    assert_eq!(
+        answer_labels(0, 2, 20),
+        ("Reject 2".into(), "Reject 2".into())
+    );
+    assert_eq!(
+        answer_labels(2, 2, 2),
+        ("Approve all".into(), "Reject all".into())
+    );
     assert_eq!(
         approval_words_refusal(&"y".repeat(MAX_APPROVAL_WORDS)),
         None

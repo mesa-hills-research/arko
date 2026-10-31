@@ -20,12 +20,14 @@ struct Recall {
     /// The entry shown.
     index: usize,
     /// What was in the box before.
-    draft: Vec<char>,
+    draft: String,
 }
 
 /// The input box's text.
 pub struct Editor {
     text: Vec<char>,
+    /// An emptying the approval switch has not observed yet.
+    emptied: bool,
     /// Where the cursor is: before `text[cursor]`.
     cursor: usize,
     /// The pasted blocks, by chip.
@@ -50,6 +52,7 @@ impl Editor {
     pub fn new(history: History) -> Self {
         Self {
             text: Vec::new(),
+            emptied: false,
             cursor: 0,
             chips: Vec::new(),
             kill: String::new(),
@@ -83,6 +86,7 @@ impl Editor {
     /// the dictated ranges following the text. The cursor stays.
     fn splice_out(&mut self, from: usize, to: usize) -> Vec<char> {
         let removed: Vec<char> = self.text.drain(from..to).collect();
+        self.emptied |= !self.has_text();
         let moved = |at: usize| {
             if at <= from {
                 at
@@ -170,6 +174,23 @@ impl Editor {
         self.text.is_empty()
     }
 
+    /// Whether the box has words, without expanding pasted blocks.
+    pub fn has_text(&self) -> bool {
+        self.text.iter().any(|c| {
+            match (*c as u32)
+                .checked_sub(CHIP_BASE)
+                .and_then(|index| self.chips.get(index as usize))
+            {
+                Some(paste) => !paste.trim().is_empty(),
+                None => !c.is_whitespace(),
+            }
+        })
+    }
+
+    pub fn take_emptied(&mut self) -> bool {
+        std::mem::take(&mut self.emptied)
+    }
+
     /// The text as typed, with each chip's label: what the command menu
     /// looks at.
     pub fn shown(&self) -> String {
@@ -243,6 +264,7 @@ impl Editor {
 
     /// Empties the box.
     pub fn clear(&mut self) {
+        self.emptied = true;
         self.text.clear();
         self.chips.clear();
         self.dictated.clear();
@@ -258,6 +280,7 @@ impl Editor {
         self.dictated.clear();
         self.cursor = 0;
         self.paste(text);
+        self.emptied |= !self.has_text();
         self.goal = None;
     }
 
@@ -625,7 +648,7 @@ impl Editor {
         };
         let draft = match self.recall.take() {
             Some(recall) => recall.draft,
-            None => self.text.clone(),
+            None => self.text(),
         };
         let entry = self.history.entries[index].clone();
         self.set(&entry);
@@ -647,8 +670,7 @@ impl Editor {
                 draft: recall.draft,
             });
         } else {
-            let draft: String = recall.draft.iter().collect();
-            self.set(&draft);
+            self.set(&recall.draft);
         }
         true
     }
@@ -699,6 +721,37 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_returns_the_expanded_pasted_draft() {
+        let mut editor = Editor::new(History::load(None));
+        editor.set("Earlier message");
+        editor.take();
+        let first = "a".repeat(CHIP_CHARS + 1);
+        let second = "second\n".repeat(CHIP_LINES + 1);
+        editor.paste(&first);
+        editor.paste(" between ");
+        editor.paste(&second);
+        let draft = editor.text();
+        assert_eq!(editor.chips.len(), 2);
+        assert!(editor.history_back());
+        assert!(editor.history_forward());
+        assert_eq!(editor.text(), draft);
+        assert!(!editor.text().chars().any(|c| c as u32 >= CHIP_BASE));
+    }
+
+    #[test]
+    fn has_text_reads_pasted_blocks_without_expanding_them() {
+        let mut editor = Editor::new(History::load(None));
+        for text in [String::new(), " \n\t".into(), " ".repeat(CHIP_CHARS + 1)] {
+            editor.set(&text);
+            assert!(!editor.has_text());
+        }
+        for text in ["word".into(), "x".repeat(CHIP_CHARS + 1)] {
+            editor.set(&text);
+            assert!(editor.has_text());
+        }
+    }
 
     fn editor() -> Editor {
         Editor::new(History::load(None))

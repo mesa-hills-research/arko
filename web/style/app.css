@@ -890,7 +890,8 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .tray-files { display: flex; flex-wrap: wrap; gap: 4px; }
 .tray-option { display: flex; align-items: center; gap: 6px; }
 .tray-option input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
-.tray-foot { display: flex; flex: none; justify-content: flex-end; gap: 8px; }
+.tray-foot { display: flex; flex: none; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.tray-message { display: flex; align-items: center; gap: 8px; margin-right: auto; font-size: 13px; }
 @media (pointer: coarse) {
   .tray-summary, .tray-foot .btn { min-height: 40px; }
   .tray-check, .tray-option input { width: 22px; height: 22px; }

@@ -286,7 +286,11 @@ pub enum Restore {
     Nothing,
     /// The box's text as it was sent, and the questions attached to it,
     /// when the box is empty.
-    Box { typed: String, answers: Vec<String> },
+    Box {
+        typed: String,
+        answers: Vec<String>,
+        message: Option<crate::remote::protocol::MessageSwitch>,
+    },
     /// The answer panel opens again. Its drafts stay until their questions
     /// settle.
     Panel,
@@ -301,8 +305,19 @@ impl Sending {
             restore: Restore::Box {
                 typed: typed.into(),
                 answers,
+                message: None,
             },
         }
+    }
+
+    pub(super) fn with_message(
+        mut self,
+        previous: Option<crate::remote::protocol::MessageSwitch>,
+    ) -> Self {
+        if let Restore::Box { message, .. } = &mut self.restore {
+            *message = previous;
+        }
+        self
     }
 }
 
@@ -712,16 +727,25 @@ impl App {
     }
 
     fn send(&mut self, text: &str) {
-        self.send_typed(text, text);
+        self.send_typed(text, text, None);
+    }
+
+    pub(super) fn take_box(&mut self) -> (String, Option<crate::remote::protocol::MessageSwitch>) {
+        self.sync_message();
+        let message = Some(self.tray.message.clone());
+        (self.editor.take(), message)
     }
 
     /// Sends `line`, which the box held as `typed`.
-    fn send_typed(&mut self, line: &str, typed: &str) {
-        self.effects.push(Effect::Send(Sending::of_box(
-            Input::Line(line.to_string()),
-            typed,
-            Vec::new(),
-        )));
+    fn send_typed(
+        &mut self,
+        line: &str,
+        typed: &str,
+        message: Option<crate::remote::protocol::MessageSwitch>,
+    ) {
+        self.effects.push(Effect::Send(
+            Sending::of_box(Input::Line(line.to_string()), typed, Vec::new()).with_message(message),
+        ));
     }
 
     /// Puts back what `sending` took, when the session refused it or didn't
@@ -730,9 +754,17 @@ impl App {
     fn restore(&mut self, sending: &Sending) {
         match &sending.restore {
             Restore::Nothing => {}
-            Restore::Box { typed, answers } => {
+            Restore::Box {
+                typed,
+                answers,
+                message,
+            } => {
                 if self.editor.is_empty() {
                     self.editor.set(typed);
+                    if let Some(previous) = message {
+                        self.editor.take_emptied();
+                        self.tray.message.restored(previous, self.editor.has_text());
+                    }
                     if self.panel.attached.is_empty() {
                         self.panel.attached = answers.clone();
                     }
@@ -1589,10 +1621,10 @@ impl App {
             if !handled && command.name == "/message" && self.confirms_continue(trimmed, trimmed) {
                 return;
             }
-            self.editor.take();
+            let (_, message) = self.take_box();
             self.menu = Menu::default();
             if !handled {
-                self.send(trimmed);
+                self.send_typed(trimmed, trimmed, message);
             }
             return;
         }
@@ -1610,7 +1642,7 @@ impl App {
         {
             return;
         }
-        let text = self.editor.take();
+        let (text, message_switch) = self.take_box();
         self.menu = Menu::default();
         self.transcript.follow();
         // The questions open now were seen.
@@ -1628,8 +1660,9 @@ impl App {
                 answers: answers.clone(),
                 ..Default::default()
             });
-            self.effects
-                .push(Effect::Send(Sending::of_box(message, text, answers)));
+            self.effects.push(Effect::Send(
+                Sending::of_box(message, text, answers).with_message(message_switch),
+            ));
             return;
         }
         // In a worker's own view it goes to that worker, unless the main
@@ -1637,9 +1670,9 @@ impl App {
         match &self.watching {
             Some(id) if !self.agent_waits() => {
                 let line = format!("/message {id} {}", text.trim());
-                self.send_typed(&line, &text);
+                self.send_typed(&line, &text, message_switch);
             }
-            _ => self.send_typed(text.trim_end(), &text),
+            _ => self.send_typed(text.trim_end(), &text, message_switch),
         }
     }
 
@@ -1661,15 +1694,16 @@ impl App {
             .take()
             .is_some_and(|(asked, at)| asked == line && at.elapsed() < CONTINUE_CONFIRM_WITHIN);
         if confirmed {
-            self.editor.take();
+            let (_, message) = self.take_box();
             self.menu = Menu::default();
             let confirmed = Input::Message(crate::ui::Message {
                 text: line.to_string(),
                 continue_uncached: true,
                 ..Default::default()
             });
-            self.effects
-                .push(Effect::Send(Sending::of_box(confirmed, typed, Vec::new())));
+            self.effects.push(Effect::Send(
+                Sending::of_box(confirmed, typed, Vec::new()).with_message(message),
+            ));
         }
         confirmed
     }

@@ -87,6 +87,7 @@ pub fn Composer() -> impl IntoView {
     let ask = page.ask;
     let input: NodeRef<leptos::html::Textarea> = NodeRef::new();
     let empty = ask.box_empty;
+    let draft = RwSignal::new(session_get(DRAFT).unwrap_or_default());
     // The text reached the box's height, which the expand button lifts.
     let tall = RwSignal::new(false);
     let expanded = RwSignal::new(false);
@@ -199,17 +200,19 @@ pub fn Composer() -> impl IntoView {
             return;
         };
         fit(&area, tall, expanded.get_untracked());
-        empty.set(area.value().trim().is_empty());
-        session_set(DRAFT, Some(&area.value()));
+        let text = area.value();
+        empty.set(text.trim().is_empty());
+        if draft.with_untracked(|draft| *draft != text) {
+            draft.set(text.clone());
+        }
+        session_set(DRAFT, Some(&text));
     };
     Effect::new(move |_| {
         expanded.track();
         resize();
     });
     input.on_load(move |area| {
-        if let Some(draft) = session_get(DRAFT) {
-            area.set_value(&draft);
-        }
+        area.set_value(&draft.get_untracked());
         let frame = wasm_bindgen::closure::Closure::once_into_js(resize);
         use wasm_bindgen::JsCast;
         let _ = window().request_animation_frame(frame.unchecked_ref());
@@ -387,7 +390,7 @@ pub fn Composer() -> impl IntoView {
                 // the last one gave too.
                 {move || {
                     page.feeds.track();
-                    view! { <crate::approvals::Tray /> }
+                    view! { <crate::approvals::Tray draft=draft /> }
                 }}
                 <form
                     class="compose"
