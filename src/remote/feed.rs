@@ -690,7 +690,7 @@ impl JobStart {
 }
 
 /// The ended jobs kept for the clients, besides those running.
-const ENDED_JOBS: usize = 100;
+pub(crate) const ENDED_JOBS: usize = 100;
 
 /// What changed, for the clients connected.
 ///
@@ -6528,6 +6528,89 @@ mod tests {
                 }
                 clients.push(rebuilt);
             }
+        }
+    }
+
+    /// How `client` differs from a client made from `snapshot`, within what
+    /// the snapshot keeps, as the tests of clients made from snapshots
+    /// compare them.
+    fn mismatch(client: &FeedMirror, snapshot: &Snapshot) -> Option<String> {
+        client
+            .within(snapshot)
+            .difference(&FeedMirror::new(snapshot))
+    }
+
+    /// The comparison those tests make is no more forgiving than a client:
+    /// a change of an item the client never got, a running job the feed
+    /// no longer has, and a change the feed made without an update each
+    /// show.
+    #[test]
+    fn a_client_made_from_a_snapshot_shows_what_it_missed() {
+        // The call's item went by unseen, then its result came.
+        let feed = Feed::new("main");
+        let (start, mut updates) = feed.subscribe();
+        let (mut client, mut seen) = (FeedMirror::new(&start), FeedMirror::new(&start));
+        let call = Uuid::new_v4();
+        feed.event(&event("main", shell(call, "ls")), None);
+        feed.event(&event("main", result(call, "Exit code: 0\nfile")), None);
+        for update in delivered(&mut updates) {
+            if !matches!(update, Update::Item(_)) {
+                client.apply(&update, || feed.activity());
+            }
+            seen.apply(&update, || feed.activity());
+        }
+        assert_eq!(mismatch(&seen, &feed.subscribe().0), None);
+        assert!(mismatch(&client, &feed.subscribe().0).is_some(), "a change");
+
+        // The first job's end went by unseen, and the feed dropped it once
+        // more than it keeps had ended. A client that saw it end differs
+        // only by the drop.
+        let feed = Feed::new("main");
+        let (start, mut updates) = feed.subscribe();
+        let (mut client, mut seen) = (FeedMirror::new(&start), FeedMirror::new(&start));
+        let first = Uuid::new_v4();
+        feed.job_started(JobStart::new(first, MAIN_AGENT, JobKind::Command, "make"));
+        feed.job_ended(first, JobState::Finished, None);
+        for update in delivered(&mut updates) {
+            if matches!(&update, Update::Job(job) if job.state.is_running()) {
+                client.apply(&update, || feed.activity());
+            }
+            seen.apply(&update, || feed.activity());
+        }
+        for _ in 0..=ENDED_JOBS {
+            let id = Uuid::new_v4();
+            feed.job_started(JobStart::new(id, MAIN_AGENT, JobKind::Command, "test"));
+            feed.job_ended(id, JobState::Finished, None);
+        }
+        for update in delivered(&mut updates) {
+            client.apply(&update, || feed.activity());
+            seen.apply(&update, || feed.activity());
+        }
+        let end = feed.subscribe().0;
+        assert!(end.jobs.iter().all(|job| job.id != first.to_string()));
+        assert_eq!(mismatch(&seen, &end), None);
+        assert!(mismatch(&client, &end).is_some(), "a running job");
+
+        // The feed changed an item and the activity without an update.
+        for change in [
+            (|state: &mut State| state.main.items.back_mut().unwrap().text.push('!'))
+                as fn(&mut State),
+            |state: &mut State| state.activity.working = true,
+        ] {
+            let feed = Feed::new("main");
+            let (start, mut updates) = feed.subscribe();
+            let mut client = FeedMirror::new(&start);
+            feed.notice(Level::Info, "Done.");
+            for update in delivered(&mut updates) {
+                client.apply(&update, || feed.activity());
+            }
+            assert_eq!(mismatch(&client, &feed.subscribe().0), None);
+            change(&mut feed.lock());
+            assert!(delivered(&mut updates).is_empty());
+            assert!(
+                mismatch(&client, &feed.subscribe().0).is_some(),
+                "no update"
+            );
         }
     }
 

@@ -11,8 +11,8 @@ use arko_workflows::WorkflowEvent;
 use uuid::Uuid;
 
 use super::feed::{
-    Activity, Delivery, Feed, Item, JobKind, JobStart, JobState, JobSummary, Kind, Level,
-    MAIN_AGENT, Snapshot, Source, Update, WorkerChange, WorkerSummary,
+    Activity, Delivery, ENDED_JOBS, Feed, Item, JobKind, JobStart, JobState, JobSummary, Kind,
+    Level, MAIN_AGENT, Snapshot, Source, Update, WorkerChange, WorkerSummary,
 };
 use crate::approvals::{Answer, Approval, ApprovalAnswers, ApprovalChoice};
 use crate::questions::{AskedQuestion, QuestionState};
@@ -631,8 +631,15 @@ impl FeedMirror {
     /// Applies `update`. `activity` reads the feed's activity now.
     pub fn apply(&mut self, update: &Update, activity: impl FnOnce() -> Activity) {
         match update {
-            Update::Item(item) | Update::Change(item) => {
+            Update::Item(item) => {
                 self.items.insert(item.id, item.clone());
+            }
+            // Only an item it has, as a client replaces it, so a change of
+            // one it never got shows.
+            Update::Change(item) => {
+                if let Some(known) = self.items.get_mut(&item.id) {
+                    *known = item.clone();
+                }
             }
             Update::Append { id, text } => {
                 if let Some(item) = self.items.get_mut(id) {
@@ -666,9 +673,11 @@ impl FeedMirror {
     /// The feed drops its oldest items, the oldest whole outputs and the
     /// oldest ended jobs without an update, so this drops them too. They
     /// are the items of each transcript (the main agent's, and the
-    /// workers') older than the snapshot's oldest, the whole outputs,
-    /// parameters and results the snapshot no longer has, and the jobs it
-    /// no longer has.
+    /// workers') older than the snapshot's oldest, and the whole outputs,
+    /// parameters and results the snapshot no longer has. A job the
+    /// snapshot no longer has goes only if it ended and the snapshot holds
+    /// as many ended jobs as the feed keeps, since the feed drops ended jobs
+    /// only past that many and never one that runs.
     pub fn within(&self, snapshot: &Snapshot) -> Self {
         let oldest = |main: bool| {
             snapshot
@@ -710,13 +719,19 @@ impl FeedMirror {
                 (*id, item)
             })
             .collect();
+        let ended = snapshot.jobs.iter().filter(|job| !job.state.is_running());
+        let full = ended.count() >= ENDED_JOBS;
         Self {
             items,
             workers: self.workers.clone(),
             jobs: self
                 .jobs
                 .iter()
-                .filter(|job| snapshot.jobs.iter().any(|kept| kept.id == job.id))
+                .filter(|job| {
+                    job.state.is_running()
+                        || !full
+                        || snapshot.jobs.iter().any(|kept| kept.id == job.id)
+                })
                 .cloned()
                 .collect(),
             activity: self.activity.clone(),
