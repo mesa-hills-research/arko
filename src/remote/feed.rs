@@ -689,8 +689,10 @@ impl JobStart {
     }
 }
 
-/// The ended jobs kept for the clients, besides those running.
-pub(crate) const ENDED_JOBS: usize = 100;
+/// How many ended background jobs the feed keeps, besides those running:
+/// those that started last. A client that drops the others as each job's
+/// summary comes holds the jobs a [`Snapshot`] does.
+pub const ENDED_JOBS: usize = 100;
 
 /// What changed, for the clients connected.
 ///
@@ -744,7 +746,8 @@ pub enum Update {
     /// [`Snapshot::items`].
     Remove { id: u64 },
     /// The whole summary of a background job that started, changed or
-    /// ended. State, in [`Snapshot::jobs`].
+    /// ended. State, in [`Snapshot::jobs`]. Past [`ENDED_JOBS`] ended, the
+    /// feed drops the ended job that started first, without an update.
     Job(JobSummary),
 }
 
@@ -963,17 +966,17 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
 /// The history, the workers and the activity at one moment.
 ///
 /// It holds what the feed keeps. The oldest items, the oldest items' whole
-/// outputs and the oldest ended jobs go, without an update, to keep it
-/// within a budget, so a client that followed every update may hold more
-/// than a snapshot does.
+/// outputs and the ended jobs that started first go, without an update, to
+/// keep it within a budget, so a client that followed every update may hold
+/// more than a snapshot does.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     /// The main agent's items and the workers', in order (by `id`).
     pub items: Vec<Item>,
     /// The workers, in the order they started.
     pub workers: Vec<WorkerSummary>,
-    /// The background jobs running, and the latest that ended, in the order
-    /// they started.
+    /// The background jobs running, and of those that ended the
+    /// [`ENDED_JOBS`] that started last, in the order they started.
     pub jobs: Vec<JobSummary>,
     pub activity: Activity,
     /// The feed it is of ([`Feed::id`]). A feed made again, as when Arko
@@ -2330,16 +2333,6 @@ impl Feed {
             expires_at,
         };
         state.jobs.push(summary.clone());
-        let ended = state
-            .jobs
-            .iter()
-            .filter(|job| !job.state.is_running())
-            .count();
-        if ended > ENDED_JOBS
-            && let Some(oldest) = state.jobs.iter().position(|job| !job.state.is_running())
-        {
-            state.jobs.remove(oldest);
-        }
         self.publish(&mut state, Update::Job(summary));
     }
 
@@ -2373,6 +2366,18 @@ impl Feed {
         job.outcome = outcome;
         let job = job.clone();
         self.publish(&mut state, Update::Job(job.clone()));
+        // Past the ended jobs kept, the one that started first goes, which
+        // may be this one.
+        let kept = state
+            .jobs
+            .iter()
+            .filter(|job| !job.state.is_running())
+            .count();
+        if kept > ENDED_JOBS
+            && let Some(first) = state.jobs.iter().position(|job| !job.state.is_running())
+        {
+            state.jobs.remove(first);
+        }
         if job.kind == JobKind::Monitor {
             let mut lines = state.lines_naming(&id);
             if let Some(item) = job.call {
@@ -6761,6 +6766,58 @@ mod tests {
         assert!(held > 0);
     }
 
+    /// The feed keeps every job that runs and the ended jobs that started
+    /// last, never more of them than it keeps. A job that ran on while newer
+    /// ones ended and went goes as it ends, as it started first. A client
+    /// that followed, and heard it end, keeps the same jobs by that rule.
+    #[test]
+    fn the_feed_keeps_the_ended_jobs_that_started_last() {
+        let feed = Feed::new("main");
+        let start = |label: &str| {
+            let id = Uuid::new_v4();
+            feed.job_started(JobStart::new(id, MAIN_AGENT, JobKind::Command, label));
+            id
+        };
+        let kept = |feed: &Feed| -> Vec<String> {
+            let jobs = feed.subscribe().0.jobs;
+            jobs.into_iter().map(|job| job.id).collect()
+        };
+        let ended_kept = |feed: &Feed| {
+            let jobs = feed.subscribe().0.jobs;
+            jobs.iter().filter(|job| !job.state.is_running()).count()
+        };
+        let long = start("cargo watch");
+        let ended: Vec<Uuid> = (0..ENDED_JOBS + 5)
+            .map(|_| {
+                let id = start("cargo test");
+                feed.job_ended(id, JobState::Finished, None);
+                id
+            })
+            .collect();
+        let mut expected = vec![long.to_string()];
+        expected.extend(ended[5..].iter().map(Uuid::to_string));
+        assert_eq!(kept(&feed), expected);
+        // Two end with no job started between them.
+        let (a, b) = (start("a"), start("b"));
+        feed.job_ended(a, JobState::Finished, None);
+        feed.job_ended(b, JobState::Failed, None);
+        assert_eq!(ended_kept(&feed), ENDED_JOBS);
+        let (snapshot, mut updates) = feed.subscribe();
+        let mut client = FeedMirror::new(&snapshot);
+        feed.job_ended(long, JobState::Stopped, None);
+        for update in delivered(&mut updates) {
+            client.apply(&update, || feed.activity());
+        }
+        assert!(
+            !kept(&feed).contains(&long.to_string()),
+            "it goes as it ends"
+        );
+        assert_eq!(ended_kept(&feed), ENDED_JOBS);
+        let heard = client.jobs.iter().find(|job| job.id == long.to_string());
+        assert_eq!(heard.map(|job| job.state), Some(JobState::Stopped));
+        assert_eq!(mismatch(&client, &feed.subscribe().0), None);
+    }
+
     /// How `client` differs from a client made from `snapshot`, within what
     /// the snapshot keeps, as the tests of clients made from snapshots
     /// compare them.
@@ -6820,6 +6877,12 @@ mod tests {
         assert!(end.jobs.iter().all(|job| job.id != first.to_string()));
         assert_eq!(mismatch(&seen, &end), None);
         assert!(mismatch(&client, &end).is_some(), "a running job");
+        // One that holds an ended job the feed never had, newer than those
+        // it keeps.
+        let mut extra = end.jobs.last().unwrap().clone();
+        extra.id = Uuid::new_v4().to_string();
+        seen.apply(&Update::Job(extra), || feed.activity());
+        assert!(mismatch(&seen, &end).is_some(), "an ended job");
 
         // The feed changed a worker's summary without an update, which a
         // summary held back would have sent by now.

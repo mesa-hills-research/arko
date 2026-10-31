@@ -730,13 +730,13 @@ impl FeedMirror {
 
     /// What of it `snapshot` keeps, to compare with a client made from it.
     /// The feed drops its oldest items, the oldest whole outputs and the
-    /// oldest ended jobs without an update, so this drops them too. They
-    /// are the items of each transcript (the main agent's, and the
-    /// workers') older than the snapshot's oldest, and the whole outputs,
-    /// parameters and results the snapshot no longer has. A job the
-    /// snapshot no longer has goes only if it ended and the snapshot holds
-    /// as many ended jobs as the feed keeps, since the feed drops ended jobs
-    /// only past that many and never one that runs.
+    /// ended jobs that started first without an update, so this drops them
+    /// too. They are the items of each transcript (the main agent's, and
+    /// the workers') older than the snapshot's oldest, and the whole
+    /// outputs, parameters and results the snapshot no longer has. Of the
+    /// jobs that ended, the [`ENDED_JOBS`] that started last stay, whatever
+    /// the snapshot holds, as the feed keeps them, and every job that runs
+    /// stays.
     pub fn within(&self, snapshot: &Snapshot) -> Self {
         let oldest = |main: bool| {
             snapshot
@@ -778,8 +778,12 @@ impl FeedMirror {
                 (*id, item)
             })
             .collect();
-        let ended = snapshot.jobs.iter().filter(|job| !job.state.is_running());
-        let full = ended.count() >= ENDED_JOBS;
+        let ended = self
+            .jobs
+            .iter()
+            .filter(|job| !job.state.is_running())
+            .count();
+        let mut dropped = ended.saturating_sub(ENDED_JOBS);
         Self {
             items,
             workers: self.workers.clone(),
@@ -787,9 +791,9 @@ impl FeedMirror {
                 .jobs
                 .iter()
                 .filter(|job| {
-                    job.state.is_running()
-                        || !full
-                        || snapshot.jobs.iter().any(|kept| kept.id == job.id)
+                    let drop = dropped > 0 && !job.state.is_running();
+                    dropped -= usize::from(drop);
+                    !drop
                 })
                 .cloned()
                 .collect(),
