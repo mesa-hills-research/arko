@@ -23,7 +23,8 @@ use uuid::Uuid;
 use crate::harness::{Conversation, Harness, News, Prompt, TurnEnd};
 use crate::inputs::{Answering, Inputs, Question};
 use crate::questions::{AgentQuestion, Pending, QuestionState, WAIT_ANSWERED, is_agent_id};
-use crate::remote::{Delivery, Level, Source};
+use crate::remote::{Delivery, Level, Partial, RefusalKind, Source};
+use crate::sending::Reply as SendReply;
 
 /// A wait for the user's answer: the agent's `ask_user` with `wait`, or a
 /// question of its runtime's without ids.
@@ -42,13 +43,36 @@ impl Waiting {
     }
 }
 
-/// A message of the user's as the agent reads it, and whether it answers
-/// questions (it then goes to the agent as their kept note, not as the
-/// message itself).
+/// What a message of the user's did to the questions it answers
+/// ([`Harness::reply_text`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Reply {
-    pub(crate) text: String,
-    pub(crate) kept: bool,
+pub(crate) enum Replied {
+    /// It answered a wait of the agent's, which reads it at once.
+    /// `not_posted` says why the questions' note isn't on the agent's note
+    /// board yet, when it isn't, and Arko posts it again after the next
+    /// turn.
+    Answered { not_posted: Option<String> },
+    /// It settled the agent's questions and went as their note, which
+    /// `text` is, kept for the agent. `not_posted` as for `Answered`.
+    Noted {
+        text: String,
+        not_posted: Option<String>,
+    },
+    /// It settled none of the agent's questions, so it goes as a message,
+    /// which `text` is as the agent reads it ("(Still open: q5.)" after
+    /// it). `settled` says it settled one of Arko's own questions.
+    Plain { text: String, settled: bool },
+}
+
+impl Replied {
+    /// The message or note as the agent reads it, unless it answered a wait.
+    #[cfg(test)]
+    pub(crate) fn text(self) -> Option<String> {
+        match self {
+            Replied::Answered { .. } => None,
+            Replied::Noted { text, .. } | Replied::Plain { text, .. } => Some(text),
+        }
+    }
 }
 
 /// Those of `ids` the agent's `ask_user` gave (not Arko's own questions).
@@ -137,7 +161,7 @@ impl Harness {
                 && let Answering::Text(answer) = answer
             {
                 if self.note_unread(run, &settled) {
-                    self.post_kept_notes(run);
+                    self.post_kept_notes_or_say(run);
                     let _ = answer.send(WAIT_ANSWERED.to_string());
                 } else if open.is_empty() {
                     let _ = answer.send(crate::questions::wait_answered_earlier(&settled));
@@ -175,10 +199,14 @@ impl Harness {
     /// for that run alone under the kept note's own id, and keeps which note
     /// carries each. A note the workflow has already, posted before Arko
     /// could record it, is found by that id instead of posted again.
-    pub(crate) fn post_kept_notes(&self, run: Uuid) {
+    ///
+    /// Returns, when one couldn't be posted, the sentence that says so. It
+    /// stays kept, and Arko posts it again after the next turn.
+    pub(crate) fn post_kept_notes(&self, run: Uuid) -> Result<(), String> {
         let Some(workflow) = self.workflow.as_ref() else {
-            return;
+            return Ok(());
         };
+        let mut posted_all = Ok(());
         for pending in self.feed.queued_notes(run) {
             if pending.posted.is_some() {
                 continue;
@@ -186,16 +214,45 @@ impl Harness {
             let note = arko_workflows::notes::Note::new(pending.note.clone())
                 .to([crate::agents::MAIN])
                 .for_run(run);
-            match workflow.post_note_once(pending.id, note) {
+            match self.post_users_note(workflow, Some(pending.id), note) {
                 Ok(posted) => self
                     .feed
                     .note_posted(pending.id, Some((posted.id, posted.seq))),
-                Err(error) => self.say(
-                    Level::Error,
-                    &format!("Couldn't pass your answers on ({error}). Arko tries again after the next turn."),
-                ),
+                Err(error) => {
+                    posted_all = Err(format!(
+                        "Couldn't pass your answers on ({error}). Arko tries again after the next turn."
+                    ))
+                }
             }
         }
+        posted_all
+    }
+
+    /// [`post_kept_notes`](Self::post_kept_notes), telling the user when
+    /// one couldn't be posted.
+    pub(crate) fn post_kept_notes_or_say(&self, run: Uuid) {
+        if let Err(why) = self.post_kept_notes(run) {
+            self.say(Level::Error, &why);
+        }
+    }
+
+    /// What of a send didn't go, as its verdict says it when a client waits
+    /// for one: the questions `dropped` and why its note `not_posted`. A send
+    /// without one tells the user why in the transcript instead.
+    pub(crate) fn partly(
+        &self,
+        reply: &SendReply,
+        dropped: Vec<String>,
+        not_posted: Option<String>,
+    ) -> Option<Partial> {
+        let words = match (not_posted, reply.tracked()) {
+            (Some(why), false) => {
+                self.say(Level::Error, &why);
+                None
+            }
+            (words, _) => words,
+        };
+        (!dropped.is_empty() || words.is_some()).then_some(Partial { dropped, words })
     }
 
     /// Gives the waits Arko asked among `answered` (questions without ids)
@@ -224,14 +281,21 @@ impl Harness {
     /// conversation's questions. Those that are open now are answered, and
     /// the others dropped. Answers too long to send settle nothing, and the
     /// user is told. Returns the note kept for the agent (`None` when
-    /// nothing was open).
-    pub(crate) fn answer_questions(&mut self, answers: Answers) -> Option<String> {
+    /// nothing was open). They went once their questions were settled,
+    /// which `reply` says.
+    pub(crate) fn answer_questions(
+        &mut self,
+        answers: Answers,
+        reply: &mut SendReply,
+    ) -> Option<String> {
         let run = self.feed.questions_conversation();
         if let Some(run) = run
             && let Some(refusal) =
                 crate::questions::answers_refusal(&self.feed.open_questions_of(run), &answers)
         {
-            self.say(Level::Warn, &refusal);
+            if !reply.refuse(RefusalKind::TooLong, &refusal) {
+                self.say(Level::Warn, &refusal);
+            }
             return None;
         }
         // One answer for each question, the first filled in.
@@ -259,8 +323,10 @@ impl Harness {
             |settled, open| crate::questions::answers_note(settled, open, &given),
         );
         if settled.is_empty() && pending.is_none() {
-            self.feed
-                .notice(Level::Warn, "Those questions are no longer open.");
+            const WORDS: &str = "Those questions are no longer open.";
+            if !reply.refuse(RefusalKind::NotOpen, WORDS) {
+                self.feed.notice(Level::Warn, WORDS);
+            }
             return None;
         }
         self.user_present();
@@ -270,15 +336,26 @@ impl Harness {
                 .map(|answer| answer.words(None))
                 .unwrap_or_default()
         });
+        // They went once settled and kept for the agent, whether or not
+        // their note could be posted now.
+        let not_posted = pending
+            .as_ref()
+            .and_then(|pending| self.post_kept_notes(pending.run).err());
+        let partial = self.partly(reply, dropped(&ids, &settled), not_posted);
+        reply.accept_partly(Delivery::Answer, None, partial);
         let pending = pending?;
-        self.post_kept_notes(pending.run);
         self.answer_agent_wait(&pending);
         Some(pending.note)
     }
 
     /// The user dismisses the current conversation's questions `ids` ("Not
-    /// now"). Returns the note kept for the agent.
-    pub(crate) fn dismiss_questions(&mut self, ids: Vec<String>) -> Option<String> {
+    /// now"). Returns the note kept for the agent. They went once the
+    /// questions were settled, which `reply` says.
+    pub(crate) fn dismiss_questions(
+        &mut self,
+        ids: Vec<String>,
+        reply: &mut SendReply,
+    ) -> Option<String> {
         let run = self.feed.questions_conversation();
         let (settled, pending) = self.feed.settle_noting(
             run,
@@ -290,12 +367,17 @@ impl Harness {
             },
         );
         if settled.is_empty() {
+            reply.refuse(RefusalKind::NotOpen, "Those questions are no longer open.");
             return None;
         }
         self.user_present();
         self.answer_plain_waits(&ids_of(&settled), |_| String::new());
+        let not_posted = pending
+            .as_ref()
+            .and_then(|pending| self.post_kept_notes(pending.run).err());
+        let partial = self.partly(reply, dropped(&ids, &settled), not_posted);
+        reply.accept_partly(Delivery::Answer, None, partial);
         let pending = pending?;
-        self.post_kept_notes(pending.run);
         self.answer_agent_wait(&pending);
         Some(pending.note)
     }
@@ -305,10 +387,9 @@ impl Harness {
     /// the agent waits for an answer, which it is. The questions it answers
     /// are no longer open, and the message as the agent reads it ("(This
     /// message answers q3.)" before it) is kept and posted as their note,
-    /// which is how it reaches the agent. Returns the message (`kept` when
-    /// it went as that note, else with "(Still open: q5.)" after it), or
-    /// `None` when it answered a wait.
-    pub(crate) fn reply_text(&mut self, text: &str, attached: &[String]) -> Option<Reply> {
+    /// which is how it reaches the agent. Returns what it did, and whether
+    /// that note could be posted now.
+    pub(crate) fn reply_text(&mut self, text: &str, attached: &[String]) -> Replied {
         let run = self.feed.questions_conversation();
         let ids = self.replied_ids(attached);
         let (settled, pending) = if ids.is_empty() {
@@ -325,22 +406,22 @@ impl Harness {
         let answered_wait = self.answer_plain_waits(&answered, |_| text.trim().to_string());
         let Some(pending) = pending else {
             if answered_wait {
-                return None;
+                return Replied::Answered { not_posted: None };
             }
             let still = agent_ids(&ids_of(&self.feed.open_questions()));
-            return Some(Reply {
+            return Replied::Plain {
                 text: notes::still_open(text, &still),
-                kept: false,
-            });
+                settled: !settled.is_empty(),
+            };
         };
-        self.post_kept_notes(pending.run);
+        let not_posted = self.post_kept_notes(pending.run).err();
         if self.answer_agent_wait(&pending) {
-            return None;
+            return Replied::Answered { not_posted };
         }
-        Some(Reply {
+        Replied::Noted {
             text: pending.note,
-            kept: true,
-        })
+            not_posted,
+        }
     }
 
     /// The questions a message of the user's answers: those `attached` to
@@ -368,8 +449,8 @@ impl Harness {
     }
 
     /// The open questions of the card `item`, which an answer to it from
-    /// the old web page (`/api/answer`) answers, or `None` (the user is
-    /// told) when it has none open any more.
+    /// the old web page (`/api/answer`) answers, or `None` when it has none
+    /// open any more.
     pub(crate) fn card_answered(&self, item: u64) -> Option<Vec<String>> {
         let open: Vec<String> = self
             .feed
@@ -378,12 +459,7 @@ impl Harness {
             .filter(|question| question.state.is_open())
             .map(|question| question.id)
             .collect();
-        if open.is_empty() {
-            self.feed
-                .notice(Level::Warn, "That question is no longer open.");
-            return None;
-        }
-        Some(open)
+        (!open.is_empty()).then_some(open)
     }
 
     /// After a turn: the waits that can no longer be answered end. A
@@ -485,7 +561,7 @@ impl Harness {
         }
         runs.dedup();
         for run in runs {
-            self.post_kept_notes(run);
+            self.post_kept_notes_or_say(run);
         }
     }
 
@@ -497,31 +573,50 @@ impl Harness {
         &mut self,
         answers: crate::approvals::ApprovalAnswers,
         source: Option<Source>,
+        reply: &mut SendReply,
     ) {
         if let Some(refusal) = answers
             .words
             .as_deref()
             .and_then(crate::approvals::approval_words_refusal)
         {
-            self.say(Level::Warn, &refusal);
+            if !reply.refuse(RefusalKind::TooLong, &refusal) {
+                self.say(Level::Warn, &refusal);
+            }
             return;
         }
         let answered = self.feed.answer_approvals(&answers);
         if answered.is_empty() {
-            self.feed
-                .notice(Level::Warn, "Those approvals are no longer open.");
+            const WORDS: &str = "Those approvals are no longer open.";
+            if !reply.refuse(RefusalKind::NotOpen, WORDS) {
+                self.feed.notice(Level::Warn, WORDS);
+            }
             return;
         }
         self.user_present();
-        if let Some(source) = source
-            && let Some(words) = answers
+        let item = match source {
+            Some(source) => answers
                 .words
                 .as_deref()
                 .map(str::trim)
                 .filter(|words| !words.is_empty())
-        {
-            self.feed.user(words, source, Delivery::Answer);
-        }
+                .map(|words| self.feed.user(words, source, Delivery::Answer)),
+            None => None,
+        };
+        let named: Vec<String> = answers
+            .choices
+            .iter()
+            .map(|choice| choice.id.clone())
+            .filter(|id| !answered.iter().any(|request| &request.id == id))
+            .collect();
+        reply.accept_partly(
+            Delivery::Answer,
+            item,
+            (!named.is_empty()).then_some(Partial {
+                dropped: named,
+                words: None,
+            }),
+        );
         let approved = answered
             .iter()
             .filter(|request| {
@@ -546,7 +641,7 @@ impl Harness {
     /// [`approvals::command_answers`](crate::approvals::command_answers)).
     pub(crate) fn approve_command(&mut self, approve: bool, argument: &str) {
         match crate::approvals::command_answers(&self.feed.approvals(), approve, argument) {
-            Ok(answers) => self.answer_approvals(answers, None),
+            Ok(answers) => self.answer_approvals(answers, None, &mut SendReply::default()),
             Err(why) => self.say(Level::Warn, &why),
         }
     }
@@ -564,4 +659,13 @@ impl Harness {
         }
         self.feed.questions_found(run, &task.questions.open);
     }
+}
+
+/// What of `ids` the user answered isn't among the questions `settled`, for
+/// a verdict's part that didn't go.
+fn dropped(ids: &[String], settled: &[crate::questions::AgentQuestion]) -> Vec<String> {
+    ids.iter()
+        .filter(|id| !settled.iter().any(|question| &question.id == *id))
+        .cloned()
+        .collect()
 }

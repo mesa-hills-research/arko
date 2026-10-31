@@ -32,6 +32,8 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "arko-web"
 version = "0.0.0"
 dependencies = [
+ "any_spawner",
+ "futures",
  "js-sys",
  "leptos",
  "lucide-leptos",

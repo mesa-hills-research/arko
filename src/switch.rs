@@ -24,6 +24,7 @@ use crate::conversations::Conversations;
 use crate::earlier;
 use crate::inputs::{Event, Inputs};
 use crate::remote::{Action, Delivery, Level, Source};
+use crate::sending::{Admitted, Phase, Read, Reply};
 use crate::session::Settings;
 use crate::{Conversation, Harness, Input, lock, providers};
 
@@ -545,7 +546,12 @@ impl Harness {
         let outcome = loop {
             tokio::select! {
                 outcome = &mut asking => break outcome,
-                event = input.next_event(false) => {
+                (event, mut reply) = input.next_event(false) => {
+                    // A stop, a quit and the like are accepted as they are
+                    // read.
+                    if !event.is_send() {
+                        reply.accept(Delivery::Command, None);
+                    }
                     let skip = match event {
                         Event::Input(Some(Input::Interrupt)) | Event::Remote(Action::Stop) => true,
                         Event::Input(Some(Input::Eof) | None) => {
@@ -571,11 +577,11 @@ impl Harness {
                             false
                         }
                         Event::Input(Some(Input::AnswerApprovals(answers))) => {
-                            self.answer_approvals(answers, Some(self.input_source));
+                            self.answer_approvals(answers, Some(self.input_source), &mut reply);
                             false
                         }
                         Event::Remote(Action::AnswerApprovals(answers)) => {
-                            self.answer_approvals(answers, Some(Source::Web));
+                            self.answer_approvals(answers, Some(Source::Web), &mut reply);
                             false
                         }
                         Event::Remote(
@@ -587,17 +593,17 @@ impl Harness {
                         Event::Woken | Event::Finished(_) | Event::Alert(_) => false,
                         Event::Input(Some(Input::AnswerQuestions(answers)))
                         | Event::Remote(Action::AnswerQuestions(answers)) => {
-                            self.answer_questions(answers);
+                            self.answer_questions(answers, &mut reply);
                             false
                         }
                         Event::Input(Some(Input::DismissQuestions(ids)))
                         | Event::Remote(Action::DismissQuestions(ids)) => {
-                            self.dismiss_questions(ids);
+                            self.dismiss_questions(ids, &mut reply);
                             false
                         }
                         // Commands run now, and messages aren't sent.
                         event => {
-                            let quits = Box::pin(self.sent_during_report(event, input)).await;
+                            let quits = Box::pin(self.sent_during_report(event, reply, input)).await;
                             quit |= quits;
                             quits
                         }
@@ -788,69 +794,31 @@ impl Harness {
     /// `Activity::reporting`), so one only comes here when it was sent as
     /// the report began, and the notice repeats its words. Returns whether
     /// the user quit.
-    async fn sent_during_report(&mut self, event: Event, input: &mut Inputs) -> bool {
-        // (With how many images an app's message sends.)
-        let (text, source, images) = match event {
-            Event::Input(Some(Input::Line(line))) => {
-                (input.coalesce(line).await, self.input_source, 0)
-            }
-            Event::Input(Some(Input::Message(message))) => {
-                if message.continue_uncached {
-                    self.confirm_continue(&message.text);
-                }
-                (message.text, self.input_source, message.images.len())
-            }
-            Event::Input(Some(Input::Answer { text, .. })) => (text, self.input_source, 0),
-            Event::Remote(Action::Continue(text)) => {
-                self.echo_web(&text);
-                self.confirm_continue(&text);
-                (text, Source::Web, 0)
-            }
-            Event::Remote(
-                Action::Message(text) | Action::Reply { text, .. } | Action::Answer { text, .. },
-            ) => {
-                self.echo_web(&text);
-                (text, Source::Web, 0)
-            }
-            _ => return false,
+    async fn sent_during_report(&mut self, event: Event, reply: Reply, input: &mut Inputs) -> bool {
+        let Read::Sent(sent) = self.read_sent(event, reply, input, Phase::Reporting).await else {
+            return false;
         };
-        let text = text.trim().to_string();
-        if text.is_empty() && images == 0 {
-            return false;
+        match self.admit(sent, Phase::Reporting) {
+            Some(Admitted::Command {
+                command,
+                source,
+                confirmed,
+                reply,
+            }) => {
+                self.run_command(&command, source, Phase::Reporting, input, reply, confirmed)
+                    .await
+            }
+            _ => false,
         }
-        self.user_present();
-        if let Some(command) = crate::harness::command(&text) {
-            if self.refused(command, source) {
-                return false;
-            }
-            if crate::harness::is_remote_command(command) {
-                self.remote_command(command, source).await;
-                return false;
-            }
-            if let Some(argument) = crate::harness::openrouter_words(command) {
-                self.openrouter_live(command, argument, source).await;
-                return false;
-            }
-            if self.live_command(command, source) {
-                return false;
-            }
-            self.feed.user(command, source, Delivery::Command);
-            return self.mirrored(|harness| {
-                if matches!(command, "/exit" | "/quit") {
-                    harness.may_exit(Some(harness.jobs_shown.clone()))
-                } else {
-                    harness.command(command);
-                    false
-                }
-            });
-        }
-        if self.unknown_command(&text, source) {
-            return false;
-        }
-        // (Its words, so that they aren't lost.)
+    }
+
+    /// Tells the user that the message `text` (empty for one of images
+    /// alone) wasn't sent because the old model writes its report, with its
+    /// words, so that they aren't lost.
+    pub(crate) fn not_sent_while_reporting(&self, text: &str) {
         let what = match text.is_empty() {
             true => "Your message".to_string(),
-            false => format!("“{}”", crate::ui::cut(&text, 200)),
+            false => format!("“{}”", crate::ui::cut(text, 200)),
         };
         self.output.echo(
             &self
@@ -859,7 +827,6 @@ impl Harness {
         );
         self.feed
             .notice(Level::Warn, &format!("{what} wasn't sent. {REPORTING}"));
-        false
     }
 
     /// The configuration the next new conversation starts on, when it isn't

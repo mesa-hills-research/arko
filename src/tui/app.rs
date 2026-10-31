@@ -89,6 +89,9 @@ pub struct Info {
 pub enum Effect {
     /// The session gets this, as the terminal's input.
     Input(Input),
+    /// The session gets what the user sent, and says what became of it
+    /// ([`App::verdict`]).
+    Send(Sending),
     /// Copy `text`, which is `what` ("14 characters", "the last
     /// reply"): the status line says what became of it.
     Copy { text: String, what: String },
@@ -268,6 +271,52 @@ fn agent_works_since(activity: &Activity, waits: bool) -> Option<i64> {
 /// continues it.
 const CONTINUE_CONFIRM_WITHIN: Duration = Duration::from_secs(30);
 
+/// What the view gives the session, as the session gets it, with what goes
+/// back where it came from when the session refuses it, or doesn't say.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sending {
+    pub input: Input,
+    pub restore: Restore,
+}
+
+/// What goes back when the session refuses a send, or stops before it says.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Restore {
+    /// Nothing: a stop, a quit, a dismissal.
+    Nothing,
+    /// The box's text as it was sent, and the questions attached to it,
+    /// when the box is empty.
+    Box { typed: String, answers: Vec<String> },
+    /// The answer panel opens again. Its drafts stay until their questions
+    /// settle.
+    Panel,
+}
+
+impl Sending {
+    /// A send that puts the box's text `typed`, with the questions
+    /// `answers`, back when refused.
+    pub fn of_box(input: Input, typed: impl Into<String>, answers: Vec<String>) -> Self {
+        Self {
+            input,
+            restore: Restore::Box {
+                typed: typed.into(),
+                answers,
+            },
+        }
+    }
+}
+
+impl Sending {
+    /// The line the session reads (a worker's view's text as `/message`).
+    fn line(&self) -> &str {
+        match &self.input {
+            Input::Line(line) => line,
+            Input::Message(message) => &message.text,
+            _ => "",
+        }
+    }
+}
+
 /// The view's state.
 pub struct App {
     pub transcript: Transcript,
@@ -301,8 +350,9 @@ pub struct App {
     /// A word in the status line for a moment: "Copied", ...
     pub hint: Option<(String, Instant)>,
     /// The `/message` to a worker whose prompt cache expired that the
-    /// status line just said the cost of, and when: Enter again soon after
-    /// continues the worker. Esc, or other text, asks again.
+    /// session didn't send, which the status line said the cost of, and
+    /// when: Enter again soon after continues the worker. Esc, or other
+    /// text, asks again.
     continue_asked: Option<(String, Instant)>,
     last_interrupt: Option<Instant>,
     /// The terminal window has the focus (as far as it says).
@@ -662,8 +712,58 @@ impl App {
     }
 
     fn send(&mut self, text: &str) {
-        self.effects
-            .push(Effect::Input(Input::Line(text.to_string())));
+        self.send_typed(text, text);
+    }
+
+    /// Sends `line`, which the box held as `typed`.
+    fn send_typed(&mut self, line: &str, typed: &str) {
+        self.effects.push(Effect::Send(Sending::of_box(
+            Input::Line(line.to_string()),
+            typed,
+            Vec::new(),
+        )));
+    }
+
+    /// Puts back what `sending` took, when the session refused it or didn't
+    /// say what became of it: the box's text and its questions, when the
+    /// box is empty, or the answer panel.
+    fn restore(&mut self, sending: &Sending) {
+        match &sending.restore {
+            Restore::Nothing => {}
+            Restore::Box { typed, answers } => {
+                if self.editor.is_empty() {
+                    self.editor.set(typed);
+                    if self.panel.attached.is_empty() {
+                        self.panel.attached = answers.clone();
+                    }
+                }
+            }
+            Restore::Panel => self.open_panel(),
+        }
+    }
+
+    /// What became of `sending`, which the session refused or took. A
+    /// refused message comes back to the box, with its questions, when the
+    /// box is empty, and the status line says why. When continuing a worker
+    /// whose cache expired is what it needs, Enter again continues it.
+    pub fn verdict(&mut self, sending: Sending, verdict: crate::Verdict) {
+        let refusal = match verdict {
+            crate::Verdict::Accepted { partial, .. } => {
+                if let Some(words) = partial.and_then(|partial| partial.words) {
+                    self.say(words);
+                }
+                return;
+            }
+            crate::Verdict::Refused(refusal) => refusal,
+        };
+        self.restore(&sending);
+        match refusal.confirm {
+            Some(crate::Confirm::ContinueUncached) => {
+                self.continue_asked = Some((sending.line().to_string(), Instant::now()));
+                self.say(format!("{} Enter again continues it.", refusal.words));
+            }
+            _ => self.say(refusal.words),
+        }
     }
 
     /// Shows `text` in the status line for a moment.
@@ -894,9 +994,12 @@ impl App {
     }
 
     /// Starts over from the feed's `snapshot` (the view fell behind it).
-    pub fn reset(&mut self, snapshot: Snapshot) {
-        self.set_activity(snapshot.activity.clone());
+    /// Returns whether the bell should sound, as when the turn ended while
+    /// the view was behind.
+    pub fn reset(&mut self, snapshot: Snapshot) -> bool {
+        let bell = self.set_activity(snapshot.activity.clone());
         self.transcript.reset(snapshot);
+        bell
     }
 
     /// The activity changed: returns whether the bell should sound (the
@@ -1483,7 +1586,7 @@ impl App {
                 }
                 _ => false,
             };
-            if !handled && command.name == "/message" && self.asks_to_continue(trimmed) {
+            if !handled && command.name == "/message" && self.confirms_continue(trimmed, trimmed) {
                 return;
             }
             self.editor.take();
@@ -1499,35 +1602,11 @@ impl App {
             self.say(why);
             return;
         }
-        // While the old model writes its report for a switch, a message to
-        // the main agent stays in the box. (One to a worker, in its view,
-        // goes.)
-        if self.activity.reporting && (self.watching.is_none() || self.agent_waits()) {
-            self.say(crate::switch::REPORTING);
-            return;
-        }
-        // An answer too long to send stays in the box, with how short to
-        // make it: the questions attached, or those the agent waits for.
-        let replied: Vec<String> = if self.panel.attached.is_empty() {
-            self.open_questions()
-                .iter()
-                .filter(|question| question.waits)
-                .map(|question| question.id.clone())
-                .collect()
-        } else {
-            self.panel.attached.clone()
-        };
-        if let Some(refusal) =
-            crate::questions::reply_refusal(self.open_questions(), &replied, trimmed)
-        {
-            self.say(refusal);
-            return;
-        }
         // In a worker's own view, continuing it when its cache expired
-        // asks first.
+        // goes once it was asked about.
         if self.panel.attached.is_empty()
             && let Some(id) = self.watching.clone().filter(|_| !self.agent_waits())
-            && self.asks_to_continue(&format!("/message {id} {}", trimmed.trim()))
+            && self.confirms_continue(&format!("/message {id} {}", trimmed.trim()), trimmed)
         {
             return;
         }
@@ -1544,12 +1623,13 @@ impl App {
         // With questions attached, it answers them, in any view.
         let answers = std::mem::take(&mut self.panel.attached);
         if !answers.is_empty() {
+            let message = Input::Message(crate::ui::Message {
+                text: text.trim_end().to_string(),
+                answers: answers.clone(),
+                ..Default::default()
+            });
             self.effects
-                .push(Effect::Input(Input::Message(crate::ui::Message {
-                    text: text.trim_end().to_string(),
-                    answers,
-                    ..Default::default()
-                })));
+                .push(Effect::Send(Sending::of_box(message, text, answers)));
             return;
         }
         // In a worker's own view it goes to that worker, unless the main
@@ -1557,25 +1637,25 @@ impl App {
         match &self.watching {
             Some(id) if !self.agent_waits() => {
                 let line = format!("/message {id} {}", text.trim());
-                self.send(&line);
+                self.send_typed(&line, &text);
             }
-            _ => self.send(text.trim_end()),
+            _ => self.send_typed(text.trim_end(), &text),
         }
     }
 
-    /// Whether the `/message` in `line` waits for Enter again: it continues
-    /// a worker whose prompt cache expired, and the status line says what
-    /// that costs, with the text left in the box. Enter again soon after
-    /// (the same text) continues the worker.
-    fn asks_to_continue(&mut self, line: &str) -> bool {
-        let now = chrono::Utc::now();
-        let cache = crate::worker_cache::message_parts(line)
-            .and_then(|(to, _)| self.transcript.worker_named(to))
-            .and_then(|worker| worker.cache())
-            .filter(|cache| cache.asks(now));
-        let Some(cache) = cache else {
-            return false;
-        };
+    /// The session stopped before it said what became of `sending`, which
+    /// may have gone: it comes back to the box when the box is empty, and
+    /// the status line says to look before sending it again.
+    pub fn no_verdict(&mut self, sending: Sending) {
+        self.restore(&sending);
+        self.say("Arko stopped before saying whether it went. Check the transcript before you send it again.");
+    }
+
+    /// Whether `line`, a `/message` that the box holds as `typed`, goes as
+    /// continuing its worker without its cache: the session refused it
+    /// moments ago for that, said what it costs, and Enter came again with
+    /// the same text.
+    fn confirms_continue(&mut self, line: &str, typed: &str) -> bool {
         let confirmed = self
             .continue_asked
             .take()
@@ -1583,17 +1663,15 @@ impl App {
         if confirmed {
             self.editor.take();
             self.menu = Menu::default();
+            let confirmed = Input::Message(crate::ui::Message {
+                text: line.to_string(),
+                continue_uncached: true,
+                ..Default::default()
+            });
             self.effects
-                .push(Effect::Input(Input::Message(crate::ui::Message {
-                    text: line.to_string(),
-                    continue_uncached: true,
-                    ..Default::default()
-                })));
-            return true;
+                .push(Effect::Send(Sending::of_box(confirmed, typed, Vec::new())));
         }
-        self.continue_asked = Some((line.to_string(), Instant::now()));
-        self.say(format!("{} Enter again continues it.", cache.warning(now)));
-        true
+        confirmed
     }
 
     fn screen_command(&mut self, name: &str, rest: &str) {
@@ -2719,7 +2797,11 @@ pub(super) mod tests {
         app.take_effects()
             .into_iter()
             .filter_map(|effect| match effect {
-                Effect::Input(Input::Line(line)) => Some(line),
+                Effect::Input(Input::Line(line))
+                | Effect::Send(Sending {
+                    input: Input::Line(line),
+                    ..
+                }) => Some(line),
                 Effect::Input(Input::Interrupt) => Some("^C".into()),
                 _ => None,
             })
@@ -2740,8 +2822,11 @@ pub(super) mod tests {
         assert!(app.editor.is_empty());
     }
 
+    /// While the old model writes its report, a message goes to the
+    /// session, which refuses it: it comes back to the box, and the status
+    /// line says why. A command goes as always.
     #[test]
-    fn a_message_stays_in_the_box_while_the_report_is_written() {
+    fn a_message_comes_back_to_the_box_while_the_report_is_written() {
         let mut app = app();
         app.set_activity(Activity {
             reporting: true,
@@ -2751,22 +2836,56 @@ pub(super) mod tests {
         });
         type_text(&mut app, "Hello.");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(sent(&mut app).is_empty(), "not sent");
+        let [sending] = sendings(&mut app).try_into().unwrap();
+        assert_eq!(sending.input, Input::Line("Hello.".into()));
+        assert!(app.editor.is_empty());
+        app.verdict(
+            sending,
+            refusal(crate::RefusalKind::Reporting, crate::switch::REPORTING),
+        );
         assert_eq!(app.editor.text(), "Hello.");
         assert_eq!(
             app.hint.as_ref().map(|(text, _)| text.as_str()),
             Some("The report is being written. Stopping skips it.")
         );
-        // A command still goes.
+        // A command goes.
         app.editor.take();
         type_text(&mut app, "/workers");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/workers"]);
-        // Once it is in, the message goes.
-        app.set_activity(Activity::default());
+        // The session stops before it says: the message comes back with
+        // its questions, and the status line says it may have gone.
+        app.no_verdict(Sending::of_box(
+            Input::Line("Tabs.".into()),
+            "Tabs.",
+            vec!["q1".into()],
+        ));
+        assert_eq!(app.editor.text(), "Tabs.");
+        assert_eq!(app.panel.attached, ["q1"]);
+        app.editor.take();
+        app.panel.attached.clear();
+        app.editor.take();
+        type_text(&mut app, "Bye.");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let [sending] = sendings(&mut app).try_into().unwrap();
+        app.no_verdict(sending);
+        assert_eq!(app.editor.text(), "Bye.");
+        assert!(
+            app.hint()
+                .is_some_and(|hint| hint.starts_with("Arko stopped before saying"))
+        );
+        app.editor.take();
+        // The box holds something else by the time a refusal comes: it
+        // stays.
         type_text(&mut app, "Hello.");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(sent(&mut app), ["Hello."]);
+        let [sending] = sendings(&mut app).try_into().unwrap();
+        type_text(&mut app, "Later.");
+        app.verdict(
+            sending,
+            refusal(crate::RefusalKind::Reporting, crate::switch::REPORTING),
+        );
+        assert_eq!(app.editor.text(), "Later.");
     }
 
     #[test]
@@ -3037,9 +3156,26 @@ pub(super) mod tests {
             .into_iter()
             .filter_map(|effect| match effect {
                 Effect::Input(input) => Some(input),
+                Effect::Send(sending) => Some(sending.input),
                 _ => None,
             })
             .collect()
+    }
+
+    /// What the view sent, each with what goes back in the box.
+    fn sendings(app: &mut App) -> Vec<Sending> {
+        app.take_effects()
+            .into_iter()
+            .filter_map(|effect| match effect {
+                Effect::Send(sending) => Some(sending),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The session's refusal for `kind`, saying `words`.
+    fn refusal(kind: crate::RefusalKind, words: &str) -> crate::Verdict {
+        crate::Verdict::refused(kind, words)
     }
 
     /// New questions open the answer panel when the box is empty and no key
@@ -3261,44 +3397,52 @@ pub(super) mod tests {
         );
     }
 
-    /// A message that answers questions, or answers in the panel, too long
-    /// to send aren't sent: the text stays in the box (and the drafts in
-    /// the open panel), and the status line says how short to make it.
-    /// Once short enough, they go.
+    /// Answers too long to send go to the session, which refuses them. The
+    /// panel's open again with its drafts, or a message comes back to the
+    /// box with its questions, and the status line says how short to make
+    /// them. Once short enough, it goes.
     #[test]
-    fn answers_too_long_to_send_stay_where_they_were_typed() {
+    fn answers_too_long_to_send_come_back_where_they_were_typed() {
         let mut app = app();
         let mut reading = asking();
         reading.questions[1].waits = true;
         app.set_reading(reading);
         let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
-        // In the panel, Send on the summary checks the whole answer.
+        // In the panel.
         app.paste(&long);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(inputs(&mut app).is_empty());
+        let [sending] = sendings(&mut app).try_into().unwrap();
+        assert_eq!(sending.restore, Restore::Panel);
+        assert!(!app.panel.open);
+        let answer = "Your answer is too long to send. Shorten it to 15 KB.";
+        app.verdict(sending, refusal(crate::RefusalKind::TooLong, answer));
         assert!(app.panel.open);
         assert_eq!(app.panel.drafts["q1"].other, long);
-        assert_eq!(
-            app.hint(),
-            Some("Your answer is too long to send. Shorten it to 15 KB.")
-        );
+        assert_eq!(app.hint(), Some(answer));
         app.panel.drafts.clear();
         // Attached to a message.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         app.paste(&long);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        let refusal = "Your message is too long to send as an answer. Shorten it to 15 KB.";
-        assert!(app.take_effects().is_empty());
+        let words = "Your message is too long to send as an answer. Shorten it to 15 KB.";
+        let [sending] = sendings(&mut app).try_into().unwrap();
+        assert!(
+            matches!(&sending.restore, Restore::Box { answers, .. } if answers == &["q1", "q2"])
+        );
+        assert!(app.editor.is_empty() && app.panel.attached.is_empty());
+        app.verdict(sending, refusal(crate::RefusalKind::TooLong, words));
         assert_eq!(app.editor.text(), long);
         assert_eq!(app.panel.attached, ["q1", "q2"]);
-        assert_eq!(app.hint(), Some(refusal));
+        assert_eq!(app.hint(), Some(words));
         // Not attached, while the agent waits for q2: the answer too.
         app.panel.attached.clear();
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.take_effects().is_empty());
+        let [sending] = sendings(&mut app).try_into().unwrap();
+        app.verdict(sending, refusal(crate::RefusalKind::TooLong, words));
         assert_eq!(app.editor.text(), long);
+        assert!(app.panel.attached.is_empty());
         // Shortened, it goes.
         app.editor.take();
         type_text(&mut app, "main");
@@ -3325,6 +3469,25 @@ pub(super) mod tests {
         assert!(!app.take_ring());
         app.set_reading(asking());
         assert!(app.take_ring(), "q2 is new again");
+    }
+
+    /// A turn that ended while the view was behind the feed rings the bell
+    /// as the view starts over, as one it followed does, while the window
+    /// isn't focused.
+    #[test]
+    fn a_turn_that_ended_while_behind_rings_the_bell() {
+        let working = Activity {
+            working: true,
+            ..Activity::default()
+        };
+        for focused in [true, false] {
+            let mut app = app();
+            app.focused = focused;
+            app.update(Update::Activity, || working.clone());
+            // (A default snapshot's turn has ended.)
+            assert_eq!(app.reset(Snapshot::default()), !focused);
+            assert!(!app.reset(Snapshot::default()), "once");
+        }
     }
 
     #[test]
@@ -3381,46 +3544,54 @@ pub(super) mod tests {
     }
 
     /// Continuing a worker whose cache expired, with `/message` or from its
-    /// view, keeps the text in the box and says what it costs. Enter again
-    /// sends it, marked confirmed. Esc, or other text, asks again, and a
-    /// warm cache or a small conversation sends at once.
+    /// view, goes to the session, which refuses it with what it costs: the
+    /// text comes back to the box, and the status line says so. Enter again
+    /// sends it, marked confirmed. Esc, other text, or Enter after the 30
+    /// seconds sends it as before, for the session to ask again.
     #[test]
     fn enter_twice_continues_a_worker_whose_cache_expired() {
-        use crate::remote::WorkerState::Finished;
         let mut app = app();
-        let now = chrono::Utc::now().timestamp_millis();
-        let ended = |expires_at: i64, tokens: u64| crate::remote::WorkerSummary {
-            cache_expires_at: Some(expires_at),
-            reread_tokens: Some(tokens),
-            reread_dollars: Some(1.36),
-            ..worker("r3", Finished)
-        };
-        let two_hours_ago = now - 2 * 3_600_000;
-        app.update(
-            Update::Worker(ended(two_hours_ago, 340_000)),
-            Activity::default,
-        );
         let messages = |app: &mut App| -> Vec<(String, bool)> {
             app.take_effects()
                 .into_iter()
                 .filter_map(|effect| match effect {
-                    Effect::Input(Input::Message(message)) => {
-                        Some((message.text, message.continue_uncached))
-                    }
-                    Effect::Input(Input::Line(line)) => Some((line, false)),
+                    Effect::Send(Sending {
+                        input: Input::Message(message),
+                        ..
+                    }) => Some((message.text, message.continue_uncached)),
+                    Effect::Send(Sending {
+                        input: Input::Line(line),
+                        ..
+                    }) => Some((line, false)),
                     _ => None,
                 })
                 .collect()
         };
-        let warning = "r3's cache expired 2 hours ago. Continuing re-reads about 340k tokens without it (≈ $1.36 at API prices). Enter again continues it.";
+        let words = "r3's cache expired 2 hours ago. Continuing re-reads about 340k tokens without it (≈ $1.36 at API prices).";
+        let uncached = || {
+            crate::Verdict::Refused(crate::Refusal {
+                kind: crate::RefusalKind::Uncached {
+                    worker: "r3".into(),
+                },
+                words: words.into(),
+                confirm: Some(crate::Confirm::ContinueUncached),
+            })
+        };
+        let warning = format!("{words} Enter again continues it.");
         let enter = |app: &mut App| press(app, KeyCode::Enter, KeyModifiers::NONE);
+        // The first Enter sends it, and the session refuses it.
+        let refused = |app: &mut App, text: &str, line: &str| {
+            type_text(app, text);
+            enter(app);
+            let [sending] = sendings(app).try_into().unwrap();
+            assert_eq!(sending.input, Input::Line(line.into()));
+            app.verdict(sending, uncached());
+        };
 
-        // `/message`: the first Enter asks, the second sends.
-        type_text(&mut app, "/message r3 Go on.");
-        enter(&mut app);
-        assert!(messages(&mut app).is_empty());
+        // `/message`: the second Enter sends it confirmed.
+        refused(&mut app, "/message r3 Go on.", "/message r3 Go on.");
         assert_eq!(app.editor.text(), "/message r3 Go on.");
-        assert_eq!(app.hint(), Some(warning));
+        assert_eq!(app.hint(), Some(warning.as_str()));
         enter(&mut app);
         assert_eq!(
             messages(&mut app),
@@ -3428,69 +3599,46 @@ pub(super) mod tests {
         );
         assert!(app.editor.is_empty());
 
-        // The worker in capitals is the same worker. (The box takes no
-        // tabs.)
-        type_text(&mut app, "/message R3 Go on.");
-        enter(&mut app);
-        assert!(messages(&mut app).is_empty());
-        assert_eq!(app.hint(), Some(warning));
-        enter(&mut app);
-        assert_eq!(
-            messages(&mut app),
-            [("/message R3 Go on.".to_string(), true)]
-        );
-
-        // Enter again after the 30 seconds asks again.
-        type_text(&mut app, "/message r3 Go on.");
-        enter(&mut app);
+        // Enter again after the 30 seconds sends it unconfirmed.
+        refused(&mut app, "/message r3 Go on.", "/message r3 Go on.");
         let (line, _) = app.continue_asked.take().unwrap();
         let long_ago = Instant::now()
             .checked_sub(CONTINUE_CONFIRM_WITHIN + Duration::from_secs(1))
             .expect("a clock that goes back 31 seconds");
         app.continue_asked = Some((line, long_ago));
         enter(&mut app);
-        assert!(messages(&mut app).is_empty());
-        enter(&mut app);
         assert_eq!(
             messages(&mut app),
-            [("/message r3 Go on.".to_string(), true)]
+            [("/message r3 Go on.".to_string(), false)]
         );
 
-        // Esc in between, or other text, asks again.
-        type_text(&mut app, "/message r3 Go on.");
-        enter(&mut app);
+        // Esc in between, or other text, sends it unconfirmed.
+        refused(&mut app, "/message r3 Go on.", "/message r3 Go on.");
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         enter(&mut app);
-        assert!(messages(&mut app).is_empty());
+        assert_eq!(
+            messages(&mut app),
+            [("/message r3 Go on.".to_string(), false)]
+        );
+        refused(&mut app, "/message r3 Go on.", "/message r3 Go on.");
         type_text(&mut app, " Now.");
         enter(&mut app);
-        assert!(messages(&mut app).is_empty());
-        assert_eq!(app.editor.text(), "/message r3 Go on. Now.");
-        app.editor.clear();
+        assert_eq!(
+            messages(&mut app),
+            [("/message r3 Go on. Now.".to_string(), false)]
+        );
 
-        // In r3's own view, the text goes to r3 the same way.
+        // In r3's own view, the text comes back as typed, and goes to r3 the
+        // same way.
         app.watch(Some("r3".into()));
-        type_text(&mut app, "Go on.");
-        enter(&mut app);
-        assert!(messages(&mut app).is_empty());
+        refused(&mut app, "Go on.", "/message r3 Go on.");
         assert_eq!(app.editor.text(), "Go on.");
-        assert_eq!(app.hint(), Some(warning));
+        assert_eq!(app.hint(), Some(warning.as_str()));
         enter(&mut app);
         assert_eq!(
             messages(&mut app),
             [("/message r3 Go on.".to_string(), true)]
         );
-
-        // A warm cache, or a small conversation, sends at once.
-        for (expires_at, tokens) in [(now + 300_000, 340_000), (two_hours_ago, 20_000)] {
-            app.update(Update::Worker(ended(expires_at, tokens)), Activity::default);
-            type_text(&mut app, "Go on.");
-            enter(&mut app);
-            assert_eq!(
-                messages(&mut app),
-                [("/message r3 Go on.".to_string(), false)]
-            );
-        }
     }
 
     /// A click (pressed and let go) at column `x`, row `y`.

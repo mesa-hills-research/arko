@@ -102,6 +102,7 @@ buttons.
 {"choices": [{"id": "a1", "approve": true, "option": true}, {"id": "a2", "approve": false}], "words": "Keep it to this project."}
 ```
 
-A request it doesn't name keeps waiting. It answers 409 when none of the requests waits any more,
-and 413 when the words are over 16 KB (`arko::approvals::MAX_APPROVAL_WORDS`), with how short to
-make them. An app sends the same as `Input::AnswerApprovals`.
+A request it doesn't name keeps waiting. The response is the session's verdict (`arko::Verdict`) as
+JSON. It's refused as `not_open` when none of the requests waits any more, and as `too_long` when the
+words are over 16 KB (`arko::approvals::MAX_APPROVAL_WORDS`), with how short to make them. An app
+sends the same as `Input::AnswerApprovals`, and `Seam::send` gives it the verdict.

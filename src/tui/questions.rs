@@ -356,7 +356,10 @@ impl App {
         }
         self.close_panel();
         self.panel.drafts.retain(|id, _| !ids.contains(id));
-        self.effects_push(Effect::Input(Input::DismissQuestions(ids)));
+        self.effects_push(Effect::Send(super::app::Sending {
+            input: Input::DismissQuestions(ids),
+            restore: super::app::Restore::Nothing,
+        }));
         self.say("Dismissed. Arko goes on with its defaults");
     }
 
@@ -381,16 +384,14 @@ impl App {
             return;
         }
         let answers = Answers { answers };
-        // Answers too long to send stay in the panel, with how short to
-        // make them.
-        if let Some(refusal) = crate::questions::answers_refusal(self.open_questions(), &answers) {
-            self.say(refusal);
-            return;
-        }
         // The drafts stay until their questions settle (another front end
-        // may have answered first).
+        // may have answered first), and the panel opens again when the
+        // session refuses them.
         self.close_panel();
-        self.effects_push(Effect::Input(Input::AnswerQuestions(answers)));
+        self.effects_push(Effect::Send(super::app::Sending {
+            input: Input::AnswerQuestions(answers),
+            restore: super::app::Restore::Panel,
+        }));
         self.transcript.follow();
     }
 

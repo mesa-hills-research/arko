@@ -602,6 +602,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
                         feed: seam.feed.clone(),
                         meter: seam.meter.clone(),
                         input: seam.input.clone(),
+                        requests: seam.requests.clone(),
                         root: seam.session.root.clone(),
                         session_dir: seam.session.dir.clone(),
                         workspace: seam.session.workspace.clone(),

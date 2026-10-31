@@ -3399,7 +3399,11 @@ mod tests {
         assert!(app.overlay.is_none());
         assert_eq!(
             app.take_effects(),
-            [Effect::Input(Input::Line("/resume 2".into()))]
+            [Effect::Send(crate::tui::app::Sending::of_box(
+                Input::Line("/resume 2".into()),
+                "/resume 2",
+                Vec::new()
+            ))]
         );
         app.set_activity(Activity {
             reporting: false,
@@ -3411,7 +3415,11 @@ mod tests {
         assert!(app.overlay.is_none());
         assert_eq!(
             app.take_effects(),
-            [Effect::Input(Input::Line("/resume".into()))]
+            [Effect::Send(crate::tui::app::Sending::of_box(
+                Input::Line("/resume".into()),
+                "/resume",
+                Vec::new()
+            ))]
         );
     }
 }

@@ -87,6 +87,9 @@ pub struct Page {
     pub workers: RwSignal<u64>,
     /// Bumped when a background job's summary changes.
     pub jobs: RwSignal<u64>,
+    /// Bumped when a `reset` brings another feed (Arko started again), once
+    /// the store holds it. What the page keeps of a session goes with it.
+    pub feeds: RwSignal<u64>,
     /// The parts of the status that rows show, which change less often
     /// than the status does: the calls that can move to the background,
     /// the background jobs running, the usual models and the app's name.
@@ -127,9 +130,6 @@ thread_local! {
     /// A stream came through once, so a key that's refused now is one that
     /// ended.
     static EVER_LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Whether the store holds the start of the stream that's open, so a
-    /// view the history asks for can be checked against its workers.
-    static CURRENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The one page, also for callbacks and tasks outside any component.
     static PAGE: std::cell::Cell<Option<Page>> = const { std::cell::Cell::new(None) };
     /// Whether an item is the text that streams, told only to the items
@@ -140,8 +140,15 @@ thread_local! {
     static WORKER_CHANGED: RefCell<HashMap<String, ArcTrigger>> = RefCell::new(HashMap::new());
 }
 
-/// Whether the item `id` is the text that streams now (follows that alone).
-pub fn streaming_is(id: u64) -> bool {
+/// Whether the item `id` is the text that streams now, for a row of it,
+/// which follows that alone. It holds while the page keeps the item, past
+/// the row (`streaming_forget`).
+pub fn streams(id: u64) -> Memo<bool> {
+    Memo::new(move |_| streaming_is(id))
+}
+
+/// Whether the item `id` is the text that streams now.
+fn streaming_is(id: u64) -> bool {
     STREAMING.with(|selector| {
         selector
             .borrow()
@@ -150,9 +157,10 @@ pub fn streaming_is(id: u64) -> bool {
     })
 }
 
-/// The item `id`'s text no longer shows, so nothing follows whether it
-/// streams.
-pub fn streaming_forget(id: u64) {
+/// The page let go of the item `id`, so nothing follows whether it streams.
+/// (Not when a row of it goes, as its next row may be drawn first: another
+/// kind, or another feed's item of the same ID.)
+fn streaming_forget(id: u64) {
     STREAMING.with(|selector| {
         if let Some(selector) = selector.borrow().as_ref() {
             selector.remove(&Some(id));
@@ -171,16 +179,20 @@ pub fn track_worker(id: &str) {
     });
 }
 
-/// The summary of the worker `id` changed, or every worker's (`None`).
-fn worker_changed(id: Option<&str>) {
-    let triggers: Vec<ArcTrigger> = WORKER_CHANGED.with(|triggers| {
-        let triggers = triggers.borrow();
-        match id {
-            Some(id) => triggers.get(id).cloned().into_iter().collect(),
-            None => triggers.values().cloned().collect(),
-        }
-    });
-    for trigger in triggers {
+/// The summary of the worker `id` changed.
+fn worker_changed(id: &str) {
+    let trigger = WORKER_CHANGED.with(|triggers| triggers.borrow().get(id).cloned());
+    if let Some(trigger) = trigger {
+        trigger.notify();
+    }
+}
+
+/// Every worker's summary came again (a `reset`). The views that follow one
+/// read it again and follow it with a new trigger, so the triggers of
+/// workers nothing shows any more go, another feed's among them.
+fn workers_all_changed() {
+    let triggers = WORKER_CHANGED.with(|triggers| std::mem::take(&mut *triggers.borrow_mut()));
+    for trigger in triggers.into_values() {
         trigger.notify();
     }
 }
@@ -196,6 +208,11 @@ impl Page {
             .as_deref()
             .and_then(View::from_key)
             .unwrap_or(View::Full);
+        Page::with(view, js_sys::Date::now())
+    }
+
+    /// The page, showing `view`, at this device's time `now`.
+    pub fn with(view: View, now: f64) -> Page {
         let status = RwSignal::new(StatusData::default());
         let jobs = RwSignal::new(0);
         let streaming = RwSignal::new(None);
@@ -218,9 +235,10 @@ impl Page {
             detail: RwSignal::new(String::new()),
             version: RwSignal::new(0),
             workers: RwSignal::new(0),
+            feeds: RwSignal::new(0),
             view: RwSignal::new(view),
             worker: RwSignal::new(None),
-            now: RwSignal::new(js_sys::Date::now()),
+            now: RwSignal::new(now),
             skew: RwSignal::new(None),
             error: RwSignal::new(None),
             commands: RwSignal::new(None),
@@ -245,6 +263,12 @@ impl Page {
         self.view.set(view);
         local_set(VIEW, Some(view.key()));
     }
+}
+
+/// The feed the store's items are of, which what the page keeps of a
+/// session belongs to.
+pub fn feed() -> Option<u64> {
+    STORE.with(|store| store.borrow().feed)
 }
 
 /// The signals of the item `id`, while it's kept.
@@ -330,14 +354,16 @@ pub async fn request(method: &str, path: &str, body: Option<String>) -> Option<(
     Some((status, text))
 }
 
-/// Gets JSON, or none.
+/// Gets JSON, or none. An answer that comes once the page shows another
+/// feed (Arko started again) is the last one's, so it's none too.
 pub async fn get_json<T: for<'a> Deserialize<'a>>(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Option<T> {
+    let asked = feed();
     let method = if body.is_some() { "POST" } else { "GET" };
     let (status, text) = request(method, path, body.map(|body| body.to_string())).await?;
-    if !(200..300).contains(&status) {
+    if !(200..300).contains(&status) || feed() != asked {
         return None;
     }
     serde_json::from_str(&text).ok()
@@ -376,74 +402,242 @@ async fn login(key: Option<String>) -> Login {
     }
 }
 
-/// Posts an action. A session cookie that ended is traded again once.
-/// Returns whether Arko took it, and says why not in the error line.
+/// Posts an action, such as a stop. A session cookie that ended is traded
+/// again once. Returns whether Arko took it, and says why not in the error
+/// line.
 pub async fn post(path: &str, body: serde_json::Value) -> bool {
-    matches!(post_asking(path, body).await, Posted::Taken)
-}
-
-/// What became of a post.
-pub enum Posted {
-    Taken,
-    /// Not taken, and the error line says why.
-    Kept,
-    /// Arko asks the user first, with these words (a message that continues
-    /// a worker whose prompt cache expired).
-    Confirm(String),
-}
-
-/// [`post`], with Arko's question when it asks the user before it takes it.
-pub async fn post_asking(path: &str, body: serde_json::Value) -> Posted {
-    let page = page();
+    // (Its words are the error line's while no send began since.)
+    let sender = Sender::from_page();
+    let body = of_feed(body, sender.feed);
     for attempt in 0..2 {
-        let Some((status, text)) = request("POST", path, Some(body.to_string())).await else {
-            page.error.set(Some(
+        let answer = request("POST", path, Some(body.to_string())).await;
+        // What it acted on went with the feed it was pressed in.
+        if feed() != sender.feed {
+            return false;
+        }
+        let Some((status, text)) = answer else {
+            sender.say(Some(
                 "Not sent, because Arko is out of reach. Your text is kept.".into(),
             ));
-            return Posted::Kept;
+            return false;
         };
         if status == 401 && attempt == 0 {
             match login(None).await {
                 Login::Ok => continue,
                 result => {
-                    lock(page, result);
-                    return Posted::Kept;
+                    lock(page(), result);
+                    return false;
                 }
             }
         }
         if !(200..300).contains(&status) {
-            #[derive(Deserialize)]
-            struct Why {
-                error: String,
-                #[serde(default)]
-                confirm: Option<String>,
-            }
-            let why = serde_json::from_str::<Why>(&text).ok();
-            if status == 409
-                && let Some(why) = why.as_ref().filter(|why| why.confirm.is_some())
-            {
-                page.error.set(None);
-                return Posted::Confirm(why.error.clone());
-            }
-            let why = why.map(|why| why.error);
-            page.error.set(Some(match why {
-                // Answers too long for the agent (Arko says what to shorten),
-                // a mistyped command (Arko says what it may be), and what
-                // Arko says in a sentence of its own.
-                Some(why) if matches!(status, 413 | 422) || why.ends_with('.') => why,
-                Some(why) => format!("Not sent ({why})."),
-                // A proxy in front of Arko (Tailscale Serve, say) answers for it.
-                None if matches!(status, 502..=504) => {
-                    "Not sent, because Arko is out of reach. Your text is kept.".into()
-                }
-                None => format!("Not sent ({status})."),
-            }));
-            return Posted::Kept;
+            sender.say(Some(not_sent(status, &text)));
+            return false;
         }
-        page.error.set(None);
-        return Posted::Taken;
+        sender.say(None);
+        return true;
     }
-    Posted::Kept
+    false
+}
+
+/// Why a request wasn't taken, from its status and the error Arko gave.
+fn not_sent(status: u16, text: &str) -> String {
+    #[derive(Deserialize)]
+    struct Why {
+        error: String,
+    }
+    match serde_json::from_str::<Why>(text).ok().map(|why| why.error) {
+        // What Arko says in a sentence of its own.
+        Some(why) if why.ends_with('.') => why,
+        Some(why) => format!("Not sent ({why})."),
+        // A proxy in front of Arko (Tailscale Serve, say) answers for it.
+        None if matches!(status, 502..=504) => {
+            "Not sent, because Arko is out of reach. Your text is kept.".into()
+        }
+        None => format!("Not sent ({status})."),
+    }
+}
+
+/// What became of something the user sent.
+#[derive(Debug, PartialEq)]
+pub enum Posted {
+    /// It went.
+    Taken,
+    /// It didn't, and the error line says why.
+    Kept,
+    /// Arko asks the user first, with these words (a message that continues
+    /// a worker whose prompt cache expired).
+    Confirm(String),
+    /// It was sent from a feed the page no longer shows (Arko started
+    /// again), so it's the last session's, and nothing of the page now is
+    /// for it to change.
+    Stale,
+}
+
+/// What became of a send, and what the error line says of it (none clears
+/// it).
+#[derive(Debug, PartialEq)]
+pub struct Outcome {
+    pub posted: Posted,
+    pub words: Option<String>,
+}
+
+impl Outcome {
+    fn new(posted: Posted, words: Option<&str>) -> Self {
+        Outcome {
+            posted,
+            words: words.map(str::to_string),
+        }
+    }
+}
+
+/// What the error line says when Arko didn't say what became of a send.
+const UNKNOWN: &str =
+    "No answer from Arko, so it may have gone. Check the transcript before you send it again.";
+/// What it says of a send the last Arko refused before it started again,
+/// as Arko says it when it refuses one from another feed.
+const RESTARTED: &str = "Not sent, because Arko restarted. Your text is kept.";
+/// What it says when the last Arko took it before it started again.
+const SENT_BEFORE: &str = "Sent before Arko restarted. Your text is kept.";
+
+thread_local! {
+    /// How many sends the page began, which numbers them.
+    static SENDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// One thing the user sends, and what it's sent from: the feed, and the
+/// view for a send that belongs to it. What became of it is for the page
+/// only while the page still shows those, and the error line is the latest
+/// send's.
+#[derive(Clone, Debug)]
+pub struct Sender {
+    id: u64,
+    feed: Option<u64>,
+    /// The view (a worker's, or none for the main transcript), unless what
+    /// it sends is the same in every view.
+    view: Option<Option<String>>,
+}
+
+impl Sender {
+    /// A send of what the view the page shows holds (the message box).
+    pub fn from_view() -> Self {
+        Self::begin(Some(page().worker.get_untracked()))
+    }
+
+    /// A send of what's the same in every view (answers, settings).
+    pub fn from_page() -> Self {
+        Self::begin(None)
+    }
+
+    fn begin(view: Option<Option<String>>) -> Self {
+        let id = SENDS.with(|sends| {
+            sends.set(sends.get() + 1);
+            sends.get()
+        });
+        Sender {
+            id,
+            feed: feed(),
+            view,
+        }
+    }
+
+    /// Numbers it among the page's sends, which a surface's own latest
+    /// send is told by.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Whether it's still in the view it was sent from.
+    fn in_its_view(&self) -> bool {
+        self.view
+            .as_ref()
+            .is_none_or(|view| *view == page().worker.get_untracked())
+    }
+
+    /// Says `words` on the error line, while the line is still this send's:
+    /// no send began since, in the view it was sent from.
+    pub fn say(&self, words: Option<String>) {
+        if SENDS.with(|sends| sends.get()) == self.id && self.in_its_view() {
+            page().error.set(words);
+        }
+    }
+
+    /// Takes what became of it: its words on the error line (`say`), and
+    /// what became of it for the caller's own effects, while the page shows
+    /// the feed and the view it was sent from.
+    pub fn take(&self, outcome: Outcome) -> Option<Posted> {
+        self.say(outcome.words);
+        (feed() == self.feed && self.in_its_view()).then_some(outcome.posted)
+    }
+}
+
+/// `body`, sent from the feed `feed`, which Arko refuses when it isn't its
+/// own.
+fn of_feed(mut body: serde_json::Value, feed: Option<u64>) -> serde_json::Value {
+    if let Some(feed) = feed {
+        body["feed"] = format!("{feed:016x}").into();
+    }
+    body
+}
+
+/// Sends `body`, what the user sent, to `path`, naming the feed `sender`
+/// sends from, and waits for what became of it however long Arko takes. A
+/// session cookie that ended is traded again once.
+pub async fn send(path: &str, body: serde_json::Value, sender: &Sender) -> Outcome {
+    let body = of_feed(body, sender.feed);
+    for attempt in 0..2 {
+        let answer = request("POST", path, Some(body.to_string())).await;
+        if feed() == sender.feed && attempt == 0 && matches!(answer, Some((401, _))) {
+            match login(None).await {
+                Login::Ok => continue,
+                result => {
+                    lock(page(), result);
+                    return Outcome::new(Posted::Kept, None);
+                }
+            }
+        }
+        return outcome(sender.feed, answer);
+    }
+    Outcome::new(Posted::Kept, None)
+}
+
+/// What became of a send from the feed `asked`, by Arko's `answer` (none
+/// when Arko was out of reach). Only an answer that says Arko took it or
+/// refused it says either. Once the page shows another feed it's the last
+/// session's, whatever it says.
+pub(crate) fn outcome(asked: Option<u64>, answer: Option<(u16, String)>) -> Outcome {
+    use crate::protocol::Verdict;
+    let verdict = answer
+        .as_ref()
+        .filter(|(status, _)| *status == 200)
+        .and_then(|(_, text)| serde_json::from_str::<Verdict>(text).ok());
+    if feed() != asked {
+        let words = match verdict {
+            Some(Verdict::Accepted { .. }) => SENT_BEFORE,
+            Some(Verdict::Refused(_)) => RESTARTED,
+            None => UNKNOWN,
+        };
+        return Outcome::new(Posted::Stale, Some(words));
+    }
+    match (verdict, answer) {
+        (Some(Verdict::Accepted { partial, .. }), _) => Outcome {
+            posted: Posted::Taken,
+            words: partial.and_then(|partial| partial.words),
+        },
+        (Some(Verdict::Refused(refusal)), _) => match refusal.confirm {
+            Some(_) => Outcome::new(Posted::Confirm(refusal.words), None),
+            None => Outcome {
+                posted: Posted::Kept,
+                words: Some(refusal.words),
+            },
+        },
+        // (A body Arko can't read, for one Arko couldn't take.)
+        (None, Some((400, text))) => Outcome {
+            posted: Posted::Kept,
+            words: Some(not_sent(400, &text)),
+        },
+        (None, _) => Outcome::new(Posted::Kept, Some(UNKNOWN)),
+    }
 }
 
 fn lock(page: Page, result: Login) {
@@ -579,11 +773,6 @@ pub fn check_stream(page: Page) {
         .set_timeout_with_callback_and_timeout_and_arguments_0(check.unchecked_ref(), PING_WAIT);
 }
 
-/// Whether the store holds the start of the stream that's open.
-pub fn store_is_current() -> bool {
-    CURRENT.with(|current| current.get())
-}
-
 fn stream_source() -> Option<EventSource> {
     STREAM.with(|stream| stream.borrow().as_ref().map(|(source, _)| source.clone()))
 }
@@ -634,7 +823,6 @@ fn connect(page: Page) {
 }
 
 pub fn close_stream() {
-    CURRENT.with(|current| current.set(false));
     STREAM.with(|stream| {
         if let Some((source, _)) = stream.borrow_mut().take() {
             source.close();
@@ -679,6 +867,8 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
         jobs: Vec<&'a RawValue>,
         #[serde(default)]
         status: Option<&'a RawValue>,
+        #[serde(default, borrow)]
+        feed: Option<&'a str>,
     }
     let raw: Raw = serde_json::from_str(data).map_err(|error| error.to_string())?;
     // An item that can't be read is left out, and said, rather than losing
@@ -712,23 +902,18 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
         None => StatusData::default(),
     };
     mark("arko-parsed");
-    let now = js_sys::Date::now();
-    reset_cells(&items, &new_code);
-    STORE.with(|store| store.borrow_mut().reset(items, workers, jobs, now));
-    RETRY.with(|retry| *retry.borrow_mut() = (1000.0, 0, 0));
-    page.skew.set(None);
-    page.status.set(status);
-    page.connection.set(Connection::Live);
-    EVER_LIVE.with(|live| live.set(true));
-    CURRENT.with(|current| current.set(true));
-    page.problem.set(
-        (bad > 0).then(|| format!("{bad} of Arko’s items couldn’t be read, so they’re left out.")),
-    );
-    page.streaming.set(None);
-    page.version.update(|version| *version += 1);
-    page.workers.update(|version| *version += 1);
-    page.jobs.update(|version| *version += 1);
-    worker_changed(None);
+    let reset = Reset {
+        feed: raw.feed.and_then(crate::store::parse_feed),
+        items,
+        workers,
+        jobs,
+        status,
+        new_code,
+        bad,
+    };
+    if take_reset(page, reset, js_sys::Date::now()) {
+        load_commands(page);
+    }
     // The view the history asked for meanwhile, checked against this start.
     if let Ok(state) = window().history().and_then(|history| history.state()) {
         crate::transcript::show_history_entry(page, &state);
@@ -744,12 +929,68 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// What a `reset` brings, read.
+pub(crate) struct Reset {
+    pub feed: Option<u64>,
+    pub items: Vec<ItemData>,
+    pub workers: Vec<WorkerData>,
+    pub jobs: Vec<JobSummary>,
+    pub status: StatusData,
+    /// The items whose code blocks' spans came new.
+    pub new_code: HashSet<u64>,
+    /// How many of Arko's items couldn't be read.
+    pub bad: usize,
+}
+
+/// The page takes a `reset`, come at `now`: the store, the cells, the
+/// status, and what the views follow. Returns whether it's of another feed
+/// than the page had (Arko started again), whose items, questions and
+/// places the page let go of. Asking for the new feed's commands is the
+/// caller's.
+pub(crate) fn take_reset(page: Page, reset: Reset, now: f64) -> bool {
+    let Reset {
+        feed,
+        items,
+        workers,
+        jobs,
+        status,
+        new_code,
+        bad,
+    } = reset;
+    let switched = STORE.with(|store| store.borrow_mut().reset(feed, items, workers, jobs, now));
+    STORE.with(|store| reset_cells(&store.borrow().items, &new_code, switched));
+    if switched {
+        start_feed(page);
+    }
+    RETRY.with(|retry| *retry.borrow_mut() = (1000.0, 0, 0));
+    page.skew.set(None);
+    page.status.set(status);
+    page.connection.set(Connection::Live);
+    EVER_LIVE.with(|live| live.set(true));
+    page.problem.set(
+        (bad > 0).then(|| format!("{bad} of Arko’s items couldn’t be read, so they’re left out.")),
+    );
+    page.streaming.set(None);
+    page.version.update(|version| *version += 1);
+    page.workers.update(|version| *version += 1);
+    page.jobs.update(|version| *version += 1);
+    workers_all_changed();
+    switched
+}
+
 /// The cells of a `reset`'s items. The transcript keys its rows by item, so
 /// a row drawn before the reset keeps the cell it was drawn with: an item
 /// the page had takes the server's version in that cell, and only a new one
-/// gets a cell. `new_code` holds the items whose code blocks' spans came new.
-fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>) {
+/// gets a cell. Items of another feed (`switched`) are others whatever their
+/// IDs, so each gets a cell of its own. `new_code` holds the items whose
+/// code blocks' spans came new.
+fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>, switched: bool) {
     let mut kept = CELLS.with(|cells| std::mem::take(&mut *cells.borrow_mut()));
+    if switched {
+        for (id, _) in kept.drain() {
+            streaming_forget(id);
+        }
+    }
     let cells = items
         .iter()
         .map(|item| {
@@ -763,7 +1004,25 @@ fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>) {
             (item.id, cell)
         })
         .collect();
+    // The items the history let go of.
+    for id in kept.into_keys() {
+        streaming_forget(id);
+    }
     CELLS.with(|all| *all.borrow_mut() = cells);
+}
+
+/// The stream started another feed (Arko started again). The page lets go
+/// of what it kept of the last one's items and questions, and opens at the
+/// new one's latest.
+fn start_feed(page: Page) {
+    page.seen.set(STORE.with(|store| store.borrow().newest()));
+    page.grown.update(HashSet::clear);
+    page.pinned.set(true);
+    page.ask.clear();
+    page.image.set(None);
+    // The new Arko may be another version, with other commands.
+    page.commands.set(None);
+    page.feeds.update(|feeds| *feeds += 1);
 }
 
 /// Gives a cell the item as Arko has it now, setting only what changed, and
@@ -808,6 +1067,7 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
                 cells.insert(item.id, new_cell(&item));
                 for id in trimmed {
                     cells.remove(&id);
+                    streaming_forget(id);
                 }
             });
         }
@@ -856,19 +1116,25 @@ fn on_change(page: Page, data: &str) -> Result<(), String> {
     let mut item: ItemData = parse(data)?;
     let code = std::mem::take(&mut item.code);
     crate::markdown::remember(&code);
-    let now = js_sys::Date::now();
-    if !STORE.with(|store| store.borrow_mut().change(item.clone(), now)) {
-        return Ok(());
-    }
-    if let Some(cell) = cell(item.id) {
-        refresh(&cell, item, !code.is_empty());
-    }
-    // A call's status moves a Messages count.
-    if page.view.get_untracked() == View::Messages {
-        page.version.update(|version| *version += 1);
-    }
+    take_change(page, item, !code.is_empty(), js_sys::Date::now());
     crate::scroll::follow();
     Ok(())
+}
+
+/// The page takes a `change` of `item`, come at `now`, whose code blocks'
+/// spans came new (`code`): the store, its cell, and the rows of the view
+/// when it moves them.
+pub(crate) fn take_change(page: Page, item: ItemData, code: bool, now: f64) {
+    let Some(old) = STORE.with(|store| store.borrow_mut().change(item.clone(), now)) else {
+        return;
+    };
+    let moves = crate::layout::moves_rows(&old, &item, page.view.get_untracked());
+    if let Some(cell) = cell(item.id) {
+        refresh(&cell, item, code);
+    }
+    if moves {
+        page.version.update(|version| *version += 1);
+    }
 }
 
 /// The code blocks a text finished as it streams, highlighted.
@@ -885,6 +1151,7 @@ fn on_remove(page: Page, data: &str) -> Result<(), String> {
     let removed: Removed = parse(data)?;
     if STORE.with(|store| store.borrow_mut().remove(removed.id)) {
         CELLS.with(|cells| cells.borrow_mut().remove(&removed.id));
+        streaming_forget(removed.id);
         page.version.update(|version| *version += 1);
     }
     Ok(())
@@ -894,7 +1161,7 @@ fn on_worker(page: Page, data: &str) -> Result<(), String> {
     let summary: WorkerData = parse(data)?;
     let id = summary.id.clone();
     STORE.with(|store| store.borrow_mut().worker(summary));
-    worker_changed(Some(&id));
+    worker_changed(&id);
     page.workers.update(|version| *version += 1);
     Ok(())
 }
@@ -923,7 +1190,7 @@ pub fn mark(name: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::protocol::CallStatus;
     use crate::store::MAIN;
@@ -938,7 +1205,7 @@ mod tests {
         let mut wait = item(5, Kind::Call, MAIN, "wait_for_agents");
         wait.status = Some(CallStatus::Running);
         let mut text = item(4, Kind::Text, MAIN, "Waiting");
-        reset_cells(&[text.clone(), wait.clone()], &none);
+        reset_cells(&[text.clone(), wait.clone()], &none, false);
         // The rows keep the cells they were drawn with.
         let drawn_wait = cell(5).unwrap();
         let drawn_text = cell(4).unwrap();
@@ -949,7 +1216,11 @@ mod tests {
         let mut shell = item(6, Kind::Call, MAIN, "cargo build");
         shell.status = Some(CallStatus::Running);
         let text_code = HashSet::from([4]);
-        reset_cells(&[text.clone(), wait.clone(), shell.clone()], &text_code);
+        reset_cells(
+            &[text.clone(), wait.clone(), shell.clone()],
+            &text_code,
+            false,
+        );
         assert_eq!(drawn_wait.data.get_untracked(), wait);
         assert_eq!(drawn_text.text.get_untracked(), text.text);
         assert_eq!(drawn_text.data.get_untracked(), text);
@@ -959,8 +1230,303 @@ mod tests {
         assert_eq!(drawn_wait.code.get_untracked(), 0);
 
         // An item the history no longer has loses its cell.
-        reset_cells(std::slice::from_ref(&shell), &none);
+        reset_cells(std::slice::from_ref(&shell), &none, false);
         assert!(cell(5).is_none() && cell(4).is_none());
         assert_eq!(cell(6).unwrap().data.get_untracked(), shell);
+    }
+
+    /// The workers' triggers are those of the workers something shows, however
+    /// many came and went over resets, and a view that shows one still hears
+    /// its changes.
+    #[test]
+    fn worker_triggers_stay_bounded_over_resets() {
+        let owner = Owner::new();
+        owner.with(|| {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let runs = Arc::new(AtomicUsize::new(0));
+            let shown = Memo::new({
+                let runs = runs.clone();
+                move |_| {
+                    track_worker("r0");
+                    runs.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            shown.get();
+            for at in 1..=50 {
+                // A row of another worker, drawn then gone.
+                let gone = Memo::new(move |_| track_worker(&format!("r{at}")));
+                gone.get();
+                gone.dispose();
+                workers_all_changed();
+                shown.get();
+            }
+            let tracked: Vec<String> =
+                WORKER_CHANGED.with(|triggers| triggers.borrow().keys().cloned().collect());
+            assert_eq!(tracked, ["r0"]);
+            let before = runs.load(Ordering::Relaxed);
+            worker_changed("r0");
+            shown.get();
+            assert_eq!(runs.load(Ordering::Relaxed), before + 1);
+        });
+    }
+
+    /// A `reset` of `feed` with `items` and `workers`.
+    pub fn reset_of(feed: u64, items: Vec<ItemData>, workers: Vec<WorkerData>) -> Reset {
+        Reset {
+            feed: Some(feed),
+            items,
+            workers,
+            jobs: Vec::new(),
+            status: StatusData::default(),
+            new_code: HashSet::new(),
+            bad: 0,
+        }
+    }
+
+    /// A tab that opens the link of an Arko started again gets that feed's
+    /// items, whose IDs the last one gave too. Each gets a cell of its own,
+    /// and a row drawn before keeps what it showed until it goes. The same
+    /// feed again (a phone back from sleep) keeps the cells.
+    #[test]
+    fn a_tab_switched_to_a_restarted_arko_draws_its_items_new() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let text = item(1, Kind::Text, MAIN, "Hello");
+            let call = item(2, Kind::Call, MAIN, "ls");
+            let a = vec![text.clone(), call.clone()];
+            assert!(!take_reset(page, reset_of(0xa, a, Vec::new()), 0.0));
+            let drawn = (cell(1).unwrap(), cell(2).unwrap());
+            let mut longer = text.clone();
+            longer.text.push_str(" again");
+            let again = vec![longer.clone(), call.clone()];
+            assert!(!take_reset(page, reset_of(0xa, again, Vec::new()), 0.0));
+            assert_eq!(drawn.0.data.get_untracked(), longer);
+
+            let b_call = item(1, Kind::Call, MAIN, "cargo test");
+            let b_user = item(2, Kind::User, MAIN, "Hi");
+            let b = vec![b_call.clone(), b_user.clone()];
+            assert!(take_reset(page, reset_of(0xb, b, Vec::new()), 0.0));
+            assert_eq!(cell(1).unwrap().data.get_untracked(), b_call);
+            assert_eq!(cell(2).unwrap().data.get_untracked(), b_user);
+            assert_eq!(drawn.0.data.get_untracked(), longer);
+            assert_eq!(drawn.1.data.get_untracked(), call);
+            assert_eq!(feed(), Some(0xb));
+        });
+    }
+
+    /// The same feed again keeps what the page has of its questions and its
+    /// reader's place. Another feed's start lets go of them, opens at the
+    /// latest, asks for its commands again, and moves `feeds`, which the
+    /// approval tray, the Continue question and the settings follow.
+    #[test]
+    fn a_new_feed_lets_go_of_the_last_ones_questions_and_places() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let items = || {
+                vec![
+                    item(1, Kind::User, MAIN, "go"),
+                    item(2, Kind::Text, MAIN, "ok"),
+                ]
+            };
+            take_reset(page, reset_of(0xa, items(), Vec::new()), 0.0);
+            let ask = page.ask;
+            let kept = || {
+                ask.attached.set(vec!["q1".into()]);
+                ask.seen.set(vec!["q1".into()]);
+                ask.drafts.update(|drafts| {
+                    drafts.insert("q1".into(), Default::default());
+                });
+                ask.answering.set(vec!["q1".into()]);
+                ask.focused.set(Some("q1".into()));
+                ask.panel.set(true);
+                ask.note.set(Some("Sent.".into()));
+                page.seen.set(1);
+                page.grown.set(HashSet::from([2]));
+                page.pinned.set(false);
+                page.commands.set(Some(Vec::new()));
+            };
+            kept();
+            take_reset(page, reset_of(0xa, items(), Vec::new()), 0.0);
+            assert_eq!(page.feeds.get_untracked(), 0);
+            assert_eq!(ask.attached.get_untracked(), ["q1"]);
+            assert_eq!(ask.seen.get_untracked(), ["q1"]);
+            assert!(
+                ask.drafts
+                    .with_untracked(|drafts| drafts.contains_key("q1"))
+            );
+            assert!(ask.panel.get_untracked() && !page.pinned.get_untracked());
+            assert_eq!(page.grown.get_untracked(), HashSet::from([2]));
+            assert!(page.commands.get_untracked().is_some());
+
+            assert!(take_reset(page, reset_of(0xb, items(), Vec::new()), 0.0));
+            assert_eq!(page.feeds.get_untracked(), 1);
+            assert!(ask.attached.get_untracked().is_empty());
+            assert!(ask.seen.get_untracked().is_empty());
+            assert!(ask.drafts.with_untracked(HashMap::is_empty));
+            assert!(ask.answering.get_untracked().is_empty());
+            assert_eq!(ask.focused.get_untracked(), None);
+            assert!(!ask.panel.get_untracked());
+            assert_eq!(ask.note.get_untracked(), None);
+            assert_eq!(page.seen.get_untracked(), 2);
+            assert!(page.grown.get_untracked().is_empty());
+            assert!(page.pinned.get_untracked());
+            assert_eq!(page.commands.get_untracked(), None);
+        });
+    }
+
+    /// Answers for tests: Arko took it, Arko asks first, and Arko refused it.
+    fn accepted() -> Option<(u16, String)> {
+        let verdict = crate::protocol::Verdict::accepted(crate::protocol::Delivery::Turn, Some(3));
+        Some((200, serde_json::to_string(&verdict).unwrap()))
+    }
+
+    fn refused(confirm: bool) -> Option<(u16, String)> {
+        use crate::protocol::{Confirm, Refusal, RefusalKind, Verdict};
+        let mut verdict = Verdict::refused(
+            RefusalKind::Uncached {
+                worker: "r1".into(),
+            },
+            "Continue r1?",
+        );
+        if confirm && let Verdict::Refused(Refusal { confirm, .. }) = &mut verdict {
+            *confirm = Some(Confirm::ContinueUncached);
+        }
+        Some((200, serde_json::to_string(&verdict).unwrap()))
+    }
+
+    /// What an answer says, for the feed the page shows and for the last
+    /// one (Arko started again). Only an answer that says Arko took it or
+    /// refused it says either, so no answer, or one Arko didn't give, is
+    /// unknown for both.
+    #[test]
+    fn an_answer_says_what_became_of_a_send_only_when_arko_said() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let said = |posted, words: Option<&str>| Outcome::new(posted, words);
+            take_reset(page, reset_of(0xa, Vec::new(), Vec::new()), 0.0);
+            assert_eq!(outcome(Some(0xa), accepted()), said(Posted::Taken, None));
+            assert_eq!(
+                outcome(Some(0xa), refused(true)),
+                said(Posted::Confirm("Continue r1?".into()), None)
+            );
+            assert_eq!(
+                outcome(Some(0xa), refused(false)),
+                said(Posted::Kept, Some("Continue r1?"))
+            );
+            assert_eq!(outcome(Some(0xa), None), said(Posted::Kept, Some(UNKNOWN)));
+            let proxy = Some((502, String::new()));
+            assert_eq!(
+                outcome(Some(0xa), proxy.clone()),
+                said(Posted::Kept, Some(UNKNOWN))
+            );
+
+            take_reset(page, reset_of(0xb, Vec::new(), Vec::new()), 0.0);
+            assert_eq!(
+                outcome(Some(0xa), accepted()),
+                said(Posted::Stale, Some(SENT_BEFORE))
+            );
+            assert_eq!(
+                outcome(Some(0xa), refused(true)),
+                said(Posted::Stale, Some(RESTARTED))
+            );
+            assert_eq!(outcome(Some(0xa), None), said(Posted::Stale, Some(UNKNOWN)));
+            let failed = Some((500, String::new()));
+            assert_eq!(
+                outcome(Some(0xa), failed),
+                said(Posted::Stale, Some(UNKNOWN))
+            );
+        });
+    }
+
+    /// What became of a send is the page's only while it owns it. The error
+    /// line is the latest send's, in the view it was sent from, so an
+    /// earlier send's answer that comes later, or a wait's "Still sending",
+    /// leaves a newer one's words. A send from a view stops being the
+    /// page's in another view, and any send in another feed.
+    #[test]
+    fn a_sends_outcome_is_the_pages_only_while_it_owns_it() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            take_reset(page, reset_of(0xa, Vec::new(), Vec::new()), 0.0);
+            let kept = |words: &str| Outcome::new(Posted::Kept, Some(words));
+            let error = || page.error.get_untracked();
+
+            // Two sends, answered out of order.
+            let first = Sender::from_view();
+            let second = Sender::from_view();
+            assert_eq!(second.take(kept("Second.")), Some(Posted::Kept));
+            assert_eq!(first.take(kept("First.")), Some(Posted::Kept));
+            assert_eq!(error().as_deref(), Some("Second."));
+            // The first one's wait, and the second's while an answer began.
+            first.say(Some("Still sending.".into()));
+            let answer = Sender::from_page();
+            second.say(Some("Still sending.".into()));
+            assert_eq!(error().as_deref(), Some("Second."));
+            answer.say(None);
+            assert_eq!(error(), None);
+
+            // Another view: the message box's send is no longer the page's,
+            // and an answer's still is.
+            let message = Sender::from_view();
+            page.worker.set(Some("r1".into()));
+            assert_eq!(message.take(kept("Not sent.")), None);
+            assert_eq!(error(), None);
+            let answer = Sender::from_page();
+            assert_eq!(answer.take(kept("Not open.")), Some(Posted::Kept));
+            assert_eq!(error().as_deref(), Some("Not open."));
+            page.worker.set(None);
+
+            // Arko started again: nothing of the page is its own, and the
+            // error line says what's known.
+            let message = Sender::from_view();
+            take_reset(page, reset_of(0xb, Vec::new(), Vec::new()), 0.0);
+            assert_eq!(message.take(outcome(Some(0xa), None)), None);
+            assert_eq!(error().as_deref(), Some(UNKNOWN));
+        });
+    }
+
+    /// A text's row drawn again (its item became another kind) hears when
+    /// its text stops streaming, though the row it took the place of went
+    /// after it was drawn. Once the page lets go of the item, nothing hears
+    /// of it.
+    #[test]
+    fn a_row_drawn_again_hears_whether_it_streams() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let text = item(5, Kind::Text, MAIN, "Done");
+            take_reset(page, reset_of(0xa, vec![text], Vec::new()), 0.0);
+            page.streaming.set(Some(5));
+            crate::testing::run_effects();
+            let row = || {
+                let row = Owner::new();
+                let streams = row.with(|| streams(5));
+                assert!(streams.get());
+                (row, streams)
+            };
+            let (old, _) = row();
+            let (_new, again) = row();
+            old.cleanup();
+            page.streaming.set(None);
+            crate::testing::run_effects();
+            assert!(!again.get());
+            page.streaming.set(Some(5));
+            crate::testing::run_effects();
+            assert!(again.get());
+
+            // The history let go of item 5, so what hears of it is no more.
+            page.streaming.set(None);
+            crate::testing::run_effects();
+            assert!(!again.get());
+            take_reset(page, reset_of(0xa, Vec::new(), Vec::new()), 0.0);
+            page.streaming.set(Some(5));
+            crate::testing::run_effects();
+            assert!(!again.get());
+        });
     }
 }

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use leptos::prelude::*;
 use lucide_leptos::{ArrowDown, ChevronRight};
 
-use crate::app::{Page, RowCell, STORE, cell, page, post, store_is_current, track_worker};
+use crate::app::{Page, RowCell, STORE, cell, feed, page, post, track_worker};
 use crate::copy::CopyButton;
 use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
@@ -20,13 +20,7 @@ pub fn Transcript() -> impl IntoView {
     let page = page();
     let log: NodeRef<leptos::html::Main> = NodeRef::new();
     log.on_load(move |log| scroll::attach(log.into(), page.pinned));
-    // The rows of the view, without "Working…".
-    let laid_out = Memo::new(move |_| {
-        page.version.track();
-        let view = page.view.get();
-        let worker = page.worker.get();
-        STORE.with(|store| layout::layout(&store.borrow().items, view, worker.as_deref()))
-    });
+    let laid_out = laid_out(page.version, page.view, page.worker);
     // What shows the agent is under way.
     let motion = Memo::new(move |_| {
         page.version.track();
@@ -52,7 +46,8 @@ pub fn Transcript() -> impl IntoView {
     });
     let rows = Memo::new(move |_| {
         let working = motion.get().1;
-        STORE.with(|store| layout::with_working(laid_out.get(), working, &store.borrow()))
+        let (feed, rows) = laid_out.get();
+        STORE.with(|store| (feed, layout::with_working(rows, working, &store.borrow())))
     });
     let thinking = Memo::new(move |_| motion.get().0);
     // The newest item the reader saw, while at the bottom.
@@ -64,7 +59,7 @@ pub fn Transcript() -> impl IntoView {
         }
     });
     let jump_label = move || {
-        rows.with(|rows| {
+        rows.with(|(_, rows)| {
             page.grown.with(|grown| {
                 STORE
                     .with(|store| layout::jump_label(rows, &store.borrow(), page.seen.get(), grown))
@@ -72,7 +67,9 @@ pub fn Transcript() -> impl IntoView {
         })
     };
     let empty = move || {
-        if !rows.with(Vec::is_empty) || page.connection.get() != words::Connection::Live {
+        if !rows.with(|(_, rows)| rows.is_empty())
+            || page.connection.get() != words::Connection::Live
+        {
             return None;
         }
         Some(match page.worker.get() {
@@ -99,12 +96,12 @@ pub fn Transcript() -> impl IntoView {
             <main id="log" class="log" class:pinned=move || page.pinned.get() aria-label="Transcript" node_ref=log on:scroll=move |_| scroll::on_scroll()>
                 <div id="rows" class="column rows">
                     <For
-                        each=move || rows.get()
-                        key=|row| match row {
-                            Row::Count { count, .. } => format!("{}:{}:{}:{}", row.key(), count.calls, count.failed, count.running),
-                            _ => row.key(),
+                        each=move || {
+                            let (feed, rows) = rows.get();
+                            rows.into_iter().map(move |row| (feed, row))
                         }
-                        children=move |row| row_view(row, thinking)
+                        key=|(feed, row)| row_key(*feed, row)
+                        children=move |(_, row)| row_view(row, thinking)
                     />
                 </div>
                 <p class="empty">{empty}</p>
@@ -124,6 +121,44 @@ pub fn Transcript() -> impl IntoView {
     }
 }
 
+/// The rows of the view, without "Working…", and the feed they're of, laid
+/// out again when `version` moves.
+fn laid_out(
+    version: RwSignal<u64>,
+    view: RwSignal<View>,
+    worker: RwSignal<Option<String>>,
+) -> Memo<(Option<u64>, Vec<Row>)> {
+    Memo::new(move |_| {
+        version.track();
+        let view = view.get();
+        let worker = worker.get();
+        STORE.with(|store| {
+            let store = store.borrow();
+            let rows = layout::layout(&store.items, view, worker.as_deref());
+            (store.feed, rows)
+        })
+    })
+}
+
+/// A row's key in the transcript: the feed it's of, as another feed's
+/// item 7 is another item, its identity, an item's kind, which decides how
+/// its row is drawn (a text becomes the reply), and a count's numbers,
+/// which its line shows.
+fn row_key(feed: Option<u64>, row: &Row) -> (Option<u64>, String) {
+    let key = match row {
+        Row::Item(_, kind) => format!("{}:{kind:?}", row.key()),
+        Row::Count { count, .. } => format!(
+            "{}:{}:{}:{}",
+            row.key(),
+            count.calls,
+            count.failed,
+            count.running
+        ),
+        _ => row.key(),
+    };
+    (feed, key)
+}
+
 fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
     match row {
         Row::Working => view! {
@@ -133,7 +168,7 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
         }
         .into_any(),
         Row::Count { id, count, .. } => count_row(id, count),
-        Row::Item(id) => match cell(id) {
+        Row::Item(id, _) => match cell(id) {
             Some(cell) => item_row(id, cell.for_row(), thinking),
             None => ().into_any(),
         },
@@ -545,8 +580,19 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
 }
 
 thread_local! {
-    /// Where the reader was in the main transcript, to come back to.
-    static MAIN_PLACE: std::cell::Cell<Option<(u64, f64)>> = const { std::cell::Cell::new(None) };
+    /// Where the reader was in the main transcript, to come back to, and the
+    /// feed it's a place among the rows of.
+    static MAIN_PLACE: std::cell::Cell<Option<(Option<u64>, (u64, f64))>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Where the reader was in the main transcript of `feed`, taken to go back
+/// to. A place of another feed is among rows that are gone.
+fn take_main_place(feed: Option<u64>) -> Option<(u64, f64)> {
+    MAIN_PLACE
+        .with(|place| place.take())
+        .filter(|(of, _)| *of == feed)
+        .map(|(_, place)| place)
 }
 
 /// Shows the worker `id`'s own transcript (none for the main one) in a new
@@ -557,7 +603,7 @@ pub fn show_worker(page: Page, id: Option<String>) {
         return;
     }
     let entry = Entry {
-        session: id.is_some().then(|| session_of(page)),
+        feed: id.as_ref().and_then(|_| feed()),
         worker: id.clone(),
     };
     if let Ok(history) = window().history() {
@@ -569,8 +615,8 @@ pub fn show_worker(page: Page, id: Option<String>) {
 /// Shows the view of the history entry that Back or Forward reached, whose
 /// state is `state`, and again for the entry shown once the stream starts
 /// (over). Until then, a worker's entry shows that worker. Once it has, a
-/// worker of another session, or one gone, shows the main transcript, and
-/// the entry says so from then on.
+/// worker of another feed, or one gone, shows the main transcript, and the
+/// entry says so from then on.
 pub fn show_history_entry(page: Page, state: &wasm_bindgen::JsValue) {
     let text = |name: &str| {
         js_sys::Reflect::get(state, &name.into())
@@ -579,13 +625,9 @@ pub fn show_history_entry(page: Page, state: &wasm_bindgen::JsValue) {
     };
     let entry = Entry {
         worker: text("worker"),
-        session: text("session"),
+        feed: text("feed").as_deref().and_then(crate::store::parse_feed),
     };
-    let shown = STORE.with(|store| {
-        store
-            .borrow()
-            .entry_view(&entry, &session_of(page), store_is_current())
-    });
+    let shown = STORE.with(|store| store.borrow().entry_view(&entry));
     if shown != entry.worker
         && let Ok(history) = window().history()
     {
@@ -603,16 +645,10 @@ pub fn history_state(entry: &Entry) -> wasm_bindgen::JsValue {
     };
     let state = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&state, &"worker".into(), &worker.into());
-    if let Some(session) = &entry.session {
-        let _ = js_sys::Reflect::set(&state, &"session".into(), &session.into());
+    if let Some(feed) = entry.feed {
+        let _ = js_sys::Reflect::set(&state, &"feed".into(), &format!("{feed:016x}").into());
     }
     state.into()
-}
-
-/// The session the page follows, as its status names it.
-fn session_of(page: Page) -> String {
-    page.status
-        .with_untracked(|status| status.info.session.clone())
 }
 
 /// Shows the worker `id`'s own transcript (none for the main one). A
@@ -620,16 +656,13 @@ fn session_of(page: Page) -> String {
 /// to where the reader was.
 fn switch_view(page: Page, id: Option<String>) {
     if page.worker.get_untracked().is_none() {
-        MAIN_PLACE.with(|place| {
-            place.set(if page.pinned.get_untracked() {
-                None
-            } else {
-                scroll::first_visible()
-            })
-        });
+        let place = (!page.pinned.get_untracked())
+            .then(scroll::first_visible)
+            .flatten();
+        MAIN_PLACE.with(|saved| saved.set(place.map(|place| (feed(), place))));
     }
     let back_to = if id.is_none() {
-        MAIN_PLACE.with(|place| place.take())
+        take_main_place(feed())
     } else {
         None
     };
@@ -657,8 +690,7 @@ fn Md(
     #[prop(optional)] class: &'static str,
 ) -> impl IntoView {
     // Whether it streams, which this text alone hears of.
-    let streaming = Memo::new(move |_| crate::app::streaming_is(id));
-    on_cleanup(move || crate::app::streaming_forget(id));
+    let streaming = crate::app::streams(id);
     let mut blocks = Blocks::default();
     let (done, open) = text.with_untracked(|text| blocks.update(text, streaming.get_untracked()));
     // Each finished block: its place, how often it was painted, its HTML.
@@ -739,6 +771,65 @@ pub fn item(id: u64) -> Option<ItemData> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another feed's rows are other rows, whatever their items' IDs.
+    #[test]
+    fn a_rows_key_names_its_feed() {
+        let row = Row::Item(4, Kind::Text);
+        assert_eq!(row_key(Some(1), &row), row_key(Some(1), &row));
+        assert_ne!(row_key(Some(1), &row), row_key(Some(2), &row));
+    }
+
+    /// The reader comes back to their place in the main transcript of the
+    /// feed it was in, and a new feed's opens at its latest.
+    #[test]
+    fn a_place_of_another_feed_isnt_gone_back_to() {
+        MAIN_PLACE.with(|place| place.set(Some((Some(1), (7, -3.5)))));
+        assert_eq!(take_main_place(Some(1)), Some((7, -3.5)));
+        assert_eq!(take_main_place(Some(1)), None);
+        MAIN_PLACE.with(|place| place.set(Some((Some(1), (7, -3.5)))));
+        assert_eq!(take_main_place(Some(2)), None);
+    }
+
+    /// A text that becomes the reply (Arko's `change`, with no new item) is
+    /// laid out again in the Full view, and its row's key changes, so it's
+    /// drawn again as a reply. More text alone is drawn in place.
+    #[test]
+    fn a_text_that_becomes_a_reply_is_laid_out_again_in_full() {
+        use crate::app::{take_change, take_reset, tests::reset_of};
+        use crate::store::tests::item;
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let rows = laid_out(page.version, page.view, page.worker);
+            let keys = move || {
+                rows.with(|(feed, rows)| {
+                    rows.iter()
+                        .map(|row| row_key(*feed, row))
+                        .collect::<Vec<_>>()
+                })
+            };
+            let text = item(4, Kind::Text, MAIN, "Done.");
+            let items = vec![item(3, Kind::User, MAIN, "go"), text.clone()];
+            take_reset(page, reset_of(1, items, Vec::new()), 0.0);
+            let before = keys();
+
+            let mut longer = text;
+            longer.text.push_str(" Mostly.");
+            let version = page.version.get_untracked();
+            take_change(page, longer.clone(), false, 1.0);
+            assert_eq!(page.version.get_untracked(), version);
+            assert_eq!(keys(), before);
+            let reply = ItemData {
+                kind: Kind::Reply,
+                ..longer
+            };
+            take_change(page, reply, false, 2.0);
+            let after = keys();
+            assert_eq!(after[0], before[0]);
+            assert_ne!(after[1], before[1]);
+        });
+    }
 
     /// A request Arko didn't take frees its button, one it took keeps it
     /// busy, and a button whose row went meanwhile is left alone.

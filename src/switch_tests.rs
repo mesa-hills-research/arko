@@ -820,6 +820,77 @@ async fn messages_during_the_report_are_refused_and_controls_still_work() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// While the old model writes its report, a client's message is refused
+/// as waiting for the report, with nothing in the transcript, and its
+/// command goes. The switch itself is accepted once it was made, after the
+/// report was skipped.
+#[tokio::test]
+async fn a_clients_sends_during_the_report_get_their_verdicts() {
+    use crate::engine::Request;
+    use crate::remote::{RefusalKind, Verdict};
+    let bodies: Bodies = Arc::default();
+    let release = Arc::new(Notify::new());
+    let server = ModelServer::start(held_report_model(bodies.clone(), release)).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let (requests, received) = mpsc::unbounded_channel();
+    inputs.requests = received;
+    let send = move |text: &str| {
+        let (reply, verdict) = oneshot::channel();
+        let input = Input::Message(crate::ui::Message {
+            text: text.into(),
+            ..Default::default()
+        });
+        requests.send(Request::Send { input, reply }).unwrap();
+        verdict
+    };
+    let feed = harness.feed.clone();
+    let page = harness.remote_actions.clone();
+    let client = tokio::spawn(async move {
+        let first = send("First.").await.unwrap();
+        assert!(matches!(first, Verdict::Accepted { .. }), "{first:?}");
+        until(|| has(&feed, "reply", "Done.", "")).await;
+        let mut switch = send("/model sol");
+        until(|| lines(&feed).contains("Asking gpt-6-luna for a report")).await;
+        match send("Hello from the app.").await.unwrap() {
+            Verdict::Refused(refusal) => {
+                assert_eq!(refusal.kind, RefusalKind::Reporting);
+                assert_eq!(refusal.words, crate::switch::REPORTING);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            send("/workers").await.unwrap(),
+            Verdict::Accepted { .. }
+        ));
+        assert!(!lines(&feed).contains("Hello from the app."));
+        // The switch isn't made yet.
+        assert!(switch.try_recv().is_err());
+        page.send(Action::Stop).unwrap();
+        let made = tokio::time::timeout(Duration::from_secs(30), switch)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(made, Verdict::Accepted { .. }), "{made:?}");
+        assert!(lines(&feed).contains("Skipped gpt-6-luna's report."));
+        sender.send(Input::Eof).unwrap();
+        sender
+    });
+    tokio::time::timeout(Duration::from_secs(60), harness.repl(&mut inputs))
+        .await
+        .unwrap();
+    let _sender = client.await.unwrap();
+    assert!(
+        bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|body| !body.contains("Hello from the app.")),
+        "it went to no model"
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// Quitting while the old model writes its report stops it and quits.
 #[tokio::test]
 async fn quitting_during_the_report_quits() {

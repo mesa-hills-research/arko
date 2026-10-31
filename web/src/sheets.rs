@@ -9,7 +9,10 @@ use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
-use crate::app::{STORE, Sheet, get_json, local_get, local_set, on_item, page, post};
+use crate::app::{
+    Posted, STORE, Sender, Sheet, feed, get_json, local_get, local_set, on_item, page,
+    send as send_to_arko,
+};
 use crate::composer::gloo_wait;
 use crate::layout::View;
 use crate::protocol::{Delivery, ItemData, Kind, Level, LinkData, SettingsData};
@@ -61,6 +64,7 @@ fn Dialog(which: Sheet, title: &'static str, children: ChildrenFn) -> impl IntoV
 #[component]
 pub fn WorkersSheet() -> impl IntoView {
     let page = page();
+    // Each worker with its feed, as another feed's r1 is another worker.
     let order = move || {
         page.workers.track();
         STORE.with(|store| {
@@ -68,7 +72,7 @@ pub fn WorkersSheet() -> impl IntoView {
             let list = store.worker_list();
             words::sheet_order(&list)
                 .into_iter()
-                .map(|summary| summary.id.clone())
+                .map(|summary| (store.feed, summary.id.clone()))
                 .collect::<Vec<_>>()
         })
     };
@@ -79,9 +83,7 @@ pub fn WorkersSheet() -> impl IntoView {
                     <span class="wtitle">"Main agent"</span>
                     <span class="wmeta">{move || if page.worker.get().is_some() { "Back to the main transcript" } else { "Shown now" }}</span>
                 </button>
-                <For each=order key=|id| id.clone() let:id>
-                    <WorkerCard id=id listed=true />
-                </For>
+                <For each=order key=|worker| worker.clone() children=|(_, id)| view! { <WorkerCard id=id listed=true /> } />
             </div>
         </Dialog>
     }
@@ -114,18 +116,20 @@ thread_local! {
 const ANSWER_WAIT_MS: i32 = 3000;
 
 /// What the settings show meanwhile: the setting's key and the value it's
-/// turning to.
+/// turning to. And what Arko said of a setting's command, by the feed it
+/// was said in and the setting.
 #[derive(Clone, Copy)]
 struct Settings {
     shows: RwSignal<Option<(&'static str, String)>>,
-    notes: RwSignal<HashMap<&'static str, (String, bool)>>,
+    notes: RwSignal<HashMap<(Option<u64>, &'static str), (String, bool)>>,
 }
 
 impl Settings {
     fn note(&self, key: &'static str, text: String, error: bool) {
+        let key = (feed(), key);
         self.notes.update(|notes| {
             if text.is_empty() {
-                notes.remove(key);
+                notes.remove(&key);
             } else {
                 notes.insert(key, (text, error));
             }
@@ -166,6 +170,16 @@ impl Settings {
         } else {
             self.note(change.note, said, true);
         }
+    }
+
+    /// The command waiting was the last session's (Arko started again), so
+    /// it waits no more, and the settings show the new one's.
+    fn forget(&self) {
+        if let Some(change) = PENDING.with(|pending| pending.borrow_mut().take()) {
+            window().clear_timeout_with_handle(change.timer);
+            window().clear_timeout_with_handle(change.wait);
+        }
+        self.shows.set(None);
     }
 
     /// What Arko says after the settings' command, for the settings.
@@ -243,8 +257,17 @@ impl Settings {
             })
         });
         self.shows.set(shows);
+        let sender = Sender::from_page();
         spawn_local(async move {
-            if !post("/api/message", serde_json::json!({ "text": text })).await {
+            let body = serde_json::json!({ "text": text });
+            let outcome = send_to_arko("/api/message", body, &sender).await;
+            let why = outcome.words.clone();
+            // (The last session's command, which waits no more, says
+            // nothing of the new one's settings.)
+            if matches!(
+                sender.take(outcome),
+                Some(Posted::Kept | Posted::Confirm(_))
+            ) {
                 let mine = PENDING.with(|pending| {
                     let mut pending = pending.borrow_mut();
                     pending.take_if(|change| change.id == id)
@@ -252,11 +275,7 @@ impl Settings {
                 let Some(change) = mine else { return };
                 window().clear_timeout_with_handle(change.timer);
                 settings.shows.set(None);
-                let why = page()
-                    .error
-                    .get_untracked()
-                    .unwrap_or_else(|| "Not sent.".into());
-                settings.note(note, why, true);
+                settings.note(note, why.unwrap_or_else(|| "Not sent.".into()), true);
             }
         });
     }
@@ -340,7 +359,7 @@ fn Note(key: &'static str) -> impl IntoView {
     move || {
         settings
             .notes
-            .with(|notes| notes.get(key).cloned())
+            .with(|notes| notes.get(&(feed(), key)).cloned())
             .map(|(text, error)| {
                 view! {
                     <p class="note" class:error=error>{text}</p>
@@ -436,6 +455,12 @@ pub fn SettingsSheet() -> impl IntoView {
     };
     provide_context(settings);
     on_item(move |item| settings.heard(item));
+    Effect::new(move |seen: Option<()>| {
+        page.feeds.track();
+        if seen.is_some() {
+            settings.forget();
+        }
+    });
     // A command that took shows in the status.
     Effect::new(move |_| {
         page.status.with(|status| {
@@ -453,7 +478,12 @@ pub fn SettingsSheet() -> impl IntoView {
     });
     view! {
         <Dialog which=Sheet::Settings title="Settings">
-            <SettingsBody />
+            // Drawn again for another feed (Arko started again), without the
+            // last one's links and questions. The theme and the view stay.
+            {move || {
+                page.feeds.track();
+                view! { <SettingsBody /> }
+            }}
         </Dialog>
     }
 }
@@ -473,7 +503,8 @@ fn SettingsBody() -> impl IntoView {
     let whose = RwSignal::new(String::new());
     let links = RwSignal::new(None::<Vec<LinkData>>);
     spawn_local(async move {
-        links.set(get_json::<Vec<LinkData>>("/api/links", None).await);
+        // (The sheet may be gone by then.)
+        links.try_set(get_json::<Vec<LinkData>>("/api/links", None).await);
     });
     let cc = move || {
         page.status.with(|status| {

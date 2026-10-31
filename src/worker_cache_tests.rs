@@ -313,11 +313,56 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
             .count()
     };
 
+    // A client that waits for the verdict gets the refusal and what
+    // confirming takes, and the transcript stays as it was. Its refusal
+    // leaves nothing to confirm with the same message again.
+    let (reply, verdict) = oneshot::channel();
+    harness.message_command(
+        "r1 Check the docs.",
+        Source::App,
+        &mut crate::sending::Reply::to(Some(reply)),
+        false,
+    );
+    match verdict.await.unwrap() {
+        crate::remote::Verdict::Refused(refusal) => {
+            assert_eq!(
+                refusal.kind,
+                crate::remote::RefusalKind::Uncached {
+                    worker: "r1".into()
+                }
+            );
+            assert_eq!(refusal.confirm, Some(crate::remote::Confirm::ContinueUncached));
+            assert_eq!(
+                refusal.words,
+                "r1's cache expired just now. Continuing re-reads about 50k tokens without it, using your ChatGPT plan."
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(warnings(&harness), 0);
+
     // (A tab and the worker's name in capitals are read as `/message r1`.)
     assert!(harness.live_command("/message\tR1 Check the docs.", Source::Terminal));
     assert_eq!(warnings(&harness), 1);
     assert!(shown(&harness.feed).iter().any(|(_, text, _)| text
         == "r1's cache expired just now. Continuing re-reads about 50k tokens without it, using your ChatGPT plan. The same /message again continues it."));
+    // That warning at the line prompt confirms nothing for a client that
+    // sends the same message unconfirmed: it is refused.
+    let (reply, verdict) = oneshot::channel();
+    harness.message_command(
+        "r1 Check the docs.",
+        Source::App,
+        &mut crate::sending::Reply::to(Some(reply)),
+        false,
+    );
+    assert!(matches!(
+        verdict.await.unwrap(),
+        crate::remote::Verdict::Refused(crate::remote::Refusal {
+            kind: crate::remote::RefusalKind::Uncached { .. },
+            ..
+        })
+    ));
+    assert!(!got(&seen, "r1", "Check the docs."));
     // Another message asks again, and the first again then asks again too.
     assert!(harness.live_command("/message r1 Check the tests.", Source::Terminal));
     assert_eq!(warnings(&harness), 2);
@@ -340,9 +385,65 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
             .unwrap()
             .asks(chrono::Utc::now())
     );
-    harness.confirm_continue("/message r1 Check the build.");
-    assert!(harness.live_command("/message r1 Check the build.", Source::Terminal));
-    assert_eq!(warnings(&harness), 2);
+    // A client's send confirmed but refused for its images leaves no
+    // permission behind: the same message from the line prompt asks.
+    let image = ui::Attachment {
+        bytes: Arc::from(&b"pixels"[..]),
+        mime: "image/png".into(),
+        name: None,
+    };
+    let (reply, verdict) = oneshot::channel();
+    let confirmed = Input::Message(ui::Message {
+        text: "/message r1 Check the lint.".into(),
+        images: vec![image],
+        continue_uncached: true,
+        ..Default::default()
+    });
+    let crate::sending::Read::Sent(sent) = harness
+        .read_sent(
+            Event::Input(Some(confirmed)),
+            crate::sending::Reply::to(Some(reply)),
+            &mut inputs,
+            crate::sending::Phase::Idle,
+        )
+        .await
+    else {
+        panic!("read as sent");
+    };
+    assert!(harness.admit(sent, crate::sending::Phase::Idle).is_none());
+    assert!(matches!(
+        verdict.await.unwrap(),
+        crate::remote::Verdict::Refused(crate::remote::Refusal {
+            kind: crate::remote::RefusalKind::WorkerTextOnly,
+            ..
+        })
+    ));
+    assert!(harness.live_command("/message r1 Check the lint.", Source::Terminal));
+    assert_eq!(warnings(&harness), 3);
+    assert!(!got(&seen, "r1", "Check the lint."));
+
+    // A client's send, confirmed, is accepted once r1 has it, as the item
+    // of the message in r1's transcript.
+    let (reply, verdict) = oneshot::channel();
+    harness.message_command(
+        "r1 Check the build.",
+        Source::App,
+        &mut crate::sending::Reply::to(Some(reply)),
+        true,
+    );
+    match verdict.await.unwrap() {
+        crate::remote::Verdict::Accepted {
+            delivery: Delivery::Command,
+            item: Some(item),
+            ..
+        } => {
+            let shown = harness.feed.subscribe().0.items;
+            let copy = shown.iter().find(|shown| shown.id == item).unwrap();
+            assert_eq!((copy.agent.as_str(), copy.text.as_str()), ("r1", "Check the build."));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(warnings(&harness), 3);
     until(|| got(&seen, "r1", "Check the build.")).await;
     harness.crew.as_ref().unwrap().shutdown().await;
 }

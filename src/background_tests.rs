@@ -41,6 +41,7 @@ async fn next_alert(inputs: &mut Inputs, within: Duration) -> crate::inputs::Ale
     match tokio::time::timeout(within, inputs.next_event(true))
         .await
         .expect("an alert in time")
+        .0
     {
         Event::Alert(alert) => alert,
         _ => panic!("expected a monitor's alert"),
@@ -115,6 +116,7 @@ async fn a_long_command_moves_to_the_background_and_its_end_wakes_the_idle_agent
     let finished = match tokio::time::timeout(Duration::from_secs(10), inputs.next_event(true))
         .await
         .unwrap()
+        .0
     {
         Event::Finished(finished) => finished,
         _ => panic!("expected a finished job"),
@@ -183,6 +185,7 @@ async fn a_job_that_ends_during_the_last_request_still_wakes_the_agent() {
     let finished = match tokio::time::timeout(Duration::from_secs(1), inputs.next_event(true))
         .await
         .expect("the job that ended during the turn wakes the agent")
+        .0
     {
         Event::Finished(finished) => finished,
         _ => panic!("expected a finished job"),
@@ -760,6 +763,7 @@ async fn ctrl_b_moves_another_tools_call_and_its_result_wakes_the_agent() {
     let finished = match tokio::time::timeout(Duration::from_secs(10), inputs.next_event(true))
         .await
         .unwrap()
+        .0
     {
         Event::Finished(finished) => finished,
         _ => panic!("expected a finished job"),

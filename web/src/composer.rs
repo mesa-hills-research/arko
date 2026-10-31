@@ -8,7 +8,9 @@ use leptos::task::spawn_local;
 use lucide_leptos::{ArrowUp, Maximize2, Minimize2, Square};
 use web_sys::HtmlTextAreaElement;
 
-use crate::app::{DRAFT, Posted, get_json, page, post, post_asking, session_get, session_set};
+use crate::app::{
+    DRAFT, Posted, Sender, get_json, page, post, send as send_to_arko, session_get, session_set,
+};
 use crate::scroll;
 use crate::slash::{self, Menu};
 
@@ -17,10 +19,23 @@ use crate::slash::{self, Menu};
 const CHOICES_FRESH: f64 = 10_000.0;
 
 thread_local! {
+    /// The words an argument may be, and when they came, by what was asked
+    /// of which feed (another Arko has other workers).
     static CHOICES: std::cell::RefCell<HashMap<String, (Option<Vec<String>>, f64)>> = std::cell::RefCell::new(HashMap::new());
-    /// What to know of the words that came, by word (how a model billed per
-    /// token is billed).
-    static NOTES: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::new());
+    /// What to know of the words that came, by feed and word (how a model
+    /// billed per token is billed).
+    static NOTES: std::cell::RefCell<HashMap<(Option<u64>, String), String>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// What the page knows of `word`, from the feed `feed`'s choices.
+fn note_of(feed: Option<u64>, word: &str) -> String {
+    NOTES.with(|notes| {
+        notes
+            .borrow()
+            .get(&(feed, word.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    })
 }
 
 /// A message as it was sent: its text, and the worker whose view it was
@@ -31,30 +46,36 @@ struct Draft {
     to: Option<String>,
 }
 
+/// What the box says while a send waits for Arko's answer longer than a
+/// moment. Send works again meanwhile.
+const STILL_SENDING: &str = "Still sending. Your text is kept.";
+
 /// Arko's question before a message continues a worker whose prompt cache
 /// expired: its words, and the message it was asked for.
 #[derive(Debug, Clone)]
 struct ContinueAsk {
     words: String,
-    body: serde_json::Value,
     draft: Draft,
 }
 
 impl ContinueAsk {
-    /// The question for Arko's answer `words` to `body`, sent as `draft`,
-    /// while the box holds `now`. None once the text or the view changed
-    /// while the message was on its way, since the answer is about a
+    /// The question for Arko's answer `words` to the message sent as
+    /// `draft`, while the box holds `now`. None once the text or the view
+    /// changed while the message was on its way, since the answer is about a
     /// message that is no longer there.
-    fn new(words: String, body: serde_json::Value, draft: Draft, now: &Draft) -> Option<Self> {
-        (draft == *now).then_some(Self { words, body, draft })
+    fn new(words: String, draft: Draft, now: &Draft) -> Option<Self> {
+        (draft == *now).then_some(Self { words, draft })
     }
 
-    /// What Continue sends while the box holds `now`: the message, marked
-    /// confirmed. None once the text or the view changed.
+    /// What Continue sends while the box holds `now`: the message as the
+    /// box holds it, marked confirmed. None once the text or the view
+    /// changed.
     fn confirmed(&self, now: &Draft) -> Option<serde_json::Value> {
         (self.draft == *now).then(|| {
-            let mut body = self.body.clone();
-            body["confirm_uncached"] = serde_json::Value::Bool(true);
+            let mut body = serde_json::json!({ "text": now.text, "confirm_uncached": true });
+            if let Some(worker) = &now.to {
+                body["to"] = worker.as_str().into();
+            }
             body
         })
     }
@@ -70,8 +91,24 @@ pub fn Composer() -> impl IntoView {
     let tall = RwSignal::new(false);
     let expanded = RwSignal::new(false);
     let sending = RwSignal::new(false);
-    // The box holds a command, which goes while the report is written.
-    let command_typed = RwSignal::new(false);
+    // The latest send, which owns the box: what becomes of an earlier one
+    // leaves it as it is.
+    let latest = RwSignal::new(0u64);
+    // A send of its own, which says so while its answer is long in coming.
+    let begin_send = move || {
+        let sender = Sender::from_view();
+        latest.set(sender.id());
+        sending.set(true);
+        let waiting = sender.clone();
+        spawn_local(async move {
+            gloo_wait(5000).await;
+            if latest.try_get_untracked() == Some(waiting.id()) && sending.get_untracked() {
+                sending.set(false);
+                waiting.say(Some(STILL_SENDING.into()));
+            }
+        });
+        sender
+    };
     // Arko asks before a message continues a worker whose prompt cache
     // expired: what it said, and the message to send again on Continue.
     let continue_asked = RwSignal::new(None::<ContinueAsk>);
@@ -82,9 +119,10 @@ pub fn Composer() -> impl IntoView {
             to: page.worker.get_untracked(),
         })
     };
-    // Another view drops the question.
+    // Another view, or another feed (Arko started again), drops the question.
     Effect::new(move |_| {
         page.worker.track();
+        page.feeds.track();
         continue_asked.set(None);
     });
     let stopping = RwSignal::new(false);
@@ -141,7 +179,7 @@ pub fn Composer() -> impl IntoView {
                 &commands,
                 &value,
                 &mut |name, before, typed| choices_of(name, before, typed, choices_came),
-                &|word| NOTES.with(|notes| notes.borrow().get(word).cloned().unwrap_or_default()),
+                &|word| note_of(crate::app::feed(), word),
             );
         }
         if !value.starts_with('/') {
@@ -162,7 +200,6 @@ pub fn Composer() -> impl IntoView {
         };
         fit(&area, tall, expanded.get_untracked());
         empty.set(area.value().trim().is_empty());
-        command_typed.set(area.value().starts_with('/'));
         session_set(DRAFT, Some(&area.value()));
     };
     Effect::new(move |_| {
@@ -186,13 +223,7 @@ pub fn Composer() -> impl IntoView {
         if text.trim().is_empty() || sending.get_untracked() {
             return;
         }
-        if page.status.with_untracked(|status| status.reporting)
-            && page.worker.get_untracked().is_none()
-            && !text.starts_with('/')
-        {
-            return;
-        }
-        sending.set(true);
+        let sender = begin_send();
         let sent = Draft {
             text: text.clone(),
             to: page.worker.get_untracked(),
@@ -200,29 +231,41 @@ pub fn Composer() -> impl IntoView {
         // In a worker's view, it goes to that worker. With questions
         // attached, it answers them (and while the agent waits on a
         // question, a message answers it).
-        let attached = ask.attached.get_untracked();
+        let answers = match page.worker.get_untracked() {
+            Some(_) => Vec::new(),
+            None => ask.attached.get_untracked(),
+        };
         let body = match page.worker.get_untracked() {
             Some(worker) => serde_json::json!({ "text": text, "to": worker }),
-            None if !attached.is_empty() => {
-                serde_json::json!({ "text": text, "answers": attached })
+            None if !answers.is_empty() => {
+                serde_json::json!({ "text": text, "answers": answers })
             }
             None => serde_json::json!({ "text": text }),
         };
         spawn_local(async move {
-            match post_asking("/api/message", body.clone()).await {
-                Posted::Taken => {
-                    if page.worker.get_untracked().is_none() {
-                        ask.attached.set(Vec::new());
+            let outcome = send_to_arko("/api/message", body, &sender).await;
+            // A later send owns the box now.
+            if latest.try_get_untracked() != Some(sender.id()) {
+                return;
+            }
+            match sender.take(outcome) {
+                Some(Posted::Taken) => {
+                    // The questions it answered, and the text unless the
+                    // box holds another meanwhile.
+                    ask.attached
+                        .update(|attached| attached.retain(|id| !answers.contains(id)));
+                    if draft_now().as_ref() == Some(&sent) {
+                        area.set_value("");
+                        expanded.set(false);
+                        resize();
                     }
-                    area.set_value("");
-                    expanded.set(false);
-                    resize();
                     // What one sends is what one wants to see next.
                     scroll::jump_to_latest();
                 }
-                Posted::Confirm(why) => continue_asked
-                    .set(draft_now().and_then(|now| ContinueAsk::new(why, body, sent, &now))),
-                Posted::Kept => {}
+                Some(Posted::Confirm(why)) => continue_asked
+                    .set(draft_now().and_then(|now| ContinueAsk::new(why, sent, &now))),
+                // Kept, or no longer the page's: the box keeps it.
+                _ => {}
             }
             sending.set(false);
             refresh_menu();
@@ -239,10 +282,15 @@ pub fn Composer() -> impl IntoView {
         let Some(body) = draft_now().and_then(|now| asked.confirmed(&now)) else {
             return;
         };
-        sending.set(true);
+        let sender = begin_send();
         spawn_local(async move {
-            // (What was typed meanwhile stays.)
-            if post("/api/message", body).await && draft_now() == Some(asked.draft) {
+            let outcome = send_to_arko("/api/message", body, &sender).await;
+            // (A later send owns the box now, and what was typed meanwhile
+            // stays.)
+            if latest.try_get_untracked() != Some(sender.id()) {
+                return;
+            }
+            if sender.take(outcome) == Some(Posted::Taken) && draft_now() == Some(asked.draft) {
                 area.set_value("");
                 expanded.set(false);
                 resize();
@@ -313,7 +361,7 @@ pub fn Composer() -> impl IntoView {
             post("/api/stop", serde_json::json!({})).await;
             // The status hides it when the turn ends, and a second tap waits a moment.
             gloo_wait(1500).await;
-            stopping.set(false);
+            stopping.try_set(false);
         });
     };
 
@@ -335,7 +383,12 @@ pub fn Composer() -> impl IntoView {
                     </div>
                 })}
                 <crate::questions::Replying />
-                <crate::approvals::Tray />
+                // Each feed's requests in a tray of their own, whose IDs
+                // the last one gave too.
+                {move || {
+                    page.feeds.track();
+                    view! { <crate::approvals::Tray /> }
+                }}
                 <form
                     class="compose"
                     class:expanded=move || expanded.get()
@@ -423,7 +476,7 @@ pub fn Composer() -> impl IntoView {
                         class="btn primary icon send"
                         aria-label=move || if replying() != 0 { "Answer" } else { "Send" }
                         title=move || if replying() != 0 { "Answer" } else { "Send" }
-                        disabled=move || empty.get() || sending.get() || (reporting() && !command_typed.get())
+                        disabled=move || empty.get() || sending.get()
                     >
                         <ArrowUp size=20 />
                     </button>
@@ -431,6 +484,13 @@ pub fn Composer() -> impl IntoView {
             </div>
         </footer>
     }
+}
+
+/// What the words an argument of `name` may be after `before` (and `typed`,
+/// for a list completed from the start typed) are kept by, for the feed
+/// they're asked of.
+fn choices_key(feed: Option<u64>, name: &str, before: &[String], typed: Option<&str>) -> String {
+    serde_json::json!([feed, name, before, typed]).to_string()
 }
 
 /// The words an argument may be after `before`, asked of Arko and kept a
@@ -443,11 +503,8 @@ fn choices_of(
 ) -> Option<Vec<String>> {
     // An OpenRouter model is completed from its list, for the start typed.
     let openrouter = name == "/model" && typed.to_lowercase().starts_with("openrouter:");
-    let key = if openrouter {
-        serde_json::json!([name, before, typed]).to_string()
-    } else {
-        serde_json::json!([name, before]).to_string()
-    };
+    let feed = crate::app::feed();
+    let key = choices_key(feed, name, before, openrouter.then_some(typed));
     let now = js_sys::Date::now();
     let hit = CHOICES.with(|choices| choices.borrow().get(&key).cloned());
     if let Some((words, at)) = &hit
@@ -478,7 +535,15 @@ fn choices_of(
         let answer = get_json::<Answer>("/api/choices", Some(body)).await;
         let words = answer
             .map(|answer| {
-                NOTES.with(|notes| notes.borrow_mut().extend(answer.notes));
+                NOTES.with(|notes| {
+                    let notes = &mut *notes.borrow_mut();
+                    notes.extend(
+                        answer
+                            .notes
+                            .into_iter()
+                            .map(|(word, note)| ((feed, word), note)),
+                    );
+                });
                 answer.choices
             })
             .unwrap_or_default();
@@ -494,7 +559,7 @@ fn choices_of(
                 (Some(words), js_sys::Date::now() - (CHOICES_FRESH - fresh)),
             )
         });
-        came.update(|count| *count += 1);
+        came.try_update(|count| *count += 1);
     });
     known
 }
@@ -556,6 +621,26 @@ fn fit(area: &HtmlTextAreaElement, tall: RwSignal<bool>, expanded: bool) {
 mod tests {
     use super::*;
 
+    /// The words an argument may be, and what's known of them, are another
+    /// feed's for an Arko started again, whose r1 is another worker.
+    #[test]
+    fn choices_and_their_notes_are_each_feeds_own() {
+        let before = ["r1".to_string()];
+        let key = |feed| choices_key(feed, "/message", &before, None);
+        assert_eq!(key(Some(1)), key(Some(1)));
+        assert_ne!(key(Some(1)), key(Some(2)));
+        assert_ne!(
+            choices_key(Some(1), "/model", &[], Some("openrouter:a")),
+            choices_key(Some(1), "/model", &[], Some("openrouter:b"))
+        );
+        NOTES.with(|notes| {
+            let notes = &mut *notes.borrow_mut();
+            notes.insert((Some(1), "gpt".into()), "billed per token".into());
+        });
+        assert_eq!(note_of(Some(1), "gpt"), "billed per token");
+        assert_eq!(note_of(Some(2), "gpt"), "");
+    }
+
     fn draft(text: &str, to: Option<&str>) -> Draft {
         Draft {
             text: text.into(),
@@ -565,12 +650,12 @@ mod tests {
 
     /// Arko's question stands for the message it was asked about: once the
     /// text or the view changed while the message was on its way, or before
-    /// Continue, nothing is sent, and the new draft stays.
+    /// Continue, nothing is sent, and the new draft stays. Continue sends
+    /// the message as the box holds it, confirmed, from the main view too.
     #[test]
     fn the_question_holds_only_for_the_draft_it_was_asked_about() {
-        let body = serde_json::json!({"text": "Go on.", "to": "r3"});
         let sent = draft("Go on.", Some("r3"));
-        let ask = |now: &Draft| ContinueAsk::new("Words.".into(), body.clone(), sent.clone(), now);
+        let ask = |now: &Draft| ContinueAsk::new("Words.".into(), sent.clone(), now);
         // Edited before Arko's answer came, or another view: no question.
         assert!(ask(&draft("Go on. Now.", Some("r3"))).is_none());
         assert!(ask(&draft("Go on.", None)).is_none());
@@ -584,5 +669,11 @@ mod tests {
         );
         assert_eq!(asked.confirmed(&draft("Something else.", Some("r3"))), None);
         assert_eq!(asked.confirmed(&draft("Go on.", None)), None);
+        let typed = draft("/message r3 Go on.", None);
+        let asked = ContinueAsk::new("Words.".into(), typed.clone(), &typed).unwrap();
+        assert_eq!(
+            asked.confirmed(&typed),
+            Some(serde_json::json!({"text": "/message r3 Go on.", "confirm_uncached": true}))
+        );
     }
 }

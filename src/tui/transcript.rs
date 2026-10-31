@@ -478,15 +478,6 @@ impl Transcript {
         self.workers.iter().find(|worker| worker.id == id)
     }
 
-    /// The worker `handle` as the user may type it: `R3` finds `r3`, as
-    /// `/message` does.
-    pub fn worker_named(&self, handle: &str) -> Option<&WorkerSummary> {
-        let handle = handle.trim();
-        self.workers
-            .iter()
-            .find(|worker| worker.id.eq_ignore_ascii_case(handle))
-    }
-
     /// The main agent's last reply.
     pub fn last_reply(&self) -> Option<&str> {
         self.entries
@@ -3996,5 +3987,62 @@ mod tests {
         );
         let own = rows(&mut t, &Filter::Worker("r1".into()), 60, 4);
         assert!(own[0].contains("r1 Test it · finished · 2h 5m"), "{own:?}");
+    }
+
+    /// A view that followed every update of a random session shows what a
+    /// view that starts over from the session's snapshot shows, in the same
+    /// order, within what the feed keeps.
+    #[test]
+    fn a_view_that_starts_over_shows_what_one_that_followed_does() {
+        use crate::remote::Received;
+        use crate::testing::{FeedMirror, RandomSession};
+        for seed in 0..8 {
+            let mut session = RandomSession::new(seed);
+            let feed = session.feed().clone();
+            let (start, mut updates) = feed.follow();
+            let mut followed = Transcript::new();
+            followed.reset(start);
+            for step in 0..=800 {
+                // (At the end, the time passes for which the feed holds the
+                // workers' summaries back.)
+                if step == 800 {
+                    session.settle();
+                } else {
+                    session.step();
+                }
+                // (It takes them after each call, so it never falls behind.)
+                while let Some(received) = updates.try_next() {
+                    match received {
+                        Received::Update(update) => followed.apply(update),
+                        Received::Reset(_) => panic!("seed {seed}, step {step}: behind"),
+                    }
+                }
+            }
+            let (snapshot, _) = feed.subscribe();
+            let mut restarted = Transcript::new();
+            restarted.reset(snapshot.clone());
+            let shown = |t: &Transcript| {
+                FeedMirror {
+                    items: t
+                        .entries
+                        .iter()
+                        .map(|entry| (entry.item.id, entry.item.clone()))
+                        .collect(),
+                    workers: t.workers.clone(),
+                    ..FeedMirror::default()
+                }
+                .within(&snapshot)
+            };
+            let (a, b) = (shown(&followed), shown(&restarted));
+            assert_eq!(a.difference(&b), None, "seed {seed}");
+            let order = |t: &Transcript| -> Vec<u64> {
+                t.entries
+                    .iter()
+                    .map(|entry| entry.item.id)
+                    .filter(|id| b.items.contains_key(id))
+                    .collect()
+            };
+            assert_eq!(order(&followed), order(&restarted), "seed {seed}");
+        }
     }
 }

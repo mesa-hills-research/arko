@@ -63,7 +63,7 @@ const EARLY_READS: usize = 64;
 const BACKLOG: usize = 2048;
 /// A worker's summary goes out at most this often while it works (four
 /// times a second); a change of its state goes out at once.
-const WORKER_EVERY: Duration = Duration::from_millis(250);
+pub(crate) const WORKER_EVERY: Duration = Duration::from_millis(250);
 
 // The types the web page reads too, which it compiles from the same file.
 pub use super::protocol::{
@@ -689,35 +689,65 @@ impl JobStart {
     }
 }
 
-/// The ended jobs kept for the clients, besides those running.
-const ENDED_JOBS: usize = 100;
+/// How many ended background jobs the feed keeps, besides those running:
+/// those that started last. A client that drops the others as each job's
+/// summary comes holds the jobs a [`Snapshot`] does.
+pub const ENDED_JOBS: usize = 100;
 
 /// What changed, for the clients connected.
+///
+/// Each kind is one of three classes, which its documentation names.
+///
+/// - A state update is a change to what the [`Snapshot`] holds. A client
+///   that applies it and one that takes a new snapshot end in the same
+///   place, so a client that falls behind the broadcast ([`Feed::follow`])
+///   starts over from a snapshot and loses nothing. Most carry their change.
+///   Two are latest-value, where a client keeps only the newest.
+///   [`Update::Worker`] carries a whole summary, sent a few times a second
+///   at most, and [`Update::Activity`] carries nothing, as the client reads
+///   [`Feed::activity`] when it comes.
+/// - An edge is news, for a client that reacts once (a notification), that
+///   something the snapshot holds changed. [`Feed::subscribe_batched`]
+///   delivers it exactly once. A broadcast client that starts over compares
+///   what it had with the snapshot instead.
+/// - A per-client event is what one client asked for, such as a
+///   recording's words, and never comes here. It goes on that client's own
+///   channel.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Update {
-    /// A new item.
+    /// A new item. State, in [`Snapshot::items`].
     Item(Item),
-    /// More text for the item `id`.
+    /// More text for the item `id`. State, in [`Snapshot::items`].
     Append { id: u64, text: String },
-    /// The item with this one's `id` is now this one (a call's result came).
+    /// The item with this one's `id` is now this one (a call's result
+    /// came). State, in [`Snapshot::items`].
     Change(Item),
-    /// A worker's summary, whole.
+    /// A worker's summary, whole. State, latest-value, in
+    /// [`Snapshot::workers`], which may be up to a quarter of a second newer
+    /// than the latest of these until the next one comes.
     Worker(WorkerSummary),
     /// The worker `id` ended as `outcome` (finished, failed or stopped).
     /// Its [`Update::Worker`] with that state, its `report` or `error`
-    /// comes right before, also in a merged batch.
+    /// comes right before, and before it in a merged batch. Edge, of the
+    /// state in [`Snapshot::workers`].
     WorkerEnded { id: String, outcome: WorkerState },
-    /// The activity changed.
+    /// The activity changed, or the approval tray did, which a client reads
+    /// in the session's status. State, latest-value, in
+    /// [`Snapshot::activity`].
     Activity,
     /// The main agent's items from `from` on are gone (the conversation was
-    /// cut back to an earlier message), and clients drop them too.
+    /// cut back to an earlier message), and clients drop them too. State,
+    /// in [`Snapshot::items`].
     Truncate { from: u64 },
     /// The item `id` is gone. It held text a model's response streamed
-    /// before it failed, which its retry streams again.
+    /// before it failed, which its retry streams again, or a note the agent
+    /// read, which comes again where it read it. State, in
+    /// [`Snapshot::items`].
     Remove { id: u64 },
     /// The whole summary of a background job that started, changed or
-    /// ended.
+    /// ended. State, in [`Snapshot::jobs`]. Past [`ENDED_JOBS`] ended, the
+    /// feed drops the ended job that started first, without an update.
     Job(JobSummary),
 }
 
@@ -751,12 +781,69 @@ impl Batches {
     }
 }
 
+/// A broadcast client's updates, from [`Feed::follow`]. The broadcast keeps
+/// a few thousand, and a client that falls further behind gets a new
+/// snapshot to start over from in place of those it missed, whether it
+/// waits for the next update or takes those that wait.
+pub struct Following {
+    feed: Feed,
+    updates: broadcast::Receiver<Update>,
+}
+
+/// What a [`Following`] client gets next.
+// (It is as large as an update, which comes by value anyway.)
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub enum Received {
+    /// The next update.
+    Update(Update),
+    /// The client fell behind, so it starts over from this snapshot, and
+    /// the updates after it follow.
+    Reset(Snapshot),
+}
+
+impl Following {
+    /// The next update, after waiting for it, or a snapshot to start over
+    /// from.
+    pub async fn next(&mut self) -> Received {
+        match self.updates.recv().await {
+            Ok(update) => Received::Update(update),
+            Err(broadcast::error::RecvError::Lagged(_)) => Received::Reset(self.restart()),
+            // (It holds the feed, which holds the sender.)
+            Err(broadcast::error::RecvError::Closed) => unreachable!("the feed is gone"),
+        }
+    }
+
+    /// The next update if one waits, or a snapshot to start over from.
+    pub fn try_next(&mut self) -> Option<Received> {
+        match self.updates.try_recv() {
+            Ok(update) => Some(Received::Update(update)),
+            Err(broadcast::error::TryRecvError::Lagged(_)) => Some(Received::Reset(self.restart())),
+            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
+                None
+            }
+        }
+    }
+
+    /// How many updates wait.
+    pub fn waiting(&self) -> usize {
+        self.updates.len()
+    }
+
+    /// Starts over now: a new snapshot, which the updates after it follow.
+    pub fn restart(&mut self) -> Snapshot {
+        let (snapshot, updates) = self.feed.subscribe();
+        self.updates = updates;
+        snapshot
+    }
+}
+
 /// `updates`, merged into fewer that leave a client where they all would:
 /// text appended to an item goes into the item when it came in the same
 /// batch (or into the batch's one append to it), an item's change replaces
-/// what the batch had of it (it is the whole item), a worker's summary
-/// only its last (but the one a worker ended with stays), and the activity
-/// is told once.
+/// what the batch had of it (it is the whole item), a worker's or a job's
+/// summary only its last, in the place of its first (but the one a worker
+/// ended with stays), and the activity is told once.
 pub fn merged(updates: Vec<Update>) -> Vec<Update> {
     let mut out: Vec<Option<Update>> = Vec::with_capacity(updates.len());
     // Where the batch has each item: created, changed or appended to.
@@ -803,24 +890,30 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
                     }
                 }
             }
-            Update::Worker(summary) => {
-                if let Some(at) = workers.insert(summary.id.clone(), out.len()) {
-                    out[at] = None;
+            // In the place of the batch's first summary of the worker, so
+            // the workers that are new to the client come in the order they
+            // started, as a snapshot has them.
+            Update::Worker(summary) => match workers.get(&summary.id) {
+                Some(&at) => out[at] = Some(Update::Worker(summary)),
+                None => {
+                    workers.insert(summary.id.clone(), out.len());
+                    out.push(Some(Update::Worker(summary)));
                 }
-                out.push(Some(Update::Worker(summary)));
-            }
+            },
             Update::WorkerEnded { id, outcome } => {
                 // The summary it ended with stays, also if the worker goes
                 // on in the same batch.
                 workers.remove(&id);
                 out.push(Some(Update::WorkerEnded { id, outcome }));
             }
-            Update::Job(summary) => {
-                if let Some(at) = jobs.insert(summary.id.clone(), out.len()) {
-                    out[at] = None;
+            // In the place of its first, as a worker's summary.
+            Update::Job(summary) => match jobs.get(&summary.id) {
+                Some(&at) => out[at] = Some(Update::Job(summary)),
+                None => {
+                    jobs.insert(summary.id.clone(), out.len());
+                    out.push(Some(Update::Job(summary)));
                 }
-                out.push(Some(Update::Job(summary)));
-            }
+            },
             Update::Activity => {
                 if let Some(at) = activity.replace(out.len()) {
                     out[at] = None;
@@ -871,16 +964,29 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
 }
 
 /// The history, the workers and the activity at one moment.
+///
+/// It holds what the feed keeps. The oldest items, the oldest items' whole
+/// outputs and the ended jobs that started first go, without an update, to
+/// keep it within a budget, so a client that followed every update may hold
+/// more than a snapshot does.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     /// The main agent's items and the workers', in order (by `id`).
     pub items: Vec<Item>,
     /// The workers, in the order they started.
     pub workers: Vec<WorkerSummary>,
-    /// The background jobs running, and the latest that ended, in the order
-    /// they started.
+    /// The background jobs running, and of those that ended the
+    /// [`ENDED_JOBS`] that started last, in the order they started.
     pub jobs: Vec<JobSummary>,
     pub activity: Activity,
+    /// The feed it is of ([`Feed::id`]). A feed made again, as when Arko
+    /// starts again and resumes the session, has another, though its items'
+    /// IDs may be the same.
+    pub feed: u64,
+    /// How many updates the feed had sent when it was taken. Those a client
+    /// gets after it follow on from there, so applied to the snapshot they
+    /// leave it where a client that followed every update would be.
+    pub seq: u64,
 }
 
 /// The session's feed. It's cheap to clone, and every clone feeds the same
@@ -894,10 +1000,119 @@ struct Inner {
     /// The main agent's name: its events are the conversation; the others'
     /// are workers'.
     main: String,
+    /// Tells this feed from any other ([`Feed::id`]).
+    id: u64,
     state: Mutex<State>,
     updates: broadcast::Sender<Update>,
     /// The batched clients' queues ([`Feed::subscribe_batched`]).
     batched: Mutex<Vec<mpsc::UnboundedSender<Update>>>,
+    /// What a test runs where a change waits to go out, with the state
+    /// locked ([`Feed::paused`]).
+    #[cfg(test)]
+    pause: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    clock: Clock,
+}
+
+/// The time by which the feed holds a worker's summary back, and the
+/// timer that sends it later: the system's, or one a test moves.
+enum Clock {
+    System,
+    #[cfg(any(test, feature = "testing"))]
+    Manual(Arc<ManualClock>),
+}
+
+impl Clock {
+    fn now(&self) -> Instant {
+        match self {
+            Clock::System => Instant::now(),
+            #[cfg(any(test, feature = "testing"))]
+            Clock::Manual(clock) => clock.lock().now,
+        }
+    }
+
+    /// Runs `due` at `at`. False when it can't wait, with no runtime to
+    /// wait on, and `due` never runs.
+    fn at(&self, at: Instant, due: impl FnOnce() + Send + 'static) -> bool {
+        match self {
+            Clock::System => {
+                let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                    return false;
+                };
+                runtime.spawn(async move {
+                    tokio::time::sleep_until(at.into()).await;
+                    due();
+                });
+                true
+            }
+            #[cfg(any(test, feature = "testing"))]
+            Clock::Manual(clock) => {
+                clock.lock().waiting.push((at, Box::new(due)));
+                true
+            }
+        }
+    }
+}
+
+/// A feed's clock that moves only when a test moves it, and runs what
+/// waits for it then ([`Feed::with_clock`]).
+#[cfg(any(test, feature = "testing"))]
+pub(crate) struct ManualClock(Mutex<ManualTime>);
+
+#[cfg(any(test, feature = "testing"))]
+struct ManualTime {
+    now: Instant,
+    waiting: Vec<(Instant, Box<dyn FnOnce() + Send>)>,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl ManualClock {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self(Mutex::new(ManualTime {
+            now: Instant::now(),
+            waiting: Vec::new(),
+        })))
+    }
+
+    fn lock(&self) -> MutexGuard<'_, ManualTime> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Moves it on by `by`, running what waits until then at its own time,
+    /// the earliest first.
+    pub(crate) fn advance(&self, by: Duration) {
+        let until = self.lock().now + by;
+        loop {
+            let due = {
+                let mut time = self.lock();
+                let next = time
+                    .waiting
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (at, _))| *at <= until)
+                    .min_by_key(|(_, (at, _))| *at)
+                    .map(|(next, _)| next);
+                next.map(|next| {
+                    let (at, due) = time.waiting.remove(next);
+                    time.now = time.now.max(at);
+                    due
+                })
+            };
+            // (Run with the clock unlocked, as it locks the feed.)
+            match due {
+                Some(due) => due(),
+                None => break,
+            }
+        }
+        self.lock().now = until;
+    }
+
+    /// How many wait for it.
+    #[cfg(test)]
+    fn waiting(&self) -> usize {
+        self.lock().waiting.len()
+    }
 }
 
 /// A transcript kept within its budget.
@@ -988,6 +1203,10 @@ struct Call {
     agent: String,
     /// A `message_agent` call's message, for the worker that gets it.
     message: Option<String>,
+    /// The background job it started, as it started and as it ended. The
+    /// result may come after the job ended, when the feed no longer keeps
+    /// the job, and its line says how the job ended from this.
+    job: Option<JobSummary>,
 }
 
 /// Where an agent's output stood as its model request went out.
@@ -1063,6 +1282,8 @@ struct State {
     warned: HashMap<String, String>,
     /// The notice that the turn is stopping, until it has stopped.
     stopping: Option<u64>,
+    /// How many updates have gone out ([`Feed::publish`]).
+    seq: u64,
 }
 
 impl State {
@@ -1187,14 +1408,42 @@ fn title(task: &str) -> String {
 impl Feed {
     /// A feed for a workflow whose main agent is `main`.
     pub fn new(main: &str) -> Self {
+        Self::on(main, Clock::System)
+    }
+
+    /// A feed whose worker summaries go out by `clock`, which a test moves.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn with_clock(main: &str, clock: Arc<ManualClock>) -> Self {
+        Self::on(main, Clock::Manual(clock))
+    }
+
+    fn on(main: &str, clock: Clock) -> Self {
         let (updates, _) = broadcast::channel(BACKLOG);
         Self {
             inner: Arc::new(Inner {
                 main: main.to_string(),
+                id: Uuid::new_v4().as_u64_pair().0,
                 state: Mutex::new(State::default()),
                 updates,
                 batched: Mutex::default(),
+                #[cfg(test)]
+                pause: Mutex::default(),
+                clock,
             }),
+        }
+    }
+
+    /// Runs what a test set to run between a change and its update.
+    #[cfg(test)]
+    fn paused(&self) {
+        let pause = self
+            .inner
+            .pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(pause) = pause {
+            pause();
         }
     }
 
@@ -1206,10 +1455,25 @@ impl Feed {
     }
 
     /// The history, the workers and the activity now, and the updates
-    /// from then on.
+    /// from then on. The broadcast drops what a client leaves unread too
+    /// long, so a client that keeps what the updates hold follows the feed
+    /// instead ([`follow`](Self::follow)), which starts it over then. This
+    /// is for one that only wakes when something changed.
     pub fn subscribe(&self) -> (Snapshot, broadcast::Receiver<Update>) {
         let state = self.lock();
-        (Self::snapshot(&state), self.inner.updates.subscribe())
+        (self.snapshot(&state), self.inner.updates.subscribe())
+    }
+
+    /// The history, the workers and the activity now, and the updates from
+    /// then on, through the broadcast. A client that falls behind gets a new
+    /// snapshot in place of what it missed ([`Received::Reset`]).
+    pub fn follow(&self) -> (Snapshot, Following) {
+        let (snapshot, updates) = self.subscribe();
+        let following = Following {
+            feed: self.clone(),
+            updates,
+        };
+        (snapshot, following)
     }
 
     /// The history, the workers and the activity now, and from then on
@@ -1227,10 +1491,17 @@ impl Feed {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(sender);
-        (Self::snapshot(&state), Batches { updates })
+        (self.snapshot(&state), Batches { updates })
     }
 
-    fn snapshot(state: &State) -> Snapshot {
+    /// A number that tells this feed from any other, made at random as it
+    /// is made. Each snapshot carries it ([`Snapshot::feed`]), so a client
+    /// that connects again can tell whether it is the feed it had.
+    pub fn id(&self) -> u64 {
+        self.inner.id
+    }
+
+    fn snapshot(&self, state: &State) -> Snapshot {
         let mut items: Vec<Item> = state
             .main
             .items
@@ -1245,6 +1516,8 @@ impl Feed {
             workers: state.workers.iter().map(|w| w.summary.clone()).collect(),
             jobs: state.jobs.clone(),
             activity: state.activity.clone(),
+            feed: self.inner.id,
+            seq: state.seq,
         }
     }
 
@@ -1283,7 +1556,12 @@ impl Feed {
             .collect()
     }
 
-    fn send(&self, update: Update) {
+    /// Sends `update` to the clients. It takes the state locked, so an
+    /// update always goes out with the change it reports and in the order
+    /// of the changes, and a client that subscribes gets each change once,
+    /// in its snapshot or as an update. It counts the update in `seq`.
+    fn publish(&self, state: &mut State, update: Update) {
+        state.seq += 1;
         let mut batched = self
             .inner
             .batched
@@ -1318,7 +1596,7 @@ impl Feed {
         let id = item.id;
         let (lane, budget) = state.lane(&item.agent);
         lane.push(item.clone(), budget);
-        self.send(Update::Item(item));
+        self.publish(state, Update::Item(item));
         id
     }
 
@@ -1337,10 +1615,13 @@ impl Feed {
             && open == kind
             && state.lane(agent).0.append(id, chunk)
         {
-            self.send(Update::Append {
-                id,
-                text: chunk.to_string(),
-            });
+            self.publish(
+                state,
+                Update::Append {
+                    id,
+                    text: chunk.to_string(),
+                },
+            );
             return;
         }
         self.push(state, Item::new(kind, chunk).agent(agent));
@@ -1369,7 +1650,7 @@ impl Feed {
                 item.job = Some(job.to_string());
             }
             let item = item.clone();
-            self.send(Update::Change(item));
+            self.publish(state, Update::Change(item));
         }
         if let Some(job) = outcome.job
             && let Some(summary) = state
@@ -1380,12 +1661,20 @@ impl Feed {
         {
             summary.call = Some(call.item);
             let summary = summary.clone();
-            self.send(Update::Job(summary));
+            self.publish(state, Update::Job(summary));
         }
         // A job that ended before the call's result came (in a parallel
-        // group, whose results come together) ends its line now.
+        // group, whose results come together) ends its line now. The feed
+        // may have dropped one it saw run, and the call keeps how that one
+        // ended. One it never saw run is among the ends it didn't see.
         if let Some(job) = outcome.job.map(|job| job.to_string()) {
-            let ended = match state.jobs.iter().find(|summary| summary.id == job) {
+            let seen = state
+                .jobs
+                .iter()
+                .find(|summary| summary.id == job)
+                .cloned()
+                .or(call.job.filter(|summary| summary.id == job));
+            let ended = match &seen {
                 Some(summary) => summary
                     .ended_at
                     .map(|at| (summary.state, Some(summary.started_at), at)),
@@ -1402,12 +1691,7 @@ impl Feed {
                 }
             }
             // A monitor's line follows its monitor from its start.
-            if let Some(summary) = state
-                .jobs
-                .iter()
-                .find(|summary| summary.id == job && summary.kind == JobKind::Monitor)
-                .cloned()
-            {
+            if let Some(summary) = seen.filter(|summary| summary.kind == JobKind::Monitor) {
                 self.follow_monitor(state, &call.agent, call.item, &summary);
             }
         }
@@ -1445,10 +1729,10 @@ impl Feed {
             })
         });
         if let Some(item) = shortened {
-            self.send(Update::Change(item));
+            self.publish(state, Update::Change(item));
         }
         for id in gone {
-            self.send(Update::Remove { id });
+            self.publish(state, Update::Remove { id });
         }
         match streamed.open_text {
             Some(open) => state.open_text.insert(agent.to_string(), open),
@@ -1486,7 +1770,7 @@ impl Feed {
         let before = state.activity.clone();
         change(&mut state.activity);
         if state.activity != before {
-            self.send(Update::Activity);
+            self.publish(&mut state, Update::Activity);
         }
     }
 
@@ -1614,6 +1898,7 @@ impl Feed {
                             item: id,
                             agent: agent.clone(),
                             message: render::message(tool_name, parameters),
+                            job: None,
                         },
                     );
                 }
@@ -1888,7 +2173,7 @@ impl Feed {
         let Some(mut item) = state.main.remove(id) else {
             return;
         };
-        self.send(Update::Remove { id });
+        self.publish(state, Update::Remove { id });
         item.pending = false;
         self.push(state, item);
     }
@@ -1972,7 +2257,7 @@ impl Feed {
         call.status = Some(status);
         call.outcome = Some(text.to_string());
         let call = call.clone();
-        self.send(Update::Change(call));
+        self.publish(state, Update::Change(call));
     }
 
     /// What the transcript shows of the call `call` (one of the latest),
@@ -2036,7 +2321,7 @@ impl Feed {
                 if found.job.as_deref() != Some(&id) {
                     found.job = Some(id.clone());
                     let found = found.clone();
-                    self.send(Update::Change(found));
+                    self.publish(&mut state, Update::Change(found));
                 }
             }
         }
@@ -2055,18 +2340,11 @@ impl Feed {
             watching,
             expires_at,
         };
-        state.jobs.push(summary.clone());
-        let ended = state
-            .jobs
-            .iter()
-            .filter(|job| !job.state.is_running())
-            .count();
-        if ended > ENDED_JOBS
-            && let Some(oldest) = state.jobs.iter().position(|job| !job.state.is_running())
-        {
-            state.jobs.remove(oldest);
+        if let Some(call) = start.tool_call.and_then(|call| state.calls.get_mut(&call)) {
+            call.job = Some(summary.clone());
         }
-        self.send(Update::Job(summary));
+        state.jobs.push(summary.clone());
+        self.publish(&mut state, Update::Job(summary));
     }
 
     /// The background job `id` ended as `ended`, with `outcome` in a few
@@ -2098,7 +2376,28 @@ impl Feed {
         job.ended_at = Some(now);
         job.outcome = outcome;
         let job = job.clone();
-        self.send(Update::Job(job.clone()));
+        self.publish(&mut state, Update::Job(job.clone()));
+        // The call that started it, if its result hasn't come, keeps how
+        // it ended for its line.
+        if let Some(call) = state
+            .calls
+            .values_mut()
+            .find(|call| call.job.as_ref().is_some_and(|started| started.id == id))
+        {
+            call.job = Some(job.clone());
+        }
+        // Past the ended jobs kept, the one that started first goes, which
+        // may be this one.
+        let kept = state
+            .jobs
+            .iter()
+            .filter(|job| !job.state.is_running())
+            .count();
+        if kept > ENDED_JOBS
+            && let Some(first) = state.jobs.iter().position(|job| !job.state.is_running())
+        {
+            state.jobs.remove(first);
+        }
         if job.kind == JobKind::Monitor {
             let mut lines = state.lines_naming(&id);
             if let Some(item) = job.call {
@@ -2145,7 +2444,7 @@ impl Feed {
         job.alerts = Some(alerts);
         job.expires_at = Some(expires_at);
         let job = job.clone();
-        self.send(Update::Job(job.clone()));
+        self.publish(&mut state, Update::Job(job.clone()));
         let mut lines = state.lines_naming(&id);
         if let Some(item) = job.call {
             lines.push((job.agent.clone(), item));
@@ -2178,7 +2477,7 @@ impl Feed {
         call.status = Some(status);
         call.outcome = Some(text);
         let call = call.clone();
-        self.send(Update::Change(call));
+        self.publish(state, Update::Change(call));
     }
 
     /// The call `item` of `agent`, if its line says it moved to the
@@ -2225,7 +2524,7 @@ impl Feed {
         call.status = Some(status);
         call.outcome = Some(text);
         let call = call.clone();
-        self.send(Update::Change(call));
+        self.publish(state, Update::Change(call));
     }
 
     /// The call `call`'s tool returned `images`: its item shows them (the
@@ -2248,7 +2547,7 @@ impl Feed {
         if let Some(item) = lane.find(id) {
             item.images.extend(images);
             let item = item.clone();
-            self.send(Update::Change(item));
+            self.publish(&mut state, Update::Change(item));
         }
     }
 
@@ -2259,16 +2558,17 @@ impl Feed {
         if let Some(item) = state.main.find(id) {
             item.message_index = Some(index);
             let item = item.clone();
-            self.send(Update::Change(item));
+            self.publish(&mut state, Update::Change(item));
         }
     }
 
     /// The user's message to `worker`, which went to it directly. It is
     /// the worker's item, so only the worker's own transcript shows it.
-    pub fn to_worker(&self, worker: &str, text: &str, source: Source) {
+    /// Returns its ID.
+    pub fn to_worker(&self, worker: &str, text: &str, source: Source) -> u64 {
         let mut item = Item::new(Kind::User, text.trim()).agent(worker);
         item.source = Some(source);
-        self.add(item);
+        self.add(item)
     }
 
     /// Items from before Arko started (a resumed session's conversation,
@@ -2319,7 +2619,7 @@ impl Feed {
             state.turn = state.turn.max(item.turn);
             let (lane, budget) = state.lane(&item.agent);
             lane.push(item.clone(), budget);
-            self.send(Update::Item(item));
+            self.publish(&mut state, Update::Item(item));
         }
         drop(state);
         self.question_activity();
@@ -2338,10 +2638,14 @@ impl Feed {
     /// session went to another conversation): they can't be edited, and
     /// the clients get the change.
     fn forget_messages(&self, state: &mut State) {
-        for item in state.main.items.iter_mut() {
-            if item.message_index.take().is_some() {
-                self.send(Update::Change(item.clone()));
-            }
+        let forgotten: Vec<Item> = state
+            .main
+            .items
+            .iter_mut()
+            .filter_map(|item| item.message_index.take().map(|_| item.clone()))
+            .collect();
+        for item in forgotten {
+            self.publish(state, Update::Change(item));
         }
     }
 
@@ -2355,7 +2659,7 @@ impl Feed {
         lane.wholes = lane.items.iter().map(Item::kept_size).sum();
         state.open_text.remove(MAIN_AGENT);
         state.unread_notes.retain(|(_, id)| *id < from);
-        self.send(Update::Truncate { from });
+        self.publish(&mut state, Update::Truncate { from });
     }
 
     /// `message` without the text of the main agent's latest warning (an
@@ -2417,7 +2721,7 @@ impl Feed {
             item.text = text.to_string();
             let item = item.clone();
             state.main.bytes = (state.main.bytes + item.size()).saturating_sub(before);
-            self.send(Update::Change(item));
+            self.publish(&mut state, Update::Change(item));
             return;
         }
         self.push(&mut state, Item::new(Kind::Notice, text).level(Level::Warn));
@@ -2458,7 +2762,7 @@ impl Feed {
             let item = item.clone();
             state.main.bytes = (state.main.bytes + item.size()).saturating_sub(before);
             state.open_text.remove(MAIN_AGENT);
-            self.send(Update::Change(item));
+            self.publish(&mut state, Update::Change(item));
             return;
         }
         self.push(&mut state, Item::new(Kind::Reply, text));
@@ -2815,7 +3119,7 @@ impl Feed {
             card.text = crate::questions::card_line(&questions);
             card.questions = Some(questions);
             let card = card.clone();
-            self.send(Update::Change(card));
+            self.publish(state, Update::Change(card));
         }
     }
 
@@ -2855,17 +3159,21 @@ impl Feed {
         String,
         tokio::sync::oneshot::Receiver<crate::approvals::Answer>,
     ) {
-        let added = self.lock().approvals.add(approval);
+        let mut state = self.lock();
+        let added = state.approvals.add(approval);
         log::debug!("approval {} asked for run {run} (call {call:?})", added.0);
-        self.send(Update::Activity);
+        #[cfg(test)]
+        self.paused();
+        self.publish(&mut state, Update::Activity);
         added
     }
 
     /// The request `id` leaves the tray unanswered (its tool stopped
     /// waiting).
     pub(crate) fn withdraw_approval(&self, id: &str) {
-        if self.lock().approvals.withdraw(id) {
-            self.send(Update::Activity);
+        let mut state = self.lock();
+        if state.approvals.withdraw(id) {
+            self.publish(&mut state, Update::Activity);
         }
     }
 
@@ -2880,9 +3188,10 @@ impl Feed {
         &self,
         answers: &crate::approvals::ApprovalAnswers,
     ) -> Vec<crate::approvals::ApprovalRequest> {
-        let answered = self.lock().approvals.answer(answers);
+        let mut state = self.lock();
+        let answered = state.approvals.answer(answers);
         if !answered.is_empty() {
-            self.send(Update::Activity);
+            self.publish(&mut state, Update::Activity);
         }
         answered
     }
@@ -2992,13 +3301,18 @@ impl Feed {
             self.push(&mut state, item.agent(id));
         }
         self.worker_changed(&mut state, id, true);
-        if let Some(worker) = state.worker(id)
-            && !worker.summary.state.is_active()
+        if let Some(outcome) = state
+            .worker(id)
+            .map(|worker| worker.summary.state)
+            .filter(|state| !state.is_active())
         {
-            self.send(Update::WorkerEnded {
-                id: id.to_string(),
-                outcome: worker.summary.state,
-            });
+            self.publish(
+                &mut state,
+                Update::WorkerEnded {
+                    id: id.to_string(),
+                    outcome,
+                },
+            );
         }
     }
 
@@ -3091,7 +3405,8 @@ impl Feed {
     /// [`worker_under`](Self::worker_under) named.
     pub fn worker_info(&self, id: &str, info: WorkerInfo) {
         let mut state = self.lock();
-        self.known_worker(&mut state, id);
+        // (A worker heard of first here goes out whatever it started with.)
+        let new = self.known_worker(&mut state, id);
         let parent = state.parents.get(id).cloned();
         let Some(worker) = state.worker(id) else {
             return;
@@ -3110,8 +3425,8 @@ impl Feed {
             summary.cost_billed = billed;
             summary.cost_list = list;
         }
-        if *summary != before {
-            self.worker_changed(&mut state, id, false);
+        if new || *summary != before {
+            self.worker_changed(&mut state, id, new);
         }
         self.add_up_families(&mut state);
     }
@@ -3234,7 +3549,7 @@ impl Feed {
     /// state changed) or when the last one went out long enough ago, else
     /// a little later.
     fn worker_changed(&self, state: &mut State, id: &str, urgent: bool) {
-        let now = Instant::now();
+        let now = self.inner.clock.now();
         let Some(worker) = state.worker(id) else {
             return;
         };
@@ -3243,29 +3558,28 @@ impl Feed {
             worker.sent = Some(now);
             worker.pending = false;
             let summary = worker.summary.clone();
-            self.send(Update::Worker(summary));
+            self.publish(state, Update::Worker(summary));
             return;
         }
         if worker.pending {
             return;
         }
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            // No timer to send it later with: it goes now.
-            worker.sent = Some(now);
-            let summary = worker.summary.clone();
-            self.send(Update::Worker(summary));
-            return;
-        };
-        worker.pending = true;
         let at = worker.sent.map_or(now, |sent| sent + WORKER_EVERY);
         let feed: Weak<Inner> = Arc::downgrade(&self.inner);
-        let id = id.to_string();
-        runtime.spawn(async move {
-            tokio::time::sleep_until(at.into()).await;
+        let owned = id.to_string();
+        let waits = self.inner.clock.at(at, move || {
             if let Some(inner) = feed.upgrade() {
-                Feed { inner }.send_pending(&id);
+                Feed { inner }.send_pending(&owned);
             }
         });
+        if waits {
+            worker.pending = true;
+            return;
+        }
+        // No timer to send it later with: it goes now.
+        worker.sent = Some(now);
+        let summary = worker.summary.clone();
+        self.publish(state, Update::Worker(summary));
     }
 
     /// Sends the worker's summary if a change of it waits.
@@ -3275,9 +3589,9 @@ impl Feed {
             && worker.pending
         {
             worker.pending = false;
-            worker.sent = Some(Instant::now());
+            worker.sent = Some(self.inner.clock.now());
             let summary = worker.summary.clone();
-            self.send(Update::Worker(summary));
+            self.publish(&mut state, Update::Worker(summary));
         }
     }
 }
@@ -3346,6 +3660,126 @@ mod tests {
         ));
     }
 
+    /// Workers new to a batched client come in the order they started, as a
+    /// snapshot has them, though the first one's summary changed again
+    /// later in the batch. So do jobs.
+    #[test]
+    fn a_batch_keeps_new_workers_and_jobs_in_the_order_they_started() {
+        let feed = Feed::new("main");
+        let (_, mut batches) = feed.subscribe_batched();
+        feed.worker("r1", "One", WorkerChange::Started);
+        feed.worker("r2", "Two", WorkerChange::Started);
+        feed.worker("r1", "One", WorkerChange::Finished { report: "Done." });
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.job_started(JobStart::new(a, MAIN_AGENT, JobKind::Command, "make"));
+        feed.job_started(JobStart::new(b, MAIN_AGENT, JobKind::Command, "test"));
+        feed.job_ended(a, JobState::Finished, None);
+        let batch = batches.try_next().unwrap();
+        let workers: Vec<(&str, WorkerState)> = batch
+            .iter()
+            .filter_map(|update| match update {
+                Update::Worker(summary) => Some((summary.id.as_str(), summary.state)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            workers,
+            [("r1", WorkerState::Finished), ("r2", WorkerState::Running)]
+        );
+        let jobs: Vec<(String, JobState)> = batch
+            .iter()
+            .filter_map(|update| match update {
+                Update::Job(summary) => Some((summary.id.clone(), summary.state)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            jobs,
+            [
+                (a.to_string(), JobState::Finished),
+                (b.to_string(), JobState::Running)
+            ]
+        );
+        let snapshot = feed.subscribe().0;
+        let order: Vec<&str> = snapshot.workers.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(order, ["r1", "r2"]);
+    }
+
+    /// A worker the feed first hears of in what it started with goes out at
+    /// once, though that tells nothing new, as a snapshot has it.
+    #[test]
+    fn a_worker_first_heard_of_in_its_info_goes_out() {
+        let feed = Feed::new("main");
+        let (_, mut receiver) = feed.subscribe();
+        feed.worker_info("r1", WorkerInfo::new());
+        assert!(matches!(
+            updates(&mut receiver).as_slice(),
+            [Update::Worker(summary)] if summary.id == "r1"
+        ));
+        assert_eq!(feed.subscribe().0.workers.len(), 1);
+    }
+
+    /// A snapshot names its feed, which another feed doesn't share, and
+    /// counts the updates sent before it. A client gets the updates sent
+    /// after it, each once.
+    #[test]
+    fn a_snapshot_names_its_feed_and_counts_the_updates_before_it() {
+        let feed = Feed::new("main");
+        assert_ne!(feed.id(), Feed::new("main").id());
+        let (empty, mut first) = feed.subscribe();
+        assert_eq!((empty.feed, empty.seq), (feed.id(), 0));
+        feed.event(&event("main", chunk("Hel")), None);
+        feed.event(&event("main", chunk("lo")), None);
+        let (snapshot, mut second) = feed.subscribe();
+        assert_eq!(snapshot.seq, 2, "the item and its append");
+        feed.notice(Level::Info, "Done.");
+        assert_eq!(updates(&mut first).len(), 3);
+        assert_eq!(updates(&mut second).len(), 1);
+        assert_eq!(feed.subscribe().0.seq, 3);
+    }
+
+    /// A client that falls behind the broadcast gets a snapshot to start
+    /// over from in place of what it missed, whether it waits for the next
+    /// update or takes those that wait, and the updates after the snapshot
+    /// follow.
+    #[test]
+    fn a_follower_that_falls_behind_gets_a_snapshot_in_place_of_what_it_missed() {
+        use futures_util::FutureExt;
+        let feed = Feed::new("main");
+        let (_, mut waits) = feed.follow();
+        let (_, mut takes) = feed.follow();
+        feed.notice(Level::Info, "first");
+        assert!(matches!(
+            takes.try_next(),
+            Some(Received::Update(Update::Item(item))) if item.text == "first"
+        ));
+        // More than the broadcast keeps, for both.
+        for n in 0..=BACKLOG {
+            feed.notice(Level::Info, &format!("note {n}"));
+        }
+        let Some(Received::Reset(taken)) = takes.try_next() else {
+            panic!("behind")
+        };
+        let Some(Received::Reset(waited)) = waits.next().now_or_never() else {
+            panic!("behind")
+        };
+        for snapshot in [&taken, &waited] {
+            assert_eq!(snapshot.seq, BACKLOG as u64 + 2);
+            assert_eq!(
+                snapshot.items.last().unwrap().text,
+                format!("note {BACKLOG}")
+            );
+        }
+        assert!(takes.try_next().is_none() && waits.waiting() == 0);
+        feed.notice(Level::Info, "after");
+        for following in [&mut takes, &mut waits] {
+            assert!(matches!(
+                following.try_next(),
+                Some(Received::Update(Update::Item(item))) if item.text == "after"
+            ));
+        }
+    }
+
     /// A batched client misses nothing however far behind it falls: 10,000
     /// pieces of text it didn't read come as one item with all of them,
     /// where a broadcast client lagged. A worker's summaries come as the
@@ -3405,8 +3839,8 @@ mod tests {
             Update::Activity,
         ]);
         assert!(matches!(merged.as_slice(), [
-            Update::Change(item),
             Update::Worker(worker),
+            Update::Change(item),
             Update::Activity,
         ] if item.text == "0x" && worker.state == WorkerState::Finished));
     }
@@ -3886,6 +4320,77 @@ mod tests {
         assert!(feed.subscribe().0.jobs.is_empty());
     }
 
+    /// A job that ended before its call's result came ends the call's line
+    /// as the result comes, also when the feed dropped the job meanwhile,
+    /// as it started before the ended jobs the feed keeps. So does a
+    /// monitor.
+    #[test]
+    fn a_job_the_feed_dropped_before_its_calls_result_still_ends_its_line() {
+        let newer_ended = |feed: &Feed| {
+            for _ in 0..ENDED_JOBS {
+                let id = Uuid::new_v4();
+                feed.job_started(JobStart::new(id, MAIN_AGENT, JobKind::Command, "test"));
+                feed.job_ended(id, JobState::Finished, None);
+            }
+        };
+        let dropped = |feed: &Feed, job: Uuid| {
+            let jobs = feed.subscribe().0.jobs;
+            jobs.iter().all(|summary| summary.id != job.to_string())
+        };
+        let result = |feed: &Feed, call: Uuid, tool: &str, output: String| {
+            let returned = AgentEvent::ToolResult {
+                tool_call_id: call,
+                tool_name: tool.into(),
+                output,
+            };
+            feed.event(&event("main", returned), None);
+        };
+
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.event(&event("main", lookup(call)), None);
+        feed.job_started(
+            JobStart::new(job, MAIN_AGENT, JobKind::Call, "mcp__search__lookup").made_by(call),
+        );
+        newer_ended(&feed);
+        feed.job_ended(job, JobState::Failed, None);
+        assert!(dropped(&feed, job));
+        result(&feed, call, "mcp__search__lookup", moved(job));
+        assert_eq!(
+            call_item(&feed, "lookup").outcome.as_deref(),
+            Some("failed in the background")
+        );
+
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut parameters = HashMap::new();
+        parameters.insert("command".to_string(), serde_json::json!("npm run dev"));
+        let monitor = AgentEvent::ToolCallFormatted {
+            tool_call_id: call,
+            tool_name: "monitor_start".into(),
+            parameters,
+        };
+        feed.event(&event("main", monitor), None);
+        feed.job_started(
+            JobStart::new(job, MAIN_AGENT, JobKind::Monitor, "npm run dev")
+                .made_by(call)
+                .started(now_ms() - 30 * 60_000)
+                .monitoring("lines that match error", now_ms()),
+        );
+        newer_ended(&feed);
+        feed.job_ended(job, JobState::Expired, None);
+        assert!(dropped(&feed, job));
+        let output = format!(
+            "Monitor {job} started. It runs `npm run dev` and alerts you of lines that match `error`, until 12:00 UTC (30 min). It has printed nothing yet."
+        );
+        result(&feed, call, "monitor_start", output);
+        let line = call_item(&feed, "monitor $ npm run dev");
+        assert_eq!(
+            (line.status, line.outcome.as_deref()),
+            (Some(CallStatus::Ok), Some("ended after 30 min"))
+        );
+    }
+
     /// A restored line of a call that moved to the background says how its
     /// job ended with an earlier Arko, without a time it can't know.
     #[test]
@@ -4245,7 +4750,8 @@ mod tests {
     }
 
     /// A job a command started (terminal_start) keeps its call's own line,
-    /// and the call names it. A batch keeps a job's last summary.
+    /// and the call names it. A batch keeps a job's last summary, in the
+    /// place of its first.
     #[test]
     fn a_started_commands_job_names_its_call_and_batches_keep_the_last_summary() {
         let feed = Feed::new("main");
@@ -4289,7 +4795,7 @@ mod tests {
             Update::Job(summary(JobState::Finished)),
         ]);
         assert!(
-            matches!(merged.as_slice(), [Update::Activity, Update::Job(last)] if last.state == JobState::Finished)
+            matches!(merged.as_slice(), [Update::Job(last), Update::Activity] if last.state == JobState::Finished)
         );
     }
 
@@ -5609,6 +6115,49 @@ mod tests {
         assert_eq!(feed.approvals()[0].batch, 2, "a new tray");
     }
 
+    /// An approval request goes out with the state locked, so a client that
+    /// subscribes while it comes in waits for its update. It sees the
+    /// request in the tray and gets no update for it, and its snapshot's
+    /// count of updates is the feed's.
+    #[test]
+    fn a_request_and_its_update_reach_a_new_client_once() {
+        use crate::approvals::Approval;
+        let feed = Feed::new("main");
+        let (_, mut before) = feed.subscribe();
+        let (locked, held) = std::sync::mpsc::channel();
+        let (sender, joined) = std::sync::mpsc::channel();
+        let paused = feed.clone();
+        *feed.inner.pause.lock().unwrap() = Some(Box::new(move || {
+            // Where the request waits to go out, the state is locked.
+            let try_lock = paused.inner.state.try_lock();
+            let _ = locked.send(matches!(try_lock, Err(std::sync::TryLockError::WouldBlock)));
+            drop(try_lock);
+            // A client subscribes then.
+            std::thread::spawn(move || {
+                let (snapshot, updates) = paused.subscribe();
+                let saw = paused.approvals().len();
+                let _ = sender.send((snapshot, updates, saw));
+            });
+        }));
+        let profile = Approval::Profile(crate::profiles::approval(
+            &crate::profiles::Profile::new("one", "Reviews"),
+            crate::profiles::Place::User,
+        ));
+        let (_, _answer) = feed.request_approval(Uuid::new_v4(), None, profile);
+        assert!(held.recv().unwrap(), "the state is locked there");
+        let (snapshot, mut updates, saw) = joined.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(saw, 1, "the client sees the request");
+        assert!(
+            delivered(&mut updates).is_empty(),
+            "and gets no update for it"
+        );
+        assert!(matches!(
+            delivered(&mut before).as_slice(),
+            [Update::Activity]
+        ));
+        assert_eq!(snapshot.seq, feed.subscribe().0.seq);
+    }
+
     /// A worker gets a placeholder in the main transcript where it starts
     /// (again in a later turn, when it goes on there), a summary that
     /// follows it, and its report as the end of its own transcript.
@@ -6126,5 +6675,429 @@ mod tests {
             .map(Item::size)
             .sum();
         assert!(main <= MAIN_BUDGET.bytes);
+    }
+
+    // ----- clients made from snapshots -----
+
+    use crate::testing::{FeedMirror, RandomSession};
+
+    /// The updates waiting for `receiver`. These tests read after each
+    /// call, so a client that fell behind fails them.
+    fn delivered(receiver: &mut broadcast::Receiver<Update>) -> Vec<Update> {
+        let mut out = Vec::new();
+        loop {
+            match receiver.try_recv() {
+                Ok(update) => out.push(update),
+                Err(broadcast::error::TryRecvError::Empty) => return out,
+                Err(other) => panic!("{other:?}"),
+            }
+        }
+    }
+
+    /// The clients of a session in the tests below: those that follow the
+    /// broadcast, each from a snapshot of its own, and a batched one.
+    struct Clients {
+        updates: broadcast::Receiver<Update>,
+        batches: Batches,
+        following: Vec<FeedMirror>,
+        batched: FeedMirror,
+        /// The updates sent, as the clients count them.
+        count: u64,
+        /// The workers' ends the first follower and the batched client were
+        /// told of, each with the state the client had the worker in then.
+        ends: [Vec<(String, WorkerState, Option<WorkerState>)>; 2],
+    }
+
+    impl Clients {
+        fn new(feed: &Feed) -> Self {
+            let (start, updates) = feed.subscribe();
+            let (_, batches) = feed.subscribe_batched();
+            Self {
+                updates,
+                batches,
+                following: vec![FeedMirror::new(&start)],
+                batched: FeedMirror::new(&start),
+                count: start.seq,
+                ends: Default::default(),
+            }
+        }
+
+        /// Gives the followers the updates that came, and the batched client
+        /// a batch if `batch`.
+        fn take(&mut self, feed: &Feed, batch: bool) {
+            for update in delivered(&mut self.updates) {
+                self.count += 1;
+                for client in &mut self.following {
+                    client.apply(&update, || feed.activity());
+                }
+                self.ends[0].extend(end_of(&update, &self.following[0]));
+            }
+            if batch && let Some(batch) = self.batches.try_next() {
+                for update in &batch {
+                    self.batched.apply(update, || feed.activity());
+                    self.ends[1].extend(end_of(update, &self.batched));
+                }
+            }
+        }
+
+        fn all(&self) -> impl Iterator<Item = &FeedMirror> {
+            self.following.iter().chain([&self.batched])
+        }
+    }
+
+    /// The worker's end that `update` tells of, if it does, with the state
+    /// `client`, which took it, has the worker in.
+    fn end_of(
+        update: &Update,
+        client: &FeedMirror,
+    ) -> Option<(String, WorkerState, Option<WorkerState>)> {
+        let Update::WorkerEnded { id, outcome } = update else {
+            return None;
+        };
+        let state = client
+            .workers
+            .iter()
+            .find(|worker| worker.id == *id)
+            .map(|worker| worker.state);
+        Some((id.clone(), *outcome, state))
+    }
+
+    /// Whatever a session does, a client made from a snapshot taken at any
+    /// moment, which then applies the updates after it, ends where a client
+    /// made from that moment's snapshot does, within what the feed keeps.
+    /// So does a client that followed every update from the start, and a
+    /// batched client whatever its batches. The items, jobs and activity
+    /// match at once, and the workers' summaries once the feed holds none
+    /// back. Each snapshot counts the updates sent before it. The activity
+    /// is read as each update comes, as clients read it, so a change of it
+    /// that went out without an update would show. Each client is told of
+    /// each worker's end once, after the summary it ended with, and the
+    /// last end of a worker that didn't go on is its state.
+    #[test]
+    fn a_client_made_from_any_snapshot_ends_where_the_feed_is() {
+        let without_workers = |client: &FeedMirror| FeedMirror {
+            workers: Vec::new(),
+            ..client.clone()
+        };
+        // The checks at which a summary was held back.
+        let mut held = 0;
+        for seed in 0..24 {
+            let mut session = RandomSession::new(seed);
+            let feed = session.feed().clone();
+            let mut clients = Clients::new(&feed);
+            // The same start whatever the seed, past the ended jobs the feed
+            // keeps.
+            let mut done = vec![session.jobs_past_the_budget()];
+            clients.take(&feed, true);
+            assert!(clients.following[0].jobs.len() > feed.subscribe().0.jobs.len());
+            let steps = 300 + session.pick(1200);
+            for step in 0..steps {
+                done.push(session.step());
+                let check = step + 1 == steps || session.pick(steps / 12 + 1) == 0;
+                let batch = check || session.pick(5) == 0;
+                clients.take(&feed, batch);
+                if !check {
+                    continue;
+                }
+                let differs = |at: usize, difference: String| {
+                    let last = &done[done.len().saturating_sub(10)..];
+                    panic!(
+                        "seed {seed}, step {step}, client {at}: {difference}\nlast calls {last:?}"
+                    )
+                };
+                let (snapshot, _) = feed.subscribe();
+                assert_eq!(snapshot.seq, clients.count, "seed {seed}, step {step}");
+                let rebuilt = FeedMirror::new(&snapshot);
+                for (at, client) in clients.all().enumerate() {
+                    let within = without_workers(&client.within(&snapshot));
+                    if let Some(difference) = within.difference(&without_workers(&rebuilt)) {
+                        differs(at, difference);
+                    }
+                }
+                held += usize::from(clients.following[0].workers != rebuilt.workers);
+                clients.following.push(rebuilt);
+                session.settle();
+                clients.take(&feed, true);
+                let (settled, _) = feed.subscribe();
+                assert_eq!(settled.seq, clients.count, "seed {seed}, step {step}");
+                for (at, client) in clients.all().enumerate() {
+                    if let Some(difference) = mismatch(client, &settled) {
+                        differs(at, difference);
+                    }
+                }
+            }
+            let ended = session.ended();
+            assert!(!ended.is_empty(), "seed {seed}");
+            for (client, ends) in ["the follower", "the batched client"]
+                .iter()
+                .zip(&clients.ends)
+            {
+                let told: Vec<(String, WorkerState)> = ends
+                    .iter()
+                    .map(|(id, outcome, _)| (id.clone(), *outcome))
+                    .collect();
+                assert_eq!(told, ended, "seed {seed}, {client}");
+                for (id, outcome, state) in ends {
+                    assert_eq!(*state, Some(*outcome), "seed {seed}, {client}, {id}");
+                }
+            }
+            let end = feed.subscribe().0;
+            for worker in end
+                .workers
+                .iter()
+                .filter(|worker| !worker.state.is_active())
+            {
+                let last = ended
+                    .iter()
+                    .rev()
+                    .find(|(id, _)| *id == worker.id)
+                    .map(|(_, outcome)| *outcome);
+                assert_eq!(last, Some(worker.state), "seed {seed}, {}", worker.id);
+            }
+        }
+        assert!(held > 0);
+    }
+
+    /// The feed keeps every job that runs and the ended jobs that started
+    /// last, never more of them than it keeps. A job that ran on while newer
+    /// ones ended and went goes as it ends, as it started first. A client
+    /// that followed, and heard it end, keeps the same jobs by that rule.
+    #[test]
+    fn the_feed_keeps_the_ended_jobs_that_started_last() {
+        let feed = Feed::new("main");
+        let start = |label: &str| {
+            let id = Uuid::new_v4();
+            feed.job_started(JobStart::new(id, MAIN_AGENT, JobKind::Command, label));
+            id
+        };
+        let kept = |feed: &Feed| -> Vec<String> {
+            let jobs = feed.subscribe().0.jobs;
+            jobs.into_iter().map(|job| job.id).collect()
+        };
+        let ended_kept = |feed: &Feed| {
+            let jobs = feed.subscribe().0.jobs;
+            jobs.iter().filter(|job| !job.state.is_running()).count()
+        };
+        let long = start("cargo watch");
+        let ended: Vec<Uuid> = (0..ENDED_JOBS + 5)
+            .map(|_| {
+                let id = start("cargo test");
+                feed.job_ended(id, JobState::Finished, None);
+                id
+            })
+            .collect();
+        let mut expected = vec![long.to_string()];
+        expected.extend(ended[5..].iter().map(Uuid::to_string));
+        assert_eq!(kept(&feed), expected);
+        // Two end with no job started between them.
+        let (a, b) = (start("a"), start("b"));
+        feed.job_ended(a, JobState::Finished, None);
+        feed.job_ended(b, JobState::Failed, None);
+        assert_eq!(ended_kept(&feed), ENDED_JOBS);
+        let (snapshot, mut updates) = feed.subscribe();
+        let mut client = FeedMirror::new(&snapshot);
+        feed.job_ended(long, JobState::Stopped, None);
+        for update in delivered(&mut updates) {
+            client.apply(&update, || feed.activity());
+        }
+        assert!(
+            !kept(&feed).contains(&long.to_string()),
+            "it goes as it ends"
+        );
+        assert_eq!(ended_kept(&feed), ENDED_JOBS);
+        let heard = client.jobs.iter().find(|job| job.id == long.to_string());
+        assert_eq!(heard.map(|job| job.state), Some(JobState::Stopped));
+        assert_eq!(mismatch(&client, &feed.subscribe().0), None);
+    }
+
+    /// How `client` differs from a client made from `snapshot`, within what
+    /// the snapshot keeps, as the tests of clients made from snapshots
+    /// compare them.
+    fn mismatch(client: &FeedMirror, snapshot: &Snapshot) -> Option<String> {
+        client
+            .within(snapshot)
+            .difference(&FeedMirror::new(snapshot))
+    }
+
+    /// The comparison those tests make is no more forgiving than a client:
+    /// a change of an item the client never got, a running job the feed
+    /// no longer has, and a change the feed made without an update each
+    /// show.
+    #[test]
+    fn a_client_made_from_a_snapshot_shows_what_it_missed() {
+        // The call's item went by unseen, then its result came.
+        let feed = Feed::new("main");
+        let (start, mut updates) = feed.subscribe();
+        let (mut client, mut seen) = (FeedMirror::new(&start), FeedMirror::new(&start));
+        let call = Uuid::new_v4();
+        feed.event(&event("main", shell(call, "ls")), None);
+        feed.event(&event("main", result(call, "Exit code: 0\nfile")), None);
+        for update in delivered(&mut updates) {
+            if !matches!(update, Update::Item(_)) {
+                client.apply(&update, || feed.activity());
+            }
+            seen.apply(&update, || feed.activity());
+        }
+        assert_eq!(mismatch(&seen, &feed.subscribe().0), None);
+        assert!(mismatch(&client, &feed.subscribe().0).is_some(), "a change");
+
+        // The first job's end went by unseen, and the feed dropped it once
+        // more than it keeps had ended. A client that saw it end differs
+        // only by the drop.
+        let feed = Feed::new("main");
+        let (start, mut updates) = feed.subscribe();
+        let (mut client, mut seen) = (FeedMirror::new(&start), FeedMirror::new(&start));
+        let first = Uuid::new_v4();
+        feed.job_started(JobStart::new(first, MAIN_AGENT, JobKind::Command, "make"));
+        feed.job_ended(first, JobState::Finished, None);
+        for update in delivered(&mut updates) {
+            if matches!(&update, Update::Job(job) if job.state.is_running()) {
+                client.apply(&update, || feed.activity());
+            }
+            seen.apply(&update, || feed.activity());
+        }
+        for _ in 0..=ENDED_JOBS {
+            let id = Uuid::new_v4();
+            feed.job_started(JobStart::new(id, MAIN_AGENT, JobKind::Command, "test"));
+            feed.job_ended(id, JobState::Finished, None);
+        }
+        for update in delivered(&mut updates) {
+            client.apply(&update, || feed.activity());
+            seen.apply(&update, || feed.activity());
+        }
+        let end = feed.subscribe().0;
+        assert!(end.jobs.iter().all(|job| job.id != first.to_string()));
+        assert_eq!(mismatch(&seen, &end), None);
+        assert!(mismatch(&client, &end).is_some(), "a running job");
+        // One that holds an ended job the feed never had, newer than those
+        // it keeps.
+        let mut extra = end.jobs.last().unwrap().clone();
+        extra.id = Uuid::new_v4().to_string();
+        seen.apply(&Update::Job(extra), || feed.activity());
+        assert!(mismatch(&seen, &end).is_some(), "an ended job");
+
+        // The feed changed a worker's summary without an update, which a
+        // summary held back would have sent by now.
+        let clock = ManualClock::new();
+        let feed = Feed::with_clock("main", clock.clone());
+        feed.worker("r1", "Count", WorkerChange::Started);
+        let (start, mut updates) = feed.subscribe();
+        let mut client = FeedMirror::new(&start);
+        feed.lock().workers[0].summary.tool_calls += 1;
+        clock.advance(WORKER_EVERY);
+        for update in delivered(&mut updates) {
+            client.apply(&update, || feed.activity());
+        }
+        assert!(
+            mismatch(&client, &feed.subscribe().0).is_some(),
+            "a summary"
+        );
+
+        // The feed changed an item and the activity without an update.
+        for change in [
+            (|state: &mut State| state.main.items.back_mut().unwrap().text.push('!'))
+                as fn(&mut State),
+            |state: &mut State| state.activity.working = true,
+        ] {
+            let feed = Feed::new("main");
+            let (start, mut updates) = feed.subscribe();
+            let mut client = FeedMirror::new(&start);
+            feed.notice(Level::Info, "Done.");
+            for update in delivered(&mut updates) {
+                client.apply(&update, || feed.activity());
+            }
+            assert_eq!(mismatch(&client, &feed.subscribe().0), None);
+            change(&mut feed.lock());
+            assert!(delivered(&mut updates).is_empty());
+            assert!(
+                mismatch(&client, &feed.subscribe().0).is_some(),
+                "no update"
+            );
+        }
+    }
+
+    /// A client that subscribes while a worker's summary waits to go out
+    /// gets the newer summary in its snapshot. Once the summary goes out, at
+    /// its time, it and a client that subscribed before both end where the
+    /// feed is.
+    #[test]
+    fn a_snapshot_taken_while_a_summary_waits_ends_where_the_feed_is() {
+        let clock = ManualClock::new();
+        let feed = Feed::with_clock("main", clock.clone());
+        feed.worker("r1", "Count", WorkerChange::Started);
+        let (before, mut early) = feed.subscribe();
+        let mut follower = FeedMirror::new(&before);
+        // Within a quarter of a second of the last summary, so the new one
+        // waits.
+        clock.advance(WORKER_EVERY / 2);
+        feed.event(&event("worker", shell(Uuid::new_v4(), "ls")), Some("r1"));
+        assert_eq!(clock.waiting(), 1, "its timer");
+        let (during, mut late) = feed.subscribe();
+        let mut rebuilt = FeedMirror::new(&during);
+        assert_eq!(during.workers[0].tool_calls, 1, "the snapshot has it");
+        for update in delivered(&mut early) {
+            follower.apply(&update, || feed.activity());
+        }
+        assert_eq!(follower.workers[0].tool_calls, 0, "its update waits");
+        clock.advance(WORKER_EVERY / 2 - Duration::from_millis(1));
+        assert!(delivered(&mut early).is_empty(), "until its time");
+        clock.advance(Duration::from_millis(1));
+        assert_eq!(clock.waiting(), 0);
+        for update in delivered(&mut early) {
+            follower.apply(&update, || feed.activity());
+        }
+        for update in delivered(&mut late) {
+            rebuilt.apply(&update, || feed.activity());
+        }
+        let end = FeedMirror::new(&feed.subscribe().0);
+        assert_eq!(follower.difference(&end), None);
+        assert_eq!(rebuilt.difference(&end), None);
+    }
+
+    /// A client that fell behind while a note moved to where the agent read
+    /// it and the conversation was cut back starts over from a snapshot,
+    /// and with what follows ends where the feed is.
+    #[test]
+    fn a_client_behind_a_cut_and_a_moved_note_starts_over_where_the_feed_is() {
+        let feed = Feed::new("main");
+        let (_, mut updates) = feed.subscribe();
+        let first = feed.user("First.", Source::Terminal, Delivery::Turn);
+        let note = feed.note("Also this.", Source::Web, 1, Vec::new());
+        // Enough text to fall behind, in few items.
+        let mut cut = None;
+        for at in 0..BACKLOG {
+            feed.event(&event("main", chunk("Working. ")), None);
+            if at == BACKLOG / 2 {
+                let call = Uuid::new_v4();
+                feed.event(&event("main", shell(call, "ls")), None);
+                feed.event(&event("main", result(call, "Exit code: 0\nfile")), None);
+                cut = Some(feed.user("Second.", Source::Terminal, Delivery::Turn));
+            }
+        }
+        let read = AgentEvent::ContextInjected {
+            ids: vec!["note:1".into()],
+            bytes: 10,
+        };
+        feed.event(&event("main", read), None);
+        let moved = feed.subscribe().0.items.last().unwrap().clone();
+        assert!(moved.id > note && moved.text == "Also this.", "{moved:?}");
+        let cut = cut.unwrap();
+        feed.truncate(cut);
+        assert!(matches!(
+            updates.try_recv(),
+            Err(broadcast::error::TryRecvError::Lagged(_))
+        ));
+        let (snapshot, mut fresh) = feed.subscribe();
+        let mut client = FeedMirror::new(&snapshot);
+        assert!(client.items.contains_key(&first));
+        assert!(!client.items.contains_key(&note) && !client.items.contains_key(&moved.id));
+        assert!(client.items.keys().all(|id| *id < cut));
+        feed.user("Third.", Source::Terminal, Delivery::Turn);
+        for update in delivered(&mut fresh) {
+            client.apply(&update, || feed.activity());
+        }
+        let end = feed.subscribe().0;
+        assert_eq!(end.seq, snapshot.seq + 1);
+        assert_eq!(client.difference(&FeedMirror::new(&end)), None);
     }
 }

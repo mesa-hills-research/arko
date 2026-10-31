@@ -223,6 +223,20 @@ pub enum Request {
     /// conversation), else with a short message and its reply in the
     /// conversation (the user's item has `Delivery::Refresh`).
     RefreshCache { reply: Reply<Refreshed> },
+    /// Sends `input`, what the user sent (a message, an answer, answers
+    /// from an answer panel, a dismissal, approval answers), as
+    /// [`Seam::input`] does, and answers with what became of it. A refusal
+    /// is the client's to show, where it keeps what the user typed, so the
+    /// transcript doesn't repeat it. A send is accepted once it went (a turn
+    /// started with it, the agent's note board took it, a worker got it, a
+    /// command ran). A stop, a quit and the like are accepted as they are
+    /// read. When the session closes before it reads a send, it's refused
+    /// as [`RefusalKind::Closed`](crate::RefusalKind::Closed). [`Seam::send`]
+    /// makes one.
+    Send {
+        input: crate::ui::Input,
+        reply: oneshot::Sender<crate::Verdict>,
+    },
     /// The current conversation as the session saved it, for an export, as
     /// [`crate::sessions::conversation`] reads it. It's read in turn with
     /// what changes the conversation, once nothing can still add to it. No
@@ -234,6 +248,20 @@ pub enum Request {
     ExportConversation {
         reply: Reply<crate::sessions::SavedConversation>,
     },
+}
+
+impl Seam {
+    /// Sends `input` ([`Request::Send`]), and returns where its verdict
+    /// comes. A closed session refuses it at once.
+    pub fn send(&self, input: crate::ui::Input) -> oneshot::Receiver<crate::Verdict> {
+        let (reply, verdict) = oneshot::channel();
+        if let Err(unsent) = self.requests.send(Request::Send { input, reply })
+            && let Request::Send { reply, .. } = unsent.0
+        {
+            let _ = reply.send(crate::Verdict::closed());
+        }
+        verdict
+    }
 }
 
 /// How the prompt cache was kept warm ([`Request::RefreshCache`]).
@@ -1064,6 +1092,8 @@ impl Engine {
             main_reconfigured: false,
             earlier: Arc::default(),
             continue_asked: None,
+            #[cfg(test)]
+            notes_refused: false,
         };
         // A chat has no project.
         if !chat {
@@ -1186,6 +1216,8 @@ impl Engine {
         if !harness.exiting {
             harness.repl(&mut self.inputs).await;
         }
+        // (Whatever the reason, what clients sent from now on is refused.)
+        self.inputs.close_sends();
         if harness.reopen {
             RunEnd::Reopen
         } else {
@@ -1209,6 +1241,7 @@ impl Engine {
             TurnEnd::Answered => harness.finish_workers(&mut self.inputs).await,
             other => other,
         };
+        self.inputs.close_sends();
         match end {
             TurnEnd::Answered => RunEnd::Answered,
             TurnEnd::Stopped | TurnEnd::Exit => RunEnd::Stopped,
@@ -5466,4 +5499,47 @@ note("stop")
 
     include!("cache_tests.rs");
     include!("mcp_engine_tests.rs");
+
+    /// What an app sends with `Seam::send` comes back as its verdict: a
+    /// message as the turn it starts, a command that doesn't exist as
+    /// refused, and a quit as read. Once the session closed, a send is
+    /// refused as closed.
+    #[tokio::test]
+    async fn an_apps_sends_get_their_verdicts_until_the_session_closes() {
+        use crate::{RefusalKind, Verdict};
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let wait = |verdict: oneshot::Receiver<Verdict>| async move {
+            tokio::time::timeout(Duration::from_secs(30), verdict)
+                .await
+                .expect("a verdict in time")
+                .expect("a verdict")
+        };
+        let started = wait(seam.send(Input::Message(app_message("Count the pears.")))).await;
+        assert!(
+            matches!(
+                started,
+                Verdict::Accepted {
+                    delivery: crate::remote::Delivery::Turn,
+                    item: Some(_),
+                    ..
+                }
+            ),
+            "{started:?}"
+        );
+        answered(&seam, &bodies, 1).await;
+        let refused = wait(seam.send(Input::Message(app_message("/nosuch")))).await;
+        assert!(
+            matches!(&refused, Verdict::Refused(refusal) if refusal.kind == RefusalKind::UnknownCommand),
+            "{refused:?}"
+        );
+        let quit = wait(seam.send(Input::Quit(Some(Vec::new())))).await;
+        assert!(matches!(quit, Verdict::Accepted { .. }), "{quit:?}");
+        let end = tokio::time::timeout(Duration::from_secs(30), ended).await;
+        assert_eq!(end.unwrap().unwrap(), RunEnd::Quit);
+        let late = wait(seam.send(Input::Message(app_message("Late.")))).await;
+        assert_eq!(late, Verdict::closed());
+    }
 }

@@ -51,12 +51,12 @@ use crossterm::terminal::{
 use crossterm::{Command, cursor, execute, queue};
 use futures_util::{FutureExt, StreamExt};
 use ratatui::Terminal;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::glyphs;
 use crate::remote;
 use crate::ui::{self, Input, Output};
-use app::{App, Effect, Info};
+use app::{App, Effect, Info, Sending};
 use backend::CursorBackend;
 pub use transcript::Banner;
 
@@ -75,6 +75,9 @@ pub struct Setup {
     pub meter: Arc<dyn remote::Meter>,
     /// Where the user's input goes: the session reads it as the terminal's.
     pub input: mpsc::UnboundedSender<Input>,
+    /// Where what the user sends goes, each with where its verdict comes
+    /// ([`crate::Request::Send`]).
+    pub requests: mpsc::UnboundedSender<crate::Request>,
     /// Arko's folder: the history, the view's choices, the user's themes.
     pub root: PathBuf,
     pub session_dir: PathBuf,
@@ -136,7 +139,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     for warning in &catalog.warnings {
         setup.feed.notice(remote::Level::Warn, warning);
     }
-    let (snapshot, updates) = setup.feed.subscribe();
+    let (snapshot, updates) = setup.feed.follow();
     let workspace = setup
         .workspace
         .file_name()
@@ -363,7 +366,7 @@ async fn run(
     mut terminal: Terminal<CursorBackend<Stdout>>,
     mut app: App,
     mut setup: Setup,
-    mut updates: broadcast::Receiver<remote::Update>,
+    mut updates: remote::Following,
     mut stop: oneshot::Receiver<()>,
 ) -> Option<String> {
     let mut events = EventStream::new();
@@ -390,6 +393,8 @@ async fn run(
     // one after another, and their results come back here.
     let settings_worker = openrouter_menu::Worker::start();
     let (settings_done, mut settings_results) = mpsc::unbounded_channel();
+    // What became of what the user sent, as the session says.
+    let (verdict_done, mut verdicts) = mpsc::unbounded_channel();
     // The view's dictation and its microphone, while it records, and where
     // its events come.
     let mut recording: (
@@ -428,7 +433,7 @@ async fn run(
                 let Some(Ok(event)) = event else {
                     // The terminal is gone: as Ctrl-D at the prompt.
                     events_open = false;
-                    let _ = setup.input.send(Input::Eof);
+                    give(&setup.requests, &verdict_done, control(Input::Eof));
                     continue;
                 };
                 // What came together comes as one batch.
@@ -437,36 +442,25 @@ async fn run(
                 handle(&mut app, batch, &mut enter, &mut burst);
                 draw_now = true;
             }
-            update = updates.recv() => {
-                match update {
-                    Ok(update) => {
-                        let mut asked = asks(&update);
-                        bell |= app.update(update, || setup.feed.activity());
-                        // Those waiting too, before the next frame.
-                        while let Ok(update) = updates.try_recv() {
-                            asked |= asks(&update);
-                            bell |= app.update(update, || setup.feed.activity());
-                        }
-                        // The web page just started says so in the feed:
-                        // its links show at once. So do the agent's
-                        // questions, in the answer panel.
-                        if app.waits_for_page() || asked {
-                            app.set_reading(setup.meter.read());
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        let (snapshot, fresh) = setup.feed.subscribe();
-                        updates = fresh;
-                        app.reset(snapshot);
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        // (The feed outlives the view.)
-                        tokio::time::sleep(Duration::from_secs(3600)).await;
-                    }
+            received = updates.next() => {
+                let (rings, asked) = take_updates(&mut app, received, &mut updates, &setup.feed);
+                bell |= rings;
+                // The web page just started says so in the feed: its links
+                // show at once. So do the agent's questions, in the answer
+                // panel.
+                if app.waits_for_page() || asked {
+                    app.set_reading(setup.meter.read());
                 }
                 // Drawn at the next frame: streaming text doesn't redraw at
                 // every chunk.
                 dirty = true;
+            }
+            Some((sending, verdict)) = verdicts.recv() => {
+                match verdict {
+                    Some(verdict) => app.verdict(sending, verdict),
+                    None => app.no_verdict(sending),
+                }
+                draw_now = true;
             }
             Some(result) = settings_results.recv() => {
                 app.openrouter_done(result);
@@ -539,9 +533,8 @@ async fn run(
             for effect in effects {
                 match effect {
                     Effect::Notice(level, text) => setup.feed.notice(level, &text),
-                    Effect::Input(input) => {
-                        let _ = setup.input.send(input);
-                    }
+                    Effect::Send(sending) => give(&setup.requests, &verdict_done, sending),
+                    Effect::Input(input) => give(&setup.requests, &verdict_done, control(input)),
                     Effect::Copy { text, what } => {
                         // The terminal's clipboard, and the system's: the status
                         // line says "Copied" only when the system's took it.
@@ -680,10 +673,68 @@ fn clear_for_redraw<B: ratatui::backend::Backend>(
     terminal.resize(area)
 }
 
-/// The events already waiting, without waiting for more. (Polled in this
-/// task, not with a no-op waker: the stream registers the waker of its
-/// first pending poll only, so a no-op one would leave the next keys unread
-/// until something else woke the loop, crossterm/src/event/stream.rs:112-131.)
+/// Takes `received` from the feed and the updates that wait after it,
+/// before the next frame. Where the view fell behind, also while it takes
+/// those, it starts over from the snapshot it gets instead. Returns whether
+/// the bell should sound, and whether the status should be read again, for
+/// the agent's questions (also when the view started over, as some may
+/// have come while it was behind).
+fn take_updates(
+    app: &mut App,
+    received: remote::Received,
+    updates: &mut remote::Following,
+    feed: &remote::Feed,
+) -> (bool, bool) {
+    let (mut bell, mut asked) = (false, false);
+    let mut next = Some(received);
+    while let Some(received) = next {
+        match received {
+            remote::Received::Update(update) => {
+                asked |= asks(&update);
+                bell |= app.update(update, || feed.activity());
+            }
+            remote::Received::Reset(snapshot) => {
+                asked = true;
+                bell |= app.reset(snapshot);
+            }
+        }
+        next = updates.try_next();
+    }
+    (bell, asked)
+}
+
+/// What became of a send, as the session says it (`None` when it stopped
+/// before it said), for the view's loop.
+type Verdicts = mpsc::UnboundedSender<(Sending, Option<crate::Verdict>)>;
+
+/// A stop, a quit or a move to the background, which puts nothing back.
+fn control(input: Input) -> Sending {
+    Sending {
+        input,
+        restore: app::Restore::Nothing,
+    }
+}
+
+/// Gives the session `sending`, in the order the view gives everything, and
+/// brings its verdict back to the view's loop through `verdicts`. When the
+/// session no longer takes anything, it is refused as closed at once.
+fn give(requests: &mpsc::UnboundedSender<crate::Request>, verdicts: &Verdicts, sending: Sending) {
+    let (reply, verdict) = oneshot::channel();
+    let request = crate::Request::Send {
+        input: sending.input.clone(),
+        reply,
+    };
+    let done = verdicts.clone();
+    if requests.send(request).is_err() {
+        let _ = done.send((sending, Some(crate::Verdict::closed())));
+        return;
+    }
+    tokio::spawn(async move {
+        let verdict = verdict.await.ok();
+        let _ = done.send((sending, verdict));
+    });
+}
+
 /// Whether `update` is of a question card: the agent asked, or its
 /// questions changed.
 fn asks(update: &remote::Update) -> bool {
@@ -694,6 +745,10 @@ fn asks(update: &remote::Update) -> bool {
     )
 }
 
+/// The events already waiting, without waiting for more. (Polled in this
+/// task, not with a no-op waker: the stream registers the waker of its
+/// first pending poll only, so a no-op one would leave the next keys unread
+/// until something else woke the loop, crossterm/src/event/stream.rs:112-131.)
 async fn waiting(events: &mut EventStream) -> Vec<Event> {
     let mut batch = Vec::new();
     while let Ok(Some(Ok(event))) = tokio::time::timeout(Duration::ZERO, events.next()).await {
@@ -860,7 +915,14 @@ mod tests {
             &mut burst,
         );
         let sent = app.take_effects();
-        assert_eq!(sent, [Effect::Input(Input::Line("one\ntwo".into()))]);
+        assert_eq!(
+            sent,
+            [Effect::Send(crate::tui::app::Sending::of_box(
+                Input::Line("one\ntwo".into()),
+                "one\ntwo",
+                Vec::new()
+            ))]
+        );
         // An Enter a key follows at once was a paste's.
         handle(
             &mut app,
@@ -917,7 +979,7 @@ mod tests {
     fn a_lagging_view_keeps_its_recording() {
         use crate::dictation::{DictationEvent, DictationUpdate};
         let feed = remote::Feed::new(remote::MAIN_AGENT);
-        let (_, mut updates) = feed.subscribe();
+        let (_, mut updates) = feed.follow();
         let mut app = app::tests::app();
         let (events, mut received) = mpsc::unbounded_channel();
         let mut sink = recording_sink(events);
@@ -950,17 +1012,54 @@ mod tests {
             event: text(" world"),
         });
         // The subscription lagged, and the view starts over as its loop does.
-        assert!(matches!(
-            updates.try_recv(),
-            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
-        ));
-        app.reset(feed.subscribe().0);
+        let behind = updates.try_next().unwrap();
+        assert!(matches!(behind, remote::Received::Reset(_)));
+        take_updates(&mut app, behind, &mut updates, &feed);
         deliver(&mut app);
         assert_eq!(app.editor.text(), "Hello world");
         assert_eq!(
             app.recording.as_ref().map(|recording| recording.phase),
             Some(dictation::Phase::Listening)
         );
+    }
+
+    /// A view that falls behind the feed while it takes the updates that
+    /// wait starts over from the history, and rings the bell for the turn
+    /// that ended meanwhile, as it does when it falls behind while it waits.
+    #[test]
+    fn a_view_that_falls_behind_while_it_takes_updates_starts_over() {
+        let feed = remote::Feed::new(remote::MAIN_AGENT);
+        let (snapshot, mut updates) = feed.follow();
+        let mut app = app::tests::app();
+        app.focused = false;
+        app.reset(snapshot);
+        feed.turn_started();
+        let started = updates.next().now_or_never().unwrap();
+        assert!(!take_updates(&mut app, started, &mut updates, &feed).0);
+        assert!(app.activity.working);
+        // The loop takes one update, and more come before it takes the
+        // rest: the turn's end and more than the broadcast keeps.
+        feed.notice(remote::Level::Info, "first");
+        let first = updates.next().now_or_never().unwrap();
+        feed.turn_ended("3 s · $0.01", None);
+        for n in 0..3000 {
+            feed.notice(remote::Level::Info, &format!("note {n}"));
+        }
+        let (bell, asked) = take_updates(&mut app, first, &mut updates, &feed);
+        assert!(bell, "the turn ended while it was behind");
+        assert!(asked, "the status is read again");
+        assert!(!app.activity.working);
+        let shown = |app: &App| {
+            let newest = feed.subscribe().0.items.last().unwrap().id;
+            app.transcript.item(newest).map(|item| item.text.clone())
+        };
+        assert_eq!(shown(&app).as_deref(), Some("note 2999"));
+        // It goes on from the snapshot it started over from.
+        feed.notice(remote::Level::Info, "after");
+        let after = updates.next().now_or_never().unwrap();
+        assert!(matches!(&after, remote::Received::Update(_)));
+        take_updates(&mut app, after, &mut updates, &feed);
+        assert_eq!(shown(&app).as_deref(), Some("after"));
     }
 
     /// Giving the terminal back undoes all the view did to it: the
@@ -990,5 +1089,42 @@ mod tests {
         let mut again = Vec::new();
         write_close(&mut again);
         assert!(!String::from_utf8(again).unwrap().contains("\x1b[<1u"));
+    }
+
+    /// What the view gives the session, its messages and its stops alike,
+    /// goes in one channel, so the session reads them in the order given.
+    /// When the session no longer takes anything, a send is refused as
+    /// closed at once.
+    #[tokio::test]
+    async fn the_view_gives_everything_in_one_order() {
+        let (requests, mut received) = mpsc::unbounded_channel();
+        let (verdicts, mut verdicts_back) = mpsc::unbounded_channel();
+        let message = Sending::of_box(Input::Line("Hello.".into()), "Hello.", Vec::new());
+        give(&requests, &verdicts, message);
+        give(&requests, &verdicts, control(Input::Interrupt));
+        let read: Vec<Input> = std::iter::from_fn(|| received.try_recv().ok())
+            .map(|request| match request {
+                crate::Request::Send { input, reply } => {
+                    let _ = reply.send(crate::Verdict::accepted(remote::Delivery::Command, None));
+                    input
+                }
+                _ => panic!("a send"),
+            })
+            .collect();
+        assert_eq!(read, [Input::Line("Hello.".into()), Input::Interrupt]);
+        drop(received);
+        give(
+            &requests,
+            &verdicts,
+            Sending::of_box(Input::Line("Late.".into()), "Late.", Vec::new()),
+        );
+        let mut closed = None;
+        for _ in 0..3 {
+            let (sending, verdict) = verdicts_back.recv().await.unwrap();
+            if sending.input == Input::Line("Late.".into()) {
+                closed = verdict;
+            }
+        }
+        assert_eq!(closed, Some(crate::Verdict::closed()));
     }
 }

@@ -11,10 +11,10 @@ use leptos::task::spawn_local;
 use lucide_leptos::{ChevronDown, ChevronRight};
 use wasm_bindgen::JsCast;
 
-use crate::app::{page, post};
+use crate::app::{Posted, Sender, page, send as send_to_arko};
 use crate::protocol::{
-    Approval, ApprovalAnswers, ApprovalRequest, Look, SkillFile, approval_words_refusal,
-    approvals_heading, approve_label, reject_label,
+    Approval, ApprovalAnswers, ApprovalRequest, Look, SkillFile, approvals_heading, approve_label,
+    reject_label,
 };
 
 /// What the tray remembers of its rows, by request.
@@ -73,10 +73,6 @@ fn words_view(text: &str) -> impl IntoView + use<> {
 fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
     let area = message_box();
     let words = area.as_ref().map(|area| area.value()).unwrap_or_default();
-    if let Some(refusal) = approval_words_refusal(&words) {
-        page().error.set(Some(refusal));
-        return;
-    }
     let answers = rows.unchecked.with_untracked(|unchecked| {
         rows.options.with_untracked(|options| {
             ApprovalAnswers::of(
@@ -88,9 +84,12 @@ fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
         })
     });
     rows.sending.set(true);
+    // (Its words are the message box's, of the view it's sent from.)
+    let sender = Sender::from_view();
     spawn_local(async move {
         let body = serde_json::to_value(&answers).unwrap_or_default();
-        if post("/api/approvals", body).await
+        let outcome = send_to_arko("/api/approvals", body, &sender).await;
+        if sender.take(outcome) == Some(Posted::Taken)
             && answers.words.is_some()
             && let Some(area) = area
             // (A draft begun while the answer was on its way stays.)
@@ -102,7 +101,8 @@ fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
                 let _ = area.dispatch_event(&event);
             }
         }
-        rows.sending.set(false);
+        // (A new feed's tray took the place of this one meanwhile.)
+        rows.sending.try_set(false);
     });
 }
 

@@ -19,10 +19,14 @@ use tokio::sync::{mpsc, oneshot};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::agents::{MAIN, NO_LIMIT, WORKER};
+use crate::asking::Replied;
 use crate::crew::Crew;
 use crate::inputs::{Alert, Asker, Event, Inputs, alert_waits, unread_notes, waits_with};
 use crate::openings::{Opening, Subjects};
-use crate::remote::{Action, Delivery, Level, REFRESH_MESSAGE, Source};
+use crate::remote::{
+    Action, Confirm, Delivery, Level, Partial, REFRESH_MESSAGE, RefusalKind, Source,
+};
+use crate::sending::{Admitted, Phase, Read, Reply};
 use crate::session::{Mode, Session, Settings};
 use crate::shell::{Shell, ShellTool};
 use crate::status::Gauges;
@@ -713,6 +717,10 @@ pub(crate) struct Harness {
     /// prompt cache expired without asking again: the one Arko just asked
     /// about, or one the user confirmed in a front end.
     pub(crate) continue_asked: Option<(String, String)>,
+    /// The workflow's note board refuses what the user's sends post, so a
+    /// test sees what a send does when it can't post its note.
+    #[cfg(test)]
+    pub(crate) notes_refused: bool,
 }
 
 impl Harness {
@@ -1392,7 +1400,12 @@ impl Harness {
     pub(crate) async fn repl(&mut self, input: &mut Inputs) {
         let mut last_interrupt: Option<Instant> = None;
         loop {
-            let (line, source, attached) = match input.next_event(true).await {
+            let (event, mut reply) = input.next_event(true).await;
+            // A stop, a quit and the like are accepted as they are read.
+            if !event.is_send() {
+                reply.accept(Delivery::Command, None);
+            }
+            let sent = match event {
                 Event::Woken => {
                     if let News::Exit = self.deliver_news(input).await {
                         break;
@@ -1478,27 +1491,8 @@ impl Harness {
                         .line(&self.output.dim("(Ctrl-C again, Ctrl-D or /exit to quit)"));
                     continue;
                 }
-                Event::Input(Some(Input::Line(line))) => {
-                    (input.coalesce(line).await, self.input_source, Vec::new())
-                }
-                Event::Input(Some(Input::Message(message))) => {
-                    let answers = message.answers.clone();
-                    if message.continue_uncached {
-                        self.confirm_continue(&message.text);
-                    }
-                    match self.message_text(message) {
-                        Some(text) => (text, self.input_source, answers),
-                        None => continue,
-                    }
-                }
-                Event::Input(Some(Input::Answer { question, text })) => {
-                    let Some(answers) = self.card_answered(question) else {
-                        continue;
-                    };
-                    (text, self.input_source, answers)
-                }
                 Event::Input(Some(Input::AnswerQuestions(answers))) => {
-                    if self.answer_questions(answers).is_some()
+                    if self.answer_questions(answers, &mut reply).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -1506,7 +1500,7 @@ impl Harness {
                     continue;
                 }
                 Event::Input(Some(Input::DismissQuestions(ids))) => {
-                    if self.dismiss_questions(ids).is_some()
+                    if self.dismiss_questions(ids, &mut reply).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -1514,28 +1508,15 @@ impl Harness {
                     continue;
                 }
                 Event::Input(Some(Input::AnswerApprovals(answers))) => {
-                    self.answer_approvals(answers, Some(self.input_source));
+                    self.answer_approvals(answers, Some(self.input_source), &mut reply);
                     continue;
                 }
                 Event::Remote(Action::AnswerApprovals(answers)) => {
-                    self.answer_approvals(answers, Some(Source::Web));
+                    self.answer_approvals(answers, Some(Source::Web), &mut reply);
                     continue;
                 }
-                Event::Remote(Action::Message(text)) => {
-                    self.echo_web(&text);
-                    (text, Source::Web, Vec::new())
-                }
-                Event::Remote(Action::Continue(text)) => {
-                    self.echo_web(&text);
-                    self.confirm_continue(&text);
-                    (text, Source::Web, Vec::new())
-                }
-                Event::Remote(Action::Reply { text, answers }) => {
-                    self.echo_web(&text);
-                    (text, Source::Web, answers)
-                }
                 Event::Remote(Action::AnswerQuestions(answers)) => {
-                    if self.answer_questions(answers).is_some()
+                    if self.answer_questions(answers, &mut reply).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -1543,7 +1524,7 @@ impl Harness {
                     continue;
                 }
                 Event::Remote(Action::DismissQuestions(ids)) => {
-                    if self.dismiss_questions(ids).is_some()
+                    if self.dismiss_questions(ids, &mut reply).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -1559,94 +1540,54 @@ impl Harness {
                     self.page_job_action(action);
                     continue;
                 }
-                Event::Remote(Action::Answer { question, text }) => {
-                    let Some(answers) = self.card_answered(question) else {
-                        continue;
-                    };
-                    self.echo_web(&text);
-                    (text, Source::Web, answers)
-                }
+                event => match self.read_sent(event, reply, input, Phase::Idle).await {
+                    Read::Sent(sent) => sent,
+                    Read::Done | Read::Other => continue,
+                },
             };
-            let text = line.trim();
-            if text.is_empty() && self.pending_images.is_empty() {
-                continue;
-            }
-            self.user_present();
-            if let Some(command) = command(text) {
-                // (Images go with messages only.)
-                self.pending_images.clear();
-                self.pending_refs.clear();
-                if self.refused(command, source) {
-                    continue;
-                }
-                if is_remote_command(command) {
-                    self.remote_command(command, source).await;
-                    continue;
-                }
-                if let Some(argument) = openrouter_words(command) {
-                    self.openrouter_live(command, argument, source).await;
-                    continue;
-                }
-                // A new conversation that carries this one over.
-                if let Some(switch) = self.switch_of(command) {
-                    self.feed.user(command, source, Delivery::Command);
-                    if self.switch(switch, source, input).await {
+            let (text, source, attached, mut reply) = match self.admit(sent, Phase::Idle) {
+                None => continue,
+                Some(Admitted::Command {
+                    command,
+                    source,
+                    confirmed,
+                    reply,
+                }) => {
+                    if self
+                        .run_command(&command, source, Phase::Idle, input, reply, confirmed)
+                        .await
+                    {
                         break;
                     }
                     continue;
                 }
-                if self.live_command(command, source) {
-                    continue;
-                }
-                self.feed.user(command, source, Delivery::Command);
-                if let Some(argument) = conversations::resume_argument(command) {
-                    self.resume_command(argument).await;
-                    continue;
-                }
-                let quit = self.mirrored(|harness| match command {
-                    "/exit" | "/quit" => harness.may_exit(Some(harness.jobs_shown.clone())),
-                    "/new" => {
-                        harness.new_conversation();
-                        false
-                    }
-                    other => {
-                        match crate::switch::new_argument(other) {
-                            Some(Err(error)) => harness.output.line(&harness.output.error(&error)),
-                            _ => harness.command(other),
-                        }
-                        false
-                    }
-                });
-                if quit {
-                    break;
-                }
-                continue;
-            }
-            if self.unknown_command(&line, source) {
-                self.pending_images.clear();
-                self.pending_refs.clear();
-                continue;
-            }
-            // An answer too long to send isn't sent, and its questions stay
-            // open.
-            if let Some(refusal) = self.reply_refused(text, &attached) {
-                self.say(Level::Warn, &refusal);
-                continue;
-            }
+                Some(Admitted::Message {
+                    text,
+                    source,
+                    attached,
+                    reply,
+                }) => (text, source, attached, reply),
+            };
+            let text = text.as_str();
             let shown = std::mem::take(&mut self.pending_refs);
             // What the user typed that the agent didn't read goes first, as
             // the message carries it.
             self.feed.notes_sent(&self.unread);
-            self.feed.user_with(text, source, Delivery::Turn, shown);
+            let item = self.feed.user_with(text, source, Delivery::Turn, shown);
             // A message that answers questions reaches the agent as their
             // note, which a turn of its own delivers.
-            let prompt = match self.reply_text(text, &attached) {
-                Some(reply) if !reply.kept => {
-                    self.labelled = Some(reply.text);
-                    Prompt::User(text.to_string())
+            let (prompt, delivery, not_posted) = match self.reply_text(text, &attached) {
+                Replied::Plain { text: labelled, .. } => {
+                    self.labelled = Some(labelled);
+                    (Prompt::User(text.to_string()), Delivery::Turn, None)
                 }
-                _ => Prompt::Answers,
+                Replied::Noted { not_posted, .. } | Replied::Answered { not_posted } => {
+                    (Prompt::Answers, Delivery::Answer, not_posted)
+                }
             };
+            // It went: the turn starts with it.
+            let partial = self.partly(&reply, Vec::new(), not_posted);
+            reply.accept_partly(delivery, Some(item), partial);
             if let TurnEnd::Exit = self.turn(prompt, input).await {
                 break;
             }
@@ -1689,31 +1630,21 @@ impl Harness {
         ));
     }
 
-    /// Whether the command can't be run from where it was typed: the page
-    /// can't quit Arko or turn itself off.
-    pub(crate) fn refused(&self, command: &str, source: Source) -> bool {
-        if source == Source::Web && commands::find(command).is_some_and(|c| c.terminal_only()) {
-            self.say(
-                Level::Warn,
-                &format!("  {command} works only at the terminal."),
-            );
-            return true;
-        }
-        false
+    /// Why the command can't be run from where it was typed, if it can't:
+    /// the page can't quit Arko or turn itself off.
+    pub(crate) fn terminal_only(&self, command: &str, source: Source) -> Option<String> {
+        (source == Source::Web && commands::find(command).is_some_and(|c| c.terminal_only()))
+            .then(|| format!("{command} works only at the terminal."))
     }
 
-    /// Whether `line` (as typed, its leading spaces kept) reads as a command
-    /// that isn't one, which is then said rather than sent to the agent
-    /// ([`commands::unknown`]), with the closest command where it was typed.
-    pub(crate) fn unknown_command(&self, line: &str, source: Source) -> bool {
-        let why = match source {
+    /// Why `line` (as typed, its leading spaces kept) isn't sent, when it
+    /// reads as a command that isn't one ([`commands::unknown`]), with the
+    /// closest command where it was typed.
+    pub(crate) fn unknown_command(&self, line: &str, source: Source) -> Option<String> {
+        match source {
             Source::Web => commands::unknown(line, commands::on_page()),
             Source::Terminal | Source::App => commands::unknown(line, commands::of_session()),
-        };
-        if let Some(why) = &why {
-            self.say(Level::Warn, why);
         }
-        why.is_some()
     }
 
     /// Runs `run` with what the harness prints shown on the remote page
@@ -2130,7 +2061,7 @@ impl Harness {
         };
         // (It shows as the user's message to the worker, not as a command.)
         if name == "/message" {
-            self.message_command(argument, source);
+            self.message_command(argument, source, &mut Reply::default(), false);
             return true;
         }
         self.feed.user(command, source, Delivery::Command);
@@ -2218,6 +2149,11 @@ impl Harness {
             }
             Request::ExportConversation { reply } => {
                 let _ = reply.send(self.export_conversation(working || waiting).await);
+            }
+            // (The session reads a send as the user's input, and never gets
+            // it here.)
+            Request::Send { reply, .. } => {
+                let _ = reply.send(crate::Verdict::closed());
             }
             // (The web page doesn't change the agent: also during a turn.)
             Request::ShareWebPage { bind, reply } => {
@@ -2769,21 +2705,9 @@ impl Harness {
         self.gauges.touch();
     }
 
-    /// The text of an app's message, with its images kept to go with it,
-    /// or `None` when it can't be sent (the user is told why).
-    pub(crate) fn message_text(&mut self, message: ui::Message) -> Option<String> {
-        match self.attach(message.images) {
-            Ok(()) => Some(message.text),
-            Err(why) => {
-                self.say(Level::Error, &why);
-                None
-            }
-        }
-    }
-
     /// The images a message sends: checked for the main agent's model,
     /// kept for the transcript, and pending for the message's turn or note.
-    fn attach(&mut self, attachments: Vec<ui::Attachment>) -> Result<(), String> {
+    pub(crate) fn attach(&mut self, attachments: Vec<ui::Attachment>) -> Result<(), String> {
         self.pending_images.clear();
         self.pending_refs.clear();
         let model = &self.main_config.llm_config.model;
@@ -2808,35 +2732,52 @@ impl Harness {
 
     /// `/message WORKER TEXT`: the user's message goes to the worker as its
     /// lead's would, and the lead gets a copy with its next news when
-    /// `/message-copies` is on.
-    pub(crate) fn message_command(&mut self, argument: &str, source: Source) {
+    /// `/message-copies` is on. It went once the worker has it, which
+    /// `reply` says. `confirmed` says the user agreed, as they sent it, to
+    /// continue a worker whose prompt cache expired.
+    pub(crate) fn message_command(
+        &mut self,
+        argument: &str,
+        source: Source,
+        reply: &mut Reply,
+        confirmed: bool,
+    ) {
         let (to, text) = argument
             .split_once(char::is_whitespace)
             .map_or((argument, ""), |(to, text)| (to, text.trim()));
         if text.is_empty() {
-            self.say(
-                Level::Warn,
-                "/message takes a worker and the message, such as /message r1 Check the tests too.",
-            );
+            let words =
+                "/message takes a worker and the message, such as /message r1 Check the tests too.";
+            if !reply.refuse(RefusalKind::UnknownCommand, words) {
+                self.say(Level::Warn, words);
+            }
             return;
         }
         // Continuing a worker whose prompt cache expired re-reads its whole
-        // conversation, so Arko says what that costs first, and the same
-        // `/message` again continues it.
+        // conversation, so Arko says what that costs first. A client that
+        // waits for the verdict asks the user, and sends it again confirmed.
+        // At the line prompt, which has no question to ask, the same
+        // `/message` again continues it. That is only for sends without a
+        // verdict to come, so a warning there confirms nothing for another
+        // client.
         let now = chrono::Utc::now();
         let asked = (to.trim().to_ascii_lowercase(), text.to_string());
         if let Some(cache) = self.crew.as_ref().and_then(|crew| crew.worker_cache(to))
             && cache.asks(now)
-            && self.continue_asked.take() != Some(asked.clone())
+            && !confirmed
+            && (reply.tracked() || self.continue_asked.take() != Some(asked.clone()))
         {
-            self.continue_asked = Some(asked);
-            self.say(
-                Level::Warn,
-                &format!(
-                    "{} The same /message again continues it.",
-                    cache.warning(now)
-                ),
-            );
+            let warning = cache.warning(now);
+            let uncached = RefusalKind::Uncached {
+                worker: to.trim().to_string(),
+            };
+            if !reply.refuse_unless(uncached, &warning, Some(Confirm::ContinueUncached)) {
+                self.continue_asked = Some(asked);
+                self.say(
+                    Level::Warn,
+                    &format!("{warning} The same /message again continues it."),
+                );
+            }
             return;
         }
         let sent = match &self.crew {
@@ -2845,26 +2786,37 @@ impl Harness {
         };
         match sent {
             Ok(id) => {
-                self.feed.to_worker(&id, text, source);
+                let item = self.feed.to_worker(&id, text, source);
                 self.output
                     .echo(&self.output.dim(&format!("  ✉ sent to {id}")));
+                reply.accept(Delivery::Command, Some(item));
             }
-            // (The model's advice after the reason isn't the user's.)
-            Err(why) => self.say(
-                Level::Warn,
-                &format!(
-                    "The message didn't reach {to} ({}). It said “{text}”.",
-                    why.split("; ").next().unwrap_or_default()
-                ),
-            ),
+            Err(why) => {
+                // (The model's advice after the reason isn't the user's.)
+                let why = why.split("; ").next().unwrap_or_default();
+                let words = format!("The message didn't reach {to} ({why}).");
+                if !reply.refuse(RefusalKind::Undelivered, &words) {
+                    self.say(Level::Warn, &format!("{words} It said “{text}”."));
+                }
+            }
         }
     }
 
-    /// The `/message` in `text` continues its worker without asking, though
-    /// its prompt cache expired: the user confirmed it in a front end.
-    pub(crate) fn confirm_continue(&mut self, text: &str) {
-        if let Some((to, words)) = crate::worker_cache::message_parts(text) {
-            self.continue_asked = Some((to.to_ascii_lowercase(), words.to_string()));
+    /// Posts what the user sent as `note` to `workflow`'s note board, once
+    /// under `id` when given ([`Workflow::post_note_once`]).
+    pub(crate) fn post_users_note(
+        &self,
+        workflow: &Workflow,
+        id: Option<uuid::Uuid>,
+        note: Note,
+    ) -> Result<arko_workflows::notes::PostedNote, WorkflowError> {
+        #[cfg(test)]
+        if self.notes_refused {
+            return Err(WorkflowError::Channel("the note board is closed".into()));
+        }
+        match id {
+            Some(id) => workflow.post_note_once(id, note),
+            None => workflow.post_note(note),
         }
     }
 
@@ -3894,8 +3846,13 @@ impl Harness {
         let outcome = loop {
             tokio::select! {
                 outcome = &mut call => break outcome,
-                event = input.next_event(false) => {
-                    let (line, source, attached) = match event {
+                (event, mut reply) = input.next_event(false) => {
+                    // A stop, a quit and the like are accepted as they are
+                    // read.
+                    if !event.is_send() {
+                        reply.accept(Delivery::Command, None);
+                    }
+                    let sent = match event {
                         Event::Request(request) => {
                             Box::pin(self.request(request, input.waiting())).await;
                             continue;
@@ -3913,62 +3870,23 @@ impl Harness {
                             self.move_to_background(&agent);
                             continue;
                         }
-                        Event::Input(Some(Input::Line(line))) => {
-                            (input.coalesce(line).await, self.input_source, Vec::new())
-                        }
-                        Event::Input(Some(Input::Message(message))) => {
-                            let answers = message.answers.clone();
-                            if message.continue_uncached {
-                                self.confirm_continue(&message.text);
-                            }
-                            match self.message_text(message) {
-                                Some(text) => (text, self.input_source, answers),
-                                None => continue,
-                            }
-                        }
-                        Event::Remote(Action::Message(text)) => {
-                            self.echo_web(&text);
-                            (text, Source::Web, Vec::new())
-                        }
-                        Event::Remote(Action::Continue(text)) => {
-                            self.echo_web(&text);
-                            self.confirm_continue(&text);
-                            (text, Source::Web, Vec::new())
-                        }
-                        Event::Remote(Action::Reply { text, answers }) => {
-                            self.echo_web(&text);
-                            (text, Source::Web, answers)
-                        }
-                        Event::Remote(Action::Answer { question, text }) => {
-                            let Some(answers) = self.card_answered(question) else {
-                                continue;
-                            };
-                            self.echo_web(&text);
-                            (text, Source::Web, answers)
-                        }
-                        Event::Input(Some(Input::Answer { question, text })) => {
-                            let Some(answers) = self.card_answered(question) else {
-                                continue;
-                            };
-                            (text, self.input_source, answers)
-                        }
                         // Their note reaches the agent at its next step.
                         Event::Input(Some(Input::AnswerQuestions(answers)))
                         | Event::Remote(Action::AnswerQuestions(answers)) => {
-                            self.answer_questions(answers);
+                            self.answer_questions(answers, &mut reply);
                             continue;
                         }
                         Event::Input(Some(Input::DismissQuestions(ids)))
                         | Event::Remote(Action::DismissQuestions(ids)) => {
-                            self.dismiss_questions(ids);
+                            self.dismiss_questions(ids, &mut reply);
                             continue;
                         }
                         Event::Input(Some(Input::AnswerApprovals(answers))) => {
-                            self.answer_approvals(answers, Some(self.input_source));
+                            self.answer_approvals(answers, Some(self.input_source), &mut reply);
                             continue;
                         }
                         Event::Remote(Action::AnswerApprovals(answers)) => {
-                            self.answer_approvals(answers, Some(Source::Web));
+                            self.answer_approvals(answers, Some(Source::Web), &mut reply);
                             continue;
                         }
                         Event::Remote(
@@ -3997,97 +3915,116 @@ impl Harness {
                             }
                             continue;
                         }
+                        event => match self.read_sent(event, reply, input, Phase::Turn).await {
+                            Read::Sent(sent) => sent,
+                            Read::Done | Read::Other => continue,
+                        },
+                    };
+                    let (text, source, attached, mut reply) = match self.admit(sent, Phase::Turn) {
+                        None => continue,
+                        Some(Admitted::Command {
+                            command,
+                            source,
+                            confirmed,
+                            reply,
+                        }) => {
+                            if self
+                                .run_command(&command, source, Phase::Turn, input, reply, confirmed)
+                                .await
+                            {
+                                exit = true;
+                                stopping |= self.stop(&workflow);
+                            }
+                            continue;
+                        }
+                        Some(Admitted::Message {
+                            text,
+                            source,
+                            attached,
+                            reply,
+                        }) => (text, source, attached, reply),
                     };
                     // The images an app's message sends go with its note.
                     let images = std::mem::take(&mut self.pending_images);
                     let shown = std::mem::take(&mut self.pending_refs);
-                    let text = line.trim().to_string();
-                    if text.is_empty() && images.is_empty() {
-                        continue;
-                    }
-                    self.user_present();
-                    if let Some(command) = command(&text) {
-                        if self.refused(command, source) {
-                            continue;
-                        }
-                        if is_remote_command(command) {
-                            self.remote_command(command, source).await;
-                            continue;
-                        }
-                        if let Some(argument) = openrouter_words(command) {
-                            self.openrouter_live(command, argument, source).await;
-                            continue;
-                        }
-                        if self.live_command(command, source) {
-                            continue;
-                        }
-                        self.feed.user(command, source, Delivery::Command);
-                        let quit = self.mirrored(|harness| {
-                            if matches!(command, "/exit" | "/quit") {
-                                harness.may_exit(Some(harness.jobs_shown.clone()))
-                            } else {
-                                harness.command(command);
-                                false
-                            }
-                        });
-                        if quit {
-                            exit = true;
-                            stopping |= self.stop(&workflow);
-                        }
-                        continue;
-                    }
-                    if self.unknown_command(&line, source) {
-                        continue;
-                    }
-                    if let Some(refusal) = self.reply_refused(&text, &attached) {
-                        self.pending_images = images;
-                        self.pending_refs = shown;
-                        self.say(Level::Warn, &refusal);
-                        continue;
-                    }
                     // A message that answers questions the agent waits for
                     // is the answer.
-                    let Some(labelled) = self.reply_text(&text, &attached) else {
-                        self.output.echo(&self.output.dim("  ✎ answered"));
-                        self.feed.user(line.trim(), source, Delivery::Answer);
-                        continue;
-                    };
-                    // One that answers questions went as their note, which
-                    // the agent reads at its next step (its images with
-                    // it, in a note of their own).
-                    if labelled.kept {
-                        self.output.echo(&self.output.dim(
-                            "  ✎ added to the task, and the agent reads it at its next step",
-                        ));
-                        self.feed.user(&text, source, Delivery::Note);
-                        if !images.is_empty()
-                            && let Some(run) = self.feed.questions_conversation()
-                            && let Err(error) = workflow.post_note(
-                                Note::new("").to([MAIN]).for_run(run).images(images),
-                            )
-                        {
-                            self.say(
-                                Level::Error,
-                                &format!("  could not pass the images on ({error})"),
-                            );
+                    match self.reply_text(&text, &attached) {
+                        Replied::Answered { not_posted } => {
+                            self.output.echo(&self.output.dim("  ✎ answered"));
+                            let item = self.feed.user(&text, source, Delivery::Answer);
+                            let partial = self.partly(&reply, Vec::new(), not_posted);
+                            reply.accept_partly(Delivery::Answer, Some(item), partial);
                         }
-                    } else if self.queue_lines {
-                        self.feed.user(&text, source, Delivery::Queued);
-                        queued.push((text, labelled.text));
-                    } else {
-                        let note = Note::new(labelled.text).to([MAIN]).once().images(images);
-                        match workflow.post_note(note) {
-                            Ok(seq) => {
-                                self.output.echo(&self.output.dim(
-                                    "  ✎ added to the task, and the agent reads it at its next step",
-                                ));
-                                self.feed.note(&text, source, seq.seq, shown);
-                                notes.push((seq.seq, text));
+                        // One that answers questions went as their note, which
+                        // the agent reads at its next step (its images with
+                        // it, in a note of their own).
+                        Replied::Noted { not_posted, .. } => {
+                            self.output.echo(&self.output.dim(
+                                "  ✎ added to the task, and the agent reads it at its next step",
+                            ));
+                            let item = self.feed.user(&text, source, Delivery::Note);
+                            let mut not_passed = not_posted;
+                            if !images.is_empty()
+                                && let Some(run) = self.feed.questions_conversation()
+                                && let Err(error) = self.post_users_note(
+                                    &workflow,
+                                    None,
+                                    Note::new("").to([MAIN]).for_run(run).images(images),
+                                )
+                            {
+                                match reply.tracked() {
+                                    true => {
+                                        let images = format!("The images didn't go with it ({error}).");
+                                        not_passed = Some(match not_passed {
+                                            Some(why) => format!("{why} {images}"),
+                                            None => images,
+                                        });
+                                    }
+                                    false => self.say(
+                                        Level::Error,
+                                        &format!("  could not pass the images on ({error})"),
+                                    ),
+                                }
                             }
-                            Err(error) => self.say(
-                                Level::Error,
-                                &format!("  could not pass that on ({error})"),
-                            ),
+                            let partial = self.partly(&reply, Vec::new(), not_passed);
+                            reply.accept_partly(Delivery::Note, Some(item), partial);
+                        }
+                        Replied::Plain { text: labelled, .. } if self.queue_lines => {
+                            let item = self.feed.user(&text, source, Delivery::Queued);
+                            queued.push((text, labelled));
+                            reply.accept(Delivery::Queued, Some(item));
+                        }
+                        Replied::Plain { text: labelled, settled } => {
+                            let note = Note::new(labelled).to([MAIN]).once().images(images);
+                            match self.post_users_note(&workflow, None, note) {
+                                Ok(seq) => {
+                                    self.output.echo(&self.output.dim(
+                                        "  ✎ added to the task, and the agent reads it at its next step",
+                                    ));
+                                    let item = self.feed.note(&text, source, seq.seq, shown);
+                                    notes.push((seq.seq, text));
+                                    reply.accept(Delivery::Note, Some(item));
+                                }
+                                // Refused only when nothing of it happened. One
+                                // that answered Arko's own question did that.
+                                Err(error) if settled && reply.tracked() => {
+                                    let partial = Partial {
+                                        dropped: Vec::new(),
+                                        words: Some(format!("Couldn’t pass that on ({error}).")),
+                                    };
+                                    reply.accept_partly(Delivery::Answer, None, Some(partial));
+                                }
+                                Err(error) => {
+                                    let words = format!("Couldn’t pass that on ({error}).");
+                                    if !reply.refuse(RefusalKind::Undelivered, words) {
+                                        self.say(
+                                            Level::Error,
+                                            &format!("  could not pass that on ({error})"),
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -4709,7 +4646,12 @@ impl Harness {
                     if running.len() == 1 { "it" } else { "them" }
                 )));
             }
-            match input.next_event(true).await {
+            let (event, mut reply) = input.next_event(true).await;
+            // A stop, a quit and the like are accepted as they are read.
+            if !event.is_send() {
+                reply.accept(Delivery::Command, None);
+            }
+            match event {
                 Event::Woken => {}
                 Event::Finished(finished) => {
                     if let News::Exit = self.deliver_finished(finished, input).await {
@@ -4727,7 +4669,14 @@ impl Harness {
                     Box::pin(self.request(request, input.waiting())).await;
                     self.only_workers = false;
                 }
-                Event::Input(Some(Input::Line(_))) => {}
+                // (A line typed at the prompt goes nowhere now. A client's is
+                // refused.)
+                Event::Input(Some(Input::Line(_))) => {
+                    reply.refuse(
+                        RefusalKind::Closed,
+                        "Arko is only waiting for the workers now, so messages aren't taken.",
+                    );
+                }
                 Event::Input(Some(Input::Background(agent))) => self.move_to_background(&agent),
                 Event::Remote(action @ (Action::Background { .. } | Action::StopJob { .. })) => {
                     self.page_job_action(action)
@@ -4739,7 +4688,8 @@ impl Harness {
                     | Action::Reply { .. }
                     | Action::AnswerQuestions(_)
                     | Action::DismissQuestions(_)
-                    | Action::AnswerApprovals(_),
+                    | Action::AnswerApprovals(_)
+                    | Action::Send { .. },
                 )
                 | Event::Input(Some(
                     Input::Message(_)
@@ -4748,10 +4698,11 @@ impl Harness {
                     | Input::DismissQuestions(_)
                     | Input::AnswerApprovals(_),
                 )) => {
-                    self.feed.notice(
-                        Level::Warn,
-                        "Arko is only waiting for the workers now, so messages aren't taken.",
-                    );
+                    const WORDS: &str =
+                        "Arko is only waiting for the workers now, so messages aren't taken.";
+                    if !reply.refuse(RefusalKind::Closed, WORDS) {
+                        self.feed.notice(Level::Warn, WORDS);
+                    }
                 }
                 Event::Input(Some(Input::Interrupt | Input::Eof | Input::Quit(_)) | None)
                 | Event::Remote(Action::Stop) => {
@@ -5303,6 +5254,13 @@ pub(crate) mod tests {
         include!("switch_tests.rs");
     }
 
+    /// The end-to-end tests of what becomes of what the user sends, in
+    /// their own file.
+    mod sends {
+        use super::*;
+        include!("sending_tests.rs");
+    }
+
     /// `/keys`'s end-to-end tests, in their own file.
     mod api_keys {
         use super::*;
@@ -5694,7 +5652,7 @@ pub(crate) mod tests {
         {
             assert_eq!(
                 listed.contains(&command.name),
-                !harness.refused(command.name, Source::Web),
+                harness.terminal_only(command.name, Source::Web).is_none(),
                 "{}",
                 command.name
             );
@@ -6500,6 +6458,7 @@ pub(crate) mod tests {
             main_reconfigured: false,
             earlier: Arc::default(),
             continue_asked: None,
+            notes_refused: false,
         };
         harness.open(false).unwrap();
         let inputs = Inputs {
@@ -7782,7 +7741,8 @@ pub(crate) mod tests {
         assert!(matches!(
             tokio::time::timeout(Duration::from_secs(2), inputs.next_event(true))
                 .await
-                .unwrap(),
+                .unwrap()
+                .0,
             Event::Woken
         ));
         assert!(matches!(
@@ -7881,6 +7841,7 @@ pub(crate) mod tests {
             match tokio::time::timeout(Duration::from_secs(10), inputs.next_event(false))
                 .await
                 .unwrap()
+                .0
             {
                 Event::Question(question) => harness.question_asked(question),
                 _ => panic!("expected the agent's question"),
@@ -8026,15 +7987,15 @@ pub(crate) mod tests {
 
         // A message without them names them at its end.
         assert_eq!(
-            harness
-                .reply_text("Hello.", &[])
-                .map(|reply| reply.text)
-                .as_deref(),
+            harness.reply_text("Hello.", &[]).text().as_deref(),
             Some("Hello.\n\n(Still open: q1 and q2.)")
         );
         // The panel's answer to q1 goes to the idle agent in a turn.
         let note = harness
-            .answer_questions(answers(vec![chose("q1", "Spaces")]))
+            .answer_questions(
+                answers(vec![chose("q1", "Spaces")]),
+                &mut crate::sending::Reply::default(),
+            )
             .unwrap();
         assert_eq!(
             note,
@@ -8081,7 +8042,7 @@ pub(crate) mod tests {
         assert_eq!(
             harness
                 .reply_text("Not yet.", &["q2".into()])
-                .map(|reply| reply.text)
+                .text()
                 .as_deref(),
             Some("(This message answers q2.)\nNot yet.")
         );
@@ -8089,7 +8050,7 @@ pub(crate) mod tests {
         assert_eq!(
             harness
                 .reply_text("Thanks.", &["q2".into()])
-                .map(|reply| reply.text)
+                .text()
                 .as_deref(),
             Some("Thanks.")
         );
@@ -8097,12 +8058,22 @@ pub(crate) mod tests {
         // so.
         ask_later(&mut harness, run, "q3", "Which branch?");
         assert_eq!(
-            harness.dismiss_questions(vec!["q3".into()]).as_deref(),
+            harness
+                .dismiss_questions(vec!["q3".into()], &mut crate::sending::Reply::default())
+                .as_deref(),
             Some("The user dismissed q3.")
         );
         assert!(harness.feed.open_questions().is_empty());
-        assert!(harness.dismiss_questions(vec!["q3".into()]).is_none());
-        assert!(harness.dismiss_questions(Vec::new()).is_none());
+        assert!(
+            harness
+                .dismiss_questions(vec!["q3".into()], &mut crate::sending::Reply::default())
+                .is_none()
+        );
+        assert!(
+            harness
+                .dismiss_questions(Vec::new(), &mut crate::sending::Reply::default())
+                .is_none()
+        );
     }
 
     /// While the agent works, the panel's answers reach it as a note at its
@@ -8235,20 +8206,27 @@ pub(crate) mod tests {
         let mut waiter = ask_approval(&harness, run, "reviewer");
         assert_eq!(harness.feed.open_questions().len(), 1, "not a question");
         let note = harness
-            .answer_questions(answers(vec![text_answer("q1", "No")]))
+            .answer_questions(
+                answers(vec![text_answer("q1", "No")]),
+                &mut crate::sending::Reply::default(),
+            )
             .unwrap();
         assert_eq!(note, "The user answered q1.\nq1 Push now? No");
         assert!(waiter.receiver().try_recv().is_err());
         ask_later(&mut harness, run, "q2", "Which branch?");
         assert_eq!(
             harness.reply_text("Hold on.", &[]),
-            Some(crate::asking::Reply {
+            crate::asking::Replied::Plain {
                 text: "Hold on.\n\n(Still open: q2.)".into(),
-                kept: false
-            })
+                settled: false
+            }
         );
         assert!(waiter.receiver().try_recv().is_err());
-        harness.answer_approvals(tray_answer(&harness, &[0], ""), Some(Source::Terminal));
+        harness.answer_approvals(
+            tray_answer(&harness, &[0], ""),
+            Some(Source::Terminal),
+            &mut crate::sending::Reply::default(),
+        );
         assert_eq!(
             waiter.receiver().try_recv().unwrap(),
             Answer::Approved {
@@ -8287,24 +8265,27 @@ pub(crate) mod tests {
             answer: None,
         });
         let note = harness
-            .answer_questions(answers(vec![
-                QuestionAnswer::new(
-                    "q1",
-                    Answer {
-                        choices: vec!["Tabs".into()],
-                        text: Some("2 wide".into()),
-                        you_decide: false,
-                    },
-                ),
-                QuestionAnswer::new(
-                    "q2",
-                    Answer {
-                        choices: Vec::new(),
-                        text: Some("ask Bob first".into()),
-                        you_decide: true,
-                    },
-                ),
-            ]))
+            .answer_questions(
+                answers(vec![
+                    QuestionAnswer::new(
+                        "q1",
+                        Answer {
+                            choices: vec!["Tabs".into()],
+                            text: Some("2 wide".into()),
+                            you_decide: false,
+                        },
+                    ),
+                    QuestionAnswer::new(
+                        "q2",
+                        Answer {
+                            choices: Vec::new(),
+                            text: Some("ask Bob first".into()),
+                            you_decide: true,
+                        },
+                    ),
+                ]),
+                &mut crate::sending::Reply::default(),
+            )
             .unwrap();
         assert_eq!(
             note,
@@ -8358,6 +8339,7 @@ pub(crate) mod tests {
         harness.answer_approvals(
             tray_answer(&harness, &[0, 2], &long),
             Some(Source::Terminal),
+            &mut crate::sending::Reply::default(),
         );
         assert_eq!(harness.feed.approvals().len(), 3, "nothing settled");
         assert!(has(
@@ -8369,6 +8351,7 @@ pub(crate) mod tests {
         harness.answer_approvals(
             tray_answer(&harness, &[0, 2], " Keep them small. "),
             Some(Source::Web),
+            &mut crate::sending::Reply::default(),
         );
         let words = Some("Keep them small.".to_string());
         let answers: Vec<Answer> = waiters
@@ -8394,7 +8377,11 @@ pub(crate) mod tests {
         assert!(harness.feed.approvals().is_empty());
         assert!(has(&harness.feed, "user", "Keep them small.", "answer"));
         let stale = crate::approvals::ApprovalAnswers::of(&requests, |_| true, |_| false, "");
-        harness.answer_approvals(stale, Some(Source::Terminal));
+        harness.answer_approvals(
+            stale,
+            Some(Source::Terminal),
+            &mut crate::sending::Reply::default(),
+        );
         assert!(has(
             &harness.feed,
             "notice",
@@ -8475,11 +8462,14 @@ pub(crate) mod tests {
             if from_panel {
                 assert!(
                     harness
-                        .answer_questions(answers(vec![text_answer(&id, "main.rs")]))
+                        .answer_questions(
+                            answers(vec![text_answer(&id, "main.rs")]),
+                            &mut crate::sending::Reply::default()
+                        )
                         .is_none()
                 );
             } else {
-                assert_eq!(harness.reply_text("main.rs", &[]), None);
+                assert_eq!(harness.reply_text("main.rs", &[]).text(), None);
             }
             assert_eq!(answered.try_recv().unwrap(), "main.rs");
             assert!(harness.waiting.is_empty());
@@ -8522,20 +8512,26 @@ pub(crate) mod tests {
         // An answer to it comes too late.
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "main.rs")]))
+                .answer_questions(
+                    answers(vec![text_answer("q1", "main.rs")]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_none()
         );
         // Answered first, the agent's closing changes nothing, and the
         // second answer is dropped.
         ask_later(&mut harness, run, "q2", "Tabs?");
-        let first = harness.answer_questions(answers(vec![
-            text_answer("q2", "Tabs"),
-            text_answer("q2", "Spaces"),
-        ]));
+        let first = harness.answer_questions(
+            answers(vec![text_answer("q2", "Tabs"), text_answer("q2", "Spaces")]),
+            &mut crate::sending::Reply::default(),
+        );
         assert_eq!(first.unwrap(), "The user answered q2.\nq2 Tabs? Tabs");
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q2", "Tabs")]))
+                .answer_questions(
+                    answers(vec![text_answer("q2", "Tabs")]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_none()
         );
         harness.feed.event(
@@ -8570,12 +8566,13 @@ pub(crate) mod tests {
         let run = uuid::Uuid::new_v4();
         ask_later(&mut harness, run, "q1", "Tabs?");
         let card = harness.feed.open_questions()[0].item;
-        assert!(harness.dismiss_questions(vec!["q1".into()]).is_some());
-        assert_eq!(
+        assert!(
             harness
-                .reply_text("Yes.", &["q1".into()])
-                .map(|reply| reply.text)
-                .as_deref(),
+                .dismiss_questions(vec!["q1".into()], &mut crate::sending::Reply::default())
+                .is_some()
+        );
+        assert_eq!(
+            harness.reply_text("Yes.", &["q1".into()]).text().as_deref(),
             Some("Yes.")
         );
         assert_eq!(harness.card_answered(card), None);
@@ -8595,10 +8592,17 @@ pub(crate) mod tests {
         ask_later(&mut harness, second, "q1", "Which branch?");
         harness.feed.questions_run(Some(first));
         let note = harness
-            .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
+            .answer_questions(
+                answers(vec![text_answer("q1", "Tabs")]),
+                &mut crate::sending::Reply::default(),
+            )
             .unwrap();
         assert_eq!(note, "The user answered q1.\nq1 Tabs? Tabs");
-        assert!(harness.dismiss_questions(vec!["q1".into()]).is_none());
+        assert!(
+            harness
+                .dismiss_questions(vec!["q1".into()], &mut crate::sending::Reply::default())
+                .is_none()
+        );
         assert_eq!(harness.feed.open_questions_of(second).len(), 1);
         assert_eq!(harness.feed.queued_notes(first).len(), 1);
         assert!(harness.feed.queued_notes(second).is_empty());
@@ -8646,10 +8650,17 @@ pub(crate) mod tests {
         let first_run = harness.conversations.current_run().unwrap();
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
+                .answer_questions(
+                    answers(vec![text_answer("q1", "Tabs")]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_some()
         );
-        assert!(harness.dismiss_questions(vec!["q2".into()]).is_some());
+        assert!(
+            harness
+                .dismiss_questions(vec!["q2".into()], &mut crate::sending::Reply::default())
+                .is_some()
+        );
         let first = std::mem::replace(&mut harness.conversation, Conversation::New);
         harness.new_conversation();
         let end = tokio::time::timeout(
@@ -8693,7 +8704,10 @@ pub(crate) mod tests {
             ask_later(&mut harness, run, "q1", "Tabs?");
             assert!(
                 harness
-                    .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
+                    .answer_questions(
+                        answers(vec![text_answer("q1", "Tabs")]),
+                        &mut crate::sending::Reply::default()
+                    )
                     .is_some()
             );
         }
@@ -8788,7 +8802,10 @@ pub(crate) mod tests {
         assert_eq!(question_cards(&harness), 1, "the wait keeps the ask's card");
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "Spaces")]))
+                .answer_questions(
+                    answers(vec![text_answer("q1", "Spaces")]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_some()
         );
         drop(answered);
@@ -8816,7 +8833,10 @@ pub(crate) mod tests {
         ask_later(&mut harness, run, "q2", "Push now?");
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q2", "Not yet")]))
+                .answer_questions(
+                    answers(vec![text_answer("q2", "Not yet")]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_some()
         );
         harness.settle_answer_notes();
@@ -8867,7 +8887,10 @@ pub(crate) mod tests {
         let run = harness.conversations.current_run().unwrap();
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "Spaces")]))
+                .answer_questions(
+                    answers(vec![text_answer("q1", "Spaces")]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_some()
         );
         // The session's file as a stop right after the delivery leaves it.
@@ -8938,7 +8961,10 @@ pub(crate) mod tests {
         let run = harness.conversations.current_run().unwrap();
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "Spaces")]))
+                .answer_questions(
+                    answers(vec![text_answer("q1", "Spaces")]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_some()
         );
         let pending = harness.feed.queued_notes(run).remove(0);
@@ -9003,7 +9029,10 @@ pub(crate) mod tests {
         ask_later(&mut harness, run, "q2", "Which branch?");
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", &long)]))
+                .answer_questions(
+                    answers(vec![text_answer("q1", &long)]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_none()
         );
         assert!(warned(
@@ -9014,12 +9043,15 @@ pub(crate) mod tests {
         let half = "y".repeat(max / 2 + 100);
         assert!(
             harness
-                .answer_questions(answers(vec![
-                    text_answer("q1", &half),
-                    text_answer("q2", &half),
-                    text_answer("q2", "ignored, the first counts"),
-                    text_answer("q9", &half),
-                ]))
+                .answer_questions(
+                    answers(vec![
+                        text_answer("q1", &half),
+                        text_answer("q2", &half),
+                        text_answer("q2", "ignored, the first counts"),
+                        text_answer("q9", &half),
+                    ]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_none()
         );
         assert!(warned(
@@ -9045,7 +9077,10 @@ pub(crate) mod tests {
         });
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q3", &long)]))
+                .answer_questions(
+                    answers(vec![text_answer("q3", &long)]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_none()
         );
         assert_eq!(harness.reply_refused(&long, &[]).as_deref(), Some(refusal));
@@ -9054,10 +9089,10 @@ pub(crate) mod tests {
         assert!(harness.feed.queued_notes(run).is_empty());
         // Short enough, all go, the long question named by an excerpt.
         let note = harness
-            .answer_questions(answers(vec![
-                text_answer("q1", &half),
-                text_answer("q3", "main.rs"),
-            ]))
+            .answer_questions(
+                answers(vec![text_answer("q1", &half), text_answer("q3", "main.rs")]),
+                &mut crate::sending::Reply::default(),
+            )
             .unwrap();
         assert!(note.len() < max, "{}", note.len());
         assert!(note.contains("q3 Which long long"), "{note}");
@@ -9081,7 +9116,10 @@ pub(crate) mod tests {
             .record_asked(run, &one_question("q1", "Which file?"));
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "main.rs")]),)
+                .answer_questions(
+                    answers(vec![text_answer("q1", "main.rs")]),
+                    &mut crate::sending::Reply::default(),
+                )
                 .is_some()
         );
         let (answer, mut answered) = tokio::sync::oneshot::channel();
@@ -9128,7 +9166,7 @@ pub(crate) mod tests {
         assert_eq!(
             harness
                 .reply_text("Spaces.", &["q1".into()])
-                .map(|reply| reply.text)
+                .text()
                 .as_deref(),
             Some("(This message answers q1.)\nSpaces.\n\n(Still open: q2.)")
         );
@@ -9140,18 +9178,18 @@ pub(crate) mod tests {
             asked: one_question("q3", "Which branch?"),
             answer: Some(crate::inputs::Answering::Text(answer)),
         });
-        let reply = harness.reply_text("Not yet.", &["q2".into()]).unwrap();
-        assert!(reply.kept);
-        assert!(
-            reply.text.starts_with("(This message answers q2.)"),
-            "{}",
-            reply.text
-        );
+        let crate::asking::Replied::Noted { text, not_posted } =
+            harness.reply_text("Not yet.", &["q2".into()])
+        else {
+            panic!("kept as the questions' note");
+        };
+        assert_eq!(not_posted, None);
+        assert!(text.starts_with("(This message answers q2.)"), "{text}");
         assert!(answered.try_recv().is_err());
         assert_eq!(open(&harness), ["q3"]);
         // Nothing attached: the question waited for, not q4.
         ask_later(&mut harness, run, "q4", "Squash the commits?");
-        assert_eq!(harness.reply_text("main", &[]), None);
+        assert_eq!(harness.reply_text("main", &[]).text(), None);
         assert_eq!(
             answered.try_recv().unwrap(),
             crate::questions::WAIT_ANSWERED
@@ -9214,7 +9252,10 @@ pub(crate) mod tests {
         };
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "Spaces")]))
+                .answer_questions(
+                    answers(vec![text_answer("q1", "Spaces")]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_some()
         );
         let mut answered = wait(&mut harness, &["q1"]);
@@ -9253,7 +9294,10 @@ pub(crate) mod tests {
         assert_eq!(harness.waiting[0].ids, ["q2"]);
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q2", "Not yet")]))
+                .answer_questions(
+                    answers(vec![text_answer("q2", "Not yet")]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_some()
         );
         assert_eq!(
@@ -9351,7 +9395,10 @@ pub(crate) mod tests {
         ask_later(&mut harness, second, "q2", "Which branch?");
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
+                .answer_questions(
+                    answers(vec![text_answer("q1", "Tabs")]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_none()
         );
         assert!(harness.feed.queued_notes(first).is_empty());
@@ -9360,13 +9407,19 @@ pub(crate) mod tests {
         harness.feed.questions_run(None);
         assert!(
             harness
-                .answer_questions(answers(vec![text_answer("q2", "main")]))
+                .answer_questions(
+                    answers(vec![text_answer("q2", "main")]),
+                    &mut crate::sending::Reply::default()
+                )
                 .is_none()
         );
         // Back in the first, its question is answered.
         harness.feed.questions_run(Some(first));
         let note = harness
-            .answer_questions(answers(vec![text_answer("q1", "Tabs")]))
+            .answer_questions(
+                answers(vec![text_answer("q1", "Tabs")]),
+                &mut crate::sending::Reply::default(),
+            )
             .unwrap();
         assert_eq!(note, "The user answered q1.\nq1 Tabs? Tabs");
         assert!(harness.feed.queued_notes(second).is_empty());
@@ -9796,7 +9849,15 @@ pub(crate) mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), 202);
+            assert_eq!(response.status(), 200);
+            let verdict: crate::Verdict = response.json().await.unwrap();
+            assert!(matches!(
+                verdict,
+                crate::Verdict::Accepted {
+                    delivery: Delivery::Answer,
+                    ..
+                }
+            ));
         });
         let end = tokio::time::timeout(
             Duration::from_secs(30),
@@ -9858,7 +9919,8 @@ pub(crate) mod tests {
                         .send()
                         .await
                         .unwrap();
-                    assert_eq!(response.status(), 202);
+                    assert_eq!(response.status(), 200);
+                    response.json::<crate::Verdict>().await.unwrap()
                 }
             }
         };
@@ -9867,7 +9929,18 @@ pub(crate) mod tests {
             let post = post.clone();
             async move {
                 until(|| feed.activity().working).await;
-                post("Also count the directories.").await;
+                let verdict = post("Also count the directories.").await;
+                assert!(
+                    matches!(
+                        verdict,
+                        crate::Verdict::Accepted {
+                            delivery: Delivery::Note,
+                            item: Some(_),
+                            ..
+                        }
+                    ),
+                    "{verdict:?}"
+                );
                 until(|| has(&feed, "user", "Also count the directories.", "note")).await;
                 release.notify_one();
             }
@@ -9883,17 +9956,23 @@ pub(crate) mod tests {
         sending.await.unwrap();
         assert!(has(&harness.feed, "call", "list workers", ""));
 
-        post("Thanks.").await;
-        let message = tokio::time::timeout(Duration::from_secs(5), async {
+        // Sent while no one reads, it waits for its verdict.
+        let thanks = tokio::spawn(post("Thanks."));
+        let (message, mut reply) = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if let Event::Remote(action) = inputs.next_event(true).await {
-                    break action;
+                if let (Event::Remote(action), reply) = inputs.next_event(true).await {
+                    break (action, reply);
                 }
             }
         })
         .await
         .unwrap();
         assert_eq!(message, Action::Message("Thanks.".into()));
+        reply.accept(Delivery::Turn, None);
+        assert_eq!(
+            thanks.await.unwrap(),
+            crate::Verdict::accepted(Delivery::Turn, None)
+        );
         harness.stop_remote().await;
     }
 

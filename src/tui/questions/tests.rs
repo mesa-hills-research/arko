@@ -225,7 +225,7 @@ fn picks_advance_and_choose_any_waits_then_the_summary_can_edit_and_send() {
     assert_eq!(app.panel.review, Some(4));
     press(&mut app, KeyCode::Enter);
     assert!(app.take_effects().iter().any(|effect| matches!(effect,
-        Effect::Input(Input::AnswerQuestions(answers)) if answers.answers.iter().any(|a| a.answer.text.as_deref() == Some("Keep it local")))));
+        Effect::Send(crate::tui::app::Sending { input: Input::AnswerQuestions(answers), .. }) if answers.answers.iter().any(|a| a.answer.text.as_deref() == Some("Keep it local")))));
 }
 
 #[test]
@@ -276,7 +276,10 @@ fn the_words_typed_go_with_the_choices_picked_or_you_decide() {
         .take_effects()
         .into_iter()
         .filter_map(|effect| match effect {
-            Effect::Input(Input::AnswerQuestions(answers)) => Some(answers),
+            Effect::Send(crate::tui::app::Sending {
+                input: Input::AnswerQuestions(answers),
+                ..
+            }) => Some(answers),
             _ => None,
         })
         .collect();
@@ -330,7 +333,7 @@ fn chat_dismiss_and_reopen_keep_their_keys() {
     assert!(app.panel.open);
     app.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
     assert!(app.take_effects().iter().any(|effect| matches!(effect,
-        Effect::Input(Input::DismissQuestions(ids)) if ids.len() == 4)));
+        Effect::Send(crate::tui::app::Sending { input: Input::DismissQuestions(ids), .. }) if ids.len() == 4)));
 }
 
 /// "Answer in chat" attaches the questions open then. One asked after it
@@ -370,6 +373,7 @@ fn a_question_asked_after_answer_in_chat_stays_out_of_the_message() {
         .into_iter()
         .filter_map(|effect| match effect {
             Effect::Input(input) => Some(input),
+            Effect::Send(sending) => Some(sending.input),
             _ => None,
         })
         .collect();
@@ -392,7 +396,7 @@ fn a_question_asked_after_answer_in_chat_stays_out_of_the_message() {
     app.set_reading(reading(&[&first, &second]));
     app.key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
     assert!(app.take_effects().iter().any(|effect| matches!(effect,
-        Effect::Input(Input::DismissQuestions(ids)) if *ids == ["q2"])));
+        Effect::Send(crate::tui::app::Sending { input: Input::DismissQuestions(ids), .. }) if *ids == ["q2"])));
     assert_eq!(app.panel.attached, ["q1"]);
 }
 
