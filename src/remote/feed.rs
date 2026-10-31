@@ -277,6 +277,18 @@ impl Item {
         }
     }
 
+    /// Moves the item `ids` IDs and `turns` turns on, with everything in it
+    /// that names an item by its ID (the call a result is of, the point a
+    /// call's result came at), for items made apart and added after others.
+    pub(crate) fn relocate(&mut self, ids: u64, turns: u64) {
+        self.id += ids;
+        self.call = self.call.map(|call| call + ids);
+        if let Some(act) = self.act.as_mut() {
+            act.ended = act.ended.map(|ended| ended + ids);
+        }
+        self.turn = self.turn.map(|turn| turn + turns);
+    }
+
     /// How a call ended, or how the job it started went on: its status,
     /// its outcome's words and what its act learns, together, so that what
     /// its row says agrees with its line in every view.
@@ -2670,9 +2682,7 @@ impl Feed {
             {
                 item.started = None;
             }
-            item.id += base;
-            item.call = item.call.map(|call| call + base);
-            item.turn = item.turn.map(|turn| turn + turns);
+            item.relocate(base, turns);
             item.at = at;
             // A card's questions as the session kept them.
             if let Some(questions) = item.questions.take() {
@@ -4911,32 +4921,74 @@ mod tests {
             if late {
                 feed.event(&event("main", result(build, ok)), None);
             }
-            let items: Vec<Item> = items(&feed)
-                .into_iter()
-                .filter(|item| item.kind == Kind::Call)
-                .collect();
-            let steps: Vec<super::super::quiet::Step> = items
-                .iter()
-                .map(|item| {
-                    super::super::quiet::Step::Call(super::super::quiet::Call {
-                        id: item.id,
-                        act: item.act.as_ref(),
-                        status: item.status,
-                        outcome: item.outcome.as_deref(),
-                        ..Default::default()
-                    })
-                })
-                .collect();
-            super::super::quiet::rows(&steps)
-                .into_iter()
-                .map(|piece| match piece {
-                    super::super::quiet::Piece::Row(row) => row.words.text,
-                    super::super::quiet::Piece::Step(at) => format!("step {at}"),
-                })
-                .collect::<Vec<_>>()
+            quiet_words(&items(&feed))
         };
         assert_eq!(rows(true), ["Ran rg x", "Ran cargo build", "Read a.rs"]);
         assert_eq!(rows(false), ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
+    }
+
+    /// The Quiet rows of the calls among `items`, by their words.
+    fn quiet_words(items: &[Item]) -> Vec<String> {
+        use super::super::quiet;
+        let steps: Vec<quiet::Step> = items
+            .iter()
+            .filter(|item| item.kind == Kind::Call)
+            .map(|item| {
+                quiet::Step::Call(quiet::Call {
+                    id: item.id,
+                    act: item.act.as_ref(),
+                    status: item.status,
+                    outcome: item.outcome.as_deref(),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        quiet::rows(&steps)
+            .into_iter()
+            .map(|piece| match piece {
+                quiet::Piece::Row(row) => row.words.text,
+                quiet::Piece::Step(at) => format!("step {at}"),
+            })
+            .collect()
+    }
+
+    /// Items restored after others show the Quiet rows they showed live.
+    /// Everything that names an item by its ID moves with them, the point a
+    /// call's result came at included.
+    #[test]
+    fn restored_items_keep_their_quiet_rows() {
+        let call = |id: u64, kind: ActKind, target: &str, ended: u64| {
+            let mut call = Item::new(Kind::Call, target);
+            call.id = id;
+            call.status = Some(CallStatus::Ok);
+            call.act = Some(Act {
+                kind,
+                target: target.into(),
+                ended: Some(ended),
+                ..Act::default()
+            });
+            call
+        };
+        // As a restored session has them: the build's result came after the
+        // read showed.
+        let saved = vec![
+            call(1, ActKind::Command, "rg x", 2),
+            call(2, ActKind::Command, "cargo build", 4),
+            call(3, ActKind::Read, "a.rs", 4),
+        ];
+        let live = quiet_words(&saved);
+        assert_eq!(live, ["Ran rg x", "Ran cargo build", "Read a.rs"]);
+        let feed = Feed::new("main");
+        // (An item first, so the restored ones move on.)
+        feed.notice(Level::Info, "Resumed.");
+        feed.restore(saved);
+        let restored = items(&feed);
+        assert!(
+            restored
+                .iter()
+                .any(|item| item.kind == Kind::Call && item.id > 3)
+        );
+        assert_eq!(quiet_words(&restored), live);
     }
 
     fn event(agent: &str, event: AgentEvent) -> WorkflowEvent {

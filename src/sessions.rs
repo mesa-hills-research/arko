@@ -372,9 +372,7 @@ pub(crate) fn conversation_of(
             .max()
             .unwrap_or(0);
         found.items.extend(items.into_iter().map(|mut item| {
-            item.id += base;
-            item.call = item.call.map(|call| call + base);
-            item.turn = item.turn.map(|turn| turn + turns);
+            item.relocate(base, turns);
             item
         }));
         found.reports.extend(
