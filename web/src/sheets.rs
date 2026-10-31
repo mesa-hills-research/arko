@@ -9,7 +9,9 @@ use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
-use crate::app::{STORE, Sheet, get_json, local_get, local_set, on_item, page, post};
+use crate::app::{
+    Posted, STORE, Sheet, get_json, local_get, local_set, on_item, page, send as send_to_arko,
+};
 use crate::composer::gloo_wait;
 use crate::layout::View;
 use crate::protocol::{Delivery, ItemData, Kind, Level, LinkData, SettingsData};
@@ -244,7 +246,8 @@ impl Settings {
         });
         self.shows.set(shows);
         spawn_local(async move {
-            if !post("/api/message", serde_json::json!({ "text": text })).await {
+            let sent = send_to_arko("/api/message", serde_json::json!({ "text": text })).await;
+            if !matches!(sent, Posted::Taken) {
                 let mine = PENDING.with(|pending| {
                     let mut pending = pending.borrow_mut();
                     pending.take_if(|change| change.id == id)

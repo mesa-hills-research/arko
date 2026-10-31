@@ -8,7 +8,7 @@ use leptos::task::spawn_local;
 use lucide_leptos::{ArrowUp, Maximize2, Minimize2, Square};
 use web_sys::HtmlTextAreaElement;
 
-use crate::app::{DRAFT, Posted, get_json, page, post, post_asking, session_get, session_set};
+use crate::app::{DRAFT, Posted, get_json, page, post, send as send_to_arko, session_get, session_set};
 use crate::scroll;
 use crate::slash::{self, Menu};
 
@@ -31,30 +31,36 @@ struct Draft {
     to: Option<String>,
 }
 
+/// What the box says while a send waits for Arko's answer longer than a
+/// moment. Send works again meanwhile.
+const STILL_SENDING: &str = "Still sending. Your text is kept.";
+
 /// Arko's question before a message continues a worker whose prompt cache
 /// expired: its words, and the message it was asked for.
 #[derive(Debug, Clone)]
 struct ContinueAsk {
     words: String,
-    body: serde_json::Value,
     draft: Draft,
 }
 
 impl ContinueAsk {
-    /// The question for Arko's answer `words` to `body`, sent as `draft`,
-    /// while the box holds `now`. None once the text or the view changed
-    /// while the message was on its way, since the answer is about a
+    /// The question for Arko's answer `words` to the message sent as
+    /// `draft`, while the box holds `now`. None once the text or the view
+    /// changed while the message was on its way, since the answer is about a
     /// message that is no longer there.
-    fn new(words: String, body: serde_json::Value, draft: Draft, now: &Draft) -> Option<Self> {
-        (draft == *now).then_some(Self { words, body, draft })
+    fn new(words: String, draft: Draft, now: &Draft) -> Option<Self> {
+        (draft == *now).then_some(Self { words, draft })
     }
 
-    /// What Continue sends while the box holds `now`: the message, marked
-    /// confirmed. None once the text or the view changed.
+    /// What Continue sends while the box holds `now`: the message as the
+    /// box holds it, marked confirmed. None once the text or the view
+    /// changed.
     fn confirmed(&self, now: &Draft) -> Option<serde_json::Value> {
         (self.draft == *now).then(|| {
-            let mut body = self.body.clone();
-            body["confirm_uncached"] = serde_json::Value::Bool(true);
+            let mut body = serde_json::json!({ "text": now.text, "confirm_uncached": true });
+            if let Some(worker) = &now.to {
+                body["to"] = worker.as_str().into();
+            }
             body
         })
     }
@@ -70,8 +76,23 @@ pub fn Composer() -> impl IntoView {
     let tall = RwSignal::new(false);
     let expanded = RwSignal::new(false);
     let sending = RwSignal::new(false);
-    // The box holds a command, which goes while the report is written.
-    let command_typed = RwSignal::new(false);
+    // The latest send, which owns the box: what becomes of an earlier one
+    // leaves it as it is.
+    let latest = RwSignal::new(0u64);
+    // A send of its own, which says so while its answer is long in coming.
+    let begin_send = move || {
+        let id = latest.get_untracked() + 1;
+        latest.set(id);
+        sending.set(true);
+        spawn_local(async move {
+            gloo_wait(5000).await;
+            if latest.try_get_untracked() == Some(id) && sending.get_untracked() {
+                sending.set(false);
+                page.error.set(Some(STILL_SENDING.into()));
+            }
+        });
+        id
+    };
     // Arko asks before a message continues a worker whose prompt cache
     // expired: what it said, and the message to send again on Continue.
     let continue_asked = RwSignal::new(None::<ContinueAsk>);
@@ -162,7 +183,6 @@ pub fn Composer() -> impl IntoView {
         };
         fit(&area, tall, expanded.get_untracked());
         empty.set(area.value().trim().is_empty());
-        command_typed.set(area.value().starts_with('/'));
         session_set(DRAFT, Some(&area.value()));
     };
     Effect::new(move |_| {
@@ -186,13 +206,7 @@ pub fn Composer() -> impl IntoView {
         if text.trim().is_empty() || sending.get_untracked() {
             return;
         }
-        if page.status.with_untracked(|status| status.reporting)
-            && page.worker.get_untracked().is_none()
-            && !text.starts_with('/')
-        {
-            return;
-        }
-        sending.set(true);
+        let id = begin_send();
         let sent = Draft {
             text: text.clone(),
             to: page.worker.get_untracked(),
@@ -209,7 +223,12 @@ pub fn Composer() -> impl IntoView {
             None => serde_json::json!({ "text": text }),
         };
         spawn_local(async move {
-            match post_asking("/api/message", body.clone()).await {
+            let posted = send_to_arko("/api/message", body).await;
+            // A later send owns the box now.
+            if latest.try_get_untracked() != Some(id) {
+                return;
+            }
+            match posted {
                 Posted::Taken => {
                     if page.worker.get_untracked().is_none() {
                         ask.attached.set(Vec::new());
@@ -221,7 +240,7 @@ pub fn Composer() -> impl IntoView {
                     scroll::jump_to_latest();
                 }
                 Posted::Confirm(why) => continue_asked
-                    .set(draft_now().and_then(|now| ContinueAsk::new(why, body, sent, &now))),
+                    .set(draft_now().and_then(|now| ContinueAsk::new(why, sent, &now))),
                 Posted::Kept => {}
             }
             sending.set(false);
@@ -239,10 +258,15 @@ pub fn Composer() -> impl IntoView {
         let Some(body) = draft_now().and_then(|now| asked.confirmed(&now)) else {
             return;
         };
-        sending.set(true);
+        let id = begin_send();
         spawn_local(async move {
-            // (What was typed meanwhile stays.)
-            if post("/api/message", body).await && draft_now() == Some(asked.draft) {
+            let posted = send_to_arko("/api/message", body).await;
+            // (A later send owns the box now, and what was typed meanwhile
+            // stays.)
+            if latest.try_get_untracked() != Some(id) {
+                return;
+            }
+            if matches!(posted, Posted::Taken) && draft_now() == Some(asked.draft) {
                 area.set_value("");
                 expanded.set(false);
                 resize();
@@ -423,7 +447,7 @@ pub fn Composer() -> impl IntoView {
                         class="btn primary icon send"
                         aria-label=move || if replying() != 0 { "Answer" } else { "Send" }
                         title=move || if replying() != 0 { "Answer" } else { "Send" }
-                        disabled=move || empty.get() || sending.get() || (reporting() && !command_typed.get())
+                        disabled=move || empty.get() || sending.get()
                     >
                         <ArrowUp size=20 />
                     </button>
@@ -565,12 +589,12 @@ mod tests {
 
     /// Arko's question stands for the message it was asked about: once the
     /// text or the view changed while the message was on its way, or before
-    /// Continue, nothing is sent, and the new draft stays.
+    /// Continue, nothing is sent, and the new draft stays. Continue sends
+    /// the message as the box holds it, confirmed, from the main view too.
     #[test]
     fn the_question_holds_only_for_the_draft_it_was_asked_about() {
-        let body = serde_json::json!({"text": "Go on.", "to": "r3"});
         let sent = draft("Go on.", Some("r3"));
-        let ask = |now: &Draft| ContinueAsk::new("Words.".into(), body.clone(), sent.clone(), now);
+        let ask = |now: &Draft| ContinueAsk::new("Words.".into(), sent.clone(), now);
         // Edited before Arko's answer came, or another view: no question.
         assert!(ask(&draft("Go on. Now.", Some("r3"))).is_none());
         assert!(ask(&draft("Go on.", None)).is_none());
@@ -584,5 +608,11 @@ mod tests {
         );
         assert_eq!(asked.confirmed(&draft("Something else.", Some("r3"))), None);
         assert_eq!(asked.confirmed(&draft("Go on.", None)), None);
+        let typed = draft("/message r3 Go on.", None);
+        let asked = ContinueAsk::new("Words.".into(), typed.clone(), &typed).unwrap();
+        assert_eq!(
+            asked.confirmed(&typed),
+            Some(serde_json::json!({"text": "/message r3 Go on.", "confirm_uncached": true}))
+        );
     }
 }

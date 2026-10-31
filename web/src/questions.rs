@@ -11,7 +11,7 @@ use leptos::task::spawn_local;
 use lucide_leptos::{MessageCircleQuestionMark, X};
 use wasm_bindgen::JsCast;
 
-use crate::app::{RowCell, page, post};
+use crate::app::{Posted, RowCell, page, send as send_to_arko};
 use crate::protocol::{CHOOSE_ANY, QuestionData};
 
 /// How long after a key the user still counts as typing, so a question
@@ -376,7 +376,10 @@ fn send() {
         .update(|answering| answering.extend(ids.iter().cloned()));
     spawn_local(async move {
         // What's typed stays until Arko has it, and the panel with it.
-        if post("/api/questions/answer", body).await {
+        if matches!(
+            send_to_arko("/api/questions/answer", body).await,
+            Posted::Taken
+        ) {
             ask.drafts
                 .update(|drafts| drafts.retain(|id, _| !ids.contains(id)));
             close_panel();
@@ -397,12 +400,11 @@ fn not_now(ids: Vec<String>) {
     ask.answering
         .update(|answering| answering.extend(ids.iter().cloned()));
     spawn_local(async move {
-        if !post(
-            "/api/questions/dismiss",
-            serde_json::json!({ "ids": ids.clone() }),
-        )
-        .await
-        {
+        let body = serde_json::json!({ "ids": ids.clone() });
+        if !matches!(
+            send_to_arko("/api/questions/dismiss", body).await,
+            Posted::Taken
+        ) {
             ask.answering
                 .update(|answering| answering.retain(|id| !ids.contains(id)));
         }

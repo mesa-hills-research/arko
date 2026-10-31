@@ -376,30 +376,87 @@ async fn login(key: Option<String>) -> Login {
     }
 }
 
-/// Posts an action. A session cookie that ended is traded again once.
-/// Returns whether Arko took it, and says why not in the error line.
+/// Posts an action, such as a stop. A session cookie that ended is traded
+/// again once. Returns whether Arko took it, and says why not in the error
+/// line.
 pub async fn post(path: &str, body: serde_json::Value) -> bool {
-    matches!(post_asking(path, body).await, Posted::Taken)
-}
-
-/// What became of a post.
-pub enum Posted {
-    Taken,
-    /// Not taken, and the error line says why.
-    Kept,
-    /// Arko asks the user first, with these words (a message that continues
-    /// a worker whose prompt cache expired).
-    Confirm(String),
-}
-
-/// [`post`], with Arko's question when it asks the user before it takes it.
-pub async fn post_asking(path: &str, body: serde_json::Value) -> Posted {
     let page = page();
     for attempt in 0..2 {
         let Some((status, text)) = request("POST", path, Some(body.to_string())).await else {
             page.error.set(Some(
                 "Not sent, because Arko is out of reach. Your text is kept.".into(),
             ));
+            return false;
+        };
+        if status == 401 && attempt == 0 {
+            match login(None).await {
+                Login::Ok => continue,
+                result => {
+                    lock(page, result);
+                    return false;
+                }
+            }
+        }
+        if !(200..300).contains(&status) {
+            page.error.set(Some(not_sent(status, &text)));
+            return false;
+        }
+        page.error.set(None);
+        return true;
+    }
+    false
+}
+
+/// Why a request wasn't taken, from its status and the error Arko gave.
+fn not_sent(status: u16, text: &str) -> String {
+    #[derive(Deserialize)]
+    struct Why {
+        error: String,
+    }
+    match serde_json::from_str::<Why>(text).ok().map(|why| why.error) {
+        // What Arko says in a sentence of its own.
+        Some(why) if why.ends_with('.') => why,
+        Some(why) => format!("Not sent ({why})."),
+        // A proxy in front of Arko (Tailscale Serve, say) answers for it.
+        None if matches!(status, 502..=504) => {
+            "Not sent, because Arko is out of reach. Your text is kept.".into()
+        }
+        None => format!("Not sent ({status})."),
+    }
+}
+
+/// What became of something the user sent.
+pub enum Posted {
+    /// It went.
+    Taken,
+    /// It didn't, and the error line says why.
+    Kept,
+    /// Arko asks the user first, with these words (a message that continues
+    /// a worker whose prompt cache expired).
+    Confirm(String),
+}
+
+/// What the error line says when Arko didn't say what became of a send.
+const UNKNOWN: &str =
+    "No answer from Arko, so it may have gone. Check the transcript before you send it again.";
+
+thread_local! {
+    /// The feed the page shows, as the latest `reset` named it.
+    static FEED: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Sends `body`, what the user sent, to `path`, naming the feed the page
+/// shows, and waits for what became of it however long Arko takes. A
+/// session cookie that ended is traded again once. The error line says why
+/// it didn't go, or that Arko didn't say.
+pub async fn send(path: &str, mut body: serde_json::Value) -> Posted {
+    let page = page();
+    if let Some(feed) = FEED.with(|feed| feed.borrow().clone()) {
+        body["feed"] = feed.into();
+    }
+    for attempt in 0..2 {
+        let Some((status, text)) = request("POST", path, Some(body.to_string())).await else {
+            page.error.set(Some(UNKNOWN.into()));
             return Posted::Kept;
         };
         if status == 401 && attempt == 0 {
@@ -411,37 +468,34 @@ pub async fn post_asking(path: &str, body: serde_json::Value) -> Posted {
                 }
             }
         }
-        if !(200..300).contains(&status) {
-            #[derive(Deserialize)]
-            struct Why {
-                error: String,
-                #[serde(default)]
-                confirm: Option<String>,
+        let verdict = (status == 200)
+            .then(|| serde_json::from_str::<crate::protocol::Verdict>(&text).ok())
+            .flatten();
+        return match verdict {
+            Some(crate::protocol::Verdict::Accepted { partial, .. }) => {
+                page.error.set(partial.and_then(|partial| partial.words));
+                Posted::Taken
             }
-            let why = serde_json::from_str::<Why>(&text).ok();
-            if status == 409
-                && let Some(why) = why.as_ref().filter(|why| why.confirm.is_some())
-            {
-                page.error.set(None);
-                return Posted::Confirm(why.error.clone());
-            }
-            let why = why.map(|why| why.error);
-            page.error.set(Some(match why {
-                // Answers too long for the agent (Arko says what to shorten),
-                // a mistyped command (Arko says what it may be), and what
-                // Arko says in a sentence of its own.
-                Some(why) if matches!(status, 413 | 422) || why.ends_with('.') => why,
-                Some(why) => format!("Not sent ({why})."),
-                // A proxy in front of Arko (Tailscale Serve, say) answers for it.
-                None if matches!(status, 502..=504) => {
-                    "Not sent, because Arko is out of reach. Your text is kept.".into()
+            Some(crate::protocol::Verdict::Refused(refusal)) => match refusal.confirm {
+                Some(_) => {
+                    page.error.set(None);
+                    Posted::Confirm(refusal.words)
                 }
-                None => format!("Not sent ({status})."),
-            }));
-            return Posted::Kept;
-        }
-        page.error.set(None);
-        return Posted::Taken;
+                None => {
+                    page.error.set(Some(refusal.words));
+                    Posted::Kept
+                }
+            },
+            // (A body Arko can't read, for one Arko couldn't take.)
+            None if status == 400 => {
+                page.error.set(Some(not_sent(status, &text)));
+                Posted::Kept
+            }
+            None => {
+                page.error.set(Some(UNKNOWN.into()));
+                Posted::Kept
+            }
+        };
     }
     Posted::Kept
 }
@@ -679,8 +733,11 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
         jobs: Vec<&'a RawValue>,
         #[serde(default)]
         status: Option<&'a RawValue>,
+        #[serde(default)]
+        feed: Option<String>,
     }
     let raw: Raw = serde_json::from_str(data).map_err(|error| error.to_string())?;
+    FEED.with(|feed| *feed.borrow_mut() = raw.feed.clone());
     // An item that can't be read is left out, and said, rather than losing
     // the transcript.
     let mut bad = 0;

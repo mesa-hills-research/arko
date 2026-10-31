@@ -11,9 +11,9 @@ use leptos::task::spawn_local;
 use lucide_leptos::{ChevronDown, ChevronRight};
 use wasm_bindgen::JsCast;
 
-use crate::app::{page, post};
+use crate::app::{Posted, page, send as send_to_arko};
 use crate::protocol::{
-    Approval, ApprovalAnswers, ApprovalRequest, Look, SkillFile, approval_words_refusal,
+    Approval, ApprovalAnswers, ApprovalRequest, Look, SkillFile,
     approvals_heading, approve_label, reject_label,
 };
 
@@ -73,10 +73,6 @@ fn words_view(text: &str) -> impl IntoView + use<> {
 fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
     let area = message_box();
     let words = area.as_ref().map(|area| area.value()).unwrap_or_default();
-    if let Some(refusal) = approval_words_refusal(&words) {
-        page().error.set(Some(refusal));
-        return;
-    }
     let answers = rows.unchecked.with_untracked(|unchecked| {
         rows.options.with_untracked(|options| {
             ApprovalAnswers::of(
@@ -90,7 +86,7 @@ fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
     rows.sending.set(true);
     spawn_local(async move {
         let body = serde_json::to_value(&answers).unwrap_or_default();
-        if post("/api/approvals", body).await
+        if matches!(send_to_arko("/api/approvals", body).await, Posted::Taken)
             && answers.words.is_some()
             && let Some(area) = area
             // (A draft begun while the answer was on its way stays.)
