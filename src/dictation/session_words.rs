@@ -5,8 +5,8 @@
 //! on a thread of its own, so they all favour the same words.
 //!
 //! Building it reads a bounded part of everything: the newest part of the
-//! transcript, the listings of the workspace and of the skill and profile
-//! folders, and small manifests.
+//! transcript (the main transcript's before the workers'), the listings of
+//! the workspace and of the skill and profile folders, and small manifests.
 //!
 //! Words that can't be said, such as keys, tokens, hashes and IDs, are
 //! always left out. With the `leave_out_secrets` setting, so are the values
@@ -95,7 +95,8 @@ pub fn favour_session_words(
 /// secrets). They come from three places.
 ///
 /// - The transcript's identifiers, file names and names, by their shape. A
-///   recent or repeated mention counts more.
+///   recent or repeated mention counts more, and the main transcript (the
+///   user's and the main agent's) comes before the workers'.
 /// - The workspace's folder name, the package names in its manifests, and
 ///   its top-level files and folders.
 /// - The session's models, skills and worker profiles, and the tools its
@@ -103,7 +104,7 @@ pub fn favour_session_words(
 pub fn session_words(feed: &Feed, details: &Details, settings: &Settings) -> Vec<SessionWord> {
     let facts = details.session();
     let mut tail = Tail::default();
-    feed.read_newest(|item| tail.take(item));
+    feed.read_newest_main_first(|item| tail.take(item));
     let models: Vec<String> = std::iter::once(facts.main.model)
         .chain(facts.workers.map(|workers| workers.model.model))
         .collect();
@@ -118,8 +119,10 @@ pub fn session_words(feed: &Feed, details: &Details, settings: &Settings) -> Vec
     )
 }
 
-/// The newest part of a transcript, up to [`TRANSCRIPT_BYTES`] of text,
-/// and the tools its calls called.
+/// The newest part of a transcript, up to [`TRANSCRIPT_BYTES`] of text, as
+/// [`Feed::read_newest_main_first`] gives it (the main transcript's newest
+/// first, then the workers' with what's left), and the tools its calls
+/// called.
 #[derive(Default)]
 struct Tail {
     texts: Vec<Text>,
@@ -1131,6 +1134,29 @@ mod tests {
         }
     }
 
+    /// The main transcript's words come before the workers', also when a
+    /// worker wrote later.
+    #[test]
+    fn the_main_transcript_comes_before_the_workers() {
+        use crate::remote::{Delivery, Source};
+        let feed = Feed::new(crate::remote::MAIN_AGENT);
+        feed.user("Look at ZuluMain now.", Source::Terminal, Delivery::Turn);
+        let event = arko_workflows::WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: "worker".into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event: arko_agents::AgentEvent::AssistantResponseChunk(
+                "Reading AlphaWorker now.".into(),
+            ),
+        };
+        feed.event(&event, Some("r1"));
+        let mut tail = Tail::default();
+        feed.read_newest_main_first(|item| tail.take(item));
+        let words = rank(&tail, Path::new(""), &[], &[], false);
+        assert_eq!(texts(&words), ["ZuluMain", "AlphaWorker"]);
+    }
+
     /// The tail stops once its budget is full, and of the text that doesn't
     /// fit it keeps the whole lines after the cut.
     #[test]
@@ -1302,7 +1328,7 @@ mod tests {
         let root = dir.parent().and_then(Path::parent).unwrap().to_path_buf();
         let started = Instant::now();
         let mut tail = Tail::default();
-        feed.read_newest(|item| tail.take(item));
+        feed.read_newest_main_first(|item| tail.take(item));
         let tail_took = started.elapsed();
         let names_started = Instant::now();
         let folders =
