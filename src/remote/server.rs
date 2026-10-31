@@ -1177,8 +1177,6 @@ impl Stream {
             ),
             // The page starts over from the history as it is now.
             Update::Truncate { .. } => self.reset(),
-            // (The page doesn't record yet.)
-            Update::Dictation(_) => {}
         }
     }
 

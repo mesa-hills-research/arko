@@ -888,11 +888,6 @@ impl App {
     /// Takes the feed's `update`; `activity` is the feed's activity now.
     /// Returns whether the bell should sound.
     pub fn update(&mut self, update: Update, activity: impl FnOnce() -> Activity) -> bool {
-        // (Another client's recording. The view's own events come on a
-        // channel of their own, `App::dictation_event`.)
-        if let Update::Dictation(_) = update {
-            return false;
-        }
         let bell = matches!(update, Update::Activity) && self.set_activity(activity());
         self.transcript.apply(update);
         bell

@@ -6,7 +6,6 @@ use ratatui::backend::TestBackend;
 
 use super::*;
 use crate::dictation::models::GRANITE;
-use crate::remote::Update;
 use crate::tui::app::tests::app;
 use crate::ui::Input;
 
@@ -97,14 +96,8 @@ fn words_go_in_at_the_cursor_and_tentative_ones_show_dimmed_after_it() {
     event(&mut app, 7, text("Hello", " world"));
     assert_eq!(app.editor.text(), "Fix this: Hello");
     assert_eq!(app.editor.cursor(), "Fix this: Hello".len());
-    // Another recording's events aren't the view's, nor are those that come
-    // through the feed, which belong to other clients.
+    // Another recording's events aren't the view's.
     event(&mut app, 8, text("Nope", ""));
-    let feed_update = DictationUpdate {
-        id: 7,
-        event: text(" twice", ""),
-    };
-    app.update(Update::Dictation(feed_update), Default::default);
     assert_eq!(app.editor.text(), "Fix this: Hello");
 }
 

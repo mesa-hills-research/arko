@@ -2,9 +2,10 @@
 //! computer. One [`DictationService`] per process runs the speech engine on
 //! a thread of its own, one recording at a time. A front end opens a
 //! [`Dictation`], hands it the microphone's audio (its [`Dictation::record`]
-//! does that), and the text comes back as [`DictationEvent`]s, which front
-//! ends put in the session's feed (`Feed::dictation`) so that every client
-//! reads them alike.
+//! does that), and the text comes back as [`DictationEvent`]s to the
+//! [`Sink`] it opened the dictation with. They're the recording client's
+//! alone, so each recorder takes them on a channel of its own, never through
+//! the session's feed.
 //!
 //! The engine and the microphone are behind the `dictation` feature.
 //! Without it, [`DictationService::open`] answers that this build has none.

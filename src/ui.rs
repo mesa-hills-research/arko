@@ -421,7 +421,7 @@ pub fn spawn_input(
                             continue;
                         }
                         if line.trim() == "/dictate" {
-                            kept = dictate_at_prompt(&root, feed.as_ref());
+                            kept = dictate_at_prompt(&root);
                             continue;
                         }
                         // While the old model writes its report for a
@@ -464,7 +464,7 @@ pub fn spawn_input(
 /// as they settle, and returns them to edit at the prompt. A missing model
 /// is asked about first.
 #[cfg(feature = "tui")]
-fn dictate_at_prompt(root: &std::path::Path, feed: Option<&remote::Feed>) -> Option<String> {
+fn dictate_at_prompt(root: &std::path::Path) -> Option<String> {
     use crate::dictation::{
         self, DictationError, DictationEvent, DictationOptions, DictationService, Sink, Source,
     };
@@ -474,11 +474,8 @@ fn dictate_at_prompt(root: &std::path::Path, feed: Option<&remote::Feed>) -> Opt
     }
     let (sender, heard) = std::sync::mpsc::channel();
     let open = |download: bool| {
-        let (sender, feed) = (sender.clone(), feed.cloned());
+        let sender = sender.clone();
         let sink: Sink = Box::new(move |update| {
-            if let Some(feed) = &feed {
-                feed.dictation(update.clone());
-            }
             let _ = sender.send(Heard::Update(update));
         });
         DictationService::shared(root).open(DictationOptions { download }, sink)

@@ -62,10 +62,10 @@ cargo install --path . --features dictation
 ```
 
 It needs Rust 1.97 or later, and on Linux the microphone needs ALSA's headers (`libasound2-dev`
-on Debian and Ubuntu, `alsa-lib-devel` on Fedora). `ARKO_DICTATION_WAV=clip.wav` records from a WAV file, played in real
-time, in place of the microphone.
+on Debian and Ubuntu, `alsa-lib-devel` on Fedora). `ARKO_DICTATION_WAV=clip.wav` records from a
+WAV file, played in real time, in place of the microphone.
 
-An app opens a dictation with `arko::dictation::DictationService::shared`, hands it audio with
-`Dictation::push` or `Dictation::record`, and passes its events to `Feed::dictation`, which sends
-them to every client as `Update::Dictation`. It keeps the `Dictation` until `Done` or `Failed`
-comes, since dropping it cancels the dictation.
+An app opens a dictation with `arko::dictation::DictationService::shared`, giving it a `Sink` that
+takes the events to the recording client, and hands it audio with `Dictation::push` or
+`Dictation::record`. It keeps the `Dictation` until `Done` or `Failed` comes, since dropping it
+cancels the dictation.
