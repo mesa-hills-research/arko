@@ -1915,6 +1915,30 @@ mod tests {
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
+    /// A first turn that fails leaves no conversation, so its cache has
+    /// nothing to keep warm, and neither the status nor the loop counts it.
+    #[tokio::test]
+    async fn a_failed_first_turn_leaves_no_cache_to_keep_warm() {
+        // (A reply without a call fails a turn that ends with one.)
+        let server = ModelServer::start(Arc::new(|_, _| {
+            Box::pin(async { crate::mock_model::reply("a", "Noted.") })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) =
+            crate::tests::harness(temp.path(), server.client(), true);
+        harness.publish_models();
+        assert!(harness.live_command("/keep-warm 5", Source::Terminal));
+        let end = harness.turn(Prompt::User("Hi.".into()), &mut inputs).await;
+        assert!(matches!(end, crate::harness::TurnEnd::Failed));
+        assert_eq!(lock(&harness.stats).cache_used(), None);
+        let cache = crate::remote::Meter::read(harness.gauges.as_ref()).cache;
+        assert_eq!(cache.refreshed_at, None);
+        assert_eq!(cache.keep_warm.and_then(|kept| kept.next_at), None);
+        assert_eq!(harness.keep_warm_wake(), None);
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
     /// It's refused where the model can't refresh its cache out of band,
     /// and where the cache lapsed while the session waits.
     #[tokio::test]

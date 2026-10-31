@@ -4983,6 +4983,8 @@ impl Harness {
         self.track_conversations();
         self.conversation = conversation_of(workflow, self.conversations.current_run());
         if matches!(self.conversation, Conversation::New) {
+            // Its cache is of a conversation that's gone.
+            lock(&self.stats).set_cache(None);
             self.say(
                 Level::Info,
                 "This conversation can't go on, so your next message starts it over, without what was said before.",
