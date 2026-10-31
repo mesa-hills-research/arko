@@ -1336,10 +1336,7 @@ fn typed(text: &str) -> Option<String> {
 /// (Arko started again since it loaded) is refused before the session
 /// sees it, so it can't land in a session it wasn't meant for.
 async fn send(app: &App, body: &[u8], action: Action) -> Response {
-    let feed = serde_json::from_slice::<Fence>(body)
-        .ok()
-        .and_then(|fence| fence.feed);
-    if feed.is_some_and(|feed| feed != format!("{:016x}", app.feed.id())) {
+    if other_feed(app, body) {
         return axum::Json(Verdict::refused(
             RefusalKind::Stale,
             "Not sent, because Arko restarted. Your text is kept.",
@@ -1363,6 +1360,25 @@ async fn send(app: &App, body: &[u8], action: Action) -> Response {
         )
             .into_response(),
     }
+}
+
+/// Whether `body` names a feed other than this server's, as a page left
+/// open across a restart of Arko sends.
+fn other_feed(app: &App, body: &[u8]) -> bool {
+    serde_json::from_slice::<Fence>(body)
+        .ok()
+        .and_then(|fence| fence.feed)
+        .is_some_and(|feed| feed != format!("{:016x}", app.feed.id()))
+}
+
+/// The 409 for a stop, a move to the background or a job's stop from a
+/// page of another feed: its call and turn were another session's.
+fn not_this_feed() -> Response {
+    (
+        StatusCode::CONFLICT,
+        error_body("Not done, because Arko restarted."),
+    )
+        .into_response()
 }
 
 /// `POST /api/message` with `{"text": ...}`: as if typed at the prompt,
@@ -1671,14 +1687,19 @@ async fn ping(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// `POST /api/stop`: stops the turn, as Ctrl-C does.
+/// `POST /api/stop`: stops the turn, as Ctrl-C does. One from a page of
+/// another feed gets a 409.
 async fn stop(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
     if let Err(refusal) = app.authorize(&headers, peer.ip()) {
         return refusal.into_response();
+    }
+    if other_feed(&app, &body) {
+        return not_this_feed();
     }
     app.act(Action::Stop)
 }
@@ -1690,7 +1711,9 @@ struct BackgroundBody {
 }
 
 /// `POST /api/background` with `{"item": ID}`: moves that running call to
-/// the background, or with `{}` the main agent's calls that can move.
+/// the background, or with `{}` the main agent's calls that can move. One
+/// from a page of another feed, whose item IDs were another session's, gets
+/// a 409.
 async fn background(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1700,15 +1723,19 @@ async fn background(
     if let Err(refusal) = app.authorize(&headers, peer.ip()) {
         return refusal.into_response();
     }
-    let body = if body.is_empty() {
+    let raw = body;
+    let body = if raw.is_empty() {
         Ok(BackgroundBody { item: None })
     } else {
-        serde_json::from_slice::<BackgroundBody>(&body)
+        serde_json::from_slice::<BackgroundBody>(&raw)
     };
-    let Ok(body) = body else {
+    let Ok(parsed) = body else {
         return (StatusCode::BAD_REQUEST, error_body("send {\"item\": ID}")).into_response();
     };
-    app.act(Action::Background { item: body.item })
+    if other_feed(&app, &raw) {
+        return not_this_feed();
+    }
+    app.act(Action::Background { item: parsed.item })
 }
 
 #[derive(Deserialize)]
@@ -1716,7 +1743,8 @@ struct StopJobBody {
     job: uuid::Uuid,
 }
 
-/// `POST /api/jobs/stop` with `{"job": ID}`: stops that background job.
+/// `POST /api/jobs/stop` with `{"job": ID}`: stops that background job. One
+/// from a page of another feed gets a 409.
 async fn stop_job(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1725,6 +1753,9 @@ async fn stop_job(
 ) -> Response {
     if let Err(refusal) = app.authorize(&headers, peer.ip()) {
         return refusal.into_response();
+    }
+    if other_feed(&app, &body) {
+        return not_this_feed();
     }
     let Ok(body) = serde_json::from_slice::<StopJobBody>(&body) else {
         return (StatusCode::BAD_REQUEST, error_body("send {\"job\": ID}")).into_response();
@@ -3673,6 +3704,34 @@ mod tests {
             })
         ));
         assert!(served.actions.try_recv().is_err());
+        // So are a stop, a move to the background and a job's stop.
+        for (path, body) in [
+            (
+                "/api/stop",
+                serde_json::json!({ "feed": "0000000000000001" }),
+            ),
+            (
+                "/api/background",
+                serde_json::json!({ "item": 3, "feed": "0000000000000001" }),
+            ),
+            (
+                "/api/jobs/stop",
+                serde_json::json!({ "job": uuid::Uuid::new_v4(), "feed": "0000000000000001" }),
+            ),
+        ] {
+            let response = served.post(path, cookie, &body.to_string()).await;
+            assert_eq!(response.status(), StatusCode::CONFLICT, "{path}");
+        }
+        assert!(served.actions.try_recv().is_err());
+        let response = served
+            .post(
+                "/api/stop",
+                cookie,
+                &serde_json::json!({ "feed": format!("{:016x}", feed.id()) }).to_string(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(served.actions.recv().await.unwrap(), Action::Stop);
         let ours = serde_json::json!({ "text": "Hello.", "feed": format!("{:016x}", feed.id()) });
         assert_eq!(
             served.sent("/api/message", cookie, &ours.to_string()).await,
