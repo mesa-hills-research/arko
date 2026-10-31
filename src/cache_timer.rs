@@ -116,9 +116,13 @@ impl CacheTimer {
 /// when it was sent, which the cache lasts from, and a Claude Code request's
 /// is its first streamed token, a few seconds after the provider read it.
 pub fn lapses_at(used: i64, lifetime: Duration) -> i64 {
-    used.saturating_add(lifetime_ms(
-        lifetime.saturating_sub(safety_margin(lifetime)),
-    ))
+    used.saturating_add(lifetime_ms(lapse_after(lifetime)))
+}
+
+/// How long after its last use a cache of `lifetime` counts as lapsed (see
+/// [`lapses_at`]).
+pub fn lapse_after(lifetime: Duration) -> Duration {
+    lifetime.saturating_sub(safety_margin(lifetime))
 }
 
 /// How long before its lifetime ends a cache counts as lapsed, 30 seconds
@@ -131,7 +135,13 @@ pub fn safety_margin(lifetime: Duration) -> Duration {
 /// milliseconds), a [`refresh_lead`] before its `lifetime` ends: at 4:00 of
 /// five minutes, and at 55:00 of an hour. That is before it [`lapses_at`].
 pub fn refresh_at(used: i64, lifetime: Duration) -> i64 {
-    used.saturating_add(lifetime_ms(lifetime.saturating_sub(refresh_lead(lifetime))))
+    used.saturating_add(lifetime_ms(refresh_after(lifetime)))
+}
+
+/// How long after its last use keep-warm refreshes a cache of `lifetime`
+/// (see [`refresh_at`]).
+pub fn refresh_after(lifetime: Duration) -> Duration {
+    lifetime.saturating_sub(refresh_lead(lifetime))
 }
 
 /// How long before its lifetime ends keep-warm refreshes a cache, a twelfth

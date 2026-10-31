@@ -477,7 +477,7 @@ pub(crate) fn cache_status(
         })
         .map(|limits| {
             let cache = crate::keep_warm::Cache {
-                used: stats.cache_refreshed_at,
+                used: stats.cache_used(),
                 lifetime: stats.cache_lifetime,
                 quote: refresh_quote(stats, models),
             };
@@ -639,6 +639,7 @@ mod tests {
         // next refresh while no turn runs.
         let kept = Stats {
             cache_refreshed_at: Some(0),
+            cache_seen: Some(std::time::Instant::now()),
             ..stats.clone()
         };
         // (Under the setting, the session's own choice being none.)

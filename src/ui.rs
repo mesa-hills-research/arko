@@ -653,6 +653,10 @@ pub struct Stats {
     /// milliseconds): its latest request's start, a refresh that kept it
     /// warm, or what a resumed session's record says of it.
     pub cache_refreshed_at: Option<i64>,
+    /// When the session saw `cache_refreshed_at`, on its monotonic clock,
+    /// which keep-warm counts by. None where the session can't vouch for
+    /// that time (a record from a clock that was ahead, or too old).
+    pub(crate) cache_seen: Option<std::time::Instant>,
     /// The session's record of its prompt cache, kept as the main agent's
     /// requests end. None where nothing is kept (tests).
     pub(crate) cache_memory: Option<Arc<crate::cache_memory::Memory>>,
@@ -1118,8 +1122,10 @@ impl EventPrinter {
                 // its task records too. (An event saved by an older version
                 // has only its own time.)
                 let sent = sent_at.map_or(at, |sent| sent.timestamp_millis());
+                let used = crate::keep_warm::Moment::sent(sent, crate::keep_warm::Moment::now());
                 stats.cache_refreshed_at = Some(sent);
-                stats.keep_warm.requested(sent);
+                stats.cache_seen = Some(used.seen);
+                stats.keep_warm.requested(used);
                 stats.last_request = Some(remote::LastRequest {
                     at: sent,
                     model,

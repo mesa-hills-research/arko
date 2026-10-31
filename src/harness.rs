@@ -1406,11 +1406,10 @@ impl Harness {
             // run that waits in a host handler, until it can.
             let (event, mut reply) = match self.keep_warm_wake() {
                 Some(at) => {
-                    let wait = at.saturating_sub(crate::keep_warm::now_ms()).max(0);
                     tokio::select! {
                         next = input.next_event(true) => next,
-                        () = tokio::time::sleep(Duration::from_millis(wait as u64)) => {
-                            Box::pin(self.keep_warm_tick(crate::keep_warm::now_ms())).await;
+                        () = tokio::time::sleep_until(tokio::time::Instant::from_std(at)) => {
+                            Box::pin(self.keep_warm_tick(crate::keep_warm::Moment::now())).await;
                             continue;
                         }
                     }
@@ -2488,7 +2487,7 @@ impl Harness {
         };
         let workflow = self.workflow().clone();
         // The cache lasts from the request's start, as a turn's does.
-        let started = chrono::Utc::now().timestamp_millis();
+        let started = crate::keep_warm::Moment::now();
         // (Boxed: the session's loop would hold it on its stack.)
         match Box::pin(workflow.refresh_prompt_cache(&result)).await {
             Ok(refresh) => {
@@ -2499,7 +2498,8 @@ impl Harness {
                 );
                 let kept = {
                     let mut stats = lock(&self.stats);
-                    stats.cache_refreshed_at = Some(started);
+                    stats.cache_refreshed_at = Some(started.at);
+                    stats.cache_seen = Some(started.seen);
                     if !own {
                         stats.keep_warm.requested(started);
                     }
