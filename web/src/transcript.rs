@@ -10,7 +10,7 @@ use crate::copy::CopyButton;
 use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
-use crate::protocol::{CallStatus, ItemData, Kind, Level, Source, WorkerState};
+use crate::protocol::{CallStatus, ItemData, Kind, Level, Source, WorkerState, duration};
 use crate::spinner::Spinner;
 use crate::store::{Entry, MAIN, call_actions};
 use crate::{scroll, words};
@@ -268,7 +268,7 @@ fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
                     return "Thinking".to_string();
                 }
                 match STORE.with(|store| store.borrow().grew_for(id)) {
-                    Some(ms) => format!("Thought for {}", words::duration(ms)),
+                    Some(ms) => format!("Thought for {}", duration(ms as i64)),
                     None => "Thought".to_string(),
                 }
             };

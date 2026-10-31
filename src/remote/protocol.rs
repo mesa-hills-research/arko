@@ -1281,6 +1281,18 @@ fn size(bytes: u64) -> String {
     }
 }
 
+/// How long `ms` milliseconds read, such as `45s`, `2m` or `1h 5m`. The
+/// terminal and the page say how long a thinking took in these words.
+#[allow(dead_code)]
+pub fn duration(ms: i64) -> String {
+    let seconds = (ms / 1000).max(0);
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m", seconds / 60),
+        _ => format!("{}h {}m", seconds / 3600, seconds % 3600 / 60),
+    }
+}
+
 /// Dollars as people write them: `$12`, `$3.20`.
 pub fn money(amount: f64) -> String {
     let cents = (amount * 100.0).round();

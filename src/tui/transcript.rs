@@ -118,6 +118,7 @@ struct Cached {
     lines: Vec<Wrapped>,
 }
 
+pub use crate::remote::protocol::duration;
 pub use crate::ui::Banner;
 
 /// The model and effort workers start with unless told otherwise. A worker's
@@ -2287,16 +2288,6 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|span| text_width(&span.content)).sum()
 }
 
-/// How long `ms` milliseconds read: `45s`, `2m`, `1h 5m`.
-pub fn duration(ms: i64) -> String {
-    let seconds = (ms / 1000).max(0);
-    match seconds {
-        0..=59 => format!("{seconds}s"),
-        60..=3599 => format!("{}m", seconds / 60),
-        _ => format!("{}h {}m", seconds / 3600, seconds % 3600 / 60),
-    }
-}
-
 /// How long a thinking that stopped took, as "for 12s", or empty when the
 /// feed can't tell or it took under a second.
 fn thought_time(entry: &Entry) -> String {
@@ -2925,6 +2916,16 @@ mod tests {
         t.follow();
         assert_eq!(rows(&mut t, &quiet, 40, 3)[..1], ["  ▸ Thought for 2m"]);
         assert_eq!(rows(&mut t, &full(), 40, 5)[..1], ["  ▾ Thought for 2m"]);
+    }
+
+    /// Times read in whole units, as the terminal and the page both say
+    /// them.
+    #[test]
+    fn durations_read_in_whole_units() {
+        assert_eq!(duration(999), "0s");
+        assert_eq!(duration(45_000), "45s");
+        assert_eq!(duration(125_000), "2m");
+        assert_eq!(duration(3_900_000), "1h 5m");
     }
 
     /// A worker's own view shows its thinking as the selected view shows
