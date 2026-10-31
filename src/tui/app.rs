@@ -271,15 +271,39 @@ fn agent_works_since(activity: &Activity, waits: bool) -> Option<i64> {
 /// continues it.
 const CONTINUE_CONFIRM_WITHIN: Duration = Duration::from_secs(30);
 
-/// What the user sent from the box, as the session gets it, with what goes
-/// back in the box when the session refuses it.
+/// What the view gives the session, as the session gets it, with what goes
+/// back where it came from when the session refuses it, or doesn't say.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sending {
     pub input: Input,
-    /// The box's text as it was sent.
-    pub typed: String,
-    /// The questions attached to it.
-    pub answers: Vec<String>,
+    pub restore: Restore,
+}
+
+/// What goes back when the session refuses a send, or stops before it says.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Restore {
+    /// Nothing: a stop, a quit, a dismissal.
+    Nothing,
+    /// The box's text as it was sent, and the questions attached to it,
+    /// when the box is empty.
+    Box { typed: String, answers: Vec<String> },
+    /// The answer panel opens again. Its drafts stay until their questions
+    /// settle.
+    Panel,
+}
+
+impl Sending {
+    /// A send that puts the box's text `typed`, with the questions
+    /// `answers`, back when refused.
+    pub fn of_box(input: Input, typed: impl Into<String>, answers: Vec<String>) -> Self {
+        Self {
+            input,
+            restore: Restore::Box {
+                typed: typed.into(),
+                answers,
+            },
+        }
+    }
 }
 
 impl Sending {
@@ -693,11 +717,29 @@ impl App {
 
     /// Sends `line`, which the box held as `typed`.
     fn send_typed(&mut self, line: &str, typed: &str) {
-        self.effects.push(Effect::Send(Sending {
-            input: Input::Line(line.to_string()),
-            typed: typed.to_string(),
-            answers: Vec::new(),
-        }));
+        self.effects.push(Effect::Send(Sending::of_box(
+            Input::Line(line.to_string()),
+            typed,
+            Vec::new(),
+        )));
+    }
+
+    /// Puts back what `sending` took, when the session refused it or didn't
+    /// say what became of it: the box's text and its questions, when the
+    /// box is empty, or the answer panel.
+    fn restore(&mut self, sending: &Sending) {
+        match &sending.restore {
+            Restore::Nothing => {}
+            Restore::Box { typed, answers } => {
+                if self.editor.is_empty() {
+                    self.editor.set(typed);
+                    if self.panel.attached.is_empty() {
+                        self.panel.attached = answers.clone();
+                    }
+                }
+            }
+            Restore::Panel => self.open_panel(),
+        }
     }
 
     /// What became of `sending`, which the session refused or took. A
@@ -714,12 +756,7 @@ impl App {
             }
             crate::Verdict::Refused(refusal) => refusal,
         };
-        if self.editor.is_empty() {
-            self.editor.set(&sending.typed);
-            if self.panel.attached.is_empty() {
-                self.panel.attached = sending.answers.clone();
-            }
-        }
+        self.restore(&sending);
         match refusal.confirm {
             Some(crate::Confirm::ContinueUncached) => {
                 self.continue_asked = Some((sending.line().to_string(), Instant::now()));
@@ -1586,15 +1623,13 @@ impl App {
         // With questions attached, it answers them, in any view.
         let answers = std::mem::take(&mut self.panel.attached);
         if !answers.is_empty() {
-            self.effects.push(Effect::Send(Sending {
-                input: Input::Message(crate::ui::Message {
-                    text: text.trim_end().to_string(),
-                    answers: answers.clone(),
-                    ..Default::default()
-                }),
-                typed: text.clone(),
-                answers,
-            }));
+            let message = Input::Message(crate::ui::Message {
+                text: text.trim_end().to_string(),
+                answers: answers.clone(),
+                ..Default::default()
+            });
+            self.effects
+                .push(Effect::Send(Sending::of_box(message, text, answers)));
             return;
         }
         // In a worker's own view it goes to that worker, unless the main
@@ -1612,9 +1647,7 @@ impl App {
     /// may have gone: it comes back to the box when the box is empty, and
     /// the status line says to look before sending it again.
     pub fn no_verdict(&mut self, sending: Sending) {
-        if self.editor.is_empty() {
-            self.editor.set(&sending.typed);
-        }
+        self.restore(&sending);
         self.say("Arko stopped before saying whether it went. Check the transcript before you send it again.");
     }
 
@@ -1630,15 +1663,13 @@ impl App {
         if confirmed {
             self.editor.take();
             self.menu = Menu::default();
-            self.effects.push(Effect::Send(Sending {
-                input: Input::Message(crate::ui::Message {
-                    text: line.to_string(),
-                    continue_uncached: true,
-                    ..Default::default()
-                }),
-                typed: typed.to_string(),
-                answers: Vec::new(),
-            }));
+            let confirmed = Input::Message(crate::ui::Message {
+                text: line.to_string(),
+                continue_uncached: true,
+                ..Default::default()
+            });
+            self.effects
+                .push(Effect::Send(Sending::of_box(confirmed, typed, Vec::new())));
         }
         confirmed
     }
@@ -2822,8 +2853,17 @@ pub(super) mod tests {
         type_text(&mut app, "/workers");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/workers"]);
-        // The session stops before it says: the message comes back, and the
-        // status line says it may have gone.
+        // The session stops before it says: the message comes back with
+        // its questions, and the status line says it may have gone.
+        app.no_verdict(Sending::of_box(
+            Input::Line("Tabs.".into()),
+            "Tabs.",
+            vec!["q1".into()],
+        ));
+        assert_eq!(app.editor.text(), "Tabs.");
+        assert_eq!(app.panel.attached, ["q1"]);
+        app.editor.take();
+        app.panel.attached.clear();
         app.editor.take();
         type_text(&mut app, "Bye.");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -3357,30 +3397,30 @@ pub(super) mod tests {
         );
     }
 
-    /// Answers in the panel too long to send aren't sent: the drafts stay in
-    /// the open panel, and the status line says how short to make them. A
-    /// message that answers questions goes to the session, which refuses it
-    /// when too long: it comes back to the box with its questions, and the
-    /// status line says how short to make it. Once short enough, it goes.
+    /// Answers too long to send go to the session, which refuses them. The
+    /// panel's open again with its drafts, or a message comes back to the
+    /// box with its questions, and the status line says how short to make
+    /// them. Once short enough, it goes.
     #[test]
-    fn answers_too_long_to_send_stay_where_they_were_typed() {
+    fn answers_too_long_to_send_come_back_where_they_were_typed() {
         let mut app = app();
         let mut reading = asking();
         reading.questions[1].waits = true;
         app.set_reading(reading);
         let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
-        // In the panel, Send on the summary checks the whole answer.
+        // In the panel.
         app.paste(&long);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(inputs(&mut app).is_empty());
+        let [sending] = sendings(&mut app).try_into().unwrap();
+        assert_eq!(sending.restore, Restore::Panel);
+        assert!(!app.panel.open);
+        let answer = "Your answer is too long to send. Shorten it to 15 KB.";
+        app.verdict(sending, refusal(crate::RefusalKind::TooLong, answer));
         assert!(app.panel.open);
         assert_eq!(app.panel.drafts["q1"].other, long);
-        assert_eq!(
-            app.hint(),
-            Some("Your answer is too long to send. Shorten it to 15 KB.")
-        );
+        assert_eq!(app.hint(), Some(answer));
         app.panel.drafts.clear();
         // Attached to a message.
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -3388,7 +3428,9 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let words = "Your message is too long to send as an answer. Shorten it to 15 KB.";
         let [sending] = sendings(&mut app).try_into().unwrap();
-        assert_eq!(sending.answers, ["q1", "q2"]);
+        assert!(
+            matches!(&sending.restore, Restore::Box { answers, .. } if answers == &["q1", "q2"])
+        );
         assert!(app.editor.is_empty() && app.panel.attached.is_empty());
         app.verdict(sending, refusal(crate::RefusalKind::TooLong, words));
         assert_eq!(app.editor.text(), long);

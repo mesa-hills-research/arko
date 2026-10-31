@@ -115,7 +115,10 @@ fn sent(app: &mut App) -> Vec<ApprovalAnswers> {
     app.take_effects()
         .into_iter()
         .filter_map(|effect| match effect {
-            Effect::Input(Input::AnswerApprovals(answers)) => Some(answers),
+            Effect::Send(crate::tui::app::Sending {
+                input: Input::AnswerApprovals(answers),
+                ..
+            }) => Some(answers),
             _ => None,
         })
         .collect()
@@ -234,16 +237,30 @@ fn the_message_box_gives_the_answer_its_words() {
     assert_eq!(answers[0].words.as_deref(), Some("Name them better."));
     assert!(app.editor.is_empty());
 
+    // Words the session refuses come back to the box, with why.
     let mut app = three();
-    app.editor
-        .set(&"y".repeat(crate::approvals::MAX_APPROVAL_WORDS + 1));
+    let long = "y".repeat(crate::approvals::MAX_APPROVAL_WORDS + 1);
+    app.editor.set(&long);
     alt_a(&mut app);
     press(&mut app, KeyCode::Enter);
-    assert!(sent(&mut app).is_empty());
-    assert!(!app.editor.is_empty());
+    let sending = app
+        .take_effects()
+        .into_iter()
+        .find_map(|effect| match effect {
+            Effect::Send(sending) => Some(sending),
+            _ => None,
+        })
+        .expect("sent");
+    assert!(app.editor.is_empty());
+    let words = "Your words are too long to send. Shorten them to 16 KB.";
+    app.verdict(
+        sending,
+        crate::Verdict::refused(crate::RefusalKind::TooLong, words),
+    );
+    assert_eq!(app.editor.text(), long);
     assert_eq!(
         app.hint.as_ref().map(|(text, _)| text.as_str()),
-        Some("Your words are too long to send. Shorten them to 16 KB.")
+        Some(words)
     );
 }
 

@@ -56,7 +56,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::glyphs;
 use crate::remote;
 use crate::ui::{self, Input, Output};
-use app::{App, Effect, Info};
+use app::{App, Effect, Info, Sending};
 use backend::CursorBackend;
 pub use transcript::Banner;
 
@@ -433,7 +433,7 @@ async fn run(
                 let Some(Ok(event)) = event else {
                     // The terminal is gone: as Ctrl-D at the prompt.
                     events_open = false;
-                    let _ = setup.input.send(Input::Eof);
+                    give(&setup.requests, &verdict_done, control(Input::Eof));
                     continue;
                 };
                 // What came together comes as one batch.
@@ -533,23 +533,8 @@ async fn run(
             for effect in effects {
                 match effect {
                     Effect::Notice(level, text) => setup.feed.notice(level, &text),
-                    Effect::Send(sending) => {
-                        let (reply, verdict) = oneshot::channel();
-                        let request = crate::Request::Send {
-                            input: sending.input.clone(),
-                            reply,
-                        };
-                        if setup.requests.send(request).is_ok() {
-                            let done = verdict_done.clone();
-                            tokio::spawn(async move {
-                                let verdict = verdict.await.ok();
-                                let _ = done.send((sending, verdict));
-                            });
-                        }
-                    }
-                    Effect::Input(input) => {
-                        let _ = setup.input.send(input);
-                    }
+                    Effect::Send(sending) => give(&setup.requests, &verdict_done, sending),
+                    Effect::Input(input) => give(&setup.requests, &verdict_done, control(input)),
                     Effect::Copy { text, what } => {
                         // The terminal's clipboard, and the system's: the status
                         // line says "Copied" only when the system's took it.
@@ -716,6 +701,38 @@ fn take_updates(
         next = updates.try_next();
     }
     (bell, asked)
+}
+
+/// What became of a send, as the session says it (`None` when it stopped
+/// before it said), for the view's loop.
+type Verdicts = mpsc::UnboundedSender<(Sending, Option<crate::Verdict>)>;
+
+/// A stop, a quit or a move to the background, which puts nothing back.
+fn control(input: Input) -> Sending {
+    Sending {
+        input,
+        restore: app::Restore::Nothing,
+    }
+}
+
+/// Gives the session `sending`, in the order the view gives everything, and
+/// brings its verdict back to the view's loop through `verdicts`. When the
+/// session no longer takes anything, it is refused as closed at once.
+fn give(requests: &mpsc::UnboundedSender<crate::Request>, verdicts: &Verdicts, sending: Sending) {
+    let (reply, verdict) = oneshot::channel();
+    let request = crate::Request::Send {
+        input: sending.input.clone(),
+        reply,
+    };
+    let done = verdicts.clone();
+    if requests.send(request).is_err() {
+        let _ = done.send((sending, Some(crate::Verdict::closed())));
+        return;
+    }
+    tokio::spawn(async move {
+        let verdict = verdict.await.ok();
+        let _ = done.send((sending, verdict));
+    });
 }
 
 /// Whether `update` is of a question card: the agent asked, or its
@@ -900,11 +917,11 @@ mod tests {
         let sent = app.take_effects();
         assert_eq!(
             sent,
-            [Effect::Send(crate::tui::app::Sending {
-                input: Input::Line("one\ntwo".into()),
-                typed: "one\ntwo".into(),
-                answers: Vec::new(),
-            })]
+            [Effect::Send(crate::tui::app::Sending::of_box(
+                Input::Line("one\ntwo".into()),
+                "one\ntwo",
+                Vec::new()
+            ))]
         );
         // An Enter a key follows at once was a paste's.
         handle(
@@ -1072,5 +1089,42 @@ mod tests {
         let mut again = Vec::new();
         write_close(&mut again);
         assert!(!String::from_utf8(again).unwrap().contains("\x1b[<1u"));
+    }
+
+    /// What the view gives the session, its messages and its stops alike,
+    /// goes in one channel, so the session reads them in the order given.
+    /// When the session no longer takes anything, a send is refused as
+    /// closed at once.
+    #[tokio::test]
+    async fn the_view_gives_everything_in_one_order() {
+        let (requests, mut received) = mpsc::unbounded_channel();
+        let (verdicts, mut verdicts_back) = mpsc::unbounded_channel();
+        let message = Sending::of_box(Input::Line("Hello.".into()), "Hello.", Vec::new());
+        give(&requests, &verdicts, message);
+        give(&requests, &verdicts, control(Input::Interrupt));
+        let read: Vec<Input> = std::iter::from_fn(|| received.try_recv().ok())
+            .map(|request| match request {
+                crate::Request::Send { input, reply } => {
+                    let _ = reply.send(crate::Verdict::accepted(remote::Delivery::Command, None));
+                    input
+                }
+                _ => panic!("a send"),
+            })
+            .collect();
+        assert_eq!(read, [Input::Line("Hello.".into()), Input::Interrupt]);
+        drop(received);
+        give(
+            &requests,
+            &verdicts,
+            Sending::of_box(Input::Line("Late.".into()), "Late.", Vec::new()),
+        );
+        let mut closed = None;
+        for _ in 0..3 {
+            let (sending, verdict) = verdicts_back.recv().await.unwrap();
+            if sending.input == Input::Line("Late.".into()) {
+                closed = verdict;
+            }
+        }
+        assert_eq!(closed, Some(crate::Verdict::closed()));
     }
 }

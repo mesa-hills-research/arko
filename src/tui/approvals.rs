@@ -24,8 +24,7 @@ use super::theme::Theme;
 use super::transcript::cut_end;
 use super::wrap;
 use crate::approvals::{
-    ApprovalAnswers, ApprovalRequest, Look, approval_words_refusal, approvals_heading,
-    approve_label, reject_label,
+    ApprovalAnswers, ApprovalRequest, Look, approvals_heading, approve_label, reject_label,
 };
 use crate::glyphs;
 use crate::ui::Input;
@@ -195,13 +194,10 @@ impl App {
 
     /// Enter (`approve`: those selected are approved, the others rejected)
     /// or R (all rejected). The message box's text goes with the answer,
-    /// and the box empties.
+    /// and the box empties. When the session refuses it, the words come
+    /// back.
     fn answer_tray(&mut self, approve: bool) {
         let words = self.editor.text();
-        if let Some(refusal) = approval_words_refusal(&words) {
-            self.say(refusal);
-            return;
-        }
         let requests = self.approvals().to_vec();
         let tray = &self.tray;
         let answers = ApprovalAnswers::of(
@@ -214,7 +210,11 @@ impl App {
             self.editor.take();
         }
         self.tray.focused = false;
-        self.effects_push(Effect::Input(Input::AnswerApprovals(answers)));
+        self.effects_push(Effect::Send(super::app::Sending::of_box(
+            Input::AnswerApprovals(answers),
+            words,
+            Vec::new(),
+        )));
         self.transcript.follow();
     }
 }
