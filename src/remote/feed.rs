@@ -898,6 +898,10 @@ struct Inner {
     updates: broadcast::Sender<Update>,
     /// The batched clients' queues ([`Feed::subscribe_batched`]).
     batched: Mutex<Vec<mpsc::UnboundedSender<Update>>>,
+    /// What a test runs where a change waits to go out, with the state
+    /// locked ([`Feed::paused`]).
+    #[cfg(test)]
+    pause: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// A transcript kept within its budget.
@@ -1063,6 +1067,8 @@ struct State {
     warned: HashMap<String, String>,
     /// The notice that the turn is stopping, until it has stopped.
     stopping: Option<u64>,
+    /// How many updates have gone out ([`Feed::publish`]).
+    seq: u64,
 }
 
 impl State {
@@ -1194,7 +1200,23 @@ impl Feed {
                 state: Mutex::new(State::default()),
                 updates,
                 batched: Mutex::default(),
+                #[cfg(test)]
+                pause: Mutex::default(),
             }),
+        }
+    }
+
+    /// Runs what a test set to run between a change and its update.
+    #[cfg(test)]
+    fn paused(&self) {
+        let pause = self
+            .inner
+            .pause
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(pause) = pause {
+            pause();
         }
     }
 
@@ -1283,7 +1305,12 @@ impl Feed {
             .collect()
     }
 
-    fn send(&self, update: Update) {
+    /// Sends `update` to the clients. It takes the state locked, so an
+    /// update always goes out with the change it reports and in the order
+    /// of the changes, and a client that subscribes gets each change once,
+    /// in its snapshot or as an update. It counts the update in `seq`.
+    fn publish(&self, state: &mut State, update: Update) {
+        state.seq += 1;
         let mut batched = self
             .inner
             .batched
@@ -1318,7 +1345,7 @@ impl Feed {
         let id = item.id;
         let (lane, budget) = state.lane(&item.agent);
         lane.push(item.clone(), budget);
-        self.send(Update::Item(item));
+        self.publish(state, Update::Item(item));
         id
     }
 
@@ -1337,10 +1364,13 @@ impl Feed {
             && open == kind
             && state.lane(agent).0.append(id, chunk)
         {
-            self.send(Update::Append {
-                id,
-                text: chunk.to_string(),
-            });
+            self.publish(
+                state,
+                Update::Append {
+                    id,
+                    text: chunk.to_string(),
+                },
+            );
             return;
         }
         self.push(state, Item::new(kind, chunk).agent(agent));
@@ -1369,7 +1399,7 @@ impl Feed {
                 item.job = Some(job.to_string());
             }
             let item = item.clone();
-            self.send(Update::Change(item));
+            self.publish(state, Update::Change(item));
         }
         if let Some(job) = outcome.job
             && let Some(summary) = state
@@ -1380,7 +1410,7 @@ impl Feed {
         {
             summary.call = Some(call.item);
             let summary = summary.clone();
-            self.send(Update::Job(summary));
+            self.publish(state, Update::Job(summary));
         }
         // A job that ended before the call's result came (in a parallel
         // group, whose results come together) ends its line now.
@@ -1445,10 +1475,10 @@ impl Feed {
             })
         });
         if let Some(item) = shortened {
-            self.send(Update::Change(item));
+            self.publish(state, Update::Change(item));
         }
         for id in gone {
-            self.send(Update::Remove { id });
+            self.publish(state, Update::Remove { id });
         }
         match streamed.open_text {
             Some(open) => state.open_text.insert(agent.to_string(), open),
@@ -1486,7 +1516,7 @@ impl Feed {
         let before = state.activity.clone();
         change(&mut state.activity);
         if state.activity != before {
-            self.send(Update::Activity);
+            self.publish(&mut state, Update::Activity);
         }
     }
 
@@ -1888,7 +1918,7 @@ impl Feed {
         let Some(mut item) = state.main.remove(id) else {
             return;
         };
-        self.send(Update::Remove { id });
+        self.publish(state, Update::Remove { id });
         item.pending = false;
         self.push(state, item);
     }
@@ -1972,7 +2002,7 @@ impl Feed {
         call.status = Some(status);
         call.outcome = Some(text.to_string());
         let call = call.clone();
-        self.send(Update::Change(call));
+        self.publish(state, Update::Change(call));
     }
 
     /// What the transcript shows of the call `call` (one of the latest),
@@ -2036,7 +2066,7 @@ impl Feed {
                 if found.job.as_deref() != Some(&id) {
                     found.job = Some(id.clone());
                     let found = found.clone();
-                    self.send(Update::Change(found));
+                    self.publish(&mut state, Update::Change(found));
                 }
             }
         }
@@ -2066,7 +2096,7 @@ impl Feed {
         {
             state.jobs.remove(oldest);
         }
-        self.send(Update::Job(summary));
+        self.publish(&mut state, Update::Job(summary));
     }
 
     /// The background job `id` ended as `ended`, with `outcome` in a few
@@ -2098,7 +2128,7 @@ impl Feed {
         job.ended_at = Some(now);
         job.outcome = outcome;
         let job = job.clone();
-        self.send(Update::Job(job.clone()));
+        self.publish(&mut state, Update::Job(job.clone()));
         if job.kind == JobKind::Monitor {
             let mut lines = state.lines_naming(&id);
             if let Some(item) = job.call {
@@ -2145,7 +2175,7 @@ impl Feed {
         job.alerts = Some(alerts);
         job.expires_at = Some(expires_at);
         let job = job.clone();
-        self.send(Update::Job(job.clone()));
+        self.publish(&mut state, Update::Job(job.clone()));
         let mut lines = state.lines_naming(&id);
         if let Some(item) = job.call {
             lines.push((job.agent.clone(), item));
@@ -2178,7 +2208,7 @@ impl Feed {
         call.status = Some(status);
         call.outcome = Some(text);
         let call = call.clone();
-        self.send(Update::Change(call));
+        self.publish(state, Update::Change(call));
     }
 
     /// The call `item` of `agent`, if its line says it moved to the
@@ -2225,7 +2255,7 @@ impl Feed {
         call.status = Some(status);
         call.outcome = Some(text);
         let call = call.clone();
-        self.send(Update::Change(call));
+        self.publish(state, Update::Change(call));
     }
 
     /// The call `call`'s tool returned `images`: its item shows them (the
@@ -2248,7 +2278,7 @@ impl Feed {
         if let Some(item) = lane.find(id) {
             item.images.extend(images);
             let item = item.clone();
-            self.send(Update::Change(item));
+            self.publish(&mut state, Update::Change(item));
         }
     }
 
@@ -2259,7 +2289,7 @@ impl Feed {
         if let Some(item) = state.main.find(id) {
             item.message_index = Some(index);
             let item = item.clone();
-            self.send(Update::Change(item));
+            self.publish(&mut state, Update::Change(item));
         }
     }
 
@@ -2319,7 +2349,7 @@ impl Feed {
             state.turn = state.turn.max(item.turn);
             let (lane, budget) = state.lane(&item.agent);
             lane.push(item.clone(), budget);
-            self.send(Update::Item(item));
+            self.publish(&mut state, Update::Item(item));
         }
         drop(state);
         self.question_activity();
@@ -2338,10 +2368,14 @@ impl Feed {
     /// session went to another conversation): they can't be edited, and
     /// the clients get the change.
     fn forget_messages(&self, state: &mut State) {
-        for item in state.main.items.iter_mut() {
-            if item.message_index.take().is_some() {
-                self.send(Update::Change(item.clone()));
-            }
+        let forgotten: Vec<Item> = state
+            .main
+            .items
+            .iter_mut()
+            .filter_map(|item| item.message_index.take().map(|_| item.clone()))
+            .collect();
+        for item in forgotten {
+            self.publish(state, Update::Change(item));
         }
     }
 
@@ -2355,7 +2389,7 @@ impl Feed {
         lane.wholes = lane.items.iter().map(Item::kept_size).sum();
         state.open_text.remove(MAIN_AGENT);
         state.unread_notes.retain(|(_, id)| *id < from);
-        self.send(Update::Truncate { from });
+        self.publish(&mut state, Update::Truncate { from });
     }
 
     /// `message` without the text of the main agent's latest warning (an
@@ -2417,7 +2451,7 @@ impl Feed {
             item.text = text.to_string();
             let item = item.clone();
             state.main.bytes = (state.main.bytes + item.size()).saturating_sub(before);
-            self.send(Update::Change(item));
+            self.publish(&mut state, Update::Change(item));
             return;
         }
         self.push(&mut state, Item::new(Kind::Notice, text).level(Level::Warn));
@@ -2458,7 +2492,7 @@ impl Feed {
             let item = item.clone();
             state.main.bytes = (state.main.bytes + item.size()).saturating_sub(before);
             state.open_text.remove(MAIN_AGENT);
-            self.send(Update::Change(item));
+            self.publish(&mut state, Update::Change(item));
             return;
         }
         self.push(&mut state, Item::new(Kind::Reply, text));
@@ -2815,7 +2849,7 @@ impl Feed {
             card.text = crate::questions::card_line(&questions);
             card.questions = Some(questions);
             let card = card.clone();
-            self.send(Update::Change(card));
+            self.publish(state, Update::Change(card));
         }
     }
 
@@ -2855,17 +2889,21 @@ impl Feed {
         String,
         tokio::sync::oneshot::Receiver<crate::approvals::Answer>,
     ) {
-        let added = self.lock().approvals.add(approval);
+        let mut state = self.lock();
+        let added = state.approvals.add(approval);
         log::debug!("approval {} asked for run {run} (call {call:?})", added.0);
-        self.send(Update::Activity);
+        #[cfg(test)]
+        self.paused();
+        self.publish(&mut state, Update::Activity);
         added
     }
 
     /// The request `id` leaves the tray unanswered (its tool stopped
     /// waiting).
     pub(crate) fn withdraw_approval(&self, id: &str) {
-        if self.lock().approvals.withdraw(id) {
-            self.send(Update::Activity);
+        let mut state = self.lock();
+        if state.approvals.withdraw(id) {
+            self.publish(&mut state, Update::Activity);
         }
     }
 
@@ -2880,9 +2918,10 @@ impl Feed {
         &self,
         answers: &crate::approvals::ApprovalAnswers,
     ) -> Vec<crate::approvals::ApprovalRequest> {
-        let answered = self.lock().approvals.answer(answers);
+        let mut state = self.lock();
+        let answered = state.approvals.answer(answers);
         if !answered.is_empty() {
-            self.send(Update::Activity);
+            self.publish(&mut state, Update::Activity);
         }
         answered
     }
@@ -2992,13 +3031,18 @@ impl Feed {
             self.push(&mut state, item.agent(id));
         }
         self.worker_changed(&mut state, id, true);
-        if let Some(worker) = state.worker(id)
-            && !worker.summary.state.is_active()
+        if let Some(outcome) = state
+            .worker(id)
+            .map(|worker| worker.summary.state)
+            .filter(|state| !state.is_active())
         {
-            self.send(Update::WorkerEnded {
-                id: id.to_string(),
-                outcome: worker.summary.state,
-            });
+            self.publish(
+                &mut state,
+                Update::WorkerEnded {
+                    id: id.to_string(),
+                    outcome,
+                },
+            );
         }
     }
 
@@ -3243,7 +3287,7 @@ impl Feed {
             worker.sent = Some(now);
             worker.pending = false;
             let summary = worker.summary.clone();
-            self.send(Update::Worker(summary));
+            self.publish(state, Update::Worker(summary));
             return;
         }
         if worker.pending {
@@ -3253,7 +3297,7 @@ impl Feed {
             // No timer to send it later with: it goes now.
             worker.sent = Some(now);
             let summary = worker.summary.clone();
-            self.send(Update::Worker(summary));
+            self.publish(state, Update::Worker(summary));
             return;
         };
         worker.pending = true;
@@ -3277,7 +3321,7 @@ impl Feed {
             worker.pending = false;
             worker.sent = Some(Instant::now());
             let summary = worker.summary.clone();
-            self.send(Update::Worker(summary));
+            self.publish(&mut state, Update::Worker(summary));
         }
     }
 }
@@ -5607,6 +5651,41 @@ mod tests {
         assert!(feed.approvals().is_empty());
         let (_, _d) = feed.request_approval(run, None, profile("four"));
         assert_eq!(feed.approvals()[0].batch, 2, "a new tray");
+    }
+
+    /// A client that subscribes while an approval request comes in either
+    /// gets the request's update, or subscribes after it and gets none, as
+    /// the request goes out with the state locked. It never sees the
+    /// request in the tray and then gets its update too.
+    #[test]
+    fn a_request_and_its_update_reach_a_new_client_once() {
+        use crate::approvals::Approval;
+        let feed = Feed::new("main");
+        let (sender, joined) = std::sync::mpsc::channel();
+        let subscriber = feed.clone();
+        *feed.inner.pause.lock().unwrap() = Some(Box::new(move || {
+            // While the request waits to go out, a client subscribes.
+            std::thread::spawn(move || {
+                let (_, updates) = subscriber.subscribe();
+                let saw = subscriber.approvals().len();
+                let _ = sender.send((updates, saw));
+            });
+            std::thread::sleep(Duration::from_millis(100));
+        }));
+        let profile = Approval::Profile(crate::profiles::approval(
+            &crate::profiles::Profile::new("one", "Reviews"),
+            crate::profiles::Place::User,
+        ));
+        let (_, _answer) = feed.request_approval(Uuid::new_v4(), None, profile);
+        let (mut updates, saw) = joined.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(saw, 1, "the client sees the request");
+        assert!(
+            matches!(
+                updates.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ),
+            "and gets no update for it"
+        );
     }
 
     /// A worker gets a placeholder in the main transcript where it starts
