@@ -1105,7 +1105,6 @@ impl Engine {
             main_reconfigured: false,
             earlier: Arc::default(),
             continue_asked: None,
-            keep_warm_chosen: false,
             #[cfg(test)]
             notes_refused: false,
         };

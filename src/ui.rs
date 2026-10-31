@@ -659,8 +659,8 @@ pub struct Stats {
     /// The main agent's model, as the session runs it (its id in the
     /// configuration). The record of the cache names it.
     pub(crate) main_model: Option<String>,
-    /// Keep-warm, while it is on (`/keep-warm`, the setting).
-    pub(crate) keep_warm: Option<crate::keep_warm::KeepWarm>,
+    /// Keep-warm in the session: its choice and what its refreshes sent.
+    pub(crate) keep_warm: crate::keep_warm::KeepWarm,
 }
 
 /// A request to the event printer.
@@ -1119,6 +1119,7 @@ impl EventPrinter {
                 // has only its own time.)
                 let sent = sent_at.map_or(at, |sent| sent.timestamp_millis());
                 stats.cache_refreshed_at = Some(sent);
+                stats.keep_warm.requested(sent);
                 stats.last_request = Some(remote::LastRequest {
                     at: sent,
                     model,

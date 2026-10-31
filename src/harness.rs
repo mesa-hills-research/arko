@@ -717,9 +717,6 @@ pub(crate) struct Harness {
     /// prompt cache expired without asking again: the one Arko just asked
     /// about, or one the user confirmed in a front end.
     pub(crate) continue_asked: Option<(String, String)>,
-    /// `/keep-warm` (or an app) chose keep-warm for the session, so the
-    /// setting no longer changes it.
-    pub(crate) keep_warm_chosen: bool,
     /// The workflow's note board refuses what the user's sends post, so a
     /// test sees what a send does when it can't post its note.
     #[cfg(test)]
@@ -2460,7 +2457,9 @@ impl Harness {
     /// provider allows, else with a short message and its reply (in
     /// `repl`).
     async fn refresh_cache(&mut self) -> Result<crate::engine::Refreshed, String> {
-        match Box::pin(self.refresh_out_of_band()).await? {
+        let refreshed = Box::pin(self.refresh_out_of_band(false)).await;
+        self.save_keep_warm();
+        match refreshed? {
             Some(usage) => Ok(crate::engine::Refreshed::OutOfBand {
                 read: usage.cached_tokens.unwrap_or(0),
                 written: usage.cache_write_tokens.unwrap_or(0),
@@ -2475,8 +2474,10 @@ impl Harness {
 
     /// Refreshes the main agent's prompt cache out of band, and returns the
     /// refresh's usage, or `None` where the provider takes no such refresh.
+    /// One keep-warm sent (`own`) starts no idle stretch.
     pub(crate) async fn refresh_out_of_band(
         &mut self,
+        own: bool,
     ) -> Result<Option<arko_ai::UsageInfo>, String> {
         let result = match &self.conversation {
             Conversation::New => {
@@ -2499,6 +2500,9 @@ impl Harness {
                 let kept = {
                     let mut stats = lock(&self.stats);
                     stats.cache_refreshed_at = Some(started);
+                    if !own {
+                        stats.keep_warm.requested(started);
+                    }
                     stats.cache_use = Some((read, written));
                     stats
                         .cache_memory
@@ -4129,6 +4133,8 @@ impl Harness {
         self.settle_answer_notes();
         self.footer(spent_before, started);
         self.tell_monitors_of_the_cache();
+        // (Its latest request, for when the session opens again.)
+        self.save_keep_warm();
         if let Some(item) = user_item {
             self.mark_message(item, at);
         }
@@ -6500,7 +6506,6 @@ pub(crate) mod tests {
             main_reconfigured: false,
             earlier: Arc::default(),
             continue_asked: None,
-            keep_warm_chosen: false,
             notes_refused: false,
         };
         harness.open(false).unwrap();

@@ -327,7 +327,7 @@ impl remote::Meter for Gauges {
             .feed
             .as_ref()
             .is_some_and(|feed| feed.activity().working);
-        let cache = cache_status(&stats, &lock(&self.models), turn);
+        let cache = cache_status(&stats, &lock(&self.models), *lock(&self.keep_warm), turn);
         let main_plan = {
             let models = lock(&self.models);
             let model = providers::resolve_model(&models.main).ok();
@@ -459,21 +459,30 @@ fn main_plan(
 }
 
 /// The main agent's prompt cache, from what its latest request said, priced
-/// for its model, with keep-warm while it is on and the conversation's model
-/// can refresh out of band. A `turn` running sends no refresh.
+/// for its model, with keep-warm while it is on (under the keep-warm
+/// `setting`) and the conversation's model can refresh out of band. A `turn`
+/// running sends no refresh.
 pub(crate) fn cache_status(
     stats: &crate::ui::Stats,
     models: &remote::Models,
+    setting: Option<crate::keep_warm::Limits>,
     turn: bool,
 ) -> remote::CacheStatus {
     let keep_warm = stats
         .keep_warm
-        .as_ref()
+        .limits(setting)
         .filter(|_| {
             crate::keep_warm::conversation_model(models)
                 .is_some_and(|model| crate::keep_warm::refreshes_out_of_band(&model))
         })
-        .map(|kept| kept.status(stats.cache_refreshed_at, stats.cache_lifetime, turn));
+        .map(|limits| {
+            stats.keep_warm.status(
+                &limits,
+                stats.cache_refreshed_at,
+                stats.cache_lifetime,
+                turn,
+            )
+        });
     let model = providers::resolve_model(&models.main).ok();
     let on_plan = main_plan(model.as_ref(), models).map(|plan| match plan {
         arko_ai::SubscriptionPlan::ClaudeCode => "your Claude plan",
@@ -582,7 +591,7 @@ mod tests {
             ..remote::Models::default()
         };
         let pricing = providers::resolve_model("opus").unwrap().pricing;
-        let cache = cache_status(&stats, &models, false);
+        let cache = cache_status(&stats, &models, None, false);
         let close = |a: Option<f64>, b: f64| (a.unwrap() - b).abs() < 1e-9;
         assert!(close(
             cache.miss_cost,
@@ -598,26 +607,27 @@ mod tests {
             main: "cc:opus".into(),
             ..models
         };
-        let cache = cache_status(&stats, &models, false);
+        let cache = cache_status(&stats, &models, None, false);
         assert_eq!((cache.miss_cost, cache.refresh_cost), (None, None));
         assert_eq!(cache.on_plan, Some("your Claude plan"));
         // Keep-warm shows for a model that refreshes out of band, with its
         // next refresh while no turn runs.
         let kept = Stats {
             cache_refreshed_at: Some(0),
-            keep_warm: Some(crate::keep_warm::KeepWarm::new(
-                crate::keep_warm::Limits {
-                    refreshes: Some(3),
-                    ..Default::default()
-                },
-                false,
-            )),
             ..stats.clone()
         };
-        let status = cache_status(&kept, &models, false).keep_warm.unwrap();
+        // (Under the setting, the session's own choice being none.)
+        let setting = Some(crate::keep_warm::Limits {
+            refreshes: Some(3),
+            ..Default::default()
+        });
+        assert_eq!(cache_status(&kept, &models, None, false).keep_warm, None);
+        let status = cache_status(&kept, &models, setting, false)
+            .keep_warm
+            .unwrap();
         assert_eq!((status.left, status.next_at), (Some(3), Some(55 * 60_000)));
         assert_eq!(
-            cache_status(&kept, &models, true)
+            cache_status(&kept, &models, setting, true)
                 .keep_warm
                 .unwrap()
                 .next_at,
@@ -627,7 +637,10 @@ mod tests {
             main: "openrouter:anthropic/claude-opus-5.5".into(),
             ..models.clone()
         };
-        assert_eq!(cache_status(&kept, &openrouter, false).keep_warm, None);
+        assert_eq!(
+            cache_status(&kept, &openrouter, setting, false).keep_warm,
+            None
+        );
         // OpenAI's 12-hour cache on an API key costs 2.5 times the input
         // price to write, and its 30-minute one 1.25 times.
         let sol = providers::resolve_model("sol").unwrap().pricing;
@@ -650,7 +663,7 @@ mod tests {
                 cache_lifetime: Some(lifetime),
                 ..stats.clone()
             };
-            let cache = cache_status(&stats, &models, false);
+            let cache = cache_status(&stats, &models, None, false);
             assert!(close(
                 cache.miss_cost,
                 0.2 * rate * sol.input_cost_per_million

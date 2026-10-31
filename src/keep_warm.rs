@@ -367,138 +367,230 @@ pub(crate) enum Step {
     Stop(Stop),
 }
 
-/// What keep-warm's refreshes sent, since it started or last stopped for
-/// its hours.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct Tally {
+/// What keep-warm's refreshes sent: how many, what they cost at API prices
+/// (what a plan's would cost on a key), what they billed, and the tokens
+/// they read from the cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Totals {
     sent: u32,
-    /// What they billed, in dollars.
+    spent: f64,
     billed: f64,
-    /// The tokens they read from the cache.
     read: usize,
 }
 
-/// Keep-warm in a session, while it is on.
-#[derive(Debug, Clone, PartialEq)]
+impl Totals {
+    /// What came since `earlier`.
+    fn since(self, earlier: Totals) -> Totals {
+        Totals {
+            sent: self.sent.saturating_sub(earlier.sent),
+            spent: (self.spent - earlier.spent).max(0.0),
+            billed: (self.billed - earlier.billed).max(0.0),
+            read: self.read.saturating_sub(earlier.read),
+        }
+    }
+}
+
+/// What a session chose in place of the setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Choice {
+    /// It follows the setting.
+    #[default]
+    Setting,
+    /// Off: `/keep-warm off`, an app's request, or an end.
+    Off,
+    /// On until these limits end it (`/keep-warm`, an app's request).
+    On(Limits),
+}
+
+/// The file in a session's folder that keeps its keep-warm.
+const SESSION_FILE: &str = "keep-warm-session.json";
+
+/// Keep-warm in a session: what it chose and what its refreshes sent. A
+/// session keeps it in its folder, so it goes on as it was when the session
+/// opens again (a resume, a switch between Chat and Agent). When to refresh
+/// comes from it, the setting and the cache, each time the session's loop
+/// asks.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct KeepWarm {
-    pub(crate) limits: Limits,
-    /// It comes from the setting (else the session turned it on).
-    pub(crate) from_setting: bool,
-    tally: Tally,
-    /// All its refreshes, and what they cost at API prices.
-    sent: u32,
-    spent: f64,
-    /// What its latest refresh cost at API prices, which the next is taken
-    /// to cost.
-    last_cost: f64,
-    /// When the idle stretch began, the latest request it didn't send, and
-    /// the time its own latest refresh left (Unix milliseconds).
-    since: Option<i64>,
-    own: Option<i64>,
-    /// The idle stretch its hours stopped it in, until a request starts
-    /// another.
+    choice: Choice,
+    /// Everything its refreshes sent in the session.
+    totals: Totals,
+    /// The totals as the session's own choice began, which its number of
+    /// refreshes and its dollars count from. Under the setting they count
+    /// from the session's start.
+    from: Totals,
+    /// The totals as it last said what it sent. A notice says what came
+    /// since.
+    told: Totals,
+    /// When the latest request that keep-warm didn't send went (Unix
+    /// milliseconds), a turn's or a refresh the user asked for. Its idle
+    /// stretch starts there.
+    requested_at: Option<i64>,
+    /// The idle stretch (its `requested_at`) whose hours ran out, until
+    /// another request.
     paused: Option<i64>,
     /// It said that Arko has no price for the refreshes.
-    pub(crate) unpriced_told: bool,
+    unpriced_told: bool,
+    /// What its latest refresh cost at API prices, which the next is taken
+    /// to cost.
+    #[serde(skip)]
+    last_cost: f64,
 }
 
 impl KeepWarm {
-    pub(crate) fn new(limits: Limits, from_setting: bool) -> Self {
-        Self {
-            limits,
-            from_setting,
-            tally: Tally::default(),
-            sent: 0,
-            spent: 0.0,
-            last_cost: 0.0,
-            since: None,
-            own: None,
-            paused: None,
-            unpriced_told: false,
+    /// The session's keep-warm, as its folder `dir` keeps it. None kept
+    /// (or unreadable) follows the setting.
+    pub(crate) fn load(dir: &Path) -> Self {
+        std::fs::read_to_string(dir.join(SESSION_FILE))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// Keeps it in the session's folder `dir`.
+    pub(crate) fn save(&self, dir: &Path) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(self).map_err(|error| error.to_string())?;
+        crate::session::write_whole(&dir.join(SESSION_FILE), text.as_bytes())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Its limits now, under the setting `setting`: the session's own, else
+    /// the setting's. `None` while it is off.
+    pub(crate) fn limits(&self, setting: Option<Limits>) -> Option<Limits> {
+        match self.choice {
+            Choice::Setting => setting,
+            Choice::Off => None,
+            Choice::On(limits) => Some(limits),
         }
     }
 
-    /// When the idle stretch of a cache last used at `used` began: its
-    /// latest request that keep-warm didn't send.
-    fn stretch_start(&self, used: i64) -> i64 {
-        match (self.own, self.since) {
-            (Some(own), Some(since)) if own == used => since,
-            _ => used,
-        }
+    /// Whether it follows the setting (the session made no choice).
+    pub(crate) fn follows_setting(&self) -> bool {
+        self.choice == Choice::Setting
     }
 
-    /// When it stops, for a cache last used at `used`.
-    fn ends_at(&self, used: Option<i64>) -> Option<i64> {
-        let idle = self
-            .limits
+    /// A request that keep-warm didn't send went at `at` (Unix
+    /// milliseconds): a turn's, or a refresh the user asked for.
+    pub(crate) fn requested(&mut self, at: i64) {
+        self.requested_at = Some(at);
+    }
+
+    /// On until `limits` end it, in place of the setting. Its number of
+    /// refreshes and its dollars count from now.
+    fn start(&mut self, limits: Limits) {
+        self.choice = Choice::On(limits);
+        self.from = self.totals;
+        self.told = self.totals;
+        self.paused = None;
+    }
+
+    /// Off for the session, and what it sent since it last said.
+    fn off(&mut self) -> Totals {
+        self.choice = Choice::Off;
+        self.report()
+    }
+
+    /// What it sent since it last said, which it says now.
+    fn report(&mut self) -> Totals {
+        let said = self.totals.since(self.told);
+        self.told = self.totals;
+        said
+    }
+
+    /// What its number of refreshes and its dollars count.
+    fn counted(&self) -> Totals {
+        self.totals.since(self.from)
+    }
+
+    /// When it stops, under `limits`: its end, or its hours after the idle
+    /// stretch's start, whichever comes first.
+    fn ends_at(&self, limits: &Limits) -> Option<i64> {
+        let idle = limits
             .idle_hours
-            .zip(used)
-            .map(|(hours, used)| self.stretch_start(used) + i64::from(hours) * 3_600_000);
-        [self.limits.ends_at, idle].into_iter().flatten().min()
+            .zip(self.requested_at)
+            .map(|(hours, at)| at + i64::from(hours) * 3_600_000);
+        [limits.ends_at, idle].into_iter().flatten().min()
     }
 
-    fn left(&self) -> Option<u32> {
-        self.limits
+    fn left(&self, limits: &Limits) -> Option<u32> {
+        limits
             .refreshes
-            .map(|refreshes| refreshes.saturating_sub(self.sent))
+            .map(|refreshes| refreshes.saturating_sub(self.counted().sent))
     }
 
     /// Whether its next refresh would pass its dollars.
-    fn spent_out(&self) -> bool {
-        self.limits
+    fn spent_out(&self, limits: &Limits) -> bool {
+        limits
             .dollars
-            .is_some_and(|most| self.spent + self.last_cost > most + 1e-9)
+            .is_some_and(|most| self.counted().spent + self.last_cost > most + 1e-9)
     }
 
-    /// Whether its hours stopped it in this idle stretch.
-    fn paused(&self, used: Option<i64>) -> bool {
-        self.paused.is_some() && self.paused == used.map(|used| self.stretch_start(used))
+    /// Whether its hours stopped it in this idle stretch, or there is no
+    /// request yet to count them from.
+    fn paused(&self, limits: &Limits) -> bool {
+        limits.idle_hours.is_some()
+            && (self.requested_at.is_none() || self.paused == self.requested_at)
     }
 
     /// When the next refresh goes for a cache last used at `used` that lasts
     /// `lifetime`, if one comes before it stops.
-    fn next_at(&self, used: i64, lifetime: Duration) -> Option<i64> {
-        if self.left() == Some(0) || self.spent_out() || self.paused(Some(used)) {
+    fn next_at(&self, limits: &Limits, used: i64, lifetime: Duration) -> Option<i64> {
+        if self.left(limits) == Some(0) || self.spent_out(limits) || self.paused(limits) {
             return None;
         }
         let due = cache_timer::refresh_at(used, lifetime);
-        match self.ends_at(Some(used)) {
+        match self.ends_at(limits) {
             Some(end) if due > end => None,
             _ => Some(due),
         }
     }
 
-    /// When the session's loop wakes for it, for the cache last used at
-    /// `used` that lasts `lifetime`: for the next refresh, or to stop.
-    pub(crate) fn wake_at(&self, used: Option<i64>, lifetime: Option<Duration>) -> Option<i64> {
-        if self.left() == Some(0) || self.spent_out() {
+    /// When the session's loop wakes for it under `limits`, for the cache
+    /// last used at `used` that lasts `lifetime`: for the next refresh, or
+    /// to stop.
+    pub(crate) fn wake_at(
+        &self,
+        limits: &Limits,
+        used: Option<i64>,
+        lifetime: Option<Duration>,
+    ) -> Option<i64> {
+        if self.left(limits) == Some(0) || self.spent_out(limits) {
             return Some(i64::MIN);
         }
-        if self.paused(used) {
+        if self.paused(limits) {
             return None;
         }
         let due = used
             .zip(lifetime)
             .map(|(used, lifetime)| cache_timer::refresh_at(used, lifetime));
-        [due, self.ends_at(used)].into_iter().flatten().min()
+        [due, self.ends_at(limits)].into_iter().flatten().min()
     }
 
-    /// What it does at `now`, for the cache last used at `used` that lasts
-    /// `lifetime`.
-    pub(crate) fn step(&self, now: i64, used: Option<i64>, lifetime: Option<Duration>) -> Step {
-        if let Some(refreshes) = self.limits.refreshes.filter(|_| self.left() == Some(0)) {
+    /// What it does at `now` under `limits`, for the cache last used at
+    /// `used` that lasts `lifetime`.
+    pub(crate) fn step(
+        &self,
+        now: i64,
+        limits: &Limits,
+        used: Option<i64>,
+        lifetime: Option<Duration>,
+    ) -> Step {
+        if let Some(refreshes) = limits.refreshes.filter(|_| self.left(limits) == Some(0)) {
             return Step::Stop(Stop::Refreshes(refreshes));
         }
-        if let Some(most) = self.limits.dollars.filter(|_| self.spent_out()) {
+        if let Some(most) = limits.dollars.filter(|_| self.spent_out(limits)) {
             return Step::Stop(Stop::Dollars(most));
         }
-        if self.paused(used) {
+        if self.paused(limits) {
             return Step::Wait;
         }
-        if let Some(end) = self.ends_at(used).filter(|end| now >= *end) {
-            return Step::Stop(match self.limits.ends_at {
+        if let Some(end) = self.ends_at(limits).filter(|end| now >= *end) {
+            return Step::Stop(match limits.ends_at {
                 Some(at) if at == end => Stop::Ended(at),
-                _ => Stop::Idle(self.limits.idle_hours.unwrap_or_default()),
+                _ => Stop::Idle(limits.idle_hours.unwrap_or_default()),
             });
         }
         let Some((used, lifetime)) = used.zip(lifetime) else {
@@ -513,112 +605,115 @@ impl KeepWarm {
         }
     }
 
-    /// Counts a refresh of the cache last used at `used` that left it last
-    /// used at `refreshed` and had `usage`.
-    pub(crate) fn sent(&mut self, used: i64, refreshed: Option<i64>, usage: &arko_ai::UsageInfo) {
-        self.since = Some(self.stretch_start(used));
-        self.own = refreshed;
+    /// Counts a refresh it sent, which had `usage`.
+    pub(crate) fn sent(&mut self, usage: &arko_ai::UsageInfo) {
         let billed = usage.billed();
         let cost = usage.total_cost.max(billed);
-        self.tally.sent += 1;
-        self.tally.billed += billed;
-        self.tally.read += usage.cached_tokens.unwrap_or(0);
-        self.sent += 1;
-        self.spent += cost;
+        self.totals.sent += 1;
+        self.totals.spent += cost;
+        self.totals.billed += billed;
+        self.totals.read += usage.cached_tokens.unwrap_or(0);
         self.last_cost = cost;
     }
 
-    /// Its hours stopped it until a request starts another idle stretch,
-    /// for the cache last used at `used`.
-    fn pause(&mut self, used: Option<i64>) {
-        self.paused = used.map(|used| self.stretch_start(used));
-        self.tally = Tally::default();
+    /// Stops it for `stop`, and says why and what it sent since it last
+    /// said, on the plan `on_plan` if one pays. Its hours stop it until the
+    /// next request, and anything else ends it for the session.
+    fn stop(&mut self, stop: &Stop, on_plan: Option<&str>) -> String {
+        let said = self.report();
+        if matches!(stop, Stop::Idle(_)) {
+            self.paused = self.requested_at;
+        } else {
+            self.choice = Choice::Off;
+        }
+        stopped(stop, said, on_plan)
     }
 
-    /// The status, for the cache last used at `used` that lasts `lifetime`,
-    /// while a turn's requests run (`turn`) or not.
+    /// The status under `limits`, for the cache last used at `used` that
+    /// lasts `lifetime`, while a turn's requests run (`turn`) or not.
     pub(crate) fn status(
         &self,
+        limits: &Limits,
         used: Option<i64>,
         lifetime: Option<Duration>,
         turn: bool,
     ) -> Status {
         Status {
-            ends_at: self.ends_at(used),
-            left: self.left(),
+            ends_at: self.ends_at(limits),
+            left: self.left(limits),
             next_at: used
                 .zip(lifetime)
                 .filter(|_| !turn)
-                .and_then(|(used, lifetime)| self.next_at(used, lifetime)),
+                .and_then(|(used, lifetime)| self.next_at(limits, used, lifetime)),
         }
     }
 
     /// Whether a refresh that cost nothing at API prices shows that Arko has
-    /// no price for the model, where it has dollars to count.
-    pub(crate) fn unpriced(&self, usage: &arko_ai::UsageInfo) -> bool {
-        self.limits.dollars.is_some()
+    /// no price for the model, where `limits` have dollars to count, and it
+    /// didn't say so yet.
+    fn unpriced(&self, limits: &Limits, usage: &arko_ai::UsageInfo) -> bool {
+        limits.dollars.is_some()
             && !self.unpriced_told
             && usage.total_cost <= 0.0
             && usage.billed() <= 0.0
     }
+}
 
-    /// What its refreshes sent, in a sentence: "It sent 8 refreshes for
-    /// $0.32." On a plan (`on_plan`), what they read of it.
-    fn tally_sentence(&self, on_plan: Option<&str>) -> String {
-        let Tally { sent, billed, read } = self.tally;
-        let count = match sent {
-            0 => return "It sent no refreshes.".into(),
-            1 => "1 refresh".to_string(),
-            sent => format!("{sent} refreshes"),
-        };
-        match on_plan.filter(|_| billed < 0.005) {
-            Some(plan) => format!(
-                "It sent {count}, which read {} cached tokens of {plan}.",
-                token_count(read)
-            ),
-            None => format!("It sent {count} for {}.", dollars(billed)),
-        }
+/// What refreshes sent (`said`), in a sentence: "It sent 8 refreshes for
+/// $0.32." On a plan (`on_plan`), what they read of it.
+fn tally_sentence(said: Totals, on_plan: Option<&str>) -> String {
+    let count = match said.sent {
+        0 => return "It sent no refreshes.".into(),
+        1 => "1 refresh".to_string(),
+        sent => format!("{sent} refreshes"),
+    };
+    match on_plan.filter(|_| said.billed < 0.005) {
+        Some(plan) => format!(
+            "It sent {count}, which read {} cached tokens of {plan}.",
+            token_count(said.read)
+        ),
+        None => format!("It sent {count} for {}.", dollars(said.billed)),
     }
+}
 
-    /// The notice of `stop`, with what it sent, on the plan `on_plan` if
-    /// one pays.
-    fn stopped(&self, stop: &Stop, on_plan: Option<&str>) -> String {
-        let tally = self.tally_sentence(on_plan);
-        match stop {
-            Stop::Ended(at) => format!(
-                "Keep-warm ended at {}. {tally}",
-                cache_timer::time_of_day(*at)
+/// The notice of `stop`, with what was sent since keep-warm last said
+/// (`said`), on the plan `on_plan` if one pays.
+fn stopped(stop: &Stop, said: Totals, on_plan: Option<&str>) -> String {
+    let tally = tally_sentence(said, on_plan);
+    match stop {
+        Stop::Ended(at) => format!(
+            "Keep-warm ended at {}. {tally}",
+            cache_timer::time_of_day(*at)
+        ),
+        Stop::Refreshes(count) => match on_plan.filter(|_| said.billed < 0.005) {
+            Some(plan) => format!(
+                "Keep-warm ended after its {}, which read {} cached tokens of {plan}.",
+                refreshes_words(*count),
+                token_count(said.read)
             ),
-            Stop::Refreshes(count) => match on_plan.filter(|_| self.tally.billed < 0.005) {
-                Some(plan) => format!(
-                    "Keep-warm ended after its {}, which read {} cached tokens of {plan}.",
-                    refreshes_words(*count),
-                    token_count(self.tally.read)
-                ),
-                None => format!(
-                    "Keep-warm ended after its {} for {}.",
-                    refreshes_words(*count),
-                    dollars(self.tally.billed)
-                ),
-            },
-            Stop::Idle(hours) => format!(
-                "Keep-warm stopped {} after your last message, and starts again after your next one. {tally}",
-                hours_words(*hours)
+            None => format!(
+                "Keep-warm ended after its {} for {}.",
+                refreshes_words(*count),
+                dollars(said.billed)
             ),
-            Stop::Dollars(most) => {
-                format!("Keep-warm stopped at its {} limit. {tally}", dollars(*most))
-            }
-            Stop::Lapsed => format!(
-                "Keep-warm stopped because the prompt cache expired before its refresh, as happens when the computer sleeps. {tally}"
-            ),
-            Stop::Failed(why) => {
-                let why = crate::ui::sentence(why.trim_end_matches('.'));
-                format!("Keep-warm stopped. {why}. {tally}")
-            }
-            Stop::Unsupported => format!(
-                "Keep-warm stopped because this model's prompt cache can't be refreshed without a message. {tally}"
-            ),
+        },
+        Stop::Idle(hours) => format!(
+            "Keep-warm stopped {} after your last message, and starts again after your next one. {tally}",
+            hours_words(*hours)
+        ),
+        Stop::Dollars(most) => {
+            format!("Keep-warm stopped at its {} limit. {tally}", dollars(*most))
         }
+        Stop::Lapsed => format!(
+            "Keep-warm stopped because the prompt cache expired before its refresh, as happens when the computer sleeps. {tally}"
+        ),
+        Stop::Failed(why) => {
+            let why = crate::ui::sentence(why.trim_end_matches('.'));
+            format!("Keep-warm stopped. {why}. {tally}")
+        }
+        Stop::Unsupported => format!(
+            "Keep-warm stopped because this model's prompt cache can't be refreshed without a message. {tally}"
+        ),
     }
 }
 
@@ -652,14 +747,29 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 impl crate::Harness {
-    /// The setting, as the session opens: on, the session keeps its cache
-    /// warm by it. A session that sends one message (-p) doesn't.
+    /// Keep-warm as the session opens: the setting, and what the session
+    /// kept of its own (its choice, what its refreshes sent, its latest
+    /// request).
     pub(crate) fn keep_warm_at_start(&mut self) {
-        let setting = load(&self.root);
-        *lock(&self.gauges.keep_warm) = setting;
-        if let Some(limits) = setting.filter(|_| !self.one_shot) {
-            lock(&self.stats).keep_warm = Some(KeepWarm::new(limits, true));
+        *lock(&self.gauges.keep_warm) = load(&self.root);
+        lock(&self.stats).keep_warm = KeepWarm::load(&self.session.dir);
+    }
+
+    /// Keeps the session's keep-warm in its folder, for when it opens again.
+    pub(crate) fn save_keep_warm(&self) {
+        let kept = lock(&self.stats).keep_warm.clone();
+        if let Err(error) = kept.save(&self.session.dir) {
+            log::warn!(
+                "could not keep the session's keep-warm in {} ({error})",
+                self.session.dir.display()
+            );
         }
+    }
+
+    /// Keep-warm's limits now, under the setting, or `None` while it is off.
+    fn keep_warm_limits(&self) -> Option<Limits> {
+        let setting = *lock(&self.gauges.keep_warm);
+        lock(&self.stats).keep_warm.limits(setting)
     }
 
     /// The model of the conversation the next message goes to (which the
@@ -687,38 +797,32 @@ impl crate::Harness {
     /// When the session's loop, waiting for the user, wakes for keep-warm
     /// (Unix milliseconds): for its next refresh, or to stop.
     pub(crate) fn keep_warm_wake(&self) -> Option<i64> {
+        let limits = self.keep_warm_limits()?;
         let (used, lifetime) = self.keep_warm_cache();
-        lock(&self.stats)
-            .keep_warm
-            .as_ref()?
-            .wake_at(used, lifetime)
+        lock(&self.stats).keep_warm.wake_at(&limits, used, lifetime)
     }
 
     /// What keep-warm does at `now`, while the session waits for the user: a
     /// refresh, a stop and its notice, or nothing yet.
     pub(crate) async fn keep_warm_tick(&mut self, now: i64) {
-        let (used, lifetime) = self.keep_warm_cache();
-        let Some(step) = lock(&self.stats)
-            .keep_warm
-            .as_ref()
-            .map(|keep_warm| keep_warm.step(now, used, lifetime))
-        else {
+        let Some(limits) = self.keep_warm_limits() else {
             return;
         };
+        let (used, lifetime) = self.keep_warm_cache();
+        let step = lock(&self.stats)
+            .keep_warm
+            .step(now, &limits, used, lifetime);
         match step {
             Step::Wait => {}
             Step::Stop(stop) => self.stop_keep_warm(stop),
-            Step::Refresh => match Box::pin(self.refresh_out_of_band()).await {
+            Step::Refresh => match Box::pin(self.refresh_out_of_band(true)).await {
                 Ok(Some(usage)) => {
                     let unpriced = {
-                        let mut stats = lock(&self.stats);
-                        let refreshed = stats.cache_refreshed_at;
-                        stats.keep_warm.as_mut().and_then(|keep_warm| {
-                            keep_warm.sent(used.unwrap_or(now), refreshed, &usage);
-                            let unpriced = keep_warm.unpriced(&usage);
-                            keep_warm.unpriced_told |= unpriced;
-                            unpriced.then_some(keep_warm.limits.dollars).flatten()
-                        })
+                        let kept = &mut lock(&self.stats).keep_warm;
+                        kept.sent(&usage);
+                        let unpriced = kept.unpriced(&limits, &usage);
+                        kept.unpriced_told |= unpriced;
+                        unpriced.then_some(limits.dollars).flatten()
                     };
                     if let Some(most) = unpriced {
                         self.say(
@@ -734,6 +838,7 @@ impl crate::Harness {
                 Err(error) => self.stop_keep_warm(Stop::Failed(error)),
             },
         }
+        self.save_keep_warm();
         self.gauges.touch();
     }
 
@@ -741,40 +846,26 @@ impl crate::Harness {
     /// and says why, with what it sent.
     fn stop_keep_warm(&mut self, stop: Stop) {
         let on_plan = self.keep_warm_plan();
-        let text = {
-            let mut stats = lock(&self.stats);
-            let used = stats.cache_refreshed_at;
-            let Some(keep_warm) = stats.keep_warm.as_mut() else {
-                return;
-            };
-            let text = keep_warm.stopped(&stop, on_plan);
-            if matches!(stop, Stop::Idle(_)) {
-                keep_warm.pause(used);
-            } else {
-                stats.keep_warm = None;
-            }
-            text
-        };
+        let text = lock(&self.stats).keep_warm.stop(&stop, on_plan);
         let level = match stop {
             Stop::Lapsed | Stop::Failed(_) | Stop::Unsupported => Level::Warn,
             _ => Level::Info,
         };
         self.say(level, &text);
+        self.save_keep_warm();
         self.gauges.touch();
     }
 
     /// The plan that pays for the main agent's refreshes, as the status
     /// names it ("your Claude plan"), if one does.
     fn keep_warm_plan(&self) -> Option<&'static str> {
-        crate::status::cache_status(&lock(&self.stats), &lock(&self.gauges.models), false).on_plan
+        crate::status::cache_status(&lock(&self.stats), &lock(&self.gauges.models), None, false)
+            .on_plan
     }
 
     /// `/keep-warm`, typed at the prompt or sent from the web page.
     pub(crate) fn keep_warm_command(&mut self, argument: &str, source: Source) {
-        let before = (
-            lock(&self.stats).keep_warm.as_ref().map(|kept| kept.limits),
-            load(&self.root),
-        );
+        let before = (lock(&self.stats).keep_warm.clone(), load(&self.root));
         let result = match parse(argument, Local::now()) {
             Err(error) => Err(error),
             Ok(Words::Show) => Ok(self.keep_warm_described()),
@@ -782,27 +873,27 @@ impl crate::Harness {
             Ok(Words::On(limits)) => self.keep_warm_on(limits),
             Ok(Words::Setting(setting)) => self.keep_warm_setting(setting),
         };
-        let after = (
-            lock(&self.stats).keep_warm.as_ref().map(|kept| kept.limits),
-            load(&self.root),
-        );
+        let after = (lock(&self.stats).keep_warm.clone(), load(&self.root));
+        self.save_keep_warm();
         self.setting_reply(result, source, before != after);
     }
 
     /// An app's [`Request::KeepWarm`](crate::Request::KeepWarm): on with
     /// `limits`, or off.
     pub(crate) fn keep_warm_request(&mut self, limits: Option<Limits>) -> Result<(), String> {
-        match limits {
+        let done = match limits {
             Some(limits) => self.keep_warm_on(limits).map(|_| ()),
             None => {
                 self.keep_warm_off();
                 Ok(())
             }
-        }
+        };
+        self.save_keep_warm();
+        done
     }
 
     /// Turns keep-warm on for the session, until `limits` end it, in place
-    /// of the setting's. It's refused where the model can't refresh its cache
+    /// of the setting. It's refused where the model can't refresh its cache
     /// out of band, and while the session waits with a cache that lapsed.
     pub(crate) fn keep_warm_on(&mut self, limits: Limits) -> Result<String, String> {
         let model = self.keep_warm_model();
@@ -828,8 +919,7 @@ impl crate::Harness {
                     .into(),
             );
         }
-        lock(&self.stats).keep_warm = Some(KeepWarm::new(limits, false));
-        self.keep_warm_chosen = true;
+        lock(&self.stats).keep_warm.start(limits);
         self.gauges.touch();
         Ok(self.keep_warm_described())
     }
@@ -837,26 +927,25 @@ impl crate::Harness {
     /// Turns keep-warm off for the session, also where the setting has it
     /// on, and says what it sent.
     fn keep_warm_off(&mut self) -> String {
-        self.keep_warm_chosen = true;
+        let was_on = self.keep_warm_limits().is_some();
         let on_plan = self.keep_warm_plan();
-        let ended = lock(&self.stats).keep_warm.take();
+        let said = lock(&self.stats).keep_warm.off();
         self.gauges.touch();
-        match ended {
-            Some(ended) => format!("Keep-warm is off. {}", ended.tally_sentence(on_plan)),
-            None => "Keep-warm is off.".into(),
+        if was_on {
+            format!("Keep-warm is off. {}", tally_sentence(said, on_plan))
+        } else {
+            "Keep-warm is off.".into()
         }
     }
 
-    /// Sets the setting for every session, and for this one unless
-    /// `/keep-warm` chose for it.
+    /// Sets the setting for every session. This one follows it unless
+    /// `/keep-warm` chose for it, with what its refreshes sent so far.
     fn keep_warm_setting(&mut self, setting: Option<Limits>) -> Result<String, String> {
         save(&self.root, setting)?;
         *lock(&self.gauges.keep_warm) = setting;
         let mut text = setting_sentence(setting);
-        if self.keep_warm_chosen {
+        if !lock(&self.stats).keep_warm.follows_setting() {
             text.push_str(" This session keeps what /keep-warm set.");
-        } else if !self.one_shot {
-            lock(&self.stats).keep_warm = setting.map(|limits| KeepWarm::new(limits, true));
         }
         self.gauges.touch();
         Ok(text)
@@ -864,42 +953,44 @@ impl crate::Harness {
 
     /// What keep-warm does in this session, and the setting.
     fn keep_warm_described(&self) -> String {
-        let (kept, used) = {
-            let stats = lock(&self.stats);
-            (stats.keep_warm.clone(), stats.cache_refreshed_at)
-        };
-        let Some(kept) = kept else {
+        let kept = lock(&self.stats).keep_warm.clone();
+        let setting = *lock(&self.gauges.keep_warm);
+        let Some(limits) = kept.limits(setting) else {
             return format!(
                 "Keep-warm is off in this session. {} {USAGE}",
                 setting_sentence(load(&self.root))
             );
         };
-        let mut limits = Vec::new();
-        match (kept.ends_at(used), kept.limits.idle_hours) {
-            (Some(end), _) => limits.push(format!("until {}", cache_timer::time_of_day(end))),
-            (None, Some(hours)) => limits.push(format!(
+        let mut parts = Vec::new();
+        match (kept.ends_at(&limits), limits.idle_hours) {
+            (Some(end), _) => parts.push(format!("until {}", cache_timer::time_of_day(end))),
+            (None, Some(hours)) => parts.push(format!(
                 "for up to {} after your last message",
                 hours_words(hours)
             )),
             (None, None) => {}
         }
-        if let Some(left) = kept.left() {
-            limits.push(format!("for {}", refreshes_words(left)));
+        if let Some(left) = kept.left(&limits) {
+            parts.push(format!("for {}", refreshes_words(left)));
         }
-        if let Some(most) = kept.limits.dollars {
-            limits.push(format!("up to {}", dollars(most)));
+        if let Some(most) = limits.dollars {
+            parts.push(format!("up to {}", dollars(most)));
         }
-        let mut text = format!("Keep-warm is on {}", limits.join(" or "));
-        if limits.len() > 1 {
+        let mut text = format!("Keep-warm is on {}", parts.join(" or "));
+        if parts.len() > 1 {
             text.push_str(", whichever comes first");
         }
         text.push('.');
-        let cache =
-            crate::status::cache_status(&lock(&self.stats), &lock(&self.gauges.models), false);
+        let cache = crate::status::cache_status(
+            &lock(&self.stats),
+            &lock(&self.gauges.models),
+            setting,
+            false,
+        );
         if let Some(each) = cache_timer::refresh_each(&cache) {
             text.push_str(&format!(" {each}"));
         }
-        if kept.from_setting {
+        if kept.follows_setting() {
             text.push_str(" The setting turned it on, and /keep-warm off turns it off here.");
         }
         text
@@ -921,11 +1012,16 @@ mod tests {
     const FIVE: Duration = Duration::from_secs(300);
     const HOUR: Duration = Duration::from_secs(3_600);
 
-    fn on(limits: Limits) -> KeepWarm {
-        KeepWarm::new(limits, false)
+    /// Keep-warm the session turned on with `limits`, its latest request at
+    /// 0:00, and the limits.
+    fn on(limits: Limits) -> (KeepWarm, Limits) {
+        let mut kept = KeepWarm::default();
+        kept.requested(0);
+        kept.start(limits);
+        (kept, limits)
     }
 
-    fn limits(ends_at: Option<i64>, refreshes: Option<u32>) -> Limits {
+    fn ending(ends_at: Option<i64>, refreshes: Option<u32>) -> Limits {
         Limits {
             ends_at,
             refreshes,
@@ -944,7 +1040,7 @@ mod tests {
 
     /// Sends the refresh due at `now`, which leaves the cache last used then.
     fn refresh(kept: &mut KeepWarm, used: &mut i64, now: i64) {
-        kept.sent(*used, Some(now), &usage(0.04));
+        kept.sent(&usage(0.04));
         *used = now;
     }
 
@@ -952,37 +1048,54 @@ mod tests {
     /// each refresh moves the next one.
     #[test]
     fn a_cache_is_refreshed_a_lead_before_it_lapses() {
-        let kept = on(limits(Some(10 * 60 * MINUTE), None));
-        assert_eq!(kept.wake_at(Some(0), Some(FIVE)), Some(4 * MINUTE));
-        assert_eq!(kept.step(4 * MINUTE - 1, Some(0), Some(FIVE)), Step::Wait);
-        assert_eq!(kept.step(4 * MINUTE, Some(0), Some(FIVE)), Step::Refresh);
-        assert_eq!(kept.wake_at(Some(0), Some(HOUR)), Some(55 * MINUTE));
-        assert_eq!(kept.step(55 * MINUTE, Some(0), Some(HOUR)), Step::Refresh);
-        let mut kept = kept;
+        let (mut kept, limits) = on(ending(Some(10 * 60 * MINUTE), None));
+        let wake =
+            |kept: &KeepWarm, used, lifetime| kept.wake_at(&limits, Some(used), Some(lifetime));
+        let step = |kept: &KeepWarm, now, used, lifetime| {
+            kept.step(now, &limits, Some(used), Some(lifetime))
+        };
+        assert_eq!(wake(&kept, 0, FIVE), Some(4 * MINUTE));
+        assert_eq!(step(&kept, 4 * MINUTE - 1, 0, FIVE), Step::Wait);
+        assert_eq!(step(&kept, 4 * MINUTE, 0, FIVE), Step::Refresh);
+        assert_eq!(wake(&kept, 0, HOUR), Some(55 * MINUTE));
+        assert_eq!(step(&kept, 55 * MINUTE, 0, HOUR), Step::Refresh);
         let mut used = 0;
         refresh(&mut kept, &mut used, 4 * MINUTE);
-        assert_eq!(kept.wake_at(Some(used), Some(FIVE)), Some(8 * MINUTE));
+        assert_eq!(wake(&kept, used, FIVE), Some(8 * MINUTE));
         assert_eq!(
-            kept.status(Some(used), Some(FIVE), false).next_at,
+            kept.status(&limits, Some(used), Some(FIVE), false).next_at,
             Some(8 * MINUTE)
         );
         // None goes while a turn runs, and a cache whose time isn't known
         // waits for a request.
-        assert_eq!(kept.status(Some(used), Some(FIVE), true).next_at, None);
-        assert_eq!(kept.step(9 * MINUTE, None, Some(FIVE)), Step::Wait);
+        assert_eq!(
+            kept.status(&limits, Some(used), Some(FIVE), true).next_at,
+            None
+        );
+        assert_eq!(kept.step(9 * MINUTE, &limits, None, Some(FIVE)), Step::Wait);
     }
 
     /// A turn's request moves the schedule, and isn't counted.
     #[test]
     fn a_turn_moves_the_next_refresh() {
-        let mut kept = on(limits(None, Some(3)));
+        let (mut kept, limits) = on(ending(None, Some(3)));
         let mut used = 0;
         refresh(&mut kept, &mut used, 4 * MINUTE);
         // The user's message at 6:00 left the cache last used then.
         let turn = 6 * MINUTE;
-        assert_eq!(kept.wake_at(Some(turn), Some(FIVE)), Some(10 * MINUTE));
-        assert_eq!(kept.step(8 * MINUTE, Some(turn), Some(FIVE)), Step::Wait);
-        assert_eq!(kept.status(Some(turn), Some(FIVE), false).left, Some(2));
+        kept.requested(turn);
+        assert_eq!(
+            kept.wake_at(&limits, Some(turn), Some(FIVE)),
+            Some(10 * MINUTE)
+        );
+        assert_eq!(
+            kept.step(8 * MINUTE, &limits, Some(turn), Some(FIVE)),
+            Step::Wait
+        );
+        assert_eq!(
+            kept.status(&limits, Some(turn), Some(FIVE), false).left,
+            Some(2)
+        );
     }
 
     /// The end stops it, and a refresh that would come after it isn't sent.
@@ -990,41 +1103,54 @@ mod tests {
     #[test]
     fn the_end_and_the_count_stop_it() {
         let end = 6 * MINUTE;
-        let kept = on(limits(Some(end), None));
+        let (mut kept, limits) = on(ending(Some(end), None));
         // The refresh at 4:00 goes. The next, at 8:00, would be after the
         // end, so the loop wakes at 6:00 to stop.
-        assert_eq!(kept.step(4 * MINUTE, Some(0), Some(FIVE)), Step::Refresh);
-        let mut kept = kept;
+        assert_eq!(
+            kept.step(4 * MINUTE, &limits, Some(0), Some(FIVE)),
+            Step::Refresh
+        );
         let mut used = 0;
         refresh(&mut kept, &mut used, 4 * MINUTE);
-        assert_eq!(kept.status(Some(used), Some(FIVE), false).next_at, None);
-        assert_eq!(kept.wake_at(Some(used), Some(FIVE)), Some(end));
         assert_eq!(
-            kept.step(end, Some(used), Some(FIVE)),
+            kept.status(&limits, Some(used), Some(FIVE), false).next_at,
+            None
+        );
+        assert_eq!(kept.wake_at(&limits, Some(used), Some(FIVE)), Some(end));
+        assert_eq!(
+            kept.step(end, &limits, Some(used), Some(FIVE)),
             Step::Stop(Stop::Ended(end))
         );
 
-        let mut kept = on(limits(None, Some(2)));
+        let (mut kept, limits) = on(ending(None, Some(2)));
         let mut used = 0;
         refresh(&mut kept, &mut used, 4 * MINUTE);
-        assert_eq!(kept.status(Some(used), Some(FIVE), false).left, Some(1));
-        refresh(&mut kept, &mut used, 8 * MINUTE);
-        assert_eq!(kept.wake_at(Some(used), Some(FIVE)), Some(i64::MIN));
         assert_eq!(
-            kept.step(8 * MINUTE, Some(used), Some(FIVE)),
-            Step::Stop(Stop::Refreshes(2))
+            kept.status(&limits, Some(used), Some(FIVE), false).left,
+            Some(1)
+        );
+        refresh(&mut kept, &mut used, 8 * MINUTE);
+        assert_eq!(
+            kept.wake_at(&limits, Some(used), Some(FIVE)),
+            Some(i64::MIN)
+        );
+        let stop = Stop::Refreshes(2);
+        assert_eq!(
+            kept.step(8 * MINUTE, &limits, Some(used), Some(FIVE)),
+            Step::Stop(stop.clone())
         );
         assert_eq!(
-            kept.stopped(&Stop::Refreshes(2), None),
+            kept.stop(&stop, None),
             "Keep-warm ended after its 2 refreshes for $0.08."
         );
+        assert_eq!(kept.limits(None), None, "ended for the session");
     }
 
     /// The dollars stop it before a refresh would pass them, and a cache
     /// that lapsed (the computer slept) stops it too.
     #[test]
     fn dollars_and_a_lapsed_cache_stop_it() {
-        let mut kept = on(Limits {
+        let (mut kept, limits) = on(Limits {
             refreshes: Some(100),
             dollars: Some(0.1),
             ..Limits::default()
@@ -1032,39 +1158,45 @@ mod tests {
         let mut used = 0;
         refresh(&mut kept, &mut used, 4 * MINUTE);
         refresh(&mut kept, &mut used, 8 * MINUTE);
-        assert_eq!(kept.wake_at(Some(used), Some(FIVE)), Some(i64::MIN));
         assert_eq!(
-            kept.step(9 * MINUTE, Some(used), Some(FIVE)),
+            kept.wake_at(&limits, Some(used), Some(FIVE)),
+            Some(i64::MIN)
+        );
+        assert_eq!(
+            kept.step(9 * MINUTE, &limits, Some(used), Some(FIVE)),
             Step::Stop(Stop::Dollars(0.1))
         );
         assert_eq!(
-            kept.stopped(&Stop::Dollars(0.1), None),
+            kept.stop(&Stop::Dollars(0.1), None),
             "Keep-warm stopped at its $0.10 limit. It sent 2 refreshes for $0.08."
         );
-        let kept = on(limits(None, Some(5)));
+        let (kept, limits) = on(ending(None, Some(5)));
         assert_eq!(
-            kept.step(4 * MINUTE + 30_000, Some(0), Some(FIVE)),
+            kept.step(4 * MINUTE + 30_000, &limits, Some(0), Some(FIVE)),
             Step::Stop(Stop::Lapsed)
         );
     }
 
-    /// The setting's hours count from the latest request it didn't send,
-    /// stop it until the next, and start again with it.
+    /// The setting's hours count from the latest request keep-warm didn't
+    /// send, which its own refreshes don't move. They stop it until the
+    /// next request, which starts it again.
     #[test]
     fn the_settings_hours_count_from_the_latest_request() {
-        let mut kept = KeepWarm::new(
-            Limits {
-                idle_hours: Some(1),
-                ..Limits::default()
-            },
-            true,
-        );
+        let limits = Limits {
+            idle_hours: Some(1),
+            ..Limits::default()
+        };
+        let mut kept = KeepWarm::default();
+        assert_eq!(kept.limits(Some(limits)), Some(limits));
+        // No request yet, so nothing to keep warm.
+        assert_eq!(kept.wake_at(&limits, None, Some(FIVE)), None);
+        kept.requested(0);
         // Refreshes at 4:00, 8:00 and on to 56:00. The next would be at
         // 60:00, the end of the hour, where it stops instead.
         let mut used = 0;
         let mut sent = 0;
-        while let Some(at) = kept.wake_at(Some(used), Some(FIVE)) {
-            match kept.step(at, Some(used), Some(FIVE)) {
+        while let Some(at) = kept.wake_at(&limits, Some(used), Some(FIVE)) {
+            match kept.step(at, &limits, Some(used), Some(FIVE)) {
                 Step::Refresh => {
                     refresh(&mut kept, &mut used, at);
                     sent += 1;
@@ -1077,33 +1209,83 @@ mod tests {
         }
         assert_eq!((sent, used), (14, 56 * MINUTE));
         assert_eq!(
-            kept.stopped(&Stop::Idle(1), Some("your Claude plan")),
+            kept.stop(&Stop::Idle(1), Some("your Claude plan")),
             "Keep-warm stopped 1 hour after your last message, and starts again after your next one. It sent 14 refreshes for $0.56."
         );
-        kept.pause(Some(used));
-        assert_eq!(kept.wake_at(Some(used), Some(FIVE)), None);
-        assert_eq!(kept.step(70 * MINUTE, Some(used), Some(FIVE)), Step::Wait);
+        assert_eq!(kept.wake_at(&limits, Some(used), Some(FIVE)), None);
+        assert_eq!(
+            kept.step(70 * MINUTE, &limits, Some(used), Some(FIVE)),
+            Step::Wait
+        );
         // The user's next message, at 90:00, starts another hour.
         let turn = 90 * MINUTE;
-        assert_eq!(kept.wake_at(Some(turn), Some(FIVE)), Some(94 * MINUTE));
+        kept.requested(turn);
         assert_eq!(
-            kept.status(Some(turn), Some(FIVE), false).ends_at,
+            kept.wake_at(&limits, Some(turn), Some(FIVE)),
+            Some(94 * MINUTE)
+        );
+        assert_eq!(
+            kept.status(&limits, Some(turn), Some(FIVE), false).ends_at,
             Some(150 * MINUTE)
         );
+    }
+
+    /// What the session chose and what its refreshes sent are kept in its
+    /// folder and come back as it opens again. A change of the setting
+    /// keeps them, and a lower dollar limit counts what was spent already.
+    #[test]
+    fn the_session_keeps_its_choice_and_what_it_spent() {
+        let temp = tempfile::tempdir().unwrap();
+        let setting = Limits {
+            idle_hours: Some(15),
+            dollars: Some(5.0),
+            ..Limits::default()
+        };
+        let mut kept = KeepWarm::default();
+        assert_eq!(KeepWarm::load(temp.path()), kept, "none kept yet");
+        kept.requested(0);
+        let mut used = 0;
+        for n in 1..=3 {
+            refresh(&mut kept, &mut used, n * 4 * MINUTE);
+        }
+        kept.save(temp.path()).unwrap();
+        let mut back = KeepWarm::load(temp.path());
+        assert_eq!(back.counted().sent, 3);
+        assert_eq!(back.requested_at, Some(0));
+        // The same setting again, or a lower one, keeps what was spent: $0.12
+        // passes a limit of $0.10.
+        let lower = Limits {
+            dollars: Some(0.1),
+            ..setting
+        };
+        assert_eq!(back.limits(Some(lower)), Some(lower));
+        assert_eq!(
+            back.step(16 * MINUTE, &lower, Some(used), Some(FIVE)),
+            Step::Stop(Stop::Dollars(0.1))
+        );
+        assert!(!back.spent_out(&setting));
+        // Off stays off when the session opens again.
+        assert_eq!(back.off().sent, 3);
+        back.save(temp.path()).unwrap();
+        let back = KeepWarm::load(temp.path());
+        assert_eq!(back.limits(Some(setting)), None);
+        assert!(!back.follows_setting());
     }
 
     /// On a plan, the notice counts the tokens its refreshes read.
     #[test]
     fn on_a_plan_the_notice_counts_tokens() {
-        let mut kept = on(limits(Some(60 * MINUTE), None));
-        kept.sent(0, Some(4 * MINUTE), &usage(0.0));
+        let (mut kept, _) = on(ending(Some(60 * MINUTE), None));
+        kept.sent(&usage(0.0));
+        let said = kept.totals.since(kept.told);
         assert_eq!(
-            kept.tally_sentence(Some("your Claude plan")),
+            tally_sentence(said, Some("your Claude plan")),
             "It sent 1 refresh, which read 180k cached tokens of your Claude plan."
         );
         assert_eq!(
-            kept.stopped(
+            stopped(
                 &Stop::Failed("the cache wasn't refreshed (the server said no)".into()),
+                said,
                 None
             ),
             "Keep-warm stopped. The cache wasn't refreshed (the server said no). It sent 1 refresh for $0.00."
@@ -1324,7 +1506,7 @@ mod tests {
             ended.starts_with("Keep-warm ended after its 2 refreshes for "),
             "{ended}"
         );
-        assert_eq!(lock(&harness.stats).keep_warm, None);
+        assert_eq!(harness.keep_warm_limits(), None);
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
@@ -1363,7 +1545,7 @@ mod tests {
         let luna = harness.settings.main.model.clone();
         harness.settings.main.model = "openrouter:anthropic/claude-opus-5.5".into();
         let refused = harness
-            .keep_warm_request(Some(limits(None, Some(3))))
+            .keep_warm_request(Some(ending(None, Some(3))))
             .unwrap_err();
         assert!(
             refused.ends_with(
@@ -1379,17 +1561,18 @@ mod tests {
         }
         assert!(
             harness
-                .keep_warm_request(Some(limits(None, Some(3))))
+                .keep_warm_request(Some(ending(None, Some(3))))
                 .unwrap_err()
                 .starts_with("The prompt cache has expired")
         );
-        assert_eq!(lock(&harness.stats).keep_warm, None);
+        assert_eq!(harness.keep_warm_limits(), None);
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
-    /// The setting is kept for every session and turns keep-warm on as one
-    /// opens. `/keep-warm` in a session goes in its place there, also when
-    /// it turns it off, and a change of the setting then leaves it.
+    /// The setting is kept for every session and keeps a session that made
+    /// no choice warm, also one that opens again. `/keep-warm` in a session
+    /// goes in its place there, also when it turns it off, which the session
+    /// keeps when it opens again. A change of the setting then leaves it.
     #[tokio::test]
     async fn the_setting_keeps_sessions_warm_unless_one_chose() {
         let server = model(Arc::default(), false).await;
@@ -1406,30 +1589,23 @@ mod tests {
             "{:?}",
             said(&harness.feed)
         );
-        assert!(
-            lock(&harness.stats)
-                .keep_warm
-                .as_ref()
-                .unwrap()
-                .from_setting
-        );
+        assert_eq!(harness.keep_warm_limits(), Some(setting));
+        assert!(lock(&harness.stats).keep_warm.follows_setting());
         let reading = crate::remote::Meter::read(harness.gauges.as_ref());
         assert_eq!(reading.settings.keep_warm, Some(setting));
-        // A session that opens takes it.
-        lock(&harness.stats).keep_warm = None;
+        // The session opens again, and follows the setting.
         harness.keep_warm_at_start();
-        assert_eq!(
-            lock(&harness.stats)
-                .keep_warm
-                .as_ref()
-                .map(|kept| kept.limits),
-            Some(setting)
-        );
+        assert_eq!(harness.keep_warm_limits(), Some(setting));
         assert!(harness.live_command("/keep-warm off", Source::Terminal));
         assert_eq!(
             said(&harness.feed).last().unwrap(),
             "Keep-warm is off. It sent no refreshes."
         );
+        // It opens again (a resume, a switch between Chat and Agent): still
+        // off.
+        lock(&harness.stats).keep_warm = KeepWarm::default();
+        harness.keep_warm_at_start();
+        assert_eq!(harness.keep_warm_limits(), None);
         assert!(harness.live_command("/keep-warm default 8h", Source::Terminal));
         assert!(
             said(&harness.feed)
@@ -1437,7 +1613,7 @@ mod tests {
                 .unwrap()
                 .ends_with("This session keeps what /keep-warm set."),
         );
-        assert_eq!(lock(&harness.stats).keep_warm, None);
+        assert_eq!(harness.keep_warm_limits(), None);
         assert!(harness.live_command("/keep-warm default off", Source::Terminal));
         assert_eq!(load(&harness.root), None);
         harness.crew.as_ref().unwrap().shutdown().await;
