@@ -120,7 +120,7 @@ serde_json = "1.0.115"
 sha2 = "0.10.9"
 # Dictation's speech engine, under a key of its own so that only this line
 # (and the profile below) name the package.
-speech = { package = "telmo", version = "0.1", optional = true }
+speech = { package = "telmo", version = "0.2", default-features = false, optional = true }
 subtle = "2.6.1"
 tokio = { version = "1.37.0", features = ["full"] }
 unicode-segmentation = "1.12.0"
