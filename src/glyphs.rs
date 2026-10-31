@@ -56,6 +56,7 @@ pub const SYMBOLS_TABLE: &[(char, &str, &str)] = &[
     // The full-screen view's.
     ('▎', "│", "|"),
     ('▸', "›", ">"),
+    ('▾', "↓", "v"),
     ('○', "○", "o"),
     ('•', "•", "*"),
     ('↓', "↓", "v"),

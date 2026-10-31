@@ -262,12 +262,24 @@ fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
         Kind::Text => view! { <Md id=id text=text code=cell.code /> }.into_any(),
         Kind::Thinking => {
             let first = move || text.with(|text| layout::first_line(text));
+            // "Thinking" while it streams, then how long it took.
+            let label = move || {
+                if thinking.get() == Some(id) {
+                    return "Thinking".to_string();
+                }
+                match STORE.with(|store| store.borrow().grew_for(id)) {
+                    Some(ms) => format!("Thought for {}", words::duration(ms)),
+                    None => "Thought".to_string(),
+                }
+            };
+            // The quiet view has no preview of it.
+            let preview = move || (page.view.get() != View::Quiet).then(|| view! { <span class="first">{first}</span> });
             view! {
                 <details class="thinking" class:streaming=move || thinking.get() == Some(id)>
                     <summary>
                         <span class="mark">"▸"</span>
-                        <span class="what">"Thinking"<span class="shine" data-text="Thinking" aria-hidden="true"></span></span>
-                        <span class="first">{first}</span>
+                        <span class="what">{label}<span class="shine" data-text=label aria-hidden="true"></span></span>
+                        {preview}
                     </summary>
                     <Md id=id text=text code=cell.code class="thinking-text" />
                 </details>
