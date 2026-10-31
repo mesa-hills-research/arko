@@ -897,12 +897,6 @@ impl App {
         bell
     }
 
-    /// Starts over from the feed's `snapshot` (the view fell behind it).
-    pub fn reset(&mut self, snapshot: Snapshot) {
-        self.set_activity(snapshot.activity.clone());
-        self.transcript.reset(snapshot);
-    }
-
     /// The activity changed: returns whether the bell should sound (the
     /// agent finished while the window isn't focused).
     pub fn set_activity(&mut self, activity: Activity) -> bool {

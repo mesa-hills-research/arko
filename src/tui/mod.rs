@@ -51,7 +51,7 @@ use crossterm::terminal::{
 use crossterm::{Command, cursor, execute, queue};
 use futures_util::{FutureExt, StreamExt};
 use ratatui::Terminal;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::glyphs;
 use crate::remote;
@@ -136,7 +136,9 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     for warning in &catalog.warnings {
         setup.feed.notice(remote::Level::Warn, warning);
     }
-    let (snapshot, updates) = setup.feed.subscribe();
+    // Every update, however far the view falls behind: a recording's events
+    // aren't in the history it would start over from.
+    let (snapshot, updates) = setup.feed.subscribe_batched();
     let workspace = setup
         .workspace
         .file_name()
@@ -349,7 +351,7 @@ async fn run(
     mut terminal: Terminal<CursorBackend<Stdout>>,
     mut app: App,
     mut setup: Setup,
-    mut updates: broadcast::Receiver<remote::Update>,
+    mut updates: remote::Batches,
     mut stop: oneshot::Receiver<()>,
 ) -> Option<String> {
     let mut events = EventStream::new();
@@ -421,16 +423,11 @@ async fn run(
                 handle(&mut app, batch, &mut enter, &mut burst);
                 draw_now = true;
             }
-            update = updates.recv() => {
-                match update {
-                    Ok(update) => {
-                        let mut asked = asks(&update);
-                        bell |= app.update(update, || setup.feed.activity());
-                        // Those waiting too, before the next frame.
-                        while let Ok(update) = updates.try_recv() {
-                            asked |= asks(&update);
-                            bell |= app.update(update, || setup.feed.activity());
-                        }
+            batch = updates.next() => {
+                match batch {
+                    Some(batch) => {
+                        let (rings, asked) = take_updates(&mut app, batch, &setup.feed);
+                        bell |= rings;
                         // The web page just started says so in the feed:
                         // its links show at once. So do the agent's
                         // questions, in the answer panel.
@@ -438,15 +435,8 @@ async fn run(
                             app.set_reading(setup.meter.read());
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        let (snapshot, fresh) = setup.feed.subscribe();
-                        updates = fresh;
-                        app.reset(snapshot);
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        // (The feed outlives the view.)
-                        tokio::time::sleep(Duration::from_secs(3600)).await;
-                    }
+                    // (The feed outlives the view.)
+                    None => tokio::time::sleep(Duration::from_secs(3600)).await,
                 }
                 // Drawn at the next frame: streaming text doesn't redraw at
                 // every chunk.
@@ -585,6 +575,17 @@ async fn run(
     let reply = app.transcript.last_reply().map(str::to_string);
     close();
     reply
+}
+
+/// A batch of the feed's updates, given to the view. Returns whether the
+/// bell rings, and whether the agent's questions changed.
+fn take_updates(app: &mut App, batch: Vec<remote::Update>, feed: &remote::Feed) -> (bool, bool) {
+    let (mut rings, mut asked) = (false, false);
+    for update in batch {
+        asked |= asks(&update);
+        rings |= app.update(update, || feed.activity());
+    }
+    (rings, asked)
 }
 
 /// Carries out what the view's recording needs of the dictation service
@@ -842,6 +843,35 @@ mod tests {
         );
         assert_eq!(app.editor.text(), "a\nb");
         assert!(app.take_effects().is_empty());
+    }
+
+    /// A view far behind the feed still gets every update, its recording's
+    /// events too, which the history it could start over from lacks.
+    #[test]
+    fn a_view_far_behind_gets_its_recordings_events() {
+        use crate::dictation::{DictationEvent, DictationUpdate};
+        let feed = remote::Feed::new(remote::MAIN_AGENT);
+        let (_, mut updates) = feed.subscribe_batched();
+        let mut app = app::tests::app();
+        app.toggle_dictation();
+        app.dictation_opened(7);
+        app.take_effects();
+        for n in 0..5000 {
+            feed.notice(remote::Level::Info, &format!("note {n}"));
+        }
+        let event = |event| DictationUpdate { id: 7, event };
+        feed.dictation(event(DictationEvent::Listening));
+        feed.dictation(event(DictationEvent::Text {
+            settled: "Hello".into(),
+            tentative: String::new(),
+        }));
+        let batch = updates.try_next().expect("the updates");
+        take_updates(&mut app, batch, &feed);
+        assert_eq!(app.editor.text(), "Hello");
+        assert_eq!(
+            app.recording.as_ref().map(|recording| recording.phase),
+            Some(dictation::Phase::Listening)
+        );
     }
 
     /// Giving the terminal back undoes all the view did to it: the
