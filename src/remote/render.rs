@@ -138,6 +138,11 @@ fn act(tool: &str, parameters: &Parameters, running: &[String]) -> Act {
                 format!("Stopped {}", job()),
                 format!("stop {}", job()),
             ),
+            "forget" => other(
+                format!("Forgetting {}", job()),
+                format!("Forgot {}", job()),
+                format!("forget {}", job()),
+            ),
             action => other(
                 format!("Using {action} on {}", job()),
                 format!("Used {action} on {}", job()),
@@ -429,7 +434,7 @@ fn act(tool: &str, parameters: &Parameters, running: &[String]) -> Act {
     }
 }
 
-/// A command as its row names it: its first line, at most
+/// A command as its row names it, by its first line, at most
 /// [`quiet::COMMAND_CHARS`] characters, with a program run by its path named
 /// by its file name, and after a `cd dir &&` that becomes "in dir", as the
 /// folder `cwd` does.
@@ -461,7 +466,7 @@ fn command_words(command: &str, cwd: &str) -> String {
     }
 }
 
-/// The last part of a path: `web` of `../arko/web`.
+/// The last part of a path (`web` of `../arko/web`).
 fn last_part(path: &str) -> String {
     path.trim_end_matches(['/', '\\'])
         .rsplit(['/', '\\'])
@@ -742,7 +747,7 @@ impl Outcome {
 
 impl Settled {
     /// How a job a call started (a command that went on in the background,
-    /// a monitor) went on: what its result first said no longer stands.
+    /// a monitor) went on, so what its result first said no longer stands.
     pub fn job() -> Self {
         Self {
             news: Some(String::new()),
@@ -750,7 +755,7 @@ impl Settled {
         }
     }
 
-    /// What the search of a call found: the indexes it searched, and
+    /// What the search of a call found, the indexes it searched, and
     /// "no results" when it had none.
     pub fn found(&mut self, found: crate::index::Found) {
         if !found.indexes.is_empty() {
@@ -1387,7 +1392,7 @@ mod tests {
     }
 
     /// Each call says what it does for the Quiet view, and its result
-    /// completes that: a test run's counts, the index a search used, what
+    /// completes that with a test run's counts, the index a search used, what
     /// reached a wait.
     #[test]
     fn calls_carry_their_act_and_results_complete_it() {
@@ -1444,6 +1449,17 @@ mod tests {
         assert_eq!(
             (start.kind, start.doing.as_str(), start.verb.as_str()),
             (ActKind::Other, "Starting a worker", "start a worker")
+        );
+        let forget = act(
+            "terminal_control",
+            &[
+                ("action", "forget".into()),
+                ("job_id", "4d2c1a9b-0000".into()),
+            ],
+        );
+        assert_eq!(
+            (forget.doing.as_str(), forget.done.as_str()),
+            ("Forgetting job 4d2c1a9b", "Forgot job 4d2c1a9b")
         );
         let mcp = act("mcp__github__create_issue", &[]);
         assert_eq!(

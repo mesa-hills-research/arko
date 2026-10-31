@@ -244,7 +244,7 @@ pub enum CallStatus {
 #[cfg_attr(test, serde(deny_unknown_fields))]
 pub struct Act {
     pub kind: ActKind,
-    /// What it works on: a file's path from the working directory, a
+    /// What it works on, such as a file's path from the working directory, a
     /// folder, a command's first line, an index, a skill, the agent runs a
     /// message or a wait is for (comma-separated), a job, an MCP tool.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -261,7 +261,7 @@ pub struct Act {
     pub done: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub verb: String,
-    /// What its row says of how it went, once it ended: a test run's counts
+    /// What its row says of how it went once it ended, such as a test run's counts
     /// ("24 passed"), "no results", a command's exit code ("exit 101").
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub news: String,
@@ -300,7 +300,7 @@ pub enum ActKind {
     Mcp,
 }
 
-/// What reached a wait: the runs that finished or stopped, the messages,
+/// What reached a wait, which is the runs that finished or stopped, the messages,
 /// and the updates (a note, a terminal update, a monitor's alert).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, serde(deny_unknown_fields))]

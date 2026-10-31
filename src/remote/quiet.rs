@@ -371,7 +371,7 @@ fn regroup<'a>(slots: Vec<Option<Member<'a>>>, frozen: &[Frozen]) -> Vec<Group<'
     groups
 }
 
-/// Places a run's rows `groups` in `steps[start..end]`, onto `out`: each row
+/// Places a run's rows `groups` in `steps[start..end]`, onto `out`, each row
 /// where its first call is, with the thinking between two of its calls, and
 /// the rest as they are.
 fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut Vec<Piece>) {
@@ -436,7 +436,7 @@ fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut V
     }
 }
 
-/// How the rows of a turn name its files: by name, and with the folder too
+/// How the rows of a turn name its files, by name, and with the folder too
 /// for a file whose name another file of the turn had first.
 #[derive(Default)]
 struct Names {
@@ -469,7 +469,7 @@ impl Names {
         if *first == path {
             name.to_string()
         } else {
-            // The folder too: `remote/mod.rs`.
+            // The folder too (`remote/mod.rs`).
             last_parts(path, 2)
         }
     }
@@ -488,7 +488,7 @@ fn last_parts(path: &str, count: usize) -> String {
     parts[parts.len().saturating_sub(count)..].join("/")
 }
 
-/// The folder `paths` share, by its last two parts: "src/tui".
+/// The folder `paths` share, by its last two parts ("src/tui").
 fn shared_folder<'a>(paths: impl IntoIterator<Item = &'a str>) -> Option<String> {
     let mut shared: Option<Vec<&str>> = None;
     for path in paths {
@@ -512,8 +512,8 @@ fn shared_folder<'a>(paths: impl IntoIterator<Item = &'a str>) -> Option<String>
     (!shared.is_empty()).then(|| shared[shared.len().saturating_sub(2)..].join("/"))
 }
 
-/// `names` in a sentence: "a", "a and b", "a, b and c", and past `most`
-/// "a, b, c and 2 more".
+/// `names` in a sentence ("a", "a and b", "a, b and c", and past `most`
+/// "a, b, c and 2 more").
 fn listed(names: &[String], most: usize) -> String {
     match names {
         [] => String::new(),
@@ -529,8 +529,8 @@ fn listed(names: &[String], most: usize) -> String {
     }
 }
 
-/// `names` inside parentheses: "rg, sed, git", and past `most` "rg, sed,
-/// git and 2 more".
+/// `names` inside parentheses ("rg, sed, git", and past `most` "rg, sed,
+/// git and 2 more").
 fn parenthesized(names: &[String], most: usize) -> String {
     if names.len() > most {
         format!(
@@ -582,7 +582,7 @@ fn words(group: &Group) -> Words {
     let now = calls.iter().all(Member::running);
     let tense = |present: &str, past: &str| if now { present } else { past }.to_string();
     let count = calls.len();
-    // The files it names: up to two, else how many and their folder.
+    // The files it names, up to two, else how many and their folder.
     let files = |noun: (&str, &str)| {
         let names = distinct(calls.iter().map(|call| call.name.as_str()));
         if names.len() <= 2 {
@@ -707,7 +707,7 @@ fn words(group: &Group) -> Words {
     words
 }
 
-/// What came while waits waited, in a few words: "r91 finished, 3 updates".
+/// What came while waits waited, in a few words ("r91 finished, 3 updates").
 fn came_words(came: &Came) -> String {
     let mut parts = Vec::new();
     let finished = distinct(came.finished.iter().map(String::as_str));
@@ -731,7 +731,7 @@ fn came_words(came: &Came) -> String {
     }
 }
 
-/// The program a command runs: `cargo` of `cargo test -p arko`, after any
+/// The program a command runs (`cargo` of `cargo test -p arko`), after any
 /// variables set before it.
 fn program(command: &str) -> &str {
     let word = command

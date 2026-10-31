@@ -111,7 +111,7 @@ impl Entry {
         }
     }
 
-    /// Its lines change: they're drawn again, here and in a Quiet row.
+    /// Its lines change, so they're drawn again, here and in a Quiet row.
     fn touch(&mut self) {
         self.cache = None;
         self.revision = next_revision();
@@ -166,7 +166,7 @@ enum Shown {
     /// "Working…", at the end, while the agent waits on its model and
     /// nothing else shows it.
     Working,
-    /// A row of the Quiet view: calls in a few words, merged with their
+    /// A row of the Quiet view, with calls in a few words, merged with their
     /// neighbours of a kind.
     Quiet(Arc<QuietRow>),
 }
@@ -174,7 +174,7 @@ enum Shown {
 /// A row of the Quiet view.
 #[derive(Debug, Clone, PartialEq)]
 struct QuietRow {
-    /// Its entries in order: its calls, the thinking between them and the
+    /// Its entries in order, which are its calls, the thinking between them and the
     /// calls' results, which show when it's open.
     members: Vec<usize>,
     words: quiet::Words,
@@ -392,14 +392,14 @@ pub struct Transcript {
     /// One more each time an item comes, changes or goes.
     generation: u64,
     /// The Quiet view's order as last worked out, for a view and a
-    /// generation: it's worked out again only when the items change.
+    /// generation. It's worked out again only when the items change.
     quiet_order: Option<(Filter, u64, Arc<Vec<Placed>>)>,
     /// What each view's sealed runs hold, which never changes.
     planners: HashMap<Filter, quiet::Planner>,
-    /// The row the keyboard is on (Ctrl+G), by its block's key: it shows in
+    /// The row the keyboard is on (Ctrl+G), by its block's key. It shows in
     /// the selection's colour, and the view keeps it in sight.
     pub focus: Option<u64>,
-    /// The keyboard moved: the next draw scrolls its row into sight.
+    /// The keyboard moved, so the next draw scrolls its row into sight.
     reveal: bool,
 }
 
@@ -992,7 +992,7 @@ impl Transcript {
         }
     }
 
-    /// What the Quiet view shows, in order: each run of the agent's calls
+    /// What the Quiet view shows, in order, with each run of the agent's calls
     /// as rows ([`quiet::rows`]), and the rest as it is. A call's results
     /// go in its row, and show under the row only when the call failed
     /// alone.
@@ -1085,7 +1085,7 @@ impl Transcript {
             .find_map(|item| running_time(item, now))
     }
 
-    /// The lines of a Quiet row: its words, and when it's open the rows of
+    /// The lines of a Quiet row, which are its words, and when it's open the rows of
     /// its calls as Full shows them, with their whole parameters.
     fn quiet_lines(
         &self,
@@ -1121,7 +1121,7 @@ impl Transcript {
                 clock: clock.as_deref(),
             };
             let mut rows = entry_lines(item, theme, inner, true, None, look);
-            // A call's long parameter whole: a message, a task, a command.
+            // A call's long parameter whole (a message, a task, a command).
             if item.kind == Kind::Call
                 && let Some(detail) = &item.detail
             {
@@ -1704,7 +1704,7 @@ impl Transcript {
             .map(|block| block.gap)
     }
 
-    /// The blocks of `filter`'s view that open and close, by key: Quiet
+    /// The blocks of `filter`'s view that open and close, by key. Those are Quiet
     /// rows, the agents' thinking and commands' whole outputs.
     fn openable(&mut self, filter: &Filter, theme: &Theme) -> Vec<u64> {
         let width = self.drawn.area.width as usize;
@@ -2180,7 +2180,7 @@ struct Look<'a> {
     clock: Option<&'a str>,
 }
 
-/// A Quiet row's line: its words, how it failed, how its job goes, and
+/// A Quiet row's line, with its words, how it failed, how its job goes, and
 /// how long it has run, after ▸ (▾ while it's open). (Its calls are the
 /// agent's whose transcript it is, so it names no worker.)
 fn quiet_line(
@@ -4502,8 +4502,8 @@ mod tests {
     }
 
     /// How long a draw of the Quiet view takes at the transcript's cap of
-    /// calls, against Full: `cargo test --release --lib quiet_draw_cost --
-    /// --ignored --nocapture`.
+    /// calls, against Full (`cargo test --release --lib quiet_draw_cost --
+    /// --ignored --nocapture`).
     #[test]
     #[ignore]
     fn quiet_draw_cost() {

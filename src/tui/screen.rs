@@ -2450,7 +2450,7 @@ mod tests {
         }
     }
 
-    /// The Quiet view's calls as the feed sends them: two edits of a file,
+    /// The Quiet view's calls as the feed sends them, which are two edits of a file,
     /// a test run that failed with its output, and a message to a worker.
     fn quiet_calls(app: &mut App) {
         use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Level, Update};

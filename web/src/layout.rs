@@ -69,7 +69,7 @@ pub enum Row {
         id: u64,
         count: Count,
     },
-    /// Calls in a few words (Quiet), by the ID of the first: what the row
+    /// Calls in a few words (Quiet), by the ID of the first, with what the row
     /// says, and the rows of its calls as Full shows them, which show when
     /// it's open.
     Quiet {
@@ -282,7 +282,7 @@ pub fn layout_with(
     rows
 }
 
-/// The Quiet view's rows: each run of the agent's calls as rows of a few
+/// The Quiet view's rows, with each run of the agent's calls as rows of a few
 /// words ([`quiet::rows`], as the terminal makes them), and the rest as it
 /// is. A call's results go in its row, and show under the row only when
 /// the call failed alone.
@@ -1108,7 +1108,7 @@ mod tests {
         assert_eq!(says(&hidden, View::Full, None, 1), "2 new");
     }
 
-    /// Quiet says each call in a few words, as the terminal does: reads of
+    /// Quiet says each call in a few words, as the terminal does. Reads of
     /// a file being edited join its edits, a test run that failed stands
     /// alone with its output under it, and the agent's text ends a run.
     #[test]

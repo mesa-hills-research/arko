@@ -1419,8 +1419,8 @@ impl EventPrinter {
     }
 }
 
-/// The line that counts the lines of an output left out: "… 1 more line",
-/// "… 12 more lines".
+/// The line that counts the lines of an output left out ("… 1 more line",
+/// "… 12 more lines").
 pub fn more_lines(count: usize) -> String {
     format!("… {count} more line{}", if count == 1 { "" } else { "s" })
 }
@@ -1469,7 +1469,7 @@ fn named_runs(parameters: &HashMap<String, serde_json::Value>) -> Vec<String> {
     }
 }
 
-/// The runs a `wait_for_agents` call waits for: those it names, else `own`,
+/// The runs a `wait_for_agents` call waits for, those it names, else `own`,
 /// the runs its agent has going. None when it waits for a message.
 pub fn waited_runs(parameters: &HashMap<String, serde_json::Value>, own: &[String]) -> Vec<String> {
     let named = named_runs(parameters);

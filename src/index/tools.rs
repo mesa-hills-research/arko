@@ -882,7 +882,7 @@ impl Tool for SearchTool {
     }
 }
 
-/// What a search found, for its call's line in the transcript: the indexes
+/// What a search found, for its call's line in the transcript. That is the indexes
 /// it searched and how many results it had.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
