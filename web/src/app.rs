@@ -174,16 +174,20 @@ pub fn track_worker(id: &str) {
     });
 }
 
-/// The summary of the worker `id` changed, or every worker's (`None`).
-fn worker_changed(id: Option<&str>) {
-    let triggers: Vec<ArcTrigger> = WORKER_CHANGED.with(|triggers| {
-        let triggers = triggers.borrow();
-        match id {
-            Some(id) => triggers.get(id).cloned().into_iter().collect(),
-            None => triggers.values().cloned().collect(),
-        }
-    });
-    for trigger in triggers {
+/// The summary of the worker `id` changed.
+fn worker_changed(id: &str) {
+    let trigger = WORKER_CHANGED.with(|triggers| triggers.borrow().get(id).cloned());
+    if let Some(trigger) = trigger {
+        trigger.notify();
+    }
+}
+
+/// Every worker's summary came again (a `reset`). The views that follow one
+/// read it again and follow it with a new trigger, so the triggers of
+/// workers nothing shows any more go, another feed's among them.
+fn workers_all_changed() {
+    let triggers = WORKER_CHANGED.with(|triggers| std::mem::take(&mut *triggers.borrow_mut()));
+    for trigger in triggers.into_values() {
         trigger.notify();
     }
 }
@@ -785,7 +789,7 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     page.version.update(|version| *version += 1);
     page.workers.update(|version| *version += 1);
     page.jobs.update(|version| *version += 1);
-    worker_changed(None);
+    workers_all_changed();
     // The view the history asked for meanwhile, checked against this start.
     if let Ok(state) = window().history().and_then(|history| history.state()) {
         crate::transcript::show_history_entry(page, &state);
@@ -993,7 +997,7 @@ fn on_worker(page: Page, data: &str) -> Result<(), String> {
     let summary: WorkerData = parse(data)?;
     let id = summary.id.clone();
     STORE.with(|store| store.borrow_mut().worker(summary));
-    worker_changed(Some(&id));
+    worker_changed(&id);
     page.workers.update(|version| *version += 1);
     Ok(())
 }
@@ -1065,6 +1069,42 @@ mod tests {
         reset_cells(std::slice::from_ref(&shell), &none, false);
         assert!(cell(5).is_none() && cell(4).is_none());
         assert_eq!(cell(6).unwrap().data.get_untracked(), shell);
+    }
+
+    /// The workers' triggers are those of the workers something shows, however
+    /// many came and went over resets, and a view that shows one still hears
+    /// its changes.
+    #[test]
+    fn worker_triggers_stay_bounded_over_resets() {
+        let owner = Owner::new();
+        owner.with(|| {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let runs = Arc::new(AtomicUsize::new(0));
+            let shown = Memo::new({
+                let runs = runs.clone();
+                move |_| {
+                    track_worker("r0");
+                    runs.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            shown.get();
+            for at in 1..=50 {
+                // A row of another worker, drawn then gone.
+                let gone = Memo::new(move |_| track_worker(&format!("r{at}")));
+                gone.get();
+                gone.dispose();
+                workers_all_changed();
+                shown.get();
+            }
+            let tracked: Vec<String> =
+                WORKER_CHANGED.with(|triggers| triggers.borrow().keys().cloned().collect());
+            assert_eq!(tracked, ["r0"]);
+            let before = runs.load(Ordering::Relaxed);
+            worker_changed("r0");
+            shown.get();
+            assert_eq!(runs.load(Ordering::Relaxed), before + 1);
+        });
     }
 
     /// A tab that opens the link of an Arko started again gets that feed's
