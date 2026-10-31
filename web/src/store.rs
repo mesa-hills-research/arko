@@ -15,6 +15,10 @@ pub const BUDGET: usize = 3000;
 
 #[derive(Default)]
 pub struct Store {
+    /// The feed the items are of, as the stream's start names it. Item IDs,
+    /// turns and workers' names start over in another one (Arko started
+    /// again), so all the page keeps of them goes with it.
+    pub feed: Option<u64>,
     pub items: Vec<ItemData>,
     index: HashMap<u64, usize>,
     pub workers: HashMap<String, WorkerData>,
@@ -27,15 +31,21 @@ pub struct Store {
 }
 
 impl Store {
-    /// Starts over (a `reset`).
+    /// Starts over (a `reset`) with the items of `feed`. Returns whether
+    /// the items it had were of another feed.
     pub fn reset(
         &mut self,
+        feed: Option<u64>,
         items: Vec<ItemData>,
         workers: Vec<WorkerData>,
         jobs: Vec<JobSummary>,
         now: f64,
-    ) {
-        *self = Store::default();
+    ) -> bool {
+        let switched = self.feed.is_some_and(|had| feed != Some(had));
+        *self = Store {
+            feed,
+            ..Store::default()
+        };
         for item in items {
             self.add(item, now);
         }
@@ -45,6 +55,7 @@ impl Store {
         for job in jobs {
             self.jobs.insert(job.id.clone(), job);
         }
+        switched
     }
 
     fn reindex(&mut self) {
@@ -190,6 +201,11 @@ impl Store {
     }
 }
 
+/// The feed a stream's start names, in hex.
+pub fn parse_feed(hex: &str) -> Option<u64> {
+    u64::from_str_radix(hex, 16).ok()
+}
+
 /// What an entry of the browser's history keeps of the view it shows: the
 /// worker (none for the main transcript), and the session it was in, which
 /// Arko names in the status (not the key).
@@ -307,6 +323,28 @@ pub mod tests {
     }
 
     #[test]
+    fn a_reset_of_another_feed_says_so() {
+        let mut store = Store::default();
+        let reset = |store: &mut Store, feed| {
+            store.reset(
+                feed,
+                vec![item(1, Kind::Text, MAIN, "x")],
+                Vec::new(),
+                Vec::new(),
+                0.0,
+            )
+        };
+        // The first feed, and the same one again.
+        assert!(!reset(&mut store, Some(1)));
+        assert!(!reset(&mut store, Some(1)));
+        assert_eq!(store.feed, Some(1));
+        assert!(reset(&mut store, Some(2)));
+        assert_eq!((store.feed, store.items.len()), (Some(2), 1));
+        assert_eq!(parse_feed("00000000000000ff"), Some(255));
+        assert_eq!(parse_feed(""), None);
+    }
+
+    #[test]
     fn a_history_entry_shows_its_worker_only_in_its_own_session() {
         let entry = |worker: Option<&str>, session: Option<&str>| Entry {
             worker: worker.map(Into::into),
@@ -333,7 +371,7 @@ pub mod tests {
         assert_eq!(store.entry_view(&r1, "s2", false).as_deref(), Some("r1"));
         assert_eq!(empty.entry_view(&Entry::default(), "", false), None);
         // A new session (a reset) has other workers.
-        store.reset(Vec::new(), vec![worker("r2")], Vec::new(), 0.0);
+        store.reset(None, Vec::new(), vec![worker("r2")], Vec::new(), 0.0);
         assert_eq!(store.entry_view(&r1, "s1", true), None);
     }
 

@@ -87,6 +87,9 @@ pub struct Page {
     pub workers: RwSignal<u64>,
     /// Bumped when a background job's summary changes.
     pub jobs: RwSignal<u64>,
+    /// Bumped when a `reset` brings another feed (Arko started again), once
+    /// the store holds it. What the page keeps of a session goes with it.
+    pub feeds: RwSignal<u64>,
     /// The parts of the status that rows show, which change less often
     /// than the status does: the calls that can move to the background,
     /// the background jobs running, the usual models and the app's name.
@@ -218,6 +221,7 @@ impl Page {
             detail: RwSignal::new(String::new()),
             version: RwSignal::new(0),
             workers: RwSignal::new(0),
+            feeds: RwSignal::new(0),
             view: RwSignal::new(view),
             worker: RwSignal::new(None),
             now: RwSignal::new(js_sys::Date::now()),
@@ -440,19 +444,14 @@ pub enum Posted {
 const UNKNOWN: &str =
     "No answer from Arko, so it may have gone. Check the transcript before you send it again.";
 
-thread_local! {
-    /// The feed the page shows, as the latest `reset` named it.
-    static FEED: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
 /// Sends `body`, what the user sent, to `path`, naming the feed the page
 /// shows, and waits for what became of it however long Arko takes. A
 /// session cookie that ended is traded again once. The error line says why
 /// it didn't go, or that Arko didn't say.
 pub async fn send(path: &str, mut body: serde_json::Value) -> Posted {
     let page = page();
-    if let Some(feed) = FEED.with(|feed| feed.borrow().clone()) {
-        body["feed"] = feed.into();
+    if let Some(feed) = STORE.with(|store| store.borrow().feed) {
+        body["feed"] = format!("{feed:016x}").into();
     }
     for attempt in 0..2 {
         let Some((status, text)) = request("POST", path, Some(body.to_string())).await else {
@@ -733,11 +732,10 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
         jobs: Vec<&'a RawValue>,
         #[serde(default)]
         status: Option<&'a RawValue>,
-        #[serde(default)]
-        feed: Option<String>,
+        #[serde(default, borrow)]
+        feed: Option<&'a str>,
     }
     let raw: Raw = serde_json::from_str(data).map_err(|error| error.to_string())?;
-    FEED.with(|feed| *feed.borrow_mut() = raw.feed.clone());
     // An item that can't be read is left out, and said, rather than losing
     // the transcript.
     let mut bad = 0;
@@ -770,8 +768,10 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     };
     mark("arko-parsed");
     let now = js_sys::Date::now();
-    reset_cells(&items, &new_code);
-    STORE.with(|store| store.borrow_mut().reset(items, workers, jobs, now));
+    let feed = raw.feed.and_then(crate::store::parse_feed);
+    if reset_store(feed, items, workers, jobs, &new_code, now) {
+        start_feed(page);
+    }
     RETRY.with(|retry| *retry.borrow_mut() = (1000.0, 0, 0));
     page.skew.set(None);
     page.status.set(status);
@@ -801,12 +801,32 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The store and the cells of a `reset` of `feed`. Returns whether the
+/// page had another feed's items (Arko started again).
+fn reset_store(
+    feed: Option<u64>,
+    items: Vec<ItemData>,
+    workers: Vec<WorkerData>,
+    jobs: Vec<JobSummary>,
+    new_code: &HashSet<u64>,
+    now: f64,
+) -> bool {
+    let switched = STORE.with(|store| store.borrow_mut().reset(feed, items, workers, jobs, now));
+    STORE.with(|store| reset_cells(&store.borrow().items, new_code, switched));
+    switched
+}
+
 /// The cells of a `reset`'s items. The transcript keys its rows by item, so
 /// a row drawn before the reset keeps the cell it was drawn with: an item
 /// the page had takes the server's version in that cell, and only a new one
-/// gets a cell. `new_code` holds the items whose code blocks' spans came new.
-fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>) {
+/// gets a cell. Items of another feed (`switched`) are others whatever their
+/// IDs, so each gets a cell of its own. `new_code` holds the items whose
+/// code blocks' spans came new.
+fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>, switched: bool) {
     let mut kept = CELLS.with(|cells| std::mem::take(&mut *cells.borrow_mut()));
+    if switched {
+        kept.clear();
+    }
     let cells = items
         .iter()
         .map(|item| {
@@ -821,6 +841,21 @@ fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>) {
         })
         .collect();
     CELLS.with(|all| *all.borrow_mut() = cells);
+}
+
+/// The stream started another feed (Arko started again). The page lets go
+/// of what it kept of the last one's items and questions, and opens at the
+/// new one's latest.
+fn start_feed(page: Page) {
+    page.seen.set(STORE.with(|store| store.borrow().newest()));
+    page.grown.update(HashSet::clear);
+    page.pinned.set(true);
+    page.ask.clear();
+    page.image.set(None);
+    // The new Arko may be another version, with other commands.
+    page.commands.set(None);
+    load_commands(page);
+    page.feeds.update(|feeds| *feeds += 1);
 }
 
 /// Gives a cell the item as Arko has it now, setting only what changed, and
@@ -995,7 +1030,7 @@ mod tests {
         let mut wait = item(5, Kind::Call, MAIN, "wait_for_agents");
         wait.status = Some(CallStatus::Running);
         let mut text = item(4, Kind::Text, MAIN, "Waiting");
-        reset_cells(&[text.clone(), wait.clone()], &none);
+        reset_cells(&[text.clone(), wait.clone()], &none, false);
         // The rows keep the cells they were drawn with.
         let drawn_wait = cell(5).unwrap();
         let drawn_text = cell(4).unwrap();
@@ -1006,7 +1041,11 @@ mod tests {
         let mut shell = item(6, Kind::Call, MAIN, "cargo build");
         shell.status = Some(CallStatus::Running);
         let text_code = HashSet::from([4]);
-        reset_cells(&[text.clone(), wait.clone(), shell.clone()], &text_code);
+        reset_cells(
+            &[text.clone(), wait.clone(), shell.clone()],
+            &text_code,
+            false,
+        );
         assert_eq!(drawn_wait.data.get_untracked(), wait);
         assert_eq!(drawn_text.text.get_untracked(), text.text);
         assert_eq!(drawn_text.data.get_untracked(), text);
@@ -1016,8 +1055,58 @@ mod tests {
         assert_eq!(drawn_wait.code.get_untracked(), 0);
 
         // An item the history no longer has loses its cell.
-        reset_cells(std::slice::from_ref(&shell), &none);
+        reset_cells(std::slice::from_ref(&shell), &none, false);
         assert!(cell(5).is_none() && cell(4).is_none());
         assert_eq!(cell(6).unwrap().data.get_untracked(), shell);
+    }
+
+    /// A tab that opens the link of an Arko started again gets that feed's
+    /// items, whose IDs the last one gave too. Each gets a cell of its own,
+    /// and a row drawn before keeps what it showed until it goes. The same
+    /// feed again (a phone back from sleep) keeps the cells.
+    #[test]
+    fn a_tab_switched_to_a_restarted_arko_draws_its_items_new() {
+        let none = HashSet::new();
+        let text = item(1, Kind::Text, MAIN, "Hello");
+        let call = item(2, Kind::Call, MAIN, "ls");
+        let a = || vec![text.clone(), call.clone()];
+        assert!(!reset_store(
+            Some(0xa),
+            a(),
+            Vec::new(),
+            Vec::new(),
+            &none,
+            0.0
+        ));
+        let drawn = (cell(1).unwrap(), cell(2).unwrap());
+        let mut longer = text.clone();
+        longer.text.push_str(" again");
+        let again = vec![longer.clone(), call.clone()];
+        assert!(!reset_store(
+            Some(0xa),
+            again,
+            Vec::new(),
+            Vec::new(),
+            &none,
+            0.0
+        ));
+        assert_eq!(drawn.0.data.get_untracked(), longer);
+
+        let b_call = item(1, Kind::Call, MAIN, "cargo test");
+        let b_user = item(2, Kind::User, MAIN, "Hi");
+        let b = vec![b_call.clone(), b_user.clone()];
+        assert!(reset_store(
+            Some(0xb),
+            b,
+            Vec::new(),
+            Vec::new(),
+            &none,
+            0.0
+        ));
+        assert_eq!(cell(1).unwrap().data.get_untracked(), b_call);
+        assert_eq!(cell(2).unwrap().data.get_untracked(), b_user);
+        assert_eq!(drawn.0.data.get_untracked(), longer);
+        assert_eq!(drawn.1.data.get_untracked(), call);
+        assert_eq!(STORE.with(|store| store.borrow().feed), Some(0xb));
     }
 }

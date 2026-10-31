@@ -20,12 +20,16 @@ pub fn Transcript() -> impl IntoView {
     let page = page();
     let log: NodeRef<leptos::html::Main> = NodeRef::new();
     log.on_load(move |log| scroll::attach(log.into(), page.pinned));
-    // The rows of the view, without "Working…".
+    // The rows of the view, without "Working…", and the feed they're of.
     let laid_out = Memo::new(move |_| {
         page.version.track();
         let view = page.view.get();
         let worker = page.worker.get();
-        STORE.with(|store| layout::layout(&store.borrow().items, view, worker.as_deref()))
+        STORE.with(|store| {
+            let store = store.borrow();
+            let rows = layout::layout(&store.items, view, worker.as_deref());
+            (store.feed, rows)
+        })
     });
     // What shows the agent is under way.
     let motion = Memo::new(move |_| {
@@ -52,7 +56,8 @@ pub fn Transcript() -> impl IntoView {
     });
     let rows = Memo::new(move |_| {
         let working = motion.get().1;
-        STORE.with(|store| layout::with_working(laid_out.get(), working, &store.borrow()))
+        let (feed, rows) = laid_out.get();
+        STORE.with(|store| (feed, layout::with_working(rows, working, &store.borrow())))
     });
     let thinking = Memo::new(move |_| motion.get().0);
     // The newest item the reader saw, while at the bottom.
@@ -64,7 +69,7 @@ pub fn Transcript() -> impl IntoView {
         }
     });
     let jump_label = move || {
-        rows.with(|rows| {
+        rows.with(|(_, rows)| {
             page.grown.with(|grown| {
                 STORE
                     .with(|store| layout::jump_label(rows, &store.borrow(), page.seen.get(), grown))
@@ -72,7 +77,9 @@ pub fn Transcript() -> impl IntoView {
         })
     };
     let empty = move || {
-        if !rows.with(Vec::is_empty) || page.connection.get() != words::Connection::Live {
+        if !rows.with(|(_, rows)| rows.is_empty())
+            || page.connection.get() != words::Connection::Live
+        {
             return None;
         }
         Some(match page.worker.get() {
@@ -99,12 +106,12 @@ pub fn Transcript() -> impl IntoView {
             <main id="log" class="log" class:pinned=move || page.pinned.get() aria-label="Transcript" node_ref=log on:scroll=move |_| scroll::on_scroll()>
                 <div id="rows" class="column rows">
                     <For
-                        each=move || rows.get()
-                        key=|row| match row {
-                            Row::Count { count, .. } => format!("{}:{}:{}:{}", row.key(), count.calls, count.failed, count.running),
-                            _ => row.key(),
+                        each=move || {
+                            let (feed, rows) = rows.get();
+                            rows.into_iter().map(move |row| (feed, row))
                         }
-                        children=move |row| row_view(row, thinking)
+                        key=|(feed, row)| row_key(*feed, row)
+                        children=move |(_, row)| row_view(row, thinking)
                     />
                 </div>
                 <p class="empty">{empty}</p>
@@ -122,6 +129,23 @@ pub fn Transcript() -> impl IntoView {
             </button>
         </div>
     }
+}
+
+/// A row's key in the transcript: the feed it's of, as another feed's
+/// item 7 is another item, its identity, and a count's numbers, which its
+/// line shows.
+fn row_key(feed: Option<u64>, row: &Row) -> (Option<u64>, String) {
+    let key = match row {
+        Row::Count { count, .. } => format!(
+            "{}:{}:{}:{}",
+            row.key(),
+            count.calls,
+            count.failed,
+            count.running
+        ),
+        _ => row.key(),
+    };
+    (feed, key)
 }
 
 fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
@@ -739,6 +763,14 @@ pub fn item(id: u64) -> Option<ItemData> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another feed's rows are other rows, whatever their items' IDs.
+    #[test]
+    fn a_rows_key_names_its_feed() {
+        let row = Row::Item(4);
+        assert_eq!(row_key(Some(1), &row), row_key(Some(1), &row));
+        assert_ne!(row_key(Some(1), &row), row_key(Some(2), &row));
+    }
 
     /// A request Arko didn't take frees its button, one it took keeps it
     /// busy, and a button whose row went meanwhile is left alone.

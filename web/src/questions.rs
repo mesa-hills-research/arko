@@ -63,6 +63,18 @@ impl Asking {
             note: RwSignal::new(None),
         }
     }
+
+    /// Forgets the questions of a feed that's gone, whose IDs another
+    /// session gives again.
+    pub fn clear(&self) {
+        self.panel.set(false);
+        self.attached.set(Vec::new());
+        self.seen.set(Vec::new());
+        self.drafts.set(HashMap::new());
+        self.focused.set(None);
+        self.answering.set(Vec::new());
+        self.note.set(None);
+    }
 }
 
 // ----- words -----

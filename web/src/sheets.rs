@@ -63,6 +63,7 @@ fn Dialog(which: Sheet, title: &'static str, children: ChildrenFn) -> impl IntoV
 #[component]
 pub fn WorkersSheet() -> impl IntoView {
     let page = page();
+    // Each worker with its feed, as another feed's r1 is another worker.
     let order = move || {
         page.workers.track();
         STORE.with(|store| {
@@ -70,7 +71,7 @@ pub fn WorkersSheet() -> impl IntoView {
             let list = store.worker_list();
             words::sheet_order(&list)
                 .into_iter()
-                .map(|summary| summary.id.clone())
+                .map(|summary| (store.feed, summary.id.clone()))
                 .collect::<Vec<_>>()
         })
     };
@@ -81,9 +82,7 @@ pub fn WorkersSheet() -> impl IntoView {
                     <span class="wtitle">"Main agent"</span>
                     <span class="wmeta">{move || if page.worker.get().is_some() { "Back to the main transcript" } else { "Shown now" }}</span>
                 </button>
-                <For each=order key=|id| id.clone() let:id>
-                    <WorkerCard id=id listed=true />
-                </For>
+                <For each=order key=|worker| worker.clone() children=|(_, id)| view! { <WorkerCard id=id listed=true /> } />
             </div>
         </Dialog>
     }
