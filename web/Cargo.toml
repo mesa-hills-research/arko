@@ -67,6 +67,11 @@ web-sys = { version = "0.3", features = [
     "HtmlDocument",
 ] }
 
+[dev-dependencies]
+# Leptos's own, to run the page's effects in tests, on the test's thread.
+any_spawner = "0.3"
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+
 [profile.release]
 opt-level = "z"
 lto = true

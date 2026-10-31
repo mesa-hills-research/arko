@@ -690,7 +690,7 @@ fn Md(
     #[prop(optional)] class: &'static str,
 ) -> impl IntoView {
     // Whether it streams, which this text alone hears of.
-    let streaming = Memo::new(move |_| crate::app::streaming_is(id));
+    let streaming = crate::app::streams(id);
     let mut blocks = Blocks::default();
     let (done, open) = text.with_untracked(|text| blocks.update(text, streaming.get_untracked()));
     // Each finished block: its place, how often it was painted, its HTML.
@@ -796,12 +796,12 @@ mod tests {
     /// drawn again as a reply. More text alone is drawn in place.
     #[test]
     fn a_text_that_becomes_a_reply_is_laid_out_again_in_full() {
-        use crate::app::{change_item, reset_store};
+        use crate::app::{take_change, take_reset, tests::reset_of};
         use crate::store::tests::item;
         let owner = Owner::new();
         owner.with(|| {
-            let version = RwSignal::new(0);
-            let rows = laid_out(version, RwSignal::new(View::Full), RwSignal::new(None));
+            let page = crate::testing::page();
+            let rows = laid_out(page.version, page.view, page.worker);
             let keys = move || {
                 rows.with(|(feed, rows)| {
                     rows.iter()
@@ -811,19 +811,20 @@ mod tests {
             };
             let text = item(4, Kind::Text, MAIN, "Done.");
             let items = vec![item(3, Kind::User, MAIN, "go"), text.clone()];
-            reset_store(Some(1), items, Vec::new(), Vec::new(), &HashSet::new(), 0.0);
-            version.update(|version| *version += 1);
+            take_reset(page, reset_of(1, items, Vec::new()), 0.0);
             let before = keys();
 
             let mut longer = text;
             longer.text.push_str(" Mostly.");
-            assert!(!change_item(longer.clone(), false, View::Full, 1.0));
+            let version = page.version.get_untracked();
+            take_change(page, longer.clone(), false, 1.0);
+            assert_eq!(page.version.get_untracked(), version);
+            assert_eq!(keys(), before);
             let reply = ItemData {
                 kind: Kind::Reply,
                 ..longer
             };
-            assert!(change_item(reply, false, View::Full, 2.0));
-            version.update(|version| *version += 1);
+            take_change(page, reply, false, 2.0);
             let after = keys();
             assert_eq!(after[0], before[0]);
             assert_ne!(after[1], before[1]);

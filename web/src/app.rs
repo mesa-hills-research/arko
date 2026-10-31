@@ -140,8 +140,15 @@ thread_local! {
     static WORKER_CHANGED: RefCell<HashMap<String, ArcTrigger>> = RefCell::new(HashMap::new());
 }
 
-/// Whether the item `id` is the text that streams now (follows that alone).
-pub fn streaming_is(id: u64) -> bool {
+/// Whether the item `id` is the text that streams now, for a row of it,
+/// which follows that alone. It holds while the page keeps the item, past
+/// the row (`streaming_forget`).
+pub fn streams(id: u64) -> Memo<bool> {
+    Memo::new(move |_| streaming_is(id))
+}
+
+/// Whether the item `id` is the text that streams now.
+fn streaming_is(id: u64) -> bool {
     STREAMING.with(|selector| {
         selector
             .borrow()
@@ -201,6 +208,11 @@ impl Page {
             .as_deref()
             .and_then(View::from_key)
             .unwrap_or(View::Full);
+        Page::with(view, js_sys::Date::now())
+    }
+
+    /// The page, showing `view`, at this device's time `now`.
+    pub fn with(view: View, now: f64) -> Page {
         let status = RwSignal::new(StatusData::default());
         let jobs = RwSignal::new(0);
         let streaming = RwSignal::new(None);
@@ -226,7 +238,7 @@ impl Page {
             feeds: RwSignal::new(0),
             view: RwSignal::new(view),
             worker: RwSignal::new(None),
-            now: RwSignal::new(js_sys::Date::now()),
+            now: RwSignal::new(now),
             skew: RwSignal::new(None),
             error: RwSignal::new(None),
             commands: RwSignal::new(None),
@@ -769,24 +781,18 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
         None => StatusData::default(),
     };
     mark("arko-parsed");
-    let now = js_sys::Date::now();
-    let feed = raw.feed.and_then(crate::store::parse_feed);
-    if reset_store(feed, items, workers, jobs, &new_code, now) {
-        start_feed(page);
+    let reset = Reset {
+        feed: raw.feed.and_then(crate::store::parse_feed),
+        items,
+        workers,
+        jobs,
+        status,
+        new_code,
+        bad,
+    };
+    if take_reset(page, reset, js_sys::Date::now()) {
+        load_commands(page);
     }
-    RETRY.with(|retry| *retry.borrow_mut() = (1000.0, 0, 0));
-    page.skew.set(None);
-    page.status.set(status);
-    page.connection.set(Connection::Live);
-    EVER_LIVE.with(|live| live.set(true));
-    page.problem.set(
-        (bad > 0).then(|| format!("{bad} of Arko’s items couldn’t be read, so they’re left out.")),
-    );
-    page.streaming.set(None);
-    page.version.update(|version| *version += 1);
-    page.workers.update(|version| *version += 1);
-    page.jobs.update(|version| *version += 1);
-    workers_all_changed();
     // The view the history asked for meanwhile, checked against this start.
     if let Ok(state) = window().history().and_then(|history| history.state()) {
         crate::transcript::show_history_entry(page, &state);
@@ -802,18 +808,52 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The store and the cells of a `reset` of `feed`. Returns whether the
-/// page had another feed's items (Arko started again).
-pub(crate) fn reset_store(
-    feed: Option<u64>,
-    items: Vec<ItemData>,
-    workers: Vec<WorkerData>,
-    jobs: Vec<JobSummary>,
-    new_code: &HashSet<u64>,
-    now: f64,
-) -> bool {
+/// What a `reset` brings, read.
+pub(crate) struct Reset {
+    pub feed: Option<u64>,
+    pub items: Vec<ItemData>,
+    pub workers: Vec<WorkerData>,
+    pub jobs: Vec<JobSummary>,
+    pub status: StatusData,
+    /// The items whose code blocks' spans came new.
+    pub new_code: HashSet<u64>,
+    /// How many of Arko's items couldn't be read.
+    pub bad: usize,
+}
+
+/// The page takes a `reset`, come at `now`: the store, the cells, the
+/// status, and what the views follow. Returns whether it's of another feed
+/// than the page had (Arko started again), whose items, questions and
+/// places the page let go of. Asking for the new feed's commands is the
+/// caller's.
+pub(crate) fn take_reset(page: Page, reset: Reset, now: f64) -> bool {
+    let Reset {
+        feed,
+        items,
+        workers,
+        jobs,
+        status,
+        new_code,
+        bad,
+    } = reset;
     let switched = STORE.with(|store| store.borrow_mut().reset(feed, items, workers, jobs, now));
-    STORE.with(|store| reset_cells(&store.borrow().items, new_code, switched));
+    STORE.with(|store| reset_cells(&store.borrow().items, &new_code, switched));
+    if switched {
+        start_feed(page);
+    }
+    RETRY.with(|retry| *retry.borrow_mut() = (1000.0, 0, 0));
+    page.skew.set(None);
+    page.status.set(status);
+    page.connection.set(Connection::Live);
+    EVER_LIVE.with(|live| live.set(true));
+    page.problem.set(
+        (bad > 0).then(|| format!("{bad} of Arko’s items couldn’t be read, so they’re left out.")),
+    );
+    page.streaming.set(None);
+    page.version.update(|version| *version += 1);
+    page.workers.update(|version| *version += 1);
+    page.jobs.update(|version| *version += 1);
+    workers_all_changed();
     switched
 }
 
@@ -861,7 +901,6 @@ fn start_feed(page: Page) {
     page.image.set(None);
     // The new Arko may be another version, with other commands.
     page.commands.set(None);
-    load_commands(page);
     page.feeds.update(|feeds| *feeds += 1);
 }
 
@@ -956,26 +995,25 @@ fn on_change(page: Page, data: &str) -> Result<(), String> {
     let mut item: ItemData = parse(data)?;
     let code = std::mem::take(&mut item.code);
     crate::markdown::remember(&code);
-    let now = js_sys::Date::now();
-    if change_item(item, !code.is_empty(), page.view.get_untracked(), now) {
-        page.version.update(|version| *version += 1);
-    }
+    take_change(page, item, !code.is_empty(), js_sys::Date::now());
     crate::scroll::follow();
     Ok(())
 }
 
-/// The store and the cell take a `change` of `item`, come at `now`, whose
-/// code blocks' spans came new (`code`). Returns whether it moves the rows
-/// of `view`, which are laid out again then.
-pub(crate) fn change_item(item: ItemData, code: bool, view: View, now: f64) -> bool {
+/// The page takes a `change` of `item`, come at `now`, whose code blocks'
+/// spans came new (`code`): the store, its cell, and the rows of the view
+/// when it moves them.
+pub(crate) fn take_change(page: Page, item: ItemData, code: bool, now: f64) {
     let Some(old) = STORE.with(|store| store.borrow_mut().change(item.clone(), now)) else {
-        return false;
+        return;
     };
-    let moves = crate::layout::moves_rows(&old, &item, view);
+    let moves = crate::layout::moves_rows(&old, &item, page.view.get_untracked());
     if let Some(cell) = cell(item.id) {
         refresh(&cell, item, code);
     }
-    moves
+    if moves {
+        page.version.update(|version| *version += 1);
+    }
 }
 
 /// The code blocks a text finished as it streams, highlighted.
@@ -1031,7 +1069,7 @@ pub fn mark(name: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::protocol::CallStatus;
     use crate::store::MAIN;
@@ -1112,53 +1150,149 @@ mod tests {
         });
     }
 
+    /// A `reset` of `feed` with `items` and `workers`.
+    pub fn reset_of(feed: u64, items: Vec<ItemData>, workers: Vec<WorkerData>) -> Reset {
+        Reset {
+            feed: Some(feed),
+            items,
+            workers,
+            jobs: Vec::new(),
+            status: StatusData::default(),
+            new_code: HashSet::new(),
+            bad: 0,
+        }
+    }
+
     /// A tab that opens the link of an Arko started again gets that feed's
     /// items, whose IDs the last one gave too. Each gets a cell of its own,
     /// and a row drawn before keeps what it showed until it goes. The same
     /// feed again (a phone back from sleep) keeps the cells.
     #[test]
     fn a_tab_switched_to_a_restarted_arko_draws_its_items_new() {
-        let none = HashSet::new();
-        let text = item(1, Kind::Text, MAIN, "Hello");
-        let call = item(2, Kind::Call, MAIN, "ls");
-        let a = || vec![text.clone(), call.clone()];
-        assert!(!reset_store(
-            Some(0xa),
-            a(),
-            Vec::new(),
-            Vec::new(),
-            &none,
-            0.0
-        ));
-        let drawn = (cell(1).unwrap(), cell(2).unwrap());
-        let mut longer = text.clone();
-        longer.text.push_str(" again");
-        let again = vec![longer.clone(), call.clone()];
-        assert!(!reset_store(
-            Some(0xa),
-            again,
-            Vec::new(),
-            Vec::new(),
-            &none,
-            0.0
-        ));
-        assert_eq!(drawn.0.data.get_untracked(), longer);
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let text = item(1, Kind::Text, MAIN, "Hello");
+            let call = item(2, Kind::Call, MAIN, "ls");
+            let a = vec![text.clone(), call.clone()];
+            assert!(!take_reset(page, reset_of(0xa, a, Vec::new()), 0.0));
+            let drawn = (cell(1).unwrap(), cell(2).unwrap());
+            let mut longer = text.clone();
+            longer.text.push_str(" again");
+            let again = vec![longer.clone(), call.clone()];
+            assert!(!take_reset(page, reset_of(0xa, again, Vec::new()), 0.0));
+            assert_eq!(drawn.0.data.get_untracked(), longer);
 
-        let b_call = item(1, Kind::Call, MAIN, "cargo test");
-        let b_user = item(2, Kind::User, MAIN, "Hi");
-        let b = vec![b_call.clone(), b_user.clone()];
-        assert!(reset_store(
-            Some(0xb),
-            b,
-            Vec::new(),
-            Vec::new(),
-            &none,
-            0.0
-        ));
-        assert_eq!(cell(1).unwrap().data.get_untracked(), b_call);
-        assert_eq!(cell(2).unwrap().data.get_untracked(), b_user);
-        assert_eq!(drawn.0.data.get_untracked(), longer);
-        assert_eq!(drawn.1.data.get_untracked(), call);
-        assert_eq!(STORE.with(|store| store.borrow().feed), Some(0xb));
+            let b_call = item(1, Kind::Call, MAIN, "cargo test");
+            let b_user = item(2, Kind::User, MAIN, "Hi");
+            let b = vec![b_call.clone(), b_user.clone()];
+            assert!(take_reset(page, reset_of(0xb, b, Vec::new()), 0.0));
+            assert_eq!(cell(1).unwrap().data.get_untracked(), b_call);
+            assert_eq!(cell(2).unwrap().data.get_untracked(), b_user);
+            assert_eq!(drawn.0.data.get_untracked(), longer);
+            assert_eq!(drawn.1.data.get_untracked(), call);
+            assert_eq!(feed(), Some(0xb));
+        });
+    }
+
+    /// The same feed again keeps what the page has of its questions and its
+    /// reader's place. Another feed's start lets go of them, opens at the
+    /// latest, asks for its commands again, and moves `feeds`, which the
+    /// approval tray, the Continue question and the settings follow.
+    #[test]
+    fn a_new_feed_lets_go_of_the_last_ones_questions_and_places() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let items = || {
+                vec![
+                    item(1, Kind::User, MAIN, "go"),
+                    item(2, Kind::Text, MAIN, "ok"),
+                ]
+            };
+            take_reset(page, reset_of(0xa, items(), Vec::new()), 0.0);
+            let ask = page.ask;
+            let kept = || {
+                ask.attached.set(vec!["q1".into()]);
+                ask.seen.set(vec!["q1".into()]);
+                ask.drafts.update(|drafts| {
+                    drafts.insert("q1".into(), Default::default());
+                });
+                ask.answering.set(vec!["q1".into()]);
+                ask.focused.set(Some("q1".into()));
+                ask.panel.set(true);
+                ask.note.set(Some("Sent.".into()));
+                page.seen.set(1);
+                page.grown.set(HashSet::from([2]));
+                page.pinned.set(false);
+                page.commands.set(Some(Vec::new()));
+            };
+            kept();
+            take_reset(page, reset_of(0xa, items(), Vec::new()), 0.0);
+            assert_eq!(page.feeds.get_untracked(), 0);
+            assert_eq!(ask.attached.get_untracked(), ["q1"]);
+            assert_eq!(ask.seen.get_untracked(), ["q1"]);
+            assert!(
+                ask.drafts
+                    .with_untracked(|drafts| drafts.contains_key("q1"))
+            );
+            assert!(ask.panel.get_untracked() && !page.pinned.get_untracked());
+            assert_eq!(page.grown.get_untracked(), HashSet::from([2]));
+            assert!(page.commands.get_untracked().is_some());
+
+            assert!(take_reset(page, reset_of(0xb, items(), Vec::new()), 0.0));
+            assert_eq!(page.feeds.get_untracked(), 1);
+            assert!(ask.attached.get_untracked().is_empty());
+            assert!(ask.seen.get_untracked().is_empty());
+            assert!(ask.drafts.with_untracked(HashMap::is_empty));
+            assert!(ask.answering.get_untracked().is_empty());
+            assert_eq!(ask.focused.get_untracked(), None);
+            assert!(!ask.panel.get_untracked());
+            assert_eq!(ask.note.get_untracked(), None);
+            assert_eq!(page.seen.get_untracked(), 2);
+            assert!(page.grown.get_untracked().is_empty());
+            assert!(page.pinned.get_untracked());
+            assert_eq!(page.commands.get_untracked(), None);
+        });
+    }
+
+    /// A text's row drawn again (its item became another kind) hears when
+    /// its text stops streaming, though the row it took the place of went
+    /// after it was drawn. Once the page lets go of the item, nothing hears
+    /// of it.
+    #[test]
+    fn a_row_drawn_again_hears_whether_it_streams() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let text = item(5, Kind::Text, MAIN, "Done");
+            take_reset(page, reset_of(0xa, vec![text], Vec::new()), 0.0);
+            page.streaming.set(Some(5));
+            crate::testing::run_effects();
+            let row = || {
+                let row = Owner::new();
+                let streams = row.with(|| streams(5));
+                assert!(streams.get());
+                (row, streams)
+            };
+            let (old, _) = row();
+            let (_new, again) = row();
+            old.cleanup();
+            page.streaming.set(None);
+            crate::testing::run_effects();
+            assert!(!again.get());
+            page.streaming.set(Some(5));
+            crate::testing::run_effects();
+            assert!(again.get());
+
+            // The history let go of item 5, so what hears of it is no more.
+            page.streaming.set(None);
+            crate::testing::run_effects();
+            assert!(!again.get());
+            take_reset(page, reset_of(0xa, Vec::new(), Vec::new()), 0.0);
+            page.streaming.set(Some(5));
+            crate::testing::run_effects();
+            assert!(!again.get());
+        });
     }
 }

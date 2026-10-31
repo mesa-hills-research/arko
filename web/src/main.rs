@@ -19,6 +19,8 @@ mod sheets;
 mod slash;
 mod spinner;
 mod store;
+#[cfg(test)]
+mod testing;
 mod theme_list;
 mod transcript;
 mod words;
