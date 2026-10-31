@@ -93,6 +93,9 @@ struct Entry {
     created: Instant,
     /// When it came, or last changed (text streamed into it).
     changed: Instant,
+    /// A number no other state of an entry had, new each time its lines
+    /// change, by which a Quiet row that shows it knows to draw again.
+    revision: u64,
 }
 
 impl Entry {
@@ -104,8 +107,21 @@ impl Entry {
             open_quiet: false,
             created: Instant::now(),
             changed: Instant::now(),
+            revision: next_revision(),
         }
     }
+
+    /// Its lines change: they're drawn again, here and in a Quiet row.
+    fn touch(&mut self) {
+        self.cache = None;
+        self.revision = next_revision();
+    }
+}
+
+/// A revision no entry had yet.
+fn next_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 struct Cached {
@@ -166,7 +182,9 @@ struct QuietRow {
 
 /// A Quiet row's lines, with what they were drawn for.
 struct QuietCached {
-    row: QuietRow,
+    /// Its words, and each item it shows with that item's revision.
+    words: quiet::Words,
+    members: Vec<(u64, u64)>,
     open: bool,
     width: usize,
     style: u64,
@@ -403,7 +421,7 @@ impl Transcript {
         for entry in &mut self.entries {
             if entry.item.kind == Kind::Thinking {
                 entry.open = open;
-                entry.cache = None;
+                entry.touch();
             }
         }
     }
@@ -424,6 +442,7 @@ impl Transcript {
     /// items.
     pub fn reset(&mut self, snapshot: Snapshot) {
         self.generation += 1;
+        self.quiet_cache.clear();
         self.entries = snapshot
             .items
             .into_iter()
@@ -453,7 +472,7 @@ impl Transcript {
             Update::Append { id, text } => {
                 if let Some(entry) = self.find_mut(id) {
                     entry.item.text.push_str(&text);
-                    entry.cache = None;
+                    entry.touch();
                     entry.changed = Instant::now();
                 }
             }
@@ -461,7 +480,7 @@ impl Transcript {
                 self.changed(item.id);
                 if let Some(entry) = self.find_mut(item.id) {
                     entry.item = for_terminal(item);
-                    entry.cache = None;
+                    entry.touch();
                     entry.changed = Instant::now();
                 }
             }
@@ -505,7 +524,7 @@ impl Transcript {
             wholes += entry.item.whole_size();
             if wholes > WHOLES_KEPT && entry.item.whole.take().is_some() {
                 entry.open = false;
-                entry.cache = None;
+                entry.touch();
             }
         }
         let main = self.entries.iter().filter(|e| e.item.is_main()).count();
@@ -847,8 +866,17 @@ impl Transcript {
                     let key = self.entries[row.members[0]].item.id;
                     let open = self.quiet_open.contains(&key);
                     let clock = self.quiet_clock(row, now);
+                    let members: Vec<(u64, u64)> = row
+                        .members
+                        .iter()
+                        .map(|member| {
+                            let entry = &self.entries[*member];
+                            (entry.item.id, entry.revision)
+                        })
+                        .collect();
                     let fresh = self.quiet_cache.get(&key).is_some_and(|c| {
-                        c.row == **row
+                        c.words == row.words
+                            && c.members == members
                             && c.open == open
                             && c.width == width
                             && c.style == style
@@ -859,7 +887,8 @@ impl Transcript {
                         self.quiet_cache.insert(
                             key,
                             QuietCached {
-                                row: (**row).clone(),
+                                words: row.words.clone(),
+                                members,
                                 open,
                                 width,
                                 style,
@@ -1420,7 +1449,7 @@ impl Transcript {
                 .unwrap_or_default(),
             // (As `blocks` drew them just before.)
             Shown::Quiet(row) => match self.quiet_cache.get(&block.key) {
-                Some(cached) if cached.row == **row => cached.lines.clone(),
+                Some(cached) if cached.words == row.words => cached.lines.clone(),
                 _ => {
                     self.quiet_lines(row, theme, width, chrono::Utc::now().timestamp_millis())
                         .0
@@ -1588,9 +1617,7 @@ impl Transcript {
         } else {
             entry.open = !entry.open;
         }
-        entry.cache = None;
-        // (It may be inside a Quiet row.)
-        self.quiet_cache.clear();
+        entry.touch();
         self.pin = Some((key, y.saturating_sub(self.drawn.area.y) as usize));
         Some(self.rows_of(key, filter, theme)?.len() - 1)
     }
@@ -1672,9 +1699,7 @@ impl Transcript {
             && folds(&entry.item)
         {
             entry.open = open.unwrap_or(!entry.open);
-            entry.cache = None;
-            // (It may be inside a Quiet row.)
-            self.quiet_cache.clear();
+            entry.touch();
         }
     }
 
@@ -4357,6 +4382,51 @@ mod tests {
         // The agent's text stays, as on the web page.
         assert!(messages.iter().any(|r| r.contains("Thinking.")));
         assert_eq!(t.item(1).unwrap().agent, MAIN_AGENT);
+    }
+
+    /// An open Quiet row draws again when an item it shows changes, also
+    /// one it doesn't count, such as a read of the file it edits, which
+    /// runs with it.
+    #[test]
+    fn an_open_quiet_row_follows_its_items() {
+        use crate::remote::{Act, ActKind};
+        let mut t = Transcript::new();
+        let call = |id: u64, text: &str, kind: ActKind, status: CallStatus| {
+            let mut call = item(id, Kind::Call, text);
+            call.turn = Some(1);
+            call.status = Some(status);
+            call.act = Some(Act {
+                kind,
+                target: "a.rs".into(),
+                ..Act::default()
+            });
+            call
+        };
+        t.apply(Update::Item(call(
+            2,
+            "edit a.rs",
+            ActKind::Edit,
+            CallStatus::Ok,
+        )));
+        t.apply(Update::Item(call(
+            3,
+            "read a.rs",
+            ActKind::Read,
+            CallStatus::Running,
+        )));
+        let quiet = Filter::Main(View::Quiet);
+        let theme = Theme::terminal();
+        rows(&mut t, &quiet, 50, 4);
+        t.toggle(2, 0, &quiet, &theme);
+        let shown = rows(&mut t, &quiet, 50, 4);
+        assert_eq!(shown[0], "▾ Made 1 edit to a.rs …", "{shown:?}");
+        assert_eq!(shown[2], "  ▸ read a.rs …", "{shown:?}");
+        let mut read = call(3, "read a.rs", ActKind::Read, CallStatus::Ok);
+        read.outcome = Some("12 lines".into());
+        t.apply(Update::Change(read));
+        let shown = rows(&mut t, &quiet, 50, 4);
+        assert_eq!(shown[0], "▾ Made 1 edit to a.rs", "{shown:?}");
+        assert_eq!(shown[2], "  ▸ read a.rs · ✓ 12 lines", "{shown:?}");
     }
 
     /// How long a draw of the Quiet view takes at the transcript's cap of
