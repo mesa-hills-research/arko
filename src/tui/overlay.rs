@@ -1,7 +1,7 @@
-//! What opens over the transcript for a moment: the help, the settings
+//! What opens over the transcript for a moment, namely the help, the settings
 //! (with the theme picker), the API keys, the web page's QR code, the
 //! worker switcher, and the conversations to go back to. Rare actions
-//! don't get permanent room; each closes with Esc.
+//! don't get permanent room. Each closes with Esc.
 
 use std::time::Instant;
 
@@ -25,11 +25,11 @@ use crate::remote;
 /// What is open over the transcript.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Overlay {
-    /// The keys and commands; scrolled by `scroll` lines.
+    /// The keys and commands, scrolled by `scroll` lines.
     Help { scroll: usize },
-    /// The settings; `row` is the one selected.
+    /// The settings, where `row` is the one selected.
     Settings { row: usize, picker: Option<Picker> },
-    /// The web page's links as QR codes; `link` is the one shown.
+    /// The web page's links as QR codes, where `link` is the one shown.
     Remote { link: usize, since: Instant },
     /// `/model`'s picker.
     Model(super::model_picker::ModelPicker),
@@ -41,15 +41,15 @@ pub enum Overlay {
     Names(super::names_menu::NamesMenu),
     /// The conversations to go back to (`/resume`).
     Resume(super::resume_picker::ResumePicker),
-    /// Quitting while background jobs run, which stop when Arko exits:
+    /// Quitting while background jobs run, which stop when Arko exits.
     /// `choice` is what is on (0: Yes, 1: No, 2: the box), and `dont_ask`
     /// whether the box is ticked.
     Quit { choice: usize, dont_ask: bool },
     /// Turning off "Ask before adding MCP servers" in the settings, which
-    /// asks first: `row` is the settings row to go back to and `choice` the
+    /// asks first. `row` is the settings row to go back to and `choice` the
     /// button on (0: Turn off, 1: Cancel).
     AskOff { row: usize, choice: usize },
-    /// Dictation's first recording asks before it downloads `model`:
+    /// Dictation's first recording asks before it downloads `model`.
     /// `choice` is the button on (0: Download, 1: Cancel).
     Download {
         model: &'static crate::dictation::SpeechModel,
@@ -133,9 +133,9 @@ pub struct Picker {
     /// Every theme, as (family, name).
     pub names: Vec<(String, String)>,
     pub selected: usize,
-    /// The theme when the picker opened: Esc goes back to it.
+    /// The theme when the picker opened. Esc goes back to it.
     pub before: String,
-    /// The notice about flashing, the first time the picker opens: the
+    /// The notice about flashing, the first time the picker opens, with the
     /// choice it is on (0: previews, 1: none).
     pub notice: Option<usize>,
     /// When the selection last moved, while its preview waits for it to
@@ -143,7 +143,7 @@ pub struct Picker {
     pub moved: Option<std::time::Instant>,
 }
 
-/// A key, as one keycap: ` Ctrl+O `.
+/// A key, as one keycap, like ` Ctrl+O `.
 pub fn cap(theme: &Theme, key: &str) -> Span<'static> {
     Span::styled(format!(" {key} "), theme.key())
 }
@@ -232,7 +232,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
     }
 }
 
-/// The question before dictation downloads its model: which model, its
+/// The question before dictation downloads its model. It shows which model, its
 /// sizes and licence, and Download or Cancel.
 fn download(
     frame: &mut Frame,
@@ -335,10 +335,10 @@ fn ask_off(frame: &mut Frame, app: &App, area: Rect, choice: usize) {
     );
 }
 
-/// The background jobs listed in the quit popup: more are counted.
+/// The background jobs listed in the quit popup, and more are counted.
 const QUIT_JOBS: usize = 5;
 
-/// The popup that asks before Arko quits with background jobs running: what
+/// The popup that asks before Arko quits with background jobs running, saying what
 /// stops (the jobs as the session reads them now, and the workers, which a
 /// resumed session continues), Yes, No and the box.
 fn quit(frame: &mut Frame, app: &App, area: Rect, choice: usize, dont_ask: bool) {
@@ -623,7 +623,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
     let page_on = app.reading.page.is_some();
     let label_width = 18;
     let mut lines: Vec<Line<'static>> = Vec::new();
-    // The last line of the chosen row's description: kept in view.
+    // The last line of the chosen row's description, kept in view.
     let mut chosen_end = 0;
     let mut section = "";
     for (n, row) in rows.iter().enumerate() {
@@ -1215,7 +1215,7 @@ fn theme_picker(frame: &mut Frame, app: &App, area: Rect, picker: &Picker) {
     }
 }
 
-/// The notice the theme picker opens with, once: previews can flash. It
+/// The notice the theme picker opens with, once, because previews can flash. It
 /// sits in front of the picker (a little wider, so it reads as its own
 /// box), comes before any preview, and offers the two ways on.
 fn flash_notice(frame: &mut Frame, app: &App, over: Rect, choice: usize) {
@@ -1300,7 +1300,7 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
                 Some(code)
                     if code.len() <= room && code[0].chars().count() + 4 <= area.width as usize =>
                 {
-                    // Dark modules on light, whatever the theme: as
+                    // Dark modules on light, whatever the theme, as
                     // scanners read it.
                     let style = if theme.is_terminal() || app.depth != Depth::Rgb {
                         Style::new().fg(Color::White).bg(Color::Black)
@@ -1321,7 +1321,7 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
                 None => {}
             }
             lines.push(Line::from(Span::styled(shown.url.clone(), theme.text())));
-            // Ranked: the local network first, VPNs last.
+            // Ranked with the local network first, VPNs last.
             let mut about = vec![Span::styled(
                 match &shown.interface {
                     Some(name) if !shown.loopback => {
@@ -1344,7 +1344,7 @@ fn page(frame: &mut Frame, app: &App, area: Rect, link: usize, since: Instant) {
             }
         }
     }
-    // As wide as the code and the link: the warning wraps.
+    // As wide as the code and the link, so the warning wraps.
     let content = lines
         .iter()
         .filter(|line| {

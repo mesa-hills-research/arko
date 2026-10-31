@@ -658,7 +658,7 @@ fn one_request_is_one_row_with_approve_and_reject() {
     assert_eq!(choices(&sent(&mut app)[0]), [("a1", true, false)]);
 }
 
-/// V opens a row's details in place, under it: a profile's model, its
+/// V opens a row's details in place, under it, with a profile's model, its
 /// description and its instructions in a box, which PgDn scrolls.
 #[test]
 fn v_opens_the_details_in_place() {

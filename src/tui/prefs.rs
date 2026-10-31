@@ -1,5 +1,5 @@
 //! The view's choices, remembered from one run to the next in `tui.json`
-//! in Arko's folder: people settle on a view and a theme.
+//! in Arko's folder, because people settle on a view and a theme.
 
 use std::path::Path;
 
@@ -13,7 +13,7 @@ pub struct Prefs {
     /// A theme's name, or `terminal`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
-    /// Whether the mouse scrolls the transcript (off: the terminal selects).
+    /// Whether the mouse scrolls the transcript (when off, the terminal selects).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mouse: Option<bool>,
     /// Whether the theme picker previews the theme it is on (on unless
@@ -33,7 +33,7 @@ pub struct Prefs {
 }
 
 impl Prefs {
-    /// The choices saved at `path`; none when it can't be read.
+    /// The choices saved at `path`, or none when it can't be read.
     pub fn load(path: Option<&Path>) -> Self {
         path.and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| serde_json::from_str(&text).ok())

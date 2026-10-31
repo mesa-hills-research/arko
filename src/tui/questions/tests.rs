@@ -236,7 +236,7 @@ fn the_words_typed_go_with_the_choices_picked_or_you_decide() {
             press(app, KeyCode::Char(c));
         }
     };
-    // One choice, then words beside it: the choice stays picked.
+    // One choice, then words beside it, and the choice stays picked.
     press(&mut app, KeyCode::Char('2'));
     app.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     typing(&mut app, "keep it narrow");
@@ -247,7 +247,7 @@ fn the_words_typed_go_with_the_choices_picked_or_you_decide() {
     press(&mut app, KeyCode::Char('3'));
     typing(&mut app, "on CI");
     press(&mut app, KeyCode::Enter);
-    // "You decide", with words: typing doesn't take it back.
+    // "You decide", with words. Typing doesn't take it back.
     press(&mut app, KeyCode::Char('4'));
     app.key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
     typing(&mut app, "ask Bob first");

@@ -1,4 +1,4 @@
-//! What moves on the screen while the agent is under way: a spinner in the
+//! What moves on the screen while the agent is under way, a spinner in the
 //! margin, and a highlight that sweeps across the word beside it. The
 //! frames come from a clock, so each redraw shows the frame of its moment,
 //! and the view redraws only while one shows.
@@ -11,14 +11,14 @@ use ratatui::buffer::Buffer;
 use super::theme::Theme;
 use crate::glyphs;
 
-/// How often the view redraws while something moves: 10 frames a second.
+/// How often the view redraws while something moves, 10 frames a second.
 pub const FRAME: Duration = Duration::from_millis(100);
 /// One sweep of the highlight, from before the word to past it.
 const SWEEP_MS: u64 = 2000;
 /// How far the highlight reaches each side of its middle, in columns.
 const REACH: f64 = 3.0;
 
-/// The animations' clock: milliseconds since the first frame.
+/// The animations' clock, in milliseconds since the first frame.
 pub fn clock() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
@@ -31,7 +31,7 @@ pub fn spinner(ms: u64) -> &'static str {
 }
 
 /// How lit (0 to 1) the column `col` of a word `width` columns wide is at
-/// `ms`: the highlight sweeps from left to right, fading at its edges.
+/// `ms`. The highlight sweeps from left to right, fading at its edges.
 pub fn shimmer(col: usize, width: usize, ms: u64) -> f64 {
     let travel = width as f64 + 2.0 * REACH;
     let middle = (ms % SWEEP_MS) as f64 / SWEEP_MS as f64 * travel - REACH;
@@ -43,7 +43,7 @@ pub fn shimmer(col: usize, width: usize, ms: u64) -> f64 {
     }
 }
 
-/// Paints the frame at `ms` over a line drawn at `x`, `y`: the spinner in
+/// Paints the frame at `ms` over a line drawn at `x`, `y`, with the spinner in
 /// its margin's first column, and the highlight over the word of `width`
 /// columns after the margin.
 pub fn paint(buffer: &mut Buffer, (x, y): (u16, u16), width: usize, theme: &Theme, ms: u64) {
@@ -67,7 +67,7 @@ pub fn paint(buffer: &mut Buffer, (x, y): (u16, u16), width: usize, theme: &Them
 mod tests {
     use super::*;
 
-    /// The highlight crosses the word once a sweep: it is past the word's
+    /// The highlight crosses the word once a sweep. It is past the word's
     /// start early, and at its end later, and off it between sweeps.
     #[test]
     fn the_highlight_sweeps_across_the_word() {

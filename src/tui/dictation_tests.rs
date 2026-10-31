@@ -154,7 +154,7 @@ fn ctrl_r_stops_as_enter_does() {
     let mut app = listening("");
     ctrl_r(&mut app);
     assert_eq!(dictates(&mut app), [Dictate::Finish]);
-    // Again while the last words come: nothing.
+    // Again while the last words come, nothing.
     ctrl_r(&mut app);
     assert!(app.take_effects().is_empty());
 }
@@ -196,7 +196,7 @@ fn esc_takes_out_only_the_recordings_words() {
     assert_eq!(app.editor.text(), "cat dog ");
 }
 
-/// Once the recording is done, its words are the user's: a later Esc
+/// Once the recording is done, its words are the user's, so a later Esc
 /// leaves them.
 #[test]
 fn a_finished_recordings_words_stay() {

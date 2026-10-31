@@ -1,14 +1,14 @@
-//! The full-screen view's colours: named roles (text, dim, accent, warning,
+//! The full-screen view's colours, as named roles (text, dim, accent, warning,
 //! ...) filled from a theme. The themes are GPUI Kit's, bundled from
 //! `themes/` (see NOTICE), and the user's own in the same format in the
-//! `themes` folder of Arko's folder; `terminal` keeps the terminal's own
+//! `themes` folder of Arko's folder. `terminal` keeps the terminal's own
 //! colours instead.
 //!
 //! A theme paints the whole screen, its background too, so the view looks
 //! the same whatever the console's palette is (Windows PowerShell's blue
-//! one included). That takes more than the 16 colours: with 24-bit colour
+//! one included). That takes more than the 16 colours. With 24-bit colour
 //! the theme's own, with 256 the nearest of xterm's, and with fewer the
-//! `terminal` theme. The console's palette itself is never changed: leaving
+//! `terminal` theme. The console's palette itself is never changed, because leaving
 //! the alternate screen brings its colours back.
 
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ use crate::glyphs::{self, Symbols};
 pub const DEFAULT: &str = "macOS Classic Dark";
 /// The theme of the terminal's own colours and background.
 pub const TERMINAL: &str = "terminal";
-/// The setting that chooses the theme: a variant's name, or `terminal`.
+/// The setting that chooses the theme, a variant's name, or `terminal`.
 pub const SETTING: &str = crate::credentials::THEME;
 
 include!("themes.rs");
@@ -81,7 +81,7 @@ impl Rgb {
     }
 
     /// The xterm-256 colour nearest this one (of the colour cube and the
-    /// grays: the first 16 follow the terminal's palette).
+    /// grays, as the first 16 follow the terminal's palette).
     pub fn xterm256(self) -> u8 {
         const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
         let distance = |other: Rgb| {
@@ -112,7 +112,7 @@ impl Rgb {
     }
 }
 
-/// `color` as red, green and blue, where it says them: a 24-bit colour, or
+/// `color` as red, green and blue, where it says them, as a 24-bit colour, or
 /// one of xterm's 256 past the first 16 (which follow the terminal's
 /// palette).
 fn rgb(color: Color) -> Option<Rgb> {
@@ -142,15 +142,15 @@ pub enum Depth {
     Rgb,
     /// xterm's 256.
     Ansi256,
-    /// The 16 of the terminal's palette: themes need more.
+    /// The 16 of the terminal's palette, though themes need more.
     Ansi16,
 }
 
 /// The colours this terminal shows: 24-bit where COLORTERM says so
 /// (GNOME Terminal sets it) or where Windows' console takes escape codes
-/// (Windows Terminal, and Windows 10's console: crossterm turns them on,
-/// style.rs:163-170); 256 where TERM says so without COLORTERM (macOS
-/// Terminal.app); else 16. NO_COLOR asks for none, so the terminal's
+/// (Windows Terminal, and Windows 10's console, where crossterm turns them on,
+/// style.rs:163-170). 256 where TERM says so without COLORTERM (macOS
+/// Terminal.app). Else 16. NO_COLOR asks for none, so the terminal's
 /// colours are kept (crossterm drops colours then anyway).
 pub fn depth() -> Depth {
     let var = |name: &str| std::env::var(name).unwrap_or_default().to_ascii_lowercase();
@@ -181,7 +181,7 @@ pub enum Corners {
 }
 
 impl Corners {
-    /// Square, for every theme for now: whether rounded corners suit the
+    /// Square, for every theme for now, since whether rounded corners suit the
     /// terminal is still open. (A theme's `radius` could choose later.)
     /// Debug builds take ARKO_CORNERS=rounded, to compare the two.
     fn chosen() -> Self {
@@ -197,8 +197,8 @@ impl Corners {
 #[derive(Debug, Clone)]
 pub struct Variant {
     pub name: String,
-    /// Its corners' radius (6 when the file doesn't say); not used yet:
-    /// see [`Corners`].
+    /// Its corners' radius (6 when the file doesn't say). Not used yet.
+    /// See [`Corners`].
     #[allow(dead_code)]
     pub radius: f64,
     /// Its colours by key (`background`, `muted.foreground`, ...).
@@ -212,7 +212,7 @@ pub struct Family {
     pub variants: Vec<Variant>,
 }
 
-/// The themes there are: the bundled ones and the user's, and what was
+/// The themes there are, the bundled ones and the user's, and what was
 /// wrong with the user's files.
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
@@ -234,7 +234,7 @@ struct FileVariant {
     radius: Option<f64>,
 }
 
-/// The variants of a theme file's `text`; an error when it isn't one.
+/// The variants of a theme file's `text`, or an error when it isn't one.
 fn family(text: &str) -> Result<Family, String> {
     let file: File = serde_json::from_str(text).map_err(|error| error.to_string())?;
     let mut variants = Vec::new();
@@ -269,7 +269,7 @@ fn family(text: &str) -> Result<Family, String> {
 }
 
 impl Catalog {
-    /// The bundled themes, then those in `folder` (`*.json`): a theme
+    /// The bundled themes, then those in `folder` (`*.json`). A theme
     /// there with a bundled one's name takes its place.
     pub fn load(folder: Option<&Path>) -> Self {
         let mut catalog = Catalog::default();
@@ -365,19 +365,19 @@ impl Catalog {
 pub struct Theme {
     /// The variant's name, or `terminal`.
     pub name: String,
-    /// The whole screen's; `Reset` keeps the terminal's.
+    /// The whole screen's. `Reset` keeps the terminal's.
     pub background: Color,
     pub text: Color,
-    /// Text that matters less: tool activity, notices, the status line.
+    /// Text that matters less, such as tool activity, notices, the status line.
     pub dim: Color,
-    /// The one accent, as text or lines on the background: the user's
+    /// The one accent, as text or lines on the background, such as the user's
     /// margin bar, the prompt, links, what is selected.
     pub accent: Color,
     /// The accent as a filled background (a menu's selected row), and the
     /// text on it.
     pub fill: Color,
     pub on_fill: Color,
-    /// A surface a little apart from the background: the input box, code,
+    /// A surface a little apart from the background, such as the input box, code,
     /// keys.
     pub surface: Color,
     /// Overlays and menus.
@@ -385,7 +385,7 @@ pub struct Theme {
     pub border: Color,
     /// A selected message's background.
     pub selection: Color,
-    /// The user's messages' background: a quiet band, a little apart from
+    /// The user's messages' background, a quiet band, a little apart from
     /// the background, so they stand out from the agent's work.
     pub user: Color,
     pub warning: Color,
@@ -398,7 +398,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// The terminal's own colours: its 16, and its background.
+    /// The terminal's own colours, its 16, and its background.
     pub fn terminal() -> Self {
         // The classic Windows console doesn't draw faint text.
         let faint = !(cfg!(windows) && crate::glyphs::classic_console());
@@ -457,7 +457,7 @@ impl Theme {
         self.background == Color::Reset
     }
 
-    /// The screen: the theme's text on its background.
+    /// The screen, the theme's text on its background.
     pub fn base(&self) -> Style {
         Style::new().fg(self.text).bg(self.background)
     }
@@ -474,7 +474,7 @@ impl Theme {
         }
     }
 
-    /// Dim text lit `amount` of the way (0 to 1) to the text's colour: the
+    /// Dim text lit `amount` of the way (0 to 1) to the text's colour, for the
     /// highlight that sweeps across what is under way. Where there are no
     /// colours to blend (the terminal's own), it is dim, or past halfway
     /// the text's.
@@ -518,7 +518,7 @@ impl Theme {
         }
     }
 
-    /// A key, as a keycap: the whole shortcut in one cap (` Ctrl+O `).
+    /// A key, as a keycap, the whole shortcut in one cap (` Ctrl+O `).
     pub fn key(&self) -> Style {
         if self.is_terminal() {
             Style::new().add_modifier(Modifier::REVERSED)
@@ -527,7 +527,7 @@ impl Theme {
         }
     }
 
-    /// The lines and corners of a bordered element (an overlay, a panel):
+    /// The lines and corners of a bordered element (an overlay, a panel),
     /// rounded or square as the theme's radius says, in the symbols the
     /// terminal shows.
     pub fn borders(&self) -> border::Set<'static> {
@@ -592,7 +592,7 @@ impl Roles {
         let color = |key: &str| raw(key).and_then(|value| Rgb::parse(value, Some(background)));
         let text = color("foreground").unwrap_or(Rgb(255, 255, 255));
         // `color`, darker on a light background (lighter on a dark one)
-        // until it reads there: its hue stays, so red still says red.
+        // until it reads there. Its hue stays, so red still says red.
         let readable = |color: Rgb, on: Rgb| {
             let toward = if on.luminance() > 0.18 {
                 Rgb(0, 0, 0)
@@ -646,7 +646,7 @@ impl Roles {
         let border = first(&["border"])
             .filter(|border| apart(*border))
             .unwrap_or_else(|| background.mix(text, 0.2));
-        // The theme's own, else its blue faintly over the background: the
+        // The theme's own, else its blue faintly over the background, the
         // first that the text reads on.
         let selection = [
             color("selection.background"),
@@ -658,7 +658,7 @@ impl Roles {
         .chain([surface])
         .find(|selection| apart(*selection) && text.contrast(*selection) >= READABLE)
         .unwrap_or(surface);
-        // The theme's muted surface: every theme sets it a little apart from
+        // The theme's muted surface. Every theme sets it a little apart from
         // its background, and never far enough to glare.
         let user = first(&["muted.background"])
             .filter(|user| apart(*user))
@@ -667,7 +667,7 @@ impl Roles {
             background,
             text,
             dim: {
-                // (Dim text has no hue to keep: toward the text.)
+                // (Dim text has no hue to keep, so toward the text.)
                 let muted = first(&["muted.foreground"]).unwrap_or(background.mix(text, 0.6));
                 let mut shade = muted;
                 let mut step = 0.0;
@@ -741,7 +741,7 @@ mod tests {
         assert!(lit.sub_modifier.contains(Modifier::DIM));
     }
 
-    /// Every bundled variant reads: its text, dim text, accent and
+    /// Every bundled variant reads, with its text, dim text, accent and
     /// warnings on its background, and the text on its filled accent.
     #[test]
     fn every_bundled_theme_gets_readable_roles() {
@@ -779,13 +779,13 @@ mod tests {
     fn the_warning_role_is_the_themes_warning_colour_else_its_yellow() {
         let catalog = Catalog::load(None);
         let warning = |name: &str| Roles::of(catalog.find(name).unwrap()).warning;
-        // No warning colour: the yellow.
+        // No warning colour, the yellow.
         assert_eq!(warning("macos classic dark"), Rgb(0xFF, 0xC6, 0x00));
         // The light theme's yellow is too faint for text, its warning colour is not.
         assert_eq!(warning("macOS Classic Light"), Rgb(0x82, 0x6E, 0x00));
     }
 
-    /// A colour too faint for text keeps its hue as it is made readable:
+    /// A colour too faint for text keeps its hue as it is made readable.
     /// Adventure Time's red (3.0:1 on its background), lightened, is still
     /// red.
     #[test]

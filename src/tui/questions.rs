@@ -65,7 +65,7 @@ pub struct Panel {
     pub focus: Option<String>,
     /// What is filled in, by question.
     pub drafts: HashMap<String, Draft>,
-    /// The questions attached to the message box: the next message answers
+    /// The questions attached to the message box. The next message answers
     /// them.
     pub attached: Vec<String>,
     /// The questions the user has seen (in the panel, or open while they
@@ -75,19 +75,19 @@ pub struct Panel {
     pub last_key: Option<Instant>,
     /// The questions the bell rang for.
     pub rung: HashSet<String>,
-    /// New questions came while the window wasn't focused: the bell rings.
+    /// New questions came while the window wasn't focused, so the bell rings.
     pub ring: bool,
     /// The window Alt+Q opened the panel over, which comes back when the
     /// panel closes.
     pub behind: Option<Overlay>,
     /// The cursor among the focused question's options.
     pub row: usize,
-    /// One at a time: the summary shows, with this row highlighted (the
+    /// One at a time, the summary shows, with this row highlighted (the
     /// questions, then Send).
     pub review: Option<usize>,
-    /// One at a time: an answer changed from the summary goes back to it.
+    /// One at a time, and an answer changed from the summary goes back to it.
     pub from_review: bool,
-    /// The width the panel was drawn at and its height: it keeps that
+    /// The width the panel was drawn at and its height. It keeps that
     /// height while it shows the same questions.
     pub height: (u16, u16),
     /// How far PgUp and PgDn moved from where the focus is in sight.
@@ -148,7 +148,7 @@ impl App {
         self.reading.questions.iter().any(|question| question.waits)
     }
 
-    /// The chips above the message box, when the panel is closed: the
+    /// The chips above the message box, when the panel is closed, the
     /// questions attached, then the others.
     pub fn chips(&self) -> Vec<Chip> {
         let open = self.open_questions();
@@ -180,7 +180,7 @@ impl App {
             .collect()
     }
 
-    /// The open questions changed (a new reading): what was filled in for
+    /// The open questions changed (a new reading). What was filled in for
     /// questions no longer open goes, and new questions open the panel
     /// when the user isn't typing.
     pub(super) fn questions_changed(&mut self) {
@@ -207,7 +207,7 @@ impl App {
             }
             return;
         }
-        // The question being answered was answered elsewhere, or closed:
+        // The question being answered was answered elsewhere, or closed, so
         // what is typed next doesn't go to another one.
         if let Some(id) = &self.panel.focus
             && !open.contains(id)
@@ -241,7 +241,7 @@ impl App {
         std::mem::take(&mut self.panel.ring)
     }
 
-    /// Alt+Q: the panel opens (or keeps the keys), on the first question
+    /// Alt+Q opens the panel (or keeps the keys) on the first question
     /// not filled in. Over a window, the window comes back when the panel
     /// closes.
     pub fn open_panel(&mut self) {
@@ -322,7 +322,7 @@ impl App {
         }
     }
 
-    /// Esc and "Answer in chat": the panel closes and the open questions
+    /// Esc and "Answer in chat", where the panel closes and the open questions
     /// are attached to the message box.
     pub(super) fn answer_in_chat(&mut self) {
         self.close_panel();
@@ -334,7 +334,7 @@ impl App {
     }
 
     /// Takes the questions off the message box (its chip's ×, Backspace in
-    /// an empty box): the next message doesn't answer them.
+    /// an empty box), so the next message doesn't answer them.
     pub(super) fn detach(&mut self) -> bool {
         if self.panel.attached.is_empty() {
             return false;
@@ -343,7 +343,7 @@ impl App {
         true
     }
 
-    /// "Not now": the open questions are dismissed, and the agent goes on
+    /// "Not now" dismisses the open questions, and the agent goes on
     /// with its defaults. Beside questions attached to the message box,
     /// only the others are.
     pub(super) fn not_now(&mut self) {
@@ -363,7 +363,7 @@ impl App {
         self.say("Dismissed. Arko goes on with its defaults");
     }
 
-    /// Enter in the panel: sends what's filled in, naming every question
+    /// Enter in the panel sends what's filled in, naming every question
     /// it shows. The questions left unanswered stay open.
     pub(super) fn send_answers(&mut self) {
         let answers: Vec<QuestionAnswer> = self
@@ -434,7 +434,7 @@ enum Opt {
     Other,
 }
 
-/// A question's answers to pick, in order: its choices, "You decide", and
+/// A question's answers to pick, in order, its choices, "You decide", and
 /// Other.
 fn options(question: &AgentQuestion) -> Vec<Opt> {
     let mut options: Vec<Opt> = (0..question.choices.len()).map(Opt::Choice).collect();
@@ -451,7 +451,7 @@ fn label(question: &AgentQuestion, opt: Opt) -> String {
     }
 }
 
-/// What "You decide" means: "(Spaces)".
+/// What "You decide" means, such as "(Spaces)".
 fn default_note(question: &AgentQuestion, opt: Opt) -> Option<String> {
     match (opt, &question.default) {
         (Opt::YouDecide, Some(default)) => Some(format!("({})", default.trim())),
@@ -510,7 +510,7 @@ fn pick(draft: &mut Draft, question: &AgentQuestion, opt: Opt, toggle: bool) {
     }
 }
 
-/// The answer in a few words, for a summary: "Spaces", "You decide
+/// The answer in a few words, for a summary, such as "Spaces", "You decide
 /// (Spaces)", the words typed, or a pick with them ("Spaces, plus “2
 /// wide”").
 fn answer_text(draft: &Draft, question: &AgentQuestion) -> Option<String> {
@@ -536,7 +536,7 @@ fn answer_text(draft: &Draft, question: &AgentQuestion) -> Option<String> {
     }
 }
 
-/// The option the cursor starts on: what is picked, else the first (Other
+/// The option the cursor starts on, which is what is picked, else the first (Other
 /// for a question without choices, which takes words first).
 fn picked_row(draft: Option<&Draft>, question: &AgentQuestion) -> Option<usize> {
     let options = options(question);
@@ -555,7 +555,7 @@ fn picked_row(draft: Option<&Draft>, question: &AgentQuestion) -> Option<usize> 
 
 // ----- the Other field -----
 
-/// A key in the Other field of `draft`, at its cursor: readline's keys.
+/// A key in the Other field of `draft`, at its cursor, with readline's keys.
 /// True when it took it.
 fn field_key(draft: &mut Draft, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -679,7 +679,7 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|span| wrap::width(&span.content)).sum()
 }
 
-/// A question's own lines at `width`: its text, and "Choose any" after a
+/// A question's own lines at `width`, with its text, and "Choose any" after a
 /// question that takes several.
 fn question_lines(
     question: &AgentQuestion,
@@ -829,7 +829,7 @@ struct Card {
     /// The text cursor in the body.
     cursor: Option<(usize, usize)>,
     keys: Vec<(&'static str, &'static str)>,
-    /// The tallest body any question needs here: the panel keeps that
+    /// The tallest body any question needs here. The panel keeps that
     /// height whichever has the keys.
     tallest: usize,
 }
@@ -1059,7 +1059,7 @@ fn steps_card(app: &App, width: usize) -> Card {
     }
 }
 
-/// The summary of one at a time: each question with its answer, then
+/// The summary of one at a time, listing each question with its answer, then
 /// Send, the highlight on `selected` (the questions, then Send).
 fn review_lines(
     app: &App,
@@ -1167,7 +1167,7 @@ impl App {
         field_key(self.draft_mut(&question.id), key);
     }
 
-    /// A character typed away from Other: the cursor moves there, and it
+    /// A character typed away from Other. The cursor moves there, and it
     /// is the start of an answer of one's own.
     fn type_into_other(&mut self, question: &AgentQuestion, key: KeyEvent) {
         self.panel.row = options(question).len() - 1;
@@ -1242,7 +1242,7 @@ impl App {
         }
     }
 
-    /// One at a time moves on from question `at`: to the next, or to the
+    /// One at a time moves on from question `at`, to the next, or to the
     /// summary after the last (or back to it, when it came from there).
     fn step_on(&mut self, at: usize) {
         let count = self.open_questions().len();
@@ -1276,7 +1276,7 @@ impl App {
     }
 }
 
-/// The panel's title: "Arko asks 2 questions".
+/// The panel's title, such as "Arko asks 2 questions".
 pub(super) fn title(questions: &[AgentQuestion]) -> String {
     match questions.len() {
         1 => " Arko asks ".to_string(),

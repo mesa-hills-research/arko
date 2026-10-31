@@ -1,4 +1,4 @@
-//! `/resume`'s picker: the session's conversations, newest first, each by
+//! `/resume`'s picker, which lists the session's conversations, newest first, each by
 //! the first line of its first message and when it was last used, with the
 //! current one marked. It opens on the one used last before the current
 //! one, so going back to it is one key. Enter sends the session the
@@ -153,7 +153,7 @@ pub(crate) mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    /// Noon today: the tests open the picker then, so "2 hours ago" is
+    /// Noon today. The tests open the picker then, so "2 hours ago" is
     /// the same day at any hour they run.
     pub(crate) fn noon() -> DateTime<Local> {
         Local::now()
@@ -226,7 +226,7 @@ pub(crate) mod tests {
             picker.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), true),
             Outcome::Close
         );
-        // After /new, none is current: the latest is chosen.
+        // After /new, none is current, so the latest is chosen.
         let mut after_new = entries();
         after_new[0].current = false;
         assert_eq!(ResumePicker::open(after_new).selected, 0);
