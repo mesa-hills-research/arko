@@ -1007,6 +1007,109 @@ struct Inner {
     /// locked ([`Feed::paused`]).
     #[cfg(test)]
     pause: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    clock: Clock,
+}
+
+/// The time by which the feed holds a worker's summary back, and the
+/// timer that sends it later: the system's, or one a test moves.
+enum Clock {
+    System,
+    #[cfg(any(test, feature = "testing"))]
+    Manual(Arc<ManualClock>),
+}
+
+impl Clock {
+    fn now(&self) -> Instant {
+        match self {
+            Clock::System => Instant::now(),
+            #[cfg(any(test, feature = "testing"))]
+            Clock::Manual(clock) => clock.lock().now,
+        }
+    }
+
+    /// Runs `due` at `at`. False when it can't wait, with no runtime to
+    /// wait on, and `due` never runs.
+    fn at(&self, at: Instant, due: impl FnOnce() + Send + 'static) -> bool {
+        match self {
+            Clock::System => {
+                let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                    return false;
+                };
+                runtime.spawn(async move {
+                    tokio::time::sleep_until(at.into()).await;
+                    due();
+                });
+                true
+            }
+            #[cfg(any(test, feature = "testing"))]
+            Clock::Manual(clock) => {
+                clock.lock().waiting.push((at, Box::new(due)));
+                true
+            }
+        }
+    }
+}
+
+/// A feed's clock that moves only when a test moves it, and runs what
+/// waits for it then ([`Feed::with_clock`]).
+#[cfg(any(test, feature = "testing"))]
+pub(crate) struct ManualClock(Mutex<ManualTime>);
+
+#[cfg(any(test, feature = "testing"))]
+struct ManualTime {
+    now: Instant,
+    waiting: Vec<(Instant, Box<dyn FnOnce() + Send>)>,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl ManualClock {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self(Mutex::new(ManualTime {
+            now: Instant::now(),
+            waiting: Vec::new(),
+        })))
+    }
+
+    fn lock(&self) -> MutexGuard<'_, ManualTime> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Moves it on by `by`, running what waits until then at its own time,
+    /// the earliest first.
+    pub(crate) fn advance(&self, by: Duration) {
+        let until = self.lock().now + by;
+        loop {
+            let due = {
+                let mut time = self.lock();
+                let next = time
+                    .waiting
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (at, _))| *at <= until)
+                    .min_by_key(|(_, (at, _))| *at)
+                    .map(|(next, _)| next);
+                next.map(|next| {
+                    let (at, due) = time.waiting.remove(next);
+                    time.now = time.now.max(at);
+                    due
+                })
+            };
+            // (Run with the clock unlocked, as it locks the feed.)
+            match due {
+                Some(due) => due(),
+                None => break,
+            }
+        }
+        self.lock().now = until;
+    }
+
+    /// How many wait for it.
+    #[cfg(test)]
+    fn waiting(&self) -> usize {
+        self.lock().waiting.len()
+    }
 }
 
 /// A transcript kept within its budget.
@@ -1298,6 +1401,16 @@ fn title(task: &str) -> String {
 impl Feed {
     /// A feed for a workflow whose main agent is `main`.
     pub fn new(main: &str) -> Self {
+        Self::on(main, Clock::System)
+    }
+
+    /// A feed whose worker summaries go out by `clock`, which a test moves.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn with_clock(main: &str, clock: Arc<ManualClock>) -> Self {
+        Self::on(main, Clock::Manual(clock))
+    }
+
+    fn on(main: &str, clock: Clock) -> Self {
         let (updates, _) = broadcast::channel(BACKLOG);
         Self {
             inner: Arc::new(Inner {
@@ -1308,6 +1421,7 @@ impl Feed {
                 batched: Mutex::default(),
                 #[cfg(test)]
                 pause: Mutex::default(),
+                clock,
             }),
         }
     }
@@ -3409,7 +3523,7 @@ impl Feed {
     /// state changed) or when the last one went out long enough ago, else
     /// a little later.
     fn worker_changed(&self, state: &mut State, id: &str, urgent: bool) {
-        let now = Instant::now();
+        let now = self.inner.clock.now();
         let Some(worker) = state.worker(id) else {
             return;
         };
@@ -3424,23 +3538,22 @@ impl Feed {
         if worker.pending {
             return;
         }
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            // No timer to send it later with: it goes now.
-            worker.sent = Some(now);
-            let summary = worker.summary.clone();
-            self.publish(state, Update::Worker(summary));
-            return;
-        };
-        worker.pending = true;
         let at = worker.sent.map_or(now, |sent| sent + WORKER_EVERY);
         let feed: Weak<Inner> = Arc::downgrade(&self.inner);
-        let id = id.to_string();
-        runtime.spawn(async move {
-            tokio::time::sleep_until(at.into()).await;
+        let owned = id.to_string();
+        let waits = self.inner.clock.at(at, move || {
             if let Some(inner) = feed.upgrade() {
-                Feed { inner }.send_pending(&id);
+                Feed { inner }.send_pending(&owned);
             }
         });
+        if waits {
+            worker.pending = true;
+            return;
+        }
+        // No timer to send it later with: it goes now.
+        worker.sent = Some(now);
+        let summary = worker.summary.clone();
+        self.publish(state, Update::Worker(summary));
     }
 
     /// Sends the worker's summary if a change of it waits.
@@ -3450,7 +3563,7 @@ impl Feed {
             && worker.pending
         {
             worker.pending = false;
-            worker.sent = Some(Instant::now());
+            worker.sent = Some(self.inner.clock.now());
             let summary = worker.summary.clone();
             self.publish(&mut state, Update::Worker(summary));
         }
@@ -6615,17 +6728,21 @@ mod tests {
     }
 
     /// A client that subscribes while a worker's summary waits to go out
-    /// gets the newer summary in its snapshot. Once the summary goes out,
-    /// it and a client that subscribed before both end where the feed is.
-    #[tokio::test]
-    async fn a_snapshot_taken_while_a_summary_waits_ends_where_the_feed_is() {
-        let feed = Feed::new("main");
+    /// gets the newer summary in its snapshot. Once the summary goes out, at
+    /// its time, it and a client that subscribed before both end where the
+    /// feed is.
+    #[test]
+    fn a_snapshot_taken_while_a_summary_waits_ends_where_the_feed_is() {
+        let clock = ManualClock::new();
+        let feed = Feed::with_clock("main", clock.clone());
         feed.worker("r1", "Count", WorkerChange::Started);
         let (before, mut early) = feed.subscribe();
         let mut follower = FeedMirror::new(&before);
         // Within a quarter of a second of the last summary, so the new one
         // waits.
+        clock.advance(WORKER_EVERY / 2);
         feed.event(&event("worker", shell(Uuid::new_v4(), "ls")), Some("r1"));
+        assert_eq!(clock.waiting(), 1, "its timer");
         let (during, mut late) = feed.subscribe();
         let mut rebuilt = FeedMirror::new(&during);
         assert_eq!(during.workers[0].tool_calls, 1, "the snapshot has it");
@@ -6633,7 +6750,10 @@ mod tests {
             follower.apply(&update, || feed.activity());
         }
         assert_eq!(follower.workers[0].tool_calls, 0, "its update waits");
-        tokio::time::sleep(WORKER_EVERY * 2).await;
+        clock.advance(WORKER_EVERY / 2 - Duration::from_millis(1));
+        assert!(delivered(&mut early).is_empty(), "until its time");
+        clock.advance(Duration::from_millis(1));
+        assert_eq!(clock.waiting(), 0);
         for update in delivered(&mut early) {
             follower.apply(&update, || feed.activity());
         }
