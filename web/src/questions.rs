@@ -11,7 +11,7 @@ use leptos::task::spawn_local;
 use lucide_leptos::{MessageCircleQuestionMark, X};
 use wasm_bindgen::JsCast;
 
-use crate::app::{Cell, page, post};
+use crate::app::{RowCell, page, post};
 use crate::protocol::{CHOOSE_ANY, QuestionData};
 
 /// How long after a key the user still counts as typing, so a question
@@ -657,7 +657,7 @@ pub fn Replying() -> impl IntoView {
 /// as the panel is, with each settled question and what became of it (the
 /// open ones are in the panel). A card without its questions (asked before
 /// they had ids) shows its text.
-pub fn card_view(id: u64, cell: Cell) -> AnyView {
+pub fn card_view(id: u64, cell: RowCell) -> AnyView {
     let data = cell.data;
     // (A card comes first with its line, and its questions follow.)
     let legacy = Memo::new(move |_| data.with(|item| item.questions.is_none()));

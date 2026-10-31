@@ -25,14 +25,15 @@ fn arcs() -> String {
     format!("{}{}", arc(0.0), arc(180.0))
 }
 
-/// The spinner. It turns inside its own drawing, about the circle's center
-/// (`.turn` in app.css), so where the line puts its box doesn't move it.
+/// The spinner. Its drawing turns as a whole about its own center, which is
+/// the circle's (`.spinner` in app.css), so where the line puts it doesn't
+/// move it, and the browser turns it without painting it again.
 #[component]
 pub fn Spinner() -> impl IntoView {
     view! {
         <svg class="spinner" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24"
             fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <g class="turn"><path d=arcs() /></g>
+            <path d=arcs() />
         </svg>
     }
 }

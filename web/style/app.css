@@ -353,6 +353,10 @@ kbd {
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+/* At the bottom the page keeps the end in view itself. A browser's scroll
+   anchoring would move the view up as the oldest rows are trimmed, which
+   reads as the reader leaving the end, so following would stop. */
+.log.pinned { overflow-anchor: none; }
 
 .rows { padding: 16px 0 24px; }
 .empty { max-width: 520px; margin: 30vh auto 0; padding: 0 var(--gutter); color: var(--muted); text-align: center; white-space: pre-wrap; }
@@ -418,13 +422,13 @@ kbd {
 .call-line .outcome::before { content: "· "; color: var(--muted); }
 .call-line .ok { color: var(--success); }
 .call-line .failed { color: var(--error); }
-/* The spinner turns inside its own drawing, about the circle's centre, so
-   wherever the line puts its box can't move it. It's two arcs, half a turn
-   apart, so the ink stays centred as it turns. */
+/* The spinner's drawing turns as a whole, about the centre of its own box,
+   which is the circle's centre, so wherever the line puts the box can't
+   move it, and the browser turns it without painting it again. It's two
+   arcs, half a turn apart, so the ink stays centred as it turns. */
 .call-line .running { display: inline-block; width: 12px; height: 12px; vertical-align: -1px; }
-.spinner .turn {
-  transform-box: view-box;
-  transform-origin: 12px 12px;
+.spinner {
+  transform-origin: 50% 50%;
   animation: spin 1.2s linear infinite;
 }
 .call-line .call-action { margin-left: 4px; font-family: var(--sans); }
@@ -507,16 +511,46 @@ details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
 .row:is(.turn, .conversation):has(+ :is(.row.thinking, .row.working)) { margin-bottom: 12px; }
 .row.thinking:last-child, .row.working:last-child { margin-bottom: -12px; }
 /* A band of the full text color, 60 % of the word wide, sweeps across the
-   word from left to right over its muted color. */
+   word from left to right over its muted color. The word is drawn once, in
+   its muted color, and the band is a copy of it in the text color (`.shine`'s
+   ::before) seen through a window that moves by transform while the copy
+   moves back as far, so the copy stays on the word and nothing is painted
+   again as it sweeps. (A moving background repaints the word each frame,
+   which in a long transcript costs WebKit half its main thread.) */
 .shimmer,
 details.thinking.streaming > summary .what {
-  background: linear-gradient(90deg, var(--muted) 40%, var(--text) 50%, var(--muted) 60%) 100% 0 / 300% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: shimmer 2s linear infinite;
+  position: relative;
+  display: inline-block;
+  color: var(--muted);
 }
-@keyframes shimmer { to { background-position: 0 0; } }
+.shine { display: none; }
+.shimmer > .shine,
+details.thinking.streaming > summary .what > .shine {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: block;
+  width: 60%;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
+  animation: shine 2s linear infinite;
+}
+.shine::before {
+  content: attr(data-text);
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: var(--text);
+  white-space: nowrap;
+  animation: shine-text 2s linear infinite;
+}
+/* The band's middle goes from half a word before the word to half a word
+   after it, so the window's left edge goes from -0.8 to 1.2 words. Its
+   own width is 0.6 of a word, and the copy's is a word. */
+@keyframes shine { from { transform: translateX(-133.333%); } to { transform: translateX(200%); } }
+@keyframes shine-text { from { transform: translateX(80%); } to { transform: translateX(-120%); } }
 @keyframes spin { to { transform: rotate(1turn); } }
 
 .row.turn, .row.conversation {
@@ -1144,6 +1178,6 @@ dialog.viewer::backdrop { background: rgba(0, 0, 0, 0.6); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
   /* A still label is plain text, in the color the label has. */
-  .shimmer, details.thinking.streaming > summary .what { background: none; -webkit-text-fill-color: currentcolor; }
+  .shine { display: none !important; }
   .state .shimmer { color: var(--text); }
 }

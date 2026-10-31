@@ -14,8 +14,8 @@ use web_sys::{EventSource, MessageEvent, RequestCredentials, RequestInit};
 
 use crate::layout::View;
 use crate::protocol::{
-    Append, CodeData, CommandData, ImageData, ItemData, JobSummary, Kind, Removed, StatusData,
-    WorkerData,
+    Append, CodeData, CommandData, ImageData, ItemData, JobSummary, Kind, ModelsData, Removed,
+    StatusData, WorkerData,
 };
 use crate::store::Store;
 use crate::words::Connection;
@@ -38,13 +38,35 @@ pub enum Sheet {
 }
 
 /// One item's signals: its data (a call's outcome) and its text, which
-/// grows as it streams. A row redraws when its own change.
-#[derive(Clone, Copy)]
+/// grows as it streams. A row redraws when its own change. The page holds
+/// them while it keeps the item, and a row that shows the item holds them
+/// while it shows (`Cell::for_row`), so they go once both let go.
+#[derive(Clone)]
 pub struct Cell {
+    pub data: ArcRwSignal<ItemData>,
+    pub text: ArcRwSignal<String>,
+    /// Moves when the spans of its code blocks come.
+    pub code: ArcRwSignal<u32>,
+}
+
+/// A cell's signals as a row holds them, until the row goes.
+#[derive(Clone, Copy)]
+pub struct RowCell {
     pub data: RwSignal<ItemData>,
     pub text: RwSignal<String>,
-    /// Moves when the spans of its code blocks come.
     pub code: RwSignal<u32>,
+}
+
+impl Cell {
+    /// The cell's signals for the row being drawn, which its owner lets go
+    /// of when the row goes.
+    pub fn for_row(&self) -> RowCell {
+        RowCell {
+            data: RwSignal::from(&self.data),
+            text: RwSignal::from(&self.text),
+            code: RwSignal::from(&self.code),
+        }
+    }
 }
 
 /// The page's state, shared by its views.
@@ -60,8 +82,18 @@ pub struct Page {
     pub detail: RwSignal<String>,
     /// Bumped when items come or go (the views lay out again).
     pub version: RwSignal<u64>,
-    /// Bumped when a worker's summary or a job changes.
+    /// Bumped when a worker's summary changes. A view of one worker
+    /// follows that worker alone (`track_worker`).
     pub workers: RwSignal<u64>,
+    /// Bumped when a background job's summary changes.
+    pub jobs: RwSignal<u64>,
+    /// The parts of the status that rows show, which change less often
+    /// than the status does: the calls that can move to the background,
+    /// the background jobs running, the usual models and the app's name.
+    pub movable: Memo<Vec<u64>>,
+    pub running_jobs: Memo<Vec<String>>,
+    pub models: Memo<ModelsData>,
+    pub app: Memo<String>,
     pub view: RwSignal<View>,
     /// The worker whose own transcript shows.
     pub worker: RwSignal<Option<String>>,
@@ -97,6 +129,57 @@ thread_local! {
     static EVER_LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The one page, also for callbacks and tasks outside any component.
     static PAGE: std::cell::Cell<Option<Page>> = const { std::cell::Cell::new(None) };
+    /// Whether an item is the text that streams, told only to the items
+    /// that start or stop streaming.
+    static STREAMING: RefCell<Option<Selector<Option<u64>>>> = const { RefCell::new(None) };
+    /// Each worker's own trigger, pulled when its summary changes, for the
+    /// views of that one worker.
+    static WORKER_CHANGED: RefCell<HashMap<String, ArcTrigger>> = RefCell::new(HashMap::new());
+}
+
+/// Whether the item `id` is the text that streams now (follows that alone).
+pub fn streaming_is(id: u64) -> bool {
+    STREAMING.with(|selector| {
+        selector
+            .borrow()
+            .as_ref()
+            .is_some_and(|selector| selector.selected(&Some(id)))
+    })
+}
+
+/// The item `id`'s text no longer shows, so nothing follows whether it
+/// streams.
+pub fn streaming_forget(id: u64) {
+    STREAMING.with(|selector| {
+        if let Some(selector) = selector.borrow().as_ref() {
+            selector.remove(&Some(id));
+        }
+    });
+}
+
+/// Follows the summary of the worker `id` alone.
+pub fn track_worker(id: &str) {
+    WORKER_CHANGED.with(|triggers| {
+        triggers
+            .borrow_mut()
+            .entry(id.to_string())
+            .or_insert_with(ArcTrigger::new)
+            .track();
+    });
+}
+
+/// The summary of the worker `id` changed, or every worker's (`None`).
+fn worker_changed(id: Option<&str>) {
+    let triggers: Vec<ArcTrigger> = WORKER_CHANGED.with(|triggers| {
+        let triggers = triggers.borrow();
+        match id {
+            Some(id) => triggers.get(id).cloned().into_iter().collect(),
+            None => triggers.values().cloned().collect(),
+        }
+    });
+    for trigger in triggers {
+        trigger.notify();
+    }
 }
 
 pub fn page() -> Page {
@@ -110,8 +193,22 @@ impl Page {
             .as_deref()
             .and_then(View::from_key)
             .unwrap_or(View::Full);
+        let status = RwSignal::new(StatusData::default());
+        let jobs = RwSignal::new(0);
+        let streaming = RwSignal::new(None);
+        STREAMING.with(|selector| {
+            *selector.borrow_mut() = Some(Selector::new(move || streaming.get()));
+        });
         let page = Page {
-            status: RwSignal::new(StatusData::default()),
+            status,
+            jobs,
+            movable: Memo::new(move |_| status.with(|status| status.movable.clone())),
+            running_jobs: Memo::new(move |_| {
+                jobs.track();
+                STORE.with(|store| store.borrow().running_jobs())
+            }),
+            models: Memo::new(move |_| status.with(|status| status.models.clone())),
+            app: Memo::new(move |_| status.with(|status| status.info.app.clone())),
             connection: RwSignal::new(Connection::Connecting),
             locked: RwSignal::new(None),
             problem: RwSignal::new(None),
@@ -126,7 +223,7 @@ impl Page {
             commands: RwSignal::new(None),
             sheet: RwSignal::new(None),
             image: RwSignal::new(None),
-            streaming: RwSignal::new(None),
+            streaming,
             seen: RwSignal::new(0),
             grown: RwSignal::new(HashSet::new()),
             pinned: RwSignal::new(true),
@@ -149,7 +246,7 @@ impl Page {
 
 /// The signals of the item `id`, while it's kept.
 pub fn cell(id: u64) -> Option<Cell> {
-    CELLS.with(|cells| cells.borrow().get(&id).copied())
+    CELLS.with(|cells| cells.borrow().get(&id).cloned())
 }
 
 /// Calls `listen` with each item that comes, until the page closes (the
@@ -555,9 +652,9 @@ fn parse<T: for<'a> Deserialize<'a>>(data: &str) -> Result<T, String> {
 
 fn new_cell(item: &ItemData) -> Cell {
     Cell {
-        text: RwSignal::new(item.text.clone()),
-        data: RwSignal::new(item.clone()),
-        code: RwSignal::new(0),
+        text: ArcRwSignal::new(item.text.clone()),
+        data: ArcRwSignal::new(item.clone()),
+        code: ArcRwSignal::new(0),
     }
 }
 
@@ -620,6 +717,8 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     page.streaming.set(None);
     page.version.update(|version| *version += 1);
     page.workers.update(|version| *version += 1);
+    page.jobs.update(|version| *version += 1);
+    worker_changed(None);
     let drawn = Closure::once_into_js(move || {
         if page.pinned.get_untracked() {
             crate::scroll::to_bottom_now();
@@ -642,7 +741,7 @@ fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>) {
         .map(|item| {
             let cell = match kept.remove(&item.id) {
                 Some(cell) => {
-                    refresh(cell, item.clone(), new_code.contains(&item.id));
+                    refresh(&cell, item.clone(), new_code.contains(&item.id));
                     cell
                 }
                 None => new_cell(item),
@@ -655,7 +754,7 @@ fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>) {
 
 /// Gives a cell the item as Arko has it now, setting only what changed, and
 /// paints its code blocks again when their spans came (`code`).
-fn refresh(cell: Cell, item: ItemData, code: bool) {
+fn refresh(cell: &Cell, item: ItemData, code: bool) {
     if cell.text.with_untracked(|text| *text != item.text) {
         cell.text.set(item.text.clone());
     }
@@ -672,15 +771,20 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
     let code = std::mem::take(&mut item.code);
     crate::markdown::remember(&code);
     // This device's clock against Arko's: the smallest gap a new item
-    // shows (the rest is the network's delay).
+    // shows (the rest is the network's delay). Only a smaller gap is news
+    // to the views that read the time.
     let sample = js_sys::Date::now() - item.at as f64;
-    page.skew
-        .update(|skew| *skew = Some(skew.map_or(sample, |skew| skew.min(sample))));
+    if page
+        .skew
+        .with_untracked(|skew| skew.is_none_or(|skew| sample < skew))
+    {
+        page.skew.set(Some(sample));
+    }
     let now = js_sys::Date::now();
     let known = cell(item.id);
     match known {
         Some(cell) => {
-            refresh(cell, item.clone(), !code.is_empty());
+            refresh(&cell, item.clone(), !code.is_empty());
             STORE.with(|store| store.borrow_mut().change(item.clone(), now));
         }
         None => {
@@ -743,7 +847,7 @@ fn on_change(page: Page, data: &str) -> Result<(), String> {
         return Ok(());
     }
     if let Some(cell) = cell(item.id) {
-        refresh(cell, item, !code.is_empty());
+        refresh(&cell, item, !code.is_empty());
     }
     // A call's status moves a Messages count.
     if page.view.get_untracked() == View::Messages {
@@ -774,7 +878,9 @@ fn on_remove(page: Page, data: &str) -> Result<(), String> {
 
 fn on_worker(page: Page, data: &str) -> Result<(), String> {
     let summary: WorkerData = parse(data)?;
+    let id = summary.id.clone();
     STORE.with(|store| store.borrow_mut().worker(summary));
+    worker_changed(Some(&id));
     page.workers.update(|version| *version += 1);
     Ok(())
 }
@@ -782,7 +888,7 @@ fn on_worker(page: Page, data: &str) -> Result<(), String> {
 fn on_job(page: Page, data: &str) -> Result<(), String> {
     let summary: JobSummary = parse(data)?;
     STORE.with(|store| store.borrow_mut().job(summary));
-    page.workers.update(|version| *version += 1);
+    page.jobs.update(|version| *version += 1);
     Ok(())
 }
 
