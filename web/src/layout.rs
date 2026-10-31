@@ -149,6 +149,32 @@ fn pending_last(items: &[ItemData]) -> Vec<&ItemData> {
     out
 }
 
+/// What a view does with an item.
+enum Place {
+    Hidden,
+    /// A row of its own.
+    Row,
+    /// Counted in its turn's tool activity (Messages).
+    Count,
+}
+
+/// What `view` does with an item of the agent whose transcript it is, the
+/// main agent's in the main transcript and a worker's in its own. One rule
+/// serves both, so a worker's view can't differ from the selected one.
+fn place(view: View, item: &ItemData) -> Place {
+    match view {
+        View::Full => Place::Row,
+        // The worker's own line stands for the call that started it. A call
+        // that is still running, was refused or queued its worker shows.
+        View::Quiet if item.kind == Kind::Call && item.started.is_some() => Place::Hidden,
+        View::Quiet => Place::Row,
+        View::Messages if shown_in_messages(item) => Place::Row,
+        // The turn's calls, as one line where the first one was.
+        View::Messages if item.kind == Kind::Call => Place::Count,
+        View::Messages => Place::Hidden,
+    }
+}
+
 /// The rows `view` shows, in order. `worker` picks a worker's own
 /// transcript instead of the main one.
 pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
@@ -165,61 +191,41 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
     }
     let placed: HashSet<u64> = results.values().flatten().copied().collect();
     let mut rows = Vec::new();
-    let push = |rows: &mut Vec<Row>, item: &ItemData| {
-        rows.push(Row::Item(item.id, item.kind));
-        for &result in results.get(&item.id).into_iter().flatten() {
-            rows.push(Row::Item(result, Kind::Result));
-        }
-    };
     let ids: HashSet<u64> = items.iter().map(|item| item.id).collect();
     // A result whose call is gone shows where it came.
     let orphan = |item: &ItemData| item.call.is_some_and(|call| !ids.contains(&call));
-    if let Some(worker) = worker {
-        for item in &items {
-            if item.agent == worker && (!placed.contains(&item.id) || orphan(item)) {
-                push(&mut rows, item);
-            }
-        }
-        return rows;
-    }
     let mut counts: HashMap<Option<u64>, usize> = HashMap::new();
     for item in &items {
         if placed.contains(&item.id) && !orphan(item) {
             continue;
         }
-        // A worker's message to the user shows as the main agent's does.
-        let main = item.agent == MAIN || is_to_user(item);
-        match view {
-            View::Full => {
-                // The workers' calls and troubles inline. Their text, their
-                // reports and what the user wrote to them are in their own
-                // views.
-                if main {
-                    push(&mut rows, item);
-                } else if item.kind == Kind::Call || (item.kind == Kind::Notice && serious(item)) {
-                    rows.push(Row::Item(item.id, item.kind));
+        // The agent's own items follow the view. In the main transcript a
+        // worker's message to the user is the main agent's own, and the
+        // calls and troubles of the workers show inline in Full. Their
+        // text, their reports and what the user wrote to them are in their
+        // own views.
+        let (place, with_results) = match worker {
+            Some(worker) if item.agent == worker => (place(view, item), true),
+            Some(_) => (Place::Hidden, false),
+            None if item.agent == MAIN || is_to_user(item) => (place(view, item), true),
+            None if view == View::Full
+                && (item.kind == Kind::Call || (item.kind == Kind::Notice && serious(item))) =>
+            {
+                (Place::Row, false)
+            }
+            None => (Place::Hidden, false),
+        };
+        match place {
+            Place::Hidden => {}
+            Place::Row => {
+                rows.push(Row::Item(item.id, item.kind));
+                if with_results {
+                    for &result in results.get(&item.id).into_iter().flatten() {
+                        rows.push(Row::Item(result, Kind::Result));
+                    }
                 }
             }
-            View::Quiet => {
-                // The worker's own line stands for the call that started
-                // it. A call that is still running, was refused or queued
-                // its worker shows.
-                if main && !(item.kind == Kind::Call && item.started.is_some()) {
-                    push(&mut rows, item);
-                }
-            }
-            View::Messages => {
-                if !main {
-                    continue;
-                }
-                if shown_in_messages(item) {
-                    rows.push(Row::Item(item.id, item.kind));
-                    continue;
-                }
-                if item.kind != Kind::Call {
-                    continue;
-                }
-                // The turn's calls, as one line where the first one was.
+            Place::Count => {
                 let at = *counts.entry(item.turn).or_insert_with(|| {
                     rows.push(Row::Count {
                         turn: item.turn,
@@ -352,7 +358,7 @@ pub fn motion(
             (None, now - grown >= QUIET_MS)
         }
         // The Messages view leaves the agent's thinking out.
-        Busy::Thinking(_) if worker.is_none() && view == View::Messages => (None, true),
+        Busy::Thinking(_) if view == View::Messages => (None, true),
         Busy::Thinking(id) => (Some(id), false),
         Busy::Tool | Busy::Done => still,
     }
@@ -521,7 +527,87 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(ids(&layout(&items, View::Quiet, Some("r1"))), ["i8"]);
+        // The worker's own view follows the view too: in Quiet the line of
+        // the worker it started stands for the call, and Full keeps both.
+        let mut line = item(10, Kind::WorkerLine, "r1", "r2");
+        line.turn = None;
+        let mut items = items;
+        items.push(line);
+        assert_eq!(ids(&layout(&items, View::Quiet, Some("r1"))), ["i10"]);
+        assert_eq!(ids(&layout(&items, View::Full, Some("r1"))), ["i8", "i10"]);
+    }
+
+    /// A worker's own view is the selected view over its own items, as the
+    /// main view is over the main agent's: Full everything, Quiet without
+    /// the call that started a worker, Messages its text, messages,
+    /// replies and what the user wrote to it, with its calls counted as one
+    /// line a turn.
+    #[test]
+    fn a_workers_own_view_follows_the_selected_view() {
+        let call = |id: u64, status: CallStatus| ItemData {
+            status: Some(status),
+            turn: Some(1),
+            ..item(id, Kind::Call, "r1", "cargo test")
+        };
+        let mut result = item(6, Kind::Result, "r1", "ok");
+        result.call = Some(5);
+        let items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            item(2, Kind::User, "r1", "use tabs"),
+            item(3, Kind::Thinking, "r1", "hmm"),
+            item(4, Kind::Text, "r1", "On it."),
+            call(5, CallStatus::Ok),
+            result,
+            call(7, CallStatus::Failed),
+            item(8, Kind::Message, "r1", "Found it."),
+            ItemData {
+                level: Some(Level::Info),
+                ..item(9, Kind::Notice, "r1", "stopped")
+            },
+            ItemData {
+                level: Some(Level::Error),
+                ..item(10, Kind::Notice, "r1", "failed")
+            },
+            item(11, Kind::Reply, "r1", "Fixed."),
+            item(12, Kind::Text, MAIN, "main text"),
+        ];
+        let own = |view| layout(&items, view, Some("r1"));
+        assert_eq!(
+            ids(&own(View::Full)),
+            ["i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9", "i10", "i11"]
+        );
+        assert_eq!(ids(&own(View::Quiet)), ids(&own(View::Full)));
+        let messages = own(View::Messages);
+        assert_eq!(ids(&messages), ["i2", "i4", "c1", "i8", "i10", "i11"]);
+        assert_eq!(
+            messages[2],
+            Row::Count {
+                turn: Some(1),
+                id: 5,
+                count: Count {
+                    calls: 2,
+                    failed: 1,
+                    running: 0
+                }
+            }
+        );
+        // The same rule, over the main agent's items, keeps the same kinds.
+        let main: Vec<ItemData> = items[1..11]
+            .iter()
+            .cloned()
+            .map(|item| ItemData {
+                agent: MAIN.into(),
+                ..item
+            })
+            .collect();
+        for view in View::ALL {
+            let shown = |rows: Vec<Row>| rows.iter().map(Row::key).collect::<Vec<_>>();
+            assert_eq!(
+                shown(layout(&main, view, None)),
+                shown(own(view)),
+                "{view:?}"
+            );
+        }
     }
 
     #[test]

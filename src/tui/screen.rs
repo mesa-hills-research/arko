@@ -584,7 +584,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             theme.dim(),
         ));
     }
-    if app.view != View::Full && app.watching.is_none() {
+    if app.view != View::Full {
         after.push(sep());
         after.push(Span::styled(app.view.name().to_string(), theme.dim()));
     }

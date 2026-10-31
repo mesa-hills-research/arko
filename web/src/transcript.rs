@@ -831,6 +831,45 @@ mod tests {
         });
     }
 
+    /// Switching the view while a worker is shown lays its transcript out
+    /// again in that view at once.
+    #[test]
+    fn switching_the_view_changes_a_workers_transcript_at_once() {
+        use crate::app::{take_reset, tests::reset_of};
+        use crate::store::tests::item;
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let rows = laid_out(page.version, page.view, page.worker);
+            let kinds = move || {
+                rows.with(|(_, rows)| {
+                    rows.iter()
+                        .map(|row| match row {
+                            Row::Item(_, kind) => format!("{kind:?}"),
+                            Row::Count { count, .. } => format!("{} calls", count.calls),
+                            Row::Working => "working".into(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+            };
+            let mut call = item(3, Kind::Call, "r1", "cat");
+            call.status = Some(CallStatus::Ok);
+            let items = vec![
+                item(1, Kind::User, MAIN, "go"),
+                item(2, Kind::Thinking, "r1", "hmm"),
+                call,
+                item(4, Kind::Text, "r1", "Done."),
+            ];
+            take_reset(page, reset_of(1, items, Vec::new()), 0.0);
+            page.worker.set(Some("r1".into()));
+            assert_eq!(kinds(), ["Thinking", "Call", "Text"]);
+            page.view.set(View::Messages);
+            assert_eq!(kinds(), ["1 calls", "Text"]);
+            page.view.set(View::Quiet);
+            assert_eq!(kinds(), ["Thinking", "Call", "Text"]);
+        });
+    }
+
     /// A request Arko didn't take frees its button, one it took keeps it
     /// busy, and a button whose row went meanwhile is left alone.
     #[test]

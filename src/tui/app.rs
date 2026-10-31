@@ -774,7 +774,7 @@ impl App {
     /// The view's filter: the main transcript in its view, or a worker's.
     pub fn filter(&self) -> Filter {
         match &self.watching {
-            Some(worker) => Filter::Worker(worker.clone()),
+            Some(worker) => Filter::Worker(worker.clone(), self.view),
             None => Filter::Main(self.view),
         }
     }
@@ -1366,10 +1366,6 @@ impl App {
     }
 
     fn cycle_view(&mut self) {
-        if self.watching.is_some() {
-            self.say("Esc goes back to the main view first");
-            return;
-        }
         self.set_view(self.view.next());
     }
 
@@ -1687,10 +1683,7 @@ impl App {
                 None => self.say("No reply to copy yet"),
             },
             "/view" => match View::parse(rest) {
-                Some(view) => {
-                    self.watching = None;
-                    self.set_view(view);
-                }
+                Some(view) => self.set_view(view),
                 None if rest.is_empty() => self.cycle_view(),
                 None => self.say("The views are full, quiet and messages"),
             },
@@ -3518,7 +3511,10 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.watching.as_deref(), Some("r1"));
-        assert_eq!(app.filter(), Filter::Worker("r1".into()));
+        // It shows in the selected view, and follows when that changes.
+        assert_eq!(app.filter(), Filter::Worker("r1".into(), View::Quiet));
+        press(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert_eq!(app.filter(), Filter::Worker("r1".into(), View::Messages));
         assert_eq!(app.list_focus, Some(1));
         type_text(&mut app, "x");
         assert_eq!(app.list_focus, None);
