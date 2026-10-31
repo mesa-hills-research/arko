@@ -147,7 +147,7 @@ pub(crate) use crate::harness::{Conversation, Harness, conversation_of};
 pub(crate) use crate::harness::{Managers, tests};
 pub use crate::options::{Options, SessionChoice};
 pub use crate::prompter::{McpApproval, NoPrompter, Prompter};
-pub use crate::remote::Level;
+pub use crate::remote::{Confirm, Level, Partial, Refusal, RefusalKind, Verdict};
 pub use crate::session::{Holder, Mode};
 #[cfg(test)]
 pub(crate) use crate::status::Gauges;

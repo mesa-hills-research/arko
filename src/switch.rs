@@ -572,11 +572,11 @@ impl Harness {
                             false
                         }
                         Event::Input(Some(Input::AnswerApprovals(answers))) => {
-                            self.answer_approvals(answers, Some(self.input_source));
+                            self.answer_approvals(answers, Some(self.input_source), &mut input.reply());
                             false
                         }
                         Event::Remote(Action::AnswerApprovals(answers)) => {
-                            self.answer_approvals(answers, Some(Source::Web));
+                            self.answer_approvals(answers, Some(Source::Web), &mut input.reply());
                             false
                         }
                         Event::Remote(
@@ -588,12 +588,12 @@ impl Harness {
                         Event::Woken | Event::Finished(_) | Event::Alert(_) => false,
                         Event::Input(Some(Input::AnswerQuestions(answers)))
                         | Event::Remote(Action::AnswerQuestions(answers)) => {
-                            self.answer_questions(answers);
+                            self.answer_questions(answers, &mut input.reply());
                             false
                         }
                         Event::Input(Some(Input::DismissQuestions(ids)))
                         | Event::Remote(Action::DismissQuestions(ids)) => {
-                            self.dismiss_questions(ids);
+                            self.dismiss_questions(ids, &mut input.reply());
                             false
                         }
                         // Commands run now, and messages aren't sent.
@@ -794,8 +794,12 @@ impl Harness {
             return false;
         };
         match self.admit(sent, Phase::Reporting) {
-            Some(Admitted::Command { command, source }) => {
-                self.run_command(&command, source, Phase::Reporting, input)
+            Some(Admitted::Command {
+                command,
+                source,
+                reply,
+            }) => {
+                self.run_command(&command, source, Phase::Reporting, input, reply)
                     .await
             }
             _ => false,

@@ -10,7 +10,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::agents::MAIN;
 use crate::engine::Request;
-use crate::remote::Action;
+use crate::remote::{Action, Delivery, Verdict};
+use crate::sending::Reply;
 use crate::ui::Input;
 
 /// The user's input, read on its own thread; the main agent's questions;
@@ -39,6 +40,9 @@ pub(crate) struct Inputs {
     /// A monitor's news that came during the agent's last request, too late
     /// for it to read (see `alert_waits`).
     pub(crate) late_alert: Option<Alert>,
+    /// Where the verdict on the input just read goes, when a client sent it
+    /// with [`Request::Send`] ([`Inputs::reply`]).
+    pub(crate) reply: Option<oneshot::Sender<Verdict>>,
 }
 
 /// A monitor's news for an idle agent.
@@ -87,6 +91,11 @@ impl Inputs {
     /// The next input, question, action from the remote page, or (when
     /// `woken`) wake-up, job finished or monitor's alert. It's cancel-safe.
     pub(crate) async fn next_event(&mut self, woken: bool) -> Event {
+        // The input before, sent with a verdict to come, wasn't something the
+        // user sent but a stop, a quit or the like, and it was read.
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(Verdict::accepted(Delivery::Command, None));
+        }
         if let Some(input) = self.pending.take() {
             return Event::Input(Some(input));
         }
@@ -100,7 +109,15 @@ impl Inputs {
             input = self.receiver.recv() => Event::Input(input),
             Some(question) = self.questions.recv() => Event::Question(question),
             Some(action) = self.remote.recv() => Event::Remote(action),
-            Some(request) = self.requests.recv() => Event::Request(request),
+            Some(request) = self.requests.recv() => match request {
+                // What a client sent with a verdict to come is the user's
+                // input, and its verdict waits for whoever reads it.
+                Request::Send { input, reply } => {
+                    self.reply = Some(reply);
+                    Event::Input(Some(input))
+                }
+                request => Event::Request(request),
+            },
             () = wake(&mut self.woken), if woken => Event::Woken,
             finished = job_finished(&mut self.finished), if woken => Event::Finished(finished),
             alert = job_alert(&mut self.alerts), if woken => Event::Alert(alert),
@@ -124,6 +141,26 @@ impl Inputs {
                 .finished
                 .as_ref()
                 .is_some_and(|finished| !finished.is_empty())
+    }
+
+    /// Where the verdict on the input just read goes: to the client that
+    /// sent it with [`Request::Send`], or nowhere for one sent without.
+    pub(crate) fn reply(&mut self) -> Reply {
+        Reply::to(self.reply.take())
+    }
+
+    /// The session closes. What clients sent that it hasn't read is
+    /// refused as closed, and what they send from now on too.
+    pub(crate) fn close_sends(&mut self) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(Verdict::accepted(Delivery::Command, None));
+        }
+        self.requests.close();
+        while let Ok(request) = self.requests.try_recv() {
+            if let Request::Send { reply, .. } = request {
+                let _ = reply.send(Verdict::closed());
+            }
+        }
     }
 
     /// Forgets the wake-ups so far: what they were for is being seen to.

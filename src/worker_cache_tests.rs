@@ -313,6 +313,33 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
             .count()
     };
 
+    // A client that waits for the verdict gets the refusal and what
+    // confirming takes, and the transcript stays as it was. Its refusal
+    // leaves nothing to confirm with the same message again.
+    let (reply, verdict) = oneshot::channel();
+    harness.message_command(
+        "r1 Check the docs.",
+        Source::App,
+        &mut crate::sending::Reply::to(Some(reply)),
+    );
+    match verdict.await.unwrap() {
+        crate::remote::Verdict::Refused(refusal) => {
+            assert_eq!(
+                refusal.kind,
+                crate::remote::RefusalKind::Uncached {
+                    worker: "r1".into()
+                }
+            );
+            assert_eq!(refusal.confirm, Some(crate::remote::Confirm::ContinueUncached));
+            assert_eq!(
+                refusal.words,
+                "r1's cache expired just now. Continuing re-reads about 50k tokens without it, using your ChatGPT plan."
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(warnings(&harness), 0);
+
     // (A tab and the worker's name in capitals are read as `/message r1`.)
     assert!(harness.live_command("/message\tR1 Check the docs.", Source::Terminal));
     assert_eq!(warnings(&harness), 1);
@@ -340,8 +367,21 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
             .unwrap()
             .asks(chrono::Utc::now())
     );
+    // A client's send, confirmed, is accepted once r1 has it.
     harness.confirm_continue("/message r1 Check the build.");
-    assert!(harness.live_command("/message r1 Check the build.", Source::Terminal));
+    let (reply, verdict) = oneshot::channel();
+    harness.message_command(
+        "r1 Check the build.",
+        Source::App,
+        &mut crate::sending::Reply::to(Some(reply)),
+    );
+    assert!(matches!(
+        verdict.await.unwrap(),
+        crate::remote::Verdict::Accepted {
+            delivery: Delivery::Command,
+            ..
+        }
+    ));
     assert_eq!(warnings(&harness), 2);
     until(|| got(&seen, "r1", "Check the build.")).await;
     harness.crew.as_ref().unwrap().shutdown().await;

@@ -93,6 +93,123 @@ pub enum Delivery {
     Refresh,
 }
 
+/// What became of something the user sent. Either it went, or it didn't
+/// and nothing of it happened. The client that sent it gets it, and keeps
+/// what the user typed when it was refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Verdict {
+    /// It went, as `delivery` says. `item` is the feed item it became, when
+    /// one shows it, and `partial` says what of it didn't go.
+    Accepted {
+        delivery: Delivery,
+        #[serde(default)]
+        item: Option<u64>,
+        #[serde(default)]
+        partial: Option<Partial>,
+    },
+    Refused(Refusal),
+}
+
+impl Verdict {
+    /// Accepted as `delivery`, as the feed item `item`.
+    pub fn accepted(delivery: Delivery, item: Option<u64>) -> Self {
+        Verdict::Accepted {
+            delivery,
+            item,
+            partial: None,
+        }
+    }
+
+    /// Refused for `kind`, with `words` to show.
+    pub fn refused(kind: RefusalKind, words: impl Into<String>) -> Self {
+        Verdict::Refused(Refusal {
+            kind,
+            words: words.into(),
+            confirm: None,
+        })
+    }
+
+    /// Refused because the session closed before it read the send.
+    pub fn closed() -> Self {
+        Verdict::refused(RefusalKind::Closed, "Not sent. The session closed.")
+    }
+}
+
+/// What of an accepted send didn't go.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct Partial {
+    /// The questions or approval requests it named that were no longer
+    /// open.
+    #[serde(default)]
+    pub dropped: Vec<String>,
+    /// The sentence to show, when there is more to say.
+    #[serde(default)]
+    pub words: Option<String>,
+}
+
+/// Why a send didn't go, and what sending it again needs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct Refusal {
+    #[serde(flatten)]
+    pub kind: RefusalKind,
+    /// The sentence to show. The client still holds what the user typed,
+    /// so it doesn't repeat it.
+    pub words: String,
+    /// What sending it again needs, when the user can agree to it.
+    #[serde(default)]
+    pub confirm: Option<Confirm>,
+}
+
+/// Why a send didn't go.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum RefusalKind {
+    /// The old model writes its report for a switch of the main agent's
+    /// model. Stopping skips it.
+    Reporting,
+    /// Continuing `worker` may read its whole conversation again without
+    /// its prompt cache, which expired.
+    Uncached { worker: String },
+    /// The answers are too long to send. The words say what to shorten
+    /// them to.
+    TooLong,
+    /// It reads as a command that isn't one, or one given wrongly.
+    UnknownCommand,
+    /// The command works only at the terminal.
+    TerminalOnly,
+    /// The main agent's model takes no images, or not of this type.
+    Images,
+    /// A message to a worker takes text only.
+    WorkerTextOnly,
+    /// The questions or approval requests it answers are no longer open.
+    NotOpen,
+    /// It couldn't reach where it was going (a worker that doesn't exist,
+    /// a note the workflow didn't take).
+    Undelivered,
+    /// There was nothing to send.
+    Empty,
+    /// The session closed before it read the send.
+    Closed,
+    /// The web page sent it from a view of another feed (Arko started
+    /// again since the page loaded).
+    Stale,
+}
+
+/// What sending something again needs, which the user agrees to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Confirm {
+    /// Send it again with `Message::continue_uncached` set (the web page's
+    /// `confirm_uncached`), which continues the worker without its cache.
+    ContinueUncached,
+}
+
 /// How a tool call is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

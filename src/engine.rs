@@ -223,6 +223,20 @@ pub enum Request {
     /// conversation), else with a short message and its reply in the
     /// conversation (the user's item has `Delivery::Refresh`).
     RefreshCache { reply: Reply<Refreshed> },
+    /// Sends `input`, what the user sent (a message, an answer, answers
+    /// from an answer panel, a dismissal, approval answers), as
+    /// [`Seam::input`] does, and answers with what became of it. A refusal
+    /// is the client's to show, where it keeps what the user typed, so the
+    /// transcript doesn't repeat it. A send is accepted once it went (a turn
+    /// started with it, the agent's note board took it, a worker got it, a
+    /// command ran). A stop, a quit and the like are accepted as they are
+    /// read. When the session closes before it reads a send, it's refused
+    /// as [`RefusalKind::Closed`](crate::RefusalKind::Closed). [`Seam::send`]
+    /// makes one.
+    Send {
+        input: crate::ui::Input,
+        reply: oneshot::Sender<crate::Verdict>,
+    },
     /// The current conversation as the session saved it, for an export, as
     /// [`crate::sessions::conversation`] reads it. It's read in turn with
     /// what changes the conversation, once nothing can still add to it. No
@@ -234,6 +248,20 @@ pub enum Request {
     ExportConversation {
         reply: Reply<crate::sessions::SavedConversation>,
     },
+}
+
+impl Seam {
+    /// Sends `input` ([`Request::Send`]), and returns where its verdict
+    /// comes. A closed session refuses it at once.
+    pub fn send(&self, input: crate::ui::Input) -> oneshot::Receiver<crate::Verdict> {
+        let (reply, verdict) = oneshot::channel();
+        if let Err(unsent) = self.requests.send(Request::Send { input, reply })
+            && let Request::Send { reply, .. } = unsent.0
+        {
+            let _ = reply.send(crate::Verdict::closed());
+        }
+        verdict
+    }
 }
 
 /// How the prompt cache was kept warm ([`Request::RefreshCache`]).
@@ -1105,6 +1133,7 @@ impl Engine {
             // With -p, monitors wake no one (the agents have none).
             alerts: (!one_shot).then(|| managers.jobs.subscribe_alerts()),
             late_alert: None,
+            reply: None,
         };
         let (quit_popup, quit_asks) = mpsc::unbounded_channel();
         let seam = Seam {
@@ -1186,6 +1215,8 @@ impl Engine {
         if !harness.exiting {
             harness.repl(&mut self.inputs).await;
         }
+        // (Whatever the reason, what clients sent from now on is refused.)
+        self.inputs.close_sends();
         if harness.reopen {
             RunEnd::Reopen
         } else {
@@ -1209,6 +1240,7 @@ impl Engine {
             TurnEnd::Answered => harness.finish_workers(&mut self.inputs).await,
             other => other,
         };
+        self.inputs.close_sends();
         match end {
             TurnEnd::Answered => RunEnd::Answered,
             TurnEnd::Stopped | TurnEnd::Exit => RunEnd::Stopped,

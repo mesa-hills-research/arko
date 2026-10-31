@@ -3,11 +3,20 @@
 //! An idle session, a turn and the old model's report for a switch read it
 //! with [`Harness::read_sent`], check it once with [`Harness::admit`] before
 //! anything happens, and run a command with [`Harness::run_command`].
+//!
+//! A client that sent it with [`Request::Send`](crate::Request::Send) gets
+//! its [`Verdict`] through its [`Reply`]: refused by a check, or accepted
+//! once it went. A send without one is told in the transcript, as it always
+//! was.
+
+use tokio::sync::oneshot;
 
 use crate::conversations;
-use crate::harness::{Harness, command, is_remote_command, openrouter_words};
+use crate::harness::{Harness, command, is_remote_command, openrouter_words, split_live_command};
 use crate::inputs::{Event, Inputs};
-use crate::remote::{Action, Delivery, Level, Source};
+use crate::remote::{
+    Action, Confirm, Delivery, Level, Partial, Refusal, RefusalKind, Source, Verdict,
+};
 use crate::ui::{self, Input};
 
 /// What the session is doing as a send comes.
@@ -22,6 +31,71 @@ pub(crate) enum Phase {
     Reporting,
 }
 
+/// Where a send's verdict goes: to the client that sent it, or, for a send
+/// without a verdict to come, nowhere, and the caller tells the user in the
+/// transcript as it always has. It answers once.
+#[derive(Debug, Default)]
+pub(crate) struct Reply(Option<oneshot::Sender<Verdict>>);
+
+impl Reply {
+    pub(crate) fn to(sender: Option<oneshot::Sender<Verdict>>) -> Self {
+        Self(sender)
+    }
+
+    /// Whether a client waits for the verdict.
+    pub(crate) fn tracked(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// The send went as `delivery`, as the feed item `item`.
+    pub(crate) fn accept(&mut self, delivery: Delivery, item: Option<u64>) {
+        self.answer(Verdict::accepted(delivery, item));
+    }
+
+    /// The send went as `delivery`, as the feed item `item`, but for what
+    /// `partial` says.
+    pub(crate) fn accept_partly(
+        &mut self,
+        delivery: Delivery,
+        item: Option<u64>,
+        partial: Option<Partial>,
+    ) {
+        self.answer(Verdict::Accepted {
+            delivery,
+            item,
+            partial,
+        });
+    }
+
+    /// Refuses the send for `kind`, with `words` to show. Returns whether a
+    /// client was told. When none was, the caller tells the user.
+    pub(crate) fn refuse(&mut self, kind: RefusalKind, words: impl Into<String>) -> bool {
+        self.refuse_unless(kind, words, None)
+    }
+
+    /// [`refuse`](Self::refuse), saying what sending it again needs.
+    pub(crate) fn refuse_unless(
+        &mut self,
+        kind: RefusalKind,
+        words: impl Into<String>,
+        confirm: Option<Confirm>,
+    ) -> bool {
+        let tracked = self.tracked();
+        self.answer(Verdict::Refused(Refusal {
+            kind,
+            words: words.into(),
+            confirm,
+        }));
+        tracked
+    }
+
+    fn answer(&mut self, verdict: Verdict) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(verdict);
+        }
+    }
+}
+
 /// What the user sent, as its event carried it.
 pub(crate) struct Sent {
     /// The line as typed, its leading spaces kept.
@@ -32,17 +106,23 @@ pub(crate) struct Sent {
     /// An app's message's images, which [`Harness::admit`] attaches. `None`
     /// for what isn't an app's message.
     images: Option<Vec<ui::Attachment>>,
+    pub(crate) reply: Reply,
 }
 
-/// A send that passed the checks.
+/// A send that passed the checks. It is accepted where it goes.
 pub(crate) enum Admitted {
     /// A command, trimmed.
-    Command { command: String, source: Source },
+    Command {
+        command: String,
+        source: Source,
+        reply: Reply,
+    },
     /// A message, trimmed, with the open questions it answers.
     Message {
         text: String,
         source: Source,
         attached: Vec<String>,
+        reply: Reply,
     },
 }
 
@@ -70,18 +150,20 @@ impl Harness {
         // (While the report is written, nothing an answer says goes, so its
         // card isn't looked at.)
         let reporting = phase == Phase::Reporting;
-        let sent = |line: String, source: Source, attached: Vec<String>| {
+        let sent = |line: String, source: Source, attached: Vec<String>, reply: Reply| {
             Read::Sent(Sent {
                 line,
                 source,
                 attached,
                 images: None,
+                reply,
             })
         };
         match event {
             Event::Input(Some(Input::Line(line))) => {
+                let reply = input.reply();
                 let line = input.coalesce(line).await;
-                sent(line, self.input_source, Vec::new())
+                sent(line, self.input_source, Vec::new(), reply)
             }
             Event::Input(Some(Input::Message(message))) => {
                 if message.continue_uncached {
@@ -92,65 +174,79 @@ impl Harness {
                     source: self.input_source,
                     attached: message.answers,
                     images: Some(message.images),
+                    reply: input.reply(),
                 })
             }
             Event::Input(Some(Input::Answer { question, text })) => {
+                let mut reply = input.reply();
                 let attached = match reporting {
                     true => Vec::new(),
                     false => match self.card_answered(question) {
                         Some(attached) => attached,
-                        None => return Read::Done,
+                        None => return self.card_closed(&mut reply),
                     },
                 };
-                sent(text, self.input_source, attached)
+                sent(text, self.input_source, attached, reply)
             }
             Event::Remote(Action::Message(text)) => {
                 self.echo_web(&text);
-                sent(text, Source::Web, Vec::new())
+                sent(text, Source::Web, Vec::new(), Reply::default())
             }
             Event::Remote(Action::Continue(text)) => {
                 self.echo_web(&text);
                 self.confirm_continue(&text);
-                sent(text, Source::Web, Vec::new())
+                sent(text, Source::Web, Vec::new(), Reply::default())
             }
             Event::Remote(Action::Reply { text, answers }) => {
                 self.echo_web(&text);
-                sent(text, Source::Web, answers)
+                sent(text, Source::Web, answers, Reply::default())
             }
             Event::Remote(Action::Answer { question, text }) => {
                 let attached = match reporting {
                     true => Vec::new(),
                     false => match self.card_answered(question) {
                         Some(attached) => attached,
-                        None => return Read::Done,
+                        None => return self.card_closed(&mut Reply::default()),
                     },
                 };
                 self.echo_web(&text);
-                sent(text, Source::Web, attached)
+                sent(text, Source::Web, attached, Reply::default())
             }
             _ => Read::Other,
         }
     }
 
-    /// Checks what the user sent before anything of it happens, and tells
-    /// the user why when it can't go: an app's images the model can't take,
-    /// a command the web page can't run or one that doesn't exist, a
-    /// message while the old model writes its report, and answers too long
-    /// to send. An app's images are attached for its message, and a
-    /// command drops them.
+    /// An answer to a question card that has no question open any more.
+    fn card_closed(&self, reply: &mut Reply) -> Read {
+        const WORDS: &str = "That question is no longer open.";
+        if !reply.refuse(RefusalKind::NotOpen, WORDS) {
+            self.feed.notice(Level::Warn, WORDS);
+        }
+        Read::Done
+    }
+
+    /// Checks what the user sent before anything of it happens, and says
+    /// why when it can't go: an app's images the model can't take, a
+    /// command the web page can't run or one that doesn't exist, images
+    /// with a message to a worker, a message while the old model writes its
+    /// report, and answers too long to send. An app's images are attached
+    /// for its message, and a command drops them.
     pub(crate) fn admit(&mut self, sent: Sent, phase: Phase) -> Option<Admitted> {
         let Sent {
             line,
             source,
             attached,
             images,
+            mut reply,
         } = sent;
         // (While the report is written, an app's message doesn't go, so its
         // images aren't attached.)
         let reported_images = match images {
             Some(images) if phase != Phase::Reporting => {
                 if let Err(why) = self.attach(images) {
-                    self.say(Level::Error, &why);
+                    if !reply.refuse(RefusalKind::Images, &why) {
+                        self.say(Level::Error, &why);
+                    }
                     return None;
                 }
                 0
@@ -164,38 +260,60 @@ impl Harness {
         };
         let text = line.trim();
         if text.is_empty() && !has_images {
+            reply.refuse(RefusalKind::Empty, "There is nothing to send.");
             return None;
         }
         self.user_present();
         if let Some(command) = command(text) {
+            if has_images && split_live_command(command).is_some_and(|(name, _)| name == "/message")
+            {
+                self.drop_images(phase);
+                let words = "A message to a worker takes text only. Remove the images, or send them to Arko.";
+                if !reply.refuse(RefusalKind::WorkerTextOnly, words) {
+                    self.say(Level::Warn, words);
+                }
+                return None;
+            }
             // (Images go with messages only.)
             self.drop_images(phase);
-            if self.refused(command, source) {
+            if let Some(why) = self.terminal_only(command, source) {
+                if !reply.refuse(RefusalKind::TerminalOnly, &why) {
+                    self.say(Level::Warn, &format!("  {why}"));
+                }
                 return None;
             }
             return Some(Admitted::Command {
                 command: command.to_string(),
                 source,
+                reply,
             });
         }
-        if self.unknown_command(&line, source) {
+        if let Some(why) = self.unknown_command(&line, source) {
             self.drop_images(phase);
+            if !reply.refuse(RefusalKind::UnknownCommand, &why) {
+                self.say(Level::Warn, &why);
+            }
             return None;
         }
         if phase == Phase::Reporting {
-            self.not_sent_while_reporting(text);
+            if !reply.refuse(RefusalKind::Reporting, crate::switch::REPORTING) {
+                self.not_sent_while_reporting(text);
+            }
             return None;
         }
         // An answer too long to send isn't sent, and its questions stay
         // open.
         if let Some(refusal) = self.reply_refused(text, &attached) {
-            self.say(Level::Warn, &refusal);
+            if !reply.refuse(RefusalKind::TooLong, &refusal) {
+                self.say(Level::Warn, &refusal);
+            }
             return None;
         }
         Some(Admitted::Message {
             text: text.to_string(),
             source,
             attached,
+            reply,
         })
     }
 
@@ -208,42 +326,54 @@ impl Harness {
         }
     }
 
-    /// Runs the `command` the user sent, as the session runs it in `phase`.
-    /// Returns whether the session is to end: the user quit, or a switch
-    /// ended it.
+    /// Runs the `command` the user sent, as the session runs it in `phase`,
+    /// and accepts it once it ran. Returns whether the session is to end:
+    /// the user quit, or a switch ended it.
     pub(crate) async fn run_command(
         &mut self,
         command: &str,
         source: Source,
         phase: Phase,
         input: &mut Inputs,
+        mut reply: Reply,
     ) -> bool {
         if is_remote_command(command) {
             self.remote_command(command, source).await;
+            reply.accept(Delivery::Command, None);
             return false;
         }
         if let Some(argument) = openrouter_words(command) {
             self.openrouter_live(command, argument, source).await;
+            reply.accept(Delivery::Command, None);
             return false;
         }
-        // A new conversation that carries this one over.
+        // A new conversation that carries this one over: it went once the
+        // old model was asked for its report.
         if phase == Phase::Idle
             && let Some(switch) = self.switch_of(command)
         {
-            self.feed.user(command, source, Delivery::Command);
+            let item = self.feed.user(command, source, Delivery::Command);
+            reply.accept(Delivery::Command, Some(item));
             return Box::pin(self.switch(switch, source, input)).await;
         }
-        if self.live_command(command, source) {
+        // A message to a worker went once the worker has it.
+        if let Some(("/message", argument)) = split_live_command(command) {
+            self.message_command(argument, source, &mut reply);
             return false;
         }
-        self.feed.user(command, source, Delivery::Command);
+        if self.live_command(command, source) {
+            reply.accept(Delivery::Command, None);
+            return false;
+        }
+        let item = self.feed.user(command, source, Delivery::Command);
         if phase == Phase::Idle
             && let Some(argument) = conversations::resume_argument(command)
         {
             self.resume_command(argument).await;
+            reply.accept(Delivery::Command, Some(item));
             return false;
         }
-        self.mirrored(|harness| match command {
+        let quit = self.mirrored(|harness| match command {
             "/exit" | "/quit" => harness.may_exit(Some(harness.jobs_shown.clone())),
             "/new" if phase == Phase::Idle => {
                 harness.new_conversation();
@@ -260,6 +390,8 @@ impl Harness {
                 harness.command(other);
                 false
             }
-        })
+        });
+        reply.accept(Delivery::Command, Some(item));
+        quit
     }
 }
