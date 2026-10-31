@@ -1012,7 +1012,9 @@ fn came(output: &str) -> Came {
 
 /// Whether `command` runs tests (`cargo test`, `go test`, `pytest`, `npm
 /// test` and the like), whose run has a row of its own in the Quiet view
-/// whatever it prints.
+/// whatever it prints. A runner's own options and a toolchain before its
+/// subcommand (`cargo +nightly --locked test`, `go -C dir test`, `npm
+/// --prefix web test`) don't hide it.
 fn runs_tests(command: &str) -> bool {
     let words: Vec<&str> = command
         .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')'))
@@ -1022,34 +1024,64 @@ fn runs_tests(command: &str) -> bool {
     let alone = [
         "pytest", "jest", "vitest", "mocha", "rspec", "phpunit", "ctest", "tox", "nox",
     ];
-    words.iter().any(|word| alone.contains(word))
-        || words.windows(2).any(|pair| match pair {
-            [runner, "test" | "nextest"] => matches!(
-                *runner,
-                "cargo"
-                    | "cargo-locked"
-                    | "go"
-                    | "npm"
-                    | "pnpm"
-                    | "yarn"
-                    | "bun"
-                    | "deno"
-                    | "dotnet"
-                    | "mvn"
-                    | "gradle"
-                    | "./gradlew"
-                    | "gradlew"
-                    | "make"
-                    | "swift"
-                    | "mix"
-                    | "zig"
-            ),
-            ["-m", "pytest" | "unittest"] => true,
+    if words.iter().any(|word| alone.contains(word)) {
+        return true;
+    }
+    // The options that take a value as the next word.
+    let valued = [
+        "-C",
+        "-Z",
+        "-F",
+        "-f",
+        "--prefix",
+        "--cwd",
+        "--dir",
+        "--directory",
+        "--manifest-path",
+        "--config",
+        "--color",
+        "--filter",
+        "--workdir",
+    ];
+    // The runner's subcommands after `at`, past its options and toolchain.
+    let subcommands = |at: usize| {
+        let mut rest = words[at + 1..].iter();
+        let mut found = Vec::new();
+        while let Some(word) = rest.next() {
+            if word.starts_with('+') {
+                continue;
+            }
+            if word.starts_with('-') {
+                if valued.contains(word) {
+                    rest.next();
+                }
+                continue;
+            }
+            found.push(*word);
+            if found.len() == 2 {
+                break;
+            }
+        }
+        found
+    };
+    words.iter().enumerate().any(|(at, word)| {
+        let then = || subcommands(at);
+        match *word {
+            "cargo" | "cargo-locked" => matches!(then().first(), Some(&("test" | "nextest"))),
+            "npm" | "pnpm" | "yarn" | "bun" => {
+                matches!(then().as_slice(), ["test", ..] | ["run", "test"])
+            }
+            "go" | "deno" | "dotnet" | "mvn" | "gradle" | "gradlew" | "swift" | "mix" => {
+                then().first() == Some(&"test")
+            }
+            "make" => matches!(then().first(), Some(&("test" | "check"))),
+            "python" | "python3" => {
+                words.get(at + 1) == Some(&"-m")
+                    && matches!(words.get(at + 2), Some(&("pytest" | "unittest")))
+            }
             _ => false,
-        })
-        || words
-            .windows(3)
-            .any(|three| matches!(three, ["npm" | "pnpm" | "yarn" | "bun", "run", "test"]))
+        }
+    })
 }
 
 /// A shell command's outcome: its tests' counts when it ran tests, else
@@ -1559,6 +1591,15 @@ mod tests {
             ("go test ./...", true),
             ("cd web && npm run test", true),
             ("python3 -m pytest -q", true),
+            ("cargo +nightly test", true),
+            ("cargo --locked test -p arko", true),
+            ("go -C web test ./...", true),
+            ("npm --prefix web test", true),
+            ("pnpm -C web test", true),
+            ("yarn --cwd web run test", true),
+            ("make -C build check", true),
+            ("cargo --locked build", false),
+            ("npm --prefix web run build", false),
             ("cargo build", false),
             ("rg test src", false),
         ] {
