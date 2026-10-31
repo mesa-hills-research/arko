@@ -7,8 +7,8 @@
 //!
 //! The view keeps the recording's state. What it asks of the service and
 //! the microphone comes out as [`Dictate`] effects, which the view's loop
-//! carries out, and the service's events come back through the feed
-//! ([`App::dictation_event`]).
+//! carries out, and the service's events come back on the view's own
+//! channel ([`App::dictation_event`]).
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -127,7 +127,7 @@ impl App {
         self.effects_push(Effect::Notice(Level::Error, why));
     }
 
-    /// A dictation's event, from the feed: the view's own recording's
+    /// An event of the view's own recording, from its channel, which
     /// changes the box and the status line.
     pub fn dictation_event(&mut self, update: DictationUpdate) {
         let ours = self

@@ -611,7 +611,7 @@ async fn run(
 }
 
 /// Carries out what the view's recording needs of the dictation service
-/// and the microphone. Its events come back through the feed.
+/// and the microphone. Its events come back on the view's own channel.
 fn carry_out(
     dictate: dictation::Dictate,
     app: &mut App,
