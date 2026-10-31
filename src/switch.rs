@@ -23,8 +23,8 @@ use crate::agents::{Effort, ModelSettings};
 use crate::conversations::Conversations;
 use crate::earlier;
 use crate::inputs::{Event, Inputs};
-use crate::remote::{Action, Level, Source};
-use crate::sending::{Admitted, Phase, Read};
+use crate::remote::{Action, Delivery, Level, Source};
+use crate::sending::{Admitted, Phase, Read, Reply};
 use crate::session::Settings;
 use crate::{Conversation, Harness, Input, lock, providers};
 
@@ -546,7 +546,12 @@ impl Harness {
         let outcome = loop {
             tokio::select! {
                 outcome = &mut asking => break outcome,
-                event = input.next_event(false) => {
+                (event, mut reply) = input.next_event(false) => {
+                    // A stop, a quit and the like are accepted as they are
+                    // read.
+                    if !event.is_send() {
+                        reply.accept(Delivery::Command, None);
+                    }
                     let skip = match event {
                         Event::Input(Some(Input::Interrupt)) | Event::Remote(Action::Stop) => true,
                         Event::Input(Some(Input::Eof) | None) => {
@@ -572,11 +577,11 @@ impl Harness {
                             false
                         }
                         Event::Input(Some(Input::AnswerApprovals(answers))) => {
-                            self.answer_approvals(answers, Some(self.input_source), &mut input.reply());
+                            self.answer_approvals(answers, Some(self.input_source), &mut reply);
                             false
                         }
                         Event::Remote(Action::AnswerApprovals(answers)) => {
-                            self.answer_approvals(answers, Some(Source::Web), &mut input.reply());
+                            self.answer_approvals(answers, Some(Source::Web), &mut reply);
                             false
                         }
                         Event::Remote(
@@ -588,17 +593,17 @@ impl Harness {
                         Event::Woken | Event::Finished(_) | Event::Alert(_) => false,
                         Event::Input(Some(Input::AnswerQuestions(answers)))
                         | Event::Remote(Action::AnswerQuestions(answers)) => {
-                            self.answer_questions(answers, &mut input.reply());
+                            self.answer_questions(answers, &mut reply);
                             false
                         }
                         Event::Input(Some(Input::DismissQuestions(ids)))
                         | Event::Remote(Action::DismissQuestions(ids)) => {
-                            self.dismiss_questions(ids, &mut input.reply());
+                            self.dismiss_questions(ids, &mut reply);
                             false
                         }
                         // Commands run now, and messages aren't sent.
                         event => {
-                            let quits = Box::pin(self.sent_during_report(event, input)).await;
+                            let quits = Box::pin(self.sent_during_report(event, reply, input)).await;
                             quit |= quits;
                             quits
                         }
@@ -789,8 +794,8 @@ impl Harness {
     /// `Activity::reporting`), so one only comes here when it was sent as
     /// the report began, and the notice repeats its words. Returns whether
     /// the user quit.
-    async fn sent_during_report(&mut self, event: Event, input: &mut Inputs) -> bool {
-        let Read::Sent(sent) = self.read_sent(event, input, Phase::Reporting).await else {
+    async fn sent_during_report(&mut self, event: Event, reply: Reply, input: &mut Inputs) -> bool {
+        let Read::Sent(sent) = self.read_sent(event, reply, input, Phase::Reporting).await else {
             return false;
         };
         match self.admit(sent, Phase::Reporting) {

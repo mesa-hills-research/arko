@@ -218,9 +218,9 @@ async fn while_the_report_is_written_a_message_is_refused_and_a_command_goes() {
             .collect::<Vec<_>>()
     };
     let (reply, verdict) = oneshot::channel();
-    inputs.reply = Some(reply);
     let event = Event::Input(Some(message("Go on.")));
-    let Read::Sent(sent) = harness.read_sent(event, &mut inputs, Phase::Reporting).await else {
+    let reply = crate::sending::Reply::to(Some(reply));
+    let Read::Sent(sent) = harness.read_sent(event, reply, &mut inputs, Phase::Reporting).await else {
         panic!("read as sent");
     };
     assert!(harness.admit(sent, Phase::Reporting).is_none());
@@ -233,7 +233,8 @@ async fn while_the_report_is_written_a_message_is_refused_and_a_command_goes() {
     }
     assert!(notices(&harness).is_empty());
     let event = Event::Input(Some(message("Go on.")));
-    let Read::Sent(sent) = harness.read_sent(event, &mut inputs, Phase::Reporting).await else {
+    let untracked = crate::sending::Reply::default();
+    let Read::Sent(sent) = harness.read_sent(event, untracked, &mut inputs, Phase::Reporting).await else {
         panic!("read as sent");
     };
     assert!(harness.admit(sent, Phase::Reporting).is_none());
@@ -242,7 +243,8 @@ async fn while_the_report_is_written_a_message_is_refused_and_a_command_goes() {
         ["“Go on.” wasn't sent. The report is being written. Stopping skips it."]
     );
     let event = Event::Input(Some(message("/workers")));
-    let Read::Sent(sent) = harness.read_sent(event, &mut inputs, Phase::Reporting).await else {
+    let untracked = crate::sending::Reply::default();
+    let Read::Sent(sent) = harness.read_sent(event, untracked, &mut inputs, Phase::Reporting).await else {
         panic!("read as sent");
     };
     assert!(matches!(
@@ -284,4 +286,67 @@ async fn answers_some_no_longer_open_are_accepted_in_part() {
         Some(&RefusalKind::NotOpen)
     );
     harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// While Arko only waits for the workers (without a terminal, after the
+/// last turn), a client's line or message is refused as closed, and none
+/// is left without its verdict.
+#[tokio::test]
+async fn sends_while_arko_only_waits_for_the_workers_are_refused() {
+    use crate::mock_model::tool_call;
+    let gate = Arc::new(Notify::new());
+    let server = {
+        let gate = gate.clone();
+        ModelServer::start(Arc::new(move |_, body: String| {
+            let gate = gate.clone();
+            Box::pin(async move {
+                if body.contains("You are agent run r1") {
+                    gate.notified().await;
+                    complete("w", "There are 3 files.")
+                } else if body.contains("There are 3 files.") {
+                    complete("m3", "Final: 3 files.")
+                } else if body.contains("Started r1") {
+                    complete("m2", "r1 is counting.")
+                } else {
+                    tool_call(
+                        "m1",
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": "Count the files."}),
+                    )
+                }
+            })
+        }))
+        .await
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), false);
+    let requests = wire(&mut inputs);
+    let end = harness
+        .turn(Prompt::User("How many files?".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    let client = async move {
+        for input in [Input::Line("Hello.".into()), message("Hello.")] {
+            let verdict = send(&requests, input).await;
+            assert_eq!(refused(&verdict), Some(&RefusalKind::Closed), "{verdict:?}");
+        }
+        gate.notify_one();
+    };
+    let (end, ()) = tokio::time::timeout(
+        Duration::from_secs(30),
+        futures_util::future::join(harness.finish_workers(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A send's verdict dropped unanswered is a mistake in Arko, which tests
+/// see.
+#[test]
+#[should_panic(expected = "dropped unanswered")]
+fn a_verdict_dropped_unanswered_is_seen() {
+    let (sender, _verdict) = oneshot::channel();
+    drop(crate::sending::Reply::to(Some(sender)));
 }

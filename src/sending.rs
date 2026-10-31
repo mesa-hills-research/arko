@@ -33,9 +33,21 @@ pub(crate) enum Phase {
 
 /// Where a send's verdict goes: to the client that sent it, or, for a send
 /// without a verdict to come, nowhere, and the caller tells the user in the
-/// transcript as it always has. It answers once.
+/// transcript as it always has. It answers once, and whatever reads a send
+/// answers it, accepted or refused. One dropped unanswered is a mistake in
+/// Arko: its client hears nothing, and says it doesn't know whether the
+/// send went.
 #[derive(Debug, Default)]
 pub(crate) struct Reply(Option<oneshot::Sender<Verdict>>);
+
+impl Drop for Reply {
+    fn drop(&mut self) {
+        if self.0.is_some() && !std::thread::panicking() {
+            log::error!("a send's verdict was dropped unanswered");
+            debug_assert!(false, "a send's verdict was dropped unanswered");
+        }
+    }
+}
 
 impl Reply {
     pub(crate) fn to(sender: Option<oneshot::Sender<Verdict>>) -> Self {
@@ -149,6 +161,7 @@ impl Harness {
     pub(crate) async fn read_sent(
         &mut self,
         event: Event,
+        mut reply: Reply,
         input: &mut Inputs,
         phase: Phase,
     ) -> Read {
@@ -167,7 +180,6 @@ impl Harness {
         };
         match event {
             Event::Input(Some(Input::Line(line))) => {
-                let reply = input.reply();
                 let line = input.coalesce(line).await;
                 sent(line, self.input_source, Vec::new(), reply)
             }
@@ -177,10 +189,9 @@ impl Harness {
                 attached: message.answers,
                 images: Some(message.images),
                 confirmed: message.continue_uncached,
-                reply: input.reply(),
+                reply,
             }),
             Event::Input(Some(Input::Answer { question, text })) => {
-                let mut reply = input.reply();
                 let attached = match reporting {
                     true => Vec::new(),
                     false => match self.card_answered(question) {
@@ -192,7 +203,7 @@ impl Harness {
             }
             Event::Remote(Action::Message(text)) => {
                 self.echo_web(&text);
-                sent(text, Source::Web, Vec::new(), input.reply())
+                sent(text, Source::Web, Vec::new(), reply)
             }
             Event::Remote(Action::Continue(line)) => {
                 self.echo_web(&line);
@@ -202,15 +213,14 @@ impl Harness {
                     attached: Vec::new(),
                     images: None,
                     confirmed: true,
-                    reply: input.reply(),
+                    reply,
                 })
             }
             Event::Remote(Action::Reply { text, answers }) => {
                 self.echo_web(&text);
-                sent(text, Source::Web, answers, input.reply())
+                sent(text, Source::Web, answers, reply)
             }
             Event::Remote(Action::Answer { question, text }) => {
-                let mut reply = input.reply();
                 let attached = match reporting {
                     true => Vec::new(),
                     false => match self.card_answered(question) {
@@ -221,7 +231,11 @@ impl Harness {
                 self.echo_web(&text);
                 sent(text, Source::Web, attached, reply)
             }
-            _ => Read::Other,
+            _ => {
+                // (Not a send: a stop or the like, accepted as it was read.)
+                reply.accept(Delivery::Command, None);
+                Read::Other
+            }
         }
     }
 

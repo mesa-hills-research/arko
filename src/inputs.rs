@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::agents::MAIN;
 use crate::engine::Request;
-use crate::remote::{Action, Delivery, Verdict};
+use crate::remote::{Action, Verdict};
 use crate::sending::Reply;
 use crate::ui::Input;
 
@@ -40,9 +40,6 @@ pub(crate) struct Inputs {
     /// A monitor's news that came during the agent's last request, too late
     /// for it to read (see `alert_waits`).
     pub(crate) late_alert: Option<Alert>,
-    /// Where the verdict on the input just read goes, when a client sent it
-    /// with [`Request::Send`] ([`Inputs::reply`]).
-    pub(crate) reply: Option<oneshot::Sender<Verdict>>,
 }
 
 /// A monitor's news for an idle agent.
@@ -87,47 +84,66 @@ pub(crate) enum Event {
     Request(Request),
 }
 
+impl Event {
+    /// Whether it is something the user sent, which is accepted where it
+    /// goes or refused, rather than a stop, a quit, a move to the
+    /// background or what isn't the user's.
+    pub(crate) fn is_send(&self) -> bool {
+        matches!(
+            self,
+            Event::Input(Some(
+                Input::Line(_)
+                    | Input::Message(_)
+                    | Input::Answer { .. }
+                    | Input::AnswerQuestions(_)
+                    | Input::DismissQuestions(_)
+                    | Input::AnswerApprovals(_)
+            )) | Event::Remote(
+                Action::Message(_)
+                    | Action::Continue(_)
+                    | Action::Answer { .. }
+                    | Action::Reply { .. }
+                    | Action::AnswerQuestions(_)
+                    | Action::DismissQuestions(_)
+                    | Action::AnswerApprovals(_)
+            )
+        )
+    }
+}
+
 impl Inputs {
     /// The next input, question, action from the remote page, or (when
-    /// `woken`) wake-up, job finished or monitor's alert. It's cancel-safe.
-    pub(crate) async fn next_event(&mut self, woken: bool) -> Event {
-        // The input before, sent with a verdict to come, wasn't something the
-        // user sent but a stop, a quit or the like, and it was read.
-        if let Some(reply) = self.reply.take() {
-            let _ = reply.send(Verdict::accepted(Delivery::Command, None));
-        }
+    /// `woken`) wake-up, job finished or monitor's alert, with where its
+    /// verdict goes when a client sent it with one to come ([`Request::Send`],
+    /// the web page's sends). The reader settles that verdict. It's
+    /// cancel-safe.
+    pub(crate) async fn next_event(&mut self, woken: bool) -> (Event, Reply) {
+        let untracked = |event: Event| (event, Reply::default());
         if let Some(input) = self.pending.take() {
-            return Event::Input(Some(input));
+            return untracked(Event::Input(Some(input)));
         }
         if woken && let Some(job) = self.late.take() {
-            return Event::Finished(job);
+            return untracked(Event::Finished(job));
         }
         if woken && let Some(alert) = self.late_alert.take() {
-            return Event::Alert(alert);
+            return untracked(Event::Alert(alert));
         }
         tokio::select! {
-            input = self.receiver.recv() => Event::Input(input),
-            Some(question) = self.questions.recv() => Event::Question(question),
+            input = self.receiver.recv() => untracked(Event::Input(input)),
+            Some(question) = self.questions.recv() => untracked(Event::Question(question)),
             Some(action) = self.remote.recv() => match action {
                 // As a client's send, from the web page.
-                Action::Send { action, reply } => {
-                    self.reply = reply.take();
-                    Event::Remote(*action)
-                }
-                action => Event::Remote(action),
+                Action::Send { action, reply } => (Event::Remote(*action), Reply::to(reply.take())),
+                action => untracked(Event::Remote(action)),
             },
             Some(request) = self.requests.recv() => match request {
-                // What a client sent with a verdict to come is the user's
-                // input, and its verdict waits for whoever reads it.
-                Request::Send { input, reply } => {
-                    self.reply = Some(reply);
-                    Event::Input(Some(input))
-                }
-                request => Event::Request(request),
+                // What a client sent with a verdict to come.
+                Request::Send { input, reply } => (Event::Input(Some(input)), Reply::to(Some(reply))),
+                request => untracked(Event::Request(request)),
             },
-            () = wake(&mut self.woken), if woken => Event::Woken,
-            finished = job_finished(&mut self.finished), if woken => Event::Finished(finished),
-            alert = job_alert(&mut self.alerts), if woken => Event::Alert(alert),
+            () = wake(&mut self.woken), if woken => untracked(Event::Woken),
+            finished = job_finished(&mut self.finished), if woken => untracked(Event::Finished(finished)),
+            alert = job_alert(&mut self.alerts), if woken => untracked(Event::Alert(alert)),
         }
     }
 
@@ -150,18 +166,9 @@ impl Inputs {
                 .is_some_and(|finished| !finished.is_empty())
     }
 
-    /// Where the verdict on the input just read goes: to the client that
-    /// sent it with [`Request::Send`], or nowhere for one sent without.
-    pub(crate) fn reply(&mut self) -> Reply {
-        Reply::to(self.reply.take())
-    }
-
     /// The session closes. What clients sent that it hasn't read is
     /// refused as closed, and what they send from now on too.
     pub(crate) fn close_sends(&mut self) {
-        if let Some(reply) = self.reply.take() {
-            let _ = reply.send(Verdict::accepted(Delivery::Command, None));
-        }
         self.requests.close();
         while let Ok(request) = self.requests.try_recv() {
             if let Request::Send { reply, .. } = request {

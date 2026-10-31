@@ -1395,7 +1395,12 @@ impl Harness {
     pub(crate) async fn repl(&mut self, input: &mut Inputs) {
         let mut last_interrupt: Option<Instant> = None;
         loop {
-            let sent = match input.next_event(true).await {
+            let (event, mut reply) = input.next_event(true).await;
+            // A stop, a quit and the like are accepted as they are read.
+            if !event.is_send() {
+                reply.accept(Delivery::Command, None);
+            }
+            let sent = match event {
                 Event::Woken => {
                     if let News::Exit = self.deliver_news(input).await {
                         break;
@@ -1482,7 +1487,7 @@ impl Harness {
                     continue;
                 }
                 Event::Input(Some(Input::AnswerQuestions(answers))) => {
-                    if self.answer_questions(answers, &mut input.reply()).is_some()
+                    if self.answer_questions(answers, &mut reply).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -1490,7 +1495,7 @@ impl Harness {
                     continue;
                 }
                 Event::Input(Some(Input::DismissQuestions(ids))) => {
-                    if self.dismiss_questions(ids, &mut input.reply()).is_some()
+                    if self.dismiss_questions(ids, &mut reply).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -1498,15 +1503,15 @@ impl Harness {
                     continue;
                 }
                 Event::Input(Some(Input::AnswerApprovals(answers))) => {
-                    self.answer_approvals(answers, Some(self.input_source), &mut input.reply());
+                    self.answer_approvals(answers, Some(self.input_source), &mut reply);
                     continue;
                 }
                 Event::Remote(Action::AnswerApprovals(answers)) => {
-                    self.answer_approvals(answers, Some(Source::Web), &mut input.reply());
+                    self.answer_approvals(answers, Some(Source::Web), &mut reply);
                     continue;
                 }
                 Event::Remote(Action::AnswerQuestions(answers)) => {
-                    if self.answer_questions(answers, &mut input.reply()).is_some()
+                    if self.answer_questions(answers, &mut reply).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -1514,7 +1519,7 @@ impl Harness {
                     continue;
                 }
                 Event::Remote(Action::DismissQuestions(ids)) => {
-                    if self.dismiss_questions(ids, &mut input.reply()).is_some()
+                    if self.dismiss_questions(ids, &mut reply).is_some()
                         && let News::Exit = self.deliver_answers(input).await
                     {
                         break;
@@ -1530,7 +1535,7 @@ impl Harness {
                     self.page_job_action(action);
                     continue;
                 }
-                event => match self.read_sent(event, input, Phase::Idle).await {
+                event => match self.read_sent(event, reply, input, Phase::Idle).await {
                     Read::Sent(sent) => sent,
                     Read::Done | Read::Other => continue,
                 },
@@ -3815,7 +3820,12 @@ impl Harness {
         let outcome = loop {
             tokio::select! {
                 outcome = &mut call => break outcome,
-                event = input.next_event(false) => {
+                (event, mut reply) = input.next_event(false) => {
+                    // A stop, a quit and the like are accepted as they are
+                    // read.
+                    if !event.is_send() {
+                        reply.accept(Delivery::Command, None);
+                    }
                     let sent = match event {
                         Event::Request(request) => {
                             Box::pin(self.request(request, input.waiting())).await;
@@ -3837,20 +3847,20 @@ impl Harness {
                         // Their note reaches the agent at its next step.
                         Event::Input(Some(Input::AnswerQuestions(answers)))
                         | Event::Remote(Action::AnswerQuestions(answers)) => {
-                            self.answer_questions(answers, &mut input.reply());
+                            self.answer_questions(answers, &mut reply);
                             continue;
                         }
                         Event::Input(Some(Input::DismissQuestions(ids)))
                         | Event::Remote(Action::DismissQuestions(ids)) => {
-                            self.dismiss_questions(ids, &mut input.reply());
+                            self.dismiss_questions(ids, &mut reply);
                             continue;
                         }
                         Event::Input(Some(Input::AnswerApprovals(answers))) => {
-                            self.answer_approvals(answers, Some(self.input_source), &mut input.reply());
+                            self.answer_approvals(answers, Some(self.input_source), &mut reply);
                             continue;
                         }
                         Event::Remote(Action::AnswerApprovals(answers)) => {
-                            self.answer_approvals(answers, Some(Source::Web), &mut input.reply());
+                            self.answer_approvals(answers, Some(Source::Web), &mut reply);
                             continue;
                         }
                         Event::Remote(
@@ -3879,7 +3889,7 @@ impl Harness {
                             }
                             continue;
                         }
-                        event => match self.read_sent(event, input, Phase::Turn).await {
+                        event => match self.read_sent(event, reply, input, Phase::Turn).await {
                             Read::Sent(sent) => sent,
                             Read::Done | Read::Other => continue,
                         },
@@ -4595,7 +4605,12 @@ impl Harness {
                     if running.len() == 1 { "it" } else { "them" }
                 )));
             }
-            match input.next_event(true).await {
+            let (event, mut reply) = input.next_event(true).await;
+            // A stop, a quit and the like are accepted as they are read.
+            if !event.is_send() {
+                reply.accept(Delivery::Command, None);
+            }
+            match event {
                 Event::Woken => {}
                 Event::Finished(finished) => {
                     if let News::Exit = self.deliver_finished(finished, input).await {
@@ -4613,7 +4628,14 @@ impl Harness {
                     Box::pin(self.request(request, input.waiting())).await;
                     self.only_workers = false;
                 }
-                Event::Input(Some(Input::Line(_))) => {}
+                // (A line typed at the prompt goes nowhere now. A client's is
+                // refused.)
+                Event::Input(Some(Input::Line(_))) => {
+                    reply.refuse(
+                        RefusalKind::Closed,
+                        "Arko is only waiting for the workers now, so messages aren't taken.",
+                    );
+                }
                 Event::Input(Some(Input::Background(agent))) => self.move_to_background(&agent),
                 Event::Remote(action @ (Action::Background { .. } | Action::StopJob { .. })) => {
                     self.page_job_action(action)
@@ -4637,7 +4659,7 @@ impl Harness {
                 )) => {
                     const WORDS: &str =
                         "Arko is only waiting for the workers now, so messages aren't taken.";
-                    if !input.reply().refuse(RefusalKind::Closed, WORDS) {
+                    if !reply.refuse(RefusalKind::Closed, WORDS) {
                         self.feed.notice(Level::Warn, WORDS);
                     }
                 }
@@ -6408,7 +6430,6 @@ pub(crate) mod tests {
             late: None,
             alerts: None,
             late_alert: None,
-            reply: None,
         };
         (harness, inputs, input_sender)
     }
@@ -7678,7 +7699,8 @@ pub(crate) mod tests {
         assert!(matches!(
             tokio::time::timeout(Duration::from_secs(2), inputs.next_event(true))
                 .await
-                .unwrap(),
+                .unwrap()
+                .0,
             Event::Woken
         ));
         assert!(matches!(
@@ -7777,6 +7799,7 @@ pub(crate) mod tests {
             match tokio::time::timeout(Duration::from_secs(10), inputs.next_event(false))
                 .await
                 .unwrap()
+                .0
             {
                 Event::Question(question) => harness.question_asked(question),
                 _ => panic!("expected the agent's question"),
@@ -9899,17 +9922,17 @@ pub(crate) mod tests {
 
         // Sent while no one reads, it waits for its verdict.
         let thanks = tokio::spawn(post("Thanks."));
-        let message = tokio::time::timeout(Duration::from_secs(5), async {
+        let (message, mut reply) = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if let Event::Remote(action) = inputs.next_event(true).await {
-                    break action;
+                if let (Event::Remote(action), reply) = inputs.next_event(true).await {
+                    break (action, reply);
                 }
             }
         })
         .await
         .unwrap();
         assert_eq!(message, Action::Message("Thanks.".into()));
-        inputs.reply().accept(Delivery::Turn, None);
+        reply.accept(Delivery::Turn, None);
         assert_eq!(
             thanks.await.unwrap(),
             crate::Verdict::accepted(Delivery::Turn, None)

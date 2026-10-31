@@ -393,7 +393,6 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
         name: None,
     };
     let (reply, verdict) = oneshot::channel();
-    inputs.reply = Some(reply);
     let confirmed = Input::Message(ui::Message {
         text: "/message r1 Check the lint.".into(),
         images: vec![image],
@@ -403,6 +402,7 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
     let crate::sending::Read::Sent(sent) = harness
         .read_sent(
             Event::Input(Some(confirmed)),
+            crate::sending::Reply::to(Some(reply)),
             &mut inputs,
             crate::sending::Phase::Idle,
         )
