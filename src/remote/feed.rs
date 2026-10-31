@@ -6018,39 +6018,47 @@ mod tests {
         assert_eq!(feed.approvals()[0].batch, 2, "a new tray");
     }
 
-    /// A client that subscribes while an approval request comes in either
-    /// gets the request's update, or subscribes after it and gets none, as
-    /// the request goes out with the state locked. It never sees the
-    /// request in the tray and then gets its update too.
+    /// An approval request goes out with the state locked, so a client that
+    /// subscribes while it comes in waits for its update. It sees the
+    /// request in the tray and gets no update for it, and its snapshot's
+    /// count of updates is the feed's.
     #[test]
     fn a_request_and_its_update_reach_a_new_client_once() {
         use crate::approvals::Approval;
         let feed = Feed::new("main");
+        let (_, mut before) = feed.subscribe();
+        let (locked, held) = std::sync::mpsc::channel();
         let (sender, joined) = std::sync::mpsc::channel();
-        let subscriber = feed.clone();
+        let paused = feed.clone();
         *feed.inner.pause.lock().unwrap() = Some(Box::new(move || {
-            // While the request waits to go out, a client subscribes.
+            // Where the request waits to go out, the state is locked.
+            let try_lock = paused.inner.state.try_lock();
+            let _ = locked.send(matches!(try_lock, Err(std::sync::TryLockError::WouldBlock)));
+            drop(try_lock);
+            // A client subscribes then.
             std::thread::spawn(move || {
-                let (_, updates) = subscriber.subscribe();
-                let saw = subscriber.approvals().len();
-                let _ = sender.send((updates, saw));
+                let (snapshot, updates) = paused.subscribe();
+                let saw = paused.approvals().len();
+                let _ = sender.send((snapshot, updates, saw));
             });
-            std::thread::sleep(Duration::from_millis(100));
         }));
         let profile = Approval::Profile(crate::profiles::approval(
             &crate::profiles::Profile::new("one", "Reviews"),
             crate::profiles::Place::User,
         ));
         let (_, _answer) = feed.request_approval(Uuid::new_v4(), None, profile);
-        let (mut updates, saw) = joined.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(held.recv().unwrap(), "the state is locked there");
+        let (snapshot, mut updates, saw) = joined.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(saw, 1, "the client sees the request");
         assert!(
-            matches!(
-                updates.try_recv(),
-                Err(broadcast::error::TryRecvError::Empty)
-            ),
+            delivered(&mut updates).is_empty(),
             "and gets no update for it"
         );
+        assert!(matches!(
+            delivered(&mut before).as_slice(),
+            [Update::Activity]
+        ));
+        assert_eq!(snapshot.seq, feed.subscribe().0.seq);
     }
 
     /// A worker gets a placeholder in the main transcript where it starts
