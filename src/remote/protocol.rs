@@ -1427,6 +1427,8 @@ pub struct SettingsData {
     #[serde(deserialize_with = "lenient")]
     pub review_project_skills: bool,
     pub keep_agents_files_out_of_git: Option<bool>,
+    /// The keep-warm setting, none for off.
+    pub keep_warm: Option<KeepWarmSettingData>,
 }
 
 /// A built-in skill and whether it is on.
@@ -1483,6 +1485,30 @@ pub struct CacheData {
     pub miss_cost: Option<f64>,
     pub refresh_cost: Option<f64>,
     pub on_plan: Option<String>,
+    /// Keep-warm, while it is on.
+    pub keep_warm: Option<KeepWarmData>,
+}
+
+/// Keep-warm, while it is on (see `keep_warm::Status`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)]
+pub struct KeepWarmData {
+    /// When it stops (Unix milliseconds).
+    pub ends_at: Option<i64>,
+    /// The refreshes it has left.
+    pub left: Option<u32>,
+    /// When its next refresh goes, none while none comes before it stops.
+    pub next_at: Option<i64>,
+}
+
+/// The keep-warm setting for every session (`/keep-warm default`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)]
+pub struct KeepWarmSettingData {
+    pub idle_hours: Option<u32>,
+    pub dollars: Option<f64>,
 }
 
 /// What the header says of the session.

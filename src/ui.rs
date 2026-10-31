@@ -659,6 +659,8 @@ pub struct Stats {
     /// The main agent's model, as the session runs it (its id in the
     /// configuration). The record of the cache names it.
     pub(crate) main_model: Option<String>,
+    /// Keep-warm, while it is on (`/keep-warm`, the setting).
+    pub(crate) keep_warm: Option<crate::keep_warm::KeepWarm>,
 }
 
 /// A request to the event printer.

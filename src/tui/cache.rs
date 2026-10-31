@@ -1,9 +1,11 @@
 //! The prompt cache's timer in the status line: "cache 3:12" while the
 //! agent waits for the user and the provider says how long the cache keeps
 //! the conversation, in the warning colour for its last minute, then "cache
-//! expired". It is hidden while the agent's requests run (each one
-//! refreshes the cache), in a worker's view (the figures are the worker's)
-//! and where the lifetime is not known. The words are
+//! expired". While keep-warm will refresh the cache before it lapses, it
+//! says so instead ("cache warm until 07:00"), without the warning. It is
+//! hidden while the agent's requests run (each one refreshes the cache), in
+//! a worker's view (the figures are the worker's) and where the lifetime is
+//! not known. The words are
 //! [`cache_timer`](crate::cache_timer)'s, which the web page and apps use.
 //!
 //! The terminal view has no notifications to send, so the warning colour
@@ -199,6 +201,41 @@ pub(super) mod tests {
         let (mut app, _clock) = idle(60, 1_000);
         let (rows, _) = drawn(&mut app, 80, 8);
         assert!(status_row(&rows).contains("cache 59:29"), "{rows:#?}");
+    }
+
+    /// While keep-warm will refresh the cache before it lapses, the line says
+    /// until when, in the dim colour also in what would be the last minute.
+    /// When no refresh comes before it lapses, the timer counts down again.
+    #[test]
+    fn keep_warm_shows_in_place_of_the_countdown() {
+        let (mut app, _clock) = idle(5, 230_000);
+        let ends = AT + 8 * 3_600_000;
+        let kept = crate::keep_warm::Status {
+            ends_at: Some(ends),
+            left: None,
+            next_at: Some(AT + 240_000),
+        };
+        app.reading.cache.keep_warm = Some(kept);
+        let (rows, buffer) = drawn(&mut app, 80, 8);
+        let warm = format!("cache warm until {}", crate::cache_timer::time_of_day(ends));
+        assert!(status_row(&rows).contains(&warm), "{rows:#?}");
+        let theme = app.theme.clone();
+        assert_eq!(timer_style(&rows, &buffer).fg, theme.dim().fg);
+        assert_eq!(app.cache_label(), Some((warm, false)));
+        app.reading.cache.keep_warm = Some(crate::keep_warm::Status {
+            ends_at: None,
+            left: Some(3),
+            next_at: Some(AT + 240_000),
+        });
+        assert_eq!(
+            app.cache_label(),
+            Some(("cache warm, 3 refreshes left".to_string(), false))
+        );
+        app.reading.cache.keep_warm = Some(crate::keep_warm::Status {
+            next_at: None,
+            ..kept
+        });
+        assert_eq!(app.cache_label(), Some(("cache 0:40".to_string(), true)));
     }
 
     /// While requests run each one refreshes the cache, so the line shows no

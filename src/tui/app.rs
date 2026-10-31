@@ -1896,6 +1896,12 @@ impl App {
         if commands::find("/extra-rules small").is_some() {
             rows.push(SettingsRow::Rules);
         }
+        if commands::find("/keep-warm default off").is_some() {
+            rows.push(SettingsRow::KeepWarm);
+            if self.keep_warm_setting().is_some() {
+                rows.push(SettingsRow::KeepWarmLimit);
+            }
+        }
         rows.push(SettingsRow::Page);
         if commands::find("/handover-at 200k").is_some() {
             rows.push(SettingsRow::Handover);
@@ -2124,6 +2130,45 @@ impl App {
                     // The next step down (to off) or up (to always).
                     if let Some(wakes) = self.monitor_wakes().step(step >= 0) {
                         self.send(&wakes.command());
+                    }
+                }
+                SettingsRow::KeepWarm => {
+                    // The next step down (to off) or up, keeping the dollars.
+                    let setting = self.keep_warm_setting();
+                    let hours = setting.and_then(|setting| setting.idle_hours).unwrap_or(0);
+                    let steps = crate::keep_warm::SETTING_HOURS;
+                    let next = if step < 0 {
+                        steps.iter().rev().find(|step| **step < hours)
+                    } else {
+                        steps.iter().find(|step| **step > hours)
+                    };
+                    if let Some(&next) = next {
+                        self.send(&crate::keep_warm::setting_command((next > 0).then(|| {
+                            crate::keep_warm::Limits {
+                                idle_hours: Some(next),
+                                dollars: setting.and_then(|setting| setting.dollars),
+                                ..Default::default()
+                            }
+                        })));
+                    }
+                }
+                SettingsRow::KeepWarmLimit => {
+                    if let Some(setting) = self.keep_warm_setting() {
+                        let most = setting.dollars.unwrap_or(0.0);
+                        let steps = crate::keep_warm::SETTING_DOLLARS;
+                        let next = if step < 0 {
+                            steps.iter().rev().find(|step| **step < most - 1e-9)
+                        } else {
+                            steps.iter().find(|step| **step > most + 1e-9)
+                        };
+                        if let Some(&next) = next {
+                            self.send(&crate::keep_warm::setting_command(Some(
+                                crate::keep_warm::Limits {
+                                    dollars: (next > 0.0).then_some(next),
+                                    ..setting
+                                },
+                            )));
+                        }
                     }
                 }
                 SettingsRow::Replies => {
@@ -2408,6 +2453,11 @@ impl App {
     /// wakes the agent.
     pub fn monitor_wakes(&self) -> crate::monitors::Wakes {
         self.reading.settings.monitor_wakes
+    }
+
+    /// The keep-warm setting for every session, its hours and dollars.
+    pub fn keep_warm_setting(&self) -> Option<crate::keep_warm::Limits> {
+        self.reading.settings.keep_warm
     }
 
     /// For how long a warning wakes the agent now, which `auto` takes from

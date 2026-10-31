@@ -844,6 +844,23 @@ fn SettingsBody() -> impl IntoView {
             <Note key="wakes" />
         </section>
 
+        <section class="group">
+            <h3>"Prompt cache"</h3>
+            <div class="setting">
+                <div class="setting-text">
+                    <span class="setting-name">"Keep warm"</span>
+                    <span class="setting-about">"Keeps every session's prompt cache warm while it waits for you, for up to these hours after your last message, or until its refreshes reach the dollars you give (at API prices on a plan)."</span>
+                </div>
+                <span class="setting-value">{move || words::keep_warm_setting(s().keep_warm.as_ref())}</span>
+            </div>
+            <Change label="Hours and dollars" placeholder="15h $5 or off" empty="Give hours, such as 15h $5, or off." note="keep-warm"
+                send=move |limits| {
+                    let before = s().keep_warm;
+                    settings.command(format!("/keep-warm default {limits}"), "keep-warm", Some(Box::new(move |s| s.keep_warm != before)), None);
+                } />
+            <Note key="keep-warm" />
+        </section>
+
         {move || links.get().filter(|links| !links.is_empty()).map(|links| {
             let rest = links[1..].to_vec();
             let count = rest.len();

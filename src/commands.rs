@@ -124,7 +124,7 @@ pub const COMMANDS: &[Command] = &[
     Command::screen(
         "/settings",
         "",
-        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, models for workers, worker depth, worker retry cap, message copies, whether agents ask before adding MCP servers, whether they ask before saving project skills, whether agents' project files stay out of git, whether the repository root's profiles are read, text replies, extra rules, Claude Code compaction, project instructions, built-in skills, web page, API keys and ChatGPT logins",
+        "the view, theme, mouse, outside access, handover size, background jobs, monitor wakes, keep warm, models for workers, worker depth, worker retry cap, message copies, whether agents ask before adding MCP servers, whether they ask before saving project skills, whether agents' project files stay out of git, whether the repository root's profiles are read, text replies, extra rules, Claude Code compaction, project instructions, built-in skills, web page, API keys and ChatGPT logins",
     ),
     Command {
         name: "/model",
@@ -229,6 +229,13 @@ pub const COMMANDS: &[Command] = &[
         name: "/monitor-wakes",
         args: "DURATION|auto|always|off",
         about: "how long after your last message a monitor's warning still wakes the agent, so it can keep the monitor",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
+        name: "/keep-warm",
+        args: "DURATION|until TIME|COUNT [$DOLLARS] | off | default HOURS [$DOLLARS]|default off",
+        about: "keep the main agent's prompt cache warm while the session waits for you, for a time, until a time of day or for a number of refreshes. default does it for every session",
         aliases: &[],
         runs: Runs::Session,
     },
@@ -493,6 +500,8 @@ const CHOICES: &[(&str, &[&str], &[&str])] = &[
     ("/outside", &[], ON_OFF),
     ("/background-after", &[], &["off"]),
     ("/monitor-wakes", &[], &["always", "off"]),
+    ("/keep-warm", &[], &["until", "off", "default"]),
+    ("/keep-warm", &["default"], &["off"]),
     ("/worker-models", &[], &["agent", "profiles", "session"]),
     ("/worker-billing", &[], &["plans", "ask", "api"]),
     ("/api-budget", &[], &["off", "on"]),

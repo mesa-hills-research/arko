@@ -86,7 +86,8 @@ pub fn Header() -> impl IntoView {
         page.status
             .with(|status| words::context_title(status, summary.as_ref()))
     };
-    // The prompt cache's timer, while the agent waits for the user.
+    // The prompt cache's timer, while the agent waits for the user, or what
+    // keep-warm does while it refreshes the cache before it lapses.
     let cache = move || {
         if page.connection.get() != Connection::Live || page.worker.get().is_some() {
             return None;
@@ -95,17 +96,44 @@ pub fn Header() -> impl IntoView {
         page.status.with(|status| {
             let running = status.working && status.question.is_none();
             let left = words::cache_timer(&status.cache, running, now)?;
-            let lapses = status.cache.expires_at? as f64;
-            let until = words::when_words(
-                local((lapses / 1000.0).floor() * 1000.0 + (page.now.get() - now)),
-                local(page.now.get()),
-            );
+            // A server time in this device's clock, in words.
+            let words_at = |at: f64| {
+                words::when_words(
+                    local((at / 1000.0).floor() * 1000.0 + (page.now.get() - now)),
+                    local(page.now.get()),
+                )
+            };
+            if let Some(kept) = words::kept_warm(&status.cache, running, now) {
+                let until = kept
+                    .ends_at
+                    .map(|at| words_at(at as f64))
+                    .unwrap_or_default();
+                return Some((
+                    words::kept_warm_label(&kept, &until),
+                    false,
+                    words::kept_warm_title(&kept, &status.cache, &until),
+                ));
+            }
+            let until = words_at(status.cache.expires_at? as f64);
             Some((
                 words::cache_label(left),
                 words::cache_warns(left),
                 words::cache_title(left, &status.cache, &until),
             ))
         })
+    };
+    // Its menu turns keep-warm on and off.
+    let keep_menu = RwSignal::new(false);
+    let keep_on = move || page.status.with(|status| status.cache.keep_warm.is_some());
+    let refresh_each = move || {
+        page.status
+            .with(|status| words::refresh_each(&status.cache))
+    };
+    let keep_warm = move |command: &'static str| {
+        keep_menu.set(false);
+        spawn_local(async move {
+            app::post("/api/message", serde_json::json!({ "text": command })).await;
+        });
     };
     let outside = move || page.status.with(|status| status.settings.outside);
     let workers = move || {
@@ -159,8 +187,38 @@ pub fn Header() -> impl IntoView {
                         </span>
                     })}
                     <span class="figures" title=figures_title>{figures}</span>
-                    {move || cache().map(|(label, warns, title)| view! { <span class="cache" class:warn=warns title=title>{label}</span> })}
+                    {move || cache().map(|(label, warns, title)| view! {
+                        <button type="button" class="cache" class:warn=warns title=title
+                            aria-haspopup="menu" aria-expanded=move || keep_menu.get().to_string()
+                            on:click=move |_| keep_menu.update(|open| *open = !*open)>
+                            {label}
+                        </button>
+                    })}
                 </span>
+                // (Outside the info, which hides what overflows it.)
+                <Show when=move || keep_menu.get() && cache().is_some()>
+                    <div class="scrim" on:click=move |_| keep_menu.set(false)></div>
+                    <div class="menu cache-menu" role="menu" aria-label="Keep warm">
+                        {move || if keep_on() {
+                            view! {
+                                <button type="button" role="menuitem" on:click=move |_| keep_warm("/keep-warm off")>
+                                    <span class="name">"Stop keeping warm"</span>
+                                </button>
+                            }.into_any()
+                        } else {
+                            [("Keep warm for 1 hour", "/keep-warm 1h"), ("Keep warm for 8 hours", "/keep-warm 8h")]
+                                .into_iter()
+                                .map(|(name, command)| view! {
+                                    <button type="button" role="menuitem" on:click=move |_| keep_warm(command)>
+                                        <span class="name">{name}</span>
+                                        {move || refresh_each().map(|each| view! { <span class="about">{each}</span> })}
+                                    </button>
+                                })
+                                .collect_view()
+                                .into_any()
+                        }}
+                    </div>
+                </Show>
                 {move || {
                     let (count, running) = workers();
                     let busy = running > 0;

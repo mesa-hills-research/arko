@@ -237,6 +237,9 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 .cache.warn { color: var(--warn); font-weight: 600; }
+/* The timer opens keep-warm's menu, and looks as the figures do. */
+button.cache { padding: 0; border: 0; background: none; }
+.menu.cache-menu { right: auto; left: 0; }
 .outside { display: inline-flex; align-items: center; color: var(--warn); font-size: 13px; font-weight: 600; }
 .outside svg { display: none; }
 /* On a phone, outside access is its icon, and the workers button its count,

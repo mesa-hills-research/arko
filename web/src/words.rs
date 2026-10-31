@@ -1,7 +1,8 @@
 //! What the page says of figures, workers, states and settings.
 
 use crate::protocol::{
-    CacheData, Delivery, ItemData, ModelsData, StatusData, WorkerData, WorkerState,
+    CacheData, Delivery, ItemData, KeepWarmData, KeepWarmSettingData, ModelsData, StatusData,
+    WorkerData, WorkerState,
 };
 
 /// 2m14s, 45s, 1h05m.
@@ -597,6 +598,72 @@ pub fn clock(ms: f64) -> String {
     }
 }
 
+/// Keep-warm, while the cache counts down and keep-warm's next refresh
+/// comes before it lapses. The timer then says so instead, and doesn't warn.
+pub fn kept_warm(cache: &CacheData, running: bool, now: f64) -> Option<KeepWarmData> {
+    let lapses = cache.expires_at? as f64;
+    cache.keep_warm.filter(|kept| {
+        !running && now < lapses && kept.next_at.is_some_and(|at| (at as f64) < lapses)
+    })
+}
+
+/// "cache warm until 07:00" (`until` is its end's time of day), "cache
+/// warm, 9 refreshes left".
+pub fn kept_warm_label(kept: &KeepWarmData, until: &str) -> String {
+    match (kept.ends_at, kept.left) {
+        (Some(_), _) => format!("cache warm until {until}"),
+        (None, Some(1)) => "cache warm, 1 refresh left".into(),
+        (None, Some(left)) => format!("cache warm, {left} refreshes left"),
+        (None, None) => "cache warm".into(),
+    }
+}
+
+/// What keep-warm does, for the timer's tooltip: "Keep-warm refreshes the
+/// prompt cache before it expires, until 07:00. Each refresh ≈ $0.04."
+pub fn kept_warm_title(kept: &KeepWarmData, cache: &CacheData, until: &str) -> String {
+    let mut text = "Keep-warm refreshes the prompt cache before it expires".to_string();
+    match (kept.ends_at, kept.left) {
+        (Some(_), _) => text.push_str(&format!(", until {until}")),
+        (None, Some(1)) => text.push_str(" once more"),
+        (None, Some(left)) => text.push_str(&format!(", {left} more times")),
+        (None, None) => {}
+    }
+    text.push('.');
+    if let Some(each) = refresh_each(cache) {
+        text.push_str(&format!(" {each}"));
+    }
+    text
+}
+
+/// What a refresh costs: "Each refresh ≈ $0.04.", or on a plan the tokens
+/// it reads.
+pub fn refresh_each(cache: &CacheData) -> Option<String> {
+    match (cache.refresh_cost, cache.tokens, &cache.on_plan) {
+        (Some(cost), _, _) => Some(format!("Each refresh ≈ {}.", dollars(cost))),
+        (None, Some(tokens), Some(plan)) => Some(format!(
+            "Each refresh reads {} cached tokens of {plan}.",
+            cache_tokens(tokens)
+        )),
+        _ => None,
+    }
+}
+
+/// The keep-warm setting: "Off", "15 hours or $5.00", "1 hour".
+pub fn keep_warm_setting(setting: Option<&KeepWarmSettingData>) -> String {
+    let Some(hours) = setting.and_then(|setting| setting.idle_hours) else {
+        return "Off".into();
+    };
+    let hours = if hours == 1 {
+        "1 hour".to_string()
+    } else {
+        format!("{hours} hours")
+    };
+    match setting.and_then(|setting| setting.dollars) {
+        Some(most) => format!("{hours} or {}", dollars(most)),
+        None => hours,
+    }
+}
+
 /// "cache 3:12", counted up to the next second, or "cache expired".
 pub fn cache_label(left: f64) -> String {
     if left <= 0.0 {
@@ -1017,6 +1084,57 @@ mod tests {
         };
         assert_eq!(cache_timer(&untimed, false, 108_000.0), None);
         assert_eq!(cache_label(0.5), "cache 0:01");
+    }
+
+    /// While keep-warm's next refresh comes before the cache lapses, the
+    /// timer says it keeps the cache warm, and doesn't warn. When none comes
+    /// (a question waits, or it stops first), the timer counts down.
+    #[test]
+    fn keep_warm_shows_in_place_of_the_countdown() {
+        let kept = KeepWarmData {
+            ends_at: Some(8 * 3_600_000),
+            left: None,
+            next_at: Some(240_000),
+        };
+        let cache = CacheData {
+            lifetime: Some(300_000),
+            refreshed_at: Some(0),
+            expires_at: Some(270_000),
+            refresh_cost: Some(0.04),
+            keep_warm: Some(kept),
+            ..CacheData::default()
+        };
+        assert_eq!(kept_warm(&cache, false, 250_000.0), Some(kept));
+        assert_eq!(kept_warm(&cache, true, 250_000.0), None);
+        assert_eq!(kept_warm(&cache, false, 270_000.0), None, "it lapsed");
+        let none_comes = CacheData {
+            keep_warm: Some(KeepWarmData {
+                next_at: None,
+                ..kept
+            }),
+            ..cache.clone()
+        };
+        assert_eq!(kept_warm(&none_comes, false, 250_000.0), None);
+        assert_eq!(kept_warm_label(&kept, "07:00"), "cache warm until 07:00");
+        assert_eq!(
+            kept_warm_title(&kept, &cache, "07:00"),
+            "Keep-warm refreshes the prompt cache before it expires, until 07:00. Each refresh ≈ $0.04."
+        );
+        let counted = KeepWarmData {
+            ends_at: None,
+            left: Some(9),
+            next_at: Some(240_000),
+        };
+        assert_eq!(
+            kept_warm_label(&counted, ""),
+            "cache warm, 9 refreshes left"
+        );
+        assert_eq!(keep_warm_setting(None), "Off");
+        let setting = KeepWarmSettingData {
+            idle_hours: Some(15),
+            dollars: Some(5.0),
+        };
+        assert_eq!(keep_warm_setting(Some(&setting)), "15 hours or $5.00");
     }
 
     #[test]

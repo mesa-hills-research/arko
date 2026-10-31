@@ -223,6 +223,18 @@ pub enum Request {
     /// conversation), else with a short message and its reply in the
     /// conversation (the user's item has `Delivery::Refresh`).
     RefreshCache { reply: Reply<Refreshed> },
+    /// Keeps the main agent's prompt cache warm while the session waits for
+    /// the user, out of band, until `limits` end it, in place of the
+    /// setting's ([`crate::keep_warm`]). `None` turns it off for the session.
+    /// Also during a turn. It's refused (`Err` says why) where the model
+    /// can't refresh its cache out of band, so nothing ever joins the
+    /// conversation, and while the session waits with a cache that lapsed.
+    /// The status's `cache.keep_warm` shows it, and a notice in the feed
+    /// says when it ends, why, and what its refreshes cost.
+    KeepWarm {
+        limits: Option<crate::keep_warm::Limits>,
+        reply: Reply<()>,
+    },
     /// Sends `input`, what the user sent (a message, an answer, answers
     /// from an answer panel, a dismissal, approval answers), as
     /// [`Seam::input`] does, and answers with what became of it. A refusal
@@ -930,6 +942,7 @@ impl Engine {
             worker_models: Default::default(),
             billing: Default::default(),
             monitor_wakes: Default::default(),
+            keep_warm: Default::default(),
             worker_depth: Default::default(),
             worker_retry_cap: Default::default(),
             message_copies: Default::default(),
@@ -1092,6 +1105,7 @@ impl Engine {
             main_reconfigured: false,
             earlier: Arc::default(),
             continue_asked: None,
+            keep_warm_chosen: false,
             #[cfg(test)]
             notes_refused: false,
         };
@@ -1112,6 +1126,7 @@ impl Engine {
         harness.import_seed().await?;
         harness.start_new_workers();
         harness.publish_models();
+        harness.keep_warm_at_start();
         harness.outside_at_start(new, options.allow_outside_workspace);
         if !new && let Some(tokens) = options.handover_at {
             harness.handover_at_start(tokens);
@@ -3579,9 +3594,39 @@ mod tests {
         quit(seam, ended).await;
     }
 
+    /// An app turns keep-warm on and off. The status says when its next
+    /// refresh goes, a twelfth of the cache's lifetime before it ends, and
+    /// how many it has left.
+    #[tokio::test]
+    async fn an_app_turns_keep_warm_on_and_off() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        seam.input
+            .send(Input::Message(app_message("One.")))
+            .unwrap();
+        answered(&seam, &bodies, 1).await;
+        let limits = crate::keep_warm::Limits {
+            refreshes: Some(5),
+            ..Default::default()
+        };
+        let keep_warm = |limits| ask_for(&seam, move |reply| Request::KeepWarm { limits, reply });
+        assert_eq!(keep_warm(Some(limits)).await, Ok(()));
+        let cache = seam.meter.read().cache;
+        let kept = cache.keep_warm.unwrap();
+        assert_eq!(kept.left, Some(5));
+        // GPT-6 Luna's cache lasts thirty minutes: the refresh goes at 27:30.
+        assert_eq!(kept.next_at, Some(cache.refreshed_at.unwrap() + 1_650_000));
+        assert_eq!(keep_warm(None).await, Ok(()));
+        assert_eq!(seam.meter.read().cache.keep_warm, None);
+        assert_eq!(bodies.lock().unwrap().len(), 1, "it sent nothing");
+        quit(seam, ended).await;
+    }
+
     /// Where the provider takes no refresh out of band (Gemini), a short
     /// message and its reply keep the cache warm, marked as such in the
-    /// feed.
+    /// feed. Keep-warm is refused there, so it never adds messages.
     #[tokio::test]
     async fn a_cache_without_refresh_is_kept_warm_with_a_message() {
         let temp = tempfile::tempdir().unwrap();
@@ -3615,6 +3660,22 @@ mod tests {
         .await;
         seam.input.send(Input::Message(app_message("Hi."))).unwrap();
         answered(&seam, &bodies, 1).await;
+        let limits = crate::keep_warm::Limits {
+            refreshes: Some(5),
+            ..Default::default()
+        };
+        let refused = ask_for(&seam, |reply| Request::KeepWarm {
+            limits: Some(limits),
+            reply,
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            refused.ends_with(
+                "can't refresh its prompt cache without adding a message, so it can't be kept warm."
+            ),
+            "{refused}"
+        );
         let refreshed = ask_for(&seam, |reply| Request::RefreshCache { reply }).await;
         assert_eq!(refreshed, Ok(crate::engine::Refreshed::Message));
         answered(&seam, &bodies, 2).await;

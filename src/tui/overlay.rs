@@ -73,6 +73,11 @@ pub enum SettingsRow {
     MonitorWakes,
     Replies,
     Rules,
+    /// How long every session keeps its prompt cache warm while it waits
+    /// for the user (the keep-warm setting's hours).
+    KeepWarm,
+    /// The keep-warm setting's dollars.
+    KeepWarmLimit,
     Page,
     /// The main agent's handover size.
     Handover,
@@ -595,6 +600,15 @@ fn choices(theme: &Theme, options: &[&str], current: usize) -> Vec<Span<'static>
     spans
 }
 
+/// A value that ← and → change.
+fn stepper(theme: &Theme, value: &str) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(format!("{} ", glyphs::render("←")), theme.dim()),
+        Span::styled(format!(" {value} "), theme.chosen()),
+        Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
+    ]
+}
+
 /// The width of the label column for a name too long for the usual one.
 const WIDE_LABEL: usize = 38;
 
@@ -758,6 +772,35 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                     Span::styled(format!(" {}", glyphs::render("→")), theme.dim()),
                 ],
                 app.monitor_wakes().sentence(app.monitor_wakes_within()),
+            ),
+            SettingsRow::KeepWarm => (
+                "Session",
+                crate::keep_warm::NAME,
+                stepper(
+                    theme,
+                    &match app.keep_warm_setting().and_then(|setting| setting.idle_hours) {
+                        Some(hours) => format!("for {hours}h"),
+                        None => "off".into(),
+                    },
+                ),
+                crate::keep_warm::setting_sentence(app.keep_warm_setting()),
+            ),
+            SettingsRow::KeepWarmLimit => (
+                "Session",
+                "Keep-warm limit",
+                stepper(
+                    theme,
+                    &match app.keep_warm_setting().and_then(|setting| setting.dollars) {
+                        Some(most) => crate::cache_timer::dollars(most),
+                        None => "none".into(),
+                    },
+                ),
+                if app.keep_warm_setting().and_then(|setting| setting.dollars).is_some() {
+                    "Keep-warm stops before a session's refreshes cost more, at API prices where a plan pays."
+                } else {
+                    "Only the hours stop keep-warm."
+                }
+                .to_string(),
             ),
             SettingsRow::Replies => (
                 "Session",
