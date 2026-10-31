@@ -86,12 +86,15 @@ after its text.
 | `POST /api/questions/dismiss` | `{"ids": ["q5"]}` |
 | `POST /api/message` | `{"text": "...", "answers": ["q3", "q4"]}` answers them in a message |
 
-Both answer a 409 when none of the questions is open. An answer names every question its panel
-shows, an unanswered one by its id alone (`{"id": "q6"}`), and one with nothing filled in gets a
-400. Answers, or a message that answers questions, must fit in one note for the agent (16 KB,
+Each answers with the session's verdict (`arko::Verdict`) as JSON. Answers and dismissals are
+refused as `not_open` when none of their questions is open, and when only some were, the others are
+in the verdict's `partial.dropped`. An answer names every question its panel shows, an unanswered
+one by its id alone (`{"id": "q6"}`), and one with nothing filled in gets a 400. Answers, or a
+message that answers questions, must fit in one note for the agent (16 KB,
 `arko::questions::MAX_ANSWER_NOTE_BYTES`, with each question named by a short excerpt). Longer ones
-get a 413 that says how short to make them ("Your answer is too long to send. Shorten it to 15
-KB."), and nothing is settled, so the questions stay open and a page keeps what was typed.
+are refused as `too_long`, with words that say how short to make them ("Your answer is too long to
+send. Shorten it to 15 KB."), and nothing is settled, so the questions stay open and a page keeps
+what was typed.
 
 An app does the same with `Input::AnswerQuestions`, `Input::DismissQuestions` and
-`Message::answers`. The types are in `arko::questions`.
+`Message::answers`, and `Seam::send` gives it the verdict. The types are in `arko::questions`.
