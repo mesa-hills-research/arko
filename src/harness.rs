@@ -2091,7 +2091,7 @@ impl Harness {
             "/openrouter" => self.openrouter_command(argument, source),
             "/chatgpt" => self.chatgpt_command(argument, source),
             "/session-names" => self.session_names_command(argument, source),
-            "/handover" => self.handover_command(argument, source),
+            "/handover" => self.handover_command(source),
             "/text-replies" => self.text_replies_command(argument, source),
             "/cc-compact" => self.cc_compact_command(argument, source),
             "/extra-rules" => self.extra_rules_command(argument, source),
@@ -2858,15 +2858,7 @@ impl Harness {
     /// `/handover`: the main agent hands over at its next step, or when
     /// its next turn starts. In Claude Code, Claude Code compacts its
     /// conversation then instead.
-    pub(crate) fn handover_command(&mut self, argument: &str, source: Source) {
-        if !argument.is_empty() {
-            self.mirrored(|harness| {
-                harness.output.line(&harness.output.error(
-                    "/handover takes nothing after it. /handover-at sets the size the agent hands over at.",
-                ))
-            });
-            return;
-        }
+    pub(crate) fn handover_command(&mut self, source: Source) {
         let compacts = self.handover.compacts();
         let Some(asked) = self.ask_handover() else {
             let text = if compacts {
@@ -5058,10 +5050,13 @@ pub(crate) fn conversation_of(workflow: &Workflow, run: Option<uuid::Uuid>) -> C
     }
 }
 
-/// The command `text` is, if it is one (see `commands`): a command's name,
-/// alone or with what it takes.
+/// The command `text` is, if it is one: a command's name, alone or with
+/// what it takes, as the registry ([`commands::find`]) says. That holds for
+/// the commands that also run while the agent works ([`LIVE_COMMANDS`]), so
+/// a line such as `/handover extra` is refused as an unknown command, with
+/// its text kept, rather than run.
 pub(crate) fn command(text: &str) -> Option<&str> {
-    (commands::find(text).is_some() || split_live_command(text).is_some()).then_some(text)
+    commands::find(text).map(|_| text)
 }
 
 /// `/remote`, alone or with what follows it.
@@ -5674,6 +5669,15 @@ pub(crate) mod tests {
         assert_eq!(command("/workers"), Some("/workers"));
         assert_eq!(command("/usr/bin is missing"), None);
         assert_eq!(command("/cost please"), None);
+        // The commands that run while the agent works take what the
+        // registry says, so `/handover extra` is no command.
+        assert_eq!(command("/handover"), Some("/handover"));
+        assert_eq!(command("/handover extra"), None);
+        for name in LIVE_COMMANDS {
+            let takes = !commands::find(name).unwrap().args.is_empty();
+            let line = format!("{name} extra");
+            assert_eq!(command(&line).is_some(), takes, "{line}");
+        }
     }
 
     /// The page lists the session's commands it doesn't refuse, among

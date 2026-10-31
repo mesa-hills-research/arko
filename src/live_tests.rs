@@ -688,12 +688,14 @@ async fn a_handover_asked_for_while_idle_happens_when_the_next_turn_starts() {
         .turn(Prompt::User("First.".into()), &mut inputs)
         .await;
     assert!(matches!(end, TurnEnd::Answered));
-    harness.live_command("/handover now", Source::Terminal);
-    assert!(says(
-        &harness.feed,
-        "output",
-        "/handover takes nothing after it"
-    ));
+    // A line with words /handover doesn't take isn't the command: the
+    // session refuses it before it runs.
+    assert_eq!(command("/handover now"), None);
+    assert!(
+        harness
+            .unknown_command("/handover now", Source::Terminal)
+            .is_some_and(|why| why.starts_with("/handover takes nothing after it."))
+    );
     harness.live_command("/handover", Source::Terminal);
     assert!(says(
         &harness.feed,
