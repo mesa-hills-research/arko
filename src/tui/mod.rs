@@ -456,7 +456,10 @@ async fn run(
                 dirty = true;
             }
             Some((sending, verdict)) = verdicts.recv() => {
-                app.verdict(sending, verdict);
+                match verdict {
+                    Some(verdict) => app.verdict(sending, verdict),
+                    None => app.no_verdict(sending),
+                }
                 draw_now = true;
             }
             Some(result) = settings_results.recv() => {
@@ -539,9 +542,8 @@ async fn run(
                         if setup.requests.send(request).is_ok() {
                             let done = verdict_done.clone();
                             tokio::spawn(async move {
-                                if let Ok(verdict) = verdict.await {
-                                    let _ = done.send((sending, verdict));
-                                }
+                                let verdict = verdict.await.ok();
+                                let _ = done.send((sending, verdict));
                             });
                         }
                     }

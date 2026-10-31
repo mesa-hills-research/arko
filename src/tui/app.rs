@@ -1608,6 +1608,16 @@ impl App {
         }
     }
 
+    /// The session stopped before it said what became of `sending`, which
+    /// may have gone: it comes back to the box when the box is empty, and
+    /// the status line says to look before sending it again.
+    pub fn no_verdict(&mut self, sending: Sending) {
+        if self.editor.is_empty() {
+            self.editor.set(&sending.typed);
+        }
+        self.say("Arko stopped before saying whether it went. Check the transcript before you send it again.");
+    }
+
     /// Whether `line`, a `/message` that the box holds as `typed`, goes as
     /// continuing its worker without its cache: the session refused it
     /// moments ago for that, said what it costs, and Enter came again with
@@ -2812,6 +2822,19 @@ pub(super) mod tests {
         type_text(&mut app, "/workers");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/workers"]);
+        // The session stops before it says: the message comes back, and the
+        // status line says it may have gone.
+        app.editor.take();
+        type_text(&mut app, "Bye.");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let [sending] = sendings(&mut app).try_into().unwrap();
+        app.no_verdict(sending);
+        assert_eq!(app.editor.text(), "Bye.");
+        assert!(
+            app.hint()
+                .is_some_and(|hint| hint.starts_with("Arko stopped before saying"))
+        );
+        app.editor.take();
         // The box holds something else by the time a refusal comes: it
         // stays.
         type_text(&mut app, "Hello.");
