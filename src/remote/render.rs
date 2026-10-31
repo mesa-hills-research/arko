@@ -1086,6 +1086,7 @@ fn runs_tests(command: &str) -> bool {
                 then().first() == Some(&"test")
             }
             "make" => matches!(then().first(), Some(&("test" | "check"))),
+            "zig" => matches!(then().as_slice(), ["test", ..] | ["build", "test"]),
             "python" | "python3" => {
                 words.get(at + 1) == Some(&"-m")
                     && matches!(words.get(at + 2), Some(&("pytest" | "unittest")))
@@ -1607,6 +1608,9 @@ mod tests {
             ("pnpm -C web test", true),
             ("yarn --cwd web run test", true),
             ("make -C build check", true),
+            ("zig test src/main.zig > test.log 2>&1", true),
+            ("zig build test > out.log", true),
+            ("zig build > out.log", false),
             ("cargo --locked build", false),
             ("npm --prefix web run build", false),
             ("cargo build", false),
