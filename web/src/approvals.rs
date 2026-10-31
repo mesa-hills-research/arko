@@ -131,8 +131,8 @@ fn rendered_rows(list: &web_sys::Element, rows: Rows) {
                 .first_element_child()
                 .unwrap_or(row)
                 .get_bounding_client_rect();
-            if rect.top() >= bounds.top().max(0.0)
-                && rect.bottom() <= bounds.bottom().min(viewport)
+            if rect.top() >= bounds.top().max(0.0) - 1.0
+                && rect.bottom() <= bounds.bottom().min(viewport) + 1.0
                 && rect.width() > 0.0
                 && rect.height() > 0.0
             {
