@@ -420,9 +420,9 @@ const ALT_Q: &str = "open the answer panel for the agent's questions";
 
 /// What Alt+A does.
 #[cfg(target_os = "macos")]
-const ALT_A: &str = "the approval tray, where Space selects, Enter approves the selection, R rejects all and V opens a row's details. Option+A needs Option to work as Alt. In the Terminal app, turn on Use Option as Meta key.";
+const ALT_A: &str = "the approval tray, where Space selects, Enter approves the selection, R rejects all, V opens a row's details and M flips Include message. Option+A needs Option to work as Alt. In the Terminal app, turn on Use Option as Meta key.";
 #[cfg(not(target_os = "macos"))]
-const ALT_A: &str = "the approval tray, where Space selects, Enter approves the selection, R rejects all and V opens a row's details";
+const ALT_A: &str = "the approval tray, where Space selects, Enter approves the selection, R rejects all, V opens a row's details and M flips Include message";
 
 /// The keys, with why each is what it is in a word, and the commands.
 pub const KEYS: &[(&str, &str)] = &[

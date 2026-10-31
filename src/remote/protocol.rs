@@ -744,11 +744,11 @@ fn yes() -> bool {
 }
 
 /// The user's answer to the requests in the tray, which a front end sends
-/// once for all it shows.
+/// for the requests it has shown long enough to read.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovalAnswers {
     pub choices: Vec<ApprovalChoice>,
-    /// What the message box held, which goes to the agent with each answer.
+    /// The message included by the user, which goes to the agent with each answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<String>,
 }
