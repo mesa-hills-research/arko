@@ -1,14 +1,14 @@
-//! The full-screen view: Arko's front end when standard input and output
+//! The full-screen view, Arko's front end when standard input and output
 //! are a terminal (`--repl` keeps the line prompt). It is a client of the
-//! session as the web page is: it shows the [`Feed`](remote::Feed) and the
+//! session as the web page is. It shows the [`Feed`](remote::Feed) and the
 //! [`Meter`](remote::Meter)'s figures, and what the user types reaches the
 //! session as a line typed at the prompt does (the terminal's own input,
 //! so `/exit` and `/remote` work here and the feed says it came from the
 //! terminal).
 //!
-//! Four rules shape it: the transcript is what the user is there for, and
-//! everything else is small and quiet; nothing moves under the reader;
-//! what is unusual shows, not what is normal; and the keys are those of
+//! Four rules shape it. The transcript is what the user is there for, and
+//! everything else is small and quiet. Nothing moves under the reader.
+//! What is unusual shows, not what is normal. The keys are those of
 //! chat apps, pagers and readline.
 
 mod app;
@@ -60,7 +60,7 @@ use app::{App, Effect, Info, Sending};
 use backend::CursorBackend;
 pub use transcript::Banner;
 
-/// How long Enter waits to see if more keys follow it: keys that come
+/// How long Enter waits to see if more keys follow it. Keys that come
 /// together are a paste the terminal didn't mark (the classic Windows
 /// console, where pastes arrive as keys), whose line breaks must not send.
 const ENTER_WAIT: Duration = Duration::from_millis(25);
@@ -75,12 +75,12 @@ pub struct Setup {
     /// The session's details, for the words dictation favours.
     pub details: Arc<crate::details::Details>,
     pub meter: Arc<dyn remote::Meter>,
-    /// Where the user's input goes: the session reads it as the terminal's.
+    /// Where the user's input goes. The session reads it as the terminal's.
     pub input: mpsc::UnboundedSender<Input>,
     /// Where what the user sends goes, each with where its verdict comes
     /// ([`crate::Request::Send`]).
     pub requests: mpsc::UnboundedSender<crate::Request>,
-    /// Arko's folder: the history, the view's choices, the user's themes.
+    /// Arko's folder, with the history, the view's choices, the user's themes.
     pub root: PathBuf,
     pub session_dir: PathBuf,
     pub workspace: PathBuf,
@@ -91,7 +91,7 @@ pub struct Setup {
     pub banner: Banner,
     /// The API keys, which the keys menu adds and removes.
     pub keys: Arc<crate::keys::Keys>,
-    /// The jobs in the background to ask about: quitting would stop them.
+    /// The jobs in the background to ask about, because quitting would stop them.
     pub quit_asks: mpsc::UnboundedReceiver<ui::QuitAsk>,
 }
 
@@ -102,7 +102,7 @@ pub struct Screen {
     output: Arc<Output>,
 }
 
-/// Whether the full-screen view can run: standard input and output are a
+/// Whether the full-screen view can run, which it does when standard input and output are a
 /// terminal that can draw (not TERM=dumb).
 pub fn available() -> bool {
     std::io::stdin().is_terminal()
@@ -110,12 +110,12 @@ pub fn available() -> bool {
         && std::env::var("TERM").map_or(true, |term| term != "dumb")
 }
 
-/// Takes the screen, and shows the session there from now on: `output`'s
+/// Takes the screen, and shows the session there from now on. `output`'s
 /// lines go to the feed. When the terminal can't be set up, the line
 /// prompt reads the input instead, and `None` is returned.
 pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     let history = setup.root.join("history.txt");
-    // Settled first: its warning, if any, prints before the screen is taken.
+    // Settled first, so its warning, if any, prints before the screen is taken.
     glyphs::symbols();
     let catalog = theme::Catalog::load(Some(&setup.root.join("themes")));
     let depth = theme::depth();
@@ -175,7 +175,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
         match running.catch_unwind().await {
             Ok(reply) => reply,
             Err(_) => {
-                // The panic hook restored the terminal and said why; the
+                // The panic hook restored the terminal and said why. The
                 // session ends as Ctrl-D ends it (it is saved).
                 close();
                 let _ = input.send(Input::Eof);
@@ -191,7 +191,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
 }
 
 impl Screen {
-    /// Gives the screen back: the terminal as it was, and then the last
+    /// Gives the screen back, with the terminal as it was, and then the last
     /// reply printed where the user can scroll back to it.
     pub async fn close(self) {
         let _ = self.stop.send(());
@@ -207,7 +207,7 @@ impl Screen {
 }
 
 /// Mouse reports for buttons, the wheel and drags (motion while a button is
-/// down, to select text): not every motion, which crossterm's own command
+/// down, to select text), not every motion, which crossterm's own command
 /// asks for too (any-event tracking, crossterm/src/event.rs:329) and which
 /// would wake the view at every move of the mouse.
 struct EnableMouse;
@@ -230,7 +230,7 @@ impl Command for EnableMouse {
     }
 }
 
-/// The terminal made the view's: raw mode, the alternate screen, the
+/// The terminal made the view's, namely raw mode, the alternate screen, the
 /// mouse, pastes and focus reported, and Shift+Enter told apart from
 /// Enter where the terminal can (the kitty keyboard protocol). Returns the
 /// terminal and whether Shift+Enter is reported.
@@ -254,15 +254,15 @@ fn open() -> std::io::Result<(Terminal<CursorBackend<Stdout>>, bool)> {
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouse, EnableFocusChange)?;
     // Not in the classic Windows console without escape codes
-    // (crossterm/src/event.rs:413-435): pastes come as keys there.
+    // (crossterm/src/event.rs:413-435), so pastes come as keys there.
     let _ = execute!(stdout, EnableBracketedPaste);
-    // The title is saved, to be put back (xterm's title stack; others
+    // The title is saved, to be put back (xterm's title stack, and others
     // ignore it).
     if !cfg!(windows) {
         let _ = write!(stdout, "\x1b[22;0t");
     }
-    // Asked once, before events are read: the answer is read as an event
-    // (crossterm/src/terminal/sys/unix.rs:183-267); Windows answers no
+    // Asked once, before events are read. The answer is read as an event
+    // (crossterm/src/terminal/sys/unix.rs:183-267). Windows answers no
     // (crossterm/src/terminal/sys/windows.rs:75), but its console's key
     // records carry Shift with Enter anyway.
     let enhanced = matches!(
@@ -291,20 +291,20 @@ fn clear_new_screen(writer: &mut impl Write) -> std::io::Result<()> {
     )
 }
 
-/// Whether a panic on the thread named `thread` ends the view: the main
+/// Whether a panic on the thread named `thread` ends the view, the main
 /// thread's, or the runtime's, which runs the view (tokio's default name,
 /// which the command's runtime keeps).
 fn ends_the_view(thread: Option<&str>) -> bool {
     matches!(thread, Some("main" | "tokio-runtime-worker"))
 }
 
-/// The keyboard protocol was pushed: it is popped as the view closes.
+/// The keyboard protocol was pushed, and it is popped as the view closes.
 static ENHANCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// The view has the terminal: [`close`] gives it back once.
+/// The view has the terminal, and [`close`] gives it back once.
 static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The terminal as it was: safe to call more than once, and from the panic
-/// hook. (Only once: leaving the alternate screen again would put the
+/// hook. (Only once, because leaving the alternate screen again would put the
 /// cursor back where the view started, over what was printed since.)
 fn close() {
     if !OPEN.swap(false, std::sync::atomic::Ordering::SeqCst) {
@@ -314,7 +314,7 @@ fn close() {
     write_close(&mut std::io::stdout());
 }
 
-/// What gives the terminal back, written to `out`: the keyboard protocol
+/// What gives the terminal back, written to `out`, with the keyboard protocol
 /// popped (when it was pushed), the mouse, focus and paste reports off, the
 /// main screen back, the cursor shown and the title put back.
 fn write_close(out: &mut impl Write) {
@@ -342,14 +342,14 @@ pub(crate) fn give_back_terminal() {
     close();
 }
 
-/// A paste that came as keys: where it started in the box, and when it
+/// A paste that came as keys, with where it started in the box, and when it
 /// ends unless more come.
 struct Burst {
     start: usize,
     until: Instant,
 }
 
-/// Whether `event` types into the box: a character, or a plain Enter.
+/// Whether `event` types into the box, a character, or a plain Enter.
 fn types(event: &Event) -> bool {
     match event {
         Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
@@ -363,7 +363,7 @@ fn types(event: &Event) -> bool {
     }
 }
 
-/// The view's loop: terminal events, the feed's updates and the clock, until
+/// The view's loop over terminal events, the feed's updates and the clock, until
 /// `stop`. Returns the last reply.
 async fn run(
     mut terminal: Terminal<CursorBackend<Stdout>>,
@@ -380,13 +380,13 @@ async fn run(
     // While the screen shows something that moves, its frames.
     let mut animation = tokio::time::interval(motion::FRAME);
     animation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // Something changed: drawn at the next frame. Keys draw at once.
+    // Something changed, drawn at the next frame. Keys draw at once.
     let mut dirty = false;
     let mut draw_now = true;
     let mut title = String::new();
     let mut enter: Option<Instant> = None;
     let mut burst: Option<Burst> = None;
-    // The cache timer's words as last seen: drawn again when they change.
+    // The cache timer's words as last seen, drawn again when they change.
     let mut cache_label = None;
     // What each way of naming sessions by a model lacks, checked off this
     // loop's thread (the check runs Claude Code).
@@ -435,7 +435,7 @@ async fn run(
             }
             event = events.next(), if events_open => {
                 let Some(Ok(event)) = event else {
-                    // The terminal is gone: as Ctrl-D at the prompt.
+                    // The terminal is gone, as Ctrl-D at the prompt.
                     events_open = false;
                     give(&setup.requests, &verdict_done, control(Input::Eof));
                     continue;
@@ -449,13 +449,13 @@ async fn run(
             received = updates.next() => {
                 let (rings, asked) = take_updates(&mut app, received, &mut updates, &setup.feed);
                 bell |= rings;
-                // The web page just started says so in the feed: its links
+                // The web page just started says so in the feed, so its links
                 // show at once. So do the agent's questions, in the answer
                 // panel.
                 if app.waits_for_page() || asked {
                     app.set_reading(setup.meter.read());
                 }
-                // Drawn at the next frame: streaming text doesn't redraw at
+                // Drawn at the next frame, because streaming text doesn't redraw at
                 // every chunk.
                 dirty = true;
             }
@@ -492,7 +492,7 @@ async fn run(
                 if models || reading != app.reading || app.activity.working || workers || app.hint.is_some() || quitting || counting {
                     app.set_reading(reading);
                     dirty = true;
-                    // Yes stops the jobs the popup shows: drawn before the
+                    // Yes stops the jobs the popup shows, drawn before the
                     // next key.
                     draw_now |= quitting;
                 }
@@ -501,7 +501,7 @@ async fn run(
                 draw_now = true;
             }
             _ = tokio::time::sleep_until(preview_at.unwrap_or_else(Instant::now).into()), if preview_at.is_some() => {
-                // The theme picker's selection has rested: its preview.
+                // The theme picker's selection has rested, and its preview is drawn.
                 if app.preview(Instant::now()) {
                     draw_now = true;
                 }
@@ -509,7 +509,7 @@ async fn run(
             _ = tokio::time::sleep_until(enter_at.into()), if enter.is_some() => {
                 let batch = waiting(&mut events).await;
                 if batch.is_empty() {
-                    // No key followed the Enter: it was typed, and sends.
+                    // No key followed the Enter, so it was typed, and sends.
                     enter = None;
                     app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
                 } else {
@@ -543,7 +543,7 @@ async fn run(
                     Effect::Send(sending) => give(&setup.requests, &verdict_done, sending),
                     Effect::Input(input) => give(&setup.requests, &verdict_done, control(input)),
                     Effect::Copy { text, what } => {
-                        // The terminal's clipboard, and the system's: the status
+                        // The terminal's clipboard, and the system's. The status
                         // line says "Copied" only when the system's took it.
                         let mut stdout = std::io::stdout();
                         let _ = execute!(
@@ -666,7 +666,7 @@ fn carry_out(
     }
 }
 
-/// Where the view's own recording's events go: to the view's loop, on a
+/// Where the view's own recording's events go, to the view's loop, on a
 /// channel of their own. The feed's subscription drops what a lagging view
 /// misses and starts over from a history that holds no recording.
 fn recording_sink(
@@ -748,7 +748,7 @@ fn give(requests: &mpsc::UnboundedSender<crate::Request>, verdicts: &Verdicts, s
     });
 }
 
-/// Whether `update` is of a question card: the agent asked, or its
+/// Whether `update` is of a question card, when the agent asked, or its
 /// questions changed.
 fn asks(update: &remote::Update) -> bool {
     matches!(
@@ -759,7 +759,7 @@ fn asks(update: &remote::Update) -> bool {
 }
 
 /// The events already waiting, without waiting for more. (Polled in this
-/// task, not with a no-op waker: the stream registers the waker of its
+/// task, not with a no-op waker, because the stream registers the waker of its
 /// first pending poll only, so a no-op one would leave the next keys unread
 /// until something else woke the loop, crossterm/src/event/stream.rs:112-131.)
 async fn waiting(events: &mut EventStream) -> Vec<Event> {
@@ -771,7 +771,7 @@ async fn waiting(events: &mut EventStream) -> Vec<Event> {
 }
 
 /// A batch of terminal events. Keys that came together are a paste (where
-/// the terminal doesn't mark pastes): their line breaks are line breaks,
+/// the terminal doesn't mark pastes), so their line breaks are line breaks,
 /// not sends. A lone Enter waits a moment for what follows it.
 fn handle(
     app: &mut App,
@@ -781,7 +781,7 @@ fn handle(
 ) {
     let now = Instant::now();
     let typed = batch.iter().filter(|event| types(event)).count();
-    // (Three keys or more: two quick keys of a person's can come in one
+    // (Three keys or more, because two quick keys of a person's can come in one
     // read while the view is busy drawing.)
     let mut pasting = typed >= 3 || burst.is_some();
     if enter.take().is_some() {
@@ -833,13 +833,13 @@ fn handle(
         }
     }
     if pasting && let Some(burst) = burst {
-        // From now: a long batch takes a while in a debug build.
+        // From now, since a long batch takes a while in a debug build.
         burst.until = Instant::now() + BURST_GAP;
     }
 }
 
 /// A frame, drawn as one update where the terminal can (synchronized
-/// output, CSI ?2026: crossterm/src/terminal.rs:433-450; others ignore it),
+/// output, CSI ?2026, crossterm/src/terminal.rs:433-450; others ignore it),
 /// so it doesn't flicker.
 fn draw(terminal: &mut Terminal<CursorBackend<Stdout>>, app: &mut App) {
     let _ = queue!(terminal.backend_mut(), BeginSynchronizedUpdate);
@@ -891,7 +891,7 @@ mod tests {
     }
 
     /// A paste that comes as keys doesn't send at its line breaks, and a
-    /// long one folds into a chip once it ends; a lone Enter sends after
+    /// long one folds into a chip once it ends. A lone Enter sends after
     /// its wait.
     #[test]
     fn keys_that_come_together_are_a_paste() {
@@ -912,7 +912,7 @@ mod tests {
         assert!(enter.is_none() && burst.is_some());
         assert!(app.take_effects().is_empty());
         burst = None;
-        // Typed, one key at a time: the Enter waits, then sends when
+        // Typed, one key at a time, so the Enter waits, then sends when
         // nothing follows (the loop's timer).
         handle(&mut app, vec![key(KeyCode::Enter)], &mut enter, &mut burst);
         assert!(enter.is_some());
@@ -1054,7 +1054,7 @@ mod tests {
         assert!(!take_updates(&mut app, started, &mut updates, &feed).0);
         assert!(app.activity.working);
         // The loop takes one update, and more come before it takes the
-        // rest: the turn's end and more than the broadcast keeps.
+        // rest, the turn's end and more than the broadcast keeps.
         feed.notice(remote::Level::Info, "first");
         let first = updates.next().now_or_never().unwrap();
         feed.turn_ended("3 s · $0.01", None);
@@ -1078,7 +1078,7 @@ mod tests {
         assert_eq!(shown(&app).as_deref(), Some("after"));
     }
 
-    /// Giving the terminal back undoes all the view did to it: the
+    /// Giving the terminal back undoes all the view did to it, namely the
     /// keyboard protocol, the mouse, focus and paste reports, the
     /// alternate screen, the cursor and the title.
     #[cfg(unix)]

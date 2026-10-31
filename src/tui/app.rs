@@ -1,5 +1,5 @@
 //! The full-screen view's state, and what each key, click and update does
-//! to it. Drawing is `screen`'s; what reaches the session (a message, a
+//! to it. Drawing is `screen`'s. What reaches the session (a message, a
 //! stop) and the terminal (a copy) comes out as [`Effect`]s, so all of it
 //! runs in tests without a terminal.
 
@@ -36,14 +36,14 @@ const AGAIN: Duration = Duration::from_secs(3);
 /// Lines a wheel notch scrolls.
 const WHEEL: i64 = 3;
 /// The theme picker previews the theme it is on once the selection has
-/// rested this long: holding a key repaints nothing, and quick steps
+/// rested this long, so holding a key repaints nothing, and quick steps
 /// repaint the screen less than 3 times a second (WCAG 2.3.1's threshold
 /// for flashes).
 pub const PREVIEW_REST: Duration = Duration::from_millis(350);
 /// Clicks this close together, on one cell, are a double or triple click.
 const MULTI_CLICK: Duration = Duration::from_millis(400);
 
-/// The left button pressed in the transcript: where the press began in the
+/// The left button pressed in the transcript, with where the press began in the
 /// text, where the mouse is, and whether it moved (a drag selects text).
 #[derive(Debug, Clone, Copy)]
 struct Press {
@@ -51,14 +51,14 @@ struct Press {
     at: (u16, u16),
     dragged: bool,
     /// A double or triple click chose what is highlighted (a word, a
-    /// line): it stays so unless the mouse drags on.
+    /// line), and it stays so unless the mouse drags on.
     chosen: bool,
-    /// The view followed the bottom when the button went down: a click
+    /// The view followed the bottom when the button went down, so a click
     /// (no drag) leaves it following.
     following: bool,
 }
 
-/// The left button pressed on the answer panel's text: where the press
+/// The left button pressed on the answer panel's text, with where the press
 /// began in it, where the mouse is, and whether it highlighted text (a
 /// drag, or a double or triple click), which is copied when the button is
 /// let go.
@@ -76,7 +76,7 @@ pub struct Info {
     pub workspace: String,
     /// The handover size the session started with, until the status says.
     pub handover_at: usize,
-    /// The session's folder: the web page's key is there.
+    /// The session's folder, where the web page's key is there.
     pub session_dir: PathBuf,
     /// Where the view's choices are remembered.
     pub prefs: Option<PathBuf>,
@@ -93,7 +93,7 @@ pub enum Effect {
     /// ([`App::verdict`]).
     Send(Sending),
     /// Copy `text`, which is `what` ("14 characters", "the last
-    /// reply"): the status line says what became of it.
+    /// reply"). The status line says what became of it.
     Copy { text: String, what: String },
     /// Turn mouse capture on or off.
     Mouse(bool),
@@ -122,7 +122,7 @@ pub enum Effect {
     Notice(crate::remote::Level, String),
 }
 
-/// A check that its asker can end: set to stop it.
+/// A check that its asker can end, set to stop it.
 #[derive(Debug, Clone, Default)]
 pub struct Cancel(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
 
@@ -136,7 +136,7 @@ impl PartialEq for Cancel {
 #[derive(Debug, Clone, Default)]
 pub struct Menu {
     pub selected: usize,
-    /// Esc closed it: it stays closed until the text changes.
+    /// Esc closed it. It stays closed until the text changes.
     pub dismissed: Option<String>,
     /// The argument's choice ↑ ↓ moved to.
     pub choice: Option<String>,
@@ -162,27 +162,27 @@ fn ended_lately(worker: &crate::remote::WorkerSummary, now: i64) -> bool {
 pub enum ListRow {
     /// The agent at this index of [`App::list`].
     Agent(usize),
-    /// "… N more" on top: the workers above those shown.
+    /// "… N more" on top, for the workers above those shown.
     Above(usize),
-    /// "… N more" at the bottom: the workers below those shown.
+    /// "… N more" at the bottom, for the workers below those shown.
     More(usize),
-    /// "… N more above, M more below": both, in a list with room for one
+    /// "… N more above, M more below", for both, in a list with room for one
     /// count.
     Both(usize, usize),
 }
 
-/// The agent list as drawn: its rows, and how far it is scrolled.
+/// The agent list as drawn, with its rows, and how far it is scrolled.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ListWindow {
     pub rows: Vec<ListRow>,
     /// How many workers are above those shown.
     pub scroll: usize,
-    /// The farthest it scrolls: the last worker is shown.
+    /// The farthest it scrolls, where the last worker is shown.
     pub most: usize,
 }
 
 /// The rows of a list of `count` agents (the main agent, then the workers)
-/// in `height` rows at most: the main agent, then at most
+/// in `height` rows at most, the main agent, then at most
 /// [`LIST_WORKERS`] workers from the `scroll`th on, with a row counting
 /// those above them and one counting those below, when there are. With
 /// `follow`, the workers shown move to the agent `focus` is on. A list too
@@ -210,7 +210,7 @@ pub fn list_rows(
     // The rows under the main agent's.
     let room = (height - 1).min(LIST_WORKERS + 1);
     if room < 2 {
-        // No room for a worker beside the main agent and the count: the
+        // No room for a worker beside the main agent and the count, the
         // agent the focus is on.
         let agent = focus.unwrap_or(0);
         let mut rows = vec![ListRow::Agent(agent)];
@@ -222,7 +222,7 @@ pub fn list_rows(
             ..ListWindow::default()
         };
     }
-    // Scrolled past `scroll` workers: whether the count above is shown, how
+    // Scrolled past `scroll` workers, with whether the count above is shown, how
     // many workers are, and how many are below them.
     let layout = |scroll: usize| {
         let rest = workers - scroll;
@@ -254,7 +254,7 @@ pub fn list_rows(
     rows.extend((scroll + 1..=scroll + shown).map(ListRow::Agent));
     match below {
         0 => {}
-        // (No room for the count above: one row counts both.)
+        // (No room for the count above, so one row counts both.)
         below if scroll > 0 && !above => rows.push(ListRow::Both(scroll, below)),
         below => rows.push(ListRow::More(below)),
     }
@@ -262,7 +262,7 @@ pub fn list_rows(
 }
 
 /// Since when the main agent works (Unix milliseconds), unless it waits
-/// for the user's answer (`waits`: not on its model).
+/// for the user's answer (`waits` means not on its model).
 fn agent_works_since(activity: &Activity, waits: bool) -> Option<i64> {
     (activity.working && !waits).then(|| activity.since.unwrap_or(i64::MIN))
 }
@@ -282,7 +282,7 @@ pub struct Sending {
 /// What goes back when the session refuses a send, or stops before it says.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Restore {
-    /// Nothing: a stop, a quit, a dismissal.
+    /// Nothing, as for a stop, a quit, a dismissal.
     Nothing,
     /// The box's text as it was sent, and the questions attached to it,
     /// when the box is empty.
@@ -362,11 +362,11 @@ pub struct App {
     pub tray: super::approvals::Tray,
     pub menu: Menu,
     pub overlay: Option<Overlay>,
-    /// A word in the status line for a moment: "Copied", ...
+    /// A word in the status line for a moment, like "Copied", ...
     pub hint: Option<(String, Instant)>,
     /// The `/message` to a worker whose prompt cache expired that the
     /// session didn't send, which the status line said the cost of, and
-    /// when: Enter again soon after continues the worker. Esc, or other
+    /// when. Enter again soon after continues the worker. Esc, or other
     /// text, asks again.
     continue_asked: Option<(String, Instant)>,
     last_interrupt: Option<Instant>,
@@ -388,11 +388,11 @@ pub struct App {
     pub docked: Option<Docked>,
     /// The left button, while it is down over the answer panel's text.
     docked_press: Option<DockPress>,
-    /// The last click: when, where, and how many in a row.
+    /// The last click, as when, where, and how many in a row.
     last_click: Option<(Instant, u16, u16, u8)>,
     /// The block whose fold the last click opened or closed.
     folded: Option<u64>,
-    /// Where the agent list was drawn, and its rows: for the mouse.
+    /// Where the agent list was drawn, and its rows, for the mouse.
     pub list_drawn: (ratatui::layout::Rect, Vec<ListRow>),
     /// How many workers the agent list is scrolled past, and the farthest
     /// it scrolls, as last drawn.
@@ -529,7 +529,7 @@ impl App {
         matches!(self.overlay, Some(Overlay::Remote { .. })) && self.reading.page.is_none()
     }
 
-    /// The session's figures now: the banner follows its models.
+    /// The session's figures now, so the banner follows its models.
     pub fn set_reading(&mut self, reading: Reading) {
         if let Some(banner) = &mut self.transcript.banner
             && !reading.models.banner_model.is_empty()
@@ -571,7 +571,7 @@ impl App {
     pub fn open_model(&mut self, target: Target) {
         let models = self.reading.models.clone();
         if models.main.is_empty() {
-            // (The session hasn't said its models yet: it answers.)
+            // (The session hasn't said its models yet, and it answers.)
             self.send(match target {
                 Target::Main => "/model",
                 Target::Workers => "/model worker",
@@ -615,7 +615,7 @@ impl App {
             _ => {}
         }
         // A fetch that ended may leave the models the settings need now
-        // unfetched (they changed meanwhile): they are asked for again.
+        // unfetched (they changed meanwhile), so they are asked for again.
         if let (Some(root), Some(Overlay::Model(_) | Overlay::OpenRouter(_))) =
             (&self.info.root, &self.overlay)
         {
@@ -636,7 +636,7 @@ impl App {
         self.overlay = Some(Overlay::Resume(ResumePicker::open(entries)));
     }
 
-    /// The API keys menu; `words` are what followed `/keys`, and `back_to`
+    /// The API keys menu. `words` are what followed `/keys`, and `back_to`
     /// the settings' row it was opened from.
     pub fn open_keys(&mut self, words: &str, back_to: Option<usize>) {
         self.overlay = Some(Overlay::Keys(KeysMenu::open(
@@ -646,7 +646,7 @@ impl App {
         )));
     }
 
-    /// A change the OpenRouter menu asked for was made, or wasn't: the menu
+    /// A change the OpenRouter menu asked for was made, or wasn't. The menu
     /// shows it, or, closed, the status line.
     pub fn openrouter_done(
         &mut self,
@@ -680,10 +680,10 @@ impl App {
         self.effects.push(Effect::CheckNames(cancel));
     }
 
-    /// What `check`, a check of the ways of naming, found: the menu shows it,
+    /// What `check`, a check of the ways of naming, found. The menu shows it,
     /// if that check is the one it waits for.
     pub fn names_checked(&mut self, check: &Cancel, missing: Vec<(Way, Option<String>)>) {
-        // Only the check the menu open now asked for: one made for a menu
+        // Only the check the menu open now asked for. One made for a menu
         // that closed, and reached the loop before the new one opened, isn't
         // this one's.
         if self.names_check.as_ref() != Some(check) {
@@ -700,7 +700,7 @@ impl App {
         self.names_check.clone()
     }
 
-    /// The menu is closed or open again: a check that is running is no
+    /// The menu is closed or open again, so a check that is running is no
     /// longer wanted.
     fn end_names_check(&mut self) {
         if let Some(cancel) = self.names_check.take() {
@@ -708,7 +708,7 @@ impl App {
         }
     }
 
-    /// What the session did with a key the menu sent: the menu shows it,
+    /// What the session did with a key the menu sent. The menu shows it,
     /// or, closed, the status line.
     pub fn keys_done(&mut self, key: &'static Key, outcome: crate::keys::Outcome) {
         if let Some(Overlay::Keys(menu)) = &mut self.overlay {
@@ -749,7 +749,7 @@ impl App {
     }
 
     /// Puts back what `sending` took, when the session refused it or didn't
-    /// say what became of it: the box's text and its questions, when the
+    /// say what became of it, giving the box's text and its questions, when the
     /// box is empty, or the answer panel.
     fn restore(&mut self, sending: &Sending) {
         match &sending.restore {
@@ -803,7 +803,7 @@ impl App {
         self.hint = Some((text.into(), Instant::now()));
     }
 
-    /// The view's filter: the main transcript in its view, or a worker's.
+    /// The view's filter, the main transcript in its view, or a worker's.
     pub fn filter(&self) -> Filter {
         match &self.watching {
             Some(worker) => Filter::Worker(worker.clone(), self.view),
@@ -815,7 +815,7 @@ impl App {
         self.effects.push(effect);
     }
 
-    /// The commands the menu offers for what is typed: the box holds a
+    /// The commands the menu offers for what is typed, when the box holds a
     /// command's name being typed.
     pub fn menu_items(&self) -> Vec<&'static commands::Command> {
         if self.overlay.is_some() {
@@ -860,7 +860,7 @@ impl App {
     }
 
     /// The words that may follow `before` in the arguments of the command
-    /// `name`: its fixed ones, or the session's workers, models and so on.
+    /// `name`, namely its fixed ones, or the session's workers, models and so on.
     /// `typed` is the start of the word being typed, which `/model` completes
     /// from OpenRouter's list once it starts with `openrouter:`.
     fn choices(&self, name: &str, before: &[String], typed: &str) -> Vec<String> {
@@ -913,7 +913,7 @@ impl App {
         }
     }
 
-    /// `/model`'s words: `worker`, the models the picker offers, `main`
+    /// `/model`'s words, namely `worker`, the models the picker offers, `main`
     /// for the workers, then the efforts the model takes.
     fn model_choices(&self, words: &[&str], typed: &str) -> Vec<String> {
         let models = &self.reading.models;
@@ -966,7 +966,7 @@ impl App {
         found
     }
 
-    /// The choice ↑ ↓ show: the one moved to, else the first once a
+    /// The choice ↑ ↓ show, the one moved to, else the first once a
     /// letter is typed.
     fn chosen(&self, argument: &Argument) -> Option<usize> {
         let moved = self
@@ -977,7 +977,7 @@ impl App {
         moved.or((argument.typed > 0 && !argument.choices.is_empty()).then_some(0))
     }
 
-    /// The dim text after the cursor on a command line: the rest of the
+    /// The dim text after the cursor on a command line, the rest of the
     /// choice shown (and which of how many), else what the argument may be.
     pub fn ghost(&self) -> Option<String> {
         let argument = self.argument()?;
@@ -1000,7 +1000,7 @@ impl App {
         }
     }
 
-    /// Tab: the choice shown, else the first, in place of what is typed,
+    /// Tab takes the choice shown, else the first, in place of what is typed,
     /// then a space when another word may follow.
     fn accept(&mut self, argument: &Argument, index: usize) {
         let choice = &argument.choices[index];
@@ -1017,7 +1017,7 @@ impl App {
 
     // ----- updates from the session -----
 
-    /// Takes the feed's `update`; `activity` is the feed's activity now.
+    /// Takes the feed's `update`, where `activity` is the feed's activity now.
     /// Returns whether the bell should sound.
     pub fn update(&mut self, update: Update, activity: impl FnOnce() -> Activity) -> bool {
         let bell = matches!(update, Update::Activity) && self.set_activity(activity());
@@ -1034,7 +1034,7 @@ impl App {
         bell
     }
 
-    /// The activity changed: returns whether the bell should sound (the
+    /// The activity changed. Returns whether the bell should sound (the
     /// agent finished while the window isn't focused).
     pub fn set_activity(&mut self, activity: Activity) -> bool {
         let finished = self.activity.working && !activity.working;
@@ -1072,7 +1072,7 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         self.panel.last_key = Some(Instant::now());
-        // The agent's questions, from anywhere: a window open comes back
+        // The agent's questions, from anywhere. A window open comes back
         // when the panel closes.
         if let KeyCode::Char('q') = key.code
             && alt
@@ -1168,14 +1168,14 @@ impl App {
                 _ => {}
             }
         }
-        // An argument's choices: ↑ ↓ show each, Tab takes it. Enter sends
+        // An argument's choices, ↑ ↓ show each, Tab takes it. Enter sends
         // only what is typed.
         if let Some(argument) = self.argument()
             && !argument.choices.is_empty()
         {
             let count = argument.choices.len();
             let chosen = self.chosen(&argument);
-            // → takes the choice shown, as in fish and PowerShell: the
+            // → takes the choice shown, as in fish and PowerShell, since the
             // cursor is at the end, where → did nothing.
             let right = (key.code == KeyCode::Right && !ctrl && !alt)
                 || (key.code == KeyCode::Char('f') && ctrl);
@@ -1210,7 +1210,7 @@ impl App {
             KeyCode::Char('y') if ctrl => self.editor.yank(),
             KeyCode::Char('h') if ctrl => self.editor.backspace(),
             KeyCode::Char('d') if ctrl => {
-                // As at the line prompt: an empty box quits, as /exit does
+                // As at the line prompt, an empty box quits, as /exit does
                 // (which warns of what quitting stops).
                 if self.editor.is_empty() {
                     self.quit();
@@ -1238,7 +1238,7 @@ impl App {
                 }
             }
             KeyCode::Down => {
-                // Past the last line: the history, else the agent list.
+                // Past the last line, the history, else the agent list.
                 if !self.editor.vertical(false, self.input_width)
                     && !self.editor.history_forward()
                     && !self.list().is_empty()
@@ -1263,14 +1263,14 @@ impl App {
         self.typing();
     }
 
-    /// Text was typed or pasted: the menu opens again.
+    /// Text was typed or pasted, so the menu opens again.
     fn typing(&mut self) {
         self.menu.selected = 0;
         self.menu.dismissed = None;
         self.menu.choice = None;
     }
 
-    /// A paste the terminal marked: into the box, or the keys menu's field.
+    /// A paste the terminal marked, into the box, or the keys menu's field.
     pub fn paste(&mut self, text: &str) {
         if let Some(Overlay::Keys(menu)) = &mut self.overlay {
             menu.paste(text);
@@ -1310,7 +1310,7 @@ impl App {
         self.menu.selected = 0;
     }
 
-    /// Esc: closes what is open, nearest first.
+    /// Esc closes what is open, nearest first.
     fn escape(&mut self) {
         self.continue_asked = None;
         if !self.menu_items().is_empty() || self.ghost().is_some() {
@@ -1334,7 +1334,7 @@ impl App {
         self.reading.commands.iter().any(|agent| agent == shown)
     }
 
-    /// Ctrl+B while the agent shown runs a call that can move: the call
+    /// Ctrl+B while the agent shown runs a call that can move. The call
     /// moves to the background, and the agent goes on (what is typed
     /// meanwhile reaches it as a note, the call no longer in the way).
     fn move_command(&mut self) {
@@ -1342,14 +1342,14 @@ impl App {
             .watching
             .clone()
             .unwrap_or_else(|| crate::remote::MAIN_AGENT.to_string());
-        // Until the status says again: a second Ctrl+B is a key again.
+        // Until the status says again (a second Ctrl+B is a key again).
         self.reading.commands.retain(|agent| *agent != shown);
         self.effects.push(Effect::Input(Input::Background(shown)));
         self.say("Moved to the background");
     }
 
-    /// Ctrl+C: stops the turn; else clears the box; else, pressed twice,
-    /// quits. (It never copies: letting go of a drag does.)
+    /// Ctrl+C stops the turn, else clears the box, else, pressed twice,
+    /// quits. (It never copies. Letting go of a drag does.)
     fn interrupt(&mut self) {
         if self.activity.working {
             if self.stopping {
@@ -1378,7 +1378,7 @@ impl App {
     }
 
     /// Quits (Ctrl+D, Ctrl+C twice, `/exit`). The session decides, as it
-    /// knows the jobs running now: background jobs stop when Arko exits
+    /// knows the jobs running now, because background jobs stop when Arko exits
     /// and never come back, so with any running it asks first
     /// ([`ask_quit`](Self::ask_quit)), unless the user turned that off.
     fn quit(&mut self) {
@@ -1386,7 +1386,7 @@ impl App {
         self.effects.push(Effect::Input(Input::Quit(agreed)));
     }
 
-    /// The session asks before it quits: `jobs` run in the background, which
+    /// The session asks before it quits. `jobs` run in the background, which
     /// quitting would stop. Yes agrees to stop those the popup shows.
     pub fn ask_quit(&mut self, jobs: Vec<arko_agents::terminal::BackgroundJob>) {
         self.reading.jobs = jobs;
@@ -1411,7 +1411,7 @@ impl App {
         self.prefs.save(self.info.prefs.as_deref());
     }
 
-    /// The agent list below the input: the main agent, then the workers
+    /// The agent list below the input, with the main agent, then the workers
     /// running or waiting to run, those that ended in the last five minutes
     /// ([`LIST_ENDED_MS`]), and the one shown when it ended before. A
     /// worker's workers follow it, so Tab goes through a family. Empty when
@@ -1435,7 +1435,7 @@ impl App {
         std::iter::once(None).chain(workers).collect()
     }
 
-    /// Whether the agent list changes with the time: a worker runs (its
+    /// Whether the agent list changes with the time, when a worker runs (its
     /// time goes on), or one that ended is still in it (it leaves the list
     /// when its five minutes are over).
     pub fn list_ticks(&self) -> bool {
@@ -1468,7 +1468,7 @@ impl App {
         window.rows
     }
 
-    /// Ctrl+T: the focus goes to the agent list, on the agent shown.
+    /// Ctrl+T sends the focus to the agent list, on the agent shown.
     fn focus_list(&mut self) {
         let list = self.list();
         if list.is_empty() {
@@ -1482,7 +1482,7 @@ impl App {
         self.list_focus = Some(row);
     }
 
-    /// Ctrl+G: the keyboard goes to the transcript's rows that open, on the
+    /// Ctrl+G sends the keyboard to the transcript's rows that open, on the
     /// last one, and again back to the input box.
     fn focus_rows(&mut self) {
         if self.transcript.focus.take().is_some() {
@@ -1494,7 +1494,7 @@ impl App {
         }
     }
 
-    /// A key while the keyboard is on the transcript's rows; false when it
+    /// A key while the keyboard is on the transcript's rows. False when it
     /// isn't theirs (it goes on as a key of the input box's, or
     /// everywhere's).
     fn row_key(&mut self, key: KeyEvent) -> bool {
@@ -1514,7 +1514,7 @@ impl App {
             KeyCode::Esc => rows.focus = None,
             KeyCode::Char('g') if ctrl => rows.focus = None,
             // Keys that work everywhere (scrolling, Ctrl+C, the views) keep
-            // the keyboard here; others (typing, editing) go to the input box.
+            // the keyboard here. Others (typing, editing) go to the input box.
             KeyCode::PageUp | KeyCode::PageDown => return false,
             KeyCode::Char('c' | 'o' | 'l') if ctrl => return false,
             _ => {
@@ -1525,7 +1525,7 @@ impl App {
         true
     }
 
-    /// A key while the agent list has the focus; false when it isn't the
+    /// A key while the agent list has the focus. False when it isn't the
     /// list's (it goes on as a key of the input box's, or everywhere's).
     fn list_key(&mut self, key: KeyEvent) -> bool {
         let list = self.list();
@@ -1553,7 +1553,7 @@ impl App {
             }
             KeyCode::Esc => self.list_focus = None,
             // Keys that work everywhere (scrolling, Ctrl+C, the views) keep
-            // the focus here; others (typing, editing) go to the input box.
+            // the focus here. Others (typing, editing) go to the input box.
             KeyCode::PageUp | KeyCode::PageDown => return false,
             KeyCode::Char('c' | 'o' | 'l') if ctrl => return false,
             _ => {
@@ -1564,14 +1564,14 @@ impl App {
         true
     }
 
-    /// Shows the worker `id`'s own transcript (`None`: the main one).
+    /// Shows the worker `id`'s own transcript (`None` is the main one).
     pub fn watch(&mut self, id: Option<String>) {
         self.watching = id;
         self.transcript.selection = None;
         self.transcript.follow();
     }
 
-    /// Enter: sends what is typed. The view's own commands run here; the
+    /// Enter sends what is typed. The view's own commands run here, and the
     /// rest goes to the session, which takes it as a line typed at the
     /// prompt (a note, a new turn, an answer, a command).
     fn submit(&mut self) {
@@ -1580,7 +1580,7 @@ impl App {
         if trimmed.is_empty() {
             return;
         }
-        // Debug builds: what a crash of the view does (the terminal comes
+        // Debug builds, to see what a crash of the view does (the terminal comes
         // back, and the session ends saved).
         #[cfg(debug_assertions)]
         if trimmed == "/__panic" {
@@ -1627,7 +1627,7 @@ impl App {
                     self.open_names();
                     true
                 }
-                // Without a model, the picker; with one, the session.
+                // Without a model, the picker. With one, the session.
                 ("/model", _) => match rest {
                     "" => {
                         self.open_model(Target::Main);
@@ -1640,8 +1640,8 @@ impl App {
                     _ => false,
                 },
                 ("/remote", _) => {
-                    // The page starts (or stops) in the session; its links
-                    // show in an overlay that stays (`qr IFACE`: that one's).
+                    // The page starts (or stops) in the session. Its links
+                    // show in an overlay that stays (`qr IFACE` is that one's).
                     if !matches!(rest, "off" | "new-key") {
                         let interface = rest.strip_prefix("qr").map(str::trim);
                         let link = interface
@@ -1709,7 +1709,7 @@ impl App {
             return;
         }
         // In a worker's own view it goes to that worker, unless the main
-        // agent waits for an answer: then it is the answer, as anywhere.
+        // agent waits for an answer, and then it is the answer, as anywhere.
         match &self.watching {
             Some(id) if !self.agent_waits() => {
                 let line = format!("/message {id} {}", text.trim());
@@ -1720,7 +1720,7 @@ impl App {
     }
 
     /// The session stopped before it said what became of `sending`, which
-    /// may have gone: it comes back to the box when the box is empty, and
+    /// may have gone. It comes back to the box when the box is empty, and
     /// the status line says to look before sending it again.
     pub fn no_verdict(&mut self, sending: Sending) {
         self.restore(&sending);
@@ -1728,7 +1728,7 @@ impl App {
     }
 
     /// Whether `line`, a `/message` that the box holds as `typed`, goes as
-    /// continuing its worker without its cache: the session refused it
+    /// continuing its worker without its cache. The session refused it
     /// moments ago for that, said what it costs, and Enter came again with
     /// the same text.
     fn confirms_continue(&mut self, line: &str, typed: &str) -> bool {
@@ -1890,7 +1890,7 @@ impl App {
                 }
             },
             // Esc is No. Yes saves a ticked box and quits, stopping the jobs
-            // shown (drawn before any key is read) and the workers: should
+            // shown (drawn before any key is read) and the workers. Should
             // another have started, the session asks again. No leaves the
             // choice unsaved, so the next quit asks again.
             // Esc is Cancel, and either button goes back to the settings.
@@ -2038,7 +2038,7 @@ impl App {
     ) -> Option<Overlay> {
         if let Some(mut picker) = picker {
             if let Some(choice) = picker.notice {
-                // The notice about flashing, over the picker: it is
+                // The notice about flashing, over the picker. It is
                 // answered (and so never shown again) with Enter.
                 match key.code {
                     _ if close => return Some(Overlay::Settings { row, picker: None }),
@@ -2058,7 +2058,7 @@ impl App {
                     picker: Some(picker),
                 });
             }
-            // The theme picker: the theme it rests on is previewed (see
+            // The theme picker, the theme it rests on is previewed (see
             // `preview`). Enter keeps it at once, Esc goes back at once.
             let before = picker.selected;
             match key.code {
@@ -2083,7 +2083,7 @@ impl App {
                 }
                 _ => {}
             }
-            // Only a move starts the wait: keys that don't move it (at the
+            // Only a move starts the wait. Keys that don't move it (at the
             // list's end) leave the selection resting.
             if picker.selected != before && self.previews() {
                 picker.moved = Some(Instant::now());
@@ -2135,7 +2135,7 @@ impl App {
                                 names,
                                 selected,
                                 before: self.theme.name.clone(),
-                                // The first time: the notice about
+                                // The first time, the notice about
                                 // flashing, before any preview.
                                 notice: (!self.prefs.flash_notice).then_some(0),
                                 moved: None,
@@ -2168,7 +2168,7 @@ impl App {
                 }
                 SettingsRow::Handover | SettingsRow::WorkersHandover => {
                     // The next round size down or up (the session may hold
-                    // it under the model's limit; the status says).
+                    // it under the model's limit, and the status says).
                     let (now, whose) = if rows[row] == SettingsRow::Handover {
                         (self.handover_at(), "main")
                     } else {
@@ -2383,7 +2383,7 @@ impl App {
                         self.send("/remote");
                     }
                 }
-                // Opened forward only: ← has nothing to step back to.
+                // Opened forward only, since ← has nothing to step back to.
                 SettingsRow::Keys if step > 0 => {
                     self.open_keys("", Some(row));
                     return self.overlay.take();
@@ -2399,7 +2399,7 @@ impl App {
         self.prefs.theme_previews.unwrap_or(true)
     }
 
-    /// When the picker's waiting preview is due: the runner wakes then.
+    /// When the picker's waiting preview is due, when the runner wakes.
     pub fn preview_due(&self) -> Option<Instant> {
         match &self.overlay {
             Some(Overlay::Settings {
@@ -2411,7 +2411,7 @@ impl App {
     }
 
     /// Shows the theme the picker rests on, once it has rested (`now`
-    /// past its due time): returns whether the screen changed.
+    /// past its due time). Returns whether the screen changed.
     pub fn preview(&mut self, now: Instant) -> bool {
         let Some(Overlay::Settings {
             picker: Some(picker),
@@ -2447,7 +2447,7 @@ impl App {
         self.reading.settings.cc_compact
     }
 
-    /// Whether an agent of the session runs in Claude Code: the main agent,
+    /// Whether an agent of the session runs in Claude Code, either the main agent,
     /// or the workers it starts.
     fn in_claude_code(&self) -> bool {
         let models = &self.reading.models;
@@ -2511,14 +2511,14 @@ impl App {
         self.reading.settings.worker_project_instructions
     }
 
-    /// Whether the main agent's conversation has started: its text replies
+    /// Whether the main agent's conversation has started. Its text replies
     /// setting (like its model) stays as it is then.
     pub fn conversation_started(&self) -> bool {
         self.reading.models.started
     }
 
     /// After how many seconds a shell command still running moves to the
-    /// background; 0: never.
+    /// background, with 0 meaning never.
     pub fn background_after(&self) -> u64 {
         self.reading.settings.background_after
     }
@@ -2535,7 +2535,7 @@ impl App {
     }
 
     /// For how long a warning wakes the agent now, which `auto` takes from
-    /// its prompt cache (`None`: always).
+    /// its prompt cache (`None` means always).
     pub fn monitor_wakes_within(&self) -> Option<std::time::Duration> {
         self.reading
             .settings
@@ -2558,10 +2558,10 @@ impl App {
 
     // ----- the mouse -----
 
-    /// The mouse: the wheel scrolls; a drag over the transcript, or over
+    /// The mouse. The wheel scrolls, and a drag over the transcript, or over
     /// the text of the answer panel, highlights
     /// text, copied when the button is let go (a double click a word, a
-    /// triple click a line); a click (no drag) opens what it is on.
+    /// triple click a line), and a click (no drag) opens what it is on.
     pub fn mouse(&mut self, event: MouseEvent) {
         let (x, y) = (event.column, event.row);
         let at = ratatui::layout::Position { x, y };
@@ -2594,7 +2594,7 @@ impl App {
                 };
             }
             // (While a drag selects, the text under the mouse is read again
-            // once the screen is drawn: the selection grows as it scrolls.)
+            // once the screen is drawn, so the selection grows as it scrolls.)
             MouseEventKind::ScrollUp => self.transcript.scroll(-WHEEL),
             MouseEventKind::ScrollDown => self.transcript.scroll(WHEEL),
             MouseEventKind::Down(MouseButton::Left) => {
@@ -2647,7 +2647,7 @@ impl App {
                 };
                 let filter = self.filter();
                 let theme = self.theme.clone();
-                // A double click on a fold's line selects a word of it: the
+                // A double click on a fold's line selects a word of it, and the
                 // fold its first click opened or closed goes back.
                 if count == 2
                     && let Some(key) = folded
@@ -2664,7 +2664,7 @@ impl App {
                     3 => self.transcript.line_at(point, &filter, &theme),
                     _ => None,
                 };
-                // The text under the mouse holds still from the press: what
+                // The text under the mouse holds still from the press, since what
                 // the press found is what a drag starts from.
                 let following = self.transcript.following();
                 self.transcript.hold();
@@ -2731,7 +2731,7 @@ impl App {
                 self.transcript.release();
                 match self.press.take() {
                     Some(press) if press.dragged => self.copy_selection(),
-                    // A click (no drag) never copies: it opens what it is on.
+                    // A click (no drag) never copies, it opens what it is on.
                     press => {
                         if press.is_some_and(|press| press.following) {
                             self.transcript.follow();
@@ -2744,7 +2744,7 @@ impl App {
         }
     }
 
-    /// After a frame: a drag's end follows the text now under the mouse
+    /// After a frame, a drag's end follows the text now under the mouse
     /// (the wheel may have scrolled it).
     pub fn after_draw(&mut self) {
         let filter = self.filter();
@@ -2780,7 +2780,7 @@ impl App {
         self.effects.push(Effect::Copy { text, what });
     }
 
-    /// A click (no drag) at `at`: a row of the agent list shows that
+    /// A click (no drag) at `at`, a row of the agent list shows that
     /// agent, the "new" marker goes to the end, a turn's counted calls
     /// open in the Full view, a command's fold line opens or closes its
     /// whole output, and a worker's line opens its transcript. Elsewhere it
@@ -2809,13 +2809,13 @@ impl App {
                         self.watch(id);
                     }
                 }
-                // The count of the workers below: the list moves on to the
+                // The count of the workers below, the list moves on to the
                 // next of them (after the last, back to the first).
                 Some(ListRow::More(_) | ListRow::Both(..)) => {
                     let count = self.list().len();
                     self.list_focus = Some(if last + 1 < count { last + 1 } else { 1 });
                 }
-                // The count of those above: the list moves back to the one
+                // The count of those above, the list moves back to the one
                 // before the first shown.
                 Some(ListRow::Above(_)) => {
                     self.list_focus = Some(first.saturating_sub(1).max(1));
@@ -2864,7 +2864,7 @@ impl App {
         }
     }
 
-    /// Whether the status line's hint is still fresh: for 3 s, or for as
+    /// Whether the status line's hint is still fresh, for 3 s, or for as
     /// long as a longer one takes to read.
     pub fn hint(&self) -> Option<&str> {
         self.hint
@@ -2875,7 +2875,7 @@ impl App {
             .map(|(text, _)| text.as_str())
     }
 
-    /// The terminal's title: the state and the folder.
+    /// The terminal's title, the state and the folder.
     pub fn title(&self) -> String {
         let state = if self.agent_waits() {
             "asks you"
@@ -2951,7 +2951,7 @@ pub(super) mod tests {
     }
 
     /// While the old model writes its report, a message goes to the
-    /// session, which refuses it: it comes back to the box, and the status
+    /// session, which refuses it. It comes back to the box, and the status
     /// line says why. A command goes as always.
     #[test]
     fn a_message_comes_back_to_the_box_while_the_report_is_written() {
@@ -2981,7 +2981,7 @@ pub(super) mod tests {
         type_text(&mut app, "/workers");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/workers"]);
-        // The session stops before it says: the message comes back with
+        // The session stops before it says. The message comes back with
         // its questions, and the status line says it may have gone.
         app.no_verdict(Sending::of_box(
             Input::Line("Tabs.".into()),
@@ -3003,7 +3003,7 @@ pub(super) mod tests {
                 .is_some_and(|hint| hint.starts_with("Arko stopped before saying"))
         );
         app.editor.take();
-        // The box holds something else by the time a refusal comes: it
+        // The box holds something else by the time a refusal comes, and it
         // stays.
         type_text(&mut app, "Hello.");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -3053,7 +3053,7 @@ pub(super) mod tests {
         }
     }
 
-    /// Quitting asks the session, which knows the jobs running now: with
+    /// Quitting asks the session, which knows the jobs running now. With
     /// any in the background, it opens the popup. Esc and No stay, and the
     /// box ticked with No isn't kept. Yes quits, agreeing to stop the jobs
     /// shown, and with the box ticked it is kept, so quitting doesn't ask
@@ -3108,7 +3108,7 @@ pub(super) mod tests {
         key(&mut app, KeyCode::Enter);
         assert_eq!(app.overlay, None);
         assert!(app.take_effects().is_empty());
-        // Ctrl+C twice asks too. The box ticked, then No: nothing is kept.
+        // Ctrl+C twice asks too. The box ticked, then No, so nothing is kept.
         ctrl(&mut app, 'c');
         ctrl(&mut app, 'c');
         assert_eq!(quits(&mut app), asking());
@@ -3124,7 +3124,7 @@ pub(super) mod tests {
         assert!(app.confirms_quit());
         assert_eq!(Prefs::load(Some(&path)).confirm_quit, None);
 
-        // The box ticked, then Yes: Arko quits, stopping the jobs shown,
+        // The box ticked, then Yes, so Arko quits, stopping the jobs shown,
         // and the choice is kept.
         ctrl(&mut app, 'd');
         assert_eq!(quits(&mut app), asking());
@@ -3176,7 +3176,7 @@ pub(super) mod tests {
         type_text(&mut app, "off");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/remote off"]);
-        // Esc closes the menu; typing opens it again.
+        // Esc closes the menu. Typing opens it again.
         type_text(&mut app, "/c");
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.menu_items().is_empty());
@@ -3204,7 +3204,7 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/workers"]);
         // The main agent's question it waits for takes the answer, in any
-        // view. (Keys came just now: the panel stays closed.)
+        // view. (Keys came just now, so the panel stays closed.)
         let mut waiting = asking();
         waiting.questions.truncate(1);
         waiting.questions[0].waits = true;
@@ -3221,7 +3221,7 @@ pub(super) mod tests {
         assert_eq!(sent(&mut app), ["Thanks."]);
     }
 
-    /// A mistyped command isn't sent, from the main view or a worker's: it
+    /// A mistyped command isn't sent, from the main view or a worker's. It
     /// stays in the box, and the status line says what it may be. A space
     /// first sends it as a message.
     #[test]
@@ -3246,7 +3246,7 @@ pub(super) mod tests {
         assert_eq!(sent(&mut app), ["/message r1 /quiet"]);
     }
 
-    /// Open questions as the status has them: q1 with choices and a
+    /// Open questions as the status has them, q1 with choices and a
     /// default, q2 without.
     pub fn asking() -> Reading {
         use crate::questions::{AgentQuestion, QuestionState};
@@ -3403,7 +3403,7 @@ pub(super) mod tests {
         assert!(app.panel.open);
     }
 
-    /// An answer that is a number, or starts with one, is typed whole: in
+    /// An answer that is a number, or starts with one, is typed whole, in
     /// a question without choices at once, and in one with choices in its
     /// Other field, or straight from its chips when no chip has the number.
     #[test]
@@ -3564,7 +3564,7 @@ pub(super) mod tests {
         assert_eq!(app.editor.text(), long);
         assert_eq!(app.panel.attached, ["q1", "q2"]);
         assert_eq!(app.hint(), Some(words));
-        // Not attached, while the agent waits for q2: the answer too.
+        // Not attached, while the agent waits for q2, the answer too.
         app.panel.attached.clear();
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let [sending] = sendings(&mut app).try_into().unwrap();
@@ -3675,7 +3675,7 @@ pub(super) mod tests {
     }
 
     /// Continuing a worker whose cache expired, with `/message` or from its
-    /// view, goes to the session, which refuses it with what it costs: the
+    /// view, goes to the session, which refuses it with what it costs. The
     /// text comes back to the box, and the status line says so. Enter again
     /// sends it, marked confirmed. Esc, other text, or Enter after the 30
     /// seconds sends it as before, for the session to ask again.
@@ -3719,7 +3719,7 @@ pub(super) mod tests {
             app.verdict(sending, uncached());
         };
 
-        // `/message`: the second Enter sends it confirmed.
+        // `/message`. The second Enter sends it confirmed.
         refused(&mut app, "/message r3 Go on.", "/message r3 Go on.");
         assert_eq!(app.editor.text(), "/message r3 Go on.");
         assert_eq!(app.hint(), Some(warning.as_str()));
@@ -3821,7 +3821,7 @@ pub(super) mod tests {
         assert!(rows(0, None, 7).is_empty());
         assert_eq!(rows(4, None, 7), [Agent(0), Agent(1), Agent(2), Agent(3)]);
         assert_eq!(rows(6, None, 7), (0..6).map(Agent).collect::<Vec<_>>());
-        // Seven workers: five, and "… 2 more".
+        // Seven workers, shown as five and "… 2 more".
         let top = [
             Agent(0),
             Agent(1),
@@ -3833,7 +3833,7 @@ pub(super) mod tests {
         ];
         assert_eq!(rows(8, None, 7), top);
         assert_eq!(rows(8, Some(5), 7), top);
-        // At the bottom, nothing is below: "… 2 more" on top.
+        // At the bottom, nothing is below, so "… 2 more" on top.
         let bottom = [
             Agent(0),
             Above(2),
@@ -3862,7 +3862,7 @@ pub(super) mod tests {
                 most: 2,
             }
         );
-        // One more worker than fits: at the bottom, none is below.
+        // One more worker than fits, and at the bottom, none is below.
         assert_eq!(
             rows(7, Some(6), 7),
             [
@@ -3884,10 +3884,10 @@ pub(super) mod tests {
         assert_eq!(list_rows(8, 2, Some(1), true, 7).rows, top);
         // Scrolled past the end, it stops at the bottom.
         assert_eq!(list_rows(8, 9, None, false, 7).rows, bottom);
-        // On a short screen: fewer workers, and the counts.
+        // On a short screen, fewer workers, and the counts.
         assert_eq!(rows(8, None, 4), [Agent(0), Agent(1), Agent(2), More(5)]);
         assert_eq!(rows(8, Some(4), 4), [Agent(0), Above(3), Agent(4), More(3)]);
-        // Too short for both counts: both on one row.
+        // Too short for both counts, so both on one row.
         assert_eq!(rows(4, Some(2), 3), [Agent(0), Agent(2), Both(1, 1)]);
         assert_eq!(rows(4, Some(3), 3), [Agent(0), Above(2), Agent(3)]);
         assert_eq!(rows(11, Some(9), 3), [Agent(0), Agent(9), Both(8, 1)]);
@@ -3912,10 +3912,10 @@ pub(super) mod tests {
         }
         app.list_focus = Some(6);
         assert!(app.list_rows(7).contains(&ListRow::Agent(6)));
-        // A worker arrives: the selected one stays.
+        // A worker arrives, the selected one stays.
         add(&mut app, 7);
         assert!(app.list_rows(7).contains(&ListRow::Agent(6)));
-        // The area shrinks: it stays too.
+        // The area shrinks, it stays too.
         assert!(app.list_rows(4).contains(&ListRow::Agent(6)));
         assert!(app.list_rows(3).contains(&ListRow::Agent(6)));
         // The wheel moves the list away from it, and it stays where the
@@ -4164,7 +4164,7 @@ pub(super) mod tests {
         assert!(!Prefs::load(Some(&path)).flash_notice);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(notice(&app), Some(0));
-        // No previews: kept in tui.json with the notice answered.
+        // No previews, kept in tui.json with the notice answered.
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
         assert_eq!(notice(&app), Some(1));
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -4205,7 +4205,7 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         // The first time, the notice about flashing comes first, and keys
-        // choose in it: nothing is previewed.
+        // choose in it, so nothing is previewed.
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(notice(&app), Some(0));
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
@@ -4318,7 +4318,7 @@ pub(super) mod tests {
         assert_eq!(moved(&mut app), ["r1"]);
     }
 
-    /// When commands move to the background is a session setting: the row
+    /// When commands move to the background is a session setting, and the row
     /// steps through round times, down to off, with `/background-after`.
     #[test]
     fn the_background_row_sends_the_command() {
@@ -4349,7 +4349,7 @@ pub(super) mod tests {
     }
 
     /// How long monitors' warnings wake the agent is a session setting, after
-    /// when commands move to the background: the row steps from off to
+    /// when commands move to the background, and the row steps from off to
     /// always with `/monitor-wakes`.
     #[test]
     fn the_monitor_wakes_row_sends_the_command() {
@@ -4428,7 +4428,7 @@ pub(super) mod tests {
             row: models - 2,
             picker: None,
         });
-        // The main agent chooses by default: right goes to profiles, left
+        // The main agent chooses by default, so right goes to profiles and left
         // round to the session's model.
         assert_eq!(app.worker_models(), crate::agents::ModelChoice::Agent);
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
@@ -4662,7 +4662,7 @@ pub(super) mod tests {
         assert!(!app.profile_prefs.repo_root);
     }
 
-    /// Text replies are a session setting: the row turns them on or off with
+    /// Text replies are a session setting, and the row turns them on or off with
     /// `/text-replies`, and says what they do and whether they can change.
     #[test]
     fn the_text_replies_row_sends_the_command() {
@@ -4690,7 +4690,7 @@ pub(super) mod tests {
         assert_eq!(sent(&mut app), ["/text-replies off"]);
     }
 
-    /// The extra rules are a session setting: the row steps through small,
+    /// The extra rules are a session setting, and the row steps through small,
     /// all and off with `/extra-rules`, beside text replies.
     #[test]
     fn the_extra_rules_row_sends_the_command() {
@@ -4720,7 +4720,7 @@ pub(super) mod tests {
     }
 
     /// What agents in Claude Code do at the handover size is a session
-    /// setting, shown only when an agent of the session is on a cc: model:
+    /// setting, shown only when an agent of the session is on a cc: model, and
     /// the row has them compact or hand over with `/cc-compact`.
     #[test]
     fn the_claude_code_row_sends_the_command() {
@@ -4751,7 +4751,7 @@ pub(super) mod tests {
     }
 
     /// The project's instructions are a group of their own, after the
-    /// session's settings: which files, stepping through one, both and off,
+    /// session's settings, with which files, stepping through one, both and off,
     /// and (in a session with workers) whether workers get them.
     #[test]
     fn the_project_instructions_rows_send_the_command() {
@@ -4802,7 +4802,7 @@ pub(super) mod tests {
     }
 
     /// The built-in skills are a group of their own after the project's
-    /// instructions: a row for all of them, then one for each, which send
+    /// instructions, with a row for all of them, then one for each, which send
     /// `/builtin-skills`.
     #[test]
     fn the_built_in_skills_rows_send_the_command() {
@@ -4842,7 +4842,7 @@ pub(super) mod tests {
         }
     }
 
-    /// The web page's overlay waits for the page until its status has it:
+    /// The web page's overlay waits for the page until its status has it.
     /// the view reads the status again as the page's links come in the feed.
     #[test]
     fn the_page_overlay_waits_for_the_page() {
@@ -4995,7 +4995,7 @@ pub(super) mod tests {
         assert!(app.overlay.is_none());
     }
 
-    /// A check of what the ways lack that is slow doesn't hold the menu:
+    /// A check of what the ways lack that is slow doesn't hold the menu.
     /// it opens and closes without it, closing ends the check, and what it
     /// finds after the menu closed is dropped, also by a menu opened again.
     #[test]
@@ -5051,7 +5051,7 @@ pub(super) mod tests {
         assert_eq!(menu.missing.as_ref().map(Vec::len), Some(1));
     }
 
-    /// The session's models, as it publishes them: luna for both agents,
+    /// The session's models, as it publishes them, with luna for both agents,
     /// the conversation not started, OpenAI reachable with an API key.
     fn models(started: bool) -> crate::remote::Models {
         crate::remote::Models {
@@ -5071,7 +5071,7 @@ pub(super) mod tests {
         }
     }
 
-    /// A command's argument completes from its choices: the rest shows
+    /// A command's argument completes from its choices. The rest shows
     /// dim, ↑ ↓ show the others, Tab takes one, and Enter sends only what
     /// is typed.
     #[test]
@@ -5086,7 +5086,7 @@ pub(super) mod tests {
         assert_eq!(app.editor.text(), "/view quiet");
         assert_eq!(app.ghost(), None);
         app.editor.clear();
-        // Several match: the first, then ↓ the next. Enter takes neither.
+        // Several match, the first, then ↓ the next. Enter takes neither.
         type_text(&mut app, "/outside o");
         assert_eq!(app.ghost(), Some(format!("n  {keys} 1 of 2")));
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
@@ -5113,7 +5113,7 @@ pub(super) mod tests {
         type_text(&mut app, "o");
         assert_eq!(app.ghost(), Some(format!("n  {keys} 1 of 2")));
         app.editor.clear();
-        // Free text: the hint until a letter, then nothing.
+        // Free text, the hint until a letter, then nothing.
         type_text(&mut app, "/handover-at ");
         assert_eq!(app.ghost().as_deref(), Some("[main|workers] SIZE"));
         type_text(&mut app, "2");
@@ -5197,7 +5197,7 @@ pub(super) mod tests {
         assert_eq!(app.ghost().as_deref(), Some("-ai/glm-5"));
         app.editor.clear();
         // Drawing asks for the completions at every frame, which takes no
-        // file: the settings are as this process has them.
+        // file, so the settings are as this process has them.
         std::fs::remove_dir_all(temp.path()).unwrap();
         type_text(&mut app, "/model openrouter:z");
         for _ in 0..3 {
@@ -5265,7 +5265,7 @@ pub(super) mod tests {
     }
 
     /// A picker that doesn't ask Claude Code (whose login differs from one
-    /// machine to the next): it needs signing in.
+    /// machine to the next), so it needs signing in.
     fn hermetic(app: &mut App) {
         app.model_needs = |reachable, name| {
             if name.starts_with("cc:") {
@@ -5283,7 +5283,7 @@ pub(super) mod tests {
         }
     }
 
-    /// `/model` before the start: the models, on the one now, then its
+    /// `/model` before the start, with the models, on the one now, then its
     /// efforts with Back, and Enter sends the line and says it.
     #[test]
     fn the_model_picker_chooses_a_model_then_an_effort() {
@@ -5368,7 +5368,7 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/model worker main"]);
 
-        // A model typed: one Arko doesn't know says what was meant, one it
+        // A model typed. One Arko doesn't know says what was meant, one it
         // can't reach what it needs.
         type_text(&mut app, "/model worker");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
