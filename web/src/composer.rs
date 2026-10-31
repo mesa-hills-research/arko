@@ -103,9 +103,10 @@ pub fn Composer() -> impl IntoView {
             to: page.worker.get_untracked(),
         })
     };
-    // Another view drops the question.
+    // Another view, or another feed (Arko started again), drops the question.
     Effect::new(move |_| {
         page.worker.track();
+        page.feeds.track();
         continue_asked.set(None);
     });
     let stopping = RwSignal::new(false);
@@ -359,7 +360,12 @@ pub fn Composer() -> impl IntoView {
                     </div>
                 })}
                 <crate::questions::Replying />
-                <crate::approvals::Tray />
+                // Each feed's requests in a tray of their own, whose IDs
+                // the last one gave too.
+                {move || {
+                    page.feeds.track();
+                    view! { <crate::approvals::Tray /> }
+                }}
                 <form
                     class="compose"
                     class:expanded=move || expanded.get()
