@@ -727,8 +727,8 @@ pub enum Update {
     Worker(WorkerSummary),
     /// The worker `id` ended as `outcome` (finished, failed or stopped).
     /// Its [`Update::Worker`] with that state, its `report` or `error`
-    /// comes right before, also in a merged batch. Edge, of the state in
-    /// [`Snapshot::workers`].
+    /// comes right before, and before it in a merged batch. Edge, of the
+    /// state in [`Snapshot::workers`].
     WorkerEnded { id: String, outcome: WorkerState },
     /// The activity changed, or the approval tray did, which a client reads
     /// in the session's status. State, latest-value, in
@@ -781,9 +781,9 @@ impl Batches {
 /// `updates`, merged into fewer that leave a client where they all would:
 /// text appended to an item goes into the item when it came in the same
 /// batch (or into the batch's one append to it), an item's change replaces
-/// what the batch had of it (it is the whole item), a worker's summary
-/// only its last (but the one a worker ended with stays), and the activity
-/// is told once.
+/// what the batch had of it (it is the whole item), a worker's or a job's
+/// summary only its last, in the place of its first (but the one a worker
+/// ended with stays), and the activity is told once.
 pub fn merged(updates: Vec<Update>) -> Vec<Update> {
     let mut out: Vec<Option<Update>> = Vec::with_capacity(updates.len());
     // Where the batch has each item: created, changed or appended to.
@@ -830,24 +830,30 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
                     }
                 }
             }
-            Update::Worker(summary) => {
-                if let Some(at) = workers.insert(summary.id.clone(), out.len()) {
-                    out[at] = None;
+            // In the place of the batch's first summary of the worker, so
+            // the workers that are new to the client come in the order they
+            // started, as a snapshot has them.
+            Update::Worker(summary) => match workers.get(&summary.id) {
+                Some(&at) => out[at] = Some(Update::Worker(summary)),
+                None => {
+                    workers.insert(summary.id.clone(), out.len());
+                    out.push(Some(Update::Worker(summary)));
                 }
-                out.push(Some(Update::Worker(summary)));
-            }
+            },
             Update::WorkerEnded { id, outcome } => {
                 // The summary it ended with stays, also if the worker goes
                 // on in the same batch.
                 workers.remove(&id);
                 out.push(Some(Update::WorkerEnded { id, outcome }));
             }
-            Update::Job(summary) => {
-                if let Some(at) = jobs.insert(summary.id.clone(), out.len()) {
-                    out[at] = None;
+            // In the place of its first, as a worker's summary.
+            Update::Job(summary) => match jobs.get(&summary.id) {
+                Some(&at) => out[at] = Some(Update::Job(summary)),
+                None => {
+                    jobs.insert(summary.id.clone(), out.len());
+                    out.push(Some(Update::Job(summary)));
                 }
-                out.push(Some(Update::Job(summary)));
-            }
+            },
             Update::Activity => {
                 if let Some(at) = activity.replace(out.len()) {
                     out[at] = None;
@@ -3442,6 +3448,51 @@ mod tests {
         ));
     }
 
+    /// Workers new to a batched client come in the order they started, as a
+    /// snapshot has them, though the first one's summary changed again
+    /// later in the batch. So do jobs.
+    #[test]
+    fn a_batch_keeps_new_workers_and_jobs_in_the_order_they_started() {
+        let feed = Feed::new("main");
+        let (_, mut batches) = feed.subscribe_batched();
+        feed.worker("r1", "One", WorkerChange::Started);
+        feed.worker("r2", "Two", WorkerChange::Started);
+        feed.worker("r1", "One", WorkerChange::Finished { report: "Done." });
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.job_started(JobStart::new(a, MAIN_AGENT, JobKind::Command, "make"));
+        feed.job_started(JobStart::new(b, MAIN_AGENT, JobKind::Command, "test"));
+        feed.job_ended(a, JobState::Finished, None);
+        let batch = batches.try_next().unwrap();
+        let workers: Vec<(&str, WorkerState)> = batch
+            .iter()
+            .filter_map(|update| match update {
+                Update::Worker(summary) => Some((summary.id.as_str(), summary.state)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            workers,
+            [("r1", WorkerState::Finished), ("r2", WorkerState::Running)]
+        );
+        let jobs: Vec<(String, JobState)> = batch
+            .iter()
+            .filter_map(|update| match update {
+                Update::Job(summary) => Some((summary.id.clone(), summary.state)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            jobs,
+            [
+                (a.to_string(), JobState::Finished),
+                (b.to_string(), JobState::Running)
+            ]
+        );
+        let snapshot = feed.subscribe().0;
+        let order: Vec<&str> = snapshot.workers.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(order, ["r1", "r2"]);
+    }
+
     /// A snapshot names its feed, which another feed doesn't share, and
     /// counts the updates sent before it. A client gets the updates sent
     /// after it, each once.
@@ -3520,8 +3571,8 @@ mod tests {
             Update::Activity,
         ]);
         assert!(matches!(merged.as_slice(), [
-            Update::Change(item),
             Update::Worker(worker),
+            Update::Change(item),
             Update::Activity,
         ] if item.text == "0x" && worker.state == WorkerState::Finished));
     }
@@ -4360,7 +4411,8 @@ mod tests {
     }
 
     /// A job a command started (terminal_start) keeps its call's own line,
-    /// and the call names it. A batch keeps a job's last summary.
+    /// and the call names it. A batch keeps a job's last summary, in the
+    /// place of its first.
     #[test]
     fn a_started_commands_job_names_its_call_and_batches_keep_the_last_summary() {
         let feed = Feed::new("main");
@@ -4404,7 +4456,7 @@ mod tests {
             Update::Job(summary(JobState::Finished)),
         ]);
         assert!(
-            matches!(merged.as_slice(), [Update::Activity, Update::Job(last)] if last.state == JobState::Finished)
+            matches!(merged.as_slice(), [Update::Job(last), Update::Activity] if last.state == JobState::Finished)
         );
     }
 
