@@ -7,6 +7,12 @@
 //! Building it reads a bounded part of everything: the newest part of the
 //! transcript, the listings of the workspace and of the skill and profile
 //! folders, and small manifests.
+//!
+//! Words that can't be said, such as keys, tokens, hashes and IDs, are
+//! always left out. With the `leave_out_secrets` setting, so are the values
+//! that context marks as secret ([`secrets`]).
+
+mod secrets;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -76,14 +82,16 @@ pub fn favour_session_words(
     let _ = std::thread::Builder::new()
         .name("arko-session-words".into())
         .spawn(move || {
-            if words.wanted() && Settings::load(&root).session_words {
-                words.send(session_words(&feed, &details));
+            let settings = Settings::load(&root);
+            if words.wanted() && settings.session_words {
+                words.send(session_words(&feed, &details, &settings));
             }
         });
 }
 
 /// The words of the session `feed` and `details` describe, best first, at
-/// most [`MAX_WORDS`]. They come from three places.
+/// most [`MAX_WORDS`], with the dictation `settings` (whether to leave out
+/// secrets). They come from three places.
 ///
 /// - The transcript's identifiers, file names and names, by their shape. A
 ///   recent or repeated mention counts more.
@@ -91,7 +99,7 @@ pub fn favour_session_words(
 ///   its top-level files and folders.
 /// - The session's models, skills and worker profiles, and the tools its
 ///   agents called.
-pub fn session_words(feed: &Feed, details: &Details) -> Vec<SessionWord> {
+pub fn session_words(feed: &Feed, details: &Details, settings: &Settings) -> Vec<SessionWord> {
     let facts = details.session();
     let mut tail = Tail::default();
     feed.read_newest(|item| tail.take(item));
@@ -100,7 +108,13 @@ pub fn session_words(feed: &Feed, details: &Details) -> Vec<SessionWord> {
         .collect();
     let mut names = skill_names(details.skill_folders(), &details.builtin_skills());
     names.extend(profile_names(&details.profile_roots()));
-    rank(&tail, &facts.workspace, &models, &names)
+    rank(
+        &tail,
+        &facts.workspace,
+        &models,
+        &names,
+        settings.leave_out_secrets,
+    )
 }
 
 /// The newest part of a transcript, up to [`TRANSCRIPT_BYTES`] of text,
@@ -177,9 +191,16 @@ fn readable(item: &Item) -> Option<(&str, bool)> {
 
 /// The words of a transcript's tail, a workspace, the models the agents run
 /// (as the session names them) and the skills and profiles they have, best
-/// first.
-fn rank(tail: &Tail, workspace: &Path, models: &[String], names: &[String]) -> Vec<SessionWord> {
+/// first, leaving out what context marks as secret with `secrets`.
+fn rank(
+    tail: &Tail,
+    workspace: &Path,
+    models: &[String],
+    names: &[String],
+    secrets: bool,
+) -> Vec<SessionWord> {
     let mut scores = Scores {
+        secrets,
         home: std::env::home_dir()
             .map(|home| {
                 home.iter()
@@ -239,6 +260,8 @@ struct Scores<'a> {
     /// The folder names of the home folder's path, which start most paths
     /// and aren't said.
     home: Vec<String>,
+    /// Leave out what context marks as secret.
+    secrets: bool,
 }
 
 #[derive(Default)]
@@ -258,9 +281,9 @@ struct Entry {
 
 impl<'a> Scores<'a> {
     /// Counts `word`, a name the workspace or the session gives, unless it
-    /// can't be said.
+    /// can't be said, or marks a secret when those are left out.
     fn add(&mut self, word: &str, code: bool, weight: f64) {
-        if !sayable(word) {
+        if !sayable(word) || (self.secrets && !secrets::secret_ranges(word).is_empty()) {
             return;
         }
         let entry = self.words.entry(word.to_string()).or_default();
@@ -270,15 +293,24 @@ impl<'a> Scores<'a> {
     }
 
     /// Counts the words of `text` (all of it code with `code`), each
-    /// mention with `weight`.
+    /// mention with `weight`. What context marks as secret takes no part
+    /// when those are left out.
     fn read(&mut self, text: &'a str, code: bool, weight: f64) {
+        let hidden = if self.secrets {
+            secrets::secret_ranges(text)
+        } else {
+            Vec::new()
+        };
+        let mut hidden = hidden.into_iter().peekable();
         // Whether the next word starts a sentence, where a capital says
         // nothing.
         let mut opens = true;
         let mut in_code = code;
         let mut start = None;
         for (at, c) in text.char_indices().chain([(text.len(), '\n')]) {
-            if c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/') {
+            while hidden.next_if(|range| range.end <= at).is_some() {}
+            let secret = hidden.peek().is_some_and(|range| range.start <= at);
+            if !secret && (c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/')) {
                 start.get_or_insert(at);
                 continue;
             }
@@ -292,6 +324,7 @@ impl<'a> Scores<'a> {
                 opens = run.ends_with(['.', '-', '/']);
             }
             match c {
+                _ if secret && c != '`' => {}
                 '`' => in_code = code || !in_code,
                 '\n' | '!' | '?' | ':' | ';' | '|' | '#' | '>' | '=' | '{' | '}' => opens = true,
                 // Space and opening marks leave it as it was.
@@ -512,23 +545,93 @@ const EXTENSIONS: &[&str] = &[
 
 /// Whether `word` could be said: it has a letter, three letters or digits
 /// (two with a digit, such as r5), at most [`LONGEST`] characters, and
-/// doesn't look like a hash, an ID or a key.
+/// nothing [`hard_to_say`].
 fn sayable(word: &str) -> bool {
     let alphanumeric = word.chars().filter(|c| c.is_alphanumeric()).count();
-    let digits = word.chars().filter(char::is_ascii_digit).count();
+    let digits = word.chars().any(|c| c.is_ascii_digit());
     word.chars().any(char::is_alphabetic)
-        && (alphanumeric >= 3 || (alphanumeric == 2 && digits > 0))
+        && (alphanumeric >= 3 || (alphanumeric == 2 && digits))
         && word.chars().count() <= LONGEST
-        // Dates, times and IDs such as 20261029-184736.
-        && digits < 6
-        && !word.split(|c: char| !c.is_alphanumeric()).any(|part| {
-            let mixed = part.chars().any(|c| c.is_ascii_digit())
-                && part.chars().any(char::is_alphabetic);
-            // A commit or a UUID's part, or a key.
-            mixed
-                && ((part.len() >= 7 && part.chars().all(|c| c.is_ascii_hexdigit()))
-                    || part.len() >= 16)
-        })
+        && !hard_to_say(word)
+}
+
+/// Whether `word` holds a part (between characters other than letters and
+/// digits) that can't be said, being a key, a token, a hash, a UUID or an
+/// ID rather than a name: one of 32 characters or more, letters and digits
+/// at random (16 or more, hexadecimal of 7 or more, or switching between
+/// letters and digits three times in 8 or more), a number of 6 digits or
+/// more, letters in mixed case at random, or letters with no vowel pattern
+/// a word has ([`unpronounceable`]).
+fn hard_to_say(word: &str) -> bool {
+    word.split(|c: char| !c.is_alphanumeric()).any(|part| {
+        let length = part.chars().count();
+        let digits = part.chars().filter(char::is_ascii_digit).count();
+        if length >= 32 {
+            true
+        } else if digits == 0 {
+            random_case(part) || camel_words(part).into_iter().any(unpronounceable)
+        } else if digits == length {
+            length >= 6
+        } else {
+            length >= 16
+                || (length >= 7 && part.chars().all(|c| c.is_ascii_hexdigit()))
+                || (length >= 8 && alternations(part) >= 3)
+        }
+    })
+}
+
+/// The words a CamelCase or camelCase part holds: `XMLHttpRequest` holds
+/// `XML`, `Http` and `Request`, and `Win32Error` `Win32` and `Error`.
+fn camel_words(part: &str) -> Vec<&str> {
+    let chars: Vec<(usize, char)> = part.char_indices().collect();
+    let mut starts = vec![0];
+    for (i, &(at, c)) in chars.iter().enumerate().skip(1) {
+        let previous = chars[i - 1].1;
+        let next_lower = chars
+            .get(i + 1)
+            .is_some_and(|(_, next)| next.is_lowercase());
+        if c.is_uppercase()
+            && (previous.is_lowercase()
+                || previous.is_ascii_digit()
+                || (previous.is_uppercase() && next_lower))
+        {
+            starts.push(at);
+        }
+    }
+    starts.push(part.len());
+    starts
+        .windows(2)
+        .map(|pair| &part[pair[0]..pair[1]])
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// Letters in mixed case at random, as in a key (`xKqzPwRtmB`): ten or
+/// more, in three or more camel words averaging under two and a half
+/// letters.
+fn random_case(part: &str) -> bool {
+    let words = camel_words(part).len();
+    part.len() >= 10 && words >= 3 && part.len() * 2 < words * 5
+}
+
+/// A word of eight letters or more (of the English alphabet) with no vowel
+/// pattern a word has: under one in five a vowel (with y), or seven
+/// consonants in a row.
+fn unpronounceable(word: &str) -> bool {
+    if word.len() < 8 || !word.chars().all(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    let vowel = |c: &u8| b"aeiouy".contains(&c.to_ascii_lowercase());
+    let letters = word.as_bytes();
+    let vowels = letters.iter().filter(|c| vowel(c)).count();
+    let consonants = letters.split(vowel).map(<[u8]>::len).max().unwrap_or(0);
+    vowels * 5 < letters.len() || consonants >= 7
+}
+
+/// How often `part` switches between letters and digits.
+fn alternations(part: &str) -> usize {
+    let digits: Vec<bool> = part.chars().map(|c| c.is_ascii_digit()).collect();
+    digits.windows(2).filter(|pair| pair[0] != pair[1]).count()
 }
 
 /// `word` without the punctuation at its ends (a sentence's full stop, a
@@ -705,7 +808,7 @@ mod tests {
 
     /// The words of `items`, with no workspace or session.
     fn words_of(items: &[Item]) -> Vec<SessionWord> {
-        rank(&tail(items), Path::new(""), &[], &[])
+        rank(&tail(items), Path::new(""), &[], &[], false)
     }
 
     /// The words of `text` as one message, with no workspace or session.
@@ -837,6 +940,121 @@ mod tests {
         assert!(words.iter().all(|word| word.code));
     }
 
+    /// Keys, tokens, hashes and IDs can't be said, and names and
+    /// identifiers can, however unusual.
+    #[test]
+    fn what_cant_be_said_is_left_out() {
+        for word in [
+            "DictationOptions",
+            "snake_case_name",
+            "Nginx",
+            "kubectl",
+            "gpt-6.1",
+            "x86_64",
+            "sha256",
+            "utf8",
+            "i18n",
+            "k8s",
+            "IOError",
+            "XMLHttpRequest",
+            "HTTPSConnectionPool",
+            "iPhoneXSMax",
+            "Win32Error",
+            "Fauchelevent",
+            "Nyiragongo",
+            "Kowalczyk",
+            "Wojciechowski",
+            "Mkrtchyan",
+            "ratatui",
+            "pthreads",
+            "llvmpipe",
+            "systemctl",
+            "h264",
+            "base64",
+            "python3",
+            "md5sum",
+            "iOS",
+            "r56",
+            "studio016-gates3",
+            "AWS_SECRET_ACCESS_KEY",
+            "Cargo.toml",
+            "e2e",
+        ] {
+            assert!(sayable(word), "{word}");
+        }
+        for word in [
+            "sk-ant-api03-Xq7Lm2Pw9Rt4Vb8Nc1Zd5Hj3Kf6Gs0Ya",
+            "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+            "AKIAIOSFODNN7EXAMPLE",
+            "e4d3e79",
+            "96ebe7e88a63e5b129b73b5e5829e4bc1cf843ab",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "build-20261029",
+            "a1b2c3d4",
+            "AbCdEfGhIjKl",
+            "xKqzPwRtmBvLnJ",
+            "qzxwvkpjrtmn",
+            "eyJhbGciOiJIUzI1NiJ9",
+            "dGhpcyBpcyBhIHRlc3Q",
+        ] {
+            assert!(!sayable(word), "{word}");
+        }
+    }
+
+    /// Values that context marks as secret count unless `leave_out_secrets`
+    /// is on, in prose, in a call's line and in a shell command, and the
+    /// names next to them count either way.
+    #[test]
+    fn marked_secrets_are_left_out_only_when_asked() {
+        let items = [
+            Item::new(
+                Kind::User,
+                "Set PASSWORD=HunterTwo and API_KEY: Sk9Zz, then mail Jane.Doe@Example.com \
+                 about ReadMe.md and password_hash.",
+            ),
+            call(
+                "http_get",
+                "fetch https://Svc.example/a?api_key=HunterNine",
+                "",
+            ),
+            call(
+                "shell",
+                "curl -H 'Authorization: Bearer HunterTen' -u root:HunterEleven https://x.example/y \
+                 && sshpass -p HunterThirteen ssh Host9 \
+                 && tool --password-file ~/KeptFolder/pw.txt --password HunterFourteen",
+                "",
+            ),
+        ];
+        let words = |secrets| {
+            texts(&rank(&tail(&items), Path::new(""), &[], &[], secrets))
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        };
+        let (kept, left_out) = (words(false), words(true));
+        let secret = |word: &String| {
+            ["Hunter", "Sk9Zz", "Jane", "Doe", "Example.com"]
+                .iter()
+                .any(|part| word.contains(part))
+        };
+        assert!(kept.iter().any(secret), "{kept:?}");
+        assert!(!left_out.iter().any(secret), "{left_out:?}");
+        for word in [
+            "PASSWORD",
+            "API_KEY",
+            "ReadMe.md",
+            "password_hash",
+            "KeptFolder",
+            "pw.txt",
+            "Host9",
+        ] {
+            assert!(
+                left_out.iter().any(|found| found == word),
+                "{word}: {left_out:?}"
+            );
+        }
+    }
+
     /// The tail stops once its budget is full, and of the text that doesn't
     /// fit it keeps the whole lines after the cut.
     #[test]
@@ -848,7 +1066,7 @@ mod tests {
         assert_eq!(tail.read, TRANSCRIPT_BYTES);
         assert_eq!(tail.texts.len(), 2);
         assert_eq!(tail.texts[1].text, "SeenWord");
-        let found = texts(&rank(&tail, Path::new(""), &[], &[]))
+        let found = texts(&rank(&tail, Path::new(""), &[], &[], false))
             .into_iter()
             .map(String::from)
             .collect::<Vec<_>>();
@@ -881,6 +1099,7 @@ mod tests {
             &workspace,
             &["claude-opus-5-5".into(), "gpt-6.1-sol".into()],
             &["root-cause".into(), "reviewer".into()],
+            false,
         );
         let found = texts(&words);
         // A name the session gives counts its plain mentions too. Then come
@@ -1018,7 +1237,7 @@ mod tests {
         ));
         let names_took = names_started.elapsed();
         let rank_started = Instant::now();
-        let words = rank(&tail, workspace, &models, &names);
+        let words = rank(&tail, workspace, &models, &names, false);
         let rank_took = rank_started.elapsed();
         let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
         for word in &words {
