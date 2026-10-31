@@ -1356,6 +1356,9 @@ pub struct CacheData {
     /// Milliseconds.
     pub lifetime: Option<i64>,
     pub refreshed_at: Option<i64>,
+    /// When the cache counts as lapsed (Unix milliseconds), which Arko works
+    /// out from the two above with its safety margin. The page shows it.
+    pub expires_at: Option<i64>,
     pub tokens: Option<u64>,
     pub read: Option<u64>,
     pub written: Option<u64>,

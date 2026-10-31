@@ -211,17 +211,14 @@ pub struct Reading {
 }
 
 /// The main agent's prompt cache, as its latest request left it, with when
-/// it lapses and what a miss and keeping it warm cost.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+/// it lapses and what a miss and keeping it warm cost. It is sent with its
+/// fields and [`expires_at`](Self::expires_at), which the page shows.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CacheStatus {
     /// How long the cache keeps the conversation after a request. `None`
     /// where the provider doesn't say (Gemini, OpenRouter models other than
     /// Claude, Claude Code until it writes the cache) or nothing is cached.
     /// The page's status has it in milliseconds.
-    #[serde(
-        serialize_with = "milliseconds",
-        skip_serializing_if = "Option::is_none"
-    )]
     pub lifetime: Option<std::time::Duration>,
     /// When the latest request went out, or the refresh that kept the cache
     /// warm (Unix milliseconds). The cache lasts `lifetime` from then. A
@@ -229,28 +226,21 @@ pub struct CacheStatus {
     /// request left, so the cache may have lapsed meanwhile. `None` for a
     /// new conversation, and for one whose cache the session can't vouch for
     /// (another model, a handover or a compaction since).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub refreshed_at: Option<i64>,
     /// The conversation's input at its latest request, in tokens, which a
     /// miss writes to the cache again.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<usize>,
     /// What the latest request read from the cache and wrote to it, in
     /// tokens.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub read: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub written: Option<usize>,
     /// What a miss costs, with `tokens` written again at the model's price.
     /// `None` on a plan.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub miss_cost: Option<f64>,
     /// What keeping it warm costs, with `tokens` read from the cache at the
     /// model's price. `None` on a plan.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_cost: Option<f64>,
     /// The plan that pays instead ("your Claude plan").
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub on_plan: Option<&'static str>,
 }
 
@@ -259,6 +249,60 @@ impl CacheStatus {
     /// is not known.
     fn is_unknown(&self) -> bool {
         self.lifetime.is_none() || self.refreshed_at.is_none()
+    }
+
+    /// When the cache counts as lapsed (Unix milliseconds), `lifetime` after
+    /// its last use less the safety margin
+    /// ([`lapses_at`](crate::cache_timer::lapses_at)). `None` while either is
+    /// unknown. Every front end shows this time, so the rule is in one place.
+    pub fn expires_at(&self) -> Option<i64> {
+        Some(crate::cache_timer::lapses_at(
+            self.refreshed_at?,
+            self.lifetime?,
+        ))
+    }
+}
+
+impl Serialize for CacheStatus {
+    /// Its fields, the lifetime in milliseconds, and when it lapses
+    /// (`expires_at`).
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Sent {
+            #[serde(
+                serialize_with = "milliseconds",
+                skip_serializing_if = "Option::is_none"
+            )]
+            lifetime: Option<std::time::Duration>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            refreshed_at: Option<i64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            expires_at: Option<i64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            tokens: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            read: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            written: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            miss_cost: Option<f64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            refresh_cost: Option<f64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            on_plan: Option<&'static str>,
+        }
+        Sent {
+            lifetime: self.lifetime,
+            refreshed_at: self.refreshed_at,
+            expires_at: self.expires_at(),
+            tokens: self.tokens,
+            read: self.read,
+            written: self.written,
+            miss_cost: self.miss_cost,
+            refresh_cost: self.refresh_cost,
+            on_plan: self.on_plan,
+        }
+        .serialize(serializer)
     }
 }
 

@@ -574,15 +574,16 @@ pub fn context_title(status: &StatusData, viewing: Option<&WorkerData>) -> Strin
     }
 }
 
-/// The prompt cache's timer: the time left (ms), 0 once it lapsed, or none
-/// where it's hidden (while requests run, and where the lifetime or last
-/// use isn't known). Never more than the lifetime.
+/// The prompt cache's timer: the time left (ms) until it lapses as Arko
+/// says (`expires_at`), 0 once it lapsed, or none where it's hidden (while
+/// requests run, and where Arko can't time it). Never more than the
+/// lifetime.
 pub fn cache_timer(cache: &CacheData, running: bool, now: f64) -> Option<f64> {
     if running {
         return None;
     }
-    let (lifetime, refreshed) = (cache.lifetime? as f64, cache.refreshed_at? as f64);
-    Some((refreshed + lifetime - now).min(lifetime).max(0.0))
+    let (lifetime, lapses) = (cache.lifetime? as f64, cache.expires_at? as f64);
+    Some((lapses - now).min(lifetime).max(0.0))
 }
 
 /// A length of time on a clock: 0:05, 3:12, 1:02:03.
@@ -985,6 +986,7 @@ mod tests {
         let cache = CacheData {
             lifetime: Some(300_000),
             refreshed_at: Some(0),
+            expires_at: Some(300_000),
             ..CacheData::default()
         };
         assert_eq!(cache_timer(&cache, true, 0.0), None);
@@ -999,6 +1001,21 @@ mod tests {
         );
         // A clock that went back still shows at most the lifetime.
         assert_eq!(cache_timer(&cache, false, -60_000.0), Some(300_000.0));
+        // It counts down to the time Arko sends, which is its margin early,
+        // and shows nothing without one.
+        let early = CacheData {
+            expires_at: Some(270_000),
+            ..cache.clone()
+        };
+        assert_eq!(
+            cache_label(cache_timer(&early, false, 108_000.0).unwrap()),
+            "cache 2:42"
+        );
+        let untimed = CacheData {
+            expires_at: None,
+            ..cache.clone()
+        };
+        assert_eq!(cache_timer(&untimed, false, 108_000.0), None);
         assert_eq!(cache_label(0.5), "cache 0:01");
     }
 

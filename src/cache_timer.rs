@@ -57,7 +57,7 @@ impl CacheTimer {
             return None;
         }
         let lifetime = lifetime_ms(cache.lifetime?);
-        let left = (expires_at(cache)? - now).min(lifetime);
+        let left = (cache.expires_at()? - now).min(lifetime);
         Some(if left > 0 {
             CacheTimer::Counting { left }
         } else {
@@ -79,12 +79,6 @@ impl CacheTimer {
     pub fn warns(self) -> bool {
         matches!(self, CacheTimer::Counting { left } if left <= WARNING_MS)
     }
-}
-
-/// When the main agent's prompt cache lapses, when its lifetime and its
-/// last use are known ([`lapses_at`]).
-pub fn expires_at(cache: &CacheStatus) -> Option<i64> {
-    Some(lapses_at(cache.refreshed_at?, cache.lifetime?))
 }
 
 /// When a prompt cache last used at `used` (Unix milliseconds) counts as
@@ -124,7 +118,8 @@ pub fn recache(cache: &CacheStatus) -> Option<String> {
 pub fn tooltip(timer: CacheTimer, cache: &CacheStatus, now: i64) -> String {
     match timer {
         CacheTimer::Counting { .. } => {
-            let until = expires_at(cache)
+            let until = cache
+                .expires_at()
                 .map(|at| when(at.div_euclid(1000), now))
                 .unwrap_or_default();
             let mut text = format!("The prompt cache keeps this conversation until {until}.");
