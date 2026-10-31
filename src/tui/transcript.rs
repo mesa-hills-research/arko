@@ -574,7 +574,7 @@ impl Transcript {
             return Motion::default();
         };
         // (The Messages view leaves the agent's thinking out.)
-        let thinking_shown = !matches!(filter, Filter::Main(View::Messages));
+        let thinking_shown = filter.view() != View::Messages;
         let working = |working| Motion {
             working,
             ..Motion::default()
@@ -596,7 +596,7 @@ impl Transcript {
     fn under_way<'a>(&self, filter: &'a Filter) -> Option<(&'a str, i64)> {
         match filter {
             Filter::Main(_) => self.working.map(|since| (MAIN_AGENT, since)),
-            Filter::Worker(id) => self
+            Filter::Worker(id, _) => self
                 .worker(id)
                 .filter(|worker| worker.state == WorkerState::Running)
                 .map(|_| (id.as_str(), i64::MIN)),
@@ -618,7 +618,7 @@ impl Transcript {
     /// The blocks of `filter`'s view of the items, at `width`.
     fn blocks(&mut self, filter: &Filter, theme: &Theme, width: usize) -> Vec<Block> {
         // A worker's own view doesn't name it on every line.
-        let own = matches!(filter, Filter::Worker(_));
+        let own = matches!(filter, Filter::Worker(..));
         let style = theme_key(theme) ^ u64::from(own);
         let mut blocks: Vec<Block> = Vec::new();
         // (Key 0: before every item. It scrolls away with them.)
@@ -631,7 +631,7 @@ impl Transcript {
                 tail: false,
             });
         }
-        if let Filter::Worker(id) = filter
+        if let Filter::Worker(id, _) = filter
             && let Some(worker) = self.worker(id)
         {
             blocks.push(Block {
@@ -1478,8 +1478,8 @@ fn folds(item: &Item) -> bool {
 pub enum Filter {
     /// The main transcript, in a view.
     Main(View),
-    /// A worker's own transcript.
-    Worker(String),
+    /// A worker's own transcript, in a view.
+    Worker(String, View),
 }
 
 /// What a view does with an item.
@@ -1492,75 +1492,75 @@ enum Show {
     Worker(String),
 }
 
-impl Filter {
-    fn show(&self, item: &Item) -> Show {
-        let worker_line = || item.worker.clone().map_or(Show::Hidden, Show::Worker);
-        match self {
-            Filter::Worker(id) => match (&item.agent == id, item.kind) {
-                // The lines of the workers it started.
-                (true, Kind::WorkerLine) => worker_line(),
-                (true, _) => Show::Item,
-                (false, _) => Show::Hidden,
+impl View {
+    /// What this view shows of an item of the agent whose transcript it
+    /// is, the main agent's in the main transcript and a worker's in its
+    /// own. One rule serves both, so a worker's view can't differ from the
+    /// selected one.
+    fn shows(self, item: &Item) -> Show {
+        match item.kind {
+            // The lines of the workers the agent started.
+            Kind::WorkerLine => item.worker.clone().map_or(Show::Hidden, Show::Worker),
+            // The status line shows how long the last turn ran, and the
+            // context and cost as they change. A line after each turn would
+            // repeat it.
+            Kind::Turn => Show::Hidden,
+            _ => match self {
+                View::Full => Show::Item,
+                // The line of a worker stands for the call that started
+                // it. A call that is still running, was refused or queued
+                // its worker shows.
+                View::Quiet if item.kind == Kind::Call && item.started.is_some() => Show::Hidden,
+                View::Quiet => Show::Item,
+                View::Messages => match item.kind {
+                    Kind::User
+                    | Kind::Text
+                    | Kind::Message
+                    | Kind::Question
+                    | Kind::Reply
+                    | Kind::Output
+                    | Kind::Conversation => Show::Item,
+                    Kind::Notice if item.level != Some(Level::Info) => Show::Item,
+                    // Tool activity is one line a turn that counts the
+                    // calls (as the web page shows it).
+                    Kind::Call => Show::Count,
+                    // (The agent's thinking is part of its work, not of
+                    // what it says.)
+                    _ => Show::Hidden,
+                },
             },
+        }
+    }
+}
+
+impl Filter {
+    /// The view whose rule applies to the agent's own items.
+    fn view(&self) -> View {
+        match self {
+            Filter::Main(view) | Filter::Worker(_, view) => *view,
+        }
+    }
+
+    fn show(&self, item: &Item) -> Show {
+        match self {
+            Filter::Worker(id, view) if &item.agent == id => view.shows(item),
+            Filter::Worker(..) => Show::Hidden,
+            Filter::Main(view) if item.is_main() => view.shows(item),
             Filter::Main(view) => {
-                if item.kind == Kind::WorkerLine {
-                    // (Those of a worker's workers are in its own.)
-                    return if item.is_main() {
-                        worker_line()
-                    } else {
-                        Show::Hidden
-                    };
+                // A worker's message to the user shows in every view.
+                // Its calls and what went wrong show in Full, and so does
+                // its stop (an Info notice). Its text, its report, what
+                // the user wrote to it and the lines of its workers are
+                // its own view's.
+                if item.is_to_user() {
+                    return Show::Item;
                 }
-                if !item.is_main() {
-                    // A worker's message to the user shows in every view.
-                    // Its calls and what went wrong show in Full, and so
-                    // does its stop (an Info notice). Its text, its report
-                    // and what the user wrote to it are its own view's.
-                    if item.is_to_user() {
-                        return Show::Item;
+                match (view, item.kind) {
+                    (View::Full, Kind::Call) => Show::Item,
+                    (View::Full, Kind::Notice) if item.level != Some(Level::Info) || item.stop => {
+                        Show::Item
                     }
-                    return match (view, item.kind) {
-                        (View::Full, Kind::Call) => Show::Item,
-                        (View::Full, Kind::Notice)
-                            if item.level != Some(Level::Info) || item.stop =>
-                        {
-                            Show::Item
-                        }
-                        _ => Show::Hidden,
-                    };
-                }
-                if item.kind == Kind::Turn {
-                    // The status line shows how long the last turn ran, and
-                    // the context and cost as they change. A line after each
-                    // turn would repeat it.
-                    return Show::Hidden;
-                }
-                match view {
-                    View::Full => Show::Item,
-                    // The line of a worker stands for the call that started
-                    // it. A call that is still running, was refused or
-                    // queued its worker shows.
-                    View::Quiet if item.kind == Kind::Call && item.started.is_some() => {
-                        Show::Hidden
-                    }
-                    View::Quiet => Show::Item,
-                    View::Messages => match item.kind {
-                        Kind::User
-                        | Kind::Text
-                        | Kind::Message
-                        | Kind::Question
-                        | Kind::Reply
-                        | Kind::Output
-                        | Kind::Conversation => Show::Item,
-                        Kind::Notice if item.level != Some(Level::Info) => Show::Item,
-                        // Tool activity is one line a turn that counts the
-                        // calls (as the web page shows it).
-                        Kind::Call => Show::Count,
-                        // (The agent's thinking is part of its work, not of
-                        // what it says.)
-                        Kind::Result | Kind::Notice | Kind::Turn | Kind::Thinking => Show::Hidden,
-                        Kind::WorkerLine => worker_line(),
-                    },
+                    _ => Show::Hidden,
                 }
             }
         }
@@ -2508,7 +2508,7 @@ mod tests {
             ["▸ message r1: Also the docs. · ✓ sent", ""]
         );
         assert_eq!(
-            rows(&mut t, &Filter::Worker("r1".into()), 40, 2),
+            rows(&mut t, &Filter::Worker("r1".into(), View::Full), 40, 2),
             ["✉ Message from the lead", "  Also the docs."]
         );
     }
@@ -2532,7 +2532,7 @@ mod tests {
             );
         }
         assert_eq!(
-            rows(&mut t, &Filter::Worker("r3".into()), 40, 3),
+            rows(&mut t, &Filter::Worker("r3".into(), View::Full), 40, 3),
             ["  Looking.", "", "✉ Found it."]
         );
     }
@@ -2556,14 +2556,14 @@ mod tests {
             );
         }
         assert_eq!(
-            rows(&mut t, &Filter::Worker("r1".into()), 50, 2),
+            rows(&mut t, &Filter::Worker("r1".into(), View::Full), 50, 2),
             [
                 format!("▎ Use tabs.{}from the web page", " ".repeat(22)),
                 String::new(),
             ]
         );
         assert_eq!(
-            rows(&mut t, &Filter::Worker("r2".into()), 50, 2),
+            rows(&mut t, &Filter::Worker("r2".into(), View::Full), 50, 2),
             ["  Testing.", ""]
         );
     }
@@ -2579,7 +2579,7 @@ mod tests {
         call.agent = "r1".into();
         call.at -= 900;
         t.apply(Update::Item(call.clone()));
-        let own = Filter::Worker("r1".into());
+        let own = Filter::Worker("r1".into(), View::Full);
         assert_eq!(rows(&mut t, &own, 40, 1)[0], "▸ $ sleep 30 …");
         std::thread::sleep(std::time::Duration::from_millis(150));
         assert_eq!(rows(&mut t, &own, 40, 1)[0], "▸ $ sleep 30 · 1s …");
@@ -2679,7 +2679,7 @@ mod tests {
             ["  Running them."]
         );
         assert_eq!(
-            rows(&mut t, &Filter::Worker("r1".into()), 40, 1),
+            rows(&mut t, &Filter::Worker("r1".into(), View::Full), 40, 1),
             ["  Thinking · Where is the parser?"]
         );
         // Its line opens it, and the last line folds it again.
@@ -2846,7 +2846,7 @@ mod tests {
         t.set_open_thinking(true);
         t.apply(Update::Worker(worker("r1", WorkerState::Running)));
         t.apply(Update::Item(item(1, Kind::Thinking, "Plan.").agent("r1")));
-        let own = Filter::Worker("r1".into());
+        let own = Filter::Worker("r1".into(), View::Full);
         let shown = rows(&mut t, &own, 40, 5);
         assert_eq!(after_spinner(&shown[2]), Some(" Thinking"), "{shown:?}");
         assert_eq!(shown[3..], ["  Plan.", "  ↑ show the first line only"]);
@@ -3161,7 +3161,7 @@ mod tests {
             ..WorkerSummary::new("r1")
         };
         t.apply(Update::Worker(worker.clone()));
-        let own = Filter::Worker("r1".into());
+        let own = Filter::Worker("r1".into(), View::Full);
         let shown = rows(&mut t, &own, 40, 4);
         assert!(shown[0].starts_with("  r1 Test it"), "{shown:?}");
         assert_eq!(shown[1], "");
@@ -3640,7 +3640,7 @@ mod tests {
             "{messages:?}"
         );
         assert!(!messages.iter().any(|r| r.contains("read a.rs")));
-        let worker = rows(&mut t, &Filter::Worker("r1".into()), 60, 8);
+        let worker = rows(&mut t, &Filter::Worker("r1".into(), View::Full), 60, 8);
         assert!(worker[0].contains("r1 Test it · running"), "{worker:?}");
         assert!(worker.iter().any(|r| r.contains("Thinking about it")));
         assert!(!worker.iter().any(|r| r.contains("Fix it")));
@@ -3665,6 +3665,103 @@ mod tests {
         // The agent's text stays, as on the web page.
         assert!(messages.iter().any(|r| r.contains("Thinking.")));
         assert_eq!(t.item(1).unwrap().agent, MAIN_AGENT);
+    }
+
+    /// A worker's own view is the selected view over its own items, as the
+    /// main view is over the main agent's. Messages shows its text, messages
+    /// and replies and counts its calls, Quiet leaves out the call that
+    /// started a worker, and Full shows everything.
+    #[test]
+    fn a_workers_own_view_follows_the_selected_view() {
+        let build = |agent: &str| {
+            let mut t = Transcript::new();
+            let mut user = item(1, Kind::User, "Use tabs.").agent(agent);
+            user.turn = Some(1);
+            t.apply(Update::Item(user));
+            t.apply(Update::Item(item(2, Kind::Thinking, "Hmm.").agent(agent)));
+            t.apply(Update::Item(item(3, Kind::Text, "On it.").agent(agent)));
+            for (id, text, started) in [
+                (4, "cargo test", None),
+                (5, "start worker “Count”", Some("r2")),
+            ] {
+                let mut call = item(id, Kind::Call, text).agent(agent);
+                call.turn = Some(1);
+                call.status = Some(CallStatus::Ok);
+                call.started = started.map(str::to_string);
+                t.apply(Update::Item(call));
+            }
+            let mut line = item(6, Kind::WorkerLine, "Count").agent(agent);
+            line.worker = Some("r2".into());
+            t.apply(Update::Item(line));
+            t.apply(Update::Item(
+                item(7, Kind::Message, "Found it.").agent(agent),
+            ));
+            t.apply(Update::Item(item(8, Kind::Reply, "Fixed.").agent(agent)));
+            t.apply(Update::Worker(WorkerSummary {
+                title: "Count".into(),
+                state: WorkerState::Running,
+                ..WorkerSummary::new("r2")
+            }));
+            t.apply(Update::Worker(WorkerSummary {
+                title: "Fix".into(),
+                state: WorkerState::Running,
+                ..WorkerSummary::new("r1")
+            }));
+            t
+        };
+        // The same items of the main agent: what the view shows of them is
+        // what it shows of the worker's, less the worker's heading.
+        let mut own = build("r1");
+        let mut main = build(MAIN_AGENT);
+        for view in View::ALL {
+            let worker = rows(&mut own, &Filter::Worker("r1".into(), view), 60, 14);
+            let main = rows(&mut main, &Filter::Main(view), 60, 14);
+            let body = |rows: &[String]| {
+                rows.iter()
+                    .map(|r| {
+                        r.trim()
+                            .trim_start_matches(['▎', '✉', '▸'])
+                            .trim()
+                            .to_string()
+                    })
+                    .filter(|r| !r.is_empty() && !r.starts_with("r1 Fix"))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(body(&worker), body(&main), "{view:?}");
+        }
+        let has = |rows: &[String], text: &str| rows.iter().any(|r| r.contains(text));
+        let full = rows(&mut own, &Filter::Worker("r1".into(), View::Full), 60, 14);
+        assert!(has(&full, "Hmm.") && has(&full, "cargo test"), "{full:?}");
+        assert!(has(&full, "start worker “Count”"), "{full:?}");
+        let quiet = rows(&mut own, &Filter::Worker("r1".into(), View::Quiet), 60, 14);
+        assert!(
+            has(&quiet, "cargo test") && has(&quiet, "r2 Count"),
+            "{quiet:?}"
+        );
+        assert!(!has(&quiet, "start worker “Count”"), "{quiet:?}");
+        let messages = rows(
+            &mut own,
+            &Filter::Worker("r1".into(), View::Messages),
+            60,
+            14,
+        );
+        for text in [
+            "Use tabs.",
+            "On it.",
+            "Found it.",
+            "Fixed.",
+            "▸ 2 tool calls",
+        ] {
+            assert!(has(&messages, text), "{text}: {messages:?}");
+        }
+        for text in ["Hmm.", "cargo test"] {
+            assert!(!has(&messages, text), "{text}: {messages:?}");
+        }
+        // The view in the filter is the selected one, so a switch shows at once.
+        assert_eq!(
+            rows(&mut own, &Filter::Worker("r1".into(), View::Full), 60, 14),
+            full
+        );
     }
 
     /// A call that started its worker is left out of the quiet view, where
@@ -3736,7 +3833,7 @@ mod tests {
         let mut nested = start(7, "start worker “Count”", CallStatus::Ok, Some("r2"));
         nested = nested.agent("r1");
         t.apply(Update::Item(nested));
-        let own = rows(&mut t, &Filter::Worker("r1".into()), 70, 6);
+        let own = rows(&mut t, &Filter::Worker("r1".into(), View::Full), 70, 6);
         assert_eq!(count(&own, "start worker “Count”"), 1, "{own:?}");
     }
 
@@ -3880,7 +3977,7 @@ mod tests {
             );
             assert!(!main.iter().any(|r| r.contains("r2")), "{main:?}");
         }
-        let own = rows(&mut t, &Filter::Worker("r1".into()), 70, 10);
+        let own = rows(&mut t, &Filter::Worker("r1".into(), View::Full), 70, 10);
         assert!(
             own.iter().any(|r| r.contains("r2 Count the files")),
             "{own:?}"
@@ -3937,7 +4034,7 @@ mod tests {
         );
         assert!(!main.iter().any(|r| r.contains("an aside")), "{main:?}");
         // In its own view a worker's lines don't name it or its starter.
-        let own = rows(&mut t, &Filter::Worker("r2".into()), 70, 10);
+        let own = rows(&mut t, &Filter::Worker("r2".into(), View::Full), 70, 10);
         assert!(
             own.iter()
                 .any(|r| r.contains("stopped (its lead r1 was stopped)"))
@@ -3985,7 +4082,7 @@ mod tests {
                 .any(|r| r.contains("r1 Test it · 2 tool calls · 2h 5m · finished")),
             "{quiet:?}"
         );
-        let own = rows(&mut t, &Filter::Worker("r1".into()), 60, 4);
+        let own = rows(&mut t, &Filter::Worker("r1".into(), View::Full), 60, 4);
         assert!(own[0].contains("r1 Test it · finished · 2h 5m"), "{own:?}");
     }
 
