@@ -150,9 +150,10 @@ pub fn streaming_is(id: u64) -> bool {
     })
 }
 
-/// The item `id`'s text no longer shows, so nothing follows whether it
-/// streams.
-pub fn streaming_forget(id: u64) {
+/// The page let go of the item `id`, so nothing follows whether it streams.
+/// (Not when a row of it goes, as its next row may be drawn first: another
+/// kind, or another feed's item of the same ID.)
+fn streaming_forget(id: u64) {
     STREAMING.with(|selector| {
         if let Some(selector) = selector.borrow().as_ref() {
             selector.remove(&Some(id));
@@ -819,7 +820,9 @@ pub(crate) fn reset_store(
 fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>, switched: bool) {
     let mut kept = CELLS.with(|cells| std::mem::take(&mut *cells.borrow_mut()));
     if switched {
-        kept.clear();
+        for (id, _) in kept.drain() {
+            streaming_forget(id);
+        }
     }
     let cells = items
         .iter()
@@ -834,6 +837,10 @@ fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>, switched: bool) {
             (item.id, cell)
         })
         .collect();
+    // The items the history let go of.
+    for id in kept.into_keys() {
+        streaming_forget(id);
+    }
     CELLS.with(|all| *all.borrow_mut() = cells);
 }
 
@@ -894,6 +901,7 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
                 cells.insert(item.id, new_cell(&item));
                 for id in trimmed {
                     cells.remove(&id);
+                    streaming_forget(id);
                 }
             });
         }
@@ -978,6 +986,7 @@ fn on_remove(page: Page, data: &str) -> Result<(), String> {
     let removed: Removed = parse(data)?;
     if STORE.with(|store| store.borrow_mut().remove(removed.id)) {
         CELLS.with(|cells| cells.borrow_mut().remove(&removed.id));
+        streaming_forget(removed.id);
         page.version.update(|version| *version += 1);
     }
     Ok(())

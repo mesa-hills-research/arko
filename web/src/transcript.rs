@@ -696,7 +696,6 @@ fn Md(
 ) -> impl IntoView {
     // Whether it streams, which this text alone hears of.
     let streaming = Memo::new(move |_| crate::app::streaming_is(id));
-    on_cleanup(move || crate::app::streaming_forget(id));
     let mut blocks = Blocks::default();
     let (done, open) = text.with_untracked(|text| blocks.update(text, streaming.get_untracked()));
     // Each finished block: its place, how often it was painted, its HTML.
