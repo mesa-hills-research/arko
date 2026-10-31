@@ -185,17 +185,16 @@ impl Store {
     }
 
     /// The view of the history entry `entry` (a worker's, none for the main
-    /// transcript) in the session `session`. Until the store holds the start
-    /// of the stream that's open (`current`), it's the worker the entry
-    /// names, to check once it does. Then a worker of another session, or
-    /// one this session doesn't have, gives the main transcript.
-    pub fn entry_view(&self, entry: &Entry, session: &str, current: bool) -> Option<String> {
+    /// transcript). Until the store holds a feed (after a reload, before the
+    /// stream starts), it's the worker the entry names, to check once it
+    /// does. Then a worker of another feed, or one this feed doesn't have,
+    /// gives the main transcript.
+    pub fn entry_view(&self, entry: &Entry) -> Option<String> {
         let worker = entry.worker.clone()?;
-        if !current {
+        let Some(feed) = self.feed else {
             return Some(worker);
-        }
-        (entry.session.as_deref() == Some(session) && self.workers.contains_key(&worker))
-            .then_some(worker)
+        };
+        (entry.feed == Some(feed) && self.workers.contains_key(&worker)).then_some(worker)
     }
 }
 
@@ -205,12 +204,12 @@ pub fn parse_feed(hex: &str) -> Option<u64> {
 }
 
 /// What an entry of the browser's history keeps of the view it shows: the
-/// worker (none for the main transcript), and the session it was in, which
-/// Arko names in the status (not the key).
+/// worker (none for the main transcript), and the feed it was of, as
+/// another feed's r1 is another worker.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Entry {
     pub worker: Option<String>,
-    pub session: Option<String>,
+    pub feed: Option<u64>,
 }
 
 /// What a call's line offers: Move to background while it runs and the
@@ -343,34 +342,29 @@ pub mod tests {
     }
 
     #[test]
-    fn a_history_entry_shows_its_worker_only_in_its_own_session() {
-        let entry = |worker: Option<&str>, session: Option<&str>| Entry {
+    fn a_history_entry_shows_its_worker_only_in_its_own_feed() {
+        let entry = |worker: Option<&str>, feed: Option<u64>| Entry {
             worker: worker.map(Into::into),
-            session: session.map(Into::into),
+            feed,
         };
+        let r1 = entry(Some("r1"), Some(1));
+        // Before the stream's start (after a reload), the entry's worker
+        // shows, to be checked when the start comes.
         let mut store = Store::default();
-        store.worker(worker("r1"));
-        let r1 = entry(Some("r1"), Some("s1"));
-        assert_eq!(store.entry_view(&r1, "s1", true).as_deref(), Some("r1"));
-        // Another session's r1, a worker gone, and an entry that names no
-        // session show the main transcript.
-        assert_eq!(store.entry_view(&r1, "s2", true), None);
-        assert_eq!(
-            store.entry_view(&entry(Some("r2"), Some("s1")), "s1", true),
-            None
-        );
-        assert_eq!(store.entry_view(&entry(Some("r1"), None), "s1", true), None);
-        assert_eq!(store.entry_view(&Entry::default(), "s1", true), None);
-        // Before the stream's start (after a reload, offline, or while a new
-        // link's key is traded), the entry's worker shows, whatever the store
-        // holds, to be checked when the start comes.
-        let empty = Store::default();
-        assert_eq!(empty.entry_view(&r1, "", false).as_deref(), Some("r1"));
-        assert_eq!(store.entry_view(&r1, "s2", false).as_deref(), Some("r1"));
-        assert_eq!(empty.entry_view(&Entry::default(), "", false), None);
-        // A new session (a reset) has other workers.
-        store.reset(None, Vec::new(), vec![worker("r2")], Vec::new(), 0.0);
-        assert_eq!(store.entry_view(&r1, "s1", true), None);
+        assert_eq!(store.entry_view(&r1).as_deref(), Some("r1"));
+        assert_eq!(store.entry_view(&Entry::default()), None);
+        store.reset(Some(1), Vec::new(), vec![worker("r1")], Vec::new(), 0.0);
+        assert_eq!(store.entry_view(&r1).as_deref(), Some("r1"));
+        // A worker gone, and an entry that names no feed (one from before
+        // feeds), show the main transcript.
+        assert_eq!(store.entry_view(&entry(Some("r2"), Some(1))), None);
+        assert_eq!(store.entry_view(&entry(Some("r1"), None)), None);
+        assert_eq!(store.entry_view(&Entry::default()), None);
+        // Arko started again, whose r1 is another worker.
+        store.reset(Some(2), Vec::new(), vec![worker("r1")], Vec::new(), 0.0);
+        assert_eq!(store.entry_view(&r1), None);
+        let again = entry(Some("r1"), Some(2));
+        assert_eq!(store.entry_view(&again).as_deref(), Some("r1"));
     }
 
     #[test]

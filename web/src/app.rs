@@ -130,9 +130,6 @@ thread_local! {
     /// A stream came through once, so a key that's refused now is one that
     /// ended.
     static EVER_LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Whether the store holds the start of the stream that's open, so a
-    /// view the history asks for can be checked against its workers.
-    static CURRENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The one page, also for callbacks and tasks outside any component.
     static PAGE: std::cell::Cell<Option<Page>> = const { std::cell::Cell::new(None) };
     /// Whether an item is the text that streams, told only to the items
@@ -636,11 +633,6 @@ pub fn check_stream(page: Page) {
         .set_timeout_with_callback_and_timeout_and_arguments_0(check.unchecked_ref(), PING_WAIT);
 }
 
-/// Whether the store holds the start of the stream that's open.
-pub fn store_is_current() -> bool {
-    CURRENT.with(|current| current.get())
-}
-
 fn stream_source() -> Option<EventSource> {
     STREAM.with(|stream| stream.borrow().as_ref().map(|(source, _)| source.clone()))
 }
@@ -691,7 +683,6 @@ fn connect(page: Page) {
 }
 
 pub fn close_stream() {
-    CURRENT.with(|current| current.set(false));
     STREAM.with(|stream| {
         if let Some((source, _)) = stream.borrow_mut().take() {
             source.close();
@@ -781,7 +772,6 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
     page.status.set(status);
     page.connection.set(Connection::Live);
     EVER_LIVE.with(|live| live.set(true));
-    CURRENT.with(|current| current.set(true));
     page.problem.set(
         (bad > 0).then(|| format!("{bad} of Arko’s items couldn’t be read, so they’re left out.")),
     );

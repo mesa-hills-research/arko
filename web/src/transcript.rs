@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use leptos::prelude::*;
 use lucide_leptos::{ArrowDown, ChevronRight};
 
-use crate::app::{Page, RowCell, STORE, cell, page, post, store_is_current, track_worker};
+use crate::app::{Page, RowCell, STORE, cell, page, post, track_worker};
 use crate::copy::CopyButton;
 use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
@@ -580,8 +580,24 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
 }
 
 thread_local! {
-    /// Where the reader was in the main transcript, to come back to.
-    static MAIN_PLACE: std::cell::Cell<Option<(u64, f64)>> = const { std::cell::Cell::new(None) };
+    /// Where the reader was in the main transcript, to come back to, and the
+    /// feed it's a place among the rows of.
+    static MAIN_PLACE: std::cell::Cell<Option<(Option<u64>, (u64, f64))>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The feed the store's items are of.
+fn feed() -> Option<u64> {
+    STORE.with(|store| store.borrow().feed)
+}
+
+/// Where the reader was in the main transcript of `feed`, taken to go back
+/// to. A place of another feed is among rows that are gone.
+fn take_main_place(feed: Option<u64>) -> Option<(u64, f64)> {
+    MAIN_PLACE
+        .with(|place| place.take())
+        .filter(|(of, _)| *of == feed)
+        .map(|(_, place)| place)
 }
 
 /// Shows the worker `id`'s own transcript (none for the main one) in a new
@@ -592,7 +608,7 @@ pub fn show_worker(page: Page, id: Option<String>) {
         return;
     }
     let entry = Entry {
-        session: id.is_some().then(|| session_of(page)),
+        feed: id.as_ref().and_then(|_| feed()),
         worker: id.clone(),
     };
     if let Ok(history) = window().history() {
@@ -604,8 +620,8 @@ pub fn show_worker(page: Page, id: Option<String>) {
 /// Shows the view of the history entry that Back or Forward reached, whose
 /// state is `state`, and again for the entry shown once the stream starts
 /// (over). Until then, a worker's entry shows that worker. Once it has, a
-/// worker of another session, or one gone, shows the main transcript, and
-/// the entry says so from then on.
+/// worker of another feed, or one gone, shows the main transcript, and the
+/// entry says so from then on.
 pub fn show_history_entry(page: Page, state: &wasm_bindgen::JsValue) {
     let text = |name: &str| {
         js_sys::Reflect::get(state, &name.into())
@@ -614,13 +630,9 @@ pub fn show_history_entry(page: Page, state: &wasm_bindgen::JsValue) {
     };
     let entry = Entry {
         worker: text("worker"),
-        session: text("session"),
+        feed: text("feed").as_deref().and_then(crate::store::parse_feed),
     };
-    let shown = STORE.with(|store| {
-        store
-            .borrow()
-            .entry_view(&entry, &session_of(page), store_is_current())
-    });
+    let shown = STORE.with(|store| store.borrow().entry_view(&entry));
     if shown != entry.worker
         && let Ok(history) = window().history()
     {
@@ -638,16 +650,10 @@ pub fn history_state(entry: &Entry) -> wasm_bindgen::JsValue {
     };
     let state = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&state, &"worker".into(), &worker.into());
-    if let Some(session) = &entry.session {
-        let _ = js_sys::Reflect::set(&state, &"session".into(), &session.into());
+    if let Some(feed) = entry.feed {
+        let _ = js_sys::Reflect::set(&state, &"feed".into(), &format!("{feed:016x}").into());
     }
     state.into()
-}
-
-/// The session the page follows, as its status names it.
-fn session_of(page: Page) -> String {
-    page.status
-        .with_untracked(|status| status.info.session.clone())
 }
 
 /// Shows the worker `id`'s own transcript (none for the main one). A
@@ -655,16 +661,13 @@ fn session_of(page: Page) -> String {
 /// to where the reader was.
 fn switch_view(page: Page, id: Option<String>) {
     if page.worker.get_untracked().is_none() {
-        MAIN_PLACE.with(|place| {
-            place.set(if page.pinned.get_untracked() {
-                None
-            } else {
-                scroll::first_visible()
-            })
-        });
+        let place = (!page.pinned.get_untracked())
+            .then(scroll::first_visible)
+            .flatten();
+        MAIN_PLACE.with(|saved| saved.set(place.map(|place| (feed(), place))));
     }
     let back_to = if id.is_none() {
-        MAIN_PLACE.with(|place| place.take())
+        take_main_place(feed())
     } else {
         None
     };
@@ -781,6 +784,17 @@ mod tests {
         let row = Row::Item(4, Kind::Text);
         assert_eq!(row_key(Some(1), &row), row_key(Some(1), &row));
         assert_ne!(row_key(Some(1), &row), row_key(Some(2), &row));
+    }
+
+    /// The reader comes back to their place in the main transcript of the
+    /// feed it was in, and a new feed's opens at its latest.
+    #[test]
+    fn a_place_of_another_feed_isnt_gone_back_to() {
+        MAIN_PLACE.with(|place| place.set(Some((Some(1), (7, -3.5)))));
+        assert_eq!(take_main_place(Some(1)), Some((7, -3.5)));
+        assert_eq!(take_main_place(Some(1)), None);
+        MAIN_PLACE.with(|place| place.set(Some((Some(1), (7, -3.5)))));
+        assert_eq!(take_main_place(Some(2)), None);
     }
 
     /// A text that becomes the reply (Arko's `change`, with no new item) is
