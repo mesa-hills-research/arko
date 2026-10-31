@@ -83,6 +83,8 @@ pub mod questions;
 pub mod remote;
 #[cfg(test)]
 mod remote_demo;
+#[cfg(all(test, feature = "remote"))]
+mod remote_load;
 mod session;
 pub mod session_names;
 pub mod sessions;

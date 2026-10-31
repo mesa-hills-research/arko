@@ -43,3 +43,11 @@ ARKO_DEMO_ITEMS=2000 cargo test --lib remote_page_demo -- --ignored --nocapture
 
 Open the link it prints, then send "Run the demo" or "demo:stream". `src/remote_demo.rs` lists the
 other scripts and settings.
+
+To see how the page holds up as a session grows, `remote_page_load` serves a made-up session that
+grows and works as a control file tells it. `src/remote_load.rs` lists the commands.
+
+```sh
+ARKO_LOAD_CONTROL=/tmp/load cargo test --lib remote_page_load -- --ignored --nocapture
+echo "grow 40" >> /tmp/load
+```
