@@ -3763,6 +3763,7 @@ impl Harness {
             message = arko_agents::HandoverSeed {
                 task_prompt: message,
                 context: None,
+                ids: Vec::new(),
             }
             .message(&report);
         }

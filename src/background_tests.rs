@@ -1043,9 +1043,12 @@ async fn an_update_that_came_too_late_is_found_by_its_job() {
     };
     let late = uuid::Uuid::new_v4();
     assert!(!waits_with(&task, &finished(late), Some(&managers.jobs)));
-    task.pending_context_injections.push(format!(
-        "Job {late} ended. It ran your slow_lookup call, which moved to the background 1 min ago. Its result follows.\n\nFound 3 matches."
-    ));
+    task.pending_context_injections.push(
+        format!(
+            "Job {late} ended. It ran your slow_lookup call, which moved to the background 1 min ago. Its result follows.\n\nFound 3 matches."
+        )
+        .into(),
+    );
     assert!(waits_with(&task, &finished(late), Some(&managers.jobs)));
 
     // An update the manager keeps for the owner's next runtime.
@@ -1110,17 +1113,18 @@ async fn a_late_alert_wakes_and_a_late_warning_wakes_while_the_user_is_here() {
         "Monitor {id} (`dev server`) ended at 11:00 UTC and its command was stopped. It alerted once."
     );
     for away in [false, true] {
-        task.pending_context_injections = vec![ended.clone()];
+        task.pending_context_injections = vec![ended.clone().into()];
         assert!(alert_waits(&task, owner, None, !away).is_none());
-        task.pending_context_injections = vec![warning.clone()];
+        task.pending_context_injections = vec![warning.clone().into()];
         let woken = alert_waits(&task, owner, None, !away);
         assert_eq!(woken.is_some(), !away);
         assert!(woken.is_none_or(|alert| alert.ends_soon && alert.late));
-        task.pending_context_injections = vec![warning.clone(), alert.clone(), ended.clone()];
+        task.pending_context_injections =
+            vec![warning.clone().into(), alert.clone().into(), ended.clone().into()];
         let woken = alert_waits(&task, owner, None, !away).expect("an alert wakes");
         assert!(!woken.ends_soon && woken.late && woken.owner == owner);
     }
-    task.pending_context_injections = vec![warning.clone()];
+    task.pending_context_injections = vec![warning.clone().into()];
     let woken = alert_waits(&task, owner, Some(&managers.jobs), true).unwrap();
     assert_eq!(woken.job, Some(id));
     managers.shutdown().await;

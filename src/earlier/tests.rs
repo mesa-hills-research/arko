@@ -364,6 +364,7 @@ fn handed_over() -> arko_agents::Task {
         &arko_agents::HandoverSeed {
             task_prompt: prompt.into(),
             context: None,
+            ids: Vec::new(),
         }
         .message("The second report."),
     );
