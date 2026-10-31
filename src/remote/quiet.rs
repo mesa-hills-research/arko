@@ -156,6 +156,21 @@ impl Planner {
     }
 }
 
+/// What a call does while it runs, in a few words, as its row says it
+/// ("Running cargo test -p arko", "Waiting for r91").
+pub fn doing(act: &Act) -> String {
+    let member = Member {
+        index: 0,
+        call: Call {
+            act: Some(act),
+            ..Call::default()
+        },
+        act,
+        name: Names::default().of(None, act),
+    };
+    phrases(&member).doing
+}
+
 /// The rows of `steps` worked out at once, as a planner first sees them.
 pub fn rows(steps: &[Step]) -> Vec<Piece> {
     Planner::default().rows(steps)
@@ -1313,6 +1328,15 @@ mod tests {
             planned(&mut planner, &waiting),
             ["Ran 2 commands (rg, cargo)", "step 2"]
         );
+    }
+
+    /// A call that runs says what it does as its row would.
+    #[test]
+    fn a_call_says_what_it_does() {
+        assert_eq!(doing(&act(Wait, "r91")), "Waiting for r91");
+        assert_eq!(doing(&act(Wait, "r1, r2, r3, r4")), "Waiting for workers");
+        assert_eq!(doing(&act(Command, "cargo test")), "Running cargo test");
+        assert_eq!(doing(&act(Read, "src/tui/app.rs")), "Reading app.rs");
     }
 
     /// Back-to-back waits are one row that says what came.

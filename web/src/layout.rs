@@ -473,8 +473,33 @@ pub fn motion(
         // The Messages view leaves the agent's thinking out.
         Busy::Thinking(_) if view == View::Messages => (None, true),
         Busy::Thinking(id) => (Some(id), false),
+        // It counts calls, so the line at the end says what the agent's
+        // call does while it runs (`working_label`).
+        Busy::Tool if view == View::Messages => (None, true),
         Busy::Tool | Busy::Done => still,
     }
+}
+
+/// What the "Working…" line says. While a call of the agent runs (which
+/// the Messages view alone shows the line for) it says what the call does,
+/// as its Quiet row would ("Waiting for r91…").
+pub fn working_label(store: &Store, worker: Option<&str>) -> String {
+    let agent = worker.unwrap_or(MAIN);
+    store
+        .items
+        .iter()
+        .rev()
+        .find(|item| {
+            item.agent == agent
+                && !item.pending
+                && item.kind == Kind::Call
+                && item.status == Some(CallStatus::Running)
+        })
+        .and_then(|item| item.act.as_ref())
+        .map_or_else(
+            || "Working…".to_string(),
+            |act| format!("{}…", quiet::doing(act)),
+        )
 }
 
 /// `rows` with the "Working…" row, when `working`, where the agent's
@@ -791,14 +816,27 @@ mod tests {
         );
         let mut call = item(4, Kind::Call, MAIN, "ls");
         call.status = Some(CallStatus::Running);
+        call.act = Some(crate::protocol::Act {
+            kind: crate::protocol::ActKind::Command,
+            target: "ls".into(),
+            ..Default::default()
+        });
         store.add(call.clone(), 0.0);
         assert_eq!(
             motion(&store, &status, View::Full, None, 0.0),
             (None, false)
         );
+        // The Messages view counts calls, so its line at the end says what
+        // the call that runs does.
+        assert_eq!(
+            motion(&store, &status, View::Messages, None, 0.0),
+            (None, true)
+        );
+        assert_eq!(working_label(&store, None), "Running ls…");
         call.status = Some(CallStatus::Ok);
         store.change(call, 0.0);
         assert_eq!(motion(&store, &status, View::Full, None, 0.0), (None, true));
+        assert_eq!(working_label(&store, None), "Working…");
         store.add(item(5, Kind::Reply, MAIN, "done"), 0.0);
         assert_eq!(
             motion(&store, &status, View::Full, None, 0.0),

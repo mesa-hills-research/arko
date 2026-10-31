@@ -178,12 +178,21 @@ fn row_key(feed: Option<u64>, row: &Row) -> (Option<u64>, String) {
 
 fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
     match row {
-        Row::Working => view! {
-            <div class="row working">
-                <span class="what shimmer">"Working…"<span class="shine" data-text="Working…" aria-hidden="true"></span></span>
-            </div>
+        Row::Working => {
+            let page = page();
+            // What the agent's call does while it runs, else "Working…".
+            let label = Memo::new(move |_| {
+                page.version.track();
+                let worker = page.worker.get();
+                STORE.with(|store| layout::working_label(&store.borrow(), worker.as_deref()))
+            });
+            view! {
+                <div class="row working">
+                    <span class="what shimmer">{move || label.get()}<span class="shine" data-text=move || label.get() aria-hidden="true"></span></span>
+                </div>
+            }
+            .into_any()
         }
-        .into_any(),
         Row::Count { id, count, .. } => count_row(id, count),
         Row::Quiet { id, words, calls } => quiet_row(id, words, calls, thinking),
         Row::Item(id, _) => match cell(id) {

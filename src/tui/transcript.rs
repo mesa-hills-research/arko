@@ -247,12 +247,15 @@ enum Busy {
 }
 
 /// What shows that a view's agent is under way, besides its calls.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Motion {
-    /// Its thinking that streams, by ID: its label moves.
+    /// Its thinking that streams, by ID, whose label moves.
     thinking: Option<u64>,
     /// The "Working…" line, at the end.
     working: bool,
+    /// What that line says instead of "Working…", in the Messages view
+    /// while a call of the agent runs ("Waiting for r91…").
+    label: Option<String>,
 }
 
 /// A block of lines in the drawn transcript.
@@ -698,11 +701,34 @@ impl Transcript {
             Busy::Text(grown) => working(grown.elapsed() >= QUIET),
             Busy::Thinking(id) if thinking_shown => Motion {
                 thinking: Some(id),
-                working: false,
+                ..Motion::default()
             },
             Busy::Thinking(_) => working(true),
+            // The Messages view counts calls, so the line says what the
+            // agent's call does while it runs.
+            Busy::Tool if filter.view() == View::Messages => Motion {
+                working: true,
+                label: self.doing(agent),
+                ..Motion::default()
+            },
             Busy::Tool | Busy::Done => Motion::default(),
         }
+    }
+
+    /// What the latest call of `agent` that runs does ("Running cargo
+    /// test…").
+    fn doing(&self, agent: &str) -> Option<String> {
+        self.entries
+            .iter()
+            .rev()
+            .map(|entry| &entry.item)
+            .find(|item| {
+                item.agent == agent
+                    && item.kind == Kind::Call
+                    && item.status == Some(CallStatus::Running)
+            })
+            .and_then(|item| item.act.as_ref())
+            .map(|act| format!("{}…", quiet::doing(act)))
     }
 
     /// The agent of `filter`'s view and when its turn began (Unix
@@ -1389,7 +1415,7 @@ impl Transcript {
                 if block.shown == Shown::Working {
                     // (Not text: the mouse finds the line above it.)
                     if line == usize::from(block.gap) {
-                        let label = text_width(&glyphs::render(WORKING));
+                        let label = text_width(&glyphs::render(self.working_label()));
                         let x = area.x + SPINNER as u16;
                         motion::paint(buffer, (x, row), label, theme, ms);
                         moving = true;
@@ -1530,7 +1556,7 @@ impl Transcript {
             }
             // (The spinner goes in the margin as it is drawn.)
             Shown::Working => {
-                let label = glyphs::render(WORKING).into_owned();
+                let label = glyphs::render(self.working_label()).into_owned();
                 // The spinner stands in the column of the rail a command's
                 // output hangs from, under it, and the word after it.
                 let mut line = Wrapped::line(vec![
@@ -1541,6 +1567,11 @@ impl Transcript {
                 vec![line]
             }
         }
+    }
+
+    /// What the "Working…" line says.
+    fn working_label(&self) -> &str {
+        self.motion.label.as_deref().unwrap_or(WORKING)
     }
 
     // ----- selecting text with the mouse -----
@@ -4454,6 +4485,59 @@ mod tests {
         // The agent's text stays, as on the web page.
         assert!(messages.iter().any(|r| r.contains("Thinking.")));
         assert_eq!(t.item(1).unwrap().agent, MAIN_AGENT);
+    }
+
+    /// The Messages view counts calls, so while one of the agent's runs,
+    /// its line at the end says what the call does, where "Working…" goes.
+    #[test]
+    fn messages_say_what_a_running_call_does() {
+        use crate::remote::{Act, ActKind};
+        let mut t = Transcript::new();
+        t.working = Some(0);
+        let mut user = item(1, Kind::User, "Wait for it");
+        user.turn = Some(1);
+        t.apply(Update::Item(user));
+        let mut wait = item(2, Kind::Call, "waiting for r91");
+        wait.turn = Some(1);
+        wait.status = Some(CallStatus::Running);
+        wait.act = Some(Act {
+            kind: ActKind::Wait,
+            target: "r91".into(),
+            ..Act::default()
+        });
+        t.apply(Update::Item(wait.clone()));
+        let messages = Filter::Main(View::Messages);
+        let shown = rows(&mut t, &messages, 50, 8);
+        assert_eq!(
+            shown
+                .iter()
+                .filter(|row| row.contains("Waiting for r91…"))
+                .count(),
+            1,
+            "{shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|row| row.contains("Working…")),
+            "{shown:?}"
+        );
+        // Full shows the call itself, and no line at the end.
+        let full = rows(&mut t, &Filter::Main(View::Full), 50, 8);
+        assert!(
+            !full.iter().any(|row| row.contains("Waiting for r91…")),
+            "{full:?}"
+        );
+        // Once it ended, the agent waits on its model again.
+        wait.status = Some(CallStatus::Ok);
+        t.apply(Update::Change(wait));
+        let shown = rows(&mut t, &messages, 50, 8);
+        assert!(
+            shown.iter().any(|row| row.contains("Working…")),
+            "{shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|row| row.contains("Waiting for")),
+            "{shown:?}"
+        );
     }
 
     /// An open Quiet row draws again when an item it shows changes, also
