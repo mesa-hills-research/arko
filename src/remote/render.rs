@@ -444,11 +444,32 @@ fn command_words(command: &str, cwd: &str) -> String {
         "" | "." => String::new(),
         cwd => last_part(cwd),
     };
+    // (After `&&` or `;`, whichever comes first.)
     if let Some(rest) = line.strip_prefix("cd ")
-        && let Some((dir, then)) = rest.split_once("&&")
+        && let Some((at, length)) = ["&&", ";"]
+            .iter()
+            .filter_map(|then| rest.find(then).map(|at| (at, then.len())))
+            .min()
     {
-        folder = last_part(dir.trim().trim_matches(['"', '\'']));
-        line = then.trim();
+        folder = last_part(rest[..at].trim().trim_matches(['"', '\'']));
+        line = rest[at + length..].trim();
+    }
+    // From its program, past the variables set for it and the shell's own
+    // settings: `CARGO_INCREMENTAL=0 cargo test` as `cargo test`.
+    loop {
+        let rest = line.trim_start();
+        let skipped = rest
+            .strip_prefix("set -o pipefail;")
+            .or_else(|| rest.strip_prefix("set -e;"))
+            .or_else(|| {
+                let (word, after) = rest.split_once(char::is_whitespace)?;
+                let assigns = word.contains('=') && !word.starts_with(['=', '-']);
+                (assigns || word == "env" || word == "export").then_some(after)
+            });
+        match skipped {
+            Some(after) if !after.trim().is_empty() => line = after.trim_start(),
+            _ => break,
+        }
     }
     // `target/debug/arko --resume x` as `arko --resume x`.
     let line = match line.split_once(char::is_whitespace) {
@@ -1429,6 +1450,19 @@ mod tests {
             program.target,
             "arko --resume 20261027 --remote 127.0.0.1:1"
         );
+        let set = act(
+            SHELL_TOOL_NAME,
+            &[(
+                "command",
+                "set -o pipefail; CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=line-tables-only cargo-locked test --lib".into(),
+            )],
+        );
+        assert_eq!(set.target, "cargo-locked test --lib");
+        let then = act(
+            SHELL_TOOL_NAME,
+            &[("command", "cd ../arko; git log -3".into())],
+        );
+        assert_eq!(then.target, "git log -3 in arko");
         let message = act(
             crew::MESSAGE_AGENT,
             &[("to", "lead".into()), ("message", "Done.".into())],

@@ -753,6 +753,10 @@ fn program(command: &str) -> &str {
         .split_whitespace()
         .find(|word| !word.contains('='))
         .unwrap_or_default();
+    // (A word cut short names no program.)
+    if word.ends_with('…') {
+        return "";
+    }
     file_name(word)
 }
 
