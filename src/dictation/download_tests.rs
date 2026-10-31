@@ -406,12 +406,10 @@ fn cancelling_stops_checking_and_packing() {
     std::fs::write(&path, weights()).unwrap();
     let cancel = AtomicBool::new(true);
     assert_eq!(sha256(&path, &cancel), Err(Error::Cancelled));
-    let lock = InstallLock::take(&setup.downloads.join(LOCK_FILE), &cancel, || {}).unwrap();
     let out = setup.downloads.join("model.pack");
     let mut writer = PackWriter {
         file: FileSink::create(&out, "test", Vec::new()).unwrap(),
         cancel: &cancel,
-        lock: &lock,
     };
     assert!(pack::Sink::bytes(&mut writer, "a", b"bytes").is_err());
     cancel.store(false, Ordering::SeqCst);
@@ -459,24 +457,79 @@ fn a_second_install_waits_for_the_first() {
         })
     );
     assert!(setup.server.requests().is_empty(), "downloaded again");
-    assert!(!dir.join(LOCK_FILE).exists());
+    // The lock's file stays, for the next install to lock.
+    assert!(dir.join(LOCK_FILE).exists());
 }
 
-/// A lock its process left behind long ago is taken over, and one still
-/// held makes a cancelled wait end.
+/// Two contenders for the lock take turns: the second waits while the
+/// first holds it, and a cancelled wait ends.
 #[test]
-fn a_stale_lock_is_taken_over() {
+fn contenders_for_the_lock_take_turns() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(LOCK_FILE);
-    let file = std::fs::File::create(&path).unwrap();
-    file.set_modified(SystemTime::now() - STALE * 2).unwrap();
-    let lock = InstallLock::take(&path, &AtomicBool::new(false), || panic!("waited")).unwrap();
+    let first = InstallLock::take(&path, &AtomicBool::new(false), || panic!("waited")).unwrap();
     assert_eq!(
         InstallLock::take(&path, &AtomicBool::new(true), || {}).err(),
         Some(Error::Cancelled)
     );
-    drop(lock);
-    assert!(!path.exists());
+    let waits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (second_path, counted) = (path.clone(), waits.clone());
+    let second = std::thread::spawn(move || {
+        InstallLock::take(&second_path, &AtomicBool::new(false), || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        })
+        .map(|_| ())
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    assert!(waits.load(Ordering::SeqCst) >= 1);
+    assert!(!second.is_finished(), "both held it");
+    drop(first);
+    assert_eq!(second.join().unwrap(), Ok(()));
+}
+
+/// The variable that makes [`a_lock_whose_holder_dies_is_free`] the
+/// process that holds the lock and dies.
+const HOLDER: &str = "ARKO_TEST_LOCK_HOLDER";
+/// What the holder prints once it holds the lock.
+const HELD: &str = "install lock held";
+
+/// A process that dies holding the lock lets go of it, however it ends.
+#[test]
+fn a_lock_whose_holder_dies_is_free() {
+    if let Some(path) = std::env::var_os(HOLDER) {
+        let _lock = InstallLock::take(Path::new(&path), &AtomicBool::new(false), || {}).unwrap();
+        // (The test harness prints it after the test's name.)
+        println!("{HELD}");
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(LOCK_FILE);
+    let mut holder = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "dictation::download::tests::a_lock_whose_holder_dies_is_free",
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
+        .env(HOLDER, &path)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(holder.stdout.take().unwrap()).lines();
+    assert!(
+        lines.any(|line| line.is_ok_and(|line| line.ends_with(HELD))),
+        "the holder didn't take the lock"
+    );
+    assert_eq!(
+        InstallLock::take(&path, &AtomicBool::new(true), || {}).err(),
+        Some(Error::Cancelled),
+        "the lock was free while held"
+    );
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    InstallLock::take(&path, &AtomicBool::new(false), || panic!("waited")).unwrap();
 }
 
 /// A server that takes the connection and never answers: cancelling ends

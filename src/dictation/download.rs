@@ -2,15 +2,15 @@
 //! pinned revision, resumed where an earlier try stopped, checked against
 //! its SHA-256, then converted into the engine's pack in the model's 8-bit
 //! precision. The downloaded files go once the pack is written. One
-//! process at a time installs a model, holding a lock file in its folder,
-//! and cancelling stops the work at the next megabyte or tensor.
+//! process at a time installs a model, holding the operating system's lock
+//! on a file in its folder, and cancelling stops the work at the next
+//! megabyte or tensor.
 
-use std::cell::Cell;
 use std::fs;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use speech::pack::{self, FileSink};
@@ -32,12 +32,9 @@ const STALL: Duration = Duration::from_secs(60);
 const RESUME: &str = "Start dictation again to resume.";
 /// The folder, in the model's, the files download into.
 const DOWNLOAD_DIR: &str = "download";
-/// The lock file, in the model's folder, of the process installing it.
+/// The file, in the model's folder, whose lock the process installing it
+/// holds. It stays there.
 const LOCK_FILE: &str = "install.lock";
-/// A lock untouched this long was left by a process that ended.
-const STALE: Duration = Duration::from_secs(120);
-/// The process holding a lock touches it this often while it works.
-const REFRESH: Duration = Duration::from_secs(10);
 
 fn failed(why: impl std::fmt::Display) -> Error {
     Error::Failed(format!(
@@ -58,9 +55,10 @@ pub(super) fn install(
     let downloads = dir.join(DOWNLOAD_DIR);
     let unsaved = |error: std::io::Error| unsaved(&dir, error);
     fs::create_dir_all(&dir).map_err(unsaved)?;
-    // Another process installing it is followed by the size of its files.
+    // Held for the whole install. Another process installing it is followed
+    // by the size of its files.
     let total = model.download_bytes();
-    let lock = InstallLock::take(&dir.join(LOCK_FILE), cancel, || {
+    let _lock = InstallLock::take(&dir.join(LOCK_FILE), cancel, || {
         progress(Preparing::Downloading {
             done: downloaded(model, &downloads),
             total,
@@ -70,18 +68,14 @@ pub(super) fn install(
         return Ok(());
     }
     fs::create_dir_all(&downloads).map_err(unsaved)?;
-    let mut progress = |step: Preparing| {
-        lock.refresh();
-        progress(step)
-    };
-    download_files(model, &downloads, base, &mut progress, cancel)?;
+    download_files(model, &downloads, base, progress, cancel)?;
     // The notices first: the pack is what makes the model installed.
     fs::write(dir.join("NOTICE.txt"), model.notice()).map_err(unsaved)?;
     fs::write(dir.join("source.json"), source_json(model)).map_err(unsaved)?;
     let source = model
         .source_file
         .map_or(downloads.clone(), |file| downloads.join(file));
-    pack_model(model, &source, &dir.join(PACK_FILE), cancel, &lock)?;
+    pack_model(model, &source, &dir.join(PACK_FILE), cancel)?;
     if let Err(error) = fs::remove_dir_all(&downloads) {
         log::warn!(
             "couldn't delete the downloaded files in {} ({error})",
@@ -317,42 +311,29 @@ fn downloaded(model: &SpeechModel, downloads: &Path) -> u64 {
         .sum()
 }
 
-/// A model's install lock, while this process holds it. Dropping it lets go.
+/// A model's install lock, while this process holds it: the operating
+/// system's lock on the model's `install.lock`, which it lets go when the
+/// lock is dropped or the process ends, however it ends.
 struct InstallLock {
-    path: PathBuf,
-    file: fs::File,
-    touched: Cell<Instant>,
+    _file: fs::File,
 }
 
 impl InstallLock {
-    /// Takes the lock at `path`, waiting while another process holds it and
-    /// telling `waiting` every half second meanwhile. A lock left untouched
-    /// for [`STALE`] is taken over.
+    /// Takes the lock on the file at `path`, waiting while another process
+    /// holds it and telling `waiting` every half second meanwhile.
     fn take(path: &Path, cancel: &AtomicBool, mut waiting: impl FnMut()) -> Result<Self, Error> {
+        let unsaved = |error: std::io::Error| unsaved(path.parent().unwrap_or(path), error);
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path)
+            .map_err(unsaved)?;
         loop {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-            {
-                Ok(mut file) => {
-                    let _ = writeln!(file, "{}", std::process::id());
-                    return Ok(Self {
-                        path: path.to_path_buf(),
-                        file,
-                        touched: Cell::new(Instant::now()),
-                    });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // shortcut: two processes finding the same stale lock at
-                    // once could both take it, after a crash, in the same
-                    // instant. Upgrade to an OS file lock if that matters.
-                    if is_stale(path) {
-                        let _ = fs::remove_file(path);
-                        continue;
-                    }
-                }
-                Err(error) => return Err(unsaved(path.parent().unwrap_or(path), error)),
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(fs::TryLockError::WouldBlock) => {}
+                Err(fs::TryLockError::Error(error)) => return Err(unsaved(error)),
             }
             if cancel.load(Ordering::SeqCst) {
                 return Err(Error::Cancelled);
@@ -361,42 +342,17 @@ impl InstallLock {
             std::thread::sleep(Duration::from_millis(500));
         }
     }
-
-    /// Shows the lock is held, at most every [`REFRESH`].
-    fn refresh(&self) {
-        if self.touched.get().elapsed() >= REFRESH {
-            let _ = self.file.set_modified(SystemTime::now());
-            self.touched.set(Instant::now());
-        }
-    }
-}
-
-impl Drop for InstallLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-/// Whether the lock at `path` was last touched longer than [`STALE`] ago.
-fn is_stale(path: &Path) -> bool {
-    fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|touched| SystemTime::now().duration_since(touched).ok())
-        .is_some_and(|age| age > STALE)
 }
 
 /// The engine's pack being written. It stops at the next tensor once the
-/// dictation is cancelled, and keeps the install lock fresh.
+/// dictation is cancelled.
 struct PackWriter<'a> {
     file: FileSink,
     cancel: &'a AtomicBool,
-    lock: &'a InstallLock,
 }
 
 impl PackWriter<'_> {
     fn go_on(&self) -> speech::Result<()> {
-        self.lock.refresh();
         if self.cancel.load(Ordering::SeqCst) {
             return Err(speech::Error::Model("Cancelled.".into()));
         }
@@ -435,7 +391,6 @@ fn pack_model(
     source: &Path,
     out: &Path,
     cancel: &AtomicBool,
-    lock: &InstallLock,
 ) -> Result<(), Error> {
     let engine = super::service::engine_type(model.family);
     let precision = engine.recommended_precision();
@@ -444,7 +399,6 @@ fn pack_model(
         let mut writer = PackWriter {
             file: FileSink::create(out, engine.pack_model(), metadata)?,
             cancel,
-            lock,
         };
         engine.convert_path(source, precision, &mut writer)?;
         writer.file.finish()
