@@ -75,6 +75,9 @@ pub struct Setup {
     pub meter: Arc<dyn remote::Meter>,
     /// Where the user's input goes: the session reads it as the terminal's.
     pub input: mpsc::UnboundedSender<Input>,
+    /// Where what the user sends goes, each with where its verdict comes
+    /// ([`crate::Request::Send`]).
+    pub requests: mpsc::UnboundedSender<crate::Request>,
     /// Arko's folder: the history, the view's choices, the user's themes.
     pub root: PathBuf,
     pub session_dir: PathBuf,
@@ -390,6 +393,8 @@ async fn run(
     // one after another, and their results come back here.
     let settings_worker = openrouter_menu::Worker::start();
     let (settings_done, mut settings_results) = mpsc::unbounded_channel();
+    // What became of what the user sent, as the session says.
+    let (verdict_done, mut verdicts) = mpsc::unbounded_channel();
     // The view's dictation and its microphone, while it records, and where
     // its events come.
     let mut recording: (
@@ -449,6 +454,10 @@ async fn run(
                 // Drawn at the next frame: streaming text doesn't redraw at
                 // every chunk.
                 dirty = true;
+            }
+            Some((sending, verdict)) = verdicts.recv() => {
+                app.verdict(sending, verdict);
+                draw_now = true;
             }
             Some(result) = settings_results.recv() => {
                 app.openrouter_done(result);
@@ -521,6 +530,21 @@ async fn run(
             for effect in effects {
                 match effect {
                     Effect::Notice(level, text) => setup.feed.notice(level, &text),
+                    Effect::Send(sending) => {
+                        let (reply, verdict) = oneshot::channel();
+                        let request = crate::Request::Send {
+                            input: sending.input.clone(),
+                            reply,
+                        };
+                        if setup.requests.send(request).is_ok() {
+                            let done = verdict_done.clone();
+                            tokio::spawn(async move {
+                                if let Ok(verdict) = verdict.await {
+                                    let _ = done.send((sending, verdict));
+                                }
+                            });
+                        }
+                    }
                     Effect::Input(input) => {
                         let _ = setup.input.send(input);
                     }
@@ -872,7 +896,14 @@ mod tests {
             &mut burst,
         );
         let sent = app.take_effects();
-        assert_eq!(sent, [Effect::Input(Input::Line("one\ntwo".into()))]);
+        assert_eq!(
+            sent,
+            [Effect::Send(crate::tui::app::Sending {
+                input: Input::Line("one\ntwo".into()),
+                typed: "one\ntwo".into(),
+                answers: Vec::new(),
+            })]
+        );
         // An Enter a key follows at once was a paste's.
         handle(
             &mut app,

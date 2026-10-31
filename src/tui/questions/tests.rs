@@ -370,6 +370,7 @@ fn a_question_asked_after_answer_in_chat_stays_out_of_the_message() {
         .into_iter()
         .filter_map(|effect| match effect {
             Effect::Input(input) => Some(input),
+            Effect::Send(sending) => Some(sending.input),
             _ => None,
         })
         .collect();

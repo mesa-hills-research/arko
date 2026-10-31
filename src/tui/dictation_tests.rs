@@ -138,7 +138,11 @@ fn enter_stops_the_words_stay_to_edit_and_enter_again_sends() {
     key(&mut app, KeyCode::Enter);
     assert_eq!(
         app.take_effects(),
-        [Effect::Input(Input::Line("Hello world!".into()))]
+        [Effect::Send(crate::tui::app::Sending {
+            input: Input::Line("Hello world!".into()),
+            typed: "Hello world!".into(),
+            answers: Vec::new(),
+        })]
     );
 }
 
@@ -260,7 +264,11 @@ fn a_download_runs_beside_the_box() {
     key(&mut app, KeyCode::Enter);
     assert_eq!(
         app.take_effects(),
-        [Effect::Input(Input::Line("hi".into()))]
+        [Effect::Send(crate::tui::app::Sending {
+            input: Input::Line("hi".into()),
+            typed: "hi".into(),
+            answers: Vec::new(),
+        })]
     );
     ctrl_r(&mut app);
     assert_eq!(dictates(&mut app), [Dictate::Cancel]);
