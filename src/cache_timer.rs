@@ -16,7 +16,7 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike as _, Local, TimeZone as _};
+use chrono::{DateTime, Datelike as _, Local, TimeZone};
 
 use crate::remote::{Activity, CacheStatus};
 
@@ -329,8 +329,16 @@ fn clock(ms: i64) -> String {
 /// The local time of day of `at` (Unix milliseconds), "07:00", for a time
 /// within a day.
 pub(crate) fn time_of_day(at: i64) -> String {
-    Local
-        .timestamp_millis_opt(at)
+    time_of_day_in(at, &Local)
+}
+
+/// The time of day of `at` (Unix milliseconds) in `zone`, also across a
+/// change of its clocks.
+pub(crate) fn time_of_day_in<Tz: TimeZone>(at: i64, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    zone.timestamp_millis_opt(at)
         .single()
         .map(|at| at.format("%H:%M").to_string())
         .unwrap_or_default()

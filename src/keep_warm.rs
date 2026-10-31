@@ -21,7 +21,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, LocalResult, NaiveDateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 
 use crate::cache_timer::{self, dollars, token_count};
@@ -201,9 +201,10 @@ pub(crate) enum Words {
 
 /// Reads the words after `/keep-warm`, at `now`. A time (`8h`, `90m`) runs
 /// from now, `until` takes a time of day (`7:00`, `7am`, `19:30`, the next
-/// one to come), a number is of refreshes, and `$5` a dollar limit. The
+/// one to come in `now`'s time zone, also across a change of the clocks), a
+/// number is of refreshes, and `$5` a dollar limit. The
 /// setting (`default`) takes hours, and dollars after them.
-pub(crate) fn parse(argument: &str, now: DateTime<Local>) -> Result<Words, String> {
+pub(crate) fn parse<Tz: TimeZone>(argument: &str, now: DateTime<Tz>) -> Result<Words, String> {
     let words: Vec<String> = argument
         .split_whitespace()
         .map(str::to_ascii_lowercase)
@@ -234,7 +235,7 @@ pub(crate) fn parse(argument: &str, now: DateTime<Local>) -> Result<Words, Strin
             if let Some(half) = words.next_if(|next| matches!(*next, "am" | "pm")) {
                 time.push_str(half);
             }
-            let at = next_time(&time, now)?;
+            let at = next_time(&time, &now)?;
             if limits.ends_at.replace(at).is_some() {
                 return Err(twice(word));
             }
@@ -308,9 +309,9 @@ fn minutes_of(word: &str) -> Option<i64> {
         .then_some(minutes)
 }
 
-/// The next time of day `text` names after `now` (Unix milliseconds):
-/// `7`, `7:00`, `07:30`, `19:30`, `7am`, `7:30pm`.
-fn next_time(text: &str, now: DateTime<Local>) -> Result<i64, String> {
+/// The next time of day `text` names after `now` (Unix milliseconds), in
+/// `now`'s time zone: `7`, `7:00`, `07:30`, `19:30`, `7am`, `7:30pm`.
+fn next_time<Tz: TimeZone>(text: &str, now: &DateTime<Tz>) -> Result<i64, String> {
     let invalid = || format!("`{text}` isn't a time of day, such as 7:00, 7am or 19:30.");
     let (clock, half) = match text.strip_suffix("am") {
         Some(clock) => (clock, Some(false)),
@@ -330,18 +331,37 @@ fn next_time(text: &str, now: DateTime<Local>) -> Result<i64, String> {
     }
     let mut day = now.date_naive();
     for _ in 0..2 {
-        let at = day
-            .and_hms_opt(hour, minute, 0)
-            .ok_or_else(invalid)?
-            .and_local_timezone(Local)
-            .earliest()
-            .map(|at| at.timestamp_millis());
-        if let Some(at) = at.filter(|at| *at > now.timestamp_millis()) {
+        let time = day.and_hms_opt(hour, minute, 0).ok_or_else(invalid)?;
+        if let Some(at) = first_after(&now.timezone(), time, now.timestamp_millis()) {
             return Ok(at);
         }
         day = day.succ_opt().ok_or_else(invalid)?;
     }
     Err(invalid())
+}
+
+/// The first moment after `after` (Unix milliseconds) that the local time
+/// `time` names in `zone`. A time the clocks go through twice as they go
+/// back is its first that comes after `after`. A time they skip as they go
+/// forward is the first moment after the gap.
+fn first_after<Tz: TimeZone>(zone: &Tz, time: NaiveDateTime, after: i64) -> Option<i64> {
+    let mut time = time;
+    // (A gap is an hour or two: past it within a day.)
+    for _ in 0..24 * 60 {
+        match zone.from_local_datetime(&time) {
+            LocalResult::Single(at) => {
+                return Some(at.timestamp_millis()).filter(|at| *at > after);
+            }
+            LocalResult::Ambiguous(first, second) => {
+                return [first, second]
+                    .into_iter()
+                    .map(|at| at.timestamp_millis())
+                    .find(|at| *at > after);
+            }
+            LocalResult::None => time += chrono::TimeDelta::minutes(1),
+        }
+    }
+    None
 }
 
 /// What ended keep-warm, or stopped it until the next request.
@@ -1154,8 +1174,6 @@ impl crate::Harness {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use chrono::TimeZone as _;
-
     use super::*;
     use crate::harness::Prompt;
     use crate::mock_model::ModelServer;
@@ -1556,6 +1574,102 @@ mod tests {
             ),
             "Keep-warm stopped. The cache wasn't refreshed (the server said no). It sent 1 refresh for $0.00."
         );
+    }
+
+    /// US Eastern time with 2026's changes of the clocks, for the tests:
+    /// daylight time (UTC-4) from March 8 at 2:00 to November 1 at 2:00, and
+    /// standard time (UTC-5) otherwise.
+    #[derive(Debug, Clone, Copy)]
+    struct Eastern;
+
+    impl Eastern {
+        fn offset_at(utc: &chrono::NaiveDateTime) -> chrono::FixedOffset {
+            let utc_at = |month, day, hour| {
+                chrono::NaiveDate::from_ymd_opt(2026, month, day)
+                    .unwrap()
+                    .and_hms_opt(hour, 0, 0)
+                    .unwrap()
+            };
+            let daylight = (utc_at(3, 8, 7)..utc_at(11, 1, 6)).contains(utc);
+            chrono::FixedOffset::west_opt(if daylight { 4 } else { 5 } * 3_600).unwrap()
+        }
+    }
+
+    impl TimeZone for Eastern {
+        type Offset = chrono::FixedOffset;
+
+        fn from_offset(_: &chrono::FixedOffset) -> Self {
+            Eastern
+        }
+
+        fn offset_from_local_date(
+            &self,
+            local: &chrono::NaiveDate,
+        ) -> LocalResult<chrono::FixedOffset> {
+            self.offset_from_local_datetime(&local.and_hms_opt(0, 0, 0).unwrap())
+        }
+
+        fn offset_from_local_datetime(
+            &self,
+            local: &chrono::NaiveDateTime,
+        ) -> LocalResult<chrono::FixedOffset> {
+            let fits: Vec<chrono::FixedOffset> = [4, 5]
+                .into_iter()
+                .map(|hours| chrono::FixedOffset::west_opt(hours * 3_600).unwrap())
+                .filter(|offset| Self::offset_at(&(*local - *offset)) == *offset)
+                .collect();
+            match fits[..] {
+                [one] => LocalResult::Single(one),
+                [first, second] => LocalResult::Ambiguous(first, second),
+                _ => LocalResult::None,
+            }
+        }
+
+        fn offset_from_utc_date(&self, utc: &chrono::NaiveDate) -> chrono::FixedOffset {
+            Self::offset_at(&utc.and_hms_opt(0, 0, 0).unwrap())
+        }
+
+        fn offset_from_utc_datetime(&self, utc: &chrono::NaiveDateTime) -> chrono::FixedOffset {
+            Self::offset_at(utc)
+        }
+    }
+
+    /// `until` takes the next moment its time names across a change of the
+    /// clocks. Of a time the clocks go through twice as they go back, it's
+    /// the first still to come, and for a time they skip as they go forward,
+    /// the first moment after the gap. One set before the clocks go back
+    /// ends at that time on the clock after, and the status says it so.
+    #[test]
+    fn until_reads_a_time_of_day_across_a_change_of_the_clocks() {
+        let utc = |month, day, hour, minute| {
+            chrono::Utc
+                .with_ymd_and_hms(2026, month, day, hour, minute, 0)
+                .unwrap()
+                .timestamp_millis()
+        };
+        let until = |words: &str, now: i64| {
+            let now = chrono::Utc
+                .timestamp_millis_opt(now)
+                .unwrap()
+                .with_timezone(&Eastern);
+            match parse(words, now) {
+                Ok(Words::On(limits)) => limits.ends_at.unwrap(),
+                other => panic!("{words}: {other:?}"),
+            }
+        };
+        // November 1 at 0:45 daylight time: 1:30 comes first in daylight
+        // time, at 5:30 UTC.
+        assert_eq!(until("until 1:30", utc(11, 1, 4, 45)), utc(11, 1, 5, 30));
+        // At 1:40 daylight time, past the first 1:30: the second, in
+        // standard time, at 6:30 UTC.
+        assert_eq!(until("until 1:30", utc(11, 1, 5, 40)), utc(11, 1, 6, 30));
+        // March 8 at midnight: 2:30 doesn't come, so 3:00 daylight time.
+        assert_eq!(until("until 2:30", utc(3, 8, 5, 0)), utc(3, 8, 7, 0));
+        // October 31 at 23:00 daylight time: 7:00 comes in standard time,
+        // nine hours on.
+        let ends = until("until 7:00", utc(11, 1, 3, 0));
+        assert_eq!(ends, utc(11, 1, 12, 0));
+        assert_eq!(cache_timer::time_of_day_in(ends, &Eastern), "07:00");
     }
 
     fn at(hour: u32, minute: u32) -> DateTime<Local> {
