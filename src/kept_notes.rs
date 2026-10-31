@@ -46,23 +46,17 @@ pub(crate) const TOOL_NAMES: [&str; 2] = [KEEP_NOTE, FORGET_NOTE];
 /// The notes' file in the session's folder.
 pub(crate) const FILE: &str = "kept-notes.json";
 
-/// The most the notes take together in the main agent's list, in bytes. They
-/// come back after each handover and compaction, so they stay small.
+/// The most the main agent's list takes as it reads it ([`lead_text`]), in
+/// bytes. The notes come back after each handover and compaction, so they
+/// stay small. A list within it goes to the main agent as one note, and a
+/// worker's part of it, without the audiences, as one message.
 pub const MAX_BYTES: usize = 16 * 1024;
+const _: () = assert!(MAX_BYTES <= arko_workflows::notes::MAX_NOTE_BYTES);
+const _: () = assert!(MAX_BYTES <= arko_workflows::subagents::MAX_MAIL_BYTES);
 
-/// The most characters a note or message that carries kept notes to a
-/// running agent takes, its heading included, as the agent reads them
-/// ([`shown_chars`]). A longer list goes in parts. With what the framework
-/// wraps around a note (about 400 characters) a part stays under the 4,750
-/// the framework always has room for in one of Claude Code's hooks beside
-/// other context, so the hook stays under the 10,000 past which Claude Code
-/// cuts it.
-const PART_CHARS: usize = 4_000;
-/// What the notes in a part take at most, which leaves room for its heading.
-const PART_NOTES_CHARS: usize = PART_CHARS - 250;
-// A part is within the framework's limit for one note, at four bytes a
-// character.
-const _: () = assert!(4 * PART_CHARS <= arko_workflows::notes::MAX_NOTE_BYTES);
+/// Where the notes of a list kept under an earlier, looser limit go when they
+/// don't fit [`MAX_BYTES`], in the session's folder.
+pub(crate) const OVERFLOW_FILE: &str = "kept-notes-overflow.md";
 
 /// What the worker is told above its notes.
 const WORKER_HEADING: &str = "The main agent's notes for you. This list replaces any earlier one.";
@@ -185,53 +179,11 @@ impl Note {
             self.created.format("%Y-%m-%d %H:%M UTC")
         )
     }
-
-    /// The note as list items that each fit in a part of a list: its whole
-    /// item, or its text in pieces under its own line, then under "- Kept
-    /// note 3, continued". Each piece ends at a line break near its end when
-    /// there is one, else between two characters.
-    fn pieces(&self, with_audience: bool) -> Vec<String> {
-        let whole = self.item(with_audience);
-        if fits_a_part(&whole) {
-            return vec![whole];
-        }
-        let mut pieces = Vec::new();
-        let mut rest = self.text.as_str();
-        while !rest.is_empty() {
-            let head = if pieces.is_empty() {
-                self.head(with_audience)
-            } else {
-                format!("- Kept note {}, continued", self.id)
-            };
-            let end = cut(rest, |text| fits_a_part(&item(&head, text)));
-            pieces.push(item(&head, &rest[..end]));
-            rest = rest[end..].strip_prefix('\n').unwrap_or(&rest[end..]);
-        }
-        pieces
-    }
 }
 
 /// A list item: `head`, then `text` with each line indented.
 fn item(head: &str, text: &str) -> String {
     format!("{head}\n  {}", text.replace('\n', "\n  "))
-}
-
-/// Where to cut `text` for its start to fit (`fits`): after as much as fits,
-/// at the last line break when one is in the last fifth of that, else
-/// between two characters, and after one character at least.
-fn cut(text: &str, fits: impl Fn(&str) -> bool) -> usize {
-    let ends: Vec<usize> = text
-        .char_indices()
-        .map(|(at, c)| at + c.len_utf8())
-        .collect();
-    let end = ends[ends.partition_point(|&end| fits(&text[..end])).max(1) - 1];
-    if end == text.len() || text[end..].starts_with('\n') {
-        return end;
-    }
-    match text[..end].rfind('\n') {
-        Some(at) if at > 0 && at >= end * 4 / 5 => at,
-        _ => end,
-    }
 }
 
 /// The main agent's list of `notes`, every one with who it is for. `None`
@@ -246,69 +198,6 @@ fn lead_text(notes: &[Note]) -> Option<String> {
     })
 }
 
-/// The characters of `text` as an agent reads it in a note or a message,
-/// which indents each of its lines by two.
-fn shown_chars(text: &str) -> usize {
-    text.chars().count() + 2 * text.lines().count()
-}
-
-/// Whether the notes `text` fit in one part of a list ([`PART_NOTES_CHARS`]).
-fn fits_a_part(text: &str) -> bool {
-    shown_chars(text) <= PART_NOTES_CHARS
-}
-
-/// `notes` as list items, joined in order into as few parts as hold them
-/// ([`PART_NOTES_CHARS`]). A note too long for one part starts a part and
-/// goes on in the next ([`Note::pieces`]).
-fn parts(notes: &[Note], with_audience: bool) -> Vec<String> {
-    let mut parts: Vec<String> = Vec::new();
-    for piece in notes.iter().flat_map(|note| note.pieces(with_audience)) {
-        match parts.last_mut() {
-            Some(part) if fits_a_part(&format!("{part}\n{piece}")) => {
-                part.push('\n');
-                part.push_str(&piece);
-            }
-            _ => parts.push(piece),
-        }
-    }
-    parts
-}
-
-/// "the next note continues", "the next 2 notes continue": what follows the
-/// first of `count` parts, each a `kind`.
-fn rest_of(count: usize, kind: &str) -> String {
-    match count - 1 {
-        1 => format!("the next {kind} continues"),
-        rest => format!("the next {rest} {kind}s continue"),
-    }
-}
-
-/// The main agent's list of `notes` as the notes that carry it while it
-/// runs: the whole list, or the list in parts when it is longer than one
-/// part holds. Empty without notes.
-fn lead_parts(notes: &[Note]) -> Vec<String> {
-    let parts = parts(notes, true);
-    let count = parts.len();
-    if count <= 1 {
-        return lead_text(notes).into_iter().collect();
-    }
-    parts
-        .iter()
-        .enumerate()
-        .map(|(at, part)| {
-            let about = if at == 0 {
-                format!(
-                    "You kept these with keep_note, and forget_note removes one. This list replaces any earlier one, and {} it.",
-                    rest_of(count, "note")
-                )
-            } else {
-                "This continues the list above.".to_string()
-            };
-            format!("# Your kept notes, {} of {count}\n\n{about}\n\n{part}", at + 1)
-        })
-        .collect()
-}
-
 /// A note's text as the framework reads a note: every kind of line break is
 /// one, so every line is indented when the note is shown. An error when it
 /// is empty.
@@ -321,6 +210,11 @@ fn note_text(text: &str) -> Result<String, String> {
         return Err("The note is empty.".into());
     }
     Ok(text.to_string())
+}
+
+/// Whether the main agent's list of `notes` is within [`MAX_BYTES`].
+fn fits(notes: &[Note]) -> bool {
+    lead_text(notes).is_none_or(|list| list.len() <= MAX_BYTES)
 }
 
 /// Refuses a change that takes the main agent's list from the notes
@@ -399,8 +293,30 @@ impl KeptNotes {
     }
 
     /// The saved notes. A file that can't be read is an error, so it isn't
-    /// replaced by the next note.
+    /// replaced by the next note. A list kept under an earlier limit, which
+    /// counted the notes' text alone, can be longer than [`MAX_BYTES`] as the
+    /// main agent reads it, and is brought within it once (see
+    /// [`fit_old_list`](Self::fit_old_list)).
     fn read(&self) -> Result<Saved, String> {
+        let saved = self.load()?;
+        if fits(&saved.notes) {
+            return Ok(saved);
+        }
+        let _writing = crate::lock(&WRITING);
+        self.read_writing()
+    }
+
+    /// [`read`](Self::read), for a caller that holds `WRITING`.
+    fn read_writing(&self) -> Result<Saved, String> {
+        let saved = self.load()?;
+        if fits(&saved.notes) {
+            return Ok(saved);
+        }
+        self.fit_old_list(saved)
+    }
+
+    /// The saved notes as they are in the file.
+    fn load(&self) -> Result<Saved, String> {
         let text = match std::fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -409,6 +325,80 @@ impl KeptNotes {
             Err(error) => return Err(self.unreadable(&error)),
         };
         serde_json::from_str(&text).map_err(|error| self.unreadable(&error))
+    }
+
+    /// Brings `saved`, a list over [`MAX_BYTES`], within it. It keeps the
+    /// notes kept or replaced most recently that fit beside a note for the
+    /// main agent that says where the others went, and writes the others
+    /// whole to [`OVERFLOW_FILE`] in the session's folder first, so none is
+    /// lost. The caller holds `WRITING`.
+    fn fit_old_list(&self, mut saved: Saved) -> Result<Saved, String> {
+        let overflow = self.path.with_file_name(OVERFLOW_FILE);
+        let pointer = Note {
+            id: saved
+                .notes
+                .iter()
+                .map(|note| note.id)
+                .fold(saved.next, u32::max)
+                + 1,
+            text: format!(
+                "Older kept notes didn't fit the {} KB list. Their full text is in {}.",
+                MAX_BYTES / 1024,
+                overflow.display()
+            ),
+            audience: Audience::Lead,
+            created: Utc::now(),
+        };
+        let mut newest: Vec<&Note> = saved.notes.iter().collect();
+        newest.sort_by_key(|note| std::cmp::Reverse(note.created));
+        let mut kept: Vec<u32> = Vec::new();
+        for note in newest {
+            let mut with: Vec<Note> = saved
+                .notes
+                .iter()
+                .filter(|other| other.id == note.id || kept.contains(&other.id))
+                .cloned()
+                .collect();
+            with.push(pointer.clone());
+            if fits(&with) {
+                kept.push(note.id);
+            }
+        }
+        let (stay, moved): (Vec<Note>, Vec<Note>) = std::mem::take(&mut saved.notes)
+            .into_iter()
+            .partition(|note| kept.contains(&note.id));
+        let mut text = if overflow.exists() {
+            std::fs::read_to_string(&overflow)
+                .map_err(|error| format!("Couldn't read {} ({error}).", overflow.display()))?
+        } else {
+            "# Kept notes moved out of the list\n".to_string()
+        };
+        for note in &moved {
+            text.push_str(&format!(
+                "\n## Kept note {}, for {}, {}\n\n{}\n",
+                note.id,
+                note.audience.describe(),
+                note.created.format("%Y-%m-%d %H:%M UTC"),
+                note.text
+            ));
+        }
+        crate::session::write_whole(&overflow, text.as_bytes()).map_err(|error| {
+            format!(
+                "Couldn't move the older kept notes to {} ({error}).",
+                overflow.display()
+            )
+        })?;
+        let numbers: Vec<String> = moved.iter().map(|note| note.id.to_string()).collect();
+        log::info!(
+            "Kept notes {} didn't fit the list, so they are in {} now.",
+            crate::and_list(&numbers),
+            overflow.display()
+        );
+        saved.next = pointer.id;
+        saved.notes = stay;
+        saved.notes.push(pointer);
+        self.write(&saved)?;
+        Ok(saved)
     }
 
     fn unreadable(&self, error: &dyn std::fmt::Display) -> String {
@@ -448,7 +438,7 @@ impl KeptNotes {
     pub fn add(&self, text: &str, audience: Audience) -> Result<Note, String> {
         let text = note_text(text)?;
         let _writing = crate::lock(&WRITING);
-        let mut saved = self.read()?;
+        let mut saved = self.read_writing()?;
         let id = saved
             .notes
             .iter()
@@ -482,7 +472,7 @@ impl KeptNotes {
     ) -> Result<(Note, Note), String> {
         let text = note_text(text)?;
         let _writing = crate::lock(&WRITING);
-        let mut saved = self.read()?;
+        let mut saved = self.read_writing()?;
         let Some(index) = saved.notes.iter().position(|note| note.id == id) else {
             let numbers: Vec<String> = saved.notes.iter().map(|note| note.id.to_string()).collect();
             return Err(match numbers.as_slice() {
@@ -513,7 +503,7 @@ impl KeptNotes {
     /// told, so that session removes a note with `/notes remove N`.
     pub fn remove(&self, id: u32) -> Result<Note, String> {
         let _writing = crate::lock(&WRITING);
-        let mut saved = self.read()?;
+        let mut saved = self.read_writing()?;
         let Some(index) = saved.notes.iter().position(|note| note.id == id) else {
             return Err(format!("There is no kept note {id}."));
         };
@@ -547,39 +537,20 @@ impl KeptNotes {
         (!items.is_empty()).then(|| format!("# Notes from the main agent\n\n{}", items.join("\n")))
     }
 
-    /// What worker `handle` is sent of its notes while it runs, as messages
-    /// with their headings: its list, in parts when it is longer than one
-    /// part holds, or that none are left when notes were kept and its are
-    /// gone (its restated first message may still hold them).
-    fn worker_messages(&self, handle: &str) -> Vec<(String, String)> {
-        let notes = self.worker_notes(handle);
-        if notes.is_empty() {
-            return self
-                .ever_kept()
-                .then(|| (WORKER_HEADING.to_string(), NONE_LEFT.to_string()))
-                .into_iter()
-                .collect();
+    /// What worker `handle` is sent of its notes while it runs, a message
+    /// under [`WORKER_HEADING`]: its list, or that none are left when notes
+    /// were kept and its are gone (its restated first message may still hold
+    /// them).
+    fn worker_message(&self, handle: &str) -> Option<String> {
+        let items: Vec<String> = self
+            .worker_notes(handle)
+            .iter()
+            .map(|note| note.item(false))
+            .collect();
+        if items.is_empty() {
+            return self.ever_kept().then(|| NONE_LEFT.to_string());
         }
-        let parts = parts(&notes, false);
-        let count = parts.len();
-        parts
-            .into_iter()
-            .enumerate()
-            .map(|(at, part)| {
-                let heading = match (at, count) {
-                    (_, 1) => WORKER_HEADING.to_string(),
-                    (0, _) => format!(
-                        "The main agent's notes for you, 1 of {count}. This list replaces any earlier one, and {} it.",
-                        rest_of(count, "message")
-                    ),
-                    _ => format!(
-                        "The main agent's notes for you, {} of {count}. This continues the list above.",
-                        at + 1
-                    ),
-                };
-                (heading, part)
-            })
-            .collect()
+        Some(items.join("\n"))
     }
 
     /// Takes `telling`, which a change and what it sends the agents hold.
@@ -664,23 +635,18 @@ impl KeptNotes {
         told
     }
 
-    /// Sends worker `handle` its notes ([`worker_messages`](Self::worker_messages)).
+    /// Sends worker `handle` its notes ([`worker_message`](Self::worker_message)).
     /// The caller holds `telling`.
     fn tell_worker(&self, workflow: &Workflow, handle: &str) -> Option<String> {
-        let messages = self.worker_messages(handle);
-        if messages.is_empty() {
-            return None;
-        }
+        let text = self.worker_message(handle)?;
         #[cfg(test)]
         if let Some(pause) = crate::lock(&self.before_sending).take() {
             pause();
         }
-        for (heading, text) in messages {
-            // No copy of it goes to the worker's lead: the main agent wrote it.
-            if let Err(error) = workflow.message_subagent(handle, &text, &heading, "") {
-                log::warn!("could not send {handle} its kept notes ({error})");
-                return None;
-            }
+        // No copy of it goes to the worker's lead: the main agent wrote it.
+        if let Err(error) = workflow.message_subagent(handle, &text, WORKER_HEADING, "") {
+            log::warn!("could not send {handle} its kept notes ({error})");
+            return None;
         }
         Some(handle.to_string())
     }
@@ -752,8 +718,8 @@ impl KeptNotes {
         }
     }
 
-    /// Posts the main agent's current list in one-time notes, for the
-    /// conversation it continues ([`lead_parts`]). A list that says none are
+    /// Posts the main agent's current list in a one-time note, for the
+    /// conversation it continues ([`lead_text`]). A list that says none are
     /// kept replaces one the conversation may still hold, when notes were
     /// ever kept.
     pub(crate) fn tell_lead(&self, workflow: &Workflow) {
@@ -763,19 +729,16 @@ impl KeptNotes {
 
     /// [`tell_lead`](Self::tell_lead), for a caller that holds `telling`.
     fn post_lead_list(&self, workflow: &Workflow) {
-        let mut parts = lead_parts(&self.notes());
-        if parts.is_empty() && self.ever_kept() {
-            parts.push(format!(
-                "# Your kept notes\n\n{NONE_LEFT} This list replaces any earlier one."
-            ));
-        }
-        for part in parts {
-            if let Err(error) =
-                workflow.post_note(Posted::new(part).source(NoteSource::Host).to([MAIN]).once())
-            {
-                log::warn!("could not give the main agent its kept notes again ({error})");
-                return;
-            }
+        let list = lead_text(&self.notes()).or_else(|| {
+            self.ever_kept().then(|| {
+                format!("# Your kept notes\n\n{NONE_LEFT} This list replaces any earlier one.")
+            })
+        });
+        if let Some(list) = list
+            && let Err(error) =
+                workflow.post_note(Posted::new(list).source(NoteSource::Host).to([MAIN]).once())
+        {
+            log::warn!("could not give the main agent its kept notes again ({error})");
         }
     }
 
@@ -1128,166 +1091,83 @@ mod tests {
         notes.add(&"c".repeat(15 * 1024), Audience::Lead).unwrap();
     }
 
+    /// A list kept under the earlier limit, which counted the notes' text
+    /// alone: 8 KiB of blank lines between two letters is about 24 KiB as the
+    /// main agent reads it. Its first read keeps the newer notes beside a
+    /// note that says where the old one went, and writes the old one's exact
+    /// text there. The list then fits, so the next read changes nothing.
     #[test]
-    fn a_long_list_reaches_a_running_agent_in_parts() {
-        let (_temp, notes) = notes();
-        notes.add("Short.", Audience::AllWorkers).unwrap();
-        // A short list goes whole, as the first message has it.
-        assert_eq!(
-            lead_parts(&notes.list().unwrap()),
-            [lead_text(&notes.list().unwrap()).unwrap()]
-        );
-        assert_eq!(
-            notes.worker_messages("r1"),
-            [(
-                WORKER_HEADING.to_string(),
-                notes.list().unwrap()[0].item(false)
-            )]
-        );
-        let texts: Vec<String> = (0..5)
-            .map(|n| format!("{n} {}", "word ".repeat(300)).trim().to_string())
-            .collect();
-        for text in &texts {
-            notes.add(text, Audience::AllWorkers).unwrap();
-        }
-        let parts = lead_parts(&notes.list().unwrap());
-        assert_eq!(parts.len(), 3, "{parts:#?}");
-        for (at, part) in parts.iter().enumerate() {
-            assert!(shown_chars(part) <= PART_CHARS, "{}", shown_chars(part));
-            assert!(part.starts_with(&format!("# Your kept notes, {} of 3\n\n", at + 1)));
-        }
-        assert!(
-            parts[0]
-                .contains("This list replaces any earlier one, and the next 2 notes continue it.")
-        );
-        assert!(parts[1].contains("\n\nThis continues the list above.\n\n- Kept note 4,"));
-        // Every note is in one part whole, in order.
-        let whole = parts.join("\n");
-        let mut from = 0;
-        for text in std::iter::once("Short.").chain(texts.iter().map(String::as_str)) {
-            let at = whole[from..].find(text).expect(text) + from;
-            assert_eq!(whole.matches(text).count(), 1);
-            from = at;
-        }
-        // A new conversation's first message has the whole list.
-        let first = notes.for_lead().unwrap();
-        assert!(
-            first.starts_with("# Your kept notes\n\n") && texts.iter().all(|t| first.contains(t))
-        );
-        // A worker gets its list in parts the same way.
-        let messages = notes.worker_messages("r1");
-        assert_eq!(messages.len(), 3);
-        assert_eq!(
-            messages[0].0,
-            "The main agent's notes for you, 1 of 3. This list replaces any earlier one, and the next 2 messages continue it."
-        );
-        assert_eq!(
-            messages[2].0,
-            "The main agent's notes for you, 3 of 3. This continues the list above."
-        );
-        assert!(
-            messages
-                .iter()
-                .all(|(_, text)| shown_chars(text) <= PART_CHARS)
-        );
-        assert!(notes.for_worker("r1").unwrap().contains(&texts[4]));
-        // The longest headings leave the notes their room.
-        let headings = [
-            format!(
-                "# Your kept notes, 1 of 99\n\nYou kept these with keep_note, and forget_note removes one. This list replaces any earlier one, and {} it.\n\n",
-                rest_of(99, "note")
-            ),
-            format!(
-                "The main agent's notes for you, 1 of 99. This list replaces any earlier one, and {} it.\n\n",
-                rest_of(99, "message")
-            ),
-        ];
-        for heading in headings {
-            assert!(
-                shown_chars(&heading) + PART_NOTES_CHARS <= PART_CHARS,
-                "{heading}"
-            );
-        }
-    }
-
-    /// The text of the notes in `parts` (their items' lines without the
-    /// indent), and the first lines of their items.
-    fn read_back(parts: &[String]) -> (Vec<String>, Vec<String>) {
-        let lines = parts.iter().flat_map(|part| part.lines());
-        let text = lines
-            .clone()
-            .filter_map(|line| line.strip_prefix("  "))
-            .map(str::to_string)
-            .collect();
-        let heads = lines
-            .filter(|line| line.starts_with("- Kept note"))
-            .map(str::to_string)
-            .collect();
-        (text, heads)
-    }
-
-    #[test]
-    fn a_long_note_goes_on_into_the_next_part() {
-        let (_temp, notes) = notes();
-        notes.add("Short.", Audience::AllWorkers).unwrap();
-        // Lines: each part ends at a line break.
-        let lines: Vec<String> = (0..40)
-            .map(|n| format!("{n:02} {}", "x".repeat(96)))
-            .collect();
-        notes.add(&lines.join("\n"), Audience::AllWorkers).unwrap();
-        // One line without breaks, of characters of two bytes.
-        notes.add(&"é".repeat(5_000), Audience::AllWorkers).unwrap();
-        let notes = notes.list().unwrap();
-        for with_audience in [true, false] {
-            let parts = parts(&notes, with_audience);
-            for part in &parts {
-                assert!(
-                    shown_chars(part) <= PART_NOTES_CHARS,
-                    "{}",
-                    shown_chars(part)
-                );
-            }
-            let (text, heads) = read_back(&parts);
-            let mut expected = vec!["Short.".to_string()];
-            expected.extend(lines.iter().cloned());
-            assert_eq!(text[..41], expected[..], "every line whole, once, in order");
-            assert_eq!(text[41..].concat(), "é".repeat(5_000));
-            assert!(text.len() > 42, "the long line is cut");
-            // The second note starts a part and goes on under its own line.
-            assert!(parts[1].starts_with("- Kept note 2,"));
-            assert!(heads.contains(&"- Kept note 2, continued".to_string()));
-            assert!(heads.contains(&"- Kept note 3, continued".to_string()));
-        }
-        // A new conversation's first message has each note whole.
-        let first = lead_text(&notes).unwrap();
-        assert!(first.contains(&lines.join("\n  ")) && !first.contains("continued"));
-    }
-
-    #[test]
-    fn a_saved_note_longer_than_a_part_goes_in_parts() {
+    fn an_old_list_over_the_cap_keeps_its_newest_notes_and_moves_the_rest() {
         let (temp, notes) = notes();
-        // Kept under the earlier 8 KB limit, it is 12,000 characters as the
-        // agent reads it.
-        let text = "a\n".repeat(2_000).trim().to_string();
+        let old = format!("a{}b", "\n".repeat(8 * 1024 - 2));
         std::fs::write(
             temp.path().join(FILE),
-            serde_json::json!({"next": 1, "notes": [
-                {"id": 1, "text": text, "audience": "all_workers", "created": "2026-10-01T10:00:00Z"}
+            serde_json::json!({"next": 3, "notes": [
+                {"id": 1, "text": old, "audience": "all_workers", "created": "2026-10-01T10:00:00Z"},
+                {"id": 2, "text": "Use tabs.", "audience": "lead", "created": "2026-10-02T10:00:00Z"},
+                {"id": 3, "text": "Run the unit tests only.", "audience": {"workers": ["r1"]},
+                 "created": "2026-10-03T10:00:00Z"},
             ]})
             .to_string(),
         )
         .unwrap();
-        let parts = lead_parts(&notes.list().unwrap());
-        assert!(parts.len() >= 3, "{}", parts.len());
-        for part in &parts {
-            assert!(shown_chars(part) <= PART_CHARS, "{}", shown_chars(part));
+        let list = notes.list().unwrap();
+        let ids: Vec<u32> = list.iter().map(|note| note.id).collect();
+        assert_eq!(ids, [2, 3, 4]);
+        let overflow = temp.path().join(OVERFLOW_FILE);
+        assert_eq!(list[2].audience, Audience::Lead);
+        assert!(
+            list[2].text.contains(&overflow.display().to_string()),
+            "{}",
+            list[2].text
+        );
+        let moved = std::fs::read_to_string(&overflow).unwrap();
+        assert!(moved.contains(&format!(
+            "## Kept note 1, for every worker, 2026-10-01 10:00 UTC\n\n{old}\n"
+        )));
+        // One note for the main agent, one message for a worker.
+        let lead = notes.for_lead().unwrap();
+        assert!(lead.len() <= MAX_BYTES, "{}", lead.len());
+        assert_eq!(
+            notes.worker_message("r1").unwrap(),
+            list[1].item(false),
+            "the worker's list"
+        );
+        // The next read changes nothing, and the next note follows.
+        let file = std::fs::read_to_string(temp.path().join(FILE)).unwrap();
+        assert_eq!(KeptNotes::new(temp.path()).list().unwrap(), list);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(FILE)).unwrap(),
+            file
+        );
+        assert_eq!(std::fs::read_to_string(&overflow).unwrap(), moved);
+        assert_eq!(notes.add("Next.", Audience::Lead).unwrap().id, 5);
+    }
+
+    /// A list at the cap goes to the main agent as one note and to a worker as
+    /// one message, its notes whole.
+    #[test]
+    fn a_full_list_goes_whole_to_each_agent() {
+        let (_temp, notes) = notes();
+        let mut texts = Vec::new();
+        loop {
+            let text = format!("Note number {}. {}", texts.len(), "word ".repeat(200))
+                .trim()
+                .to_string();
+            if notes.add(&text, Audience::AllWorkers).is_err() {
+                break;
+            }
+            texts.push(text);
         }
-        let (lines, _) = read_back(&parts);
-        assert_eq!(lines, vec!["a"; 2_000]);
-        let messages = notes.worker_messages("r1");
-        assert!(messages.len() >= 3);
-        let texts: Vec<String> = messages.into_iter().map(|(_, text)| text).collect();
-        assert_eq!(read_back(&texts).0, vec!["a"; 2_000]);
+        assert!(texts.len() > 10);
+        let lead = notes.for_lead().unwrap();
+        assert!(lead.len() <= arko_workflows::notes::MAX_NOTE_BYTES);
+        let worker = notes.worker_message("r1").unwrap();
+        assert!(worker.len() <= arko_workflows::subagents::MAX_MAIL_BYTES);
+        for text in &texts {
+            assert_eq!(lead.matches(text.as_str()).count(), 1);
+            assert_eq!(worker.matches(text.as_str()).count(), 1);
+        }
     }
 
     #[test]

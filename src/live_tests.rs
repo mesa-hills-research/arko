@@ -3376,12 +3376,13 @@ async fn changes_to_the_notes_reach_a_worker_in_the_order_they_were_made() {
 }
 
 /// A list of kept notes longer than one of Claude Code's hooks holds comes
-/// back after a compaction in parts, every note whole. Posted again while a
-/// terminal update waits, a part comes beside the update, and every hook
-/// stays under the limit past which Claude Code cuts it.
+/// back after a compaction as one note, which the framework gives over as
+/// many hooks as it takes, every hook within the limit past which Claude
+/// Code cuts it. Posted again while a terminal update waits, it comes after
+/// the update, and every note arrives whole in both lists.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_long_list_of_kept_notes_comes_back_in_parts_after_a_compaction() {
+async fn a_long_list_of_kept_notes_comes_back_whole_after_a_compaction() {
     let temp = tempfile::tempdir().unwrap();
     let shell = |command: &str, tokens: u64| serde_json::json!({"tool": "mcp__arko__shell", "input": {"command": command}, "input_tokens": tokens});
     // A job whose update, about 4,000 characters with its output's quotes
@@ -3462,40 +3463,36 @@ async fn a_long_list_of_kept_notes_comes_back_in_parts_after_a_compaction() {
         .collect();
     // Claude Code cuts a hook's context past 10,000 characters.
     for hook in &hooks {
-        assert!(hook.chars().count() <= 10_000, "{}", hook.chars().count());
+        assert!(hook.len() <= 9_500, "{}", hook.len());
     }
     assert!(
         hooks
             .iter()
-            .any(|hook| hook.contains("Terminal update:") && hook.contains("# Your kept notes, ")),
-        "no hook has a part beside the terminal update"
+            .any(|hook| hook.ends_with("(This update goes on in the next one.)")),
+        "the list went in parts"
     );
-    // A part, with what the framework wraps around it, takes at most the
-    // 4,750 characters the framework always leaves the notes beside other
-    // context.
-    for hook in &hooks {
-        if let Some(at) = hook.find("A new note on your task.") {
-            let notes = hook[at..].chars().count();
-            assert!(notes <= 4_750, "{notes}");
-        }
-    }
-    let given: Vec<&str> = log[compacted..]
+    // The hooks' parts joined again, after the inputs sent.
+    let hooked = arko_agents::rejoin_context_updates(hooks.iter().map(|hook| {
+        hook.strip_prefix("# Workflow context update\n\n")
+            .unwrap_or(hook)
+    }));
+    let given: Vec<String> = log[compacted..]
         .iter()
         .filter_map(|entry| entry["text"].as_str())
-        .chain(hooks.iter().copied())
+        .map(str::to_string)
+        .chain(hooked.iter().cloned())
         .collect();
     let given = given.join("\n");
     // Both lists arrive whole.
-    for part in 1..=4 {
-        let heading = format!("# Your kept notes, {part} of 4");
-        assert_eq!(given.matches(&heading).count(), 2, "{heading}");
-    }
-    assert!(
-        given.contains("This list replaces any earlier one, and the next 3 notes continue it.")
-    );
+    let about = "You kept these with keep_note, and forget_note removes one. This list replaces any earlier one.";
+    assert_eq!(given.matches(about).count(), 2);
     for text in &texts {
         assert_eq!(given.matches(text.as_str()).count(), 2, "{}", &text[..8]);
     }
+    // The list posted again comes after the terminal update.
+    let hooked = hooked.join("\n");
+    let update = hooked.find("Terminal update:").expect("the terminal update");
+    assert!(hooked[update..].contains(about), "the list after the update");
     harness.crew.as_ref().unwrap().shutdown().await;
     managers.shutdown().await;
 }
