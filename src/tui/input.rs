@@ -181,6 +181,19 @@ impl Editor {
         self.text.is_empty()
     }
 
+    /// Whether the box has words, without expanding pasted blocks.
+    pub fn has_text(&self) -> bool {
+        self.text.iter().any(|c| {
+            match (*c as u32)
+                .checked_sub(CHIP_BASE)
+                .and_then(|index| self.chips.get(index as usize))
+            {
+                Some(paste) => !paste.trim().is_empty(),
+                None => !c.is_whitespace(),
+            }
+        })
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -724,6 +737,19 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_text_reads_pasted_blocks_without_expanding_them() {
+        let mut editor = Editor::new(History::load(None));
+        for text in [String::new(), " \n\t".into(), " ".repeat(CHIP_CHARS + 1)] {
+            editor.set(&text);
+            assert!(!editor.has_text());
+        }
+        for text in ["word".into(), "x".repeat(CHIP_CHARS + 1)] {
+            editor.set(&text);
+            assert!(editor.has_text());
+        }
+    }
 
     fn editor() -> Editor {
         Editor::new(History::load(None))

@@ -179,7 +179,7 @@ impl App {
                     self.tray.options.insert(id);
                 }
             }
-            KeyCode::Char('m') if !self.editor.text().trim().is_empty() => {
+            KeyCode::Char('m') if self.editor.has_text() => {
                 self.tray.message_choice =
                     Some((!self.includes_message(), self.editor.emptied_at()));
             }
@@ -263,7 +263,7 @@ fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize) {
         .open
         .as_ref()
         .and_then(|id| requests.iter().find(|request| &request.id == id));
-    let has_message = !app.editor.text().trim().is_empty();
+    let has_message = app.editor.has_text();
     let mut pairs: Vec<(&str, &str)> = Vec::new();
     if tray.focused {
         if count > 1 {
