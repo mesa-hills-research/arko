@@ -5,23 +5,25 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MessageSwitch {
     seen: HashSet<String>,
-    newest_request: Option<String>,
+    arrivals: u64,
     has_text: bool,
     for_answer: bool,
     manual: Option<bool>,
 }
 
 impl MessageSwitch {
+    /// New requests reset intent to whether the box was empty at arrival.
     pub fn requests(&mut self, ids: HashSet<String>, has_text: bool) {
         self.edited(has_text);
-        if let Some(newest) = ids.difference(&self.seen).max() {
-            self.newest_request = Some(newest.clone());
+        if ids.iter().any(|id| !self.seen.contains(id)) {
+            self.arrivals = self.arrivals.wrapping_add(1);
             self.for_answer = !has_text;
             self.manual = None;
         }
         self.seen = ids;
     }
 
+    /// Emptying the box starts a fresh message and clears a manual choice.
     pub fn edited(&mut self, has_text: bool) {
         self.has_text = has_text;
         if !has_text {
@@ -30,10 +32,12 @@ impl MessageSwitch {
         }
     }
 
+    /// Whether an answer takes the box's current words.
     pub fn includes(&self) -> bool {
         self.has_text && self.manual.unwrap_or(self.for_answer)
     }
 
+    /// A manual choice lasts until a new request or an empty box.
     pub fn flip(&mut self) {
         if self.has_text {
             self.manual = Some(!self.includes());
@@ -43,7 +47,7 @@ impl MessageSwitch {
     /// A refused send returns its draft's intent, not the send's emptying.
     pub fn restored(&mut self, previous: &Self, has_text: bool) {
         self.has_text = has_text;
-        if self.newest_request == previous.newest_request {
+        if self.arrivals == previous.arrivals {
             self.for_answer = previous.for_answer;
             self.manual = previous.manual;
         } else {

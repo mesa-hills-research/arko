@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+const READ_MS: u64 = 500;
+
 #[derive(Debug, Default)]
 pub struct ShownApprovals {
     shown_at_ms: HashMap<String, u64>,
@@ -15,7 +17,7 @@ impl ShownApprovals {
     /// Leaving sight before the guard ends starts the wait over next time.
     pub fn visible(&mut self, ids: &HashSet<String>, now_ms: u64) {
         self.shown_at_ms
-            .retain(|id, shown| ids.contains(id) || now_ms.saturating_sub(*shown) >= 500);
+            .retain(|id, shown| ids.contains(id) || now_ms.saturating_sub(*shown) >= READ_MS);
         for id in ids {
             self.shown_at_ms.entry(id.clone()).or_insert(now_ms);
         }
@@ -24,7 +26,7 @@ impl ShownApprovals {
     pub fn can_answer(&self, id: &str, now_ms: u64) -> bool {
         self.shown_at_ms
             .get(id)
-            .is_some_and(|shown| now_ms.saturating_sub(*shown) >= 500)
+            .is_some_and(|shown| now_ms.saturating_sub(*shown) >= READ_MS)
     }
 }
 
