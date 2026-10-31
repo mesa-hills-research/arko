@@ -3,7 +3,7 @@
 //! while recordings follow, and drops it after the idle time the settings
 //! give.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -30,7 +30,12 @@ const POLL: Duration = Duration::from_millis(100);
 /// computer can't keep up, and the dictation fails rather than fall further
 /// behind.
 const BACKLOG_SECONDS: usize = 15;
-/// What a dictation says when its audio piles up.
+/// Recognition this far behind the audio taken, in seconds, means the
+/// computer can't keep up. It also bounds the last flush when a dictation
+/// finishes, which can't stop between utterances.
+const LAG_SECONDS: f64 = 30.0;
+/// What a dictation says when its audio piles up, or recognition falls too
+/// far behind it.
 const OVERLOADED: &str = "Dictation can't keep up on this computer.";
 
 /// Runs dictations, one at a time, on a thread of its own.
@@ -388,6 +393,7 @@ fn listen(
 ) {
     let mut streamer: Option<Streamer> = None;
     let mut shown = Shown::default();
+    let mut lag = Lag::default();
     let mut next_pass: Option<Instant> = None;
     let failed = |error: speech::Error| {
         DictationEvent::Failed(format!("Speech recognition failed ({error})."))
@@ -414,7 +420,8 @@ fn listen(
                         )
                     });
                     // (Only voice activity's events, which change no text.)
-                    streamer.push(&samples);
+                    let events = streamer.push(&samples);
+                    lag.took(samples.len() as f64 / f64::from(rate.max(1)), &events);
                 }
                 Ok(Message::Overloaded) => return send(DictationEvent::Failed(OVERLOADED.into())),
                 Ok(Message::CaptureFailed(why)) => {
@@ -429,6 +436,9 @@ fn listen(
                 Ok(next) => message = Ok(next),
                 Err(_) => break,
             }
+        }
+        if lag.behind() > LAG_SECONDS {
+            return send(DictationEvent::Failed(OVERLOADED.into()));
         }
         if finishing {
             if let Some(streamer) = &mut streamer {
@@ -455,8 +465,10 @@ fn listen(
         let due = *next_pass.get_or_insert(now + config.min_interval);
         if streamer.wants_final() || (now >= due && streamer.has_new_audio()) {
             let start = Instant::now();
+            let heard = lag.taken;
             match streamer.pass() {
                 Ok(events) => {
+                    lag.passed(heard, &events);
                     if let Some(text) = shown.take(events) {
                         send(text);
                     }
@@ -471,6 +483,62 @@ fn listen(
                         .max(took.mul_f64(config.interval_factor)),
             );
         }
+    }
+}
+
+/// How far recognition lags behind the audio taken, in seconds of audio. It
+/// follows the engine's utterances: while one started and hasn't had a pass
+/// over all its audio, recognition is behind by the audio taken since the
+/// last pass that caught up. A pass catches up when at most the utterance
+/// being spoken is left open, since Telmo's passes cover all of it, and an
+/// utterance waiting for its final pass keeps recognition behind.
+#[derive(Default)]
+struct Lag {
+    taken: f64,
+    /// The audio taken when recognition last caught up.
+    caught_up: f64,
+    /// The utterances that started and haven't ended.
+    open: BTreeSet<u64>,
+}
+
+impl Lag {
+    /// `seconds` of audio taken, with the engine's events for it.
+    fn took(&mut self, seconds: f64, events: &[Event]) {
+        self.taken += seconds;
+        self.follow(events);
+        if self.open.is_empty() {
+            self.caught_up = self.taken;
+        }
+    }
+
+    /// A pass that began when `heard` seconds were taken ended with
+    /// `events`.
+    fn passed(&mut self, heard: f64, events: &[Event]) {
+        self.follow(events);
+        if self.open.len() <= 1 {
+            self.caught_up = self.caught_up.max(heard);
+        }
+        if self.open.is_empty() {
+            self.caught_up = self.taken;
+        }
+    }
+
+    fn follow(&mut self, events: &[Event]) {
+        for event in events {
+            match event {
+                Event::SpeechStart { utterance, .. } => {
+                    self.open.insert(*utterance);
+                }
+                Event::UtteranceEnd { utterance, .. } => {
+                    self.open.remove(utterance);
+                }
+                Event::Tentative { .. } | Event::Settled { .. } => {}
+            }
+        }
+    }
+
+    fn behind(&self) -> f64 {
+        self.taken - self.caught_up
     }
 }
 

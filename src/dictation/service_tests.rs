@@ -118,6 +118,77 @@ fn audio_past_the_backlog_overloads_once() {
     assert!(received.try_recv().is_err());
 }
 
+fn start(utterance: u64) -> Event {
+    Event::SpeechStart { utterance, at: 0.0 }
+}
+
+fn end(utterance: u64) -> Event {
+    Event::UtteranceEnd {
+        utterance,
+        at: 0.0,
+        speech_end: 0.0,
+    }
+}
+
+fn words(utterance: u64) -> Event {
+    Event::Tentative {
+        utterance,
+        text: "words".into(),
+    }
+}
+
+/// Recognition that keeps up stays about a pass behind the audio, and
+/// silence is never behind.
+#[test]
+fn recognition_that_keeps_up_isnt_behind() {
+    let mut lag = Lag::default();
+    lag.took(2.0, &[]);
+    assert_eq!(lag.behind(), 0.0);
+    lag.took(0.5, &[start(0)]);
+    assert_eq!(lag.behind(), 0.5);
+    lag.passed(lag.taken, &[words(0)]);
+    assert_eq!(lag.behind(), 0.0);
+    // A long utterance, passes as it grows.
+    for _ in 0..60 {
+        lag.took(0.5, &[]);
+        let heard = lag.taken;
+        lag.took(0.2, &[]);
+        lag.passed(heard, &[words(0)]);
+        assert!(lag.behind() < 0.5, "{}", lag.behind());
+    }
+    // The next utterance starts as this one waits for its final pass.
+    lag.took(0.5, &[start(1)]);
+    let heard = lag.taken;
+    lag.passed(heard, &[words(0), end(0)]);
+    assert_eq!(lag.behind(), 0.0);
+    lag.passed(lag.taken, &[words(1), end(1)]);
+    lag.took(3.0, &[]);
+    assert_eq!(lag.behind(), 0.0);
+}
+
+/// Utterances that wait for their final passes keep recognition behind,
+/// however many passes run, until it's past the bound.
+#[test]
+fn utterances_waiting_for_final_passes_fall_behind() {
+    let mut lag = Lag::default();
+    lag.took(1.0, &[start(0)]);
+    let mut utterance = 0;
+    while lag.behind() <= LAG_SECONDS {
+        utterance += 1;
+        lag.took(2.0, &[start(utterance)]);
+        let heard = lag.taken;
+        lag.passed(heard, &[words(utterance)]);
+    }
+    assert!(utterance < 20);
+    // A pass that began long ago leaves recognition that far behind.
+    let mut lag = Lag::default();
+    lag.took(1.0, &[start(0)]);
+    let heard = lag.taken;
+    lag.took(40.0, &[]);
+    lag.passed(heard, &[words(0)]);
+    assert!(lag.behind() > LAG_SECONDS);
+}
+
 /// A pass that's due without new audio waits for audio, rather than look
 /// again at once.
 #[test]
