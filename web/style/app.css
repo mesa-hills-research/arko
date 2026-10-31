@@ -422,13 +422,13 @@ kbd {
 .call-line .outcome::before { content: "· "; color: var(--muted); }
 .call-line .ok { color: var(--success); }
 .call-line .failed { color: var(--error); }
-/* The spinner turns inside its own drawing, about the circle's centre, so
-   wherever the line puts its box can't move it. It's two arcs, half a turn
-   apart, so the ink stays centred as it turns. */
+/* The spinner's drawing turns as a whole, about the centre of its own box,
+   which is the circle's centre, so wherever the line puts the box can't
+   move it, and the browser turns it without painting it again. It's two
+   arcs, half a turn apart, so the ink stays centred as it turns. */
 .call-line .running { display: inline-block; width: 12px; height: 12px; vertical-align: -1px; }
-.spinner .turn {
-  transform-box: view-box;
-  transform-origin: 12px 12px;
+.spinner {
+  transform-origin: 50% 50%;
   animation: spin 1.2s linear infinite;
 }
 .call-line .call-action { margin-left: 4px; font-family: var(--sans); }
