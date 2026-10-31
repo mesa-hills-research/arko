@@ -219,7 +219,7 @@ fn change_view(view: View) {
         return;
     }
     if !page.pinned.get_untracked()
-        && let Some(at) = crate::scroll::first_visible()
+        && let Some((at, _)) = crate::scroll::first_visible()
     {
         crate::scroll::keep_place(at);
     }
