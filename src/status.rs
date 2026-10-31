@@ -476,12 +476,12 @@ pub(crate) fn cache_status(
                 .is_some_and(|model| crate::keep_warm::refreshes_out_of_band(&model))
         })
         .map(|limits| {
-            stats.keep_warm.status(
-                &limits,
-                stats.cache_refreshed_at,
-                stats.cache_lifetime,
-                turn,
-            )
+            let cache = crate::keep_warm::Cache {
+                used: stats.cache_refreshed_at,
+                lifetime: stats.cache_lifetime,
+                quote: refresh_quote(stats, models),
+            };
+            stats.keep_warm.status(&limits, cache, turn)
         });
     let model = providers::resolve_model(&models.main).ok();
     let on_plan = main_plan(model.as_ref(), models).map(|plan| match plan {
@@ -491,12 +491,7 @@ pub(crate) fn cache_status(
     let tokens = stats.context_tokens;
     let (miss_cost, refresh_cost) = match (&model, tokens) {
         (Some(model), Some(tokens)) if on_plan.is_none() => {
-            // A long cache (Claude's hour, OpenAI's 12 hours) is written at
-            // its own price.
-            let long = stats.cache_lifetime.is_some_and(|lifetime| {
-                lifetime == arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME
-                    || lifetime == arko_ai::prompt_cache::OPENAI_EXTENDED_PROMPT_CACHE_LIFETIME
-            });
+            let long = long_cache(stats.cache_lifetime);
             let (write, read) = providers::cache_prices(model, tokens, models.main_fast, long);
             let cost = |per_million: f64| Some(tokens as f64 * per_million / 1e6);
             (cost(write), cost(read))
@@ -514,6 +509,36 @@ pub(crate) fn cache_status(
         on_plan,
         keep_warm,
     }
+}
+
+/// Whether a cache of `lifetime` is a long one (Claude's hour, OpenAI's 12
+/// hours), which is written at its own price.
+fn long_cache(lifetime: Option<Duration>) -> bool {
+    lifetime.is_some_and(|lifetime| {
+        lifetime == arko_ai::prompt_cache::ANTHROPIC_EXTENDED_PROMPT_CACHE_LIFETIME
+            || lifetime == arko_ai::prompt_cache::OPENAI_EXTENDED_PROMPT_CACHE_LIFETIME
+    })
+}
+
+/// The most output a keep-warm refresh writes: arko_agents' output limit for
+/// one whose provider refused the smaller limit.
+const REFRESH_OUTPUT_TOKENS: usize = 1_024;
+
+/// The most keep-warm's next refresh costs at API prices (what it would on a
+/// key where a plan pays), from the conversation's model and size now. `None`
+/// where Arko has no price for the model, or nothing was sent yet.
+// shortcut: priced here, before the refresh, from what the status knows,
+// until arko_workflows' refresh quotes its own price first.
+pub(crate) fn refresh_quote(stats: &crate::ui::Stats, models: &remote::Models) -> Option<f64> {
+    let model = crate::keep_warm::conversation_model(models)?;
+    let quote = providers::refresh_price(
+        &model,
+        stats.context_tokens?,
+        models.main_fast,
+        long_cache(stats.cache_lifetime),
+        REFRESH_OUTPUT_TOKENS,
+    );
+    (quote > 0.0).then_some(quote)
 }
 
 #[cfg(test)]

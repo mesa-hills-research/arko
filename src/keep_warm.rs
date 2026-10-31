@@ -434,10 +434,6 @@ pub(crate) struct KeepWarm {
     paused: Option<i64>,
     /// It said that Arko has no price for the refreshes.
     unpriced_told: bool,
-    /// What its latest refresh cost at API prices, which the next is taken
-    /// to cost.
-    #[serde(skip)]
-    last_cost: f64,
 }
 
 impl KeepWarm {
@@ -521,11 +517,13 @@ impl KeepWarm {
             .map(|refreshes| refreshes.saturating_sub(self.counted().sent))
     }
 
-    /// Whether its next refresh would pass its dollars.
-    fn spent_out(&self, limits: &Limits) -> bool {
+    /// Whether its next refresh, which costs `quote` at most (`None` where
+    /// Arko has no price for it), would pass its dollars, with what it spent
+    /// already.
+    fn spent_out(&self, limits: &Limits, quote: Option<f64>) -> bool {
         limits
             .dollars
-            .is_some_and(|most| self.counted().spent + self.last_cost > most + 1e-9)
+            .is_some_and(|most| self.counted().spent + quote.unwrap_or_default() > most + 1e-9)
     }
 
     /// Whether its hours stopped it in this idle stretch, or there is no
@@ -542,50 +540,43 @@ impl KeepWarm {
         self.ends_at(limits).is_none_or(|end| at < end)
     }
 
-    /// When the next refresh goes for a cache last used at `used` that lasts
-    /// `lifetime`, if one comes before it stops.
-    fn next_at(&self, limits: &Limits, used: i64, lifetime: Duration) -> Option<i64> {
-        if self.left(limits) == Some(0) || self.spent_out(limits) || self.paused(limits) {
+    /// When the next refresh of `cache` goes under `limits`, if one comes
+    /// before it stops and the limits leave one.
+    fn next_at(&self, limits: &Limits, cache: Cache) -> Option<i64> {
+        if self.left(limits) == Some(0)
+            || self.spent_out(limits, cache.quote)
+            || self.paused(limits)
+        {
             return None;
         }
-        let due = cache_timer::refresh_at(used, lifetime);
+        let due = cache_timer::refresh_at(cache.used?, cache.lifetime?);
         self.before_end(limits, due).then_some(due)
     }
 
-    /// When the session's loop wakes for it under `limits`, for the cache
-    /// last used at `used` that lasts `lifetime`: for the next refresh, or
-    /// to stop.
-    pub(crate) fn wake_at(
-        &self,
-        limits: &Limits,
-        used: Option<i64>,
-        lifetime: Option<Duration>,
-    ) -> Option<i64> {
-        if self.left(limits) == Some(0) || self.spent_out(limits) {
+    /// When the session's loop wakes for it under `limits`, for `cache`: for
+    /// the next refresh, or to stop.
+    pub(crate) fn wake_at(&self, limits: &Limits, cache: Cache) -> Option<i64> {
+        if self.left(limits) == Some(0) || self.spent_out(limits, cache.quote) {
             return Some(i64::MIN);
         }
         if self.paused(limits) {
             return None;
         }
-        let next = used
-            .zip(lifetime)
-            .and_then(|(used, lifetime)| self.next_at(limits, used, lifetime));
-        [next, self.ends_at(limits)].into_iter().flatten().min()
+        [self.next_at(limits, cache), self.ends_at(limits)]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
-    /// What it does at `now` under `limits`, for the cache last used at
-    /// `used` that lasts `lifetime`.
-    pub(crate) fn step(
-        &self,
-        now: i64,
-        limits: &Limits,
-        used: Option<i64>,
-        lifetime: Option<Duration>,
-    ) -> Step {
+    /// What it does at `now` under `limits`, for `cache`.
+    pub(crate) fn step(&self, now: i64, limits: &Limits, cache: Cache) -> Step {
         if let Some(refreshes) = limits.refreshes.filter(|_| self.left(limits) == Some(0)) {
             return Step::Stop(Stop::Refreshes(refreshes));
         }
-        if let Some(most) = limits.dollars.filter(|_| self.spent_out(limits)) {
+        if let Some(most) = limits
+            .dollars
+            .filter(|_| self.spent_out(limits, cache.quote))
+        {
             return Step::Stop(Stop::Dollars(most));
         }
         if self.paused(limits) {
@@ -597,30 +588,27 @@ impl KeepWarm {
                 _ => Stop::Idle(limits.idle_hours.unwrap_or_default()),
             });
         }
-        let Some((used, lifetime)) = used.zip(lifetime) else {
+        let (Some(due), Some(used), Some(lifetime)) =
+            (self.next_at(limits, cache), cache.used, cache.lifetime)
+        else {
             return Step::Wait;
         };
-        match self.next_at(limits, used, lifetime) {
-            Some(due) if now >= due => {
-                if now >= cache_timer::lapses_at(used, lifetime) {
-                    Step::Stop(Stop::Lapsed)
-                } else {
-                    Step::Refresh
-                }
-            }
-            _ => Step::Wait,
+        if now < due {
+            Step::Wait
+        } else if now >= cache_timer::lapses_at(used, lifetime) {
+            Step::Stop(Stop::Lapsed)
+        } else {
+            Step::Refresh
         }
     }
 
     /// Counts a refresh it sent, which had `usage`.
     pub(crate) fn sent(&mut self, usage: &arko_ai::UsageInfo) {
         let billed = usage.billed();
-        let cost = usage.total_cost.max(billed);
         self.totals.sent += 1;
-        self.totals.spent += cost;
+        self.totals.spent += usage.total_cost.max(billed);
         self.totals.billed += billed;
         self.totals.read += usage.cached_tokens.unwrap_or(0);
-        self.last_cost = cost;
     }
 
     /// Stops it for `stop`, and says why and what it sent since it last
@@ -636,34 +624,29 @@ impl KeepWarm {
         stopped(stop, said, on_plan)
     }
 
-    /// The status under `limits`, for the cache last used at `used` that
-    /// lasts `lifetime`, while a turn's requests run (`turn`) or not.
-    pub(crate) fn status(
-        &self,
-        limits: &Limits,
-        used: Option<i64>,
-        lifetime: Option<Duration>,
-        turn: bool,
-    ) -> Status {
+    /// The status under `limits`, for `cache`, while a turn's requests run
+    /// (`turn`) or not.
+    pub(crate) fn status(&self, limits: &Limits, cache: Cache, turn: bool) -> Status {
         Status {
             ends_at: self.ends_at(limits),
             left: self.left(limits),
-            next_at: used
-                .zip(lifetime)
-                .filter(|_| !turn)
-                .and_then(|(used, lifetime)| self.next_at(limits, used, lifetime)),
+            next_at: (!turn).then(|| self.next_at(limits, cache)).flatten(),
         }
     }
+}
 
-    /// Whether a refresh that cost nothing at API prices shows that Arko has
-    /// no price for the model, where `limits` have dollars to count, and it
-    /// didn't say so yet.
-    fn unpriced(&self, limits: &Limits, usage: &arko_ai::UsageInfo) -> bool {
-        limits.dollars.is_some()
-            && !self.unpriced_told
-            && usage.total_cost <= 0.0
-            && usage.billed() <= 0.0
-    }
+/// What keep-warm decides by: the cache it refreshes, and what a refresh
+/// costs.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Cache {
+    /// When it was last used (Unix milliseconds), `None` while that isn't
+    /// known.
+    pub(crate) used: Option<i64>,
+    /// How long it lasts, where the provider says.
+    pub(crate) lifetime: Option<Duration>,
+    /// What a refresh costs at most, at API prices, `None` where Arko has
+    /// no price for the model.
+    pub(crate) quote: Option<f64>,
 }
 
 /// What refreshes sent (`said`), in a sentence: "It sent 8 refreshes for
@@ -785,19 +768,23 @@ impl crate::Harness {
         crate::providers::resolve_model(&self.conversation_settings().model).ok()
     }
 
-    /// The cache keep-warm refreshes, when it was last used and how long it
-    /// lasts, while there is a conversation whose model refreshes it out of
-    /// band. Otherwise none, and keep-warm waits for its end.
-    fn keep_warm_cache(&self) -> (Option<i64>, Option<Duration>) {
+    /// The cache keep-warm refreshes and what a refresh of it costs, while
+    /// there is a conversation whose model refreshes it out of band.
+    /// Otherwise none, and keep-warm waits for its end.
+    fn keep_warm_cache(&self) -> Cache {
         let refreshes = !matches!(self.conversation, crate::Conversation::New)
             && self
                 .keep_warm_model()
                 .is_some_and(|model| refreshes_out_of_band(&model));
+        if !refreshes {
+            return Cache::default();
+        }
+        let quote = crate::status::refresh_quote(&lock(&self.stats), &lock(&self.gauges.models));
         let stats = lock(&self.stats);
-        if refreshes {
-            (stats.cache_refreshed_at, stats.cache_lifetime)
-        } else {
-            (None, None)
+        Cache {
+            used: stats.cache_refreshed_at,
+            lifetime: stats.cache_lifetime,
+            quote,
         }
     }
 
@@ -805,8 +792,8 @@ impl crate::Harness {
     /// (Unix milliseconds): for its next refresh, or to stop.
     pub(crate) fn keep_warm_wake(&self) -> Option<i64> {
         let limits = self.keep_warm_limits()?;
-        let (used, lifetime) = self.keep_warm_cache();
-        lock(&self.stats).keep_warm.wake_at(&limits, used, lifetime)
+        let cache = self.keep_warm_cache();
+        lock(&self.stats).keep_warm.wake_at(&limits, cache)
     }
 
     /// What keep-warm does at `now`, while the session waits for the user: a
@@ -815,35 +802,32 @@ impl crate::Harness {
         let Some(limits) = self.keep_warm_limits() else {
             return;
         };
-        let (used, lifetime) = self.keep_warm_cache();
-        let step = lock(&self.stats)
-            .keep_warm
-            .step(now, &limits, used, lifetime);
+        let cache = self.keep_warm_cache();
+        let step = lock(&self.stats).keep_warm.step(now, &limits, cache);
         match step {
             Step::Wait => {}
             Step::Stop(stop) => self.stop_keep_warm(stop),
-            Step::Refresh => match Box::pin(self.refresh_out_of_band(true)).await {
-                Ok(Some(usage)) => {
-                    let unpriced = {
-                        let kept = &mut lock(&self.stats).keep_warm;
-                        kept.sent(&usage);
-                        let unpriced = kept.unpriced(&limits, &usage);
-                        kept.unpriced_told |= unpriced;
-                        unpriced.then_some(limits.dollars).flatten()
-                    };
-                    if let Some(most) = unpriced {
-                        self.say(
-                            Level::Warn,
-                            &format!(
-                                "Arko has no price for this model's refreshes, so keep-warm's {} limit doesn't apply.",
-                                dollars(most)
-                            ),
-                        );
-                    }
+            Step::Refresh => {
+                // Without a price, its dollars can't count: it says so once.
+                let unpriced = limits.dollars.filter(|_| {
+                    let kept = &mut lock(&self.stats).keep_warm;
+                    cache.quote.is_none() && !std::mem::replace(&mut kept.unpriced_told, true)
+                });
+                if let Some(most) = unpriced {
+                    self.say(
+                        Level::Warn,
+                        &format!(
+                            "Arko has no price for this model's refreshes, so keep-warm's {} limit doesn't apply.",
+                            dollars(most)
+                        ),
+                    );
                 }
-                Ok(None) => self.stop_keep_warm(Stop::Unsupported),
-                Err(error) => self.stop_keep_warm(Stop::Failed(error)),
-            },
+                match Box::pin(self.refresh_out_of_band(true)).await {
+                    Ok(Some(usage)) => lock(&self.stats).keep_warm.sent(&usage),
+                    Ok(None) => self.stop_keep_warm(Stop::Unsupported),
+                    Err(error) => self.stop_keep_warm(Stop::Failed(error)),
+                }
+            }
         }
         self.save_keep_warm();
         self.gauges.touch();
@@ -912,6 +896,16 @@ impl crate::Harness {
         }
         if limits.ends_at.is_none() && limits.refreshes.is_none() && limits.idle_hours.is_none() {
             return Err(format!("Give a time or a number of refreshes. {USAGE}"));
+        }
+        let quote = crate::status::refresh_quote(&lock(&self.stats), &lock(&self.gauges.models));
+        if let (Some(most), Some(quote)) = (limits.dollars, quote)
+            && quote > most
+        {
+            return Err(format!(
+                "A refresh costs up to {}, more than the {} limit.",
+                dollars(quote),
+                dollars(most)
+            ));
         }
         let lapsed = {
             let stats = lock(&self.stats);
@@ -1045,6 +1039,16 @@ mod tests {
         }
     }
 
+    /// The cache last used at `used` that lasts `lifetime`, each refresh of
+    /// it costing $0.04 at most.
+    fn cached(used: Option<i64>, lifetime: Option<Duration>) -> Cache {
+        Cache {
+            used,
+            lifetime,
+            quote: Some(0.04),
+        }
+    }
+
     /// Sends the refresh due at `now`, which leaves the cache last used then.
     fn refresh(kept: &mut KeepWarm, used: &mut i64, now: i64) {
         kept.sent(&usage(0.04));
@@ -1056,10 +1060,11 @@ mod tests {
     #[test]
     fn a_cache_is_refreshed_a_lead_before_it_lapses() {
         let (mut kept, limits) = on(ending(Some(10 * 60 * MINUTE), None));
-        let wake =
-            |kept: &KeepWarm, used, lifetime| kept.wake_at(&limits, Some(used), Some(lifetime));
+        let wake = |kept: &KeepWarm, used, lifetime| {
+            kept.wake_at(&limits, cached(Some(used), Some(lifetime)))
+        };
         let step = |kept: &KeepWarm, now, used, lifetime| {
-            kept.step(now, &limits, Some(used), Some(lifetime))
+            kept.step(now, &limits, cached(Some(used), Some(lifetime)))
         };
         assert_eq!(wake(&kept, 0, FIVE), Some(4 * MINUTE));
         assert_eq!(step(&kept, 4 * MINUTE - 1, 0, FIVE), Step::Wait);
@@ -1070,16 +1075,21 @@ mod tests {
         refresh(&mut kept, &mut used, 4 * MINUTE);
         assert_eq!(wake(&kept, used, FIVE), Some(8 * MINUTE));
         assert_eq!(
-            kept.status(&limits, Some(used), Some(FIVE), false).next_at,
+            kept.status(&limits, cached(Some(used), Some(FIVE)), false)
+                .next_at,
             Some(8 * MINUTE)
         );
         // None goes while a turn runs, and a cache whose time isn't known
         // waits for a request.
         assert_eq!(
-            kept.status(&limits, Some(used), Some(FIVE), true).next_at,
+            kept.status(&limits, cached(Some(used), Some(FIVE)), true)
+                .next_at,
             None
         );
-        assert_eq!(kept.step(9 * MINUTE, &limits, None, Some(FIVE)), Step::Wait);
+        assert_eq!(
+            kept.step(9 * MINUTE, &limits, cached(None, Some(FIVE))),
+            Step::Wait
+        );
     }
 
     /// A turn's request moves the schedule, and isn't counted.
@@ -1092,15 +1102,16 @@ mod tests {
         let turn = 6 * MINUTE;
         kept.requested(turn);
         assert_eq!(
-            kept.wake_at(&limits, Some(turn), Some(FIVE)),
+            kept.wake_at(&limits, cached(Some(turn), Some(FIVE))),
             Some(10 * MINUTE)
         );
         assert_eq!(
-            kept.step(8 * MINUTE, &limits, Some(turn), Some(FIVE)),
+            kept.step(8 * MINUTE, &limits, cached(Some(turn), Some(FIVE))),
             Step::Wait
         );
         assert_eq!(
-            kept.status(&limits, Some(turn), Some(FIVE), false).left,
+            kept.status(&limits, cached(Some(turn), Some(FIVE)), false)
+                .left,
             Some(2)
         );
     }
@@ -1114,33 +1125,38 @@ mod tests {
         // The refresh at 4:00 goes. The next, at 8:00, would be after the
         // end, so the loop wakes at 6:00 to stop.
         assert_eq!(
-            kept.step(4 * MINUTE, &limits, Some(0), Some(FIVE)),
+            kept.step(4 * MINUTE, &limits, cached(Some(0), Some(FIVE))),
             Step::Refresh
         );
         let mut used = 0;
         refresh(&mut kept, &mut used, 4 * MINUTE);
         assert_eq!(
-            kept.status(&limits, Some(used), Some(FIVE), false).next_at,
+            kept.status(&limits, cached(Some(used), Some(FIVE)), false)
+                .next_at,
             None
         );
-        assert_eq!(kept.wake_at(&limits, Some(used), Some(FIVE)), Some(end));
         assert_eq!(
-            kept.step(end, &limits, Some(used), Some(FIVE)),
+            kept.wake_at(&limits, cached(Some(used), Some(FIVE))),
+            Some(end)
+        );
+        assert_eq!(
+            kept.step(end, &limits, cached(Some(used), Some(FIVE))),
             Step::Stop(Stop::Ended(end))
         );
         // A refresh due right at the end doesn't go, and the status doesn't
         // show it: the end at 8:00, when the refresh after 4:00 would be.
         let (kept, limits) = on(ending(Some(8 * MINUTE), None));
         assert_eq!(
-            kept.status(&limits, Some(used), Some(FIVE), false).next_at,
+            kept.status(&limits, cached(Some(used), Some(FIVE)), false)
+                .next_at,
             None
         );
         assert_eq!(
-            kept.wake_at(&limits, Some(used), Some(FIVE)),
+            kept.wake_at(&limits, cached(Some(used), Some(FIVE))),
             Some(8 * MINUTE)
         );
         assert_eq!(
-            kept.step(8 * MINUTE, &limits, Some(used), Some(FIVE)),
+            kept.step(8 * MINUTE, &limits, cached(Some(used), Some(FIVE))),
             Step::Stop(Stop::Ended(8 * MINUTE))
         );
 
@@ -1148,17 +1164,18 @@ mod tests {
         let mut used = 0;
         refresh(&mut kept, &mut used, 4 * MINUTE);
         assert_eq!(
-            kept.status(&limits, Some(used), Some(FIVE), false).left,
+            kept.status(&limits, cached(Some(used), Some(FIVE)), false)
+                .left,
             Some(1)
         );
         refresh(&mut kept, &mut used, 8 * MINUTE);
         assert_eq!(
-            kept.wake_at(&limits, Some(used), Some(FIVE)),
+            kept.wake_at(&limits, cached(Some(used), Some(FIVE))),
             Some(i64::MIN)
         );
         let stop = Stop::Refreshes(2);
         assert_eq!(
-            kept.step(8 * MINUTE, &limits, Some(used), Some(FIVE)),
+            kept.step(8 * MINUTE, &limits, cached(Some(used), Some(FIVE))),
             Step::Stop(stop.clone())
         );
         assert_eq!(
@@ -1181,11 +1198,11 @@ mod tests {
         refresh(&mut kept, &mut used, 4 * MINUTE);
         refresh(&mut kept, &mut used, 8 * MINUTE);
         assert_eq!(
-            kept.wake_at(&limits, Some(used), Some(FIVE)),
+            kept.wake_at(&limits, cached(Some(used), Some(FIVE))),
             Some(i64::MIN)
         );
         assert_eq!(
-            kept.step(9 * MINUTE, &limits, Some(used), Some(FIVE)),
+            kept.step(9 * MINUTE, &limits, cached(Some(used), Some(FIVE))),
             Step::Stop(Stop::Dollars(0.1))
         );
         assert_eq!(
@@ -1194,8 +1211,49 @@ mod tests {
         );
         let (kept, limits) = on(ending(None, Some(5)));
         assert_eq!(
-            kept.step(4 * MINUTE + 30_000, &limits, Some(0), Some(FIVE)),
+            kept.step(4 * MINUTE + 30_000, &limits, cached(Some(0), Some(FIVE))),
             Step::Stop(Stop::Lapsed)
+        );
+    }
+
+    /// Each refresh, the first too, is priced before it goes, from the cache
+    /// and the model as they are then, and one that would pass the dollars
+    /// doesn't go. Without a price, the dollars don't apply.
+    #[test]
+    fn each_refresh_is_priced_before_it_goes() {
+        let (kept, limits) = on(Limits {
+            refreshes: Some(10),
+            dollars: Some(0.01),
+            ..Limits::default()
+        });
+        let five = |quote| Cache {
+            used: Some(0),
+            lifetime: Some(FIVE),
+            quote,
+        };
+        assert_eq!(kept.wake_at(&limits, five(Some(0.04))), Some(i64::MIN));
+        assert_eq!(
+            kept.step(4 * MINUTE, &limits, five(Some(0.04))),
+            Step::Stop(Stop::Dollars(0.01))
+        );
+        assert_eq!(kept.status(&limits, five(Some(0.04)), false).next_at, None);
+        // Without a price, it goes by its other limits.
+        assert_eq!(kept.wake_at(&limits, five(None)), Some(4 * MINUTE));
+        // A cache that grew after a cheap refresh: $0.01 spent and $0.50
+        // next passes $0.30.
+        let (mut kept, limits) = on(Limits {
+            refreshes: Some(10),
+            dollars: Some(0.3),
+            ..Limits::default()
+        });
+        kept.sent(&usage(0.01));
+        assert_eq!(
+            kept.step(4 * MINUTE, &limits, five(Some(0.2))),
+            Step::Refresh
+        );
+        assert_eq!(
+            kept.step(4 * MINUTE, &limits, five(Some(0.5))),
+            Step::Stop(Stop::Dollars(0.3))
         );
     }
 
@@ -1211,14 +1269,14 @@ mod tests {
         let mut kept = KeepWarm::default();
         assert_eq!(kept.limits(Some(limits)), Some(limits));
         // No request yet, so nothing to keep warm.
-        assert_eq!(kept.wake_at(&limits, None, Some(FIVE)), None);
+        assert_eq!(kept.wake_at(&limits, cached(None, Some(FIVE))), None);
         kept.requested(0);
         // Refreshes at 4:00, 8:00 and on to 56:00. The next would be at
         // 60:00, the end of the hour, where it stops instead.
         let mut used = 0;
         let mut sent = 0;
-        while let Some(at) = kept.wake_at(&limits, Some(used), Some(FIVE)) {
-            match kept.step(at, &limits, Some(used), Some(FIVE)) {
+        while let Some(at) = kept.wake_at(&limits, cached(Some(used), Some(FIVE))) {
+            match kept.step(at, &limits, cached(Some(used), Some(FIVE))) {
                 Step::Refresh => {
                     refresh(&mut kept, &mut used, at);
                     sent += 1;
@@ -1232,27 +1290,29 @@ mod tests {
         assert_eq!((sent, used), (14, 56 * MINUTE));
         // The status shows no refresh at 60:00, as none goes there.
         assert_eq!(
-            kept.status(&limits, Some(used), Some(FIVE), false).next_at,
+            kept.status(&limits, cached(Some(used), Some(FIVE)), false)
+                .next_at,
             None
         );
         assert_eq!(
             kept.stop(&Stop::Idle(1), Some("your Claude plan")),
             "Keep-warm stopped 1 hour after your last message, and starts again after your next one. It sent 14 refreshes for $0.56."
         );
-        assert_eq!(kept.wake_at(&limits, Some(used), Some(FIVE)), None);
+        assert_eq!(kept.wake_at(&limits, cached(Some(used), Some(FIVE))), None);
         assert_eq!(
-            kept.step(70 * MINUTE, &limits, Some(used), Some(FIVE)),
+            kept.step(70 * MINUTE, &limits, cached(Some(used), Some(FIVE))),
             Step::Wait
         );
         // The user's next message, at 90:00, starts another hour.
         let turn = 90 * MINUTE;
         kept.requested(turn);
         assert_eq!(
-            kept.wake_at(&limits, Some(turn), Some(FIVE)),
+            kept.wake_at(&limits, cached(Some(turn), Some(FIVE))),
             Some(94 * MINUTE)
         );
         assert_eq!(
-            kept.status(&limits, Some(turn), Some(FIVE), false).ends_at,
+            kept.status(&limits, cached(Some(turn), Some(FIVE)), false)
+                .ends_at,
             Some(150 * MINUTE)
         );
     }
@@ -1287,10 +1347,10 @@ mod tests {
         };
         assert_eq!(back.limits(Some(lower)), Some(lower));
         assert_eq!(
-            back.step(16 * MINUTE, &lower, Some(used), Some(FIVE)),
+            back.step(16 * MINUTE, &lower, cached(Some(used), Some(FIVE))),
             Step::Stop(Stop::Dollars(0.1))
         );
-        assert!(!back.spent_out(&setting));
+        assert!(!back.spent_out(&setting, Some(0.04)));
         // Off stays off when the session opens again.
         assert_eq!(back.off().sent, 3);
         back.save(temp.path()).unwrap();
@@ -1591,6 +1651,24 @@ mod tests {
                 .keep_warm_request(Some(ending(None, Some(3))))
                 .unwrap_err()
                 .starts_with("The prompt cache has expired")
+        );
+        // A limit below what one refresh costs.
+        harness.publish_models();
+        {
+            let mut stats = lock(&harness.stats);
+            stats.cache_refreshed_at = Some(now_ms());
+            stats.context_tokens = Some(10_000_000);
+        }
+        let dear = Limits {
+            refreshes: Some(3),
+            dollars: Some(0.01),
+            ..Limits::default()
+        };
+        let refused = harness.keep_warm_request(Some(dear)).unwrap_err();
+        assert!(
+            refused.starts_with("A refresh costs up to $")
+                && refused.ends_with(", more than the $0.01 limit."),
+            "{refused}"
         );
         assert_eq!(harness.keep_warm_limits(), None);
         harness.crew.as_ref().unwrap().shutdown().await;
