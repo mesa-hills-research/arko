@@ -549,13 +549,52 @@ thread_local! {
     static MAIN_PLACE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
-/// Shows the worker `id`'s own transcript (none for the main one). A
-/// worker's opens at its latest, and going back returns to where the
-/// reader was.
+/// Shows the worker `id`'s own transcript (none for the main one) in a new
+/// entry of the browser's history, so Back and Forward step through the
+/// views the reader saw.
 pub fn show_worker(page: Page, id: Option<String>) {
     if page.worker.get_untracked() == id {
         return;
     }
+    if let Ok(history) = window().history() {
+        let _ = history.push_state(&history_state(id.as_deref()), "");
+    }
+    switch_view(page, id);
+}
+
+/// Shows the view of the history entry that Back or Forward reached, whose
+/// state is `state`. A worker the page no longer has shows the main
+/// transcript, and the entry says so from then on.
+pub fn show_history_entry(page: Page, state: &wasm_bindgen::JsValue) {
+    let named = js_sys::Reflect::get(state, &"worker".into())
+        .ok()
+        .and_then(|worker| worker.as_string());
+    let shown = STORE.with(|store| store.borrow().entry_view(named.clone()));
+    if shown != named
+        && let Ok(history) = window().history()
+    {
+        let _ = history.replace_state(&history_state(None), "");
+    }
+    if page.worker.get_untracked() != shown {
+        switch_view(page, shown);
+    }
+}
+
+/// The state of a history entry that shows `worker`'s transcript, null for
+/// the main one.
+pub fn history_state(worker: Option<&str>) -> wasm_bindgen::JsValue {
+    let Some(worker) = worker else {
+        return wasm_bindgen::JsValue::NULL;
+    };
+    let state = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&state, &"worker".into(), &worker.into());
+    state.into()
+}
+
+/// Shows the worker `id`'s own transcript (none for the main one). A
+/// worker's opens at its latest, and coming back to the main one returns
+/// to where the reader was.
+fn switch_view(page: Page, id: Option<String>) {
     if page.worker.get_untracked().is_none() {
         MAIN_PLACE.with(|place| {
             place.set(if page.pinned.get_untracked() {
@@ -570,23 +609,6 @@ pub fn show_worker(page: Page, id: Option<String>) {
     } else {
         None
     };
-    if let Ok(history) = window().history() {
-        match &id {
-            Some(worker) => {
-                let state = serde_wasm_state(worker);
-                let _ = history.push_state(&state, "");
-            }
-            None => {
-                if history
-                    .state()
-                    .ok()
-                    .is_some_and(|state| !state.is_null() && !state.is_undefined())
-                {
-                    let _ = history.back();
-                }
-            }
-        }
-    }
     page.worker.set(id);
     match back_to {
         Some(at) => scroll::keep_place(at),
@@ -597,12 +619,6 @@ pub fn show_worker(page: Page, id: Option<String>) {
             let _ = window().request_animation_frame(frame.unchecked_ref());
         }
     }
-}
-
-fn serde_wasm_state(worker: &str) -> wasm_bindgen::JsValue {
-    let state = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&state, &"worker".into(), &worker.into());
-    state.into()
 }
 
 /// Markdown that may still stream: its finished blocks stay as they are,

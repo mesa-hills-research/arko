@@ -174,6 +174,13 @@ impl Store {
             .filter_map(|id| self.workers.get(id))
             .collect()
     }
+
+    /// The view of a history entry that names `worker` (none for the main
+    /// transcript). A worker this session doesn't have, as after Arko
+    /// started over, gives the main transcript.
+    pub fn entry_view(&self, worker: Option<String>) -> Option<String> {
+        worker.filter(|id| self.workers.contains_key(id))
+    }
 }
 
 /// What a call's line offers: Move to background while it runs and the
@@ -281,6 +288,19 @@ pub mod tests {
         assert!(store.remove(10));
         assert!(store.get(10).is_none() && store.get(11).is_some());
         assert!(!store.append(10, "z", 0.0));
+    }
+
+    #[test]
+    fn a_history_entry_of_a_worker_that_is_gone_shows_the_main_transcript() {
+        let mut store = Store::default();
+        store.worker(worker("r1"));
+        assert_eq!(store.entry_view(Some("r1".into())).as_deref(), Some("r1"));
+        assert_eq!(store.entry_view(Some("r2".into())), None);
+        assert_eq!(store.entry_view(None), None);
+        // A new session (a reset) has other workers.
+        store.reset(Vec::new(), vec![worker("r2")], Vec::new(), 0.0);
+        assert_eq!(store.entry_view(Some("r1".into())), None);
+        assert_eq!(store.entry_view(Some("r2".into())).as_deref(), Some("r2"));
     }
 
     #[test]

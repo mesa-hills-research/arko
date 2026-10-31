@@ -62,6 +62,11 @@ fn main() {
 #[component]
 fn App() -> impl IntoView {
     let page = Page::new();
+    // The page opens at the main transcript, whichever view this entry of
+    // the history showed before a reload.
+    if let Ok(history) = window().history() {
+        let _ = history.replace_state(&transcript::history_state(None), "");
+    }
     let key = app::take_key();
     spawn_local(app::start(page, key));
     listen(page);
@@ -140,16 +145,13 @@ fn listen(page: Page) {
             }
         }),
     );
+    // Back and Forward (and the edge swipes of phones) step through the
+    // views the reader saw.
     on(
         "popstate",
         Box::new(move |event| {
             let state = event.unchecked_ref::<web_sys::PopStateEvent>().state();
-            let worker = js_sys::Reflect::get(&state, &"worker".into())
-                .ok()
-                .and_then(|worker| worker.as_string());
-            if worker != page.worker.get_untracked() {
-                page.worker.set(worker);
-            }
+            transcript::show_history_entry(page, &state);
         }),
     );
     on(
