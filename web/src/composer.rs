@@ -87,6 +87,9 @@ pub fn Composer() -> impl IntoView {
     let ask = page.ask;
     let input: NodeRef<leptos::html::Textarea> = NodeRef::new();
     let empty = ask.box_empty;
+    // What the box holds, which starts as the saved draft. (The box starts
+    // with it, so no first fit can save an empty box over it, whichever way
+    // the effects run.)
     let draft = RwSignal::new(session_get(DRAFT).unwrap_or_default());
     // The text reached the box's height, which the expand button lifts.
     let tall = RwSignal::new(false);
@@ -211,8 +214,8 @@ pub fn Composer() -> impl IntoView {
         expanded.track();
         resize();
     });
-    input.on_load(move |area| {
-        area.set_value(&draft.get_untracked());
+    input.on_load(move |_| {
+        // Fits the box again once laid out.
         let frame = wasm_bindgen::closure::Closure::once_into_js(resize);
         use wasm_bindgen::JsCast;
         let _ = window().request_animation_frame(frame.unchecked_ref());
@@ -437,6 +440,7 @@ pub fn Composer() -> impl IntoView {
                     <div class="field">
                         <textarea
                             node_ref=input
+                            prop:value=draft.get_untracked()
                             rows="1"
                             aria-label=placeholder
                             placeholder=placeholder
