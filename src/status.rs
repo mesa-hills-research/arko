@@ -97,11 +97,11 @@ impl Default for Published {
 /// second.
 const GATHER: Duration = Duration::from_millis(500);
 /// How often the status is read while the session works (a turn, workers,
-/// jobs): its time and costs move without a change being told.
+/// jobs), because its time and costs move without a change being told.
 const WHILE_WORKING: Duration = Duration::from_secs(1);
 
 impl Gauges {
-    /// The session closed: what it ran goes (its workflow holds the
+    /// The session closed. What it ran goes (its workflow holds the
     /// terminal, whose folder lock the session releases), while a front end
     /// may still hold the status.
     pub(crate) fn release(&self) {
@@ -110,7 +110,7 @@ impl Gauges {
     }
 
     /// Something the status shows changed (a setting, the models, the
-    /// conversations, the web page): the next status goes out soon.
+    /// conversations, the web page). The next status goes out soon.
     pub(crate) fn touch(&self) {
         self.changed.notify_one();
     }
@@ -120,7 +120,7 @@ impl Gauges {
         self.published.0.subscribe()
     }
 
-    /// Sends the status to [`watch`](Self::watch)ers whenever it changes:
+    /// Sends the status to [`watch`](Self::watch)ers whenever it changes, meaning
     /// when something [touches](Self::touch) it or `feed` changes, and every
     /// second while the session works. A status like the last isn't sent
     /// again. Runs until it is aborted.
@@ -165,7 +165,7 @@ impl Gauges {
                 }
                 drop(this);
                 tokio::time::sleep(GATHER).await;
-                // One reading for all the updates so far: once nothing more
+                // One reading for all the updates so far. Once nothing more
                 // changes, it waits.
                 if !drain(&mut updates) {
                     break;
@@ -194,7 +194,7 @@ impl Gauges {
         })
     }
 
-    /// The agent whose run `run` is, as the clients name it:
+    /// The agent whose run `run` is, as the clients name it, either
     /// [`remote::MAIN_AGENT`], or a worker's ID.
     pub(crate) fn agent_of(&self, run: uuid::Uuid) -> String {
         lock(&self.workflow)
@@ -210,7 +210,7 @@ impl Gauges {
     }
 
     /// The agents running a call that can move to the background (a shell
-    /// command, an MCP tool's call), as the clients name them:
+    /// command, an MCP tool's call), as the clients name them, either
     /// [`remote::MAIN_AGENT`], or a worker's ID.
     pub(crate) fn commands_running(&self) -> Vec<String> {
         let running = self.background.movable();
@@ -242,7 +242,7 @@ impl Gauges {
 
 /// What the session billed, what that would cost at list prices when a plan
 /// paid for some of it, and its split between the main agent and the
-/// workers: from the budget's running totals, without reading its ledger
+/// workers, from the budget's running totals, without reading its ledger
 /// (which grows with every call).
 fn costs(workflow: Option<&Workflow>) -> (f64, Option<f64>, remote::CostSplit) {
     let Some(workflow) = workflow else {
@@ -442,7 +442,7 @@ impl remote::Meter for Gauges {
 }
 
 /// Takes the feed's updates waiting in `updates`, also those it fell behind
-/// on: false once the feed is gone.
+/// on, and false once the feed is gone.
 fn drain(updates: &mut broadcast::Receiver<remote::Update>) -> bool {
     loop {
         match updates.try_recv() {
@@ -453,7 +453,7 @@ fn drain(updates: &mut broadcast::Receiver<remote::Update>) -> bool {
     }
 }
 
-/// The plan that pays for the main agent's calls to `model`, when one does:
+/// The plan that pays for the main agent's calls to `model`, when one does, meaning
 /// the Claude plan through Claude Code, or the ChatGPT plan through a
 /// ChatGPT login.
 fn main_plan(
@@ -535,7 +535,7 @@ fn long_cache(lifetime: Option<Duration>) -> bool {
     })
 }
 
-/// The most output a keep-warm refresh writes on a key: arko_agents' output
+/// The most output a keep-warm refresh writes on a key, meaning arko_agents' output
 /// limit for one whose provider refused the smaller limit.
 const REFRESH_OUTPUT_TOKENS: usize = 1_024;
 
@@ -578,7 +578,7 @@ mod tests {
     use super::*;
 
     /// The status is read once for all the feed's updates that came while it
-    /// gathered them, also more than it keeps: after a long streamed reply,
+    /// gathered them, also more than it keeps. After a long streamed reply,
     /// it doesn't go on reading them one at a time.
     #[test]
     fn the_status_takes_the_feeds_updates_at_once() {
@@ -632,7 +632,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&reading).unwrap(), before);
     }
 
-    /// The cache's costs follow the model's prices and its lifetime: a miss
+    /// The cache's costs follow the model's prices and its lifetime. A miss
     /// writes the conversation again, keeping it warm reads it. A plan pays
     /// for both.
     /// Keep-warm's quote prices the refresh that goes. The latest request's

@@ -110,7 +110,7 @@ fn words(bytes: usize, seed: usize) -> String {
     out
 }
 
-/// A reply in Markdown, about `bytes` long: paragraphs, a list, a code block.
+/// A reply in Markdown, about `bytes` long, with paragraphs, a list, a code block.
 fn reply(bytes: usize, seed: usize) -> String {
     let mut out = String::new();
     let mut part = 0;
@@ -236,7 +236,7 @@ impl Sim {
         (id, Uuid::new_v4())
     }
 
-    /// One step of a worker's work: some text, then a command with a long
+    /// One step of a worker's work, meaning some text, then a command with a long
     /// script and long output, or a file read.
     fn worker_call(&self, id: &str, run: Uuid, step: usize) -> (Uuid, &'static str, String) {
         let seed = self.seed();
@@ -343,7 +343,7 @@ impl Sim {
         );
     }
 
-    /// The meter's reading as a busy session's: a line for each worker, with
+    /// The meter's reading as a busy session's, with a line for each worker, with
     /// how long it ran, which moves every second.
     fn reading(&self, tick: u64) -> Reading {
         let count = self.workers.load(Ordering::Relaxed);
@@ -470,7 +470,7 @@ async fn remote_page_load() {
             }
         });
     }
-    // The live workers: each streams text, runs a command for a few
+    // The live workers, where each streams text, runs a command for a few
     // seconds, and after some steps reports, and another takes its place.
     for slot in 0..64usize {
         let (sim, busy) = (sim.clone(), busy.clone());

@@ -22,7 +22,7 @@ use super::protocol::{Act, ActKind, CallStatus, Came};
 
 /// A call's outcome when a stop cancelled it.
 pub const STOPPED: &str = "stopped";
-/// A call's outcome when Claude Code was about to compact the conversation:
+/// A call's outcome when Claude Code was about to compact the conversation, so
 /// the agent makes the call again after.
 pub const HELD: &str = "held for the compaction";
 /// A call's outcome when the session stopped before its result came.

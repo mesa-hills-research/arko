@@ -1,5 +1,5 @@
 //! A scripted session for trying the remote page by hand, with Arko's own
-//! harness and the mock model: no model is called.
+//! harness and the mock model, so no model is called.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,14 +14,14 @@ use crate::remote::{self, Level};
 use crate::shell::{Shell, WindowsShell};
 use crate::ui::Input;
 
-/// Not a test: serves the web page for a scripted session, to try the
+/// Not a test. It serves the web page for a scripted session, to try the
 /// page by hand. `ARKO_DEMO_HOST` (127.0.0.1), `ARKO_DEMO_PORT` (8799) and
 /// `ARKO_DEMO_SECONDS` (900). `ARKO_DEMO_ITEMS` starts the transcript with
 /// that many items of earlier turns, and with `ARKO_DEMO_STAMPS=1` each
 /// word "demo:stream" sends ends with the time it was sent (`⟦t=…⟧`, Unix
 /// milliseconds), for timing how fast a page shows it.
 /// run with `cargo test remote_page_demo -- --ignored --nocapture` and
-/// open the link it prints. Messages: "Run the demo" (calls, two
+/// open the link it prints. Messages are "Run the demo" (calls, two
 /// workers, a failed command, a question, a report), "demo:stream" (a
 /// long reply that streams), "demo:worker" (a new worker whose long reply
 /// streams while the main agent waits), "demo:think" (reasoning that
@@ -32,12 +32,12 @@ use crate::ui::Input;
 /// "demo:approval" (two worker profiles to approve), "demo:image" (a file read
 /// that shows a large image), "demo:table" (a reply with a narrow table, a
 /// wide one and one with long cells), "demo:long" (3,500 calls, to reach the
-/// history's limit; "demo:long 500", 500), anything else (a short turn).
+/// history's limit, and "demo:long 500" gives 500), anything else (a short turn).
 /// With `ARKO_DEMO_ITEMS`, an earlier message sends an image too.
 /// Lines added to the file `ARKO_DEMO_INPUT` are typed at the terminal.
 /// `ARKO_DEMO_MODEL_MS` (900) is how long the model takes to answer, and a
 /// long one keeps "Working…" on the page.
-/// What starts a script: a message with one of these.
+/// What starts a script is a message with one of these.
 const MARKERS: [&str; 12] = [
     "Run the demo",
     "demo:stream",
@@ -53,7 +53,7 @@ const MARKERS: [&str; 12] = [
     "demo:long",
 ];
 
-/// The reply of "demo:table": a table that fits a phone, a wide one with
+/// The reply of "demo:table" is a table that fits a phone, a wide one with
 /// many columns, and one whose cells hold long text.
 const TABLES: &str = "Three tables, from the narrowest.\n\n\
 | Check | Result |\n|---|---|\n| Tests | 40 passed |\n| Docs | 1 note |\n\n\
@@ -111,7 +111,7 @@ async fn remote_page_demo() {
         .unwrap_or(900);
     let feed_cell: Arc<std::sync::OnceLock<remote::Feed>> = Arc::new(std::sync::OnceLock::new());
     let feed_for_model = feed_cell.clone();
-    // The script running: started by its marker in a new message, it goes
+    // The script running. Started by its marker in a new message, it goes
     // a step on with each request of the main agent, until it completes.
     let script: Arc<std::sync::Mutex<Script>> = Arc::default();
     let server = ModelServer::start(Arc::new(move |_, body: String| {
@@ -206,7 +206,7 @@ async fn remote_page_demo() {
             }
             if let Some(step) = after("demo:worker") {
                 if step == 0 && let Some(feed) = feed.get() {
-                    // A worker of its own each time: r5, r6, and so on.
+                    // A worker of its own each time, as r5, r6, and so on.
                     let id = format!("r{}", 4 + body.matches("demo:worker").count());
                     let run = Uuid::new_v4();
                     let words = "The worker reads the parser's tests one case after another, and writes down what it finds so the lead can check it later. ".repeat(2);
@@ -348,7 +348,7 @@ async fn remote_page_demo() {
             }
             if let Some(step) = after("demo:long") {
                 if step == 0 && let Some(feed) = feed.get() {
-                    // "demo:long 500": that many.
+                    // "demo:long 500" means that many.
                     let count: usize = body
                         .rsplit("demo:long")
                         .next()

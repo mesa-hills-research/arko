@@ -1,4 +1,4 @@
-//! How the agents' calls and results read in the feed: as the terminal
+//! How the agents' calls and results read in the feed, as the terminal
 //! shows them, without its styles, with the long parts (a worker's task, a
 //! multi-line command, a handover report) kept whole as details, and with
 //! each result told in a few words on its call's line.
@@ -46,7 +46,7 @@ fn flag(parameters: &Parameters, name: &str) -> bool {
     }
 }
 
-/// How a call of an agent (the main one or a worker) shows; `None` for
+/// How a call of an agent (the main one or a worker) shows, and `None` for
 /// calls not shown (a question is shown as Arko asks it, a reply or a
 /// worker's report as it ends). A call's item names its tool and keeps its
 /// parameters, for an app's view of it.
@@ -57,7 +57,7 @@ pub fn call(tool: &str, parameters: &Parameters, running: &[String]) -> Option<I
     let mut item = line(tool, parameters, running)?;
     if item.kind == Kind::Call {
         item.tool = Some(tool.to_string());
-        // (In the order of their names: a `HashMap` has none.)
+        // (In the order of their names, because a `HashMap` has none.)
         let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
         item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
         item.act = Some(act(tool, parameters, running));
@@ -455,7 +455,7 @@ fn command_words(command: &str, cwd: &str) -> String {
         line = rest[at + length..].trim();
     }
     // From its program, past the variables set for it and the shell's own
-    // settings: `CARGO_INCREMENTAL=0 cargo test` as `cargo test`.
+    // settings, so `CARGO_INCREMENTAL=0 cargo test` shows as `cargo test`.
     loop {
         let rest = line.trim_start();
         let skipped = rest
@@ -607,13 +607,13 @@ fn line(tool: &str, parameters: &Parameters, running: &[String]) -> Option<Item>
     })
 }
 
-/// The message of a `message_agent` call: the worker that gets it shows it
+/// The message of a `message_agent` call. The worker that gets it shows it
 /// in its own transcript.
 pub fn message(tool: &str, parameters: &Parameters) -> Option<String> {
     (tool == crew::MESSAGE_AGENT).then(|| text(parameters, "message").trim().to_string())
 }
 
-/// The worker a `message_agent` call's result says got the message: "Sent:
+/// The worker a `message_agent` call's result says got the message, as "Sent:
 /// r1 reads it at its next step." or "Sent to r2." (not the lead's "Sent.
 /// Your lead's answer ...").
 pub fn sent_to(output: &str) -> Option<&str> {
@@ -624,7 +624,7 @@ pub fn sent_to(output: &str) -> Option<&str> {
     (!id.is_empty()).then_some(id)
 }
 
-/// `text` when `cut` would shorten it: the detail of a line that shows
+/// `text` when `cut` would shorten it, meaning the detail of a line that shows
 /// only its start.
 fn long(text: &str, limit: usize) -> String {
     if cut(text, limit) == text {
@@ -635,10 +635,10 @@ fn long(text: &str, limit: usize) -> String {
 }
 
 /// How the line of a call that moved to the background starts, before
-/// its job's first characters: `in the background · job 4d2c1a9b`.
+/// its job's first characters, as `in the background · job 4d2c1a9b`.
 pub const MOVED_OUTCOME: &str = "in the background · job ";
 
-/// How the line of a `monitor_start` call starts while its monitor runs:
+/// How the line of a `monitor_start` call starts while its monitor runs, as
 /// `monitoring · 3 alerts`.
 pub const MONITORING: &str = "monitoring";
 
@@ -665,13 +665,13 @@ pub fn moved_job(output: &str) -> Option<Uuid> {
         .ok()
 }
 
-/// A moved call's line: `in the background · job 4d2c1a9b`.
+/// A moved call's line, as `in the background · job 4d2c1a9b`.
 fn moved_outcome(job: Uuid) -> String {
     let job = job.to_string();
     format!("{MOVED_OUTCOME}{}", &job[..8])
 }
 
-/// How long something ran, in a few words: `40 s`, `4 min`, `2 h 5 min`.
+/// How long something ran, in a few words, as `40 s`, `4 min`, `2 h 5 min`.
 pub fn duration_words(duration: std::time::Duration) -> String {
     let seconds = duration.as_secs();
     match seconds {
@@ -686,9 +686,9 @@ pub fn duration_words(duration: std::time::Duration) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
     pub status: CallStatus,
-    /// A few words for the call's own line: "12 passed", "exit 1", "r2".
+    /// A few words for the call's own line, as "12 passed", "exit 1", "r2".
     pub text: Option<String>,
-    /// A block to show under the call: a command's first lines of output.
+    /// A block to show under the call, meaning a command's first lines of output.
     pub block: Option<Item>,
     /// The call's whole result (or why it failed), for an app's view of it
     /// (the call item's `output`). A command's is its block's `whole`.
@@ -733,7 +733,7 @@ impl Outcome {
         }
     }
 
-    /// A call that failed with `message` (an error, a rejection): its
+    /// A call that failed with `message` (an error, a rejection), meaning its
     /// first words on the call's line, and the whole of a longer message
     /// as a block under it.
     pub fn failed(message: &str) -> Self {
@@ -949,7 +949,7 @@ fn brief(tool: &str, output: &str) -> Outcome {
             outcome
         }
         crew::MESSAGE_AGENT if output.starts_with("Sent") => Outcome::ok("sent"),
-        // Its result is the mail that came: "[mail 2] r1 ... finished ...".
+        // Its result is the mail that came, as "[mail 2] r1 ... finished ...".
         crew::WAIT_FOR_AGENTS => {
             let mail = output
                 .lines()
@@ -1096,9 +1096,9 @@ fn runs_tests(command: &str) -> bool {
     })
 }
 
-/// A shell command's outcome: its tests' counts when it ran tests, else
-/// its time, or how it failed; with its first lines of output as a block
-/// (and its whole output, when the block leaves out any of it: lines, or
+/// A shell command's outcome, meaning its tests' counts when it ran tests, else
+/// its time, or how it failed, with its first lines of output as a block
+/// (and its whole output, when the block leaves out any of it, meaning lines, or
 /// the end of a long line).
 fn command_outcome(output: &str) -> Outcome {
     let mut lines = output.lines();
@@ -1178,7 +1178,7 @@ fn command_outcome(output: &str) -> Outcome {
 
 /// The counts of a test run's summary lines (cargo's `test result:`,
 /// pytest's `=== 3 passed in 0.2s ===`, jest's `Tests: 3 passed`), added
-/// up: "12 passed", or "1 failed, 11 passed".
+/// up, as "12 passed", or "1 failed, 11 passed".
 fn tests(lines: &[&str]) -> Option<String> {
     let (mut passed, mut failed, mut found) = (0usize, 0usize, false);
     for line in lines {
@@ -1339,7 +1339,7 @@ mod tests {
         assert_eq!(item.text, "message lead “Done?”");
     }
 
-    /// Only a start that began the worker at once names it as started: one
+    /// Only a start that began the worker at once names it as started. One
     /// that waits for a place, a refusal and a result of another kind do not.
     #[test]
     fn a_start_names_its_worker_only_when_it_began_at_once() {
@@ -1364,7 +1364,7 @@ mod tests {
         assert_eq!(outcome("shell", "Started r5").started, None);
     }
 
-    /// A result is told in a few words on its call's line; a command's
+    /// A result is told in a few words on its call's line, and a command's
     /// output also comes as a block.
     #[test]
     fn results_are_told_in_a_few_words() {
@@ -1665,7 +1665,7 @@ mod tests {
         assert_eq!(queued.done, "Queued r5");
     }
 
-    /// A command's block keeps its whole output when it shows less of it:
+    /// A command's block keeps its whole output when it shows less of it, meaning
     /// fewer lines, or a long line's start only.
     #[test]
     fn a_commands_whole_output_is_kept_when_any_of_it_is_left_out() {

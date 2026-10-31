@@ -18,7 +18,7 @@ use tree_sitter::{Language, Query, QueryCursor};
 use super::feed::{Item, Kind};
 use super::protocol::{CodeSpans, HIGHLIGHT_NAMES, code_hash};
 
-/// A language: the names a fence gives it, its grammar and its highlight
+/// A language, meaning the names a fence gives it, its grammar and its highlight
 /// query.
 struct Grammar {
     names: &'static [&'static str],
@@ -201,7 +201,7 @@ fn grammar(fence: &str) -> Option<usize> {
         .position(|grammar| grammar.names.contains(&name.as_str()))
 }
 
-/// The highlight name of the capture `name`: its own, else its first
+/// The highlight name of the capture `name`, meaning its own, else its first
 /// word's, else none (captures that only feed a predicate, or name no
 /// style).
 fn highlight_name(name: &str) -> Option<u32> {
@@ -218,7 +218,7 @@ fn compiled(at: usize) -> Option<Arc<Compiled>> {
     if let Some(done) = lock(&COMPILED).get(&at) {
         return done.clone();
     }
-    // (Compiled outside the lock: a grammar's tables decode the first time,
+    // (Compiled outside the lock, because a grammar's tables decode the first time,
     // which takes tens of milliseconds.)
     let grammar = &GRAMMARS[at];
     let language = (grammar.language)();
@@ -247,7 +247,7 @@ fn compiled(at: usize) -> Option<Arc<Compiled>> {
     compiled
 }
 
-/// The spans of `code` in the language `at`: `[start, end, name]` in bytes.
+/// The spans of `code` in the language `at`, as `[start, end, name]` in bytes.
 /// Of the captures of one node the first pattern's wins, as in
 /// tree-sitter's highlighter, and a node's inside takes its own.
 fn spans(at: usize, code: &str) -> Vec<[u32; 3]> {

@@ -1,4 +1,4 @@
-//! What the session waits for between and during turns: the user's input,
+//! What the session waits for between and during turns, meaning the user's input,
 //! the main agent's `ask_user` questions, finished jobs, monitors' alerts
 //! and the crew's wake-ups.
 
@@ -14,7 +14,7 @@ use crate::remote::{Action, Verdict};
 use crate::sending::Reply;
 use crate::ui::Input;
 
-/// The user's input, read on its own thread; the main agent's questions;
+/// The user's input, read on its own thread, the main agent's questions,
 /// and the crew's wake-ups.
 pub(crate) struct Inputs {
     pub(crate) receiver: mpsc::UnboundedReceiver<Input>,
@@ -27,7 +27,7 @@ pub(crate) struct Inputs {
     pub(crate) remote: mpsc::UnboundedReceiver<Action>,
     /// What the front end asks of the session.
     pub(crate) requests: mpsc::UnboundedReceiver<Request>,
-    /// The terminal's jobs that finish in the background; `None` with -p,
+    /// The terminal's jobs that finish in the background, and `None` with -p,
     /// where they wake no one.
     pub(crate) finished:
         Option<tokio::sync::broadcast::Receiver<arko_agents::terminal::JobFinished>>,
@@ -68,7 +68,7 @@ impl Alert {
 
 /// What [`Inputs::next_event`] returns.
 pub(crate) enum Event {
-    /// An input; `None` once the input thread is gone.
+    /// An input, and `None` once the input thread is gone.
     Input(Option<Input>),
     /// The main agent asks the user something.
     Question(Question),
@@ -147,7 +147,7 @@ impl Inputs {
         }
     }
 
-    /// Whether input waits to be read: what the user typed or the web page
+    /// Whether input waits to be read, meaning what the user typed or the web page
     /// sent, or a finished job's update or a monitor's news the agent
     /// hasn't had.
     pub(crate) fn waiting(&self) -> bool {
@@ -183,14 +183,14 @@ impl Inputs {
         }
     }
 
-    /// Forgets the wake-ups so far: what they were for is being seen to.
+    /// Forgets the wake-ups so far, because what they were for is being seen to.
     pub(crate) fn drain_woken(&mut self) {
         if let Some(woken) = &mut self.woken {
             while woken.try_recv().is_ok() {}
         }
     }
 
-    /// Forgets the jobs that finished so far, and returns them: their
+    /// Forgets the jobs that finished so far, and returns them, because their
     /// updates reached the agent, or go with the turn starting.
     pub(crate) fn drain_finished(&mut self) -> Vec<arko_agents::terminal::JobFinished> {
         let mut jobs: Vec<_> = self.late.take().into_iter().collect();
@@ -206,7 +206,7 @@ impl Inputs {
         jobs
     }
 
-    /// Forgets the monitors' alerts so far, and returns them: their news
+    /// Forgets the monitors' alerts so far, and returns them, because their news
     /// reaches the agent with the turn starting.
     pub(crate) fn drain_alerts(&mut self) -> Vec<arko_agents::terminal::JobAlert> {
         self.late_alert = None;
@@ -224,7 +224,7 @@ impl Inputs {
     }
 
     /// A pasted block arrives as several lines in quick succession (where
-    /// the terminal doesn't mark pastes): they are one message.
+    /// the terminal doesn't mark pastes). They are one message.
     pub(crate) async fn coalesce(&mut self, first: String) -> String {
         let mut text = first;
         while self.pending.is_none() {
@@ -242,8 +242,8 @@ impl Inputs {
     }
 }
 
-/// The next job that finishes in the background; never, without a
-/// terminal to hear from. (Missed ones are told by the next: a turn they
+/// The next job that finishes in the background, or never, without a
+/// terminal to hear from. (Missed ones are told by the next, because a turn they
 /// start gets all their updates.)
 pub(crate) async fn job_finished(
     finished: &mut Option<tokio::sync::broadcast::Receiver<arko_agents::terminal::JobFinished>>,
@@ -369,7 +369,7 @@ pub(crate) fn alert_waits(
     })
 }
 
-/// The crew's next wake-up; never, without a crew.
+/// The crew's next wake-up, or never without a crew.
 pub(crate) async fn wake(woken: &mut Option<mpsc::UnboundedReceiver<()>>) {
     if let Some(receiver) = woken {
         if receiver.recv().await.is_some() {
@@ -384,7 +384,7 @@ pub(crate) async fn wake(woken: &mut Option<mpsc::UnboundedReceiver<()>>) {
 /// Questions the main agent asks with `ask_user`, and, when it waits for
 /// the answer, where the answer goes.
 pub(crate) struct Question {
-    /// The run that asks: the main agent's conversation.
+    /// The run that asks, the main agent's conversation.
     pub(crate) run: uuid::Uuid,
     /// The questions with their ids. A question Arko asks has an id that
     /// isn't the agent's (`q1`).
@@ -396,7 +396,7 @@ pub(crate) struct Question {
 /// Where the answer to questions the agent waits for goes.
 pub(crate) enum Answering {
     /// The agent's wait (`ask_user` with `wait`, or a question without
-    /// ids): the answer as text.
+    /// ids), with the answer as text.
     Text(oneshot::Sender<String>),
 }
 
@@ -420,7 +420,7 @@ impl Question {
             .join("\n")
     }
 
-    /// Whether Arko asks it, not the agent: a question of a host's own
+    /// Whether Arko asks it, not the agent, which holds for a question of a host's own
     /// `ask_user` without ids.
     pub(crate) fn plain(&self) -> bool {
         !self
@@ -433,7 +433,7 @@ impl Question {
 /// Puts the main agent's `ask_user` questions to the user. The answers to
 /// those it waits for go back as the answer, and the others reach it later
 /// as notes. Without a terminal, the agent is told that no one can answer.
-/// It always answers: an error would fail the turn. It holds the session's
+/// It always answers, because an error would fail the turn. It holds the session's
 /// approval tray too, which the tools that need the user's approval ask
 /// through.
 pub(crate) struct Asker {

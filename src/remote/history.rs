@@ -66,7 +66,7 @@ fn items_from(
 ) -> Vec<Item> {
     let messages = &messages[first..];
     let mut items: Vec<Item> = Vec::new();
-    // The calls waiting for their results: their items, by call ID.
+    // The calls waiting for their results, meaning their items, by call ID.
     let mut calls: HashMap<String, (usize, String)> = HashMap::new();
     let push = |items: &mut Vec<Item>, mut item: Item| -> usize {
         item.id = items.len() as u64 + 1;
@@ -355,7 +355,7 @@ fn is_reply(messages: &[Message], index: usize, answers: &[usize]) -> bool {
         })
 }
 
-/// The messages that answer questions the agent waited for: the first
+/// The messages that answer questions the agent waited for, meaning the first
 /// message of the user's own text after an `ask_user` result that didn't
 /// return at once (context updates come apart from it).
 fn waited_answers(messages: &[Message]) -> Vec<usize> {
@@ -383,7 +383,7 @@ fn waited_answers(messages: &[Message]) -> Vec<usize> {
     answers
 }
 
-/// Whether `message` can begin a turn: a message from the user's side with
+/// Whether `message` can begin a turn, meaning a message from the user's side with
 /// text, not tool results alone, nor the user's answer to a question.
 fn starts_turn(message: &Message) -> bool {
     message.role == Role::User
@@ -406,7 +406,7 @@ fn is_answer(message: &Message) -> bool {
         })
 }
 
-/// The user's own words in a message Arko sent: before a handover's report
+/// The user's own words in a message Arko sent, meaning before a handover's report
 /// (the first message of a conversation that was handed over holds the
 /// message it answers, then the report), and under "# My message" when Arko
 /// composed sections around them.
@@ -498,7 +498,7 @@ fn reopened_with(update: &str) -> Option<(&str, &str)> {
 }
 
 /// Whether `text` begins with a note of the terminal's jobs or monitors,
-/// as their news reaches the agent: a monitor's alert or other news, a
+/// as their news reaches the agent, meaning a monitor's alert or other news, a
 /// command's terminal update, a moved call's update.
 fn is_news(text: &str) -> bool {
     let named = |start: &str| {
@@ -512,7 +512,7 @@ fn is_news(text: &str) -> bool {
         || named("Job ")
 }
 
-/// The items of a message Arko composed: the notes in its section of what
+/// The items of a message Arko composed, meaning the notes in its section of what
 /// the user typed during the last turn, then the user's words.
 fn composed(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Vec<Item> {
     let mut items: Vec<Item> = unread_notes(text).into_iter().filter_map(note).collect();
@@ -549,7 +549,7 @@ fn subjects_of(opening: Opening, messages: &[Message], index: usize) -> Subjects
 }
 
 /// What job `id` ran, from the call in `messages` that started it or moved
-/// to it, whose result names the job: its command, or a call as it is shown.
+/// to it, whose result names the job, meaning its command or a call as it is shown.
 pub(crate) fn job_ran(messages: &[Message], id: uuid::Uuid) -> Option<String> {
     let id = id.to_string();
     let call_id = messages
@@ -607,7 +607,7 @@ fn unread_notes(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The user's notes in a context update: those from the operator, each a
+/// The user's notes in a context update, meaning those from the operator, each a
 /// list item of indented lines, without the line saying images follow.
 /// The workflow's own notes and the agents' aren't the user's.
 fn operator_notes(update: &str) -> Vec<String> {
@@ -638,7 +638,7 @@ fn operator_notes(update: &str) -> Vec<String> {
         .collect()
 }
 
-/// A note the user typed during a turn, as the live transcript shows it:
+/// A note the user typed during a turn, as the live transcript shows it, meaning
 /// the user's words. A note Arko wrote about the agent's questions has
 /// none (their card shows the answers).
 fn note(text: String) -> Option<Item> {
@@ -651,7 +651,7 @@ fn note(text: String) -> Option<Item> {
     Some(item)
 }
 
-/// The items of the user's answer to questions the agent waited for: their
+/// The items of the user's answer to questions the agent waited for, meaning their
 /// message. (A note of the answers, which their card shows, and the wait's
 /// own replies, which point to that note, have none.)
 fn answer_items(text: &str) -> Vec<Item> {
@@ -738,7 +738,7 @@ fn user_item(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Option<Item> {
                 });
             }
             // Only Arko's own sections, or its notes about the agent's
-            // questions: no words of the user's.
+            // questions, with no words of the user's.
             if text.starts_with("# ") || ANSWER_NOTES.iter().any(|start| text.starts_with(start)) {
                 return None;
             }
@@ -1432,7 +1432,7 @@ mod tests {
             ]
         );
         assert!(shown(false).iter().all(|(kind, _)| *kind == Kind::Text));
-        // Each with its turn: the answer to the question is in the first.
+        // Each with its turn, and the answer to the question is in the first.
         let turns: Vec<(Kind, Option<u64>)> = items(&messages, true, &Images::default())
             .into_iter()
             .map(|item| (item.kind, item.turn))
@@ -1557,7 +1557,7 @@ mod tests {
     }
 
     /// The answer to questions the agent waited for stays in their turn, in
-    /// both forms Arko sends it: a note of the answers (which their card
+    /// both forms Arko sends it, meaning a note of the answers (which their card
     /// shows), or the user's message. A reply to the wait that points to a
     /// note shows nothing, also one saying the agent read the note already.
     #[test]
@@ -1600,7 +1600,7 @@ mod tests {
         }
     }
 
-    /// In Claude Code the agent ends its turn after asking: its text before
+    /// In Claude Code the agent ends its turn after asking. Its text before
     /// the answer isn't its reply, the answer keeps the turn, and the card
     /// takes its id from the call's result.
     #[test]

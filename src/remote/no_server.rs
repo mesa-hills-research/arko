@@ -1,4 +1,4 @@
-//! The web page's server in a build without it (no `remote` feature):
+//! The web page's server in a build without it (no `remote` feature), so
 //! starting it says this build has none.
 
 use std::net::SocketAddr;

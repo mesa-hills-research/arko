@@ -29,7 +29,7 @@ const WORDS: [&str; 16] = [
     "fix", "that", "file", "next",
 ];
 
-/// A session's calls on a feed, made at random from a seed: its agents'
+/// A session's calls on a feed, made at random from a seed, meaning its agents'
 /// streamed text and thinking, calls and results, failed responses, the
 /// user's messages and notes, questions, approvals, workers, background
 /// jobs, cuts, conversations and a resumed history. Some text is long, so
@@ -180,7 +180,7 @@ impl RandomSession {
     }
 
     /// An agent at random, the main agent or a running worker, as its
-    /// events name it: the agent and the worker's label.
+    /// events name it, meaning the agent and the worker's label.
     fn agent(&mut self) -> Option<String> {
         let running: Vec<String> = self
             .workers
@@ -724,7 +724,7 @@ impl FeedMirror {
                 None => self.jobs.push(summary.clone()),
             },
             Update::Activity => self.activity = activity(),
-            // An edge: what it tells of is in the worker's summary.
+            // An edge, since what it tells of is in the worker's summary.
             Update::WorkerEnded { .. } => {}
         }
     }

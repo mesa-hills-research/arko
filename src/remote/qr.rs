@@ -6,7 +6,7 @@ use qrcodegen::{QrCode, QrCodeEcc};
 const QUIET: i32 = 2;
 
 /// `text` as lines of half blocks, two rows of modules a line. The light
-/// modules (and the margin) are drawn, the dark ones left blank: on a
+/// modules (and the margin) are drawn, the dark ones left blank. On a
 /// terminal with a dark background, the code reads dark on light.
 pub fn lines(text: &str) -> Option<Vec<String>> {
     let code = QrCode::encode_text(text, QrCodeEcc::Low).ok()?;
@@ -29,10 +29,10 @@ pub fn lines(text: &str) -> Option<Vec<String>> {
     Some(lines)
 }
 
-/// The margin around the code in SVG, in modules: the standard's.
+/// The margin around the code in SVG, in modules, the standard's.
 const SVG_QUIET: i32 = 4;
 
-/// `text` as a QR code in SVG: dark modules on a light ground with its
+/// `text` as a QR code in SVG, with dark modules on a light ground with its
 /// margin, whatever the page's theme, since that is what readers expect.
 /// The image scales to what holds it.
 pub fn svg(text: &str) -> Option<String> {
@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn the_svg_has_its_margin_and_dark_modules() {
         let svg = svg("http://192.168.1.12:8765/#key=abc").unwrap();
-        // 33 bytes: a version 3 code, 29 modules, and the margins.
+        // 33 bytes, giving a version 3 code, 29 modules, and the margins.
         assert!(
             svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 37 37\""),
             "{svg}"
