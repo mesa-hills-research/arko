@@ -164,6 +164,27 @@ pub fn answers_body(
     Some((serde_json::json!({ "answers": answers }), ids))
 }
 
+/// Whether the panel opens by itself for the open questions `open`: one
+/// isn't `seen` yet, and the user neither types nor replies to questions
+/// `attached` to the message box. (The panel would show those again, and
+/// "Answer in chat" would attach the new one with them.)
+pub fn opens_by_itself(
+    open: &[String],
+    seen: &[String],
+    attached: &[String],
+    typing: bool,
+) -> bool {
+    open.iter().any(|id| !seen.contains(id)) && !typing && attached.is_empty()
+}
+
+/// The open questions a chip stands for: those not attached.
+pub fn waiting(open: &[QuestionData], attached: &[String]) -> Vec<QuestionData> {
+    open.iter()
+        .filter(|question| !attached.contains(&question.id))
+        .cloned()
+        .collect()
+}
+
 // ----- what the panel does -----
 
 fn open_questions() -> Vec<QuestionData> {
@@ -174,7 +195,7 @@ fn open_questions() -> Vec<QuestionData> {
 
 /// Follows the open questions: what's filled in and attached stays only
 /// for those still open, the panel closes when none is, and opens by itself
-/// for new ones while the user isn't typing.
+/// for new ones ([`opens_by_itself`]).
 pub fn follow() {
     let page = page();
     let ask = page.ask;
@@ -227,12 +248,13 @@ pub fn follow() {
             ask.panel.set(false);
             return;
         }
-        let unseen = ask
-            .seen
-            .with_untracked(|seen| open.iter().any(|id| !seen.contains(id)));
         let typing = !ask.box_empty.get_untracked()
             || js_sys::Date::now() - ask.typed_at.get_untracked() < TYPING_REST;
-        if unseen && !typing && !ask.panel.get_untracked() {
+        let opens = ask.seen.with_untracked(|seen| {
+            ask.attached
+                .with_untracked(|attached| opens_by_itself(&open, seen, attached, typing))
+        });
+        if opens && !ask.panel.get_untracked() {
             ask.panel.set(true);
         }
     });
@@ -584,14 +606,9 @@ pub fn QuestionsChip() -> impl IntoView {
         if ask.panel.get() {
             return Vec::new();
         }
-        let attached = ask.attached.get();
-        page.status.with(|status| {
-            status
-                .questions
-                .iter()
-                .filter(|question| !attached.contains(&question.id))
-                .cloned()
-                .collect::<Vec<_>>()
+        ask.attached.with(|attached| {
+            page.status
+                .with(|status| waiting(&status.questions, attached))
         })
     });
     let new = move || {
@@ -760,6 +777,30 @@ mod tests {
                 .as_deref(),
             Some("Dismissed")
         );
+    }
+
+    /// "Answer in chat" attaches the questions open then. One asked after
+    /// it waits in the chip, even while the box is empty, rather than open
+    /// the panel, which would bring the attached ones back beside it.
+    #[test]
+    fn a_question_asked_after_answer_in_chat_waits_in_the_chip() {
+        let ids = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        let first = question(
+            serde_json::json!({ "id": "q1", "question": "Tabs?", "state": "open", "item": 7 }),
+        );
+        let second = question(
+            serde_json::json!({ "id": "q2", "question": "Push?", "state": "open", "item": 8 }),
+        );
+        let (open, seen, attached) = (ids(&["q1", "q2"]), ids(&["q1"]), ids(&["q1"]));
+        assert!(!opens_by_itself(&open, &seen, &attached, false));
+        let chip = waiting(&[first, second.clone()], &attached);
+        assert_eq!(chip, [second]);
+        assert_eq!(asks_text(&chip), "Arko asks a question");
+        // Without questions attached, a new one opens the panel unless the
+        // user types.
+        assert!(opens_by_itself(&open, &seen, &[], false));
+        assert!(!opens_by_itself(&open, &seen, &[], true));
+        assert!(!opens_by_itself(&ids(&["q1"]), &seen, &[], false));
     }
 
     #[test]

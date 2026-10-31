@@ -148,24 +148,36 @@ impl App {
         self.reading.questions.iter().any(|question| question.waits)
     }
 
-    /// The chip above the message box, when the panel is closed.
-    pub fn chip(&self) -> Option<Chip> {
+    /// The chips above the message box, when the panel is closed: the
+    /// questions attached, then the others.
+    pub fn chips(&self) -> Vec<Chip> {
         let open = self.open_questions();
         if self.panel.open || open.is_empty() {
-            return None;
+            return Vec::new();
         }
+        let mut chips = Vec::new();
         if !self.panel.attached.is_empty() {
-            return Some(Chip::Replying(self.panel.attached.len()));
+            chips.push(Chip::Replying(self.panel.attached.len()));
         }
-        let new = open
+        let waiting = self.waiting_questions();
+        if !waiting.is_empty() {
+            let new = waiting.iter().any(|id| !self.panel.seen.contains(id));
+            chips.push(if new {
+                Chip::Asks(waiting.len())
+            } else {
+                Chip::Open(waiting.len())
+            });
+        }
+        chips
+    }
+
+    /// The open questions not attached to the message box.
+    fn waiting_questions(&self) -> Vec<String> {
+        self.open_questions()
             .iter()
-            .filter(|question| !self.panel.seen.contains(&question.id))
-            .count();
-        Some(if new > 0 {
-            Chip::Asks(open.len())
-        } else {
-            Chip::Open(open.len())
-        })
+            .map(|question| question.id.clone())
+            .filter(|id| !self.panel.attached.contains(id))
+            .collect()
     }
 
     /// The open questions changed (a new reading): what was filled in for
@@ -332,19 +344,18 @@ impl App {
     }
 
     /// "Not now": the open questions are dismissed, and the agent goes on
-    /// with its defaults.
+    /// with its defaults. Beside questions attached to the message box,
+    /// only the others are.
     pub(super) fn not_now(&mut self) {
-        let ids: Vec<String> = self
-            .open_questions()
-            .iter()
-            .map(|question| question.id.clone())
-            .collect();
+        let mut ids = self.waiting_questions();
+        if ids.is_empty() {
+            ids = std::mem::take(&mut self.panel.attached);
+        }
         if ids.is_empty() {
             return;
         }
         self.close_panel();
-        self.panel.attached.clear();
-        self.panel.drafts.clear();
+        self.panel.drafts.retain(|id, _| !ids.contains(id));
         self.effects_push(Effect::Input(Input::DismissQuestions(ids)));
         self.say("Dismissed. Arko goes on with its defaults");
     }
@@ -1272,37 +1283,36 @@ pub(super) fn title(questions: &[AgentQuestion]) -> String {
     }
 }
 
-/// The question chip while the panel is closed.
+/// The question chips while the panel is closed, a line each, the
+/// questions attached nearest the message box.
 pub fn draw_chip(frame: &mut Frame, app: &App, above: Rect) -> u16 {
-    let Some(chip) = app.chip() else {
-        return 0;
-    };
-    if above.height < 2 {
-        return 0;
-    }
+    let chips = app.chips();
+    let rows = (chips.len() as u16).min(above.height.saturating_sub(1));
     let theme = &app.theme;
-    let style = match chip {
-        Chip::Asks(_) => theme.accent().add_modifier(Modifier::BOLD),
-        Chip::Replying(_) => theme.accent(),
-        Chip::Open(_) => theme.dim(),
-    };
-    let mut spans = vec![
-        Span::raw(" "),
-        Span::styled(
-            crate::glyphs::render(&format!(" {} ", chip.text())).into_owned(),
-            style,
-        ),
-    ];
-    let pairs: &[(&str, &str)] = match chip {
-        Chip::Replying(_) => &[("Backspace", "take off")],
-        _ => &[("Alt+Q", "answer"), ("Ctrl+N", "not now")],
-    };
-    spans.push(Span::raw("  "));
-    spans.extend(hints(theme, pairs));
-    let rect = Rect::new(above.x, above.bottom() - 1, above.width, 1);
-    frame.render_widget(Clear, rect);
-    frame
-        .buffer_mut()
-        .set_line(rect.x, rect.y, &Line::from(spans), rect.width);
-    1
+    for (at, chip) in chips.iter().take(rows as usize).enumerate() {
+        let style = match chip {
+            Chip::Asks(_) => theme.accent().add_modifier(Modifier::BOLD),
+            Chip::Replying(_) => theme.accent(),
+            Chip::Open(_) => theme.dim(),
+        };
+        let mut spans = vec![
+            Span::raw(" "),
+            Span::styled(
+                crate::glyphs::render(&format!(" {} ", chip.text())).into_owned(),
+                style,
+            ),
+        ];
+        let pairs: &[(&str, &str)] = match chip {
+            Chip::Replying(_) => &[("Backspace", "take off")],
+            _ => &[("Alt+Q", "answer"), ("Ctrl+N", "not now")],
+        };
+        spans.push(Span::raw("  "));
+        spans.extend(hints(theme, pairs));
+        let rect = Rect::new(above.x, above.bottom() - 1 - at as u16, above.width, 1);
+        frame.render_widget(Clear, rect);
+        frame
+            .buffer_mut()
+            .set_line(rect.x, rect.y, &Line::from(spans), rect.width);
+    }
+    rows
 }

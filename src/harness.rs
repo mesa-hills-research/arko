@@ -9091,6 +9091,61 @@ pub(crate) mod tests {
         );
     }
 
+    /// A message answers the questions attached to it and no others: one
+    /// asked after they were attached stays open, waited for or not.
+    /// Without questions attached, it answers only those the agent waits
+    /// for, not one asked without waiting.
+    #[tokio::test]
+    async fn a_message_answers_only_the_questions_attached_or_waited_for() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+        let run = uuid::Uuid::new_v4();
+        harness.feed.questions_run(Some(run));
+        let open = |harness: &Harness| {
+            harness
+                .feed
+                .open_questions()
+                .into_iter()
+                .map(|question| question.id)
+                .collect::<Vec<_>>()
+        };
+        ask_later(&mut harness, run, "q1", "Tabs or spaces?");
+        // Asked after q1 was attached.
+        ask_later(&mut harness, run, "q2", "Push now?");
+        assert_eq!(
+            harness
+                .reply_text("Spaces.", &["q1".into()])
+                .map(|reply| reply.text)
+                .as_deref(),
+            Some("(This message answers q1.)\nSpaces.\n\n(Still open: q2.)")
+        );
+        assert_eq!(open(&harness), ["q2"]);
+        // Waited for, and asked after q2 was attached.
+        let (answer, mut answered) = tokio::sync::oneshot::channel();
+        harness.question_asked(Question {
+            run,
+            asked: one_question("q3", "Which branch?"),
+            answer: Some(crate::inputs::Answering::Text(answer)),
+        });
+        let reply = harness.reply_text("Not yet.", &["q2".into()]).unwrap();
+        assert!(reply.kept);
+        assert!(
+            reply.text.starts_with("(This message answers q2.)"),
+            "{}",
+            reply.text
+        );
+        assert!(answered.try_recv().is_err());
+        assert_eq!(open(&harness), ["q3"]);
+        // Nothing attached: the question waited for, not q4.
+        ask_later(&mut harness, run, "q4", "Squash the commits?");
+        assert_eq!(harness.reply_text("main", &[]), None);
+        assert_eq!(
+            answered.try_recv().unwrap(),
+            crate::questions::WAIT_ANSWERED
+        );
+        assert_eq!(open(&harness), ["q4"]);
+    }
+
     /// Claude Code waits for an answer only once the turn that asked ends,
     /// and a note can bring the answer while that turn goes on. A wait that
     /// comes after the agent read its answer promises no note. It says the
