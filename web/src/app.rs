@@ -803,7 +803,7 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
 
 /// The store and the cells of a `reset` of `feed`. Returns whether the
 /// page had another feed's items (Arko started again).
-fn reset_store(
+pub(crate) fn reset_store(
     feed: Option<u64>,
     items: Vec<ItemData>,
     workers: Vec<WorkerData>,
@@ -949,18 +949,25 @@ fn on_change(page: Page, data: &str) -> Result<(), String> {
     let code = std::mem::take(&mut item.code);
     crate::markdown::remember(&code);
     let now = js_sys::Date::now();
-    if !STORE.with(|store| store.borrow_mut().change(item.clone(), now)) {
-        return Ok(());
-    }
-    if let Some(cell) = cell(item.id) {
-        refresh(&cell, item, !code.is_empty());
-    }
-    // A call's status moves a Messages count.
-    if page.view.get_untracked() == View::Messages {
+    if change_item(item, !code.is_empty(), page.view.get_untracked(), now) {
         page.version.update(|version| *version += 1);
     }
     crate::scroll::follow();
     Ok(())
+}
+
+/// The store and the cell take a `change` of `item`, come at `now`, whose
+/// code blocks' spans came new (`code`). Returns whether it moves the rows
+/// of `view`, which are laid out again then.
+pub(crate) fn change_item(item: ItemData, code: bool, view: View, now: f64) -> bool {
+    let Some(old) = STORE.with(|store| store.borrow_mut().change(item.clone(), now)) else {
+        return false;
+    };
+    let moves = crate::layout::moves_rows(&old, &item, view);
+    if let Some(cell) = cell(item.id) {
+        refresh(&cell, item, code);
+    }
+    moves
 }
 
 /// The code blocks a text finished as it streams, highlighted.

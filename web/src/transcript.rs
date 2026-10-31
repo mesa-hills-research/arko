@@ -20,17 +20,7 @@ pub fn Transcript() -> impl IntoView {
     let page = page();
     let log: NodeRef<leptos::html::Main> = NodeRef::new();
     log.on_load(move |log| scroll::attach(log.into(), page.pinned));
-    // The rows of the view, without "Working…", and the feed they're of.
-    let laid_out = Memo::new(move |_| {
-        page.version.track();
-        let view = page.view.get();
-        let worker = page.worker.get();
-        STORE.with(|store| {
-            let store = store.borrow();
-            let rows = layout::layout(&store.items, view, worker.as_deref());
-            (store.feed, rows)
-        })
-    });
+    let laid_out = laid_out(page.version, page.view, page.worker);
     // What shows the agent is under way.
     let motion = Memo::new(move |_| {
         page.version.track();
@@ -131,11 +121,32 @@ pub fn Transcript() -> impl IntoView {
     }
 }
 
+/// The rows of the view, without "Working…", and the feed they're of, laid
+/// out again when `version` moves.
+fn laid_out(
+    version: RwSignal<u64>,
+    view: RwSignal<View>,
+    worker: RwSignal<Option<String>>,
+) -> Memo<(Option<u64>, Vec<Row>)> {
+    Memo::new(move |_| {
+        version.track();
+        let view = view.get();
+        let worker = worker.get();
+        STORE.with(|store| {
+            let store = store.borrow();
+            let rows = layout::layout(&store.items, view, worker.as_deref());
+            (store.feed, rows)
+        })
+    })
+}
+
 /// A row's key in the transcript: the feed it's of, as another feed's
-/// item 7 is another item, its identity, and a count's numbers, which its
-/// line shows.
+/// item 7 is another item, its identity, an item's kind, which decides how
+/// its row is drawn (a text becomes the reply), and a count's numbers,
+/// which its line shows.
 fn row_key(feed: Option<u64>, row: &Row) -> (Option<u64>, String) {
     let key = match row {
+        Row::Item(_, kind) => format!("{}:{kind:?}", row.key()),
         Row::Count { count, .. } => format!(
             "{}:{}:{}:{}",
             row.key(),
@@ -157,7 +168,7 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
         }
         .into_any(),
         Row::Count { id, count, .. } => count_row(id, count),
-        Row::Item(id) => match cell(id) {
+        Row::Item(id, _) => match cell(id) {
             Some(cell) => item_row(id, cell.for_row(), thinking),
             None => ().into_any(),
         },
@@ -767,9 +778,48 @@ mod tests {
     /// Another feed's rows are other rows, whatever their items' IDs.
     #[test]
     fn a_rows_key_names_its_feed() {
-        let row = Row::Item(4);
+        let row = Row::Item(4, Kind::Text);
         assert_eq!(row_key(Some(1), &row), row_key(Some(1), &row));
         assert_ne!(row_key(Some(1), &row), row_key(Some(2), &row));
+    }
+
+    /// A text that becomes the reply (Arko's `change`, with no new item) is
+    /// laid out again in the Full view, and its row's key changes, so it's
+    /// drawn again as a reply. More text alone is drawn in place.
+    #[test]
+    fn a_text_that_becomes_a_reply_is_laid_out_again_in_full() {
+        use crate::app::{change_item, reset_store};
+        use crate::store::tests::item;
+        let owner = Owner::new();
+        owner.with(|| {
+            let version = RwSignal::new(0);
+            let rows = laid_out(version, RwSignal::new(View::Full), RwSignal::new(None));
+            let keys = move || {
+                rows.with(|(feed, rows)| {
+                    rows.iter()
+                        .map(|row| row_key(*feed, row))
+                        .collect::<Vec<_>>()
+                })
+            };
+            let text = item(4, Kind::Text, MAIN, "Done.");
+            let items = vec![item(3, Kind::User, MAIN, "go"), text.clone()];
+            reset_store(Some(1), items, Vec::new(), Vec::new(), &HashSet::new(), 0.0);
+            version.update(|version| *version += 1);
+            let before = keys();
+
+            let mut longer = text;
+            longer.text.push_str(" Mostly.");
+            assert!(!change_item(longer.clone(), false, View::Full, 1.0));
+            let reply = ItemData {
+                kind: Kind::Reply,
+                ..longer
+            };
+            assert!(change_item(reply, false, View::Full, 2.0));
+            version.update(|version| *version += 1);
+            let after = keys();
+            assert_eq!(after[0], before[0]);
+            assert_ne!(after[1], before[1]);
+        });
     }
 
     /// A request Arko didn't take frees its button, one it took keeps it

@@ -125,14 +125,12 @@ impl Store {
         true
     }
 
-    /// The item with this one's ID is now this one, since `now`.
-    pub fn change(&mut self, item: ItemData, now: f64) -> bool {
-        let Some(&at) = self.index.get(&item.id) else {
-            return false;
-        };
+    /// The item with this one's ID is now this one, since `now`. Returns
+    /// the one it was, if it's kept.
+    pub fn change(&mut self, item: ItemData, now: f64) -> Option<ItemData> {
+        let &at = self.index.get(&item.id)?;
         self.grown.insert(item.id, now);
-        self.items[at] = item;
-        true
+        Some(std::mem::replace(&mut self.items[at], item))
     }
 
     pub fn worker(&mut self, summary: WorkerData) {
@@ -311,7 +309,7 @@ pub mod tests {
         assert_eq!(store.grown[&10], 5.0);
         let mut changed = item(10, Kind::Call, MAIN, "ls");
         changed.outcome = Some("ok".into());
-        assert!(store.change(changed.clone(), 6.0));
+        assert!(store.change(changed.clone(), 6.0).is_some());
         assert_eq!(store.get(10), Some(&changed));
         // A change without the outcome takes it away.
         changed.outcome = None;

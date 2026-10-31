@@ -60,7 +60,8 @@ pub struct Count {
 /// A row of a view.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Row {
-    Item(u64),
+    /// An item, and its kind, which decides how its row is drawn.
+    Item(u64, Kind),
     /// The count's first call's ID, and the count.
     Count {
         turn: Option<u64>,
@@ -75,7 +76,7 @@ impl Row {
     /// The row's identity, kept across layouts.
     pub fn key(&self) -> String {
         match self {
-            Row::Item(id) => format!("i{id}"),
+            Row::Item(id, _) => format!("i{id}"),
             Row::Count { turn, .. } => format!(
                 "c{}",
                 turn.map_or("none".to_string(), |turn| turn.to_string())
@@ -94,6 +95,23 @@ pub fn serious(item: &ItemData) -> bool {
 /// transcript shows for a worker too. (A message a worker got has a sender.)
 pub fn is_to_user(item: &ItemData) -> bool {
     item.kind == Kind::Message && item.from.is_none()
+}
+
+/// Whether an item that changed from `old` to `new` moves the rows of
+/// `view` or their keys, as it does when what [`layout`] and
+/// [`with_working`] read of it changed. A change of its text, outcome or
+/// images redraws its row in place.
+pub fn moves_rows(old: &ItemData, new: &ItemData, view: View) -> bool {
+    old.kind != new.kind
+        || old.agent != new.agent
+        || old.pending != new.pending
+        || old.call != new.call
+        || old.turn != new.turn
+        || old.started.is_some() != new.started.is_some()
+        || old.from.is_some() != new.from.is_some()
+        || serious(old) != serious(new)
+        // A call's status moves a Messages count.
+        || (view == View::Messages && old.status != new.status)
 }
 
 /// What the Messages view keeps of the main transcript.
@@ -148,9 +166,9 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
     let placed: HashSet<u64> = results.values().flatten().copied().collect();
     let mut rows = Vec::new();
     let push = |rows: &mut Vec<Row>, item: &ItemData| {
-        rows.push(Row::Item(item.id));
+        rows.push(Row::Item(item.id, item.kind));
         for &result in results.get(&item.id).into_iter().flatten() {
-            rows.push(Row::Item(result));
+            rows.push(Row::Item(result, Kind::Result));
         }
     };
     let ids: HashSet<u64> = items.iter().map(|item| item.id).collect();
@@ -179,7 +197,7 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
                 if main {
                     push(&mut rows, item);
                 } else if item.kind == Kind::Call || (item.kind == Kind::Notice && serious(item)) {
-                    rows.push(Row::Item(item.id));
+                    rows.push(Row::Item(item.id, item.kind));
                 }
             }
             View::Quiet => {
@@ -195,7 +213,7 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
                     continue;
                 }
                 if shown_in_messages(item) {
-                    rows.push(Row::Item(item.id));
+                    rows.push(Row::Item(item.id, item.kind));
                     continue;
                 }
                 if item.kind != Kind::Call {
@@ -348,7 +366,7 @@ pub fn with_working(mut rows: Vec<Row>, working: bool, store: &Store) -> Vec<Row
     }
     let mut at = rows.len();
     while at > 0
-        && let Row::Item(id) = rows[at - 1]
+        && let Row::Item(id, _) = rows[at - 1]
         && store.get(id).is_some_and(|item| item.pending)
     {
         at -= 1;
@@ -381,7 +399,7 @@ fn is_read(item: &ItemData) -> bool {
 pub fn unseen(rows: &[Row], store: &Store, seen: u64) -> usize {
     rows.iter()
         .filter(|row| match row {
-            Row::Item(id) => *id > seen && store.get(*id).is_some_and(is_read),
+            Row::Item(id, _) => *id > seen && store.get(*id).is_some_and(is_read),
             Row::Count { id, .. } => *id > seen,
             Row::Working => false,
         })
@@ -392,7 +410,7 @@ pub fn unseen(rows: &[Row], store: &Store, seen: u64) -> usize {
 /// row shows no text, and "Working…" isn't an item.
 fn grew(rows: &[Row], grown: &HashSet<u64>) -> bool {
     rows.iter()
-        .any(|row| matches!(row, Row::Item(id) if grown.contains(id)))
+        .any(|row| matches!(row, Row::Item(id, _) if grown.contains(id)))
 }
 
 /// What Latest says. It counts the things that came after the item `seen`
@@ -848,14 +866,18 @@ mod tests {
         for view in View::ALL {
             assert_eq!(
                 layout(&items, view, None),
-                [Row::Item(1), Row::Item(4)],
+                [Row::Item(1, Kind::User), Row::Item(4, Kind::Message)],
                 "{view:?}"
             );
             assert_eq!(says(&items, view, None, 1), "1 new", "{view:?}");
         }
         assert_eq!(
             layout(&items, View::Full, Some("r1")),
-            [Row::Item(2), Row::Item(3), Row::Item(4)]
+            [
+                Row::Item(2, Kind::Message),
+                Row::Item(3, Kind::Text),
+                Row::Item(4, Kind::Message)
+            ]
         );
         assert!(is_to_user(&items[3]) && !is_to_user(&items[1]));
     }
@@ -881,5 +903,31 @@ mod tests {
         ];
         assert_eq!(says(&hidden, View::Messages, None, 1), "Latest");
         assert_eq!(says(&hidden, View::Full, None, 1), "2 new");
+    }
+
+    /// A change lays the rows out again only when it changes what they're
+    /// laid out by, as a text that becomes the reply does in every view.
+    #[test]
+    fn a_change_moves_the_rows_only_by_what_they_read() {
+        let text = item(4, Kind::Text, MAIN, "Done.");
+        let moves = |change: &dyn Fn(&mut ItemData), view| {
+            let mut new = text.clone();
+            change(&mut new);
+            moves_rows(&text, &new, view)
+        };
+        for view in View::ALL {
+            assert!(moves(&|item| item.kind = Kind::Reply, view), "{view:?}");
+            assert!(moves(&|item| item.pending = true, view), "{view:?}");
+            assert!(moves(&|item| item.started = Some("r1".into()), view));
+            assert!(moves(&|item| item.level = Some(Level::Warn), view));
+            assert!(moves(&|item| item.from = Some(MAIN.into()), view));
+            assert!(!moves(&|item| item.text.push_str(" Mostly."), view));
+            assert!(!moves(&|item| item.outcome = Some("ok".into()), view));
+            assert!(!moves(&|item| item.level = Some(Level::Info), view));
+        }
+        // A call's status counts in Messages alone.
+        let status = |item: &mut ItemData| item.status = Some(CallStatus::Failed);
+        assert!(moves(&status, View::Messages));
+        assert!(!moves(&status, View::Full));
     }
 }
