@@ -693,31 +693,58 @@ impl JobStart {
 const ENDED_JOBS: usize = 100;
 
 /// What changed, for the clients connected.
+///
+/// Each kind is one of three classes, which its documentation names.
+///
+/// - A state update is a change to what the [`Snapshot`] holds. A client
+///   that applies it and one that takes a new snapshot end in the same
+///   place, so a client that falls behind [`Feed::subscribe`]'s broadcast
+///   starts over from a snapshot and loses nothing. Most carry their change.
+///   Two are latest-value, where a client keeps only the newest.
+///   [`Update::Worker`] carries a whole summary, sent a few times a second
+///   at most, and [`Update::Activity`] carries nothing, as the client reads
+///   [`Feed::activity`] when it comes.
+/// - An edge is news, for a client that reacts once (a notification), that
+///   something the snapshot holds changed. [`Feed::subscribe_batched`]
+///   delivers it exactly once. A broadcast client that starts over compares
+///   what it had with the snapshot instead.
+/// - A per-client event is what one client asked for, such as a
+///   recording's words, and never comes here. It goes on that client's own
+///   channel.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Update {
-    /// A new item.
+    /// A new item. State, in [`Snapshot::items`].
     Item(Item),
-    /// More text for the item `id`.
+    /// More text for the item `id`. State, in [`Snapshot::items`].
     Append { id: u64, text: String },
-    /// The item with this one's `id` is now this one (a call's result came).
+    /// The item with this one's `id` is now this one (a call's result
+    /// came). State, in [`Snapshot::items`].
     Change(Item),
-    /// A worker's summary, whole.
+    /// A worker's summary, whole. State, latest-value, in
+    /// [`Snapshot::workers`], which may be up to a quarter of a second newer
+    /// than the latest of these until the next one comes.
     Worker(WorkerSummary),
     /// The worker `id` ended as `outcome` (finished, failed or stopped).
     /// Its [`Update::Worker`] with that state, its `report` or `error`
-    /// comes right before, also in a merged batch.
+    /// comes right before, also in a merged batch. Edge, of the state in
+    /// [`Snapshot::workers`].
     WorkerEnded { id: String, outcome: WorkerState },
-    /// The activity changed.
+    /// The activity changed, or the approval tray did, which a client reads
+    /// in the session's status. State, latest-value, in
+    /// [`Snapshot::activity`].
     Activity,
     /// The main agent's items from `from` on are gone (the conversation was
-    /// cut back to an earlier message), and clients drop them too.
+    /// cut back to an earlier message), and clients drop them too. State,
+    /// in [`Snapshot::items`].
     Truncate { from: u64 },
     /// The item `id` is gone. It held text a model's response streamed
-    /// before it failed, which its retry streams again.
+    /// before it failed, which its retry streams again, or a note the agent
+    /// read, which comes again where it read it. State, in
+    /// [`Snapshot::items`].
     Remove { id: u64 },
     /// The whole summary of a background job that started, changed or
-    /// ended.
+    /// ended. State, in [`Snapshot::jobs`].
     Job(JobSummary),
 }
 
@@ -871,6 +898,11 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
 }
 
 /// The history, the workers and the activity at one moment.
+///
+/// It holds what the feed keeps. The oldest items, the oldest items' whole
+/// outputs and the oldest ended jobs go, without an update, to keep it
+/// within a budget, so a client that followed every update may hold more
+/// than a snapshot does.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
     /// The main agent's items and the workers', in order (by `id`).
