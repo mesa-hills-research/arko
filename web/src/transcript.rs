@@ -425,11 +425,21 @@ fn MoveButton(id: u64) -> impl IntoView {
                 event.prevent_default();
                 busy.set(true);
                 leptos::task::spawn_local(async move {
-                    post("/api/background", serde_json::json!({ "item": id })).await;
+                    let taken = post("/api/background", serde_json::json!({ "item": id })).await;
+                    answered(busy, taken);
                 });
             }>
             "Move to background"
         </button>
+    }
+}
+
+/// A call's action button once Arko answered. One Arko took stays busy
+/// until Arko's update takes the action away. One it didn't take can be
+/// pressed again (the error line says why), while its row still shows.
+fn answered(busy: RwSignal<bool>, taken: bool) {
+    if !taken {
+        busy.try_set(false);
     }
 }
 
@@ -444,7 +454,8 @@ fn StopJobButton(job: String) -> impl IntoView {
                 busy.set(true);
                 let job = job.clone();
                 leptos::task::spawn_local(async move {
-                    post("/api/jobs/stop", serde_json::json!({ "job": job })).await;
+                    let taken = post("/api/jobs/stop", serde_json::json!({ "job": job })).await;
+                    answered(busy, taken);
                 });
             }>
             "Stop"
@@ -680,4 +691,27 @@ fn Md(
 #[allow(dead_code)]
 pub fn item(id: u64) -> Option<ItemData> {
     STORE.with(|store| store.borrow().get(id).cloned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A request Arko didn't take frees its button, one it took keeps it
+    /// busy, and a button whose row went meanwhile is left alone.
+    #[test]
+    fn an_action_arko_didnt_take_can_be_pressed_again() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let busy = RwSignal::new(true);
+            answered(busy, true);
+            assert!(busy.get_untracked());
+            answered(busy, false);
+            assert!(!busy.get_untracked());
+
+            let gone = RwSignal::new(true);
+            gone.dispose();
+            answered(gone, false);
+        });
+    }
 }
