@@ -2651,9 +2651,13 @@ impl App {
                 // fold its first click opened or closed goes back.
                 if count == 2
                     && let Some(key) = folded
-                    && let Some(line) = self.transcript.toggle(key, y, &filter, &theme)
+                    && let Some(fold) = self.transcript.toggle(key, y, &filter, &theme)
                 {
-                    point = super::transcript::Point { key, line, ..point };
+                    point = super::transcript::Point {
+                        key: fold.block,
+                        line: fold.line,
+                        ..point
+                    };
                 }
                 let span = match count {
                     2 => self.transcript.word_at(point, &filter, &theme),
@@ -2838,9 +2842,9 @@ impl App {
             return;
         }
         let (filter, theme) = (self.filter(), self.theme.clone());
-        if let Some(key) = self.transcript.fold_at(at.x, at.y, &filter, &theme) {
-            self.transcript.toggle(key, at.y, &filter, &theme);
-            self.folded = Some(key);
+        if let Some(fold) = self.transcript.fold_at(at.x, at.y, &filter, &theme) {
+            self.transcript.toggle(fold.item, at.y, &filter, &theme);
+            self.folded = Some(fold.item);
             return;
         }
         if let Some(item) = self.transcript.item(key)

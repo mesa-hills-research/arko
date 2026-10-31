@@ -2647,6 +2647,34 @@ mod tests {
         assert!(!rows.iter().any(|row| row.contains("│ 7")), "{rows:#?}");
         app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(app.transcript.focus, Some(2));
+        // A double click on that line selects a word of it, as it does on
+        // the output's own line.
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.take_effects();
+        let rows = screen(&mut app, 60, 20);
+        let line = at(&rows, "… 3 more lines");
+        let byte = rows[line].find("more").unwrap();
+        let x = rows[line][..byte].chars().count() as u16 + 1;
+        for kind in [
+            MouseEventKind::Down(left),
+            MouseEventKind::Up(left),
+            MouseEventKind::Down(left),
+            MouseEventKind::Up(left),
+        ] {
+            mouse(&mut app, kind, x, line as u16);
+            screen(&mut app, 60, 20);
+        }
+        let copied: Vec<String> = app
+            .take_effects()
+            .into_iter()
+            .filter_map(|effect| match effect {
+                crate::tui::app::Effect::Copy { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(copied, ["more"]);
+        let rows = screen(&mut app, 60, 20);
+        assert!(!rows.iter().any(|row| row.contains("│ 7")), "{rows:#?}");
     }
 
     /// Ctrl+G puts the keyboard on the last row that opens, ↑ and ↓ move it,

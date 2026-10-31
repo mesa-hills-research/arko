@@ -198,22 +198,21 @@ struct QuietCached {
 /// opened or closed a fold at stays under the pointer.
 #[derive(Debug, Clone, Copy)]
 struct Pin {
-    /// The block it's in.
+    /// The block it's in, and its line there.
     key: u64,
-    at: PinAt,
+    line: usize,
     /// The row of the area it stays on.
     row: usize,
 }
 
-/// Which line of its block a pin holds.
-#[derive(Debug, Clone, Copy)]
-enum PinAt {
-    /// The last, where an output or a thinking opens and closes.
-    Last,
-    /// This one, such as a Quiet row's line.
-    Line(usize),
-    /// The last line of this item inside an open Quiet row.
-    Inner(u64),
+/// Where a fold opens and closes: the item whose fold it is, the block it
+/// shows in (an open Quiet row's, for an item inside it), and its line
+/// there. A click, the keyboard and a selection all find a fold by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fold {
+    pub item: u64,
+    pub block: u64,
+    pub line: usize,
 }
 
 /// What a view shows in order, before it's laid out in blocks.
@@ -1134,7 +1133,11 @@ impl Transcript {
                 running_time(item, now)
             };
             let look = Look {
-                open: if thinking { entry.open_quiet } else { entry.open },
+                open: if thinking {
+                    entry.open_quiet
+                } else {
+                    entry.open
+                },
                 quiet: thinking,
                 clock: clock.as_deref(),
             };
@@ -1274,15 +1277,7 @@ impl Transcript {
         if let Some(pin) = self.pin.take()
             && let Some(index) = blocks.iter().position(|block| block.key == pin.key)
         {
-            let block = &blocks[index];
-            let line = match pin.at {
-                PinAt::Last => Some(block.height().saturating_sub(1)),
-                PinAt::Line(line) => Some(line),
-                PinAt::Inner(id) => self.inner_line(block, id),
-            };
-            if let Some(line) = line {
-                top = (starts[index] + line).saturating_sub(pin.row);
-            }
+            top = (starts[index] + pin.line).saturating_sub(pin.row);
         }
         if self.pending_scroll != 0 {
             top = (top as i64 + self.pending_scroll).clamp(0, bottom as i64) as usize;
@@ -1627,94 +1622,93 @@ impl Transcript {
         self.hold = false;
     }
 
-    /// The block whose fold line is on the screen's `x`, `y`: its last
-    /// line, which opens or closes a command's whole output or an agent's
-    /// thinking.
-    pub fn fold_at(&mut self, x: u16, y: u16, filter: &Filter, theme: &Theme) -> Option<u64> {
+    /// The fold at the screen's `x`, `y`: a Quiet row's line, the last line
+    /// of a command's whole output or of an agent's thinking, and the same
+    /// lines of those inside an open Quiet row.
+    pub fn fold_at(&mut self, x: u16, y: u16, filter: &Filter, theme: &Theme) -> Option<Fold> {
         let row = self.drawn.row_at(x, y)?;
-        // A Quiet row opens and closes at its line, and a call's output or
-        // thinking inside it at its last, as they do on their own.
-        if let Some(gap) = self.quiet_row(row.key, filter, theme) {
-            let gap = usize::from(gap);
-            if row.line == gap {
-                return Some(row.key);
-            }
-            let cached = self.quiet_cache.get(&row.key)?;
-            return cached
-                .spans
-                .iter()
-                .find(|(id, lines)| {
-                    gap + lines.end == row.line + 1 && self.item(*id).is_some_and(folds)
-                })
-                .map(|(id, _)| *id);
-        }
-        if !folds(self.item(row.key)?) {
-            return None;
-        }
-        let rows = self.rows_of(row.key, filter, theme)?;
-        (row.line + 1 == rows.len()).then_some(row.key)
-    }
-
-    /// Opens or closes the fold of the block `key`, its fold line held on
-    /// the screen's row `y` at the next draw. Returns that line.
-    pub fn toggle(&mut self, key: u64, y: u16, filter: &Filter, theme: &Theme) -> Option<usize> {
-        let row = y.saturating_sub(self.drawn.area.y) as usize;
-        // A Quiet row's line stays where it is, and what it holds opens
-        // below it.
-        if let Some(gap) = self.quiet_row(key, filter, theme) {
-            if !self.quiet_open.remove(&key) {
-                self.quiet_open.insert(key);
-            }
-            let line = usize::from(gap);
-            self.pin = Some(Pin {
-                key,
-                at: PinAt::Line(line),
-                row,
-            });
-            return Some(line);
-        }
-        let quiet = filter.view() == View::Quiet;
-        // The open Quiet row an output or a thinking may be in.
-        let inside = self.quiet_holding(key, filter, theme);
-        let entry = self.find_mut(key)?;
-        if !folds(&entry.item) {
-            return None;
-        }
-        if quiet && entry.item.kind == Kind::Thinking {
-            entry.open_quiet = !entry.open_quiet;
-        } else {
-            entry.open = !entry.open;
-        }
-        entry.touch();
-        self.pin = Some(match inside {
-            Some(block) => Pin {
-                key: block,
-                at: PinAt::Inner(key),
-                row,
-            },
-            None => Pin {
-                key,
-                at: PinAt::Last,
-                row,
-            },
-        });
-        Some(self.rows_of(key, filter, theme)?.len() - 1)
-    }
-
-    /// The open Quiet row of `filter`'s view that shows the item `id`, by
-    /// its key.
-    fn quiet_holding(&mut self, id: u64, filter: &Filter, theme: &Theme) -> Option<u64> {
         let width = self.drawn.area.width as usize;
         let blocks = self.blocks(filter, theme, width);
-        blocks
-            .iter()
-            .filter(|block| matches!(block.shown, Shown::Quiet(_)))
-            .find(|block| {
-                self.quiet_cache
-                    .get(&block.key)
-                    .is_some_and(|cached| cached.spans.iter().any(|(inner, _)| *inner == id))
-            })
-            .map(|block| block.key)
+        let block = blocks.iter().find(|block| block.key == row.key)?;
+        let found = match &block.shown {
+            Shown::Quiet(_) if row.line == usize::from(block.gap) => Some(row.key),
+            Shown::Quiet(_) => self.quiet_cache.get(&row.key).and_then(|cached| {
+                cached
+                    .spans
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .find(|id| self.inner_line(block, *id) == Some(row.line))
+                    .filter(|id| self.item(*id).is_some_and(folds))
+            }),
+            Shown::Entry(index) if folds(&self.entries[*index].item) => {
+                let rows = self.block_rows(block, theme, width);
+                (row.line + 1 == rows.len()).then_some(row.key)
+            }
+            _ => None,
+        };
+        found.map(|item| Fold {
+            item,
+            block: row.key,
+            line: row.line,
+        })
+    }
+
+    /// Where the fold of `item` is in `filter`'s view.
+    fn fold(&mut self, item: u64, filter: &Filter, theme: &Theme) -> Option<Fold> {
+        let width = self.drawn.area.width as usize;
+        let blocks = self.blocks(filter, theme, width);
+        for block in &blocks {
+            let line = if block.key == item {
+                match &block.shown {
+                    Shown::Quiet(_) => Some(usize::from(block.gap)),
+                    Shown::Entry(index) if folds(&self.entries[*index].item) => {
+                        Some(self.block_rows(block, theme, width).len().saturating_sub(1))
+                    }
+                    _ => return None,
+                }
+            } else {
+                self.inner_line(block, item)
+                    .filter(|_| self.item(item).is_some_and(folds))
+            };
+            if let Some(line) = line {
+                return Some(Fold {
+                    item,
+                    block: block.key,
+                    line,
+                });
+            }
+        }
+        None
+    }
+
+    /// Opens or closes the fold of the item `item`, its line held on the
+    /// screen's row `y` at the next draw. Returns where that line is.
+    pub fn toggle(&mut self, item: u64, y: u16, filter: &Filter, theme: &Theme) -> Option<Fold> {
+        if self.quiet_row(item, filter, theme).is_some() {
+            if !self.quiet_open.remove(&item) {
+                self.quiet_open.insert(item);
+            }
+        } else {
+            let quiet = filter.view() == View::Quiet;
+            let entry = self.find_mut(item)?;
+            if !folds(&entry.item) {
+                return None;
+            }
+            // A thinking opens in the Quiet view apart from the Full view.
+            if quiet && entry.item.kind == Kind::Thinking {
+                entry.open_quiet = !entry.open_quiet;
+            } else {
+                entry.open = !entry.open;
+            }
+            entry.touch();
+        }
+        let fold = self.fold(item, filter, theme)?;
+        self.pin = Some(Pin {
+            key: fold.block,
+            line: fold.line,
+            row: y.saturating_sub(self.drawn.area.y) as usize,
+        });
+        Some(fold)
     }
 
     /// Whether the block `key` is a Quiet row of `filter`'s view, and if
@@ -1790,10 +1784,15 @@ impl Transcript {
             }
             return;
         }
+        let quiet = filter.view() == View::Quiet;
         if let Some(entry) = self.find_mut(key)
             && folds(&entry.item)
         {
-            entry.open = open.unwrap_or(!entry.open);
+            if quiet && entry.item.kind == Kind::Thinking {
+                entry.open_quiet = open.unwrap_or(!entry.open_quiet);
+            } else {
+                entry.open = open.unwrap_or(!entry.open);
+            }
             entry.touch();
         }
     }
@@ -3337,7 +3336,10 @@ mod tests {
         );
         // Its line opens it, and the last line folds it again.
         rows(&mut t, &full(), 40, 8);
-        assert_eq!(t.fold_at(4, 0, &full(), &theme), Some(1));
+        assert_eq!(
+            t.fold_at(4, 0, &full(), &theme).map(|fold| fold.item),
+            Some(1)
+        );
         t.toggle(1, 0, &full(), &theme);
         t.follow();
         let open = rows(&mut t, &full(), 40, 7);
@@ -3351,7 +3353,10 @@ mod tests {
                 "",
             ]
         );
-        assert_eq!(t.fold_at(4, 3, &full(), &theme), Some(1));
+        assert_eq!(
+            t.fold_at(4, 3, &full(), &theme).map(|fold| fold.item),
+            Some(1)
+        );
         assert_eq!(t.fold_at(4, 1, &full(), &theme), None, "not its text");
         t.toggle(1, 3, &full(), &theme);
         t.follow();
@@ -3434,7 +3439,11 @@ mod tests {
         assert_eq!(columns(&shown[row], 'T'), working, "{shown:?}");
         // A click on the triangle opens it, and another closes it.
         let y = row as u16;
-        assert_eq!(t.fold_at(SPINNER as u16, y, &full(), &theme), Some(2));
+        assert_eq!(
+            t.fold_at(SPINNER as u16, y, &full(), &theme)
+                .map(|fold| fold.item),
+            Some(2)
+        );
         t.toggle(2, y, &full(), &theme);
         t.follow();
         let shown = rows(&mut t, &full(), 40, 6);
@@ -3442,7 +3451,11 @@ mod tests {
         assert_eq!(shown[row], "  ▾ Thought for 12s", "{shown:?}");
         assert_eq!(columns(&shown[row], 'T'), working, "{shown:?}");
         let close = shown.iter().position(|row| row.contains('↑')).unwrap() as u16;
-        assert_eq!(t.fold_at(SPINNER as u16, close, &full(), &theme), Some(2));
+        assert_eq!(
+            t.fold_at(SPINNER as u16, close, &full(), &theme)
+                .map(|fold| fold.item),
+            Some(2)
+        );
         t.toggle(2, close, &full(), &theme);
         t.follow();
         let shown = rows(&mut t, &full(), 40, 4);
@@ -3478,7 +3491,11 @@ mod tests {
         t.working = None;
         assert_eq!(rows(&mut t, &quiet, 40, 3)[..1], ["  ▸ Thought for 2m"]);
         // A click opens it there, and leaves the full view as it was.
-        assert_eq!(t.fold_at(SPINNER as u16, 0, &quiet, &theme), Some(1));
+        assert_eq!(
+            t.fold_at(SPINNER as u16, 0, &quiet, &theme)
+                .map(|fold| fold.item),
+            Some(1)
+        );
         t.toggle(1, 0, &quiet, &theme);
         t.follow();
         assert_eq!(
@@ -3524,7 +3541,11 @@ mod tests {
             ["  ▸ Thought · Where to start?"]
         );
         rows(&mut t, &quiet, 40, 1);
-        assert_eq!(t.fold_at(SPINNER as u16, 0, &quiet, &theme), Some(1));
+        assert_eq!(
+            t.fold_at(SPINNER as u16, 0, &quiet, &theme)
+                .map(|fold| fold.item),
+            Some(1)
+        );
         t.toggle(1, 0, &quiet, &theme);
         t.follow();
         assert_eq!(
