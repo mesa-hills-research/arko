@@ -38,13 +38,35 @@ pub enum Sheet {
 }
 
 /// One item's signals: its data (a call's outcome) and its text, which
-/// grows as it streams. A row redraws when its own change.
-#[derive(Clone, Copy)]
+/// grows as it streams. A row redraws when its own change. The page holds
+/// them while it keeps the item, and a row that shows the item holds them
+/// while it shows (`Cell::for_row`), so they go once both let go.
+#[derive(Clone)]
 pub struct Cell {
+    pub data: ArcRwSignal<ItemData>,
+    pub text: ArcRwSignal<String>,
+    /// Moves when the spans of its code blocks come.
+    pub code: ArcRwSignal<u32>,
+}
+
+/// A cell's signals as a row holds them, until the row goes.
+#[derive(Clone, Copy)]
+pub struct RowCell {
     pub data: RwSignal<ItemData>,
     pub text: RwSignal<String>,
-    /// Moves when the spans of its code blocks come.
     pub code: RwSignal<u32>,
+}
+
+impl Cell {
+    /// The cell's signals for the row being drawn, which its owner lets go
+    /// of when the row goes.
+    pub fn for_row(&self) -> RowCell {
+        RowCell {
+            data: RwSignal::from(&self.data),
+            text: RwSignal::from(&self.text),
+            code: RwSignal::from(&self.code),
+        }
+    }
 }
 
 /// The page's state, shared by its views.
@@ -224,7 +246,7 @@ impl Page {
 
 /// The signals of the item `id`, while it's kept.
 pub fn cell(id: u64) -> Option<Cell> {
-    CELLS.with(|cells| cells.borrow().get(&id).copied())
+    CELLS.with(|cells| cells.borrow().get(&id).cloned())
 }
 
 /// Calls `listen` with each item that comes, until the page closes (the
@@ -630,9 +652,9 @@ fn parse<T: for<'a> Deserialize<'a>>(data: &str) -> Result<T, String> {
 
 fn new_cell(item: &ItemData) -> Cell {
     Cell {
-        text: RwSignal::new(item.text.clone()),
-        data: RwSignal::new(item.clone()),
-        code: RwSignal::new(0),
+        text: ArcRwSignal::new(item.text.clone()),
+        data: ArcRwSignal::new(item.clone()),
+        code: ArcRwSignal::new(0),
     }
 }
 
@@ -719,7 +741,7 @@ fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>) {
         .map(|item| {
             let cell = match kept.remove(&item.id) {
                 Some(cell) => {
-                    refresh(cell, item.clone(), new_code.contains(&item.id));
+                    refresh(&cell, item.clone(), new_code.contains(&item.id));
                     cell
                 }
                 None => new_cell(item),
@@ -732,7 +754,7 @@ fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>) {
 
 /// Gives a cell the item as Arko has it now, setting only what changed, and
 /// paints its code blocks again when their spans came (`code`).
-fn refresh(cell: Cell, item: ItemData, code: bool) {
+fn refresh(cell: &Cell, item: ItemData, code: bool) {
     if cell.text.with_untracked(|text| *text != item.text) {
         cell.text.set(item.text.clone());
     }
@@ -762,7 +784,7 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
     let known = cell(item.id);
     match known {
         Some(cell) => {
-            refresh(cell, item.clone(), !code.is_empty());
+            refresh(&cell, item.clone(), !code.is_empty());
             STORE.with(|store| store.borrow_mut().change(item.clone(), now));
         }
         None => {
@@ -825,7 +847,7 @@ fn on_change(page: Page, data: &str) -> Result<(), String> {
         return Ok(());
     }
     if let Some(cell) = cell(item.id) {
-        refresh(cell, item, !code.is_empty());
+        refresh(&cell, item, !code.is_empty());
     }
     // A call's status moves a Messages count.
     if page.view.get_untracked() == View::Messages {

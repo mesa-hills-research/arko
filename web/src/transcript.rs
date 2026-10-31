@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use leptos::prelude::*;
 use lucide_leptos::{ArrowDown, ChevronRight};
 
-use crate::app::{Cell, Page, STORE, cell, page, post, track_worker};
+use crate::app::{Page, RowCell, STORE, cell, page, post, track_worker};
 use crate::copy::CopyButton;
 use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
@@ -132,7 +132,7 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
         .into_any(),
         Row::Count { id, count, .. } => count_row(id, count),
         Row::Item(id) => match cell(id) {
-            Some(cell) => item_row(id, cell, thinking),
+            Some(cell) => item_row(id, cell.for_row(), thinking),
             None => ().into_any(),
         },
     }
@@ -169,7 +169,7 @@ fn local_time(at: i64) -> String {
         .unwrap_or_default()
 }
 
-fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
+fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
     let page = page();
     let item = cell.data.get_untracked();
     let data = cell.data;
@@ -335,7 +335,7 @@ fn kind_class(kind: Kind) -> &'static str {
 /// its own item, and its actions follow the status only while the call
 /// runs and the jobs only while it has one, so the many settled calls of a
 /// long session follow neither.
-fn call_row(cell: Cell) -> AnyView {
+fn call_row(cell: RowCell) -> AnyView {
     let page = page();
     let data = cell.data;
     let (id, long) = data.with_untracked(|item| {
