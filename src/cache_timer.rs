@@ -8,13 +8,15 @@
 //! hidden while a turn's requests run, since each one refreshes the cache,
 //! and where the lifetime isn't known. A resumed session counts from the
 //! request it was left at, so it says how long is left, or that the cache
-//! expired meanwhile.
+//! expired meanwhile. While keep-warm will refresh the cache before it
+//! lapses, the timer says so instead ("cache warm until 07:00"), and doesn't
+//! warn.
 //!
 //! Times are Unix milliseconds, as [`CacheStatus::refreshed_at`] has them.
 
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike as _, Local, TimeZone as _};
+use chrono::{DateTime, Datelike as _, Local, TimeZone};
 
 use crate::remote::{Activity, CacheStatus};
 
@@ -26,6 +28,13 @@ pub enum CacheTimer {
     Counting { left: i64 },
     /// It lapsed.
     Expired,
+    /// Keep-warm refreshes it before it lapses, until `ends_at` (Unix
+    /// milliseconds) or for `left` more refreshes
+    /// ([`Status`](crate::keep_warm::Status)).
+    KeptWarm {
+        ends_at: Option<i64>,
+        left: Option<u32>,
+    },
 }
 
 /// The last minute, when the timer warns (in milliseconds).
@@ -51,13 +60,25 @@ impl CacheTimer {
     /// The timer for `cache` at `now`, hidden (`None`) while requests run
     /// (each one refreshes the cache, see [`requests_run`]) and where its
     /// lifetime or its last use isn't known. The time left is never more
-    /// than the lifetime, whatever the clock did.
+    /// than the lifetime, whatever the clock did. While keep-warm's next
+    /// refresh comes before the cache lapses, it is
+    /// [`KeptWarm`](Self::KeptWarm).
     pub fn of(cache: &CacheStatus, requests_run: bool, now: i64) -> Option<Self> {
         if requests_run {
             return None;
         }
         let lifetime = lifetime_ms(cache.lifetime?);
-        let left = (cache.expires_at()? - now).min(lifetime);
+        let lapses = cache.expires_at()?;
+        let left = (lapses - now).min(lifetime);
+        if let Some(kept) = cache
+            .keep_warm
+            .filter(|kept| left > 0 && kept.next_at.is_some_and(|at| at < lapses))
+        {
+            return Some(CacheTimer::KeptWarm {
+                ends_at: kept.ends_at,
+                left: kept.left,
+            });
+        }
         Some(if left > 0 {
             CacheTimer::Counting { left }
         } else {
@@ -65,13 +86,22 @@ impl CacheTimer {
         })
     }
 
-    /// "cache 3:12", "cache expired".
+    /// "cache 3:12", "cache expired", "cache warm until 07:00", "cache warm,
+    /// 9 refreshes left".
     pub fn label(self) -> String {
         match self {
             // The minutes and seconds left, counted up to the next second, so
             // the timer reads 0:01 until the moment it lapses.
             CacheTimer::Counting { left } => format!("cache {}", clock(left + 999)),
             CacheTimer::Expired => "cache expired".to_string(),
+            CacheTimer::KeptWarm {
+                ends_at: Some(at), ..
+            } => format!("cache warm until {}", time_of_day(at)),
+            CacheTimer::KeptWarm { left: Some(1), .. } => "cache warm, 1 refresh left".to_string(),
+            CacheTimer::KeptWarm {
+                left: Some(left), ..
+            } => format!("cache warm, {left} refreshes left"),
+            CacheTimer::KeptWarm { .. } => "cache warm".to_string(),
         }
     }
 
@@ -86,15 +116,39 @@ impl CacheTimer {
 /// when it was sent, which the cache lasts from, and a Claude Code request's
 /// is its first streamed token, a few seconds after the provider read it.
 pub fn lapses_at(used: i64, lifetime: Duration) -> i64 {
-    used.saturating_add(lifetime_ms(
-        lifetime.saturating_sub(safety_margin(lifetime)),
-    ))
+    used.saturating_add(lifetime_ms(lapse_after(lifetime)))
+}
+
+/// How long after its last use a cache of `lifetime` counts as lapsed (see
+/// [`lapses_at`]).
+pub fn lapse_after(lifetime: Duration) -> Duration {
+    lifetime.saturating_sub(safety_margin(lifetime))
 }
 
 /// How long before its lifetime ends a cache counts as lapsed, 30 seconds
 /// or a tenth of a shorter lifetime.
 pub fn safety_margin(lifetime: Duration) -> Duration {
     (lifetime / 10).min(Duration::from_secs(30))
+}
+
+/// When keep-warm refreshes a prompt cache last used at `used` (Unix
+/// milliseconds), a [`refresh_lead`] before its `lifetime` ends: at 4:00 of
+/// five minutes, and at 55:00 of an hour. That is before it [`lapses_at`].
+pub fn refresh_at(used: i64, lifetime: Duration) -> i64 {
+    used.saturating_add(lifetime_ms(refresh_after(lifetime)))
+}
+
+/// How long after its last use keep-warm refreshes a cache of `lifetime`
+/// (see [`refresh_at`]).
+pub fn refresh_after(lifetime: Duration) -> Duration {
+    lifetime.saturating_sub(refresh_lead(lifetime))
+}
+
+/// How long before its lifetime ends keep-warm refreshes a cache, a twelfth
+/// of the lifetime and at least a minute (more than the
+/// [`safety_margin`]).
+pub fn refresh_lead(lifetime: Duration) -> Duration {
+    (lifetime / 12).max(Duration::from_secs(60))
 }
 
 fn lifetime_ms(lifetime: Duration) -> i64 {
@@ -114,6 +168,10 @@ pub fn recache(cache: &CacheStatus) -> Option<String> {
     Some(text)
 }
 
+/// What a tooltip adds while keep-warm waits for the next message.
+pub const KEEP_WARM_WAITS: &str =
+    "Keep-warm waits for your next message, as Arko can't tell how long ago the cache was used.";
+
 /// What the timer means, for a tooltip or a line of help.
 pub fn tooltip(timer: CacheTimer, cache: &CacheStatus, now: i64) -> String {
     match timer {
@@ -126,12 +184,45 @@ pub fn tooltip(timer: CacheTimer, cache: &CacheStatus, now: i64) -> String {
             if let Some(recache) = recache(cache) {
                 text.push_str(&format!(" Letting it expire re-caches {recache}."));
             }
+            if cache.keep_warm.is_some_and(|kept| kept.waits) {
+                text.push(' ');
+                text.push_str(KEEP_WARM_WAITS);
+            }
             text
         }
         CacheTimer::Expired => match recache(cache) {
             Some(recache) => format!("The next message re-caches {recache}."),
             None => "The prompt cache has expired.".to_string(),
         },
+        CacheTimer::KeptWarm { ends_at, left } => {
+            let mut text = "Keep-warm refreshes the prompt cache before it expires".to_string();
+            match (ends_at, left) {
+                (Some(at), _) => {
+                    text.push_str(&format!(", until {}", when(at.div_euclid(1000), now)))
+                }
+                (None, Some(1)) => text.push_str(" once more"),
+                (None, Some(left)) => text.push_str(&format!(", {left} more times")),
+                (None, None) => {}
+            }
+            text.push('.');
+            if let Some(each) = refresh_each(cache) {
+                text.push_str(&format!(" {each}"));
+            }
+            text
+        }
+    }
+}
+
+/// What a refresh costs, such as "Each refresh ≈ $0.04." On a plan, the
+/// tokens it reads.
+pub fn refresh_each(cache: &CacheStatus) -> Option<String> {
+    match (cache.refresh_cost, cache.tokens, cache.on_plan) {
+        (Some(cost), _, _) => Some(format!("Each refresh ≈ {}.", dollars(cost))),
+        (None, Some(tokens), Some(plan)) => Some(format!(
+            "Each refresh reads {} cached tokens of {plan}.",
+            token_count(tokens)
+        )),
+        _ => None,
     }
 }
 
@@ -197,7 +288,7 @@ pub fn headline(left: i64) -> String {
 }
 
 /// A token count, short: "820", "8.2k", "142k", "1.02M", "1M".
-fn token_count(count: usize) -> String {
+pub(crate) fn token_count(count: usize) -> String {
     /// `value` with at most `decimals` decimals, trailing zeros dropped.
     fn trimmed(value: f64, decimals: usize) -> String {
         let text = format!("{value:.decimals$}");
@@ -224,7 +315,7 @@ fn token_count(count: usize) -> String {
 }
 
 /// Dollars, to the cent: "$1.20", and "< $0.01" for less than a cent.
-fn dollars(amount: f64) -> String {
+pub(crate) fn dollars(amount: f64) -> String {
     if amount > 0. && amount < 0.005 {
         "< $0.01".to_string()
     } else {
@@ -241,6 +332,24 @@ fn clock(ms: i64) -> String {
     } else {
         format!("{minutes}:{seconds:02}")
     }
+}
+
+/// The local time of day of `at` (Unix milliseconds), "07:00", for a time
+/// within a day.
+pub(crate) fn time_of_day(at: i64) -> String {
+    time_of_day_in(at, &Local)
+}
+
+/// The time of day of `at` (Unix milliseconds) in `zone`, also across a
+/// change of its clocks.
+pub(crate) fn time_of_day_in<Tz: TimeZone>(at: i64, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    zone.timestamp_millis_opt(at)
+        .single()
+        .map(|at| at.format("%H:%M").to_string())
+        .unwrap_or_default()
 }
 
 /// A local time of day for a Unix time in seconds: "14:00" today, "Mon
@@ -283,6 +392,7 @@ mod tests {
             miss_cost: Some(0.9),
             refresh_cost: Some(0.04),
             on_plan: None,
+            keep_warm: None,
         }
     }
 
@@ -433,6 +543,19 @@ mod tests {
         assert_eq!(safety_margin(minutes(2)), Duration::from_secs(12));
         assert_eq!(lapses_at(1_000, minutes(60)), 1_000 + 3_570_000);
         assert_eq!(lapses_at(1_000, minutes(2)), 1_000 + 108_000);
+    }
+
+    /// Keep-warm refreshes a five-minute cache at 4:00 and an hour's at
+    /// 55:00, each before the cache counts as lapsed.
+    #[test]
+    fn keep_warm_refreshes_a_lead_before_the_lifetime_ends() {
+        let minutes = |minutes: u64| Duration::from_secs(minutes * 60);
+        assert_eq!(refresh_at(0, minutes(5)), 4 * 60_000);
+        assert_eq!(refresh_at(0, minutes(60)), 55 * 60_000);
+        assert_eq!(refresh_lead(minutes(30)), Duration::from_secs(150));
+        for lifetime in [minutes(2), minutes(5), minutes(30), minutes(60)] {
+            assert!(refresh_at(1_000, lifetime) < lapses_at(1_000, lifetime));
+        }
     }
 
     #[test]

@@ -1400,7 +1400,22 @@ impl Harness {
     pub(crate) async fn repl(&mut self, input: &mut Inputs) {
         let mut last_interrupt: Option<Instant> = None;
         loop {
-            let (event, mut reply) = input.next_event(true).await;
+            // Keep-warm wakes the loop for its next refresh, or to stop.
+            // shortcut: it refreshes only between turns, not while a question
+            // waits for its answer, since arko_workflows refuses to refresh a
+            // run that waits in a host handler, until it can.
+            let (event, mut reply) = match self.keep_warm_wake() {
+                Some(at) => {
+                    tokio::select! {
+                        next = input.next_event(true) => next,
+                        () = tokio::time::sleep_until(tokio::time::Instant::from_std(at)) => {
+                            Box::pin(self.keep_warm_tick(crate::keep_warm::Moment::now())).await;
+                            continue;
+                        }
+                    }
+                }
+                None => input.next_event(true).await,
+            };
             // A stop, a quit and the like are accepted as they are read.
             if !event.is_send() {
                 reply.accept(Delivery::Command, None);
@@ -2072,7 +2087,7 @@ impl Harness {
             "/openrouter" => self.openrouter_command(argument, source),
             "/chatgpt" => self.chatgpt_command(argument, source),
             "/session-names" => self.session_names_command(argument, source),
-            "/handover" => self.handover_command(argument, source),
+            "/handover" => self.handover_command(source),
             "/text-replies" => self.text_replies_command(argument, source),
             "/cc-compact" => self.cc_compact_command(argument, source),
             "/extra-rules" => self.extra_rules_command(argument, source),
@@ -2080,6 +2095,7 @@ impl Harness {
             "/builtin-skills" => self.builtin_skills_command(argument, source),
             "/background-after" => self.background_after_command(argument, source),
             "/monitor-wakes" => self.monitor_wakes_command(argument, source),
+            "/keep-warm" => self.keep_warm_command(argument, source),
             "/worker-models" => self.worker_models_command(argument, source),
             "/worker-billing" => self.worker_billing_command(argument, source),
             "/api-budget" => self.api_budget_command(argument, source),
@@ -2146,6 +2162,9 @@ impl Harness {
             }
             Request::RefreshCache { reply } => {
                 let _ = reply.send(self.refresh_cache().await);
+            }
+            Request::KeepWarm { limits, reply } => {
+                let _ = reply.send(self.keep_warm_request(limits));
             }
             Request::ExportConversation { reply } => {
                 let _ = reply.send(self.export_conversation(working || waiting).await);
@@ -2437,6 +2456,28 @@ impl Harness {
     /// provider allows, else with a short message and its reply (in
     /// `repl`).
     async fn refresh_cache(&mut self) -> Result<crate::engine::Refreshed, String> {
+        let refreshed = Box::pin(self.refresh_out_of_band(false)).await;
+        self.save_keep_warm();
+        match refreshed? {
+            Some(usage) => Ok(crate::engine::Refreshed::OutOfBand {
+                read: usage.cached_tokens.unwrap_or(0),
+                written: usage.cache_write_tokens.unwrap_or(0),
+                cost: usage.billed(),
+            }),
+            None => {
+                self.refresh_turn = true;
+                Ok(crate::engine::Refreshed::Message)
+            }
+        }
+    }
+
+    /// Refreshes the main agent's prompt cache out of band, and returns the
+    /// refresh's usage, or `None` where the provider takes no such refresh.
+    /// One keep-warm sent (`own`) starts no idle stretch.
+    pub(crate) async fn refresh_out_of_band(
+        &mut self,
+        own: bool,
+    ) -> Result<Option<arko_ai::UsageInfo>, String> {
         let result = match &self.conversation {
             Conversation::New => {
                 return Err("There is no conversation to keep warm yet.".into());
@@ -2446,7 +2487,7 @@ impl Harness {
         };
         let workflow = self.workflow().clone();
         // The cache lasts from the request's start, as a turn's does.
-        let started = chrono::Utc::now().timestamp_millis();
+        let started = crate::keep_warm::Moment::now();
         // (Boxed: the session's loop would hold it on its stack.)
         match Box::pin(workflow.refresh_prompt_cache(&result)).await {
             Ok(refresh) => {
@@ -2457,7 +2498,11 @@ impl Harness {
                 );
                 let kept = {
                     let mut stats = lock(&self.stats);
-                    stats.cache_refreshed_at = Some(started);
+                    stats.cache_refreshed_at = Some(started.at);
+                    stats.cache_seen = Some(started.seen);
+                    if !own {
+                        stats.keep_warm.requested(started);
+                    }
                     stats.cache_use = Some((read, written));
                     stats
                         .cache_memory
@@ -2470,18 +2515,11 @@ impl Harness {
                 }
                 self.tell_monitors_of_the_cache();
                 self.gauges.touch();
-                Ok(crate::engine::Refreshed::OutOfBand {
-                    read,
-                    written,
-                    cost: usage.billed_cost.unwrap_or(usage.total_cost),
-                })
+                Ok(Some(usage))
             }
             Err(WorkflowError::Agent(arko_agents::ArkoAgentsError::LLM(
                 arko_ai::Error::UnsupportedFeature(_),
-            ))) => {
-                self.refresh_turn = true;
-                Ok(crate::engine::Refreshed::Message)
-            }
+            ))) => Ok(None),
             Err(error) => Err(format!("The cache wasn't refreshed ({error})")),
         }
     }
@@ -2824,15 +2862,7 @@ impl Harness {
     /// `/handover`: the main agent hands over at its next step, or when
     /// its next turn starts. In Claude Code, Claude Code compacts its
     /// conversation then instead.
-    pub(crate) fn handover_command(&mut self, argument: &str, source: Source) {
-        if !argument.is_empty() {
-            self.mirrored(|harness| {
-                harness.output.line(&harness.output.error(
-                    "/handover takes nothing after it. /handover-at sets the size the agent hands over at.",
-                ))
-            });
-            return;
-        }
+    pub(crate) fn handover_command(&mut self, source: Source) {
         let compacts = self.handover.compacts();
         let Some(asked) = self.ask_handover() else {
             let text = if compacts {
@@ -4103,6 +4133,8 @@ impl Harness {
         self.settle_answer_notes();
         self.footer(spent_before, started);
         self.tell_monitors_of_the_cache();
+        // (Its latest request, for when the session opens again.)
+        self.save_keep_warm();
         if let Some(item) = user_item {
             self.mark_message(item, at);
         }
@@ -4951,6 +4983,8 @@ impl Harness {
         self.track_conversations();
         self.conversation = conversation_of(workflow, self.conversations.current_run());
         if matches!(self.conversation, Conversation::New) {
+            // Its cache is of a conversation that's gone.
+            lock(&self.stats).set_cache(None);
             self.say(
                 Level::Info,
                 "This conversation can't go on, so your next message starts it over, without what was said before.",
@@ -5024,10 +5058,13 @@ pub(crate) fn conversation_of(workflow: &Workflow, run: Option<uuid::Uuid>) -> C
     }
 }
 
-/// The command `text` is, if it is one (see `commands`): a command's name,
-/// alone or with what it takes.
+/// The command `text` is, if it is one: a command's name, alone or with
+/// what it takes, as the registry ([`commands::find`]) says. That holds for
+/// the commands that also run while the agent works ([`LIVE_COMMANDS`]), so
+/// a line such as `/handover extra` is refused as an unknown command, with
+/// its text kept, rather than run.
 pub(crate) fn command(text: &str) -> Option<&str> {
-    (commands::find(text).is_some() || split_live_command(text).is_some()).then_some(text)
+    commands::find(text).map(|_| text)
 }
 
 /// `/remote`, alone or with what follows it.
@@ -5086,7 +5123,7 @@ pub(crate) fn publish_title_from_disk(session: &Session, gauges: &Gauges) {
 /// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, `/approve` and `/reject`, which work while the agent
 /// works too.
-pub(crate) const LIVE_COMMANDS: [&str; 29] = [
+pub(crate) const LIVE_COMMANDS: [&str; 30] = [
     "/outside",
     "/model",
     "/handover",
@@ -5102,6 +5139,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 29] = [
     "/builtin-skills",
     "/background-after",
     "/monitor-wakes",
+    "/keep-warm",
     "/worker-models",
     "/worker-billing",
     "/api-budget",
@@ -5639,6 +5677,15 @@ pub(crate) mod tests {
         assert_eq!(command("/workers"), Some("/workers"));
         assert_eq!(command("/usr/bin is missing"), None);
         assert_eq!(command("/cost please"), None);
+        // The commands that run while the agent works take what the
+        // registry says, so `/handover extra` is no command.
+        assert_eq!(command("/handover"), Some("/handover"));
+        assert_eq!(command("/handover extra"), None);
+        for name in LIVE_COMMANDS {
+            let takes = !commands::find(name).unwrap().args.is_empty();
+            let line = format!("{name} extra");
+            assert_eq!(command(&line).is_some(), takes, "{line}");
+        }
     }
 
     /// The page lists the session's commands it doesn't refuse, among
@@ -6371,6 +6418,8 @@ pub(crate) mod tests {
             worker_models: Default::default(),
             billing: Default::default(),
             monitor_wakes: Default::default(),
+            keep_warm: Default::default(),
+            keep_warm_route: Default::default(),
             worker_depth: Default::default(),
             worker_retry_cap: Default::default(),
             message_copies: Default::default(),

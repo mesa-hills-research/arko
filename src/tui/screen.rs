@@ -2891,8 +2891,9 @@ mod tests {
         use crate::tui::overlay::Overlay;
         let mut app = app();
         app.overlay = Some(Overlay::Help { scroll: 0 });
-        // The box wraps the lines, so read the words in order.
-        let text = screen(&mut app, 140, 140)
+        // The box wraps the lines, so read the words in order. (Tall
+        // enough for the whole list.)
+        let text = screen(&mut app, 140, 170)
             .iter()
             .map(|row| row.trim_matches(|c: char| c == '│' || c.is_whitespace()))
             .collect::<Vec<_>>()

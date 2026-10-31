@@ -60,6 +60,7 @@ pub mod images;
 mod index;
 mod inputs;
 mod jobs;
+pub mod keep_warm;
 pub mod kept_notes;
 mod keys;
 pub mod logging;

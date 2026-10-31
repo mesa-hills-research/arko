@@ -296,6 +296,9 @@ pub struct CacheStatus {
     pub refresh_cost: Option<f64>,
     /// The plan that pays instead ("your Claude plan").
     pub on_plan: Option<&'static str>,
+    /// Keep-warm, while it is on and the model can refresh its cache out of
+    /// band (`/keep-warm`, [`Request::KeepWarm`](crate::Request::KeepWarm)).
+    pub keep_warm: Option<crate::keep_warm::Status>,
 }
 
 impl CacheStatus {
@@ -344,6 +347,8 @@ impl Serialize for CacheStatus {
             refresh_cost: Option<f64>,
             #[serde(skip_serializing_if = "Option::is_none")]
             on_plan: Option<&'static str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            keep_warm: Option<crate::keep_warm::Status>,
         }
         Sent {
             lifetime: self.lifetime,
@@ -355,6 +360,7 @@ impl Serialize for CacheStatus {
             miss_cost: self.miss_cost,
             refresh_cost: self.refresh_cost,
             on_plan: self.on_plan,
+            keep_warm: self.keep_warm,
         }
         .serialize(serializer)
     }
@@ -589,6 +595,10 @@ pub struct LiveSettings {
     /// The files agents save in the project's `.arko` folder stay out of
     /// git (`/extensions keep-out-of-git`).
     pub keep_agents_files_out_of_git: bool,
+    /// The keep-warm setting for every session, its hours and dollars, or
+    /// `None` for off ([`keep_warm::setting_command`](crate::keep_warm::setting_command)
+    /// sets it).
+    pub keep_warm: Option<crate::keep_warm::Limits>,
 }
 
 impl Default for LiveSettings {
@@ -618,6 +628,7 @@ impl Default for LiveSettings {
             ask_before_adding_mcp: true,
             review_project_skills: false,
             keep_agents_files_out_of_git: true,
+            keep_warm: None,
         }
     }
 }

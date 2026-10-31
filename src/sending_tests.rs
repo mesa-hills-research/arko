@@ -98,6 +98,7 @@ async fn an_idle_sessions_sends_get_their_verdicts() {
                 (message("/nosuch"), RefusalKind::UnknownCommand),
                 (message("   "), RefusalKind::Empty),
                 (message("/message r1"), RefusalKind::UnknownCommand),
+                (message("/handover extra"), RefusalKind::UnknownCommand),
                 (message("/message r9 Check it."), RefusalKind::Undelivered),
                 (with_image("Look."), RefusalKind::Images),
                 (
@@ -187,6 +188,10 @@ async fn a_turns_sends_get_their_verdicts() {
         ));
         assert_eq!(
             refused(&send(&requests, message("/nosuch")).await),
+            Some(&RefusalKind::UnknownCommand)
+        );
+        assert_eq!(
+            refused(&send(&requests, message("/handover now")).await),
             Some(&RefusalKind::UnknownCommand)
         );
         gate.notify_one();

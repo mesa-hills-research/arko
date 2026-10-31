@@ -257,6 +257,8 @@ impl Stats {
         match restored {
             Some(restored) => {
                 self.cache_refreshed_at = Some(restored.at);
+                // (Its time is the record's: keep-warm waits for a request.)
+                self.cache_seen = None;
                 self.cache_use = Some((restored.read, restored.written));
                 if self.learns_cache_lifetime {
                     self.cache_lifetime = Some(restored.lifetime);
@@ -264,6 +266,7 @@ impl Stats {
             }
             None => {
                 self.cache_refreshed_at = None;
+                self.cache_seen = None;
                 self.cache_use = None;
             }
         }
@@ -464,6 +467,8 @@ mod tests {
         stats.set_cache(Some(restored));
         assert_eq!(stats.cache_lifetime, Some(HOUR));
         assert_eq!(stats.cache_refreshed_at, Some(5));
+        // Shown, but keep-warm can't tell its age until a request.
+        assert_eq!(stats.cache_used(), None);
         assert_eq!(stats.cache_use, Some((170_000, 10_000)));
         stats.set_cache(None);
         assert_eq!((stats.cache_refreshed_at, stats.cache_use), (None, None));

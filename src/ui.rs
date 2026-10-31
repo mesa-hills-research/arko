@@ -653,12 +653,21 @@ pub struct Stats {
     /// milliseconds): its latest request's start, a refresh that kept it
     /// warm, or what a resumed session's record says of it.
     pub cache_refreshed_at: Option<i64>,
+    /// When the session saw `cache_refreshed_at`, on its monotonic clock,
+    /// which keep-warm counts by. None where the session can't vouch for
+    /// that time (a record from a clock that was ahead, or too old).
+    pub(crate) cache_seen: Option<std::time::Instant>,
     /// The session's record of its prompt cache, kept as the main agent's
     /// requests end. None where nothing is kept (tests).
     pub(crate) cache_memory: Option<Arc<crate::cache_memory::Memory>>,
+    /// The output of the main agent's latest request, in tokens, which the
+    /// next request writes to the cache.
+    pub(crate) reply_tokens: Option<usize>,
     /// The main agent's model, as the session runs it (its id in the
     /// configuration). The record of the cache names it.
     pub(crate) main_model: Option<String>,
+    /// Keep-warm in the session: its choice and what its refreshes sent.
+    pub(crate) keep_warm: crate::keep_warm::KeepWarm,
 }
 
 /// A request to the event printer.
@@ -1116,7 +1125,10 @@ impl EventPrinter {
                 // its task records too. (An event saved by an older version
                 // has only its own time.)
                 let sent = sent_at.map_or(at, |sent| sent.timestamp_millis());
+                let used = crate::keep_warm::Moment::sent(sent, crate::keep_warm::Moment::now());
                 stats.cache_refreshed_at = Some(sent);
+                stats.cache_seen = Some(used.seen);
+                stats.keep_warm.requested(used);
                 stats.last_request = Some(remote::LastRequest {
                     at: sent,
                     model,
@@ -1135,6 +1147,7 @@ impl EventPrinter {
                     let mut stats = self.stats.lock().unwrap();
                     let written = usage.cache_write_tokens.unwrap_or(0);
                     stats.cache_use = Some((usage.cached_tokens.unwrap_or(0), written));
+                    stats.reply_tokens = Some(usage.output_tokens);
                     if stats.learns_cache_lifetime && written > 0 {
                         let hour = usage.cache_write_1h_tokens.unwrap_or(0) > 0;
                         stats.cache_lifetime = Some(if hour {
