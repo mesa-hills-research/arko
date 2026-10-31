@@ -535,6 +535,13 @@ impl KeepWarm {
             && (self.requested_at.is_none() || self.paused == self.requested_at)
     }
 
+    /// Whether `at` comes before it stops under `limits`. The status, the
+    /// loop's wake and each step all go by this one rule, so a refresh the
+    /// status shows is one that goes.
+    fn before_end(&self, limits: &Limits, at: i64) -> bool {
+        self.ends_at(limits).is_none_or(|end| at < end)
+    }
+
     /// When the next refresh goes for a cache last used at `used` that lasts
     /// `lifetime`, if one comes before it stops.
     fn next_at(&self, limits: &Limits, used: i64, lifetime: Duration) -> Option<i64> {
@@ -542,10 +549,7 @@ impl KeepWarm {
             return None;
         }
         let due = cache_timer::refresh_at(used, lifetime);
-        match self.ends_at(limits) {
-            Some(end) if due > end => None,
-            _ => Some(due),
-        }
+        self.before_end(limits, due).then_some(due)
     }
 
     /// When the session's loop wakes for it under `limits`, for the cache
@@ -563,10 +567,10 @@ impl KeepWarm {
         if self.paused(limits) {
             return None;
         }
-        let due = used
+        let next = used
             .zip(lifetime)
-            .map(|(used, lifetime)| cache_timer::refresh_at(used, lifetime));
-        [due, self.ends_at(limits)].into_iter().flatten().min()
+            .and_then(|(used, lifetime)| self.next_at(limits, used, lifetime));
+        [next, self.ends_at(limits)].into_iter().flatten().min()
     }
 
     /// What it does at `now` under `limits`, for the cache last used at
@@ -587,21 +591,24 @@ impl KeepWarm {
         if self.paused(limits) {
             return Step::Wait;
         }
-        if let Some(end) = self.ends_at(limits).filter(|end| now >= *end) {
-            return Step::Stop(match limits.ends_at {
-                Some(at) if at == end => Stop::Ended(at),
+        if !self.before_end(limits, now) {
+            return Step::Stop(match (limits.ends_at, self.ends_at(limits)) {
+                (Some(at), Some(end)) if at == end => Stop::Ended(at),
                 _ => Stop::Idle(limits.idle_hours.unwrap_or_default()),
             });
         }
         let Some((used, lifetime)) = used.zip(lifetime) else {
             return Step::Wait;
         };
-        if now < cache_timer::refresh_at(used, lifetime) {
-            Step::Wait
-        } else if now >= cache_timer::lapses_at(used, lifetime) {
-            Step::Stop(Stop::Lapsed)
-        } else {
-            Step::Refresh
+        match self.next_at(limits, used, lifetime) {
+            Some(due) if now >= due => {
+                if now >= cache_timer::lapses_at(used, lifetime) {
+                    Step::Stop(Stop::Lapsed)
+                } else {
+                    Step::Refresh
+                }
+            }
+            _ => Step::Wait,
         }
     }
 
@@ -1121,6 +1128,21 @@ mod tests {
             kept.step(end, &limits, Some(used), Some(FIVE)),
             Step::Stop(Stop::Ended(end))
         );
+        // A refresh due right at the end doesn't go, and the status doesn't
+        // show it: the end at 8:00, when the refresh after 4:00 would be.
+        let (kept, limits) = on(ending(Some(8 * MINUTE), None));
+        assert_eq!(
+            kept.status(&limits, Some(used), Some(FIVE), false).next_at,
+            None
+        );
+        assert_eq!(
+            kept.wake_at(&limits, Some(used), Some(FIVE)),
+            Some(8 * MINUTE)
+        );
+        assert_eq!(
+            kept.step(8 * MINUTE, &limits, Some(used), Some(FIVE)),
+            Step::Stop(Stop::Ended(8 * MINUTE))
+        );
 
         let (mut kept, limits) = on(ending(None, Some(2)));
         let mut used = 0;
@@ -1208,6 +1230,11 @@ mod tests {
             }
         }
         assert_eq!((sent, used), (14, 56 * MINUTE));
+        // The status shows no refresh at 60:00, as none goes there.
+        assert_eq!(
+            kept.status(&limits, Some(used), Some(FIVE), false).next_at,
+            None
+        );
         assert_eq!(
             kept.stop(&Stop::Idle(1), Some("your Claude plan")),
             "Keep-warm stopped 1 hour after your last message, and starts again after your next one. It sent 14 refreshes for $0.56."
