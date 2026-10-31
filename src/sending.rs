@@ -289,13 +289,15 @@ impl Harness {
         }
         self.user_present();
         if let Some(command) = command(text) {
-            if has_images && split_live_command(command).is_some_and(|(name, _)| name == "/message")
+            // (A send without a verdict to come drops the images, as it
+            // always did.)
+            if has_images
+                && reply.tracked()
+                && split_live_command(command).is_some_and(|(name, _)| name == "/message")
             {
                 self.drop_images(phase);
                 let words = "A message to a worker takes text only. Remove the images, or send them to Arko.";
-                if !reply.refuse(RefusalKind::WorkerTextOnly, words) {
-                    self.say(Level::Warn, words);
-                }
+                reply.refuse(RefusalKind::WorkerTextOnly, words);
                 return None;
             }
             // (Images go with messages only.)
@@ -313,7 +315,14 @@ impl Harness {
                 reply,
             });
         }
-        if let Some(why) = self.unknown_command(&line, source) {
+        // (While the report is written, a space before the slash doesn't
+        // make it a message, as it does at other times, since a message
+        // doesn't go then anyway.)
+        let typed = match phase {
+            Phase::Reporting => text,
+            Phase::Idle | Phase::Turn => line.as_str(),
+        };
+        if let Some(why) = self.unknown_command(typed, source) {
             self.drop_images(phase);
             if !reply.refuse(RefusalKind::UnknownCommand, &why) {
                 self.say(Level::Warn, &why);
@@ -374,13 +383,14 @@ impl Harness {
             return false;
         }
         // A new conversation that carries this one over: it went once the
-        // old model was asked for its report.
+        // switch was made (the old model's report written or skipped).
         if phase == Phase::Idle
             && let Some(switch) = self.switch_of(command)
         {
             let item = self.feed.user(command, source, Delivery::Command);
+            let quit = Box::pin(self.switch(switch, source, input)).await;
             reply.accept(Delivery::Command, Some(item));
-            return Box::pin(self.switch(switch, source, input)).await;
+            return quit;
         }
         // A message to a worker went once the worker has it.
         if let Some(("/message", argument)) = split_live_command(command) {

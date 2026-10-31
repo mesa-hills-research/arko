@@ -492,3 +492,138 @@ async fn a_note_the_board_refuses_during_a_turn() {
     .unwrap();
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// Each refusal reads, without a verdict to come, as the notice it always
+/// was, word for word, and with one, as its kind, with nothing in the
+/// transcript. Where a send without a verdict goes on (an untracked
+/// `/message` with images, which drops them), one with a verdict is
+/// refused.
+#[tokio::test]
+async fn refusals_read_as_before_without_a_verdict_and_as_kinds_with_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+    let notices = |harness: &Harness| {
+        shown(&harness.feed)
+            .into_iter()
+            .filter(|(kind, _, _)| kind == "notice")
+            .map(|(_, text, _)| text)
+            .collect::<Vec<_>>()
+    };
+    let image = ui::Attachment {
+        bytes: Arc::from(&b"pixels"[..]),
+        mime: "image/png".into(),
+        name: None,
+    };
+    let with_image = |text: &str| {
+        Input::Message(ui::Message {
+            text: text.into(),
+            images: vec![image.clone()],
+            ..Default::default()
+        })
+    };
+    let unknown = |line: &str| {
+        crate::commands::unknown(line, crate::commands::of_session()).expect("unknown")
+    };
+    // (Phase, what is sent, whether the model takes images, the refusal
+    // with a verdict, the notice without one.)
+    type Case = (Phase, Event, bool, Option<RefusalKind>, Option<String>);
+    let cases = |images: &dyn Fn(&str) -> Input| -> Vec<Case> {
+        vec![
+            (
+                Phase::Idle,
+                Event::Input(Some(message("/nosuch"))),
+                true,
+                Some(RefusalKind::UnknownCommand),
+                Some(unknown("/nosuch")),
+            ),
+            (
+                Phase::Idle,
+                Event::Input(Some(message("   "))),
+                true,
+                Some(RefusalKind::Empty),
+                None,
+            ),
+            (
+                Phase::Idle,
+                Event::Input(Some(images("Look."))),
+                false,
+                Some(RefusalKind::Images),
+                Some(
+                    "The message wasn't sent (model 'gpt-6-luna' doesn't take images). Send it without images, or switch to a model that takes them."
+                        .into(),
+                ),
+            ),
+            (
+                Phase::Idle,
+                Event::Input(Some(images("/message r1 Look."))),
+                true,
+                Some(RefusalKind::WorkerTextOnly),
+                None,
+            ),
+            (
+                Phase::Idle,
+                Event::Input(Some(Input::Answer {
+                    question: 999,
+                    text: "Tabs.".into(),
+                })),
+                true,
+                Some(RefusalKind::NotOpen),
+                Some("That question is no longer open.".into()),
+            ),
+            (
+                Phase::Idle,
+                Event::Remote(Action::Message("/exit".into())),
+                true,
+                Some(RefusalKind::TerminalOnly),
+                Some("/exit works only at the terminal.".into()),
+            ),
+            (
+                Phase::Reporting,
+                Event::Input(Some(message("Go on."))),
+                true,
+                Some(RefusalKind::Reporting),
+                Some("“Go on.” wasn't sent. The report is being written. Stopping skips it.".into()),
+            ),
+            // While the report is written, a space before the slash leaves it a
+            // command, which doesn't exist.
+            (
+                Phase::Reporting,
+                Event::Input(Some(message(" /nosuch"))),
+                true,
+                Some(RefusalKind::UnknownCommand),
+                Some(unknown("/nosuch")),
+            ),
+        ]
+    };
+    let count = cases(&with_image).len();
+    for at in 0..count {
+        let (phase, event, takes_images, kind, notice) = cases(&with_image).swap_remove(at);
+        let what = format!("case {at}");
+        harness.main_config.llm_config.model.supports_image_input = takes_images;
+        // Without a verdict to come: the notice it always was.
+        let before = notices(&harness).len();
+        let read = harness
+            .read_sent(event, crate::sending::Reply::default(), &mut inputs, phase)
+            .await;
+        if let Read::Sent(sent) = read {
+            let _ = harness.admit(sent, phase);
+        }
+        assert_eq!(
+            &notices(&harness)[before..],
+            notice.as_slice(),
+            "{what}, without a verdict"
+        );
+        // With one: its kind, and nothing in the transcript.
+        let (phase, event, _, _, _) = cases(&with_image).swap_remove(at);
+        let (sender, verdict) = oneshot::channel();
+        let before = notices(&harness).len();
+        let read = harness
+            .read_sent(event, crate::sending::Reply::to(Some(sender)), &mut inputs, phase)
+            .await;
+        if let Read::Sent(sent) = read {
+            assert!(harness.admit(sent, phase).is_none(), "{what} refused");
+        }
+        assert_eq!(refused(&verdict.await.unwrap()), kind.as_ref(), "{what}");
+        assert_eq!(notices(&harness).len(), before, "{what} left no notice");
+    }
+}
