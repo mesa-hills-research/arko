@@ -17,7 +17,7 @@ use crate::protocol::{
     reject_label,
 };
 
-use crate::protocol::MessageSwitch;
+use crate::protocol::{MessageSwitch, ShownApprovals};
 
 /// What the tray remembers of its rows, by request.
 #[derive(Clone, Copy)]
@@ -33,6 +33,7 @@ struct Rows {
     /// An answer is on its way.
     sending: RwSignal<bool>,
     message: RwSignal<MessageSwitch>,
+    shown: RwSignal<ShownApprovals>,
 }
 
 impl Rows {
@@ -44,10 +45,12 @@ impl Rows {
             files: RwSignal::new(HashMap::new()),
             sending: RwSignal::new(false),
             message: RwSignal::new(MessageSwitch::default()),
+            shown: RwSignal::new(ShownApprovals::default()),
         }
     }
 
     fn requests_changed(self, ids: &HashSet<String>, has_text: bool) {
+        self.shown.update(|shown| shown.retain(ids));
         self.message
             .update(|message| message.requests(ids.clone(), has_text));
     }
@@ -60,14 +63,32 @@ impl Rows {
         self.message.update(MessageSwitch::flip);
     }
 
-    fn answers(self, requests: &[ApprovalRequest], approve: bool, words: &str) -> ApprovalAnswers {
+    fn answers(
+        self,
+        requests: &[ApprovalRequest],
+        approve: bool,
+        words: &str,
+        now_ms: u64,
+    ) -> ApprovalAnswers {
+        let requests: Vec<_> = requests
+            .iter()
+            .filter(|request| {
+                self.shown
+                    .with_untracked(|shown| shown.can_answer(&request.id, now_ms))
+            })
+            .cloned()
+            .collect();
         self.message
             .update(|message| message.edited(has_message(words)));
-        let words = if self.includes_message() { words } else { "" };
+        let words = if !requests.is_empty() && self.includes_message() {
+            words
+        } else {
+            ""
+        };
         self.unchecked.with_untracked(|unchecked| {
             self.options.with_untracked(|options| {
                 ApprovalAnswers::of(
-                    requests,
+                    &requests,
                     |id| approve && !unchecked.contains(id),
                     |id| options.contains(id),
                     words,
@@ -75,6 +96,49 @@ impl Rows {
             })
         })
     }
+}
+
+fn now_ms() -> u64 {
+    window()
+        .performance()
+        .map(|clock| clock.now() as u64)
+        .unwrap_or(0)
+}
+
+/// Only rows within the list and viewport have been shown to the reader.
+fn rendered_rows(list: &web_sys::Element, rows: Rows) {
+    if document().visibility_state() != web_sys::VisibilityState::Visible {
+        rows.shown
+            .update(|shown| shown.visible(&HashSet::new(), now_ms()));
+        return;
+    }
+    let bounds = list.get_bounding_client_rect();
+    let viewport = window()
+        .inner_height()
+        .ok()
+        .and_then(|height| height.as_f64())
+        .unwrap_or(0.0);
+    let now = now_ms();
+    let children = list.children();
+    let mut visible = HashSet::new();
+    for at in 0..children.length() {
+        if let Some(row) = children.item(at)
+            && let Some(id) = row.get_attribute("data-request")
+        {
+            let rect = row
+                .first_element_child()
+                .unwrap_or(row)
+                .get_bounding_client_rect();
+            if rect.top() >= bounds.top().max(0.0)
+                && rect.bottom() <= bounds.bottom().min(viewport)
+                && rect.width() > 0.0
+                && rect.height() > 0.0
+            {
+                visible.insert(id);
+            }
+        }
+    }
+    rows.shown.update(|shown| shown.visible(&visible, now));
 }
 
 fn has_message(text: &str) -> bool {
@@ -120,9 +184,15 @@ fn words_view(text: &str) -> impl IntoView + use<> {
 /// box's included words go with it. Once Arko has them, the box empties
 /// unless the user wrote something else there meanwhile.
 fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
+    if let Ok(Some(list)) = document().query_selector(".tray-list") {
+        rendered_rows(&list, rows);
+    }
     let area = message_box();
     let words = area.as_ref().map(|area| area.value()).unwrap_or_default();
-    let answers = rows.answers(&requests, approve, &words);
+    let answers = rows.answers(&requests, approve, &words, now_ms());
+    if answers.choices.is_empty() {
+        return;
+    }
     rows.sending.set(true);
     // (Its words are the message box's, of the view it's sent from.)
     let sender = Sender::from_view();
@@ -164,6 +234,49 @@ pub fn Tray(draft: RwSignal<String>) -> impl IntoView {
     let page = page();
     let requests = Memo::new(move |_| page.status.with(|status| status.approvals.clone()));
     let rows = Rows::new();
+    let list: NodeRef<leptos::html::Ul> = NodeRef::new();
+    let observer = StoredValue::new_local(
+        None::<(
+            web_sys::ResizeObserver,
+            wasm_bindgen::closure::Closure<dyn FnMut()>,
+        )>,
+    );
+    Effect::new(move |_| {
+        let list = list.get();
+        observer.update_value(|previous| {
+            if let Some((resize, _)) = previous.take() {
+                resize.disconnect();
+            }
+        });
+        let Some(list) = list else {
+            return;
+        };
+        let element: web_sys::Element = list.into();
+        let resized = element.clone();
+        let callback = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+            rendered_rows(&resized, rows)
+        });
+        if let Ok(resize) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) {
+            resize.observe(&element);
+            observer.set_value(Some((resize, callback)));
+        }
+    });
+    on_cleanup(move || {
+        observer.with_value(|observer| {
+            if let Some((resize, _)) = observer {
+                resize.disconnect();
+            }
+        })
+    });
+    let visibility = leptos::leptos_dom::helpers::window_event_listener(
+        leptos::ev::visibilitychange,
+        move |_| {
+            if let Some(list) = list.get_untracked() {
+                rendered_rows(&list, rows);
+            }
+        },
+    );
+    on_cleanup(move || visibility.remove());
     // What was set for requests no longer waiting goes.
     Effect::new(move |_| {
         let ids: HashSet<String> =
@@ -203,7 +316,11 @@ pub fn Tray(draft: RwSignal<String>) -> impl IntoView {
         <Show when=waiting>
             <section class="tray" aria-label=move || approvals_heading(count())>
                 <h2 class="tray-title">{move || approvals_heading(count())}</h2>
-                <ul class="tray-list">
+                <ul class="tray-list" node_ref=list on:scroll=move |_| {
+                    if let Some(list) = list.get_untracked() {
+                        rendered_rows(&list, rows);
+                    }
+                }>
                     <For each=move || requests.get() key=|request| request.id.clone() let:request>
                         <Row request=request rows=rows several=several />
                     </For>
@@ -238,6 +355,15 @@ pub fn Tray(draft: RwSignal<String>) -> impl IntoView {
 /// summary, which open its details.
 #[component]
 fn Row(request: ApprovalRequest, rows: Rows, several: Signal<bool>) -> impl IntoView {
+    let row: NodeRef<leptos::html::Li> = NodeRef::new();
+    row.on_load(move |row| {
+        let drawn = wasm_bindgen::closure::Closure::once_into_js(move || {
+            if let Some(list) = row.parent_element() {
+                rendered_rows(&list, rows);
+            }
+        });
+        let _ = window().request_animation_frame(drawn.unchecked_ref());
+    });
     let id = request.id.clone();
     let approval = request.approval.clone();
     let open = {
@@ -268,7 +394,7 @@ fn Row(request: ApprovalRequest, rows: Rows, several: Signal<bool>) -> impl Into
     let chevron = open.clone();
     let opened = open.clone();
     view! {
-        <li class="tray-row" class:open=opened>
+        <li class="tray-row" class:open=opened node_ref=row data-request=id>
             <div class="tray-line">
                 <Show when=move || several.get()>{check.clone()}</Show>
                 <button type="button" class="tray-summary" aria-expanded=move || expanded().to_string() on:click=toggle>
@@ -405,6 +531,47 @@ mod tests {
             &requests.iter().map(|request| request.id.clone()).collect(),
             has_text,
         );
+        rows.shown.update(|shown| {
+            shown.visible(
+                &requests.iter().map(|request| request.id.clone()).collect(),
+                1000,
+            )
+        });
+    }
+
+    #[test]
+    fn both_answers_wait_for_rendering_and_leave_newer_requests_waiting() {
+        Owner::new().with(|| {
+            for approve in [false, true] {
+                let rows = Rows::new();
+                let pending = requests(&["a1"]);
+                rows.requests_changed(&HashSet::from(["a1".into()]), false);
+                let answers = rows.answers(&pending, approve, "Reason", 1000);
+                assert!(answers.choices.is_empty());
+                assert_eq!(answers.words, None);
+                rows.shown
+                    .update(|shown| shown.visible(&HashSet::from(["a1".into()]), 1000));
+                assert!(
+                    rows.answers(&pending, approve, "Reason", 1499)
+                        .choices
+                        .is_empty()
+                );
+                let pending = requests(&["a1", "a2"]);
+                rows.requests_changed(&HashSet::from(["a1".into(), "a2".into()]), true);
+                rows.shown.update(|shown| {
+                    shown.visible(&HashSet::from(["a1".into(), "a2".into()]), 1500)
+                });
+                let answers = rows.answers(&pending, approve, "Reason", 1500);
+                assert_eq!(answers.choices.len(), 1);
+                assert_eq!(answers.choices[0].id, "a1");
+                assert_eq!(answers.choices[0].approve, approve);
+                assert_eq!(answers.words, None);
+                rows.requests_changed(&HashSet::from(["a2".into()]), true);
+                let answers = rows.answers(&requests(&["a2"]), approve, "Reason", 2000);
+                assert_eq!(answers.choices.len(), 1);
+                assert_eq!(answers.choices[0].id, "a2");
+            }
+        });
     }
 
     #[test]
@@ -416,7 +583,7 @@ mod tests {
                 let text = "Half-written message";
                 follow(rows, &requests, true);
                 assert!(!rows.includes_message());
-                let answers = rows.answers(&requests, approve, text);
+                let answers = rows.answers(&requests, approve, text, 1500);
                 assert_eq!(answers.words, None);
                 assert_eq!(answers.choices[0].approve, approve);
                 assert!(
@@ -427,7 +594,7 @@ mod tests {
                 );
                 assert!(!clears_message(true, &answers, text, text));
                 rows.flip_message();
-                let answers = rows.answers(&requests, approve, text);
+                let answers = rows.answers(&requests, approve, text, 1500);
                 assert_eq!(answers.words.as_deref(), Some(text));
                 assert!(clears_message(true, &answers, text, text));
             }
@@ -448,7 +615,7 @@ mod tests {
                         rows.flip_message();
                     }
                     let include = flips != 1;
-                    let answers = rows.answers(&requests, approve, " Reason ");
+                    let answers = rows.answers(&requests, approve, " Reason ", 1500);
                     assert_eq!(answers.words.as_deref(), include.then_some("Reason"));
                     assert_eq!(answers.choices[0].approve, approve);
                     assert_eq!(
@@ -470,7 +637,7 @@ mod tests {
             follow(rows, &requests, false);
             for text in ["", " ", "\n"] {
                 assert!(!has_message(text));
-                let answers = rows.answers(&requests, true, text);
+                let answers = rows.answers(&requests, true, text, 1500);
                 assert!(answers.words.is_none());
                 assert!(!clears_message(true, &answers, text, text));
             }

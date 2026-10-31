@@ -83,6 +83,9 @@ fn press(app: &mut App, code: KeyCode) {
 
 fn alt_a(app: &mut App) {
     app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT));
+    screen(app, 120, 40);
+    let age = app.tray.now_ms() + 500;
+    app.tray.clock = Some(Instant::now() - std::time::Duration::from_millis(age));
 }
 
 fn screen(app: &mut App, width: u16, height: u16) -> String {
@@ -220,6 +223,47 @@ fn a_selects_all_or_none_and_r_rejects_all() {
             ("a3", false, false)
         ]
     );
+}
+
+#[test]
+fn answers_wait_for_rendering_and_leave_newer_requests_waiting() {
+    for key in [KeyCode::Enter, KeyCode::Char('r')] {
+        let mut app = with(vec![request("a1", skill())]);
+        app.paste("Reason");
+        app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT));
+        app.tray.clock = Some(Instant::now() - std::time::Duration::from_secs(1));
+        press(&mut app, key);
+        assert!(sent(&mut app).is_empty(), "unrendered requests wait");
+        assert_eq!(app.editor.text(), "Reason");
+        assert!(app.tray.focused);
+        screen(&mut app, 120, 40);
+        press(&mut app, key);
+        assert!(sent(&mut app).is_empty(), "newly rendered requests wait");
+        let age = app.tray.now_ms() + 500;
+        app.tray.clock = Some(Instant::now() - std::time::Duration::from_millis(age));
+        app.set_reading(Reading {
+            approvals: vec![request("a1", skill()), request("a2", server())],
+            ..Reading::default()
+        });
+        screen(&mut app, 120, 40);
+        press(&mut app, key);
+        let answers = sent(&mut app);
+        assert_eq!(choices(&answers[0]), [("a1", key == KeyCode::Enter, false)]);
+        assert_eq!(
+            answers[0].words, None,
+            "the newer request resets message intent"
+        );
+        app.set_reading(Reading {
+            approvals: vec![request("a2", server())],
+            ..Reading::default()
+        });
+        alt_a(&mut app);
+        press(&mut app, key);
+        assert_eq!(
+            choices(&sent(&mut app)[0]),
+            [("a2", key == KeyCode::Enter, false)]
+        );
+    }
 }
 
 #[test]

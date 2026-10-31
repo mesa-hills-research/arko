@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 #[path = "message_switch.rs"]
 mod message_switch;
 pub use message_switch::MessageSwitch;
+#[path = "shown_approvals.rs"]
+mod shown_approvals;
+pub use shown_approvals::ShownApprovals;
 
 /// What an item is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
