@@ -3,12 +3,12 @@
 //! asks the main agent for at once (`/handover`).
 //!
 //! An agent's configuration holds the size it hands over at, and it is
-//! saved with the session: a resumed conversation keeps it, and its prompt
+//! saved with the session. A resumed conversation keeps it, and its prompt
 //! cache with it. So the size the user sets goes to the framework instead,
 //! as the main agent's `HandoverThreshold` and the workers' one, which the
 //! workflow gives each run of the agent (`WorkflowBuilder::
 //! agent_handover_threshold`). The runtime hands over at it in place of the
-//! configured size, larger or smaller, from its next check on: a worker
+//! configured size, larger or smaller, from its next check on, meaning a worker
 //! running too, and one started, continued or resumed later. Each worker
 //! goes by it up to what its own model leaves room for, since workers can
 //! be on different models (`HandoverThreshold::with_most`). The session
@@ -16,12 +16,12 @@
 //! `workers_handover_at`), and a resumed session sets them again. At the size,
 //! the agent writes its report and goes on from it in a fresh
 //! conversation. An agent in Claude Code compacts instead (see
-//! `agents::compacts`): Claude Code's `/compact` summarises the
+//! `agents::compacts`). Claude Code's `/compact` summarises the
 //! conversation, and the agent goes on from the summary in the same
 //! conversation. For `/handover`, Arko asks with
 //! `UserCommand::RequestHandover`, through the command channel of the run,
 //! which it reaches through the tools the run is bound to
-//! (`Tool::bind_runtime`): the shell tool keeps them in [`Runs`].
+//! (`Tool::bind_runtime`). The shell tool keeps them in [`Runs`].
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -49,7 +49,7 @@ pub const MIN_TOKENS: usize = 20_000;
 #[derive(Debug, Default)]
 pub struct Runs {
     channels: Mutex<HashMap<Uuid, mpsc::WeakSender<UserCommand>>>,
-    /// The run asked for a handover as soon as it is bound: the main
+    /// The run asked for a handover as soon as it is bound, meaning the main
     /// agent's, whose next turn starts with one (`/handover` while no turn
     /// runs). Asked then, before its first request, the report comes
     /// first, with the turn's message in view.
@@ -70,7 +70,7 @@ impl Runs {
         }
     }
 
-    /// Sends `command` to run `run`; false when it isn't running.
+    /// Sends `command` to run `run`, and false when it isn't running.
     pub fn send(&self, run: Uuid, command: UserCommand) -> bool {
         let sender = crate::lock(&self.channels)
             .get(&run)
@@ -80,7 +80,7 @@ impl Runs {
 }
 
 /// The main agent's runs the user asked for a handover (`/handover`, or
-/// `/handover-at` under the agent's context) that hasn't happened yet: the
+/// `/handover-at` under the agent's context) that hasn't happened yet. The
 /// terminal and the feed say whose the handover is when it starts. By run
 /// ID, so tests running at once don't meet.
 static USER_ASKED: Mutex<Vec<Uuid>> = Mutex::new(Vec::new());
@@ -151,7 +151,7 @@ pub struct Handover {
     openai_auth: Arc<Mutex<Option<OpenAiAuth>>>,
     /// The size the main agent's configuration hands over at.
     configured: AtomicUsize,
-    /// The largest size the user can set: what the main agent's model
+    /// The largest size the user can set, meaning what the main agent's model
     /// leaves room for (see `agents::max_handover`).
     most: AtomicUsize,
     /// The main agent compacts in Claude Code instead of handing over.
@@ -185,7 +185,7 @@ struct Watch {
 }
 
 /// The most a run of `config` hands over at, in a session that reaches
-/// OpenAI models by `openai_auth`: what its model leaves room for, else (a
+/// OpenAI models by `openai_auth`, meaning what its model leaves room for, else (a
 /// model whose window isn't known) its configured size, as
 /// [`Handover::at`] says it.
 pub(crate) fn run_most(
@@ -245,7 +245,7 @@ impl Handover {
         self.runs.clone()
     }
 
-    /// The size the main agent hands over at: the one the user set, else
+    /// The size the main agent hands over at, meaning the one the user set, else
     /// the configured one, up to what its model leaves room for.
     pub fn at(&self) -> usize {
         self.threshold
@@ -271,13 +271,13 @@ impl Handover {
         self.workers.clone()
     }
 
-    /// The size the user set for the workers, if any: each worker hands
+    /// The size the user set for the workers, if any. Each worker hands
     /// over at it, or at less where its model leaves less room.
     pub fn workers_at(&self) -> Option<usize> {
         self.workers.get()
     }
 
-    /// Sets the size the workers hand over at, larger or smaller: the
+    /// Sets the size the workers hand over at, larger or smaller, meaning the
     /// running ones from their next check on, and the ones started,
     /// continued or resumed later. Each goes by it up to what its own
     /// model leaves room for ([`worker_most`](Self::worker_most)).
@@ -292,7 +292,7 @@ impl Handover {
     }
 
     /// The size a worker on `model` whose configuration hands over at
-    /// `configured` goes by: the workers' size the user set, else its
+    /// `configured` goes by, meaning the workers' size the user set, else its
     /// configured one, up to what its model leaves room for.
     pub fn worker_at(&self, model: &arko_ai::Model, configured: Option<usize>) -> Option<usize> {
         let at = self.workers.get().or(configured)?;
@@ -307,10 +307,10 @@ impl Handover {
 
     /// The main agent's configuration, as the workflow runs it (the saved
     /// one in a resumed session), hands over at `configured`, and its model
-    /// leaves room up to `most` (`None` when its limit isn't known: then
+    /// leaves room up to `most` (`None` when its limit isn't known, then
     /// up to the configured size). The size the user set stays as set, and
     /// so does a configured size over `most` (a session saved before sizes
-    /// were held under the model's room): each run goes by at most what its
+    /// were held under the model's room). Each run goes by at most what its
     /// model leaves room for, and [`at`](Self::at) says the size the
     /// current conversation goes by. (A conversation on a smaller model
     /// doesn't lower the size for one on a larger model.)
@@ -347,14 +347,14 @@ impl Handover {
                 watch.asked = true;
                 user_asked(run, true);
             }
-            // The turn's run isn't bound yet: at its first event.
+            // The turn's run isn't bound yet, so at its first event.
             _ => watch.pending = true,
         }
         Asked::Now
     }
 
     /// Asks the main agent, which isn't working, for a handover when its
-    /// next turn starts: in run `run`, its conversation's.
+    /// next turn starts, in run `run`, its conversation's.
     pub fn ask_next(&self, run: Uuid) -> Asked {
         *crate::lock(&self.runs.handover_on_bind) = Some(run);
         user_asked(run, true);
@@ -401,7 +401,7 @@ impl Handover {
     }
 
     /// The main agent's conversation runs on `main`, in a session that
-    /// reaches OpenAI models by `openai_auth`: its handover size, the most
+    /// reaches OpenAI models by `openai_auth`, meaning its handover size, the most
     /// the user can set, and whether it compacts in Claude Code go by it
     /// from now on (the conversation the session opens in, one it goes back
     /// to, a new one).
@@ -448,7 +448,7 @@ impl Handover {
                 watch.warned = false;
             }
             // A turn that ends drops the handover or compaction it hadn't
-            // made: Arko asks again in the next turn when it is still due.
+            // made. Arko asks again in the next turn when it is still due.
             AgentEvent::TaskStateChanged(TaskState::Completed { .. }) => {
                 user_asked(event.agent_run_id, false);
                 watch.asked = false;
@@ -512,7 +512,7 @@ pub enum Whose {
     Workers,
 }
 
-/// Reads `/handover-at`'s argument: whose size (`main`, `workers`, else
+/// Reads `/handover-at`'s argument, meaning whose size (`main`, `workers`, else
 /// both), and the rest (the size, if any).
 pub fn whose(argument: &str) -> (Whose, &str) {
     let argument = argument.trim();
@@ -555,7 +555,7 @@ pub fn parse_tokens(text: &str) -> Result<usize, String> {
             "`{text}` isn't a number of tokens. Use , or _ only between groups of three digits, and a point for decimals, as in 1.2M."
         ));
     }
-    // In whole tokens: `1.2M` is 1,200,000, `1.2345k` isn't whole.
+    // In whole tokens, `1.2M` is 1,200,000, `1.2345k` isn't whole.
     let fraction = fraction.trim_end_matches('0');
     if fraction.len() > places {
         return Err(format!("`{text}` isn't a whole number of tokens."));
@@ -572,7 +572,7 @@ pub fn parse_tokens(text: &str) -> Result<usize, String> {
     Ok(tokens)
 }
 
-/// A handover size as the user reads it: `250k` for whole thousands, else
+/// A handover size as the user reads it, as `250k` for whole thousands, else
 /// all of it (`250,500`), never rounded.
 pub fn shown(tokens: usize) -> String {
     if tokens.is_multiple_of(1000) {
@@ -589,7 +589,7 @@ pub fn shown(tokens: usize) -> String {
     grouped
 }
 
-/// A measured size, such as a request's input, in whole thousands:
+/// A measured size, such as a request's input, in whole thousands, as
 /// `642k` for 642,400.
 pub fn about(tokens: usize) -> String {
     format!("{}k", tokens / 1000)
@@ -756,7 +756,7 @@ mod tests {
         assert_eq!(handover.threshold().get(), Some(600_000));
         handover.configure(Some(250_000), Some(950_000));
         assert_eq!(handover.at(), 600_000);
-        // A model whose limit isn't known: up to the configured size.
+        // A model whose limit isn't known, up to the configured size.
         handover.configure(Some(250_000), None);
         assert_eq!(handover.set_at(300_000), 250_000);
         // A session saved at a size over the model's room goes by the room.
@@ -793,7 +793,7 @@ mod tests {
         assert_eq!(handover.set_at(920_000), 100_000, "as the size shown says");
     }
 
-    /// The watch leaves the size to the runtime: it asks for no handover
+    /// The watch leaves the size to the runtime. It asks for no handover
     /// there. It warns once when a fresh conversation starts over the
     /// size, which the runtime then doesn't hand over.
     #[tokio::test]
@@ -835,7 +835,7 @@ mod tests {
     }
 
     /// A compaction resets the watch as a handover does, and a turn that
-    /// ends drops a request it didn't act on: `/handover` asks again.
+    /// ends drops a request it didn't act on, so `/handover` asks again.
     #[tokio::test]
     async fn the_watch_starts_over_after_a_compaction_or_a_turn() {
         let runs = Arc::new(Runs::default());
@@ -891,7 +891,7 @@ mod tests {
     }
 
     /// A handover asked for while the agent doesn't work goes to its run
-    /// as the next turn binds it; one asked for as a turn starts, before
+    /// as the next turn binds it, and one asked for as a turn starts, before
     /// its run is bound, at its first event.
     #[tokio::test]
     async fn a_handover_asked_between_turns_goes_to_the_next() {
@@ -910,7 +910,7 @@ mod tests {
         ));
         runs.bind(run, sender.downgrade());
         assert!(commands.try_recv().is_err(), "once");
-        // That turn ended: its run's channel is closed.
+        // That turn ended, so its run's channel is closed.
         drop((sender, commands));
 
         let next = Uuid::new_v4();

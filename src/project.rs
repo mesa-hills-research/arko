@@ -1,14 +1,14 @@
-//! The project's instructions: `AGENTS.md` and `CLAUDE.md` in the working
+//! The project's instructions are `AGENTS.md` and `CLAUDE.md` in the working
 //! directory, read as Arko starts. Which of them the agents get is a session
 //! setting ([`Files`]), and so is whether workers get them too.
 //!
 //! The main agent gets them in the first message of each conversation, and
 //! again when a handover restates that message. Each worker gets the same
 //! text, from the lead's working directory (a worktree of its own has only
-//! what was committed), in its first message as it starts: the crew gives
+//! what was committed), in its first message as it starts. The crew gives
 //! it as arko's subagent start context, which a handover restates too.
 //! Neither is in an agent's instructions, so `/project-instructions` can
-//! change them at any time without breaking a prompt cache: the change
+//! change them at any time without breaking a prompt cache. The change
 //! reaches the conversations and the workers that start after it.
 
 use std::path::Path;
@@ -29,7 +29,7 @@ const MAX_BYTES: usize = 64 * 1024;
 /// Where the main agent is told the files are.
 const MAIN_PLACE: &str = "the working directory";
 
-/// Where a worker is told they are: it may work in a worktree of its own.
+/// Where a worker is told they are. It may work in a worktree of its own.
 const WORKER_PLACE: &str = "your lead's working directory";
 
 /// Which of the project's instruction files the agents get. `One` is the
@@ -81,7 +81,7 @@ impl Files {
     }
 }
 
-/// The instruction files the working directory had as Arko started: each
+/// The instruction files the working directory had as Arko started, each
 /// by name, with its text trimmed. Missing and empty files are left out.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Found(Vec<(&'static str, String)>);
@@ -136,7 +136,7 @@ impl Found {
             .collect()
     }
 
-    /// What the main agent's first message of a conversation starts with:
+    /// What the main agent's first message of a conversation starts with, meaning
     /// the files `choice` gives, each under its heading. `None` without any.
     pub fn for_main(&self, choice: Files) -> Option<String> {
         self.section(choice, MAIN_PLACE)
@@ -170,7 +170,7 @@ fn cut(name: &str, text: &str, room: usize) -> String {
     format!("{}\n[... the rest of {name} is left out ...]", &text[..end])
 }
 
-/// `names` as a list in words: `AGENTS.md and CLAUDE.md`.
+/// `names` as a list in words, as `AGENTS.md and CLAUDE.md`.
 fn listed(names: &[&str]) -> String {
     match names {
         [] => String::new(),
@@ -184,10 +184,10 @@ const USAGE: &str = "/project-instructions takes one, both or off, or workers on
 
 impl crate::Harness {
     /// `/project-instructions`, typed at the prompt, sent from the page or
-    /// chosen in the settings: says which of the project's instruction files
+    /// chosen in the settings, says which of the project's instruction files
     /// the agents get. With `one`, `both` or `off` it changes which, and
     /// with `workers on` or `workers off` whether workers get them, at any
-    /// time: the conversations and workers that start after it get the
+    /// time. The conversations and workers that start after it get the
     /// change.
     pub(crate) fn project_command(&mut self, argument: &str, source: Source) {
         let before = (
@@ -277,7 +277,7 @@ impl crate::Harness {
         text
     }
 
-    /// Which files the agents get, from the next first message on: the
+    /// Which files the agents get, from the next first message on, and the
     /// conversation under way keeps what it got.
     fn set_project_files(&mut self, files: Files) -> String {
         if self.settings.project_instructions == files {
@@ -338,7 +338,7 @@ impl crate::Harness {
 mod tests {
     use super::*;
 
-    /// A working directory with these files (a `None` text: no file).
+    /// A working directory with these files (a `None` text means no file).
     fn found(agents: Option<&str>, claude: Option<&str>) -> (tempfile::TempDir, Found) {
         let temp = tempfile::tempdir().unwrap();
         for (name, text) in [("AGENTS.md", agents), ("CLAUDE.md", claude)] {
@@ -358,7 +358,7 @@ mod tests {
         (name, text.to_string())
     }
 
-    /// One gives AGENTS.md, else CLAUDE.md; both gives each there is; off
+    /// One gives AGENTS.md, else CLAUDE.md, both gives each there is, and off
     /// gives none. An empty (or blank) file counts as none.
     #[test]
     fn each_choice_gives_its_files() {

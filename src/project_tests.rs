@@ -1,4 +1,4 @@
-// End-to-end tests of the project's instructions (AGENTS.md and CLAUDE.md):
+// End-to-end tests of the project's instructions (AGENTS.md and CLAUDE.md), covering
 // the flags and defaults, the session that keeps the choice,
 // `/project-instructions`, and what reaches the main agent's and the
 // workers' first messages, with the mock model. (Included in `main`'s
@@ -115,7 +115,7 @@ fn the_flags_choose_for_new_and_resumed_sessions() {
     );
     assert!(Args::try_parse_from(["arko", "--project-instructions", "agents"]).is_err());
 
-    // A resumed session (saved before the setting: one file, not to
+    // A resumed session (saved before the setting, with one file, not to
     // workers) keeps its own without the flags, and takes them with them.
     let mut resumed = Settings {
         project_instructions: project::Files::One,
@@ -181,7 +181,7 @@ fn the_choices_are_saved_with_the_session_and_old_sessions_load_as_they_were() {
 }
 
 /// The main agent gets the files in the first message of each
-/// conversation, once: a later message of the conversation doesn't repeat
+/// conversation, once, and a later message of the conversation doesn't repeat
 /// them. A change applies from the next conversation on, with the files
 /// as Arko read them at its start.
 #[tokio::test]
@@ -202,7 +202,7 @@ async fn the_main_agent_gets_them_once_per_conversation() {
         assert!(matches!(end, TurnEnd::Answered));
     };
 
-    // One: AGENTS.md, first, then the message.
+    // One, so AGENTS.md comes first, then the message.
     say(&mut harness, &mut inputs, "Hi.").await;
     let first = user_messages(&last(&bodies));
     assert_eq!(
@@ -214,7 +214,7 @@ async fn the_main_agent_gets_them_once_per_conversation() {
     assert_eq!(body.matches("Use tabs.").count(), 1, "{body}");
     assert_eq!(user_messages(&body).last().unwrap(), "And now?");
 
-    // Both, from the next conversation on: the conversation under way keeps
+    // Both, from the next conversation on, and the conversation under way keeps
     // what it got.
     harness.project_command("both", Source::Terminal);
     assert!(texts(&harness.feed, "output").iter().any(|text| text.ends_with(
@@ -223,7 +223,7 @@ async fn the_main_agent_gets_them_once_per_conversation() {
     say(&mut harness, &mut inputs, "Still here?").await;
     assert!(!last(&bodies).contains("Use spaces."));
     harness.new_conversation();
-    // Arko read the files as it started: a later edit isn't sent.
+    // Arko read the files as it started, so a later edit isn't sent.
     std::fs::write(harness.settings.workspace.join("AGENTS.md"), "Changed.").unwrap();
     say(&mut harness, &mut inputs, "Fresh.").await;
     assert_eq!(
@@ -231,7 +231,7 @@ async fn the_main_agent_gets_them_once_per_conversation() {
         format!("{MAIN_AGENTS}\n\nUse tabs.\n\n{MAIN_CLAUDE}\n\nUse spaces.\n\n# My message\n\nFresh.")
     );
 
-    // Off: neither, in the next conversation.
+    // Off, so neither, in the next conversation.
     harness.project_command("off", Source::Terminal);
     harness.new_conversation();
     say(&mut harness, &mut inputs, "Plain.").await;
@@ -239,7 +239,7 @@ async fn the_main_agent_gets_them_once_per_conversation() {
 }
 
 /// `/project-instructions` says what the agents get from the working
-/// directory and how often, and changes it at any time: the session and
+/// directory and how often, and changes it at any time. The session and
 /// the clients have the change. It says what it takes when given anything
 /// else, and that a session without workers has none to give them to.
 #[tokio::test]
@@ -308,7 +308,7 @@ async fn the_command_says_and_changes_the_choices() {
     assert_eq!(output(&harness).iter().filter(|text| **text == usage).count(), 2);
     assert_eq!(harness.settings.project_instructions, project::Files::Off);
 
-    // No file: the agents get none.
+    // No file, so the agents get none.
     harness.project = project::Found::default();
     harness.project_command("one", Source::Terminal);
     assert!(output(&harness).contains(
@@ -326,7 +326,7 @@ async fn the_command_says_and_changes_the_choices() {
 }
 
 /// Each worker gets the files in its first message, before its task, with
-/// the text the main agent gets: from the lead's working directory, as Arko
+/// the text the main agent gets, from the lead's working directory, as Arko
 /// read it when it started, not the worker's own (an untracked or edited
 /// AGENTS.md would be missing or older in a worktree of its own). A worker
 /// started after workers are turned off doesn't get them, and one started

@@ -1,4 +1,4 @@
-// End-to-end tests of what becomes of what the user sends: the verdict a
+// End-to-end tests of what becomes of what the user sends, meaning the verdict a
 // client that sends with `Request::Send` gets, at the moment its send went
 // or was refused, and the notice a send without one gets, as before.
 // (Included in `main`'s tests, whose helpers they use.)
@@ -9,7 +9,7 @@ use crate::remote::{RefusalKind, Verdict};
 use crate::sending::{Admitted, Phase, Read};
 use tokio::sync::Notify;
 
-/// Where an app's sends go: the requests `inputs` reads.
+/// Where an app's sends go, meaning the requests `inputs` reads.
 fn wire(inputs: &mut Inputs) -> mpsc::UnboundedSender<Request> {
     let (sender, receiver) = mpsc::unbounded_channel();
     inputs.requests = receiver;
@@ -51,7 +51,7 @@ fn accepted(verdict: &Verdict) -> Option<(Delivery, Option<u64>)> {
 /// its item, and a command once it ran. A command that doesn't exist or
 /// is given wrongly, nothing to send, a message to a worker that isn't
 /// there, images the model can't take, and answers to questions that
-/// aren't open are refused, and the transcript doesn't repeat it: the
+/// aren't open are refused, and the transcript doesn't repeat it. The
 /// client shows why. A stop is accepted as it is read. A send the session
 /// hasn't read as it closes is refused as closed.
 #[tokio::test]
@@ -382,7 +382,7 @@ fn partial_words(verdict: &Verdict) -> Option<&str> {
 }
 
 /// When the agent's note board refuses the note that carries a message's
-/// answers, the message still went: its questions are settled and the
+/// answers, the message still went. Its questions are settled and the
 /// note is kept, which Arko posts again after the next turn. The verdict
 /// says so, and a send without one gets the notice it always had.
 #[tokio::test]
@@ -619,7 +619,7 @@ async fn refusals_read_as_before_without_a_verdict_and_as_kinds_with_one() {
         let (phase, event, takes_images, kind, notice) = cases(&with_image).swap_remove(at);
         let what = format!("case {at}");
         harness.main_config.llm_config.model.supports_image_input = takes_images;
-        // Without a verdict to come: the notice it always was.
+        // Without a verdict to come, so the notice it always was.
         let before = notices(&harness).len();
         let read = harness
             .read_sent(event, crate::sending::Reply::default(), &mut inputs, phase)
@@ -632,7 +632,7 @@ async fn refusals_read_as_before_without_a_verdict_and_as_kinds_with_one() {
             notice.as_slice(),
             "{what}, without a verdict"
         );
-        // With one: its kind, and nothing in the transcript.
+        // With one, its kind, and nothing in the transcript.
         let (phase, event, _, _, _) = cases(&with_image).swap_remove(at);
         let (sender, verdict) = oneshot::channel();
         let before = notices(&harness).len();
@@ -667,7 +667,7 @@ async fn post_verdict(
     response.json().await.unwrap()
 }
 
-/// The web page's sends get the session's own verdicts: a message as the
+/// The web page's sends get the session's own verdicts, meaning a message as the
 /// turn it starts, and refusals for a command that doesn't exist (also one
 /// mistyped in a worker's view), a message to a worker that isn't there,
 /// answers to questions and approvals that aren't open, and a send from a
@@ -795,7 +795,7 @@ async fn a_message_queued_for_a_turn_of_its_own_is_accepted_as_queued() {
 }
 
 /// While a turn runs, a message that answers a question went as their note
-/// even when the board refuses the note and the images with it: the
+/// even when the board refuses the note and the images with it. The
 /// verdict says both wait.
 #[tokio::test]
 async fn a_note_and_its_images_the_board_refuses_are_said_in_the_verdict() {

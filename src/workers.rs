@@ -113,7 +113,7 @@ pub fn check_retry_cap(cap: u32) -> Result<u32, String> {
     }
 }
 
-/// Reads `text` as `/worker-retry-cap` takes it: `off` for no cap, `on` for
+/// Reads `text` as `/worker-retry-cap` takes it, as `off` for no cap, `on` for
 /// [`DEFAULT_RETRY_CAP`], or a whole number from 1.
 pub fn parse_retry_cap(text: &str) -> Result<Option<u32>, String> {
     match text.trim() {
@@ -183,7 +183,7 @@ pub fn check_depth(depth: u32) -> Result<u32, String> {
     }
 }
 
-/// Reads `text` as `/worker-depth` takes it: a whole number from 1 to
+/// Reads `text` as `/worker-depth` takes it, as a whole number from 1 to
 /// [`MAX_DEPTH`]. 1 allows only the main agent to start workers.
 pub fn parse_depth(text: &str) -> Result<u32, String> {
     text.trim()

@@ -1,4 +1,4 @@
-//! A local model server for tests: it speaks OpenAI's Responses streaming
+//! A local model server for tests. It speaks OpenAI's Responses streaming
 //! protocol, and answers each request as the test scripts it, so agents
 //! run without calling a model.
 
@@ -9,7 +9,7 @@ use serde_json::Value;
 use tokio::task::JoinHandle;
 
 /// A local model server speaking OpenAI's Responses streaming
-/// protocol: `respond` answers each request (its index and body) with
+/// protocol. `respond` answers each request (its index and body) with
 /// the events of a model turn, after an optional wait.
 pub struct ModelServer {
     url: String,
@@ -86,7 +86,7 @@ impl ModelServer {
         crate::lock(&self.heads).clone()
     }
 
-    /// Where it listens: `http://127.0.0.1:PORT`.
+    /// Where it listens, as `http://127.0.0.1:PORT`.
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -114,7 +114,7 @@ impl ModelServer {
         )
     }
 
-    /// A client whose Gemini requests come here: answer them with
+    /// A client whose Gemini requests come here. Answer them with
     /// [`gemini_tool_call`].
     pub fn gemini_client(&self) -> LLMClient {
         LLMClient::new().with_google_client(
@@ -122,7 +122,7 @@ impl ModelServer {
         )
     }
 
-    /// A client whose OpenRouter requests come here: answer them with
+    /// A client whose OpenRouter requests come here. Answer them with
     /// [`openrouter_tool_call`].
     pub fn openrouter_client(&self) -> LLMClient {
         LLMClient::new().with_openrouter_client(
@@ -201,14 +201,14 @@ pub fn overflow() -> String {
     )
 }
 
-/// A model turn of `text` alone, without a tool call: the main agent's
+/// A model turn of `text` alone, without a tool call, as the main agent's
 /// reply when it ends its turns with a reply in plain text. The text
 /// streams first, as a model's does.
 pub fn reply(id: &str, text: &str) -> String {
     turn_with_text(id, text, None)
 }
 
-/// A model turn with `text` beside a call to the tool `name`: the agent's
+/// A model turn with `text` beside a call to the tool `name`, as the agent's
 /// progress as it works.
 pub fn say_and_call(id: &str, text: &str, name: &str, arguments: Value) -> String {
     turn_with_text(id, text, Some((name, arguments)))
@@ -244,7 +244,7 @@ fn turn_with_text(id: &str, text: &str, call: Option<(&str, Value)>) -> String {
         .collect()
 }
 
-/// A model turn whose reply streams in `pieces`, all at once: a burst.
+/// A model turn whose reply streams in `pieces`, all at once, a burst.
 pub fn reply_in_pieces(id: &str, pieces: &[String]) -> String {
     let text: String = pieces.concat();
     let message = serde_json::json!({

@@ -1,4 +1,4 @@
-//! A new conversation that carries the current one over: `/model MODEL`
+//! A new conversation that carries the current one over, as `/model MODEL`
 //! once the conversation has started, and `/new continue` on the same model.
 //!
 //! The main agent's runs keep their configuration, so a model can't change
@@ -7,7 +7,7 @@
 //! Its first message opens with a brief Arko writes of the old conversation
 //! without any model (see `earlier`), and it is offered `earlier_conversation`
 //! to read the old one as it needs. When the old model can still write, its
-//! own report goes in the brief first: Arko asks for it in one more turn of
+//! own report goes in the brief first. Arko asks for it in one more turn of
 //! the old conversation, which Ctrl-C skips. A plain `/new` stays a clean
 //! start, and so does `/model MODEL` after it (it only sets the model of the
 //! conversation to come). The old conversation stays as it was, on its own
@@ -28,7 +28,7 @@ use crate::sending::{Admitted, Phase, Read, Reply};
 use crate::session::Settings;
 use crate::{Conversation, Harness, Input, lock, providers};
 
-/// What carries the old conversation into the next one: the brief its
+/// What carries the old conversation into the next one, meaning the brief its
 /// first message opens with, and which conversation it continues.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Carry {
@@ -59,7 +59,7 @@ pub(crate) const REPORTING: &str = "The report is being written. Stopping skips 
 pub(crate) const REPORTING_AT_PROMPT: &str = "The report is being written. Ctrl-C skips it.";
 
 /// The old model writes its report for a switch, as the session's feed
-/// says (`Activity::reporting`), from its start until this is dropped:
+/// says (`Activity::reporting`), from its start until this is dropped, meaning
 /// when the report is in or skipped, or when what awaits it is dropped,
 /// which ends the report's request too.
 struct Reporting {
@@ -94,7 +94,7 @@ pub(crate) enum New {
     Continue,
 }
 
-/// What `/new` in `text` asks for, when `text` is that command: plain, or
+/// What `/new` in `text` asks for, when `text` is that command, plain or
 /// with `continue`. Another word is an error that says what it takes.
 pub(crate) fn new_argument(text: &str) -> Option<Result<New, String>> {
     let rest = text.strip_prefix("/new")?;
@@ -111,7 +111,7 @@ pub(crate) fn new_argument(text: &str) -> Option<Result<New, String>> {
     })
 }
 
-/// The request for the old model's report, which says how to give it:
+/// The request for the old model's report, which says how to give it, either
 /// `with_tool` with `handover_report`, else as a reply. `to` is the new
 /// conversation's model when the switch changes it.
 pub(crate) fn report_request(with_tool: bool, to: Option<&str>) -> String {
@@ -133,7 +133,7 @@ pub(crate) fn report_request(with_tool: bool, to: Option<&str>) -> String {
 }
 
 /// Why the old model couldn't write its report, from the error its request
-/// ended in, as the switch's line says it: "plan limit reached".
+/// ended in, as the switch's line says it, as "plan limit reached".
 pub(crate) fn report_failure(error: &WorkflowError) -> String {
     use arko_agents::ErrorRecoveryCause;
     match error {
@@ -187,7 +187,7 @@ fn state_word(worker: &arko_workflows::subagents::SubagentRecord) -> &'static st
 }
 
 /// Whether the conversation `task` holds changed since its latest handover
-/// report: the agent wrote something after it.
+/// report, meaning the agent wrote something after it.
 fn worked_since_report(task: &arko_agents::Task) -> bool {
     task.conversation
         .messages
@@ -195,7 +195,7 @@ fn worked_since_report(task: &arko_agents::Task) -> bool {
         .any(|message| message.role == arko_ai::Role::Assistant)
 }
 
-/// The session's conversations as `earlier_conversation` reads them: the
+/// The session's conversations as `earlier_conversation` reads them, meaning the
 /// record's runs, which the harness keeps current here, read from the
 /// workflow.
 #[derive(Debug, Default)]
@@ -272,7 +272,7 @@ impl earlier::Saved for Earlier {
     }
 }
 
-/// What a switch changes the session to: its settings, and the agents'
+/// What a switch changes the session to, meaning its settings, and the agents'
 /// configurations built from them.
 struct Target {
     settings: Settings,
@@ -284,7 +284,7 @@ struct Target {
 }
 
 impl Harness {
-    /// The switch `command` asks for, at the prompt between turns:
+    /// The switch `command` asks for, at the prompt between turns, meaning
     /// `/new continue`, and `/model MODEL` once the conversation has started
     /// (before, `/model` builds the agents again on the model).
     pub(crate) fn switch_of(&self, command: &str) -> Option<Switch> {
@@ -306,7 +306,7 @@ impl Harness {
     }
 
     /// The model settings of the conversation the next message goes to,
-    /// its effort included: the current conversation's own configuration's,
+    /// its effort included, meaning the current conversation's own configuration's,
     /// else those a new conversation starts on.
     pub(crate) fn conversation_settings(&self) -> ModelSettings {
         self.conversations
@@ -318,7 +318,7 @@ impl Harness {
             .unwrap_or_else(|| self.settings.main.clone())
     }
 
-    /// Makes `switch`: a new conversation that carries the current one
+    /// Makes `switch`, a new conversation that carries the current one
     /// over, or (`/model` with none current, after `/new`) sets the model
     /// of the conversation to come. Returns whether the user quit while
     /// the old model wrote its report.
@@ -358,7 +358,7 @@ impl Harness {
             }
         };
         let (Some(index), Some(latest)) = (current, latest) else {
-            // After `/new`: the next conversation starts clean on the model.
+            // After `/new`, the next conversation starts clean on the model.
             let text = self.apply_target(target);
             self.setting_reply(Ok(text), source, true);
             return false;
@@ -452,7 +452,7 @@ impl Harness {
     }
 
     /// The session takes `target`'s settings and configurations without
-    /// building the workflow again: new conversations start on its main
+    /// building the workflow again, so new conversations start on its main
     /// configuration, and new workers that follow the main agent on its
     /// model. Returns what to say.
     fn apply_target(&mut self, target: Target) -> String {
@@ -496,7 +496,7 @@ impl Harness {
     /// report for the new conversation (on `to`, when the switch changes
     /// the model), unless it can't or has nothing new to say. The line says
     /// it asks, and Ctrl-C (or the page's stop) skips it. Returns the
-    /// report, or why there is none (`None`: nothing to say), and whether
+    /// report, or why there is none (`None` means nothing to say), and whether
     /// the user quit meanwhile.
     async fn old_report(
         &mut self,
@@ -539,7 +539,7 @@ impl Harness {
             &format!("Asking {old_model} for a report. Stopping skips it."),
         );
         // (Until the report is in or skipped, also when what awaits this
-        // is dropped: then the request ends with it.)
+        // is dropped, and then the request ends with it.)
         let reporting = Reporting::start(&self.feed, asking.abort_handle());
         let mut skipped = false;
         let mut quit = false;
@@ -653,7 +653,7 @@ impl Harness {
 
     /// The brief of the conversation at `index` (on `old_model`), with
     /// `report`, sized to `target`'s main model. Its latest run is read as
-    /// `latest` has it: before the request for the report and the report,
+    /// `latest` has it, before the request for the report and the report,
     /// which the brief holds in a section of its own.
     fn brief_of(
         &self,
@@ -732,7 +732,7 @@ impl Harness {
         })
     }
 
-    /// The line that says what the switch did: the new conversation, on
+    /// The line that says what the switch did, meaning the new conversation, on
     /// `model` when it changed, from the old model's report (`reported`)
     /// and a brief of conversation `index`, the workers that move across,
     /// and (`follow`) that new workers follow the model.
@@ -788,7 +788,7 @@ impl Harness {
         self.earlier.update(&self.conversations);
     }
 
-    /// What the user sent while the old model writes its report: a command
+    /// What the user sent while the old model writes its report. A command
     /// runs now, as during a turn, and a message is refused. The clients
     /// keep a message in their box while the report is written (see
     /// `Activity::reporting`), so one only comes here when it was sent as
@@ -830,7 +830,7 @@ impl Harness {
     }
 
     /// The configuration the next new conversation starts on, when it isn't
-    /// the one the workflow was built with: after a switch, and with
+    /// the one the workflow was built with, meaning after a switch, and with
     /// `earlier_conversation` when it carries an earlier one over. (Its
     /// record takes the carry once its run is recorded.)
     pub(crate) fn new_conversation_config(&self) -> Option<arko_agents::AgentConfig> {

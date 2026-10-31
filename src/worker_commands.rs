@@ -1,5 +1,5 @@
 //! `/worker-models`, `/worker-billing`, `/api-budget`, `/worker-depth`,
-//! `/worker-retry-cap`, `/message-copies` and `/profiles`: who chooses the
+//! `/worker-retry-cap`, `/message-copies` and `/profiles`, covering who chooses the
 //! workers' models, whether they may run on models billed per token and the
 //! day's budget for those, how deep workers go, how many failed requests
 //! stop a worker, whether the agent that started a worker gets a copy of the
@@ -45,7 +45,7 @@ const PLACEHOLDER: &str = "Describe what this profile is for";
 /// How `/profiles` is used.
 const PROFILES_USAGE: &str = "/profiles lists the worker profiles, /profiles NAME shows one, /profiles add NAME MODEL [EFFORT] [DESCRIPTION] makes one for every project, and /profiles remove NAME deletes one.";
 
-/// The retry cap as the commands say it: a number, or `off`.
+/// The retry cap as the commands say it, as a number, or `off`.
 fn cap_word(cap: Option<u32>) -> String {
     cap.map_or_else(|| "off".to_string(), |cap| cap.to_string())
 }
@@ -86,7 +86,7 @@ impl Harness {
     }
 
     /// `/worker-models`, typed at the prompt, sent from the page or chosen in
-    /// the settings: says who chooses the workers' models, and with `agent`,
+    /// the settings, says who chooses the workers' models, and with `agent`,
     /// `profiles` or `session` changes it, at any time. The start hook
     /// enforces it on each start. Before the conversation starts the agents
     /// are built again, since their instructions say what the main agent
@@ -139,7 +139,7 @@ impl Harness {
         let sentence = self.models_sentence(choice);
         if started {
             // The main agent's instructions say what it could choose when the
-            // conversation started: a note tells it what it can now.
+            // conversation started, so a note tells it what it can now.
             let told = match choice {
                 ModelChoice::Agent => format!(
                     "The user now lets you choose a profile, model and effort for each worker, and save profiles.{}",
@@ -167,7 +167,7 @@ impl Harness {
     }
 
     /// `/worker-billing`, typed at the prompt, sent from the page or chosen
-    /// in the settings: says whether workers may run on models billed per
+    /// in the settings, says whether workers may run on models billed per
     /// token, and with `plans`, `ask` or `api` changes it, at any time. The
     /// start hook holds each start to it. Before the conversation starts the
     /// agents are built again, since the main agent's instructions say it.
@@ -216,7 +216,7 @@ impl Harness {
             self.start_new_workers();
             self.publish_models();
             // The main agent's instructions say how workers were paid for
-            // when the conversation started: a note tells it how now.
+            // when the conversation started, so a note tells it how now.
             let told = format!(
                 "The user changed worker billing to {}. {}",
                 billing.label(),
@@ -240,7 +240,7 @@ impl Harness {
     }
 
     /// `/api-budget`, typed at the prompt, sent from the page or chosen in
-    /// the settings: says the daily API budget and the day's spend, or with
+    /// the settings, says the daily API budget and the day's spend, or with
     /// `off`, `on` or dollars sets it, at any time. The start hook holds each
     /// start to it, and the agents aren't told.
     pub(crate) fn api_budget_command(&mut self, argument: &str, source: Source) {
@@ -287,7 +287,7 @@ impl Harness {
     }
 
     /// What the main agent is told again once workers are not all on the
-    /// session's model, when the depth lets them start workers: its
+    /// session's model, when the depth lets them start workers, because its
     /// instructions may not have said it.
     fn nesting_again(&self) -> String {
         if self.settings.worker_depth > 1 {
@@ -298,7 +298,7 @@ impl Harness {
     }
 
     /// `/worker-depth`, typed at the prompt, sent from the page or chosen in
-    /// the settings: says how many levels of workers the session allows, or
+    /// the settings, says how many levels of workers the session allows, or
     /// sets it, from 1 to 4.
     pub(crate) fn worker_depth_command(&mut self, argument: &str, source: Source) {
         let before = self.settings.worker_depth;
@@ -336,7 +336,7 @@ impl Harness {
             self.start_new_workers();
             self.publish_models();
             // The main agent's instructions say what the depth was when the
-            // conversation started: a note tells it what it is now.
+            // conversation started, so a note tells it what it is now.
             if let Some(told) = depth_note(depth, self.settings.worker_models)
                 && let Err(error) = self
                     .workflow()
@@ -357,7 +357,7 @@ impl Harness {
     }
 
     /// `/worker-retry-cap`, typed at the prompt, sent from the page or chosen
-    /// in the settings: says how many failed model requests in a row stop a
+    /// in the settings, says how many failed model requests in a row stop a
     /// worker, or with `off`, `on` or a number sets it. Before the
     /// conversation starts the agents are built again. After it the running
     /// workflow gets the cap, and its running workers have it at their next
@@ -409,7 +409,7 @@ impl Harness {
     }
 
     /// `/message-copies`, typed at the prompt, sent from the page or chosen
-    /// in the settings: says whether the agent that started a worker gets a
+    /// in the settings, says whether the agent that started a worker gets a
     /// copy of the user's messages to it, or with `on` or `off` sets that.
     /// It applies from the next message, and the agents aren't told.
     pub(crate) fn message_copies_command(&mut self, argument: &str, source: Source) {
@@ -462,7 +462,7 @@ impl Harness {
         ))
     }
 
-    /// `/profiles`, typed at the prompt or sent from the page: the worker
+    /// `/profiles`, typed at the prompt or sent from the page, covers the worker
     /// profiles, one profile whole, and making and deleting one.
     pub(crate) fn profiles_command(&mut self, argument: &str) {
         let words: Vec<&str> = argument.split_whitespace().collect();
@@ -666,7 +666,7 @@ impl Harness {
         Ok(text)
     }
 
-    /// `/profiles add NAME MODEL [EFFORT] [DESCRIPTION]`: writes the file in
+    /// `/profiles add NAME MODEL [EFFORT] [DESCRIPTION]` writes the file in
     /// Arko's folder, with an empty body, for the user to edit.
     fn profiles_add(&self, name: &str, rest: &[&str]) -> Result<String, String> {
         let Some((model, rest)) = rest.split_first() else {
@@ -720,7 +720,7 @@ impl Harness {
         Ok(text)
     }
 
-    /// `/profiles remove NAME`: deletes the file of the profile `/profiles`
+    /// `/profiles remove NAME` deletes the file of the profile `/profiles`
     /// shows under that name.
     fn profiles_remove(&self, name: &str) -> Result<String, String> {
         let roots = self.profile_roots();

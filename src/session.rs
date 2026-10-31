@@ -1,4 +1,4 @@
-//! Sessions: one folder per session under the user's data directory, with
+//! Sessions are one folder per session under the user's data directory, with
 //! the settings it was started with (a resumed session keeps them), the
 //! workflow's checkpoints, and the terminal jobs' logs.
 
@@ -17,10 +17,10 @@ use crate::providers::OpenAiAuth;
 use crate::shell::WindowsShell;
 
 pub(crate) const SETTINGS_FILE: &str = "session.json";
-/// The name the user gave the session, when they renamed it: apart from
+/// The name the user gave the session, when they renamed it, kept apart from
 /// its settings, which the session rewrites while it runs.
 const TITLE_FILE: &str = "title";
-/// The name a model gave the session (see `session_names`): apart from the
+/// The name a model gave the session (see `session_names`), kept apart from the
 /// user's, which it never replaces.
 const NAME_FILE: &str = "generated-title";
 
@@ -53,18 +53,18 @@ pub struct Settings {
     pub workspace: PathBuf,
     pub main: ModelSettings,
     pub worker: ModelSettings,
-    /// How many workers may run at once; 0 turns them off, and
+    /// How many workers may run at once, where 0 turns them off and
     /// `agents::NO_LIMIT` sets no limit.
     pub max_workers: u32,
     pub handover_at: usize,
     /// The input size, in tokens, at which the main agent hands over, as
-    /// `/handover-at` (or `--handover-at` when resuming) last set it; `None`:
+    /// `/handover-at` (or `--handover-at` when resuming) last set it, and `None` means
     /// as its model settings say. The main agent's runs hand over at it in
     /// place of the size their saved configuration holds (see `handover`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_handover_at: Option<usize>,
     /// The input size, in tokens, at which the workers hand over, as
-    /// `/handover-at` (or `--handover-at` when resuming) last set it; `None`:
+    /// `/handover-at` (or `--handover-at` when resuming) last set it, and `None` means
     /// each as its model settings say. Every worker run, also one started
     /// before it was set, hands over at it in place of the size its
     /// configuration holds, up to what its own model leaves room for.
@@ -72,12 +72,12 @@ pub struct Settings {
     pub workers_handover_at: Option<usize>,
     /// Outside access, as the session last had it (`/outside`).
     pub allow_outside_workspace: bool,
-    /// Show the agents' thinking whole as they work: the line prompt
+    /// Show the agents' thinking whole as they work. The line prompt
     /// prints it, and the full-screen view opens it (else it shows folded,
     /// and the line prompt leaves it out).
     pub show_thinking: bool,
     /// The agents neither ask their models for the text of their thinking
-    /// nor show it. False in sessions saved before it existed: their saved
+    /// nor show it. False in sessions saved before it existed, because their saved
     /// agents keep asking for what they asked for, and new workers ask.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hide_thinking: bool,
@@ -85,14 +85,14 @@ pub struct Settings {
     /// The start of the first message, to tell sessions apart.
     #[serde(default)]
     pub title: Option<String>,
-    /// An agent's session or a chat (sessions saved before chats: an
+    /// An agent's session or a chat (sessions saved before chats are an
     /// agent's).
     #[serde(default, skip_serializing_if = "Mode::is_agent")]
     pub mode: Mode,
     /// A chat's instructions from the user, for its next conversations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_instructions: Option<String>,
-    /// The session switched between Chat and Agent: its conversations of
+    /// The session switched between Chat and Agent. Its conversations of
     /// either mode resume, each with its own configuration until its next
     /// message, which goes on in the session's mode.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -104,7 +104,7 @@ pub struct Settings {
     /// before it could be chosen, which ran PowerShell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows_shell: Option<WindowsShell>,
-    /// How the session reaches OpenAI models, when it has one: the ChatGPT
+    /// How the session reaches OpenAI models, when it has one, meaning the ChatGPT
     /// login or an API key. `None` in sessions without OpenAI models, and
     /// in those saved before it could be chosen, which used the ChatGPT
     /// login.
@@ -143,7 +143,7 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub worker_project_instructions: bool,
     /// After how many seconds a shell command still running moves to the
-    /// background (0: never), as `/background-after` last set it. Ten
+    /// background (0 means never), as `/background-after` last set it. Ten
     /// minutes in sessions saved before it.
     #[serde(default = "default_background_after")]
     pub background_after: u64,
@@ -180,7 +180,7 @@ pub struct Settings {
     /// existed.
     #[serde(default)]
     pub worker_billing: WorkerBilling,
-    /// The daily API budget in dollars (`/api-budget`): no new worker starts
+    /// The daily API budget in dollars (`/api-budget`). No new worker starts
     /// on a model billed per token once the day's API spend reaches it.
     /// None, no budget, in sessions saved before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -217,7 +217,7 @@ fn default_message_copies() -> bool {
 }
 
 impl Settings {
-    /// Settings for tests: a session in `workspace` with both agents on
+    /// Settings for tests, meaning a session in `workspace` with both agents on
     /// `model`, no limit on workers, and nothing else on (not the built-in
     /// skills either). Tests change what they test.
     #[cfg(test)]
@@ -348,19 +348,19 @@ impl Session {
         self.dir.join("run")
     }
 
-    /// The terminal's jobs' folder: the terminal tools' background jobs and
+    /// The terminal's jobs' folder, meaning the terminal tools' background jobs and
     /// the `shell` tool's commands. (Sessions saved before the shell's
     /// commands could move to the background kept those in `commands`.)
     pub fn jobs_dir(&self) -> PathBuf {
         self.dir.join("jobs")
     }
 
-    /// The checkpoint to resume from: the one `latest-checkpoint` names.
+    /// The checkpoint to resume from, meaning the one `latest-checkpoint` names.
     pub fn latest_checkpoint(&self) -> Option<PathBuf> {
         latest_checkpoint_in(&self.run_dir())
     }
 
-    /// When the session was last worked in: its latest checkpoint's time.
+    /// When the session was last worked in, meaning its latest checkpoint's time.
     /// `None` for a session closed before its first message.
     pub fn last_active(&self) -> Option<std::time::SystemTime> {
         std::fs::metadata(self.latest_checkpoint()?)
@@ -422,8 +422,8 @@ impl Session {
         let _ = std::fs::remove_file(self.dir.join(NAME_FILE));
     }
 
-    /// Renames the session `title` (an empty title: back to the one it
-    /// takes from its conversation). A running session may be renamed: the
+    /// Renames the session `title` (an empty title goes back to the one it
+    /// takes from its conversation). A running session may be renamed, because the
     /// name isn't in the settings it rewrites.
     pub fn rename(&self, title: &str) -> Result<(), String> {
         let path = self.dir.join(TITLE_FILE);
@@ -457,7 +457,7 @@ impl Session {
     }
 }
 
-/// Writes `bytes` to `path` whole: through a temporary file of its own
+/// Writes `bytes` to `path` whole, through a temporary file of its own
 /// beside it (two writers at once don't share one), renamed into place, so
 /// a reader finds the old text or the new.
 pub(crate) fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -559,7 +559,7 @@ pub(crate) fn move_fin_folder_in(data_directory: &Path) -> Option<String> {
     ))
 }
 
-/// The file an open session holds locked: one Arko (in any process) has a
+/// The file an open session holds locked, so one Arko (in any process) has a
 /// session open at a time.
 pub(crate) const LOCK_FILE: &str = "lock";
 /// Who holds the lock, as they wrote it once they had it.
@@ -568,11 +568,11 @@ pub(crate) const HOLDER_FILE: &str = "holder.json";
 const LOCK_TRIES: u32 = 3;
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
 
-/// The lock the session's terminal holds while an Arko has it open: all
+/// The lock the session's terminal holds while an Arko has it open, which is all
 /// that an Arko from before session locks holds.
 pub(crate) const TERMINAL_LOCK: &str = "jobs/.lock";
 
-/// Whether `id` can name a session: a folder's name in `sessions/`, never
+/// Whether `id` can name a session, meaning a folder's name in `sessions/`, never
 /// a path (no separators, not `.` or `..`).
 pub fn is_session_id(id: &str) -> bool {
     let mut parts = Path::new(id).components();
@@ -673,15 +673,15 @@ fn host_name() -> String {
 /// Why a session couldn't be locked.
 #[derive(Debug)]
 pub enum LockError {
-    /// Another Arko has it open: who, when it said so.
+    /// Another Arko has it open, with who, when it said so.
     Held(Option<Holder>),
     Io(std::io::Error),
 }
 
-/// An open session's lock: it is released when this is dropped.
+/// An open session's lock, released when this is dropped.
 #[derive(Debug)]
 pub struct SessionLock {
-    /// `None` in a folder where the lock can't be made: the terminal's
+    /// `None` in a folder where the lock can't be made, so the terminal's
     /// lock is all that holds the session, as before session locks.
     _file: Option<std::fs::File>,
     holder: Option<PathBuf>,
@@ -696,10 +696,10 @@ impl Drop for SessionLock {
 }
 
 impl Session {
-    /// Takes the session for the app `app` (its identity: `arko` for the
+    /// Takes the session for the app `app` (its identity, `arko` for the
     /// command line) named `name` (as people read it) in this process, until
     /// the lock is dropped, and says who has it. A session open in another
-    /// Arko, also in this process, can't be taken: who has it, if they said.
+    /// Arko, also in this process, can't be taken, and says who has it, if they said.
     pub fn lock(&self, app: &str, name: &str) -> Result<SessionLock, LockError> {
         let path = self.dir.join(LOCK_FILE);
         let opened = std::fs::OpenOptions::new()
@@ -708,7 +708,7 @@ impl Session {
             .read(true)
             .write(true)
             .open(&path)
-            // (A lock works on a file only read too: one in a folder only
+            // (A lock works on a file only read too, such as one in a folder only
             // read, or left by another user.)
             .or_else(|error| match error.kind() {
                 std::io::ErrorKind::PermissionDenied => {
@@ -718,7 +718,7 @@ impl Session {
             });
         let file = match opened {
             Ok(file) => file,
-            // A folder the lock can't be made in: the session opens as
+            // A folder the lock can't be made in, so the session opens as
             // before session locks, which its terminal's lock guards.
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
                 log::warn!(
@@ -733,7 +733,7 @@ impl Session {
             Err(error) => return Err(LockError::Io(error)),
         };
         // Someone may be looking (the session list tries the lock for a
-        // moment): a few tries before it counts as held.
+        // moment), so a few tries before it counts as held.
         let mut tries = 0;
         loop {
             match file.try_lock() {
@@ -751,7 +751,7 @@ impl Session {
         let holder = self.dir.join(HOLDER_FILE);
         let text = serde_json::to_string_pretty(&Holder::now(app, name))
             .map_err(|error| LockError::Io(std::io::Error::other(error)))?;
-        // (Who has it, whole: never half written for one who reads it.)
+        // (Who has it, whole, never half written for one who reads it.)
         let holder = match write_whole(&holder, text.as_bytes()) {
             Ok(()) => Some(holder),
             Err(error) => {
@@ -768,7 +768,7 @@ impl Session {
         })
     }
 
-    /// Takes the session's terminal's lock, when it has a terminal: to
+    /// Takes the session's terminal's lock, when it has a terminal, to
     /// delete it, as an Arko from before session locks holds only that one
     /// while it has the session open (`Held(None)`).
     pub(crate) fn lock_terminal(&self) -> Result<Option<std::fs::File>, LockError> {
@@ -785,7 +785,7 @@ impl Session {
     }
 }
 
-/// Who has the session in `dir` open, if anyone does: its lock is held,
+/// Who has the session in `dir` open, if anyone does, meaning its lock is held,
 /// or (an Arko from before session locks, which doesn't say who it is) its
 /// terminal's. (A holder file left without the lock, by an Arko that ended
 /// without removing it, says nothing.)
@@ -805,7 +805,7 @@ fn held(path: &Path) -> bool {
     matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
 }
 
-/// The lock file at `path`, as it is: to write, else (another user's, or
+/// The lock file at `path`, as it is, to write, else (another user's, or
 /// in a folder only read) to read, which a lock works on too.
 fn open_lock(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new()
@@ -1004,7 +1004,7 @@ mod tests {
     }
 
     /// Two that rename a session at once (an app and the session itself)
-    /// both land, each whole: they don't share a temporary file.
+    /// both land, each whole, since they don't share a temporary file.
     #[test]
     fn writes_at_once_each_land_whole() {
         let temp = tempfile::tempdir().unwrap();
@@ -1047,7 +1047,7 @@ mod tests {
     }
 
     /// A session in a folder that can only be read opens, as it did before
-    /// session locks: its terminal's lock holds it.
+    /// session locks, and its terminal's lock holds it.
     #[cfg(unix)]
     #[test]
     fn a_session_in_a_folder_only_read_opens() {
@@ -1062,7 +1062,7 @@ mod tests {
         drop(lock);
     }
 
-    /// One Arko has a session open at a time, also in one process: another
+    /// One Arko has a session open at a time, also in one process. Another
     /// is told who has it, until it is closed. A holder file left behind
     /// without the lock (an Arko that ended without removing it) holds
     /// nothing.
@@ -1109,7 +1109,7 @@ mod tests {
                 Local::now().format("%H:%M")
             )
         );
-        // One written before names were kept: the identity.
+        // One written before names were kept, giving the identity.
         let older: Holder = serde_json::from_str(
             r#"{"app": "notes", "pid": 1, "host": "", "since": "2026-10-16T12:00:00Z"}"#,
         )
@@ -1221,7 +1221,7 @@ mod tests {
         assert!(Session::open(root.path(), "missing").is_err());
     }
 
-    /// The OpenAI auth is saved only when chosen; sessions from before it
+    /// The OpenAI auth is saved only when chosen, and sessions from before it
     /// load without it, and their OpenAI models used the ChatGPT login.
     #[test]
     fn the_openai_auth_is_saved_with_the_session() {
@@ -1257,7 +1257,7 @@ mod tests {
 
     /// The workers' handover size `/handover-at` set is kept with the
     /// session, for a resumed one to set again. A session saved before it
-    /// has none: its workers go by their models' own sizes.
+    /// has none, so its workers go by their models' own sizes.
     #[test]
     fn the_workers_handover_size_is_saved_with_the_session() {
         let root = tempfile::tempdir().unwrap();

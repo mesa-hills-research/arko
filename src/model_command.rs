@@ -1,4 +1,4 @@
-//! `/model`: the agents' models while Arko runs.
+//! `/model` covers the agents' models while Arko runs.
 //!
 //! `/model [MODEL] [EFFORT]` is the main agent's. Before the conversation
 //! starts a change rebuilds the agents (their configurations, the workflow,
@@ -47,7 +47,7 @@ pub enum Request {
     },
 }
 
-/// `/model`'s words: `[MODEL] [EFFORT]`, or `worker` first.
+/// `/model`'s words are `[MODEL] [EFFORT]`, or `worker` first.
 pub fn parse(argument: &str) -> Result<Request, String> {
     let words: Vec<&str> = argument.split_whitespace().collect();
     let (target, rest) = match words.split_first() {
@@ -83,13 +83,13 @@ pub fn usage(target: Target) -> &'static str {
     }
 }
 
-/// `model`'s settings as Arko says them: `gpt-6.1-sol (high effort)`.
+/// `model`'s settings as Arko says them, as `gpt-6.1-sol (high effort)`.
 fn shown(model: &ModelSettings) -> String {
     format!("{} ({} effort)", model.model, model.effort)
 }
 
 impl Harness {
-    /// `/model`, typed at the prompt or sent from the page: says or changes
+    /// `/model`, typed at the prompt or sent from the page, says or changes
     /// an agent's model, in a plain line.
     pub(crate) fn model_command(&mut self, argument: &str, source: Source) {
         let before = (
@@ -229,7 +229,7 @@ impl Harness {
     }
 
     /// Why the workers can't run `model` under the session's worker
-    /// billing: with Plans only, a model billed per token.
+    /// billing, as with Plans only, a model billed per token.
     fn plans_allow(&self, model: &Model) -> Result<(), String> {
         if self.settings.worker_billing != crate::billing::WorkerBilling::Plans
             || providers::plan_of(model, self.settings.openai_auth).is_some()
@@ -244,7 +244,7 @@ impl Harness {
     }
 
     /// `/text-replies`, typed at the prompt, sent from the page or chosen
-    /// in the settings: says how the main agent ends its turns, and with
+    /// in the settings, says how the main agent ends its turns, and with
     /// `on` or `off` changes it before the conversation starts (the agents
     /// are built again). Once it has started, the main agent keeps it for
     /// the session, as it keeps its model.
@@ -274,7 +274,7 @@ impl Harness {
         }
     }
 
-    /// Text replies on or off, before the conversation starts: the agents
+    /// Text replies on or off, before the conversation starts, and the agents
     /// are built again with them.
     fn set_text_replies(&mut self, on: bool) -> Result<String, String> {
         let state = if on { "on" } else { "off" };
@@ -296,10 +296,10 @@ impl Harness {
     }
 
     /// `/cc-compact`, typed at the prompt, sent from the page or chosen in
-    /// the settings: says what the agents on `cc:` models do at the handover
+    /// the settings, says what the agents on `cc:` models do at the handover
     /// size, and with `on` (compact) or `off` (hand over) changes that
     /// before the conversation starts (the agents are built again). Once it
-    /// has started, the session keeps it: it is part of the agents' saved
+    /// has started, the session keeps it, because it is part of the agents' saved
     /// configurations.
     pub(crate) fn cc_compact_command(&mut self, argument: &str, source: Source) {
         let before = self.reply_settings();
@@ -313,7 +313,7 @@ impl Harness {
         self.setting_reply(result, source, changed);
     }
 
-    /// Whether an agent of the session runs in Claude Code: the main agent,
+    /// Whether an agent of the session runs in Claude Code, meaning the main agent
     /// or the workers it starts.
     fn in_claude_code(&self) -> bool {
         self.settings.main.in_claude_code() || self.settings.worker.in_claude_code()
@@ -343,7 +343,7 @@ impl Harness {
         }
     }
 
-    /// Compacting on or off in Claude Code, before the conversation starts:
+    /// Compacting on or off in Claude Code, before the conversation starts, and
     /// the agents are built again with it.
     fn set_cc_compact(&mut self, on: bool) -> Result<String, String> {
         if !self.in_claude_code() {
@@ -372,7 +372,7 @@ impl Harness {
     }
 
     /// `/extra-rules`, typed at the prompt, sent from the page or chosen in
-    /// the settings: says which agents get the extra rules for small models,
+    /// the settings, says which agents get the extra rules for small models,
     /// and with `small`, `all` or `off` changes that before the conversation
     /// starts (the agents are built again). Once it has started, the
     /// session keeps it, as it keeps the main agent's model.
@@ -407,7 +407,7 @@ impl Harness {
         }
     }
 
-    /// Which of this session's agents get the extra rules: the main agent
+    /// Which of this session's agents get the extra rules, meaning the main agent
     /// by its model, and the workers by the model new ones start on.
     fn extra_rules_here(&self) -> String {
         let rules = self.settings.extra_rules;
@@ -429,7 +429,7 @@ impl Harness {
         .to_string()
     }
 
-    /// Who gets the extra rules, before the conversation starts: the agents
+    /// Who gets the extra rules, before the conversation starts, and the agents
     /// are built again with them.
     fn set_extra_rules(&mut self, rules: ExtraRules) -> Result<String, String> {
         if self.settings.extra_rules == rules {
@@ -457,7 +457,7 @@ impl Harness {
         ))
     }
 
-    /// Whether the main agent's conversation has started: it can't change
+    /// Whether the main agent's conversation has started, so it can't change
     /// model then. (A checkpoint, a turn that ran or runs.)
     pub(crate) fn conversation_started(&self) -> bool {
         self.session.latest_checkpoint().is_some()
@@ -487,7 +487,7 @@ impl Harness {
         }
     }
 
-    /// An error with what `model` needs when this session can't reach it:
+    /// An error with what `model` needs when this session can't reach it, because
     /// its client has no client for its provider (whose key wasn't there as
     /// Arko started nor added with `/keys`, or was removed), or Claude Code
     /// isn't installed and signed in.
@@ -503,7 +503,7 @@ impl Harness {
         self.keys.needs(model)
     }
 
-    /// How the session reaches OpenAI models when its models don't say: as
+    /// How the session reaches OpenAI models when its models don't say, as
     /// its client does, else as a new session would.
     pub(crate) fn openai_auth(&self) -> Option<OpenAiAuth> {
         self.keys
@@ -537,7 +537,7 @@ impl Harness {
         (settings, follow)
     }
 
-    /// The main agent's model, before the conversation starts: the agents
+    /// The main agent's model, before the conversation starts, and the agents
     /// are built again on it (the workers too, when they follow it).
     fn set_main_model(&mut self, model: &Model, effort: Effort) -> Result<String, String> {
         let (settings, follow) = self.main_switched(model, effort);
@@ -556,9 +556,9 @@ impl Harness {
         })
     }
 
-    /// The model of the workers started from now on: `model` at `effort`,
+    /// The model of the workers started from now on, meaning `model` at `effort`,
     /// else (`None`) the main agent's. Before the conversation starts the
-    /// agents are built again on it; after, new workers start on it and the
+    /// agents are built again on it. After, new workers start on it and the
     /// workers already started keep theirs.
     fn set_workers_model(&mut self, model: Option<(&Model, Effort)>) -> Result<String, String> {
         if self.settings.max_workers == 0 || self.crew.is_none() {
@@ -616,7 +616,7 @@ impl Harness {
             text.push_str(" The workers started before keep their model.");
         }
         // The main agent's instructions name the workers' model as the
-        // conversation started: a note tells it.
+        // conversation started, so a note tells it.
         if let Err(error) = self
             .workflow()
             .post_note(Note::new(text.clone()).source(NoteSource::Host).to([MAIN]))
@@ -679,7 +679,7 @@ impl Harness {
     }
 
     /// Builds the agents again on `settings`, before the conversation
-    /// starts: their configurations, the workflow, the main agent's handover
+    /// starts, meaning their configurations, the workflow, the main agent's handover
     /// size and new workers' model. The session and the next session's
     /// default keep them.
     pub(crate) fn rebuild_agents(&mut self, settings: Settings) -> Result<(), String> {
@@ -704,7 +704,7 @@ impl Harness {
         Ok(())
     }
 
-    /// New workers start on the session's workers' model: on resume too,
+    /// New workers start on the session's workers' model, on resume too,
     /// when it changed after the workers' configuration was saved.
     pub(crate) fn start_new_workers(&self) {
         if let Some(crew) = &self.crew {
@@ -717,7 +717,7 @@ impl Harness {
     }
 
     /// What the start hook chooses a worker's setup from, for `settings`
-    /// on `setup`: the session's worker model and the settings around it,
+    /// on `setup`, meaning the session's worker model and the settings around it,
     /// and where the profiles are.
     pub(crate) fn workers_basis(
         &self,
@@ -835,7 +835,7 @@ impl Harness {
     }
 }
 
-/// `old`'s settings on `model` at `effort`: fast mode where the model has
+/// `old`'s settings on `model` at `effort`, with fast mode where the model has
 /// it, the long cache where it takes one and it was asked for, and the
 /// handover size the model's own unless one was given (held under what
 /// the model leaves room for).

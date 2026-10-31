@@ -64,7 +64,7 @@ impl Command {
         self.name == name || self.aliases.contains(&name)
     }
 
-    /// Whether only the terminal runs it: the web page can't quit Arko or
+    /// Whether only the terminal runs it, because the web page can't quit Arko or
     /// turn itself off.
     pub fn terminal_only(&self) -> bool {
         matches!(self.name, "/exit" | "/remote")
@@ -366,7 +366,7 @@ pub fn find(text: &str) -> Option<&'static Command> {
 }
 
 /// What to tell the user when `text` (a message as typed, its leading
-/// spaces kept) reads as a command that isn't one: one line that starts
+/// spaces kept) reads as a command that isn't one, meaning one line that starts
 /// with a slash and a word (`/quiet`) that names no command, or names one
 /// that takes nothing after it (`/cost please`). It names the closest of
 /// `offered` (the commands where it was typed) when one is near, and how to
@@ -398,7 +398,7 @@ pub fn unknown<'a>(text: &str, offered: impl IntoIterator<Item = &'a Command>) -
 }
 
 /// The command of `offered` nearest to `word` (a name typed without its
-/// slash): the one whose name it starts, else the one that takes it as its
+/// slash), meaning the one whose name it starts, else the one that takes it as its
 /// first word (`quiet` is `/view quiet`), else the one it misspells, if any
 /// is near enough.
 fn closest<'a>(word: &str, offered: impl IntoIterator<Item = &'a Command>) -> Option<String> {
@@ -442,7 +442,7 @@ fn edits(a: &str, b: &str, most: usize) -> Option<usize> {
         return None;
     }
     // The rows for a's letters before the last two, the last one, and this
-    // one: how many edits turn a's start into each start of b.
+    // one, meaning how many edits turn a's start into each start of b.
     let mut before: Vec<usize> = vec![0; b.len() + 1];
     let mut last: Vec<usize> = (0..=b.len()).collect();
     let mut row: Vec<usize> = vec![0; b.len() + 1];
@@ -463,7 +463,7 @@ fn edits(a: &str, b: &str, most: usize) -> Option<usize> {
     (count <= most).then_some(count)
 }
 
-/// The commands the line prompt takes: the session's, which it runs
+/// The commands the line prompt takes, meaning the session's, which it runs
 /// wherever it was typed, and the terminal's.
 pub fn of_session() -> impl Iterator<Item = &'static Command> {
     COMMANDS
@@ -471,7 +471,7 @@ pub fn of_session() -> impl Iterator<Item = &'static Command> {
         .filter(|command| command.runs != Runs::Screen)
 }
 
-/// The commands the web page runs, for its menu: the session's, except
+/// The commands the web page runs, for its menu, meaning the session's, except
 /// those only the terminal runs.
 pub fn on_page() -> impl Iterator<Item = &'static Command> {
     COMMANDS
@@ -492,7 +492,7 @@ pub fn matching(prefix: &str, screen: bool) -> Vec<&'static Command> {
 
 const ON_OFF: &[&str] = &["on", "off"];
 
-/// The words an argument may be, where they are fixed: the command, the
+/// The words an argument may be, where they are fixed, meaning the command, the
 /// words before the argument, and its words. The full-screen view
 /// completes them (and the arguments that depend on the session).
 const CHOICES: &[(&str, &[&str], &[&str])] = &[
@@ -662,7 +662,7 @@ pub(crate) fn model_comes_next(_models: &crate::remote::Models, words: &[&str]) 
     matches!(words, [] | ["worker" | "workers"])
 }
 
-/// `/model`'s words: `worker`, the models the picker offers, `main` for the
+/// `/model`'s words are `worker`, the models the picker offers, `main` for the
 /// workers, then the efforts the model takes.
 fn model_choices(models: &crate::remote::Models, words: &[&str]) -> Vec<String> {
     let (workers, words) = match words {
@@ -716,7 +716,7 @@ pub fn help_lines() -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// An app completes a command's arguments from the session's status:
+    /// An app completes a command's arguments from the session's status, meaning
     /// its workers, those running, the web page's interfaces, the models.
     #[test]
     fn choices_come_from_the_status() {

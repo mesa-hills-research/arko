@@ -1,4 +1,4 @@
-// End-to-end tests of text replies: the main agent ends its turns with a
+// End-to-end tests of text replies. The main agent ends its turns with a
 // reply in plain text, which Arko shows once, as the reply. Also the default
 // and flags that choose them, `/text-replies` and the settings, and sessions
 // saved before them, whose main agent goes on calling `complete_task`. Each
@@ -35,7 +35,7 @@ impl Lines {
     }
 }
 
-/// Prints `harness`'s output to `Lines` from now on: at the line prompt,
+/// Prints `harness`'s output to `Lines` from now on, at the line prompt,
 /// or (`one_shot`) as -p does, the progress there and the answer to
 /// standard output. Its workflow is opened again with it.
 fn recording(harness: &mut Harness, one_shot: bool) -> Lines {
@@ -152,7 +152,7 @@ fn the_mode_is_saved_with_the_session_and_old_sessions_load_with_it_off() {
 
 /// A reply in text ends the turn, with the reply as the turn's answer. The
 /// agent is offered `message_user` and no `complete_task`, and its
-/// instructions say how its turn ends. The reply shows once, as the reply:
+/// instructions say how its turn ends. The reply shows once, as the reply,
 /// in the feed (the full screen and the web page), and at the line prompt.
 #[tokio::test]
 async fn a_reply_in_text_ends_the_turn_and_shows_once() {
@@ -195,7 +195,7 @@ async fn a_reply_in_text_ends_the_turn_and_shows_once() {
     assert_eq!(lines.count("17 * 23 is 391."), 1);
 }
 
-/// With -p and text replies, the reply isn't printed as progress: standard
+/// With -p and text replies, the reply isn't printed as progress, and standard
 /// output has it, once.
 #[tokio::test]
 async fn with_p_the_reply_is_not_printed_as_progress() {
@@ -216,7 +216,7 @@ async fn with_p_the_reply_is_not_printed_as_progress() {
     assert_eq!(progress.count("17 * 23 is 391."), 0);
 }
 
-/// Text beside a call is progress: the turn goes on. What the user types
+/// Text beside a call is progress, so the turn goes on. What the user types
 /// meanwhile reaches the agent as a note, and it answers in text beside its
 /// next call, also progress, and the turn ends with its reply.
 #[tokio::test]
@@ -285,7 +285,7 @@ async fn text_beside_a_call_is_progress_and_answers_a_note_mid_turn() {
 }
 
 /// With text replies the agent answers mid-turn with `message_user`, as
-/// without them: the message shows now, in its order among the agent's text
+/// without them. The message shows now, in its order among the agent's text
 /// and calls, the turn goes on, and it ends with a plain reply. Text beside
 /// a `wait_for_agents` call shows too, before the waiting row, and nothing
 /// shows twice.
@@ -362,7 +362,7 @@ async fn message_user_answers_mid_turn_and_the_turn_ends_with_a_reply() {
     }
 }
 
-/// With text replies, workers still report with `complete_task`: the lead
+/// With text replies, workers still report with `complete_task`. The lead
 /// starts one, waits for its report, and replies in text.
 #[tokio::test]
 async fn workers_report_with_complete_task_and_the_lead_replies_in_text() {
@@ -432,7 +432,7 @@ async fn workers_report_with_complete_task_and_the_lead_replies_in_text() {
 }
 
 /// `/text-replies` says how the main agent ends its turns, and before the
-/// conversation starts turns text replies on or off: the agents are built
+/// conversation starts turns text replies on or off, and the agents are built
 /// again, and the session and the settings (the full screen's, the web
 /// page's) have it. Once the conversation has started, the main agent keeps
 /// it for the session, and Arko says so.
@@ -503,7 +503,7 @@ async fn text_replies_change_before_the_conversation_starts_only() {
     assert!(now.models.started);
 }
 
-/// A session with text replies keeps them when it is resumed: the agent's
+/// A session with text replies keeps them when it is resumed. The agent's
 /// saved configuration ends its turns with a reply, and the conversation
 /// shows its replies as replies again.
 #[tokio::test]
@@ -578,7 +578,7 @@ async fn a_session_saved_before_text_replies_resumes_with_complete_task() {
     assert_eq!(summary(&harness), "Apples noted.");
 
     // Arko now builds its main agent with text replies, and the session is
-    // resumed: its saved configuration stands.
+    // resumed, and its saved configuration stands.
     let settings = AgentSettings {
         text_replies: true,
         ..agent_settings_of(&harness)
@@ -664,7 +664,7 @@ fn without_message_user(config: &arko_agents::AgentConfig) -> arko_agents::Agent
 
 // ----- where the agent answers a note the user typed -----
 
-/// What a context update with a note from the user ends with: for an agent
+/// What a context update with a note from the user ends with, for an agent
 /// that has `message_user` (with text replies or without), and for one saved
 /// with text replies before it had it.
 const TOOL_HINT: &str = "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above with `message_user` first, even if they cut a wait short, then carry on with your work.";

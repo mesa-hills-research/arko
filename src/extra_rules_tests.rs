@@ -1,4 +1,4 @@
-// End-to-end tests of the extra rules for small models: the default and the
+// End-to-end tests of the extra rules for small models, covering the default and the
 // flags that choose who gets them, the session that keeps the choice, and
 // `/extra-rules`, which changes it before the conversation starts. Each
 // follows a path a user takes, with the mock model. (Included in `main`'s
@@ -17,7 +17,7 @@ fn args(words: &[&str]) -> Options {
 }
 
 /// The search index tools in `harness`'s session, as Arko has them where
-/// the index store opens: the rules are about them.
+/// the index store opens, because the rules are about them.
 fn with_index_tools(harness: &mut Harness, temp: &Path) {
     let indexes =
         index::Indexes::open(&temp.join("indexes"), &harness.settings.workspace, None, false)
@@ -95,8 +95,8 @@ fn the_choice_is_saved_with_the_session_and_old_sessions_load_with_it_off() {
 }
 
 /// `/extra-rules` says who gets the rules, and which of the session's
-/// agents that is. Before the conversation starts it changes the choice:
-/// the agents are built again, and the session and the settings (the full
+/// agents that is. Before the conversation starts it changes the choice.
+/// The agents are built again, and the session and the settings (the full
 /// screen's, the web page's) have it. Once the conversation has started,
 /// the session keeps it, and Arko says so.
 #[tokio::test]
@@ -175,7 +175,7 @@ async fn extra_rules_change_before_the_conversation_starts_only() {
     ));
 }
 
-/// A resumed session keeps its choice: its agents are built with the rules
+/// A resumed session keeps its choice. Its agents are built with the rules
 /// as they were saved, also when they are off and a new session would
 /// give them.
 #[tokio::test]

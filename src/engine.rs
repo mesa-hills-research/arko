@@ -1,8 +1,8 @@
-//! A session as a front end drives it: [`Engine::open`] opens (or creates)
+//! A session as a front end drives it. [`Engine::open`] opens (or creates)
 //! it and gives the front end its [`Seam`], what it shows the session with
 //! and sends the user's input through. [`Engine::run`] runs it until the
 //! user quits, and [`Engine::shutdown`] stops what it started. The command
-//! line (`cli`) is one such front end: the full-screen view or the line
+//! line (`cli`) is one such front end, the full-screen view or the line
 //! prompt, or -p's one message ([`Engine::run_prompt`]).
 
 use std::path::PathBuf;
@@ -410,11 +410,11 @@ pub fn spawn(options: Options, prompter: Arc<dyn Prompter>) -> Running {
 }
 
 /// Whether a session is open in this process without a context of its own
-/// (opened with [`Engine::open`], not [`spawn`]): it reads the process's
+/// (opened with [`Engine::open`], not [`spawn`]). It reads the process's
 /// settings and keys, so it is the only one.
 static ALONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// The session open without a context of its own: another can open once
+/// The session open without a context of its own. Another can open once
 /// it is dropped.
 struct Alone;
 
@@ -474,11 +474,11 @@ impl Engine {
         };
         let remote_bind = options.remote;
         // Why the session doesn't run the last session's models, as Arko said
-        // before the session started: the full-screen view opens over it, so
+        // before the session started. The full-screen view opens over it, so
         // its banner says it again.
         let mut model_note = None;
 
-        // The session: resumed with the settings it was started with, or new.
+        // The session is resumed with the settings it was started with, or new.
         let resumed = match &options.session {
             SessionChoice::Resume(id) => Some(Session::open(&root, id)?),
             SessionChoice::ContinueLatest => {
@@ -700,7 +700,7 @@ impl Engine {
             agents::main_config(&agent_settings)?;
             agents::worker_config(&agent_settings)?;
         }
-        // A chat has no tools: no MCP servers, skills, indexes or workers. One
+        // A chat has no tools, meaning no MCP servers, skills, indexes or workers. One
         // that was an agent's has the skills, indexes and workers still (its
         // agent is offered none), for its agent's conversations, which resume
         // with their tools. MCP servers are never started in a chat.
@@ -740,7 +740,7 @@ impl Engine {
         };
         let lock = lock.expect("the session is locked");
         if new && chat {
-            // A chat works in no folder of the user's: its own, which `arko
+            // A chat works in no folder of the user's, only its own, which `arko
             // -c` never takes for a project's.
             settings.workspace = session.dir.clone();
         }
@@ -748,7 +748,7 @@ impl Engine {
             session
                 .save_settings(&settings)
                 .map_err(|error| format!("could not save the session ({error})"))?;
-            // The next session's default; see `providers::LastModels::remember`.
+            // The next session's default, see `providers::LastModels::remember`.
             if !options.one_shot
                 && let Err(error) = providers::LastModels::remember(&root, &settings)
             {
@@ -768,7 +768,7 @@ impl Engine {
                 OpenError::Failed(error)
             }
         })?;
-        // Outside access as the session left it; the flag turns it on below.
+        // Outside access as the session left it. The flag turns it on below.
         let outside = Arc::new(outside::Outside::new(
             settings.allow_outside_workspace,
             managers.list(),
@@ -783,7 +783,7 @@ impl Engine {
             // (The cache's lifetime is known once the conversation opens.)
             .set_warning_wakes_within(settings.monitor_wakes.within(None));
 
-        // MCP servers, skills and search indexes: what goes wrong with them is
+        // MCP servers, skills and search indexes. What goes wrong with them is
         // said, and the session goes on without.
         let startup = Output::new(None, one_shot);
         for note in &mcp_notes {
@@ -886,7 +886,7 @@ impl Engine {
         let runs = Arc::new(handover::Runs::default());
         let mut tools = managers.tools(&shell, runs.clone());
         // The tools a session doesn't give, whose definitions stand in for
-        // those a saved run was offered: a chat's (it has no tools), and the
+        // those a saved run was offered, meaning a chat's (it has no tools), and the
         // monitors with -p, since no one would hear their alerts (the
         // workflow offers each agent every tool it's given).
         let mut withheld = Vec::new();
@@ -957,7 +957,7 @@ impl Engine {
             title: Default::default(),
             published: Default::default(),
         });
-        // The main agent's questions are put to the user at the prompt; with
+        // The main agent's questions are put to the user at the prompt, and with
         // no terminal, it is told there is no one to ask.
         let (questions_sender, questions) = mpsc::unbounded_channel();
         let asker = Arc::new(Asker {
@@ -1113,7 +1113,7 @@ impl Engine {
         if !chat {
             harness.project = project::Found::read(&harness.settings.workspace);
         }
-        // Before the workflow opens: it may restart a worker that hadn't started.
+        // Before the workflow opens, since it may restart a worker that hadn't started.
         harness.give_workers_project();
         prompter.opening();
         harness.open(!new)?;
@@ -1197,7 +1197,7 @@ impl Engine {
         Ok((engine, seam))
     }
 
-    /// Where Arko prints: the front end attaches a printer to it, or the
+    /// Where Arko prints. The front end attaches a printer to it, or the
     /// feed it shows.
     pub(crate) fn output(&self) -> Arc<Output> {
         self.harness.output.clone()
@@ -1391,7 +1391,7 @@ mod tests {
     }
 
     /// An app serves the session's web page, stops it and gives it a new
-    /// key with requests that answer: served to the network when it gives
+    /// key with requests that answer, meaning served to the network when it gives
     /// no address (whatever the page was served on before), with what went
     /// wrong when it can't be served, and its clients told it was done in
     /// the app.
@@ -1461,7 +1461,7 @@ mod tests {
             ask_for(&seam, |reply| Request::NewWebPageKey { reply }).await,
             Ok(None)
         );
-        // A port in use: what to change.
+        // A port in use, with what to change.
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = taken.local_addr().unwrap().port();
         let refused = share(Some(&format!("127.0.0.1:{port}"))).await.unwrap_err();
@@ -1471,7 +1471,7 @@ mod tests {
         );
         assert!(share(Some("nowhere at all")).await.is_err());
 
-        // A share that can't be served leaves the page served as it was:
+        // A share that can't be served leaves the page served as it was,
         // on another port, and on its own port at an address not here.
         let served = share(Some("127.0.0.1:0")).await.unwrap();
         let serves = |addr: std::net::SocketAddr| {
@@ -1573,7 +1573,7 @@ mod tests {
     }
 
     /// An MCP config file an app gives that can't be read doesn't keep the
-    /// session from opening: its servers aren't started, and the
+    /// session from opening. Its servers aren't started, and the
     /// transcript says why, naming it.
     #[tokio::test]
     async fn an_apps_mcp_config_that_cant_be_read_is_left_out() {
@@ -1781,7 +1781,7 @@ mod tests {
     }
 
     /// A front end hears when the session's workflow starts loading, after
-    /// its questions: a terminal takes Ctrl-C for the session from then on.
+    /// its questions. A terminal takes Ctrl-C for the session from then on.
     #[tokio::test]
     async fn the_front_end_hears_when_the_workflow_loads() {
         struct Hearing(Arc<std::sync::atomic::AtomicBool>);
@@ -1828,7 +1828,7 @@ mod tests {
     }
 
     /// A reply streamed in a burst (more pieces than the workflow's
-    /// broadcast of events holds) reaches the feed whole: none of it is
+    /// broadcast of events holds) reaches the feed whole, and none of it is
     /// lost however far behind the feed falls.
     #[tokio::test]
     async fn a_burst_of_streamed_text_reaches_the_feed_whole() {
@@ -2405,7 +2405,7 @@ mod tests {
         assert_eq!(saved(&id), Some(4));
     }
 
-    /// A process opens one session without `spawn`: it reads the process's
+    /// A process opens one session without `spawn`. It reads the process's
     /// settings and keys, so a second is refused, until the first closes.
     #[tokio::test]
     async fn a_second_session_without_spawn_is_refused() {
@@ -2421,7 +2421,7 @@ mod tests {
             cache_1h: false,
             handover_at: None,
         };
-        // (A test client and an API key: no login of the machine's.)
+        // (A test client and an API key, so no login of the machine's.)
         let options = || {
             let session = Session::create(&root).unwrap();
             session
@@ -2449,14 +2449,14 @@ mod tests {
         again.shutdown().await;
     }
 
-    /// A front end adds and removes a session's keys from any thread: they
+    /// A front end adds and removes a session's keys from any thread. They
     /// are saved in the session's Arko folder, and read as the session reads
-    /// them (a resumed session: its workspace's `.env`, not the current
+    /// them (for a resumed session, its workspace's `.env`, not the current
     /// directory's).
     #[tokio::test]
     async fn a_sessions_keys_are_its_own_from_any_thread() {
         if std::env::var_os(credentials::OPENROUTER_KEY).is_some() {
-            return; // (Set in this process: it comes first.)
+            return; // (Set in this process, so it comes first.)
         }
         let temp = tempfile::tempdir().unwrap();
         let (server, _bodies) = counting_server().await;
@@ -2499,7 +2499,7 @@ mod tests {
         quit(seam, ended).await;
     }
 
-    /// The engine, its seam and its futures can go to any thread: a front
+    /// The engine, its seam and its futures can go to any thread, so a front
     /// end can run a session on a runtime of its own or on a shared one.
     /// (Checked as this compiles.)
     #[allow(dead_code)]
@@ -2514,7 +2514,7 @@ mod tests {
     }
 
     /// Two sessions run side by side in one process, each on its own
-    /// runtime: each reads its own folder's settings, answers its messages
+    /// runtime. Each reads its own folder's settings, answers its messages
     /// in its own feed, holds its own lock and tags its log lines with its
     /// ID. Once closed, its threads are gone.
     #[tokio::test]
@@ -2694,7 +2694,7 @@ mod tests {
         }
 
         // The process's log tags each session's lines. (No other test
-        // installs a logger: one would have to read its own.)
+        // installs a logger, because one would have to read its own.)
         logging.expect("the process's log is this test's");
         log::logger().flush();
         let text = std::fs::read_to_string(&log).unwrap();
@@ -2704,7 +2704,7 @@ mod tests {
     }
 
     /// The status goes out when it changes (a request reports its usage),
-    /// once per change: not again while the session is idle.
+    /// once per change, and not again while the session is idle.
     #[tokio::test]
     async fn the_status_changes_when_a_request_reports_usage() {
         let _alone = ALONE_TESTS.lock().await;
@@ -2862,7 +2862,7 @@ mod tests {
     }
 
     /// A chat's agent is offered no tools and told the user's
-    /// instructions: those set before its first message, and later ones
+    /// instructions, meaning those set before its first message, and later ones
     /// from its next new conversation, also once it opens again. A chat
     /// works in its own folder, lists without one, and has no workers.
     #[tokio::test]
@@ -3182,7 +3182,7 @@ mod tests {
     }
 
     /// A session whose workers started workers lists them under their
-    /// starters when it opens again: each worker's place in the family, what
+    /// starters when it opens again, with each worker's place in the family, what
     /// each cost before, and what a family cost together.
     #[tokio::test]
     async fn a_resumed_session_lists_its_workers_under_their_starters() {
@@ -3251,7 +3251,7 @@ mod tests {
         let before = seam.feed.worker_summaries();
         quit(seam, ended).await;
 
-        // A new process: its feed knows the workers from the saved runs.
+        // A new process. Its feed knows the workers from the saved runs.
         let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id)).await;
         let workers = seam.feed.worker_summaries();
         let family: Vec<_> = workers
@@ -3275,7 +3275,7 @@ mod tests {
         assert_eq!(end.unwrap().unwrap(), RunEnd::Quit);
     }
 
-    /// A session an app runs is named by a model after it closes too: its
+    /// A session an app runs is named by a model after it closes too. Its
     /// thread keeps its runtime for the model that is still working, so the
     /// name comes and is kept for the next time the session is listed or
     /// opened. A session deleted by then gets none.
@@ -3452,7 +3452,7 @@ mod tests {
         .expect("it didn't happen in time");
     }
 
-    /// An app edits the user's message, or sends the latest again: the
+    /// An app edits the user's message, or sends the latest again. The
     /// conversation is cut back to just before it and goes on from the new
     /// message, in the model's requests and in the feed. Only the user's
     /// messages can be edited, also those restored when the session opens
@@ -3476,7 +3476,7 @@ mod tests {
         let two = user_item(&seam, "Two.");
         assert!(two.message_index.is_some());
 
-        // An edit: the conversation goes on from it.
+        // An edit, so the conversation goes on from it.
         assert_eq!(edit(&seam, two.id, "Deux.").await, Ok(()));
         let third = answered(&seam, &bodies, 3).await;
         assert!(third.contains("One.") && third.contains("Reply 1.") && third.contains("Deux."));
@@ -3485,14 +3485,14 @@ mod tests {
             "{third}"
         );
         assert_eq!(exchanged(&seam), ["One.", "Reply 1.", "Deux.", "Reply 3."]);
-        // Sent again: a new reply in place of the last.
+        // Sent again, with a new reply in place of the last.
         let regenerated = ask_for(&seam, |reply| Request::Regenerate { reply }).await;
         assert_eq!(regenerated, Ok(()));
         let fourth = answered(&seam, &bodies, 4).await;
         assert_eq!(fourth.matches("Deux.").count(), 1, "{fourth}");
         assert!(!fourth.contains("Reply 3."));
         assert_eq!(exchanged(&seam), ["One.", "Reply 1.", "Deux.", "Reply 4."]);
-        // The first message: the conversation starts over.
+        // The first message, so the conversation starts over.
         let one = user_item(&seam, "One.").id;
         assert_eq!(edit(&seam, one, "Uno.").await, Ok(()));
         let fifth = answered(&seam, &bodies, 5).await;
@@ -3556,7 +3556,7 @@ mod tests {
         quit(seam, ended).await;
     }
 
-    /// The prompt cache is kept warm out of band where the provider allows:
+    /// The prompt cache is kept warm out of band where the provider allows, with
     /// the conversation's request with a ping after it, its output capped,
     /// and nothing joins the conversation or the feed.
     #[tokio::test]
@@ -3616,7 +3616,7 @@ mod tests {
         let cache = seam.meter.read().cache;
         let kept = cache.keep_warm.unwrap();
         assert_eq!(kept.left, Some(5));
-        // GPT-6 Luna's cache lasts thirty minutes: the refresh goes at 27:30.
+        // GPT-6 Luna's cache lasts thirty minutes, so the refresh goes at 27:30.
         assert_eq!(kept.next_at, Some(cache.refreshed_at.unwrap() + 1_650_000));
         assert_eq!(keep_warm(None).await, Ok(()));
         assert_eq!(seam.meter.read().cache.keep_warm, None);
@@ -3698,7 +3698,7 @@ mod tests {
         quit(seam, ended).await;
     }
 
-    /// The smallest PNG: one pixel.
+    /// The smallest PNG, one pixel.
     const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
     fn pixel() -> Vec<u8> {
@@ -3806,7 +3806,7 @@ mod tests {
     }
 
     /// A branch is a new session with the conversation up to a message of
-    /// the user's: it goes on apart from the session it came from, also
+    /// the user's. It goes on apart from the session it came from, also
     /// once it opens again. One before the first message has none of it.
     /// A closed session is branched from what it saved
     /// (`sessions::branch`).
@@ -3825,7 +3825,7 @@ mod tests {
             .send(Input::Message(app_message("Two.")))
             .unwrap();
         answered(&seam, &bodies, 2).await;
-        // Before the first message: a branch with none of it.
+        // Before the first message, a branch with none of it.
         let one = user_item(&seam, "One.").id;
         let empty = ask_for(&seam, |reply| Request::Branch {
             before: Some(one),
@@ -3977,7 +3977,7 @@ mod tests {
         );
     }
 
-    /// A session switches between Agent and Chat between turns: it opens
+    /// A session switches between Agent and Chat between turns. It opens
     /// again, and its conversation goes on with the new mode's tools and
     /// instructions (the same conversation, under the same cache key). A
     /// switch waits for the turn.
@@ -4595,7 +4595,7 @@ note("stop")
     }
 
     /// An app exports the conversation it has open through the session,
-    /// which answers only once nothing can still add to it: not during a
+    /// which answers only once nothing can still add to it, meaning not during a
     /// turn, nor with a note typed during it on its way to the agent, nor
     /// with input waiting to be read. Then the export has all of it, the
     /// notes typed during turns and a message the stopped turn went on
@@ -4716,7 +4716,7 @@ note("stop")
         ];
         assert_eq!(texts(export(&seam).await.unwrap()), exchanged);
 
-        // Stopped before the agent read a note: the note goes with the next
+        // Stopped before the agent read a note, so the note goes with the next
         // message, and until then an export would leave it out.
         seam.input
             .send(Input::Message(app_message("Fourth question.")))
@@ -4832,7 +4832,7 @@ note("stop")
         quit(seam, ended).await;
     }
 
-    /// A session that stopped while a call ran (a crash: its folder as it
+    /// A session that stopped while a call ran (a crash, with its folder as it
     /// was then) is branched from what it saved, and the branch's next
     /// request answers that call, as providers require.
     #[tokio::test]
@@ -4881,7 +4881,7 @@ note("stop")
         .await
         .unwrap();
         tokio::time::sleep(Duration::from_millis(1500)).await;
-        // The crash: the session's folder as it is now.
+        // The crash, meaning the session's folder as it is now.
         fn copy(from: &std::path::Path, to: &std::path::Path) {
             std::fs::create_dir_all(to).unwrap();
             for entry in std::fs::read_dir(from).unwrap().flatten() {
@@ -4922,7 +4922,7 @@ note("stop")
     }
 
     /// The message whose turn handed a chat's conversation over goes on
-    /// from the handover's summary when it is sent again or edited: the
+    /// from the handover's summary when it is sent again or edited, so the
     /// summary stays in what the model gets.
     #[tokio::test]
     async fn a_message_after_a_handover_keeps_the_summary_when_edited() {
@@ -4972,7 +4972,7 @@ note("stop")
         }
         assert!(user_item(&seam, "And once more.").message_index.is_some());
         let last = |bodies: &Mutex<Vec<String>>| bodies.lock().unwrap().last().unwrap().clone();
-        // Sent again: from the summary, without the conversation before it.
+        // Sent again, from the summary, without the conversation before it.
         let regenerated = ask_for(&seam, |reply| Request::Regenerate { reply }).await;
         assert_eq!(regenerated, Ok(()));
         let again = answered(&seam, &bodies, 5).await;
@@ -4981,7 +4981,7 @@ note("stop")
             "{again}"
         );
         assert!(again.contains("And once more.") && !again.contains("First answer."));
-        // Edited: the same.
+        // Edited, the same.
         let once_more = user_item(&seam, "And once more.").id;
         assert_eq!(edit(&seam, once_more, "Something else.").await, Ok(()));
         let edited = answered(&seam, &bodies, 6).await;
@@ -4992,7 +4992,7 @@ note("stop")
         assert!(edited.contains("Something else.") && !edited.contains("And once more."));
         assert_eq!(last(&bodies), edited);
 
-        // A branch before that message keeps the summary: the branch's
+        // A branch before that message keeps the summary. The branch's
         // first message goes on from it, also edited.
         let something = user_item(&seam, "Something else.").id;
         let branch = ask_for(&seam, |reply| Request::Branch {
@@ -5063,7 +5063,7 @@ note("stop")
         assert_eq!(current.title, "Branched again.");
     }
 
-    /// The user answers one of two questions the agent waited for: the
+    /// The user answers one of two questions the agent waited for. The
     /// other stays open, and the fresh conversation of the handover that
     /// follows restates it, without the one answered.
     #[tokio::test]
@@ -5178,7 +5178,7 @@ note("stop")
     #[tokio::test]
     async fn a_chat_hands_over_with_a_summary_and_answers() {
         let temp = tempfile::tempdir().unwrap();
-        // (A conversation that starts over the size isn't handed over: the
+        // (A conversation that starts over the size isn't handed over, because the
         // first request is small.)
         let server = ModelServer::start(Arc::new(|_, body: String| {
             Box::pin(async move {
@@ -5276,7 +5276,7 @@ note("stop")
         .unwrap();
         idle(&seam).await;
         // The messages before the handover aren't in the agent's
-        // conversation any more: they can't be edited, even where the fresh
+        // conversation any more, so they can't be edited, even where the fresh
         // conversation has a message with their words at their place.
         let hello_again = user_item(&seam, "Hello again.");
         assert_eq!(hello_again.message_index, None);
@@ -5300,7 +5300,7 @@ note("stop")
         );
     }
 
-    /// A session open in another Arko isn't opened: the front end is told
+    /// A session open in another Arko isn't opened. The front end is told
     /// who has it.
     #[tokio::test]
     async fn a_session_open_elsewhere_isnt_opened() {
@@ -5486,8 +5486,8 @@ note("stop")
         assert_eq!(tools(&bodies[1]), tools(&bodies[0]));
     }
 
-    /// A session opens, answers a message and shuts down with no terminal:
-    /// what it does reaches the front end through the feed, and the session
+    /// A session opens, answers a message and shuts down with no terminal.
+    /// What it does reaches the front end through the feed, and the session
     /// is saved.
     #[tokio::test]
     async fn an_engine_answers_a_turn_without_a_terminal() {
@@ -5561,7 +5561,7 @@ note("stop")
     include!("cache_tests.rs");
     include!("mcp_engine_tests.rs");
 
-    /// What an app sends with `Seam::send` comes back as its verdict: a
+    /// What an app sends with `Seam::send` comes back as its verdict, meaning a
     /// message as the turn it starts, a command that doesn't exist as
     /// refused, and a quit as read. Once the session closed, a send is
     /// refused as closed.

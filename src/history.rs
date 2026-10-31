@@ -74,7 +74,7 @@ impl History {
 }
 
 /// Saves `entries` at `path` as the line editor does (rustyline's version
-/// 2 format: line breaks and backslashes escaped), whole: a new file, with
+/// 2 format, with line breaks and backslashes escaped), whole, as a new file, with
 /// the old one's permissions (else readable by the user only), renamed
 /// into its place, so a crash leaves the old history or the new.
 fn save(path: &Path, entries: &[String]) -> std::io::Result<()> {
@@ -96,7 +96,7 @@ fn save(path: &Path, entries: &[String]) -> std::io::Result<()> {
         use std::io::Write;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
-        // (The mode asked for is masked by the umask: set it again.)
+        // (The mode asked for is masked by the umask, so set it again.)
         #[cfg(unix)]
         if let Ok(meta) = std::fs::metadata(path) {
             file.set_permissions(meta.permissions())?;
@@ -110,7 +110,7 @@ fn save(path: &Path, entries: &[String]) -> std::io::Result<()> {
     written
 }
 
-/// The entries of a history file: version 2 (escaped) or the older plain
+/// The entries of a history file, in version 2 (escaped) or the older plain
 /// one.
 fn parse(text: &str) -> Vec<String> {
     let mut lines = text.lines();

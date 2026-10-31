@@ -1,4 +1,4 @@
-// End-to-end tests of what agents on cc: models do at the handover size:
+// End-to-end tests of what agents on cc: models do at the handover size.
 // Claude Code compacts their conversation (the default), or they hand over.
 // The flags choose it for a new session, the session keeps it, and
 // `/cc-compact` changes it before the conversation starts. (Included in
@@ -64,7 +64,7 @@ fn new_sessions_compact_unless_the_flag_says_hand_over() {
 
 /// `/cc-compact` changes nothing in a session with no agent in Claude
 /// Code, and says why. With workers on a cc: model, it changes the choice
-/// before the conversation starts: the agents are built again, and the
+/// before the conversation starts. The agents are built again, and the
 /// session and the settings (the full screen's, the web page's) have it.
 /// Once the conversation has started, the session keeps it, and Arko says
 /// so. A resumed session's agents are built with the choice it saved.

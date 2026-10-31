@@ -1,4 +1,4 @@
-//! The agents: the main agent the user talks with, and the workers it can
+//! The agents, the main agent the user talks with and the workers it can
 //! hand tasks to. Their configurations depend only on the session's
 //! settings, so a resumed session builds them again unchanged.
 
@@ -226,7 +226,7 @@ impl ModelChoice {
     }
 }
 
-/// The deepest level of workers a session allows unless it says otherwise:
+/// The deepest level of workers a session allows unless it says otherwise, meaning
 /// the main agent's workers, and the workers those start.
 pub const DEFAULT_WORKER_DEPTH: u32 = 2;
 /// The most levels of workers a session can allow.
@@ -251,7 +251,7 @@ pub struct ModelSettings {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cache_1h: bool,
     /// The input size, in tokens, at which the agent hands over. `None` in
-    /// sessions saved before it was set per model: the session's
+    /// sessions saved before it was set per model, so the session's
     /// `handover_at` applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handover_at: Option<usize>,
@@ -313,10 +313,10 @@ impl ModelSettings {
 pub struct AgentSettings<'a> {
     pub main: &'a ModelSettings,
     pub worker: &'a ModelSettings,
-    /// What the configurations take from the session's providers: how it
+    /// What the configurations take from the session's providers, meaning how it
     /// reaches OpenAI models, and how Claude Code runs.
     pub providers: &'a providers::Setup,
-    /// How many workers may run at once; 0 turns them off, and
+    /// How many workers may run at once, where 0 turns them off and
     /// [`NO_LIMIT`] sets no limit.
     pub max_workers: u32,
     pub handover_at: usize,
@@ -375,7 +375,7 @@ pub struct AgentSettings<'a> {
     pub worker_billing: WorkerBilling,
 }
 
-/// A worker profile as the main agent's instructions name it: its name and
+/// A worker profile as the main agent's instructions name it, with its name and
 /// the model it runs, when it names one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileName {
@@ -384,7 +384,7 @@ pub struct ProfileName {
 }
 
 impl<'a> AgentSettings<'a> {
-    /// What the session's agents are built from: its `settings` on
+    /// What the session's agents are built from, meaning its `settings` on
     /// `providers`, without MCP servers, skills or indexes. The session adds
     /// those once they are up.
     pub fn for_session(settings: &'a Settings, providers: &'a providers::Setup) -> Self {
@@ -414,7 +414,7 @@ impl<'a> AgentSettings<'a> {
         }
     }
 
-    /// Settings for tests: `main` and `worker` on Arko's own providers, up
+    /// Settings for tests, with `main` and `worker` on Arko's own providers, up
     /// to 4 workers, and nothing else on. Tests change what they test.
     #[cfg(test)]
     pub fn for_test(main: &'a ModelSettings, worker: &'a ModelSettings) -> Self {
@@ -452,14 +452,14 @@ static NO_BUILTIN_SKILLS: BuiltinSkills = BuiltinSkills {
     off: Vec::new(),
 };
 
-/// How many indexes the instructions name; `index_status` lists the rest.
+/// How many indexes the instructions name, and `index_status` lists the rest.
 const INDEXES_NAMED: usize = 20;
 
 /// `max_workers` for no limit on how many workers run at once.
 pub const NO_LIMIT: u32 = u32::MAX;
 
 /// What the handover size leaves free below the input limit of the
-/// ChatGPT login's backend: the report request and the report the agent
+/// ChatGPT login's backend, meaning the report request and the report the agent
 /// writes (a few thousand tokens), and the tool results of a step past
 /// the size. The size is checked before each request with its new tool
 /// results counted, so a step goes past it only by what the estimate
@@ -498,11 +498,11 @@ pub fn default_handover(model: &Model, openai_auth: Option<OpenAiAuth>) -> usize
 }
 
 /// The largest handover size `/handover-at` takes for an agent on `model`,
-/// in a session that reaches OpenAI models by `openai_auth`: 95% of what
+/// in a session that reaches OpenAI models by `openai_auth`, which is 95% of what
 /// the model accepts (on the ChatGPT login, of its backend's 272k). The
 /// rest is room for the report request and the results of a step past the
 /// size, and the overflow guard shortens results that would go past the
-/// limit. The reply needs no room there: OpenAI's input limits leave room
+/// limit. The reply needs no room there, because OpenAI's input limits leave room
 /// for the output, and Claude models end a reply at the context window
 /// (`model_context_window_exceeded`) instead of refusing a request whose
 /// `max_tokens` reaches past it. `None` when the limit isn't known.
@@ -515,10 +515,10 @@ fn on_chatgpt(model: &Model, openai_auth: Option<OpenAiAuth>) -> bool {
     model.provider == Provider::OpenAI && openai_auth == Some(OpenAiAuth::ChatGpt)
 }
 
-/// What an agent on `model` does at `tokens` of input: in Claude Code with
+/// What an agent on `model` does at `tokens` of input. In Claude Code with
 /// `cc_compact`, Claude Code compacts the conversation (its own `/compact`)
 /// and the agent goes on in the same conversation. Otherwise, and on the
-/// other providers, it hands over: it writes a report and goes on from it
+/// other providers, it hands over. It writes a report and goes on from it
 /// in a fresh conversation.
 pub(crate) fn handover(model: &ModelSettings, tokens: usize, cc_compact: bool) -> HandoverConfig {
     HandoverConfig {
@@ -547,7 +547,7 @@ pub const FILE_TOOL_NAMES: [&str; 4] = [
     EDIT_FILE_TOOL_NAME,
 ];
 
-/// The tools both agents have: the shell, the terminal tools and (with
+/// The tools both agents have, meaning the shell, the terminal tools and (with
 /// `monitors`) the monitor tools.
 pub fn terminal_tool_names(monitors: bool) -> Vec<String> {
     let monitors = if monitors {
@@ -562,7 +562,7 @@ pub fn terminal_tool_names(monitors: bool) -> Vec<String> {
         .collect()
 }
 
-/// The tools both agents have: the shell, the terminal and monitor tools,
+/// The tools both agents have, meaning the shell, the terminal and monitor tools,
 /// the file tools and the search index tools. (The skills configuration
 /// adds `load_skill` for each run, and the main agent has `mcp`.)
 fn shared_tool_names(settings: &AgentSettings) -> Vec<String> {
@@ -572,9 +572,9 @@ fn shared_tool_names(settings: &AgentSettings) -> Vec<String> {
     tools
 }
 
-/// Both agents' tool configuration: `tools` run without approval, and
+/// Both agents' tool configuration, where `tools` run without approval, and
 /// `read_file` reads line ranges. The file tools may read and write
-/// anywhere as far as the configuration goes: whether they write outside
+/// anywhere as far as the configuration goes. Whether they write outside
 /// the working directory follows outside access, which can change while
 /// the session runs, so a hook decides it (see `outside`), as the command
 /// guard does for commands.
@@ -610,7 +610,7 @@ fn environment() -> EnvironmentDetailsConfig {
     }
 }
 
-/// How the main agent ends its turns, as Arko tells the user: with
+/// How the main agent ends its turns, as Arko tells the user. With
 /// `text_replies`, a plain reply, else a `complete_task` call.
 pub fn replies_text(text_replies: bool) -> &'static str {
     if text_replies {
@@ -646,7 +646,7 @@ pub fn operator_note_hint(config: &AgentConfig) -> Option<&'static str> {
     }
 }
 
-/// What agents on `cc:` models do at the handover size: with `cc_compact`,
+/// What agents on `cc:` models do at the handover size. With `cc_compact`,
 /// Claude Code compacts their conversation, else they hand over.
 pub fn cc_text(cc_compact: bool) -> &'static str {
     if cc_compact {
@@ -732,7 +732,7 @@ pub fn main_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     builder.build().map_err(|error| error.to_string())
 }
 
-/// What a worker run on `worker` starts with that its model decides: the
+/// What a worker run on `worker` starts with that its model decides, meaning the
 /// model with its generation settings, Claude Code's settings, and the
 /// handover size (`handover_at` unless the model's settings give one).
 /// `worker_config` builds the session's worker model the same way.
@@ -886,7 +886,7 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
              When the code you work on has an index (see the list below), begin every task with `index_search`, before anything else. Before you reach for `rg`, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you're looking for and search with mode `semantic`. It finds the code even when the words differ from yours (a user's \"handoff\" for code that says \"handover\", which `rg` misses), and the results show where it lives and how it works. Use mode `hybrid` for where an exact name is defined, an exact string such as an error message, or a name together with words about it. `rg` is for every use of a name, regexes, and exact strings in files no index covers. Read files once the searches have shown you where to look.\n\n",
         );
         text.push_str(&known_indexes(settings.indexes));
-        // A worker's worktree is a checkout elsewhere: the index of the
+        // A worker's worktree is a checkout elsewhere, so the index of the
         // lead's working directory doesn't cover it, and workers on every
         // model searched there without naming it.
         if worker
@@ -949,10 +949,10 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
     text
 }
 
-/// The indexes the session started with, for the Search indexes section:
+/// The indexes the session started with, for the Search indexes section, meaning
 /// the working directory's first, at most [`INDEXES_NAMED`] of them. When
 /// none is the working directory, holds it or lies in it, that is said
-/// outright: smaller models search anyway when only a label is missing.
+/// outright, because smaller models search anyway when only a label is missing.
 fn known_indexes(indexes: &[index::Known]) -> String {
     if indexes.is_empty() {
         return "There were no indexes when this session started.".to_string();
@@ -1003,7 +1003,7 @@ pub(crate) const NESTING: &str = "A worker you start with `nested: true` can sta
 pub(crate) const NESTED_INSTRUCTIONS: &str = "# Workers of your own\nYou can start workers with `start_agent`. They report to you, and what your lead reads is your own report. Use them for parts of your task that can run apart, and do small things yourself. Start them on the profiles and models your task names. You can't report while they run, so wait for them with `wait_for_agents` or stop the ones you don't need with `stop_agent`. Stopping you stops them. If a worker of yours works in a worktree (`isolated: true`), commit what it needs first and merge its branch into yours before you report.";
 
 /// What the main agent is told of paying for workers under `billing`, when
-/// it chooses their models: the plans first, and what a model billed per
+/// it chooses their models, meaning the plans first, and what a model billed per
 /// token takes.
 pub(crate) fn billing_words(billing: WorkerBilling) -> &'static str {
     match billing {
@@ -1138,7 +1138,7 @@ fn worker_instructions(settings: &AgentSettings) -> String {
 }
 
 /// The extra rules for agents on small models (see [`ExtraRules`]), when
-/// any applies: short commands for what the large models do without being
+/// any applies, meaning short commands for what the large models do without being
 /// told. Each comes from a mistake the small models made in Arko's evals
 /// (`evals/`) that the large ones didn't.
 pub(crate) fn extra_rules(settings: &AgentSettings) -> Option<String> {
@@ -1296,7 +1296,7 @@ mod tests {
     }
 
     /// Agents in Claude Code get Arko's own tools, served to it, and none of
-    /// Claude Code's: the command guard sees every command. Agents on other
+    /// Claude Code's, because the command guard sees every command. Agents on other
     /// providers get no Claude Code settings.
     #[test]
     fn claude_code_agents_run_arko_s_tools_only() {
@@ -1384,7 +1384,7 @@ mod tests {
     }
 
     /// With every worker on the session's worker model, its provider's cache
-    /// gets a paragraph: the `cache` choice where the model has a long cache
+    /// gets a paragraph, meaning the `cache` choice where the model has a long cache
     /// (Claude, in Claude Code too, which uses an hour on a plan without one,
     /// and OpenAI on an API key), ChatGPT's 30 minutes, and nothing where
     /// Arko can't tell. Where the main agent chooses the
@@ -1548,7 +1548,7 @@ mod tests {
     }
 
     /// The main agent hears how workers are paid for when it chooses their
-    /// models: the user's plans first, and under Ask before API that a
+    /// models, meaning the user's plans first, and under Ask before API that a
     /// worker billed per token waits for the user's OK. With every worker on
     /// the session's model it has nothing to choose, and hears nothing.
     #[test]
@@ -1583,7 +1583,7 @@ mod tests {
         assert!(text(ModelChoice::Agent, WorkerBilling::Api).contains("cost the user money"));
     }
 
-    /// What a worker that starts workers is told: who reports to whom, when
+    /// What a worker that starts workers is told, meaning who reports to whom, when
     /// to wait and stop, that stopping it stops them, and what to do about
     /// worktrees. It names no tool the worker doesn't have.
     #[test]
@@ -1608,7 +1608,7 @@ mod tests {
 
     /// The main agent is offered the profile tools with the lead's tools.
     /// A worker is offered neither them nor the start tools, whatever the
-    /// settings say: no worker starts workers yet.
+    /// settings say, because no worker starts workers yet.
     #[test]
     fn only_the_main_agent_is_offered_the_worker_tools() {
         let opus = model("opus", false);
@@ -1638,8 +1638,8 @@ mod tests {
         );
     }
 
-    /// The file tools' configuration lets them read and write anywhere:
-    /// outside access decides their writes outside the working directory
+    /// The file tools' configuration lets them read and write anywhere,
+    /// and outside access decides their writes outside the working directory
     /// as the session runs (`outside`), so the configuration, which a
     /// resume needs unchanged, doesn't depend on it. The instructions say
     /// the rule without saying whether it is on.
@@ -1853,7 +1853,7 @@ mod tests {
     }
 
     /// With the index tools, both agents are told to read code through
-    /// `index_search` before `rg`, and which indexes there are: the working
+    /// `index_search` before `rg`, and which indexes there are, meaning the working
     /// directory's first, at most `INDEXES_NAMED`.
     #[test]
     fn the_index_section_names_the_indexes_and_puts_search_before_rg() {
@@ -1904,7 +1904,7 @@ mod tests {
                 .contains(&format!("{list}To search another project, use its index"))
         );
         // A worker is told how to search from a worktree of its own, which
-        // no index covers: by the index of the lead's working directory.
+        // no index covers, by the index of the lead's working directory.
         assert!(worker_config(&with).unwrap().instructions.contains(&format!(
             "{list}If you work in a worktree of your own, no index covers it. To search the project, name its index (`index: arko`): the results show the lead's copies of the files, which are at the same paths in your worktree.\n\nTo search another project"
         )));
@@ -2014,7 +2014,7 @@ mod tests {
     }
 
     /// The extra rules go to agents on small models, each agent by its own
-    /// model: a worker on Haiku under a lead on Opus gets them, and the
+    /// model. A worker on Haiku under a lead on Opus gets them, and the
     /// lead doesn't. `All` gives them to every agent and `Off` to none.
     #[test]
     fn each_agent_gets_the_extra_rules_by_its_own_model() {
@@ -2041,7 +2041,7 @@ mod tests {
         assert!(!has(worker_config(&off).unwrap()));
     }
 
-    /// Each rule is given where it applies: the one about a working
+    /// Each rule is given where it applies. The one about a working
     /// directory no index covers only then, and none without the index
     /// tools, which leaves no section at all.
     #[test]
@@ -2207,7 +2207,7 @@ mod tests {
             CLAUDE_HANDOVER
         );
         let sol = resolve_model("sol").unwrap();
-        // The ChatGPT backend's 272k, less the room: not the API's limit,
+        // The ChatGPT backend's 272k, less the room, not the API's limit,
         // which an API key has.
         assert!(sol.max_input_tokens > 272_000);
         assert_eq!(default_handover(&sol, Some(OpenAiAuth::ChatGpt)), 250_000);
@@ -2219,7 +2219,7 @@ mod tests {
         assert_eq!(default_handover(&small, Some(OpenAiAuth::ApiKey)), 160_000);
         small.max_input_tokens = 128_000;
         assert_eq!(default_handover(&small, Some(OpenAiAuth::ChatGpt)), 106_000);
-        // The largest size /handover-at takes: 95% of what the model
+        // The largest size /handover-at takes, which is 95% of what the model
         // accepts, on Claude Code too, and of the ChatGPT login's 272k.
         assert_eq!(max_handover(&opus, None), Some(950_000));
         let cc = resolve_model("cc:opus").unwrap();
@@ -2241,7 +2241,7 @@ mod tests {
         assert_eq!(handover(&worker_config(&settings).unwrap()), Some(200_000));
     }
 
-    /// With text replies, the lead ends its turns with a reply in text: it
+    /// With text replies, the lead ends its turns with a reply in text. It
     /// has no `complete_task`, nor the summary's description, and its
     /// instructions say how its turn ends. It answers mid-turn with
     /// `message_user`, as without them. The workers keep `complete_task`.

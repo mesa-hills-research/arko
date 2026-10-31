@@ -1,10 +1,10 @@
-//! Claude Code: Claude models run in the user's installed `claude` CLI,
+//! Claude Code. Claude models run in the user's installed `claude` CLI,
 //! under its Claude plan (`-m cc:opus`). arko_agents' Claude Code runtime
-//! drives the CLI; Arko finds it, checks that it is signed in, and says how
+//! drives the CLI. Arko finds it, checks that it is signed in, and says how
 //! it runs.
 //!
 //! The agents get Arko's own tools only, served to Claude Code in-process,
-//! and none of Claude Code's built-in ones (`Bash`, `Edit`, ...): every
+//! and none of Claude Code's built-in ones (`Bash`, `Edit`, ...), so every
 //! command still goes through Arko's `shell` tool and its command guard, as
 //! on the other providers. Arko's system prompt replaces Claude Code's,
 //! which explains those built-in tools.
@@ -22,7 +22,7 @@ use arko_ai::providers::claude_code::NO_SELF_UPDATE;
 /// The variable Claude Code bills instead of the user's Claude plan when it
 /// is set. Claude Code 2.1 treats an empty value as unset (`claude auth
 /// status` reports `claude.ai` with `ANTHROPIC_API_KEY=` and `api_key` with
-/// a key), so Arko sets it empty: `cc:` models always run on the plan, even
+/// a key), so Arko sets it empty, so `cc:` models always run on the plan, even
 /// where the user's environment holds the API key Arko's Anthropic models
 /// use.
 const API_KEY: &str = "ANTHROPIC_API_KEY";
@@ -30,7 +30,7 @@ const API_KEY: &str = "ANTHROPIC_API_KEY";
 /// How long `claude auth status` may take.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How Arko runs Claude Code for an agent on a `cc:` model: `claude` on the
+/// How Arko runs Claude Code for an agent on a `cc:` model, with `claude` on the
 /// PATH, Arko's tools and system prompt, and never an API key.
 pub fn settings() -> ClaudeCodeSettings {
     ClaudeCodeSettings {
@@ -138,7 +138,7 @@ pub(crate) fn plan_only_env(names: impl IntoIterator<Item = String>) -> BTreeMap
         .collect()
 }
 
-/// [`check`] for work that must run on the Claude plan: Claude Code is run
+/// [`check`] for work that must run on the Claude plan. Claude Code is run
 /// with [`plan_only_env`], so what it says of its login is the stored
 /// plan's, never one an environment variable gave. It ends at once when
 /// `cancel` is set. The caller still decides with [`Ready::on_plan`], since
@@ -173,7 +173,7 @@ pub fn check() -> Result<Ready, Problem> {
     result
 }
 
-/// The last check's result while it is fresh, else a new check: starting
+/// The last check's result while it is fresh, else a new check. Starting
 /// a session asks several times (for the default model, then for the
 /// session's client), and one `claude auth status` answers them all. The
 /// setup screen checks anew each time.
@@ -193,7 +193,7 @@ static LAST_CHECK: std::sync::Mutex<Option<(Instant, Result<Ready, Problem>)>> =
 
 /// Checks that the Claude Code CLI at `path` is recent enough, from `claude
 /// --version`, and signed in, from `claude auth status --json`, which makes
-/// no model request. An answer Arko can't read doesn't stop the session: the
+/// no model request. An answer Arko can't read doesn't stop the session, because the
 /// first turn reports a missing login too.
 pub fn check_at(path: &Path) -> Result<Ready, Problem> {
     check_with(path, &run(path, &["--version"]), || auth_status(path))
@@ -265,7 +265,7 @@ fn auth_status(path: &Path) -> std::io::Result<String> {
 }
 
 /// The standard output of `claude` at `path` run with `args`, as sessions
-/// run it: the API key unset, no self-update, at most 15 s (plus up to 2 s
+/// run it, with the API key unset, no self-update, at most 15 s (plus up to 2 s
 /// of retries while the program file is still busy).
 fn run(path: &Path, args: &[&str]) -> std::io::Result<String> {
     run_with(path, args, &BTreeMap::new(), None)
@@ -352,14 +352,14 @@ fn spawn_when_free(command: &mut Command) -> std::io::Result<Child> {
 /// How long a start waits for a program that is open for writing.
 const BUSY_WAIT: Duration = Duration::from_secs(2);
 
-/// `claude` on the PATH: on Windows also `claude.exe`, or the `claude.cmd`
+/// `claude` on the PATH, and on Windows also `claude.exe`, or the `claude.cmd`
 /// launcher npm installs (arko follows it to the program it starts).
 pub fn find_cli() -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     find_in(std::env::split_paths(&path))
 }
 
-/// The names `claude` has in a folder: on Windows also `claude.exe`, or
+/// The names `claude` has in a folder, and on Windows also `claude.exe`, or
 /// the `claude.cmd` npm installs.
 fn names() -> Vec<String> {
     if cfg!(windows) {
@@ -515,7 +515,7 @@ mod tests {
     use super::*;
 
     /// `claude` installed where Claude Code's installers put it, off the
-    /// PATH, is found there: an app started from a desktop has no shell's
+    /// PATH, is found there, because an app started from a desktop has no shell's
     /// PATH.
     #[cfg(unix)]
     #[test]

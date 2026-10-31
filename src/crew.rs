@@ -49,7 +49,7 @@ pub const LEAD_TOOL_NAMES: &[&str] = &[
     WORKER_OPTIONS,
     SAVE_WORKER_PROFILE,
 ];
-/// Every worker's tools besides the shared ones: it messages the agents it
+/// Every worker's tools besides the shared ones. It messages the agents it
 /// works with, waits for them, and answers the user who writes to it.
 pub const WORKER_TOOL_NAMES: &[&str] =
     &[MESSAGE_AGENT, WAIT_FOR_AGENTS, crate::message::MESSAGE_USER];
@@ -96,19 +96,19 @@ pub struct Setup {
     /// The client's cache lifetime for the worker model and authentication.
     pub cache_lifetime: PromptCacheLifetime,
     pub feed: Option<remote::Feed>,
-    /// Why new workers can't start on a model, when they can't: its
+    /// Why new workers can't start on a model, when they can't. Its
     /// provider has no key in this session (or its key was removed while
     /// Arko runs), or Claude Code isn't installed and signed in.
     pub refuse: Option<Refuse>,
-    /// Who asks the user to allow a worker billed per token (none: no one
+    /// Who asks the user to allow a worker billed per token (none means no one
     /// can).
     pub(crate) asker: Option<Arc<crate::inputs::Asker>>,
-    /// Arko's folder, where the sessions share the day's API spend (none:
+    /// Arko's folder, where the sessions share the day's API spend (none means
     /// the session counts its own only).
     pub(crate) root: Option<PathBuf>,
 }
 
-/// What the start hook holds a worker's billing to (see [`billing`]): the
+/// What the start hook holds a worker's billing to (see [`billing`]), meaning the
 /// models the user allowed for the session, the day's API spend, and who
 /// asks the user.
 struct Spending {
@@ -236,7 +236,7 @@ const RUN_TIMES_FILE: &str = "worker-times.json";
 /// folder.
 const TOOL_CALLS_FILE: &str = "worker-calls.json";
 
-/// What `file` of the session in `dir` kept of each worker (none: a session
+/// What `file` of the session in `dir` kept of each worker (none means a session
 /// from before it was kept).
 fn load_kept<T: serde::de::DeserializeOwned>(
     dir: &std::path::Path,
@@ -291,7 +291,7 @@ pub struct WorkerFacts {
     pub report: Option<String>,
 }
 
-/// What a worker run starts with that its setup decides: the model with
+/// What a worker run starts with that its setup decides, meaning the model with
 /// its generation settings (the prompt cache's lifetime too), Claude Code's
 /// settings, the handover size, and what its profile adds. The start hook
 /// works it out from the call, the profile and the session's settings,
@@ -305,7 +305,7 @@ pub struct WorkerSetup {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handover: Option<HandoverConfig>,
     /// Text for the top of the run's first message, after the project's
-    /// instructions: the profile's instructions, and the extra rules for a
+    /// instructions, meaning the profile's instructions and the extra rules for a
     /// small model that the registered worker didn't get. It is copied here
     /// when the run starts, so an edit or the deletion of the profile's file
     /// changes nothing for a run that exists.
@@ -362,7 +362,7 @@ impl WorkerSetup {
         }
     }
 
-    /// Whether the run may start workers of its own: its setup adds the
+    /// Whether the run may start workers of its own, meaning its setup adds the
     /// start tools.
     pub(crate) fn nests(&self) -> bool {
         self.tools_added.iter().any(|tool| tool == START_AGENT)
@@ -402,7 +402,7 @@ impl WorkerSetup {
                 skills.offer_when_empty = false;
             }
         }
-        // The start tools are the run's own: none a configuration of
+        // The start tools are the run's own, meaning none a configuration of
         // another run had, and the ones this run's setup adds.
         // The same goes for the MCP tool, which only a worker that reaches a
         // server is offered.
@@ -428,7 +428,7 @@ pub struct NewWorkers {
     pub basis: std::sync::Arc<chooser::Basis>,
 }
 
-/// The workers' models: what new workers start on, and what each run
+/// The workers' models, meaning what new workers start on and what each run
 /// started on. A run keeps its own when it resumes (Arko restarted) or is
 /// continued (`message_agent`, a follow-up), whatever new workers start
 /// on by then.
@@ -447,7 +447,7 @@ struct WorkerRecords {
     /// The crew is attached to its workflow, whose start hook calls are
     /// starts. Before (while a checkpoint is read back), a call for a run
     /// without a record is the check of a run saved before records
-    /// existed: it gets the configuration it started with, as then.
+    /// existed. It gets the configuration it started with, as then.
     attached: bool,
 }
 
@@ -485,7 +485,7 @@ impl WorkerRecords {
 }
 
 /// Whether `start_agent`'s `cache` (or a profile's) asks for the long prompt
-/// cache: `long`, or `1h` as it was first called, against `short` or `5m`.
+/// cache, meaning `long`, or `1h` as it was first called, against `short` or `5m`.
 pub(crate) fn long_cache_asked(text: &str) -> Result<bool, String> {
     match text.trim().to_ascii_lowercase().as_str() {
         "long" | "1h" => Ok(true),
@@ -510,7 +510,7 @@ pub(crate) fn name_problem(name: &str) -> Option<&'static str> {
     }
 }
 
-/// The names that `start_agent`'s `skills` or `mcp`, or a profile's, give:
+/// The names that `start_agent`'s `skills` or `mcp`, or a profile's, give, as
 /// text with the names separated by commas, a JSON array of them, or `none`
 /// for no names at all. `None` for blank text, which gives nothing. A name
 /// given twice counts once. The error says what is wrong, to follow the
@@ -565,7 +565,7 @@ pub(crate) fn names_words(names: &[String]) -> String {
     )
 }
 
-/// What a narrowed set of `noun`s (`skill`, `MCP server`) is as a phrase:
+/// What a narrowed set of `noun`s (`skill`, `MCP server`) is as a phrase, such as
 /// `only the skills ponytail and release-notes`, or `no MCP servers`.
 pub(crate) fn only_words(noun: &str, names: &[String]) -> String {
     match names {
@@ -627,7 +627,7 @@ fn prepare(
         ..
     } = hook;
     let (feed, refuse, default_long) = (feed.as_ref(), refuse.as_ref(), *default_long);
-    // (The lock is held briefly: choosing may read files, and Claude Code's
+    // (The lock is held briefly, because choosing may read files, and Claude Code's
     // login check runs a command.)
     let (started, attached, new) = {
         let models = models.lock().unwrap();
@@ -670,7 +670,7 @@ fn prepare(
                 found
             };
             // What its starter has, which the worker's skills and servers
-            // are chosen from (the main agent has no record: everything).
+            // are chosen from (the main agent has no record, so everything).
             let starter = models
                 .lock()
                 .unwrap()
@@ -705,7 +705,7 @@ fn prepare(
             setup
         }
         None => {
-            // Not told what new workers start on: the registered worker.
+            // Not told what new workers start on, so the registered worker.
             if let Some(why) = refuse.and_then(|refuse| refuse(&config.llm_config.model)) {
                 return Err(why);
             }
@@ -772,7 +772,7 @@ fn pay_for(
 const FLIGHT_LIMIT: Duration = Duration::from_secs(30);
 
 /// Where in the tree of workers the start `request` happens, and the handle
-/// of its starter when a worker started it: how deep the new worker is, and
+/// of its starter when a worker started it, meaning how deep the new worker is, and
 /// how many workers its starter has running or queued. `runs` are the
 /// session's workers, and `held` the starts (their run and their starter)
 /// that passed the hook and have no record yet, which count as running.
@@ -818,7 +818,7 @@ pub(crate) fn started_by(
         .map(|parent| parent.handle.clone())
 }
 
-/// The worker `handle` (run `run`) as a notice names it among `runs`: `r2`,
+/// The worker `handle` (run `run`) as a notice names it among `runs`, as `r2`,
 /// or `r2 (under r1)` when a worker started it.
 pub(crate) fn named_in(runs: &[SubagentRecord], handle: &str, run: Uuid) -> String {
     match started_by(runs, run) {
@@ -828,7 +828,7 @@ pub(crate) fn named_in(runs: &[SubagentRecord], handle: &str, run: Uuid) -> Stri
 }
 
 /// The runs a `wait_for_agents` without ids waits for, among the `active`
-/// ones of the session's workers `all`: those of the worker `waiting` that
+/// ones of the session's workers `all`, meaning those of the worker `waiting` that
 /// started them, or, for the main agent (`None`), those that no worker started.
 pub(crate) fn waited_runs(
     active: &[SubagentRecord],
@@ -845,7 +845,7 @@ pub(crate) fn waited_runs(
         .collect()
 }
 
-/// The workers in the order a list shows a family: each worker followed by
+/// The workers in the order a list shows a family, with each worker followed by
 /// the workers it started.
 fn in_family_order(facts: Vec<WorkerFacts>) -> Vec<WorkerFacts> {
     let order = remote::family_order_of(
@@ -876,7 +876,7 @@ pub(crate) fn below(runs: &[arko_workflows::subagents::SubagentRecord], root: Uu
     found
 }
 
-/// What `/stop-workers NAME` says once it stopped `worker`: the workers that
+/// What `/stop-workers NAME` says once it stopped `worker`, meaning the workers that
 /// stop with it, and who can restart it, the agent that started it. `starter`
 /// is the worker that started it, none for the main agent's workers, whose
 /// starter is the main agent.
@@ -894,7 +894,7 @@ pub(crate) fn stopping_words(worker: &str, starter: Option<&str>, with: &[String
 }
 
 /// How many of the `active` workers stop when the stops of the workers
-/// `accepted` take effect: those, and the workers that they started, which
+/// `accepted` take effect, meaning those and the workers that they started, which
 /// stop with them and report no stop of their own.
 fn stopped_by(active: &[SubagentRecord], accepted: &[Uuid]) -> usize {
     let mut stopped: Vec<Uuid> = Vec::new();
@@ -914,7 +914,7 @@ fn stopped_by(active: &[SubagentRecord], accepted: &[Uuid]) -> usize {
     stopped.len()
 }
 
-/// The start hook: a worker's setup as it starts, and which workers may
+/// The start hook, meaning a worker's setup as it starts, and which workers may
 /// start workers.
 struct StartHook {
     models: Arc<Mutex<WorkerRecords>>,
@@ -993,7 +993,7 @@ impl SubagentHook for StartHook {
         prepare(self, request, config)
     }
 
-    /// What the worker runs and its profile, for its starter: the start's
+    /// What the worker runs and its profile, for its starter. The start's
     /// result and `list_agents` say it, so a starter that chose a model sees
     /// what it got and one that lost track of its workers sees what each is.
     /// A model billed per token says so.
@@ -1054,7 +1054,7 @@ impl SubagentHook for StartHook {
     }
 }
 
-/// The text a run's first message opens with: the project's instructions,
+/// The text a run's first message opens with, meaning the project's instructions,
 /// then what the run's setup adds (its profile's instructions).
 fn first_message_context(
     project: &Mutex<Option<String>>,
@@ -1075,7 +1075,7 @@ fn first_message_context(
         .reduce(|text, part| format!("{}\n\n{part}", text.trim_end()))
 }
 
-/// The parameters of the host's own that `start_agent` takes: the prompt
+/// The parameters of the host's own that `start_agent` takes, meaning the prompt
 /// cache, the worker's profile, model and effort, the skills and MCP servers
 /// it gets, and whether it may start workers of its own.
 fn start_parameters() -> Vec<ToolParameterDefinition> {
@@ -1125,7 +1125,7 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
     ]
 }
 
-/// What a worker runs, as a sentence: "runs sol at high effort, profile judge".
+/// What a worker runs, as a sentence, as "runs sol at high effort, profile judge".
 fn runs_words(model: &str, effort: Option<&str>, profile: Option<&str>) -> String {
     let mut text = format!("runs {model}");
     if let Some(effort) = effort {
@@ -1293,7 +1293,7 @@ impl Crew {
                 openai_auth: self.setup.openai_auth,
                 hub: self.hub.clone(),
             }))
-            // Asked as each worker starts: a run keeps its first message.
+            // Asked as each worker starts, because a run keeps its first message.
             .start_context(Arc::new(move |request: &StartRequest| {
                 first_message_context(&project, &records, &kept, request)
             }));
@@ -1310,13 +1310,13 @@ impl Crew {
             config = config.max_failed_requests(cap);
         }
         // A worker's workspace may be outside the lead's only while outside
-        // access is on, which can change while the session runs: the
+        // access is on, which can change while the session runs, and the
         // `outside` hook refuses the others.
         config.workspaces_anywhere()
     }
 
     /// Stops a worker after `cap` failed model requests in a row, in the
-    /// workflow built from now on (none: no cap).
+    /// workflow built from now on (none means no cap).
     pub fn set_retry_cap(&self, cap: Option<u32>) {
         *self.retry_cap.lock().unwrap() = cap;
     }
@@ -1376,14 +1376,14 @@ impl Crew {
         self.models.lock().unwrap().new.clone()
     }
 
-    /// Before a workflow is built from a checkpoint: the start hook's calls
+    /// Before a workflow is built from a checkpoint, the start hook's calls
     /// until it is attached are checks of the saved runs.
     pub fn detach(&self) {
         self.models.lock().unwrap().attached = false;
     }
 
     /// Records the model of each worker run that has no record yet (runs
-    /// of Arko before records existed), as it started: so that it keeps it
+    /// of Arko before records existed), as it started, so that it keeps it
     /// once new workers start on another. Called as that changes. Returns
     /// how many workers the session has started.
     pub fn keep_started_models(&self) -> Result<usize, String> {
@@ -1442,7 +1442,7 @@ impl Crew {
 
     /// The MCP servers the run `run` reaches, by name. `None` is all of them,
     /// for the main agent, whose runs have no record. A worker's is always a
-    /// list: the one it started with, without any server the hub marks
+    /// list, meaning the one it started with, without any server the hub marks
     /// `workers: false`, or, for a worker that has what its starter has, the
     /// servers workers may reach now, so one added later counts. It is
     /// the same after the session resumes.
@@ -1486,7 +1486,7 @@ impl Crew {
         self.models.lock().unwrap().attached = true;
         // A crash before the fresh lead's first tool can leave its workers
         // owned by the previous lead. Keep that owner until lead_run transfers
-        // it. (The lead is the main agent's: the owner of the latest worker
+        // it. (The lead is the main agent's, meaning the owner of the latest worker
         // that no worker started.)
         let started = workflow.subagents();
         *self.lead.lock().unwrap() = started
@@ -1563,7 +1563,7 @@ impl Crew {
         }));
     }
 
-    /// What the crew does with a worker's event `received`: says it, tells
+    /// What the crew does with a worker's event `received`. It says it, tells
     /// the feed, and wakes the session. False once the workers' events end.
     pub(crate) fn worker_event(
         &self,
@@ -1607,7 +1607,7 @@ impl Crew {
         true
     }
 
-    /// The worker `handle` (run `run`) as a notice names it: `r2`, or `r2
+    /// The worker `handle` (run `run`) as a notice names it, as `r2`, or `r2
     /// (under r1)` when a worker started it.
     fn named(&self, handle: &str, run: Uuid) -> String {
         let Some(workflow) = self.workflow() else {
@@ -1616,7 +1616,7 @@ impl Crew {
         named_in(&workflow.subagents(), handle, run)
     }
 
-    /// What became of a worker, for the feed: its summary and placeholder
+    /// What became of a worker, for the feed, meaning its summary and placeholder
     /// follow its runs.
     fn tell_feed(&self, feed: &remote::Feed, handle: &str, run: Uuid, kind: &SubagentEventKind) {
         use remote::WorkerChange;
@@ -1674,7 +1674,7 @@ impl Crew {
         }
     }
 
-    /// What a worker's summary says of it: the setup it started with, its
+    /// What a worker's summary says of it, meaning the setup it started with, its
     /// depth, and (`with_costs`) what its saved runs cost, for a session that
     /// resumes. The costs of a worker that starts add up from its events. Who
     /// started it is told with `Feed::worker_under`.
@@ -1789,7 +1789,7 @@ impl Crew {
             .collect()
     }
     /// The user's message to worker `to` (`r1`), which goes as its lead's
-    /// message does: a running worker reads it at its next step, and one
+    /// message does. A running worker reads it at its next step, and one
     /// that ended goes on with it. With `copy`, the worker that started it
     /// (the main agent, for most) gets a copy with its next news, and
     /// without, nothing reaches it. Returns the worker's ID, or why the
@@ -1825,7 +1825,7 @@ impl Crew {
     }
 
     /// The prompt cache of worker `handle` as the session knows it, once it
-    /// has ended: known, or unknown for a worker an older Arko saved.
+    /// has ended, which is known or unknown for a worker an older Arko saved.
     /// Continuing it asks first when [`WorkerCacheState::asks`].
     pub fn cache_state(&self, handle: &str) -> Option<WorkerCacheState> {
         let workflow = self.workflow()?;
@@ -1866,7 +1866,7 @@ impl Crew {
         }
     }
 
-    /// Why a `message_agent` call with `params` doesn't continue its worker:
+    /// Why a `message_agent` call with `params` doesn't continue its worker, meaning
     /// the worker has ended, its cache expired and continuing it re-reads
     /// enough to matter (or an older Arko saved it, so its cache isn't
     /// known), and the call didn't confirm it. `None` sends it.
@@ -1948,7 +1948,7 @@ impl Crew {
                     (None, Some(new)) => new.cache_lifetime,
                     _ => self.setup.cache_lifetime,
                 };
-                // A run Arko didn't record: the cache it asked for, on the
+                // A run Arko didn't record, with the cache it asked for, on the
                 // registered worker's model.
                 if started.is_none()
                     && let Some(config) = workflow.context().agent_configs.get(&run.agent)
@@ -2019,8 +2019,8 @@ impl Crew {
     }
 
     /// Stops the worker `id` (r1, r2, ...), when it is running, else says
-    /// why not. The workers it started stop with it, and theirs in turn:
-    /// their IDs are returned.
+    /// why not. The workers it started stop with it, and theirs in turn,
+    /// and their IDs are returned.
     pub fn stop(&self, id: &str, reason: &str) -> Result<Vec<String>, String> {
         let workflow = self
             .workflow()
@@ -2422,7 +2422,7 @@ mod tests {
         assert_eq!(hook.describe(&record(&start("r9", &[]))), None);
 
         // The profile is edited and deleted, a Claude Code login changes
-        // nothing: the same configuration, from the registered worker and
+        // nothing, so it is the same configuration, from the registered worker and
         // from another run's saved one, and the same answer.
         judge(&root, "---\ndescription: Judges\n---\nJudge it alone.\n");
         assert_eq!(prepared(&crew, &nests, &registered), before);
@@ -2434,7 +2434,7 @@ mod tests {
         assert!(ask(&nests).unwrap().contains("Judge it in parts."));
         assert!(hook.offers_start_tools(&record(&nests)));
 
-        // Arko restarts: a new crew on the same folder reads the record.
+        // Arko restarts, and a new crew on the same folder reads the record.
         let (again, _) = crew_for(&session, &root, &luna());
         let hook = again.config().hook.unwrap();
         assert!(hook.offers_start_tools(&record(&nests)));
@@ -2483,7 +2483,7 @@ mod tests {
             Some("# Your profile (judge)\nJudge version one.")
         );
 
-        // Edited: the run keeps what it started with.
+        // Edited, so the run keeps what it started with.
         judge(
             &root,
             "---\ndescription: Judges\nmodel: astra\neffort: low\n---\nJudge version two.\n",
@@ -2503,12 +2503,12 @@ mod tests {
         );
 
         // The registered worker is another run's saved configuration, as in
-        // a resumed session: the same result for each run.
+        // a resumed session, with the same result for each run.
         let saved: AgentConfig = serde_json::from_value(after.clone()).unwrap();
         assert_eq!(prepared(&crew, &first, &saved), before);
         assert_eq!(prepared(&crew, &second, &saved), after);
 
-        // Deleted: the same.
+        // Deleted, the same.
         std::fs::remove_file(root.join("profiles").join("judge.md")).unwrap();
         assert_eq!(prepared(&crew, &first, &registered), before);
         assert_eq!(prepared(&crew, &second, &registered), after);
@@ -2521,7 +2521,7 @@ mod tests {
                 .starts_with("There is no worker profile `judge`.")
         );
 
-        // Arko restarts, with the settings changed and the profile gone: a
+        // Arko restarts, with the settings changed and the profile gone. A
         // new crew on the same folder reads the record. Before its workflow
         // is attached, the hook is only checking the saved runs.
         let mut other = luna();
@@ -2641,7 +2641,7 @@ mod tests {
         // The main agent has no record, so all of its servers.
         assert_eq!(crew.mcp_servers_of(narrow.caller_run_id), None);
 
-        // Another run's saved configuration, with a list of its own: each
+        // Another run's saved configuration, with a list of its own, and each
         // run gets its own again.
         let saved: AgentConfig = serde_json::from_value(before.clone()).unwrap();
         assert_eq!(prepared(&crew, &narrow, &saved), before);
@@ -2871,7 +2871,7 @@ mod tests {
     }
 
     /// What a start result and `list_agents` say of a worker's skills and
-    /// servers: nothing when it has its starter's, else the narrowed sets
+    /// servers, which is nothing when it has its starter's, else the narrowed sets
     /// and the names its profile asked for that it couldn't get.
     #[test]
     fn the_lists_say_the_narrowed_skills_and_servers() {
@@ -3104,7 +3104,7 @@ mod tests {
             describe_worker(&worker),
             "r2  running  Judge the render\n  runs gpt-6.1-sol at high effort, profile 3d-judge\n  cost $0.12\n  prompt cache of 5 minutes\n  Done."
         );
-        // A plan covered the calls: they bill nothing, and the list prices
+        // A plan covered the calls, so they bill nothing, and the list prices
         // say what they are worth.
         worker.cost = Some((0.0, 0.31));
         worker.other_model = Some("gpt-6-luna".into());
@@ -3233,7 +3233,7 @@ mod tests {
         }
     }
 
-    /// A wait without ids waits for the runs of the agent that waits: the
+    /// A wait without ids waits for the runs of the agent that waits, meaning the
     /// main agent's own, and not the workers of its workers, or the worker's.
     #[test]
     fn a_wait_without_ids_waits_for_the_runs_of_the_agent_that_waits() {
@@ -3293,7 +3293,7 @@ mod tests {
         assert_eq!(ids, ["r1", "r3", "r2"]);
     }
 
-    /// What `/stop-workers NAME` says: the workers that stop with the worker,
+    /// What `/stop-workers NAME` says, meaning the workers that stop with the worker,
     /// and who can restart it, which is the worker that started it.
     #[test]
     fn stopping_a_worker_says_what_stops_with_it_and_who_resumes_it() {
@@ -3444,7 +3444,7 @@ mod tests {
         .expect("asked in time")
     }
 
-    /// Answers `request` in the tray of `feed`, as the tray's buttons do:
+    /// Answers `request` in the tray of `feed`, as the tray's buttons do, with
     /// `approve` with its option on (`option`), and the message box's
     /// `words`.
     fn answer(
@@ -3517,7 +3517,7 @@ mod tests {
         assert_eq!(starting.await.unwrap(), Ok(()));
         assert!(feed.approvals().is_empty());
 
-        // Once only: the next start asks again, and Reject refuses it.
+        // Once only, so the next start asks again, and Reject refuses it.
         let starting = start_on(&crew, &base, "opus");
         answer(&feed, &asked(&feed).await, false, false, None);
         assert_eq!(
@@ -3548,7 +3548,7 @@ mod tests {
         assert!(feed.approvals().is_empty());
         feed.turn_started();
 
-        // Allowed for the session: it starts, and so do the next ones, with
+        // Allowed for the session, so it starts, and so do the next ones, with
         // no request, also in the session opened again.
         let starting = start_on(&crew, &base, "opus");
         answer(&feed, &asked(&feed).await, true, true, None);

@@ -1,4 +1,4 @@
-// End-to-end tests of `/model`: the main agent's model before the
+// End-to-end tests of `/model`, covering the main agent's model before the
 // conversation starts, the workers' at any time, and the workers already
 // started keeping theirs (resumed, or continued). Each follows a path a
 // user takes, with the mock model, and checks the requests the model gets.
@@ -6,7 +6,7 @@
 
 use crate::mock_model::{ModelServer, complete, tool_call};
 
-/// What a request asks for: (who sent it, its model, its effort).
+/// What a request asks for, as (who sent it, its model, its effort).
 type Asked = Arc<Mutex<Vec<(String, String, String)>>>;
 
 /// The request's model and reasoning effort.
@@ -178,7 +178,7 @@ async fn before_the_start_model_sets_the_main_agent_and_after_it_opens_a_new_con
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
-/// The main agent's mock: starts a worker or messages one as the user's
+/// The main agent's mock, which starts a worker or messages one as the user's
 /// message says, and ends its turn when a call's result comes back.
 fn lead(body: &str, step: &str) -> String {
     let (user, answers) = last_user(body);
@@ -209,7 +209,7 @@ fn lead(body: &str, step: &str) -> String {
 }
 
 /// After the start, `/model worker` changes the workers started from now
-/// on: a worker started before keeps its model when Arko stops and resumes
+/// on. A worker started before keeps its model when Arko stops and resumes
 /// it, and when the main agent continues it later, while a new worker
 /// starts on the new model and the main agent keeps its own.
 #[tokio::test]
@@ -283,7 +283,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
     assert_eq!(reading.models.workers, "gpt-6.1-sol");
     assert!(reading.models.banner_workers.contains("gpt-6.1-sol"));
 
-    // Arko stops while r1 runs, and resumes the session: r1 goes on on luna.
+    // Arko stops while r1 runs, and resumes the session, and r1 goes on on luna.
     harness.crew.as_ref().unwrap().shutdown().await;
     harness.open(true).unwrap();
     harness.start_new_workers();
@@ -322,7 +322,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
     );
     assert!(models("main").iter().all(|model| model == "gpt-6-luna"));
 
-    // The main agent continues r1: on luna still.
+    // The main agent continues r1, on luna still.
     let before = models("r1").len();
     let _ = tokio::time::timeout(Duration::from_secs(20), harness.finish_workers(&mut inputs)).await;
     assert!(matches!(
@@ -357,7 +357,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
             .describe()
             .contains("runs gpt-6.1-sol at high effort\n")
     );
-    // `/model worker main`: new workers follow the main agent again.
+    // `/model worker main` makes new workers follow the main agent again.
     assert!(harness.live_command("/model worker main", Source::Terminal));
     assert!(said(&harness.feed).contains(
         "Workers started from now on follow the main agent's model, gpt-6-luna (high effort), and the workers started before keep theirs."
@@ -447,7 +447,7 @@ async fn page_status(http: &reqwest::Client, base: &str, cookie: &str) -> serde_
 
 /// The page served before the first message (`arko --remote`) names the
 /// model `/model` then sets, before the conversation starts, and after
-/// it: its Model row reads the status's `info.model`.
+/// it. Its Model row reads the status's `info.model`.
 #[tokio::test]
 async fn the_page_names_the_model_set_after_it_started() {
     let server =

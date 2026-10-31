@@ -1,4 +1,4 @@
-//! The `shell` tool: runs one command and returns its output once it
+//! The `shell` tool runs one command and returns its output once it
 //! finishes. It runs commands as held jobs of the terminal tools'
 //! [`TerminalManager`], so the command guard, process-group cleanup and
 //! logs are the terminal module's. A command that runs too long, or that
@@ -29,7 +29,7 @@ pub const SHELL_TOOL_NAME: &str = "shell";
 /// The time a command may run when the call doesn't say.
 pub const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 /// The time a command may run when the call doesn't say, while commands
-/// move to the background: well past the time they move at.
+/// move to the background, which is well past the time they move at.
 pub const BACKGROUND_TIMEOUT_SECONDS: u64 = 1_800;
 /// How long a command runs before it moves to the background, by default
 /// in sessions the user takes part in (in seconds).
@@ -93,8 +93,8 @@ pub struct Shell {
 }
 
 impl Shell {
-    /// bash where there is one, else `/bin/sh`; on Windows the one
-    /// `windows` names: cmd.exe, or PowerShell 7 (`pwsh`) where installed,
+    /// bash where there is one, else `/bin/sh`, and on Windows the one
+    /// `windows` names, either cmd.exe or PowerShell 7 (`pwsh`) where installed,
     /// else Windows PowerShell.
     pub fn detect(windows: WindowsShell) -> Self {
         if cfg!(windows) && windows == WindowsShell::Cmd {
@@ -138,7 +138,7 @@ impl Shell {
         }
     }
 
-    /// cmd.exe at `program`, as the terminal module runs it: `/D /S /C`
+    /// cmd.exe at `program`, as the terminal module runs it, with `/D /S /C`
     /// and the command line as written.
     fn cmd(program: PathBuf) -> Self {
         let args: Vec<String> = ["/D", "/S", "/C"].map(String::from).to_vec();
@@ -151,7 +151,7 @@ impl Shell {
         }
     }
 
-    /// The command as it is run: in `directory` when the call names one
+    /// The command as it is run, in `directory` when the call names one
     /// (a `cd` the command guard follows, so the guard still judges paths
     /// against the working directory), and on Unix with standard input
     /// closed, so a program that would wait for input ends instead of
@@ -159,7 +159,7 @@ impl Shell {
     /// whole command line.)
     fn wrap(&self, command: &str, directory: Option<&Path>) -> String {
         if self.kind == ShellKind::Cmd {
-            // `&` comes last: a failed `cd` exits before the command runs.
+            // `&` comes last, because a failed `cd` exits before the command runs.
             match directory {
                 Some(directory) => {
                     format!("cd /d \"{}\" || exit 1 & {command}", directory.display())
@@ -209,7 +209,7 @@ pub struct Background {
 }
 
 impl Background {
-    /// Calls move after `after` seconds (0: never), as jobs of `jobs`.
+    /// Calls move after `after` seconds (0 means never), as jobs of `jobs`.
     pub fn new(after: u64, jobs: &Arc<TerminalManager>) -> Arc<Self> {
         let background = Arc::new(Self {
             after: 0.into(),
@@ -224,7 +224,7 @@ impl Background {
         self.jobs.upgrade()
     }
 
-    /// The jobs running in the background, oldest first: the commands moved
+    /// The jobs running in the background, oldest first, meaning the commands moved
     /// there, the calls moved there, and those the terminal tools started.
     /// They stop when Arko exits.
     pub fn jobs(&self) -> Vec<BackgroundJob> {
@@ -236,13 +236,13 @@ impl Background {
 
     /// Readies the jobs for Arko's exit, unless a job runs in the
     /// background that isn't one of `known` (those the user agreed to
-    /// stop): then they come back. Readied, no job starts or moves to the
+    /// stop), and then they come back. Readied, no job starts or moves to the
     /// background, so the exit stops none the user didn't know of.
     pub fn close(&self, known: &[Uuid]) -> Result<(), Vec<BackgroundJob>> {
         self.jobs.upgrade().map_or(Ok(()), |jobs| jobs.close(known))
     }
 
-    /// After how long a call still running moves; `None`: never.
+    /// After how long a call still running moves, and `None` means never.
     pub fn after(&self) -> Option<Duration> {
         match self.after.load(Ordering::Relaxed) {
             0 => None,
@@ -250,7 +250,7 @@ impl Background {
         }
     }
 
-    /// Calls started from now on move after `after` seconds (0: never):
+    /// Calls started from now on move after `after` seconds (0 means never), meaning
     /// the shell's commands, and the calls the runtime moves (MCP tools,
     /// `index_create`).
     pub fn set_after(&self, after: u64) {
@@ -275,7 +275,7 @@ impl Background {
         runs
     }
 
-    /// Moves the calls of `run` to the background; returns how many.
+    /// Moves the calls of `run` to the background, and returns how many.
     pub fn move_run(&self, run: Uuid) -> usize {
         self.jobs
             .upgrade()
@@ -318,7 +318,7 @@ pub fn parse_background_after(text: &str) -> Result<u64, String> {
     Ok(seconds)
 }
 
-/// A time in seconds as `/background-after` takes it: `90s`, `10m`, `1h`,
+/// A time in seconds as `/background-after` takes it, as `90s`, `10m`, `1h`,
 /// or `off` for 0.
 pub fn shown_background_after(seconds: u64) -> String {
     match seconds {
@@ -329,7 +329,7 @@ pub fn shown_background_after(seconds: u64) -> String {
     }
 }
 
-/// A time in seconds in words: `90 seconds`, `10 minutes`, `1 hour`.
+/// A time in seconds in words, as `90 seconds`, `10 minutes`, `1 hour`.
 pub fn background_after_words(seconds: u64) -> String {
     let (count, unit) = match seconds {
         seconds if seconds % 3_600 == 0 => (seconds / 3_600, "hour"),
@@ -348,7 +348,7 @@ pub struct ShellTool {
     /// When commands move to the background, and those running.
     background: Arc<Background>,
     /// When commands moved to the background as the tool was made, which
-    /// its description says: it stays the same through a conversation, so
+    /// its description says. It stays the same through a conversation, so
     /// the prompt cache holds (a change reaches the agents as a note).
     described_after: u64,
 }
@@ -365,7 +365,7 @@ impl ShellTool {
     }
 
     /// Keeps the command channel of each run the tool is bound to in
-    /// `runs`: every agent has the shell, so Arko reaches every run there
+    /// `runs`, because every agent has the shell, so Arko reaches every run there
     /// (to ask for a handover).
     pub fn keeping_runs(mut self, runs: Arc<crate::handover::Runs>) -> Self {
         self.runs = Some(runs);
@@ -403,7 +403,7 @@ fn parameter(name: &str, description: &str, required: bool) -> ToolParameterDefi
 }
 
 /// The directory the call names (`cwd`), absolute or relative to the
-/// working directory; `None` for the working directory itself.
+/// working directory, and `None` for the working directory itself.
 fn directory(
     params: &HashMap<String, Value>,
     workspace: &Path,
@@ -432,7 +432,7 @@ fn directory(
     Ok((path != arko_agents::utils::normalize_path(workspace)).then_some(path))
 }
 
-/// The time a command may run when the call doesn't say: longer while
+/// The time a command may run when the call doesn't say, and longer while
 /// commands move to the background (after `after` seconds, 0 for never),
 /// so that one isn't stopped as it should move.
 pub fn default_timeout(after: u64) -> u64 {
@@ -514,7 +514,7 @@ impl Tool for ShellTool {
         false
     }
 
-    /// A command moves itself to the background: when the user moves the
+    /// A command moves itself to the background. When the user moves the
     /// call (Ctrl+B), its job is released and the call returns its ID.
     fn background_mode(&self) -> arko_agents::ToolBackground {
         arko_agents::ToolBackground::Own
@@ -565,7 +565,7 @@ impl Tool for ShellTool {
         )?;
         let directory = directory(&params, context.current_working_directory)?;
         let started = Instant::now();
-        // Held: the agent hears of it only if it moves to the background.
+        // Held, so the agent hears of it only if it moves to the background.
         let job = self
             .manager
             .start(
@@ -614,11 +614,11 @@ impl Tool for ShellTool {
             };
             match self.manager.release(context.task_id, job.job_id) {
                 Ok(snapshot) => {
-                    // The command goes on: a stopped turn no longer stops it.
+                    // The command goes on, and a stopped turn no longer stops it.
                     guard.armed = false;
                     return Ok(moved(&snapshot, started.elapsed(), after, moved_by_user));
                 }
-                // It finished as it was to move: its result is here.
+                // It finished as it was to move, so its result is here.
                 Err(TerminalError::Finished) => {
                     break self
                         .manager
@@ -633,7 +633,7 @@ impl Tool for ShellTool {
         let output = std::fs::read(&done.log_path)
             .map(|bytes| String::from_utf8_lossy(&bytes).replace("\r\n", "\n"))
             .unwrap_or_default();
-        // The job's log stays; the catalog forgets the job, so the terminal
+        // The job's log stays, and the catalog forgets the job, so the terminal
         // tools' listing shows only background jobs.
         let _ = self.manager.forget(context.task_id, job.job_id);
         let status = match done.state {
@@ -659,7 +659,7 @@ impl Tool for ShellTool {
 }
 
 /// The result of a command that moved to the background after `elapsed`,
-/// by the user (`by_user`) or as it ran past `after`: its job, what to do
+/// by the user (`by_user`) or as it ran past `after`, meaning its job, what to do
 /// next, and its output so far.
 fn moved(
     job: &TerminalSnapshot,
@@ -689,7 +689,7 @@ fn seconds(elapsed: Duration) -> String {
     format!("{:.1} s", elapsed.as_secs_f64())
 }
 
-/// The output as the agent sees it: all of it, or its start and end with a
+/// The output as the agent sees it, meaning all of it, or its start and end with a
 /// line saying what was left out and where the rest is.
 fn body(output: &str, log: &Path, log_truncated: bool) -> String {
     let output = output.trim_end();
@@ -736,7 +736,7 @@ mod tests {
     }
 
     /// The tool, with commands moving to the background after `after`
-    /// seconds (0: never).
+    /// seconds (0 means never).
     fn tool_moving_after(directory: &Path, after: u64) -> ShellTool {
         let shell = Shell::detect(WindowsShell::Cmd);
         let mut config = TerminalConfig::new(directory.join("jobs"));
@@ -792,7 +792,7 @@ mod tests {
     async fn standard_input_is_closed_and_a_slow_command_is_stopped() {
         let temp = tempfile::tempdir().unwrap();
         let tool = tool(temp.path());
-        // `cat` with no file reads standard input: closed, it ends at once.
+        // `cat` with no file reads standard input, which is closed, so it ends at once.
         let result = run(
             &tool,
             temp.path(),
@@ -1015,7 +1015,7 @@ mod tests {
         );
     }
 
-    /// A command still running at the set time moves to the background: the
+    /// A command still running at the set time moves to the background. The
     /// call returns its job, which runs on, and the agent's runtime hears
     /// when it ends.
     #[cfg(unix)]
@@ -1077,8 +1077,8 @@ mod tests {
         assert!(content.contains("late"), "{content}");
     }
 
-    /// The user moves a command at once (Ctrl+B), also with the setting off:
-    /// the call's move signal fires, its job goes on in the background, and
+    /// The user moves a command at once (Ctrl+B), also with the setting off.
+    /// The call's move signal fires, its job goes on in the background, and
     /// the call returns its ID.
     #[cfg(unix)]
     #[tokio::test]

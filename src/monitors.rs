@@ -68,7 +68,7 @@ impl Wakes {
         }
     }
 
-    /// [`shown`](Self::shown), with the time `auto` is now (`within`'s):
+    /// [`shown`](Self::shown), with the time `auto` is now (`within`'s), as
     /// `auto (54m)`.
     pub fn shown_now(self, now: Option<Duration>) -> String {
         match (self, now) {
@@ -116,7 +116,7 @@ impl Wakes {
     }
 }
 
-/// What a session's settings hold: a text such as `auto`, `2h` or `off`, or
+/// What a session's settings hold, meaning a text such as `auto`, `2h` or `off`, or
 /// (in sessions saved before `auto`) a number of seconds, 0 for never, or
 /// null for always.
 #[derive(Deserialize)]

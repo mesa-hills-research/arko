@@ -2,7 +2,7 @@
 //! Windows console (cmd.exe or PowerShell in conhost) draws only its fonts'
 //! characters and shows the others as question marks, so there the symbols
 //! are replaced with stand-ins from the set those fonts share (WGL4).
-//! ARKO_SYMBOLS chooses: `full`, `basic` (those stand-ins) or `ascii`.
+//! ARKO_SYMBOLS chooses between `full`, `basic` (those stand-ins) or `ascii`.
 //!
 //! Arko's code writes the full symbols, and [`render`] replaces them where
 //! text is printed ([`Output`](crate::ui::Output) and the prompt), so a
@@ -13,13 +13,13 @@ use std::sync::OnceLock;
 
 use crate::credentials;
 
-/// The setting that chooses the symbols: `full`, `basic` or `ascii`.
+/// The setting that chooses the symbols, either `full`, `basic` or `ascii`.
 pub const SYMBOLS: &str = "ARKO_SYMBOLS";
 
 /// Which symbols the terminal shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Symbols {
-    /// As written: every modern terminal font has them.
+    /// As written, since every modern terminal font has them.
     Full,
     /// Stand-ins in WGL4, the characters of the classic Windows console's
     /// fonts (Consolas, Lucida Console).
@@ -78,7 +78,7 @@ pub const SYMBOLS_TABLE: &[(char, &str, &str)] = &[
 ];
 
 /// A spinner's frames in `symbols`, and how long each shows (in
-/// milliseconds): braille dots where the font has them, else a turning
+/// milliseconds), meaning braille dots where the font has them, else a turning
 /// line. Only the full-screen view draws one. Each braille frame has seven
 /// of the eight dots and splits them between the cell's two columns, 4 and
 /// 3, so the dots stay in the middle of the cell as the gap goes round.
@@ -90,7 +90,7 @@ pub fn spinner_frames(symbols: Symbols) -> (&'static [&'static str], u64) {
     }
 }
 
-/// The symbols this terminal shows: ARKO_SYMBOLS (in the environment or a
+/// The symbols this terminal shows, meaning ARKO_SYMBOLS (in the environment or a
 /// `.env` file), else `basic` in the classic Windows console and `full`
 /// elsewhere.
 pub fn symbols() -> Symbols {
@@ -151,7 +151,7 @@ fn choose(setting: Option<&str>, classic: bool) -> Symbols {
     }
 }
 
-/// Whether Arko runs in the classic Windows console: no terminal says what
+/// Whether Arko runs in the classic Windows console. No terminal says what
 /// it is (Windows Terminal, VS Code, WezTerm, ConEmu, Alacritty).
 pub fn classic_console() -> bool {
     [
@@ -226,7 +226,7 @@ pub(crate) mod tests {
     }
 
     /// The `basic` stand-ins are characters the classic console's fonts
-    /// draw (WGL4: Latin-1, the arrows, box drawing, a few shapes,
+    /// draw (WGL4, meaning Latin-1, the arrows, box drawing, a few shapes,
     /// punctuation and `≈`, which code page 437 has too), and the `ascii`
     /// ones are ASCII.
     #[test]

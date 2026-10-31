@@ -1,4 +1,4 @@
-//! Outside access: whether the agents may delete, move and overwrite paths
+//! Outside access is whether the agents may delete, move and overwrite paths
 //! outside the working directory. The user turns it on and off while the
 //! session runs (`/outside on|off`, from the terminal or the web page, and
 //! `--allow-outside-workspace` when resuming). The command guard, the file
@@ -7,7 +7,7 @@
 //! no longer holds.
 //!
 //! The file tools follow it through a `PreToolExecution` hook, not their
-//! configuration: an agent's configuration is saved with the session and
+//! configuration, because an agent's configuration is saved with the session and
 //! must stay the same for a resume. Sessions saved before the switch keep
 //! the refusal in their configuration, so there the switch reaches the
 //! shell only ([`Outside::files_follow`]).
@@ -37,14 +37,14 @@ const WORKSPACE_PARAM: &str = "workspace";
 pub struct Outside {
     on: AtomicBool,
     /// The terminal managers whose command guard follows the switch. (The
-    /// session owns them: once it closes, their folders' locks go, also
+    /// session owns them, so once it closes, their folders' locks go, also
     /// while a front end still holds its status.)
     managers: Vec<Weak<TerminalManager>>,
     /// The session's working directory (the main agent's).
     workspace: PathBuf,
     /// The workflow, for the workers' working directories.
     workflow: Mutex<Weak<Workflow>>,
-    /// Whether the file tools' writes follow the switch: false when the
+    /// Whether the file tools' writes follow the switch, which is false when the
     /// agents' saved configuration refuses writes outside the working
     /// directory.
     files_follow: AtomicBool,
@@ -152,7 +152,7 @@ impl Outside {
         HookResult::Continue
     }
 
-    /// The working directory of run `run`: a worker's own, else the
+    /// The working directory of run `run`, meaning a worker's own, else the
     /// session's.
     fn directory_of(&self, run: Option<Uuid>) -> PathBuf {
         let workflow = crate::lock(&self.workflow).upgrade();
@@ -167,7 +167,7 @@ impl Outside {
             .unwrap_or_else(|| self.workspace.clone())
     }
 
-    /// What the agents are told of outside access as it is now: posted as
+    /// What the agents are told of outside access as it is now, posted as
     /// a note when it changes, and when a session starts with it on.
     pub fn note(&self) -> String {
         if !self.is_on() {
@@ -215,7 +215,7 @@ impl Outside {
 pub const FILES_FIXED: &str = " In this session it reaches commands only. Its agents were saved before outside access could change, so their file tools still write only inside the working directory. A new session has both.";
 
 /// Whether an agent configuration lets the file tools' writes follow the
-/// switch: it doesn't refuse writes outside the working directory itself.
+/// switch, meaning it doesn't refuse writes outside the working directory itself.
 /// `write_file` is judged in any configuration, and the editing tool it
 /// offers (`edit_file`, or `apply_diff` in sessions saved before it).
 pub fn files_follow(config: &AgentConfig) -> bool {
@@ -236,7 +236,7 @@ pub fn files_follow(config: &AgentConfig) -> bool {
     .all(|tool| config.get_path_safety_policy(tool) != PathSafetyPolicy::AutoReject)
 }
 
-/// Reads `/outside`'s argument: `Some(on)`, or `None` for none.
+/// Reads `/outside`'s argument, which is `Some(on)`, or `None` for none.
 pub fn parse(argument: &str) -> Result<Option<bool>, String> {
     match argument.trim().to_ascii_lowercase().as_str() {
         "" => Ok(None),
@@ -283,7 +283,7 @@ mod tests {
     }
 
     /// While it's off, the file tools write only inside the working
-    /// directory and workers start only inside it; on, both may go
+    /// directory and workers start only inside it, and on, both may go
     /// anywhere. Other tools aren't the hook's business.
     #[test]
     fn the_hook_follows_the_switch() {
@@ -425,7 +425,7 @@ mod tests {
     }
 
     /// Configurations saved before the switch refuse the file tools'
-    /// writes outside the working directory themselves; the user is told
+    /// writes outside the working directory themselves, and the user is told
     /// that the switch reaches commands only there.
     #[test]
     fn saved_configurations_that_refuse_outside_writes_are_told_apart() {

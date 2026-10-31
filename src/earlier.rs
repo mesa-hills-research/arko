@@ -144,7 +144,7 @@ pub fn brief(parts: &BriefParts) -> String {
     sections.join("\n\n")
 }
 
-/// The brief's heading and header: the conversation's number, model and
+/// The brief's heading and header, meaning the conversation's number, model and
 /// size, and how the tool reads it.
 fn header(parts: &BriefParts, transcript: &Transcript) -> String {
     let size = parts
@@ -389,7 +389,7 @@ fn exchanges(transcript: &Transcript, room: usize) -> Option<String> {
             shown.push(block);
             continue;
         }
-        // Too long for what is left: cut, if enough is left to be of use.
+        // Too long for what is left. Cut, if enough is left to be of use.
         if room >= 150 {
             let chars = room * 4 - 160;
             let (user, user_cut) =
@@ -847,7 +847,7 @@ fn run_turns(task: &arko_agents::Task, before: usize) -> Vec<Turn> {
     turns
 }
 
-/// The part of a text from the user's side: a context update, a note the
+/// The part of a text from the user's side, meaning a context update, a note the
 /// runtime or Arko added, or the user's message. `None` when nothing is
 /// left once the runtime's sections are gone.
 fn user_part(text: &str, runtime: bool) -> Option<Part> {
@@ -1463,7 +1463,7 @@ fn part_index(turn: &Turn, at: At) -> Result<Option<usize>, String> {
     Ok(Some(part - 1))
 }
 
-/// How `outline` lists a turn: its summary, and the first lines of the
+/// How `outline` lists a turn, meaning its summary, and the first lines of the
 /// user's message and of the reply.
 fn outline_block(turn: &Turn) -> String {
     let mut block = turn.summary();
@@ -1504,7 +1504,7 @@ fn outline_block(turn: &Turn) -> String {
     block
 }
 
-/// A turn `search` found: the part that matched best, where, and how well
+/// A turn `search` found, meaning the part that matched best, where, and how well
 /// the turn matched.
 struct Hit {
     /// Indices in the transcript and in the turn's parts.
@@ -1531,7 +1531,7 @@ fn search_hits(transcript: &Transcript, terms: &[String]) -> Vec<Hit> {
     for (index, turn) in transcript.turns.iter().enumerate() {
         let mut matched = vec![false; terms.len()];
         let (mut score, mut phrased) = (0, false);
-        // The best part: how well it matched, which it is, and where.
+        // The best part, giving how well it matched, which it is, and where.
         let mut best: Option<((usize, bool, usize), usize, usize)> = None;
         for (part_index, part) in turn.parts.iter().enumerate() {
             // ASCII lowercase keeps every byte where it was.
@@ -1601,7 +1601,7 @@ fn best_line(lower: &str, terms: &[String]) -> usize {
     best.2
 }
 
-/// The three lines of `text` around byte `at`: its line, and the ones
+/// The three lines of `text` around byte `at`, meaning its line, and the ones
 /// before and after it, each cut to about 200 characters around `at`.
 fn snippet(text: &str, at: usize) -> Vec<String> {
     let start = text[..at].rfind('\n').map_or(0, |newline| newline + 1);
@@ -1646,7 +1646,7 @@ fn around(line: &str, at: usize, width: usize) -> String {
     text
 }
 
-/// `terms` as the output names them: “parse_args” and “config”.
+/// `terms` as the output names them, as “parse_args” and “config”.
 fn quoted(terms: &[String]) -> String {
     let quoted: Vec<String> = terms.iter().map(|term| format!("“{term}”")).collect();
     let text = match quoted.split_last() {
@@ -1734,7 +1734,7 @@ fn counted(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
 
-/// A token count, short: "820", "8.2k", "142k", "1.2M".
+/// A token count, short, as "820", "8.2k", "142k", "1.2M".
 fn short(count: usize) -> String {
     let value = count as f64;
     let trimmed = |value: f64| {
@@ -1765,7 +1765,7 @@ fn thousands(number: usize) -> String {
     text
 }
 
-/// When, as the outputs say it: "2026-10-29 14:02 UTC".
+/// When, as the outputs say it, as "2026-10-29 14:02 UTC".
 fn time(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%d %H:%M UTC").to_string()
 }

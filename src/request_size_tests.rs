@@ -1,7 +1,7 @@
-// What the model is sent: the main agent's first request, with text
+// What the model is sent, meaning the main agent's first request, with text
 // replies on and off, and a worker's, with every tool Arko offers (the
 // shell, the terminal and the search index tools too, with one index
-// named). The test is ignored: run it to measure the system prompt and
+// named). The test is ignored. Run it to measure the system prompt and
 // the tool definitions, and to see the requests whole.
 //
 //     ARKO_REQUESTS=/some/dir cargo test --locked request_sizes -- --ignored --nocapture
@@ -13,7 +13,7 @@
 
 use crate::mock_model::{ModelServer, complete, reply, tool_call};
 
-/// The sizes of a request, in characters: its system prompt, its tool
+/// The sizes of a request, in characters, meaning its system prompt, its tool
 /// definitions (as the JSON sent), and their text alone (the tools' and
 /// their parameters' descriptions). And its tools' names.
 fn sizes(body: &str) -> (usize, usize, usize, Vec<String>) {

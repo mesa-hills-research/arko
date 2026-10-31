@@ -1,4 +1,4 @@
-//! `message_user`: an agent answers the user while it works, without ending
+//! `message_user` lets an agent answer the user while it works, without ending
 //! its turn or its task. The event printer shows the message as the call is
 //! made (see `ui`), in order with the agent's other output, and names the
 //! worker that sent it. The workers have it too, to answer what the user

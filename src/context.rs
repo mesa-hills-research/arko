@@ -1,9 +1,9 @@
 //! What the threads of one session's runtime share when several sessions
-//! run in one process (`arko::spawn`): the session's ID, which tags its log
+//! run in one process (`arko::spawn`), meaning the session's ID, which tags its log
 //! lines, and its settings' [`Env`]. Each thread of the runtime enters the
 //! context as it starts, so code anywhere in the session (the framework's
 //! too) finds it without being handed it. A process with one session, the
-//! command line, has none: the process's settings are the session's.
+//! command line, has none, so the process's settings are the session's.
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -80,7 +80,7 @@ fn current() -> Option<Arc<SessionContext>> {
     CONTEXT.with(|current| current.borrow().clone())
 }
 
-/// The ID of the session this thread works for: `Some("")` while the
+/// The ID of the session this thread works for. It is `Some("")` while the
 /// session opens and has none yet, `None` outside a session's runtime.
 pub(crate) fn session_id() -> Option<String> {
     current().map(|context| context.id.get().cloned().unwrap_or_default())
@@ -116,7 +116,7 @@ pub(crate) fn handle() -> Option<Arc<SessionContext>> {
 
 /// Runs `work` on this thread for the session of `context` (its settings,
 /// its log tag), then goes back to this thread's own context. `None` (a
-/// process with one session): as the process.
+/// process with one session) means as the process.
 pub(crate) fn within<T>(context: Option<Arc<SessionContext>>, work: impl FnOnce() -> T) -> T {
     struct Restore(Option<Arc<SessionContext>>);
     impl Drop for Restore {
@@ -151,7 +151,7 @@ mod tests {
     #[tokio::test]
     async fn work_that_lingers_is_waited_for_up_to_a_limit() {
         let context = Arc::new(SessionContext::default());
-        // Nothing lingers: no wait.
+        // Nothing lingers, so no wait.
         context.lingered(Duration::from_secs(5)).await;
         let linger = context.linger();
         let waiting = tokio::spawn({

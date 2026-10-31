@@ -1,4 +1,4 @@
-// End-to-end tests of shell commands that move to the background: after
+// End-to-end tests of shell commands that move to the background, either after
 // the session's time (`/background-after`), or when the user presses
 // Ctrl+B, and the finished job waking the idle main agent. Each follows a
 // path a user takes, with the mock model. (Included in `main`'s tests,
@@ -11,7 +11,7 @@ use crate::mock_model::{ModelServer, complete};
 const SHELL_TOOL: &str = crate::shell::SHELL_TOOL_NAME;
 
 /// Gives `harness` the session's shell and terminal tools, with commands
-/// moving to the background after `after` seconds (0: never), and opens
+/// moving to the background after `after` seconds (0 means never), and opens
 /// its workflow again. The jobs that finish in the background reach
 /// `inputs`, as in a session the user takes part in.
 fn equip(harness: &mut Harness, inputs: &mut Inputs, after: u64) -> Managers {
@@ -26,7 +26,7 @@ fn equip(harness: &mut Harness, inputs: &mut Inputs, after: u64) -> Managers {
     managers
 }
 
-/// Monitor limits that send news soon: notes `interval` apart at least,
+/// Monitor limits that send news soon, meaning notes `interval` apart at least,
 /// news gathered for a tenth of a second, and a start that doesn't wait.
 fn quick_monitors(managers: &Managers, interval: Duration) {
     let mut limits = arko_agents::terminal::MonitorLimits::default();
@@ -112,7 +112,7 @@ async fn a_long_command_moves_to_the_background_and_its_end_wakes_the_idle_agent
         "{call:?}"
     );
 
-    // The job ends with the agent idle: that starts a turn.
+    // The job ends with the agent idle, which starts a turn.
     let finished = match tokio::time::timeout(Duration::from_secs(10), inputs.next_event(true))
         .await
         .unwrap()
@@ -147,7 +147,7 @@ async fn a_long_command_moves_to_the_background_and_its_end_wakes_the_idle_agent
 }
 
 /// A job that finishes while the agent makes its last request still starts
-/// a turn once the agent is idle: its update came too late for that request,
+/// a turn once the agent is idle, because its update came too late for that request,
 /// and the agent reads it once, in the turn the job starts.
 #[cfg(unix)]
 #[tokio::test]
@@ -242,7 +242,7 @@ async fn ctrl_b_moves_the_running_command_and_the_user_writes_at_once() {
         sender
             .send(Input::Line("Check the logs too.".into()))
             .unwrap();
-        // (Kept until the turn ends: a closed input quits.)
+        // (Kept until the turn ends, because a closed input quits.)
         sender
     });
     let end = tokio::time::timeout(
@@ -291,7 +291,7 @@ async fn ctrl_b_moves_the_running_command_and_the_user_writes_at_once() {
 /// the job stops when Arko exits, and the next `/exit` quits. A job that
 /// started after the warning is asked about too, rather than stopped. The
 /// full-screen view is told to ask in its popup instead. Quitting readies
-/// the jobs for the exit: none starts after it.
+/// the jobs for the exit, so none starts after it.
 #[cfg(unix)]
 #[tokio::test]
 async fn exit_with_a_background_job_warns_first_at_the_line_prompt() {
@@ -368,7 +368,7 @@ async fn exit_with_a_background_job_warns_first_at_the_line_prompt() {
         [first, second]
     );
     assert_eq!(warnings(&harness).len(), 2, "the popup asks instead");
-    // With asking turned off, it quits; with both agreed to, too.
+    // With asking turned off, it quits, and with both agreed to, too.
     assert!(harness.mirrored(|harness| harness.may_exit(None)));
     assert!(
         start("sleep 30").is_ok(),
@@ -393,7 +393,7 @@ fn body_with(bodies: &Bodies, with: &str) -> String {
 }
 
 /// `/background-after` says when commands move, sets it (or turns it off),
-/// keeps it in the session, and tells the agents: the shell follows at once
+/// keeps it in the session, and tells the agents. The shell follows at once
 /// and the next request carries the note.
 #[tokio::test]
 async fn the_background_after_command_sets_keeps_and_tells() {
@@ -558,7 +558,7 @@ fn two_calls(id: &str, first: &str, second: &str) -> String {
 }
 
 /// In a parallel group, a call moved alone (the page's Move to background)
-/// whose job ends before the group's other call does: its line says the
+/// whose job ends before the group's other call does. Its line says the
 /// job finished, though its result came after.
 #[cfg(unix)]
 #[tokio::test]
@@ -665,8 +665,8 @@ fn equip_with(
     managers
 }
 
-/// Ctrl+B moves a long call that isn't a shell command (an MCP tool's, say):
-/// the agent gets its job's ID at once and finishes its turn, and when the
+/// Ctrl+B moves a long call that isn't a shell command (an MCP tool's, say).
+/// The agent gets its job's ID at once and finishes its turn, and when the
 /// call ends, with the agent idle, its result starts a turn.
 #[cfg(unix)]
 #[tokio::test]
@@ -714,7 +714,7 @@ async fn ctrl_b_moves_another_tools_call_and_its_result_wakes_the_agent() {
     )
     .await
     .unwrap();
-    // (Kept: a closed input quits.)
+    // (Kept, because a closed input quits.)
     let (_sender, item) = pressing.await.unwrap();
     assert!(matches!(end, TurnEnd::Answered));
     assert_eq!(summary(&harness), "The lookup goes on in the background.");
@@ -1158,7 +1158,7 @@ async fn the_first_message_after_a_quit_names_the_jobs_that_stopped() {
         Conversation::Answered(result) => result.agent_run_id,
         _ => unreachable!(),
     };
-    // This Arko's jobs: a command and a moved call of the main agent's, and
+    // This Arko's jobs, a command and a moved call of the main agent's, and
     // a worker's command.
     let shell = Shell::detect(WindowsShell::Cmd);
     let managers = Managers::open(&harness.session, &shell).unwrap();
@@ -1267,7 +1267,7 @@ async fn the_first_message_after_a_quit_names_the_jobs_that_stopped() {
             .await,
         TurnEnd::Answered
     ));
-    // Once: the next message has only the earlier one's.
+    // Once, so the next message has only the earlier one's.
     assert_eq!(
         body_with(&bodies, "Once more.")
             .matches("# Background jobs")
@@ -1292,8 +1292,8 @@ async fn a_failed_turn_leaves_the_stopped_jobs_for_the_next_message() {
     assert!(!harness.interrupted_told);
 }
 
-/// A monitor the agent started alerts while the agent waits for the user:
-/// that starts a turn, whose message says why and carries the alert, and
+/// A monitor the agent started alerts while the agent waits for the user,
+/// and that starts a turn, whose message says why and carries the alert, and
 /// the transcript says so. Another alert soon after waits for the minute
 /// (here two seconds) since the first.
 #[cfg(unix)]
@@ -1365,7 +1365,7 @@ async fn a_monitors_alert_starts_a_turn_while_the_agent_waits_for_the_user() {
     assert_eq!(live_openings(&harness.feed), [line]);
     assert_eq!(reopened_openings(&harness), [line]);
 
-    // The second line came a second after the first: its alert waits.
+    // The second line came a second after the first, so its alert waits.
     let alert = next_alert(&mut inputs, Duration::from_secs(10)).await;
     assert!(first.elapsed() >= Duration::from_millis(1500), "{:?}", first.elapsed());
     harness.deliver_alert(alert, &mut inputs).await;
@@ -1376,7 +1376,7 @@ async fn a_monitors_alert_starts_a_turn_while_the_agent_waits_for_the_user() {
 }
 
 /// A monitor's alert that reaches the agent while it makes its last request
-/// still starts a turn once the agent is idle: the agent's task kept it for
+/// still starts a turn once the agent is idle, because the agent's task kept it for
 /// the next turn, which reads it once.
 #[cfg(unix)]
 #[tokio::test]
@@ -1588,7 +1588,7 @@ async fn alerts_while_the_turn_is_stopped_wait_for_the_next_message() {
     managers.shutdown().await;
 }
 
-/// A worker's monitor alerts while no runtime of the worker's is bound:
+/// A worker's monitor alerts while no runtime of the worker's is bound, so
 /// that starts no turn of the main agent's.
 #[cfg(unix)]
 #[tokio::test]
@@ -1808,7 +1808,7 @@ async fn the_monitor_wakes_command_sets_and_keeps() {
             .iter()
             .any(|(kind, text, _)| (kind == "output" || kind == "notice") && text.contains(start))
     };
-    // (Auto: 90% of the 30-minute cache the test's model has.)
+    // (Auto is 90% of the 30-minute cache the test's model has.)
     assert!(said(
         "A monitor's warning wakes the agent while the prompt cache from your last message lasts (now 27 minutes)"
     ));

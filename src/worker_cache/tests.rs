@@ -40,10 +40,10 @@ fn a_workers_cache_lasts_as_its_run_set_it_up() {
     };
     let lasts = |llm: &arko_agents::AgentLLMConfig, auth| lasts_as(llm, None, auth);
     let key = Some(OpenAiAuth::ApiKey);
-    // Claude by API key: 5 minutes, or the hour.
+    // Claude by API key, with 5 minutes or the hour.
     assert_eq!(lasts(&llm("opus", false, false), key), Some(270));
     assert_eq!(lasts(&llm("opus", true, false), key), Some(3_570));
-    // Claude Code: an hour on a Claude plan, unless the short one was asked.
+    // Claude Code, with an hour on a Claude plan, unless the short one was asked.
     assert_eq!(lasts(&llm("cc:opus", false, false), None), Some(3_570));
     assert_eq!(lasts(&llm("cc:opus", false, true), None), Some(270));
     // Claude Code's writes say what it chose, which wins.
@@ -60,7 +60,7 @@ fn a_workers_cache_lasts_as_its_run_set_it_up() {
     assert_eq!(lasts(&llm("gemini", false, false), key), None);
 }
 
-/// Continuing re-reads the conversation and writes it to the cache again:
+/// Continuing re-reads the conversation and writes it to the cache again,
 /// at the model's cache write price, as `/cost` counts it. On Claude that's
 /// 1.25 times the input price, twice with the long cache. On OpenAI it's the
 /// table's write price, past the long-context threshold here. A plan pays
@@ -190,7 +190,7 @@ fn a_worker_whose_cache_isnt_known_asks_first() {
 }
 
 /// A worker run in fast mode costs what its fast mode's cache writes cost,
-/// from the run's own settings: Claude's fast mode and OpenAI's Fast tier.
+/// from the run's own settings, meaning Claude's fast mode and OpenAI's Fast tier.
 #[test]
 fn a_fast_runs_re_read_costs_its_fast_price() {
     let key = Some(OpenAiAuth::ApiKey);

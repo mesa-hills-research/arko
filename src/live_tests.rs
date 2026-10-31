@@ -1,4 +1,4 @@
-// End-to-end tests of the settings that change while a session runs:
+// End-to-end tests of the settings that change while a session runs, namely
 // outside access (`/outside`). Each follows a path a user takes, with the
 // mock model, and checks what the user and the agents see. (Included in
 // `main`'s tests, whose helpers they use.)
@@ -25,7 +25,7 @@ fn equip(harness: &mut Harness, on: bool) -> Managers {
 
 /// A command the guard judges as deleting a path outside the working
 /// directory (in the home directory, not a temporary one), which never
-/// runs: `true ||` ends the list first.
+/// runs, because `true ||` ends the list first.
 fn outside_command() -> String {
     format!(
         "true || rm -rf ~/arko-outside-test-{}",
@@ -66,7 +66,7 @@ const GUARD_REFUSAL: &str = "Refused";
 /// What the `outside` hook's refusal of a file tool's write says.
 const HOOK_REFUSAL: &str = "and the user hasn't turned on outside access";
 
-/// `/outside on` typed while the agent works: its next command and its
+/// `/outside on` typed while the agent works. Its next command and its
 /// next write outside the working directory run, and it reads a note
 /// saying so. `/outside off` then refuses both again, with a note. The
 /// session keeps the last setting.
@@ -151,19 +151,19 @@ async fn outside_access_turned_on_and_off_mid_turn_reaches_the_shell_the_file_to
     assert!(matches!(end, TurnEnd::Answered));
     assert_eq!(summary(&harness), "Done.");
 
-    // On: the command ran, the file was written, and the agent was told.
+    // On, so the command ran, the file was written, and the agent was told.
     let after_command = body(&bodies, "call_m1", "call_m2");
     assert!(!after_command.contains(GUARD_REFUSAL), "{after_command}");
     assert!(after_command.contains(ON_NOTE), "{after_command}");
     assert_eq!(std::fs::read_to_string(&allowed).unwrap(), "one");
-    // Off again: both refused, and the agent was told.
+    // Off again, so both refused, and the agent was told.
     let after_command = body(&bodies, "call_m3", "call_m4");
     assert!(after_command.contains(GUARD_REFUSAL), "{after_command}");
     assert!(after_command.contains(OFF_NOTE), "{after_command}");
     assert!(body(&bodies, "call_m4", "").contains(HOOK_REFUSAL));
     assert!(!refused.exists());
 
-    // The user saw the commands and their effect; the session keeps the
+    // The user saw the commands and their effect, and the session keeps the
     // last setting.
     assert!(has(&harness.feed, "user", "/outside on", "command"));
     assert!(has(&harness.feed, "user", "/outside off", "command"));
@@ -186,8 +186,8 @@ async fn outside_access_turned_on_and_off_mid_turn_reaches_the_shell_the_file_to
     );
 }
 
-/// The web page turns outside access on and off with the same commands:
-/// the terminal and the page get a notice, a repeated or wrong command
+/// The web page turns outside access on and off with the same commands.
+/// The terminal and the page get a notice, a repeated or wrong command
 /// says so, and the page's status shows the setting.
 #[tokio::test]
 async fn outside_access_changed_from_the_web_page_is_announced() {
@@ -250,7 +250,7 @@ async fn outside_access_changed_from_the_web_page_is_announced() {
     assert_eq!(harness.workflow().notes().len(), 2);
 }
 
-/// A new session started with `--allow-outside-workspace`: the agent is
+/// A new session started with `--allow-outside-workspace`. The agent is
 /// told in its first message, and it writes outside the working
 /// directory.
 #[cfg(unix)]
@@ -299,7 +299,7 @@ async fn a_session_started_with_outside_access_says_so_and_allows_it() {
 
 /// A session saved before outside access could change (its agents'
 /// configuration refuses the file tools' writes outside the working
-/// directory), resumed: without the flag it stays off; with it, commands
+/// directory), resumed. Without the flag it stays off, and with it, commands
 /// may act outside, the user is told the file tools still can't, and so is
 /// the agent.
 #[cfg(unix)]
@@ -396,7 +396,7 @@ async fn an_old_session_resumed_with_the_flag_gets_the_shell_part_and_says_so() 
     assert!(!target.exists());
 }
 
-/// A session made by this Arko, resumed with the flag: commands and the
+/// A session made by this Arko, resumed with the flag. Commands and the
 /// file tools both act outside.
 #[cfg(unix)]
 #[tokio::test]
@@ -449,8 +449,8 @@ async fn a_new_session_resumed_with_the_flag_gets_both_parts() {
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
 }
 
-/// Workers follow the switch: one started before it is turned on writes
-/// outside afterwards and reads the note; a workspace outside the
+/// Workers follow the switch. One started before it is turned on writes
+/// outside afterwards and reads the note, and a workspace outside the
 /// working directory is refused while it is off and given once it is on,
 /// and that worker starts knowing.
 #[tokio::test]
@@ -529,7 +529,7 @@ async fn workers_started_before_and_after_a_change_follow_it() {
         bodies.lock().unwrap().last()
     );
     assert_eq!(summary(&harness), "All done.");
-    // Off: the workspace outside was refused.
+    // Off, so the workspace outside was refused.
     let refusal = body(&bodies, "call_m1", "call_m2");
     assert!(refusal.contains("Refused: the workspace"), "{refusal}");
     // r1 started before the change, wrote after it, and was told.
@@ -559,7 +559,7 @@ fn handovers(harness: &Harness) -> usize {
 }
 
 /// What the mock model answers the requests of a conversation that hands
-/// over: the report when it is asked for (with the user's message `Second.`
+/// over, meaning the report when it is asked for (with the user's message `Second.`
 /// when the conversation has it unanswered, as the report request asks),
 /// `after` once the fresh conversation has it, else `before`.
 fn handing_over(body: &str, before: String, after: String) -> String {
@@ -581,7 +581,7 @@ fn handing_over(body: &str, before: String, after: String) -> String {
     }
 }
 
-/// `/handover` while the agent works: it hands over at its next step, and
+/// `/handover` while the agent works. It hands over at its next step, and
 /// the fresh conversation starts from its report.
 #[cfg(unix)]
 #[tokio::test]
@@ -650,8 +650,8 @@ async fn a_handover_asked_for_while_the_agent_works_happens_at_its_next_step() {
     ));
 }
 
-/// `/handover` while no turn runs: nothing to hand over before the first
-/// message; after it, the agent hands over when the next message starts
+/// `/handover` while no turn runs. Nothing to hand over before the first
+/// message, and after it, the agent hands over when the next message starts
 /// its turn, and the report carries that message.
 #[cfg(unix)]
 #[tokio::test]
@@ -688,7 +688,7 @@ async fn a_handover_asked_for_while_idle_happens_when_the_next_turn_starts() {
         .turn(Prompt::User("First.".into()), &mut inputs)
         .await;
     assert!(matches!(end, TurnEnd::Answered));
-    // A line with words /handover doesn't take isn't the command: the
+    // A line with words /handover doesn't take isn't the command, so the
     // session refuses it before it runs.
     assert_eq!(command("/handover now"), None);
     assert!(
@@ -718,7 +718,7 @@ async fn a_handover_asked_for_while_idle_happens_when_the_next_turn_starts() {
         "the agent is writing a handover report (you asked, at 0k tokens)"
     ));
     // The report was asked for with the message, before the agent acted on
-    // it; the fresh conversation starts from the conversation's first
+    // it, and the fresh conversation starts from the conversation's first
     // message and the report, which has the new message.
     let first = body(&bodies, "Second.", "");
     assert!(
@@ -733,7 +733,7 @@ async fn a_handover_asked_for_while_idle_happens_when_the_next_turn_starts() {
     );
 }
 
-/// `/handover-at`: a size it can't read, one too small, one over the
+/// `/handover-at` covers a size it can't read, one too small, one over the
 /// configured 200k (the conversation goes past 200k without a handover,
 /// also after the session is resumed), one over what the model leaves
 /// room for (it stops there), and one under the agent's context (it hands
@@ -786,7 +786,7 @@ async fn handover_sizes_are_checked_kept_and_acted_on() {
     );
     assert_eq!(harness.handover.threshold().get(), Some(300_000));
     assert_eq!(harness.handover.workers_threshold().get(), Some(300_000));
-    // Arko closes, and the session is resumed: its runs go by the size.
+    // Arko closes, and the session is resumed, so its runs go by the size.
     harness.open(true).unwrap();
     let end = tokio::time::timeout(
         Duration::from_secs(30),
@@ -817,7 +817,7 @@ async fn handover_sizes_are_checked_kept_and_acted_on() {
         )
     );
     assert_eq!(harness.handover.at(), most);
-    // The workers' size stays as asked: each worker is held under its own
+    // The workers' size stays as asked, and each worker is held under its own
     // model's room.
     assert_eq!(harness.handover.workers_at(), Some(2_000_000));
     assert_eq!(
@@ -875,7 +875,7 @@ async fn a_handover_size_set_from_the_web_page_is_announced() {
     assert_eq!(harness.handover.at(), 150_000);
 }
 
-/// A session on the ChatGPT login hands over by itself at 250k: its
+/// A session on the ChatGPT login hands over by itself at 250k. Its
 /// configuration says so, and Arko doesn't ask too.
 #[cfg(unix)]
 #[tokio::test]
@@ -924,7 +924,7 @@ async fn a_chatgpt_session_hands_over_at_250k() {
     .unwrap();
     assert!(matches!(end, TurnEnd::Answered));
     assert_eq!(handovers(&harness), 1);
-    // Not at 240k; at 251k.
+    // Not at 240k, but at 251k.
     assert!(!body(&bodies, "call_m1", "call_m2").contains("Your conversation is getting long"));
     assert!(body(&bodies, "Your conversation is getting long", "").contains("call_m2"));
     assert!(says(
@@ -934,7 +934,7 @@ async fn a_chatgpt_session_hands_over_at_250k() {
     ));
 }
 
-/// A tool that returns `0` bytes of text: a large result.
+/// A tool that returns `0` bytes of text, meaning a large result.
 #[derive(Debug)]
 struct Big(usize);
 
@@ -964,7 +964,7 @@ impl Tool for Big {
 }
 
 /// How a turn on the ChatGPT login goes when its first call returns
-/// `bytes` of text at 240k tokens of input, 10k under the handover size:
+/// `bytes` of text at 240k tokens of input, 10k under the handover size, giving
 /// whether it ends answered, how many requests the backend refused for
 /// their size, the page's notices, the handovers, the reply and the
 /// requests' bodies. The mock backend counts a request's tokens as 240k
@@ -1041,7 +1041,7 @@ async fn over_the_limit(bytes: usize) -> (bool, usize, Vec<String>, usize, Strin
 /// past the ChatGPT login's limit just before the handover size, by less
 /// than arko's lower bound (10 bytes a token) sees, so it goes into the
 /// conversation whole. arko asks for the handover report in that request,
-/// as its estimate is past the size; the backend refuses it, arko
+/// as its estimate is past the size. The backend refuses it, arko
 /// shortens the result and sends it again, and the handover goes ahead.
 /// The user sees the refusal as an error notice.
 #[cfg(unix)]
@@ -1065,7 +1065,7 @@ async fn a_result_past_the_input_limit_is_shortened_after_a_refusal_and_the_hand
 }
 
 /// A result so large (1 MB) that even arko's lower bound puts the request
-/// past the limit: arko shortens it as it joins the conversation, before
+/// past the limit, so arko shortens it as it joins the conversation, before
 /// sending, and the backend refuses nothing. What is left is under the
 /// handover size, so this turn ends without one.
 #[cfg(unix)]
@@ -1094,13 +1094,13 @@ fn made_up(interfaces: &[(&str, &str)]) -> Vec<remote::Interface> {
 }
 
 /// `/remote qr` picks the first link other devices can open, or the one
-/// named; with none, or a name that has none, it says why.
+/// named. With none, or a name that has none, it says why.
 #[test]
 fn the_qr_code_shows_the_first_link_or_the_one_named() {
     let any: std::net::SocketAddr = "0.0.0.0:8765".parse().unwrap();
     let ranked =
         |interfaces: &[(&str, &str)]| remote::ranked_links(any, "k", made_up(interfaces), None).0;
-    // None: only this machine.
+    // None, only this machine.
     let local = remote::ranked_links("127.0.0.1:8765".parse().unwrap(), "k", Vec::new(), None).0;
     let error = qr_link(&local, "", "127.0.0.1:8765".parse().unwrap()).unwrap_err();
     assert!(
@@ -1126,7 +1126,7 @@ fn the_qr_code_shows_the_first_link_or_the_one_named() {
             .as_deref(),
         Some("ens33")
     );
-    // Several: the LAN first, the others by name.
+    // Several, with the LAN first and the others by name.
     let several = ranked(&[
         ("wg0-mullvad", "10.64.1.2"),
         ("tailscale0", "100.101.102.103"),
@@ -1155,7 +1155,7 @@ fn the_qr_code_shows_the_first_link_or_the_one_named() {
     }
 }
 
-/// `/remote qr` at the terminal: with the page off, on this machine only,
+/// `/remote qr` at the terminal, with the page off, on this machine only,
 /// and on every interface, where it draws the code of the first link,
 /// and says so for a name that has no link.
 #[tokio::test]
@@ -1191,7 +1191,7 @@ async fn remote_qr_draws_the_code_or_says_why_not() {
     let (links, _) = remote::links(addr, key.trim());
     let code = shown(&mut harness, "");
     match links.iter().find(|link| !link.loopback) {
-        // This machine has a network: the code of its best link.
+        // This machine has a network, so the code of its best link.
         Some(link) => {
             assert!(code.starts_with(&link.url), "{code}");
             assert!(code.lines().count() > 10, "{code}");
@@ -1254,7 +1254,7 @@ async fn the_pages_sessions_outlast_a_restart_and_end_when_it_is_turned_off() {
         .next()
         .unwrap()
         .to_string();
-    // Arko starts the page again, as when the session is resumed: the
+    // Arko starts the page again, as when the session is resumed. The
     // cookie for the old port is still good on the new one's name.
     harness.stop_remote().await;
     harness.start_remote(local).await;
@@ -1349,7 +1349,7 @@ async fn remote_off_ends_the_saved_sessions_when_the_page_isnt_on() {
 }
 
 /// Agents in Claude Code are offered Arko's tools only, so outside access
-/// reaches them as it reaches the others: the command guard and the file
+/// reaches them as it reaches the others. The command guard and the file
 /// tools' hook decide their calls, and they read the note.
 #[cfg(unix)]
 #[tokio::test]
@@ -1477,7 +1477,7 @@ fn call_outcomes(feed: &remote::Feed) -> Vec<(String, String)> {
 }
 
 /// A main agent in Claude Code compacts at the handover size instead of
-/// handing over: the call it makes there is held, Claude Code's `/compact`
+/// handing over. The call it makes there is held, Claude Code's `/compact`
 /// runs in the same conversation, and the agent makes the call again from
 /// the summary. The transcript says it in one line.
 #[cfg(unix)]
@@ -1532,7 +1532,7 @@ async fn a_main_agent_in_claude_code_compacts_at_the_handover_size() {
     managers.shutdown().await;
 }
 
-/// `/handover` on a main agent in Claude Code compacts: while no turn
+/// `/handover` on a main agent in Claude Code compacts. While no turn
 /// runs, Claude Code compacts the conversation when the next message
 /// starts its turn, before the agent reads the message.
 #[cfg(unix)]
@@ -1593,7 +1593,7 @@ async fn handover_compacts_a_main_agent_in_claude_code() {
     managers.shutdown().await;
 }
 
-/// A main agent in Claude Code shows what it writes beside its calls: its
+/// A main agent in Claude Code shows what it writes beside its calls, meaning its
 /// thinking, folded, then each response's text, an item of its own before
 /// the call it goes with, with text replies and with `complete_task`.
 #[cfg(unix)]
@@ -1653,7 +1653,7 @@ async fn a_main_agent_in_claude_code_shows_its_thinking_and_text_beside_its_call
 }
 
 /// A main agent in Claude Code with text replies answers with `message_user`
-/// mid-turn, as it does without them: Arko's tool is served to the CLI (the
+/// mid-turn, as it does without them. Arko's tool is served to the CLI (the
 /// model sees it as `mcp__arko__message_user`, and the instructions name it
 /// `message_user`), the message shows in its order, and the turn ends with
 /// the plain reply.
@@ -1707,7 +1707,7 @@ async fn a_main_agent_in_claude_code_with_text_replies_answers_with_message_user
 }
 
 /// A worker in Claude Code that was running when Arko closed goes on when
-/// the session resumes: its Claude Code session resumes, without a message
+/// the session resumes. Its Claude Code session resumes, without a message
 /// from the lead, and its report reaches the lead.
 #[cfg(unix)]
 #[tokio::test]
@@ -1786,7 +1786,7 @@ async fn resuming_a_session_restarts_its_workers_in_claude_code() {
         "its Claude Code session resumes: {:?}",
         argvs[1]
     );
-    // The lead isn't told that it stopped as Arko closed: it goes on.
+    // The lead isn't told that it stopped as Arko closed, and it goes on.
     let told = bodies.lock().unwrap().clone();
     assert!(
         told.iter()
@@ -1797,8 +1797,8 @@ async fn resuming_a_session_restarts_its_workers_in_claude_code() {
     managers.shutdown().await;
 }
 
-/// A chat in Claude Code becomes an agent's session working in a folder:
-/// its conversation goes on in the same Claude Code session, which resumes
+/// A chat in Claude Code becomes an agent's session working in a folder.
+/// Its conversation goes on in the same Claude Code session, which resumes
 /// in the folder it started in with the new one added, and Arko's tools work
 /// in the new folder.
 #[cfg(unix)]
@@ -1826,7 +1826,7 @@ async fn a_claude_code_chat_moves_to_a_folder_as_it_becomes_an_agent() {
         handover_at: None,
     };
     let setup = fake_claude_code(&fake);
-    // A new chat: in its session's folder, without tools or workers.
+    // A new chat, in its session's folder, without tools or workers.
     harness.crew = None;
     harness.providers = setup.clone();
     harness.settings.mode = Mode::Chat;
@@ -1851,7 +1851,7 @@ async fn a_claude_code_chat_moves_to_a_folder_as_it_becomes_an_agent() {
     assert!(matches!(end, TurnEnd::Answered));
     assert_eq!(summary(&harness), "Hello.");
 
-    // To Agent, in the project: the session opens again, equipped.
+    // To Agent, in the project, so the session opens again, equipped.
     harness
         .switch_mode(Mode::Agent, Some(project.clone()))
         .unwrap();
@@ -1918,7 +1918,7 @@ async fn a_claude_code_chat_moves_to_a_folder_as_it_becomes_an_agent() {
     managers.shutdown().await;
 }
 
-/// What the user sent worker r1 directly, as the feed has it: its items
+/// What the user sent worker r1 directly, as the feed has it, meaning its items
 /// for r1 that are the user's.
 fn to_r1(feed: &remote::Feed) -> Vec<(String, Option<remote::Source>)> {
     feed.subscribe()
@@ -1930,7 +1930,7 @@ fn to_r1(feed: &remote::Feed) -> Vec<(String, Option<remote::Source>)> {
         .collect()
 }
 
-/// `/message r1 …` typed while the main agent waits for its worker: the
+/// `/message r1 …` typed while the main agent waits for its worker. The
 /// running worker reads it at its next step, marked as from the user, and
 /// the lead's wait returns a copy with the report. The feed has it as the
 /// user's message to r1. The worker answers with `message_user`, which the
@@ -2052,7 +2052,7 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
 }
 
 /// `/message r1 …` from the web page while the main agent is idle and r1
-/// finished: r1 continues with it and reports again. The lead hears of it
+/// finished. r1 continues with it and reports again. The lead hears of it
 /// with its next news, once, before the new report. A worker that isn't
 /// there, or no message, gets a warning that keeps the text.
 #[tokio::test]
@@ -2126,7 +2126,7 @@ async fn a_message_to_a_finished_worker_continues_it_and_its_lead_hears_of_it() 
 }
 
 /// The user's message to r1, while r1 and r2 both run, sent each way a
-/// front end sends it: as the terminal's view of r1 does (a line), as an
+/// front end sends it, as the terminal's view of r1 does (a line), as an
 /// app does (a message) and as the web page does. Only r1's conversation
 /// gets it, as the user's, and the feed has it as r1's item alone. r2 never
 /// sees it. The lead gets a copy marked as one, with its next news.
@@ -2277,7 +2277,7 @@ async fn the_users_message_to_a_worker_reaches_that_worker_only() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
-/// `/handover-at workers` reaches a worker that is already running: it
+/// `/handover-at workers` reaches a worker that is already running. It
 /// hands over at the new size from its next check, under its configured
 /// one. `/handover-at main` leaves the workers' size alone, and in a
 /// session without workers `/handover-at workers` says there are none.
@@ -2316,7 +2316,7 @@ async fn the_workers_size_reaches_a_running_worker() {
     .await;
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
     let _managers = equip(&mut harness, false);
-    // The workers' own size, by default: 200k on luna by API key.
+    // The workers' own size, by default, which is 200k on luna by API key.
     let configured = harness
         .worker_config
         .handover
@@ -2928,7 +2928,7 @@ async fn a_worker_hands_over(forget: bool) {
 }
 
 /// A note the user removes with `/notes remove` is announced to the main
-/// agent in its next request: once, with the start of its first line.
+/// agent in its next request, once, with the start of its first line.
 #[tokio::test]
 async fn a_removed_note_is_announced_to_the_main_agent_once() {
     let temp = tempfile::tempdir().unwrap();
@@ -2975,7 +2975,7 @@ async fn a_removed_note_reaches_the_workers_that_had_it() {
     workers_hear_of_a_removed_note(false).await;
 }
 
-/// The main agent removes the note with `forget_note`: r1 hears of it as
+/// The main agent removes the note with `forget_note`. r1 hears of it as
 /// the main agent's doing, and the main agent isn't told what it did.
 #[cfg(unix)]
 #[tokio::test]

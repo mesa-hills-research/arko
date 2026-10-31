@@ -1,4 +1,4 @@
-//! What a front end asks of a session as it opens it: which session, and,
+//! What a front end asks of a session as it opens it, meaning which session and,
 //! for a new one, its models and settings. The command line's flags become
 //! [`Options`] (`cli`), and an app fills them in itself.
 
@@ -176,12 +176,12 @@ pub struct Options {
     /// A new chat's instructions from the user.
     pub chat_instructions: Option<String>,
     /// A client to use in place of the one the session's credentials make
-    /// (tests: the mock model server's).
+    /// (in tests, the mock model server's).
     #[cfg(any(test, feature = "testing"))]
     pub client: Option<GivenClient>,
 }
 
-/// A client made beforehand: see [`Options::client`].
+/// A client made beforehand, see [`Options::client`].
 #[cfg(any(test, feature = "testing"))]
 #[derive(Clone)]
 pub struct GivenClient(pub std::sync::Arc<arko_ai::LLMClient>);
