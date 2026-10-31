@@ -5,14 +5,14 @@ use std::collections::HashSet;
 use leptos::prelude::*;
 use lucide_leptos::{ArrowDown, ChevronRight};
 
-use crate::app::{Page, RowCell, STORE, cell, page, post, track_worker};
+use crate::app::{Page, RowCell, STORE, cell, page, post, store_is_current, track_worker};
 use crate::copy::CopyButton;
 use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
 use crate::protocol::{CallStatus, ItemData, Kind, Level, Source, WorkerState};
 use crate::spinner::Spinner;
-use crate::store::{MAIN, call_actions};
+use crate::store::{Entry, MAIN, call_actions};
 use crate::{scroll, words};
 
 #[component]
@@ -556,39 +556,63 @@ pub fn show_worker(page: Page, id: Option<String>) {
     if page.worker.get_untracked() == id {
         return;
     }
+    let entry = Entry {
+        session: id.is_some().then(|| session_of(page)),
+        worker: id.clone(),
+    };
     if let Ok(history) = window().history() {
-        let _ = history.push_state(&history_state(id.as_deref()), "");
+        let _ = history.push_state(&history_state(&entry), "");
     }
     switch_view(page, id);
 }
 
 /// Shows the view of the history entry that Back or Forward reached, whose
-/// state is `state`. A worker the page no longer has shows the main
-/// transcript, and the entry says so from then on.
+/// state is `state`, and again for the entry shown once the stream starts
+/// (over). Until then, a worker's entry shows that worker. Once it has, a
+/// worker of another session, or one gone, shows the main transcript, and
+/// the entry says so from then on.
 pub fn show_history_entry(page: Page, state: &wasm_bindgen::JsValue) {
-    let named = js_sys::Reflect::get(state, &"worker".into())
-        .ok()
-        .and_then(|worker| worker.as_string());
-    let shown = STORE.with(|store| store.borrow().entry_view(named.clone()));
-    if shown != named
+    let text = |name: &str| {
+        js_sys::Reflect::get(state, &name.into())
+            .ok()
+            .and_then(|value| value.as_string())
+    };
+    let entry = Entry {
+        worker: text("worker"),
+        session: text("session"),
+    };
+    let shown = STORE.with(|store| {
+        store
+            .borrow()
+            .entry_view(&entry, &session_of(page), store_is_current())
+    });
+    if shown != entry.worker
         && let Ok(history) = window().history()
     {
-        let _ = history.replace_state(&history_state(None), "");
+        let _ = history.replace_state(&history_state(&Entry::default()), "");
     }
     if page.worker.get_untracked() != shown {
         switch_view(page, shown);
     }
 }
 
-/// The state of a history entry that shows `worker`'s transcript, null for
-/// the main one.
-pub fn history_state(worker: Option<&str>) -> wasm_bindgen::JsValue {
-    let Some(worker) = worker else {
+/// The state of the history entry `entry`, null for the main transcript.
+pub fn history_state(entry: &Entry) -> wasm_bindgen::JsValue {
+    let Some(worker) = &entry.worker else {
         return wasm_bindgen::JsValue::NULL;
     };
     let state = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&state, &"worker".into(), &worker.into());
+    if let Some(session) = &entry.session {
+        let _ = js_sys::Reflect::set(&state, &"session".into(), &session.into());
+    }
     state.into()
+}
+
+/// The session the page follows, as its status names it.
+fn session_of(page: Page) -> String {
+    page.status
+        .with_untracked(|status| status.info.session.clone())
 }
 
 /// Shows the worker `id`'s own transcript (none for the main one). A

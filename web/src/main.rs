@@ -65,7 +65,7 @@ fn App() -> impl IntoView {
     // The page opens at the main transcript, whichever view this entry of
     // the history showed before a reload.
     if let Ok(history) = window().history() {
-        let _ = history.replace_state(&transcript::history_state(None), "");
+        let _ = history.replace_state(&transcript::history_state(&Default::default()), "");
     }
     let key = app::take_key();
     spawn_local(app::start(page, key));
