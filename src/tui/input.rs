@@ -20,7 +20,7 @@ struct Recall {
     /// The entry shown.
     index: usize,
     /// What was in the box before.
-    draft: Vec<char>,
+    draft: String,
 }
 
 /// The input box's text.
@@ -648,7 +648,7 @@ impl Editor {
         };
         let draft = match self.recall.take() {
             Some(recall) => recall.draft,
-            None => self.text.clone(),
+            None => self.text(),
         };
         let entry = self.history.entries[index].clone();
         self.set(&entry);
@@ -670,8 +670,7 @@ impl Editor {
                 draft: recall.draft,
             });
         } else {
-            let draft: String = recall.draft.iter().collect();
-            self.set(&draft);
+            self.set(&recall.draft);
         }
         true
     }
@@ -722,6 +721,24 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_returns_the_expanded_pasted_draft() {
+        let mut editor = Editor::new(History::load(None));
+        editor.set("Earlier message");
+        editor.take();
+        let first = "a".repeat(CHIP_CHARS + 1);
+        let second = "second\n".repeat(CHIP_LINES + 1);
+        editor.paste(&first);
+        editor.paste(" between ");
+        editor.paste(&second);
+        let draft = editor.text();
+        assert_eq!(editor.chips.len(), 2);
+        assert!(editor.history_back());
+        assert!(editor.history_forward());
+        assert_eq!(editor.text(), draft);
+        assert!(!editor.text().chars().any(|c| c as u32 >= CHIP_BASE));
+    }
 
     #[test]
     fn has_text_reads_pasted_blocks_without_expanding_them() {
