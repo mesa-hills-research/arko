@@ -95,7 +95,7 @@ pub fn Header() -> impl IntoView {
         page.status.with(|status| {
             let running = status.working && status.question.is_none();
             let left = words::cache_timer(&status.cache, running, now)?;
-            let lapses = (status.cache.refreshed_at? + status.cache.lifetime?) as f64;
+            let lapses = status.cache.expires_at? as f64;
             let until = words::when_words(
                 local((lapses / 1000.0).floor() * 1000.0 + (page.now.get() - now)),
                 local(page.now.get()),

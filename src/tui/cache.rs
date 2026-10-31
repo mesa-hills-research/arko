@@ -155,8 +155,9 @@ pub(super) mod tests {
     #[test]
     fn the_status_line_counts_the_cache_down_while_idle() {
         for width in [80, 120] {
-            // 1:48 after the request, 3:12 left of five minutes.
-            let (mut app, _clock) = idle(5, 108_000);
+            // 1:18 after the request, 3:12 left of five minutes, which count
+            // as lapsed 30 seconds early.
+            let (mut app, _clock) = idle(5, 78_000);
             let (rows, buffer) = drawn(&mut app, width, 8);
             let status = status_row(&rows);
             assert!(
@@ -173,7 +174,7 @@ pub(super) mod tests {
     /// the line says so, with the dim colour again.
     #[test]
     fn the_last_minute_warns_and_then_the_cache_is_expired() {
-        let (mut app, _clock) = idle(5, 300_000 - 59_500);
+        let (mut app, _clock) = idle(5, 270_000 - 59_500);
         let (rows, buffer) = drawn(&mut app, 80, 8);
         assert!(status_row(&rows).contains("cache 1:00"), "{rows:#?}");
         let theme = app.theme.clone();
@@ -181,11 +182,11 @@ pub(super) mod tests {
         assert_ne!(theme.warning().fg, theme.dim().fg);
 
         // Half a second left reads 0:01.
-        let (mut app, _clock) = idle(5, 299_500);
+        let (mut app, _clock) = idle(5, 269_500);
         let (rows, _) = drawn(&mut app, 80, 8);
         assert!(status_row(&rows).contains("cache 0:01"), "{rows:#?}");
 
-        let (mut app, _clock) = idle(5, 300_000);
+        let (mut app, _clock) = idle(5, 270_000);
         let (rows, buffer) = drawn(&mut app, 80, 8);
         let status = status_row(&rows);
         assert!(
@@ -197,7 +198,7 @@ pub(super) mod tests {
         // (An hour's cache reads in minutes until the last hour is gone.)
         let (mut app, _clock) = idle(60, 1_000);
         let (rows, _) = drawn(&mut app, 80, 8);
-        assert!(status_row(&rows).contains("cache 59:59"), "{rows:#?}");
+        assert!(status_row(&rows).contains("cache 59:29"), "{rows:#?}");
     }
 
     /// While requests run each one refreshes the cache, so the line shows no
@@ -205,7 +206,7 @@ pub(super) mod tests {
     /// timer shows again, beside "asks you".
     #[test]
     fn the_timer_is_hidden_while_requests_run() {
-        let (mut app, _clock) = idle(5, 108_000);
+        let (mut app, _clock) = idle(5, 78_000);
         app.set_activity(Activity {
             reporting: false,
             working: true,
@@ -244,7 +245,7 @@ pub(super) mod tests {
     /// there is no timer.
     #[test]
     fn the_timer_is_hidden_in_a_workers_view_and_without_a_lifetime() {
-        let (mut app, _clock) = idle(5, 108_000);
+        let (mut app, _clock) = idle(5, 78_000);
         app.watching = Some("r1".into());
         assert_eq!(app.cache_label(), None);
         let (rows, _) = drawn(&mut app, 120, 8);
@@ -267,7 +268,7 @@ pub(super) mod tests {
     fn the_status_line_with_ascii_symbols() {
         let _chosen = choose_symbols(Symbols::Ascii);
         for width in [80, 120] {
-            let (mut app, _clock) = idle(5, 108_000);
+            let (mut app, _clock) = idle(5, 78_000);
             let (rows, _) = drawn(&mut app, width, 8);
             let status = status_row(&rows);
             assert!(
@@ -288,7 +289,7 @@ pub(super) mod tests {
     /// busy line, and the line keeps to the width.
     #[test]
     fn the_timer_stays_in_sight_on_a_busy_line_at_80_columns() {
-        let (mut app, _clock) = idle(5, 108_000);
+        let (mut app, _clock) = idle(5, 78_000);
         app.reading.plans = vec![crate::remote::PlanStatus {
             plan: "Claude plan".into(),
             windows: [("5 h", 21.0), ("7 d", 4.0)]
@@ -320,12 +321,12 @@ pub(super) mod tests {
     /// and not otherwise.
     #[test]
     fn the_label_changes_each_second() {
-        let (mut app, _clock) = idle(5, 108_000);
+        let (mut app, _clock) = idle(5, 78_000);
         let label = |app: &App| app.cache_label().map(|(label, _)| label);
         assert_eq!(label(&app).as_deref(), Some("cache 3:12"));
-        NOW.set(Some(AT + 108_400));
+        NOW.set(Some(AT + 78_400));
         assert_eq!(label(&app).as_deref(), Some("cache 3:12"));
-        NOW.set(Some(AT + 109_000));
+        NOW.set(Some(AT + 79_000));
         assert_eq!(label(&app).as_deref(), Some("cache 3:11"));
         NOW.set(Some(AT + 1_000_000));
         assert_eq!(label(&app).as_deref(), Some("cache expired"));

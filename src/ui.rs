@@ -107,7 +107,7 @@ pub struct Message {
     /// "(Still open: q5.)".
     pub answers: Vec<String>,
     /// The message is a `/message` that the user confirmed after the
-    /// warning that the worker's prompt cache expired (see
+    /// warning that the worker's prompt cache expired or isn't known (see
     /// [`crate::worker_cache`]), so it continues the worker without asking.
     pub continue_uncached: bool,
 }
@@ -1106,15 +1106,19 @@ impl EventPrinter {
                 subagent: None,
                 sizes,
                 bytes_per_token,
+                sent_at,
             } if main => {
                 self.request_start = (self.text.len(), self.thinking.len());
                 self.printed_since_request = (false, false);
                 self.subagent_request = false;
                 let mut stats = self.stats.lock().unwrap();
-                // The cache lasts from the request's start.
-                stats.cache_refreshed_at = Some(at);
+                // The cache lasts from when the request was sent, the time
+                // its task records too. (An event saved by an older version
+                // has only its own time.)
+                let sent = sent_at.map_or(at, |sent| sent.timestamp_millis());
+                stats.cache_refreshed_at = Some(sent);
                 stats.last_request = Some(remote::LastRequest {
-                    at,
+                    at: sent,
                     model,
                     sizes,
                     bytes_per_token,
@@ -2270,6 +2274,7 @@ mod tests {
             subagent: subagent.map(str::to_string),
             sizes: None,
             bytes_per_token: 3.0,
+            sent_at: None,
         };
         let usage = |input: usize, subagent: Option<&str>| {
             serde_json::from_value::<arko_ai::ModelCallUsage>(serde_json::json!({
@@ -2295,6 +2300,30 @@ mod tests {
         let stats = stats.lock().unwrap();
         assert_eq!(stats.context_tokens, Some(500));
         assert_eq!(stats.cache_use, Some((500, 0)));
+    }
+
+    /// The cache counts from when the request was sent, as its event says,
+    /// not from when the event came, which can be later.
+    #[tokio::test]
+    async fn the_cache_counts_from_the_requests_send() {
+        let output = Arc::new(Output::new(None, true));
+        let stats: Arc<Mutex<Stats>> = Arc::default();
+        let mut printer = EventPrinter::new(output, stats.clone(), false, None);
+        let at = |millis: i64| chrono::DateTime::from_timestamp_millis(millis).unwrap();
+        printer.event(WorkflowEvent {
+            timestamp: at(1_000),
+            workflow_run_id: Uuid::nil(),
+            agent_name: MAIN.into(),
+            agent_run_id: Uuid::nil(),
+            event: AgentEvent::ModelRequestStarted {
+                model: "claude-opus-5-5".into(),
+                subagent: None,
+                sizes: None,
+                bytes_per_token: 3.0,
+                sent_at: Some(at(900)),
+            },
+        });
+        assert_eq!(stats.lock().unwrap().cache_refreshed_at, Some(900));
     }
 
     /// The session keeps when its prompt cache lapses as each request ends,
@@ -2327,6 +2356,7 @@ mod tests {
             subagent: None,
             sizes: None,
             bytes_per_token: 3.0,
+            sent_at: None,
         };
         let read = |tokens: usize| {
             AgentEvent::UsageReported(arko_ai::UsageInfo {
@@ -2362,6 +2392,7 @@ mod tests {
             subagent: Some("call-1".into()),
             sizes: None,
             bytes_per_token: 3.0,
+            sent_at: None,
         };
         printer.event(event(90_000, subagent));
         printer.event(event(91_000, read(9_000)));
@@ -2443,6 +2474,7 @@ mod tests {
             subagent: None,
             sizes: None,
             bytes_per_token: 3.0,
+            sent_at: None,
         };
         let discarded = || AgentEvent::StreamedOutputDiscarded {
             text_bytes: 6,
@@ -2555,6 +2587,7 @@ mod tests {
             subagent: None,
             sizes: None,
             bytes_per_token: 3.0,
+            sent_at: None,
         }));
         printer.event(event(failed(note.into())));
         // A worker's warning names the worker.

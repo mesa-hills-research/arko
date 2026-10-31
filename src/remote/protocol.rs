@@ -173,7 +173,8 @@ pub enum RefusalKind {
     /// model. Stopping skips it.
     Reporting,
     /// Continuing `worker` may read its whole conversation again without
-    /// its prompt cache, which expired.
+    /// its prompt cache, because the cache expired, or an older Arko saved
+    /// the worker and its cache isn't known.
     Uncached { worker: String },
     /// The answers are too long to send. The words say what to shorten
     /// them to.
@@ -1473,6 +1474,9 @@ pub struct CacheData {
     /// Milliseconds.
     pub lifetime: Option<i64>,
     pub refreshed_at: Option<i64>,
+    /// When the cache counts as lapsed (Unix milliseconds), which Arko works
+    /// out from the two above with its safety margin. The page shows it.
+    pub expires_at: Option<i64>,
     pub tokens: Option<u64>,
     pub read: Option<u64>,
     pub written: Option<u64>,

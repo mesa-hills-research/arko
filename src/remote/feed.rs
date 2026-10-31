@@ -5387,6 +5387,7 @@ mod tests {
             subagent: None,
             sizes: None,
             bytes_per_token: 3.0,
+            sent_at: None,
         };
         let feed = Feed::new("main");
         feed.turn_started();
@@ -6491,6 +6492,7 @@ mod tests {
             subagent: None,
             sizes: None,
             bytes_per_token: 3.0,
+            sent_at: None,
         };
         feed.event(&event("main", chunk("Before. ")), None);
         let before = items(&feed)[0].id;

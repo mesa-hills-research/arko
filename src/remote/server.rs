@@ -3462,8 +3462,9 @@ mod tests {
     }
 
     /// The status carries the main agent's prompt cache once its lifetime
-    /// and last use are known (the lifetime in milliseconds), which the
-    /// page counts down in its header. Until then it carries none.
+    /// and last use are known (the lifetime in milliseconds), with when it
+    /// lapses, which the page counts down to in its header. Until then it
+    /// carries none.
     #[tokio::test]
     async fn the_status_carries_the_prompt_cache_once_it_is_known() {
         let feed = Feed::new("main");
@@ -3499,6 +3500,8 @@ mod tests {
             serde_json::json!({
                 "lifetime": 300_000,
                 "refreshed_at": 1_800_000_000_000_i64,
+                // Its five minutes, 30 seconds short.
+                "expires_at": 1_800_000_270_000_i64,
                 "tokens": 180_000,
                 "miss_cost": 0.9,
             })

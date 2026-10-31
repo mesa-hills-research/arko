@@ -57,7 +57,7 @@ impl CacheTimer {
             return None;
         }
         let lifetime = lifetime_ms(cache.lifetime?);
-        let left = (expires_at(cache)? - now).min(lifetime);
+        let left = (cache.expires_at()? - now).min(lifetime);
         Some(if left > 0 {
             CacheTimer::Counting { left }
         } else {
@@ -81,11 +81,20 @@ impl CacheTimer {
     }
 }
 
-/// When the main agent's prompt cache lapses, when its lifetime and its
-/// last use are known.
-pub fn expires_at(cache: &CacheStatus) -> Option<i64> {
-    let refreshed = cache.refreshed_at?;
-    Some(refreshed.saturating_add(lifetime_ms(cache.lifetime?)))
+/// When a prompt cache last used at `used` (Unix milliseconds) counts as
+/// lapsed, a [`safety_margin`] before its `lifetime` ends. A request's time is
+/// when it was sent, which the cache lasts from, and a Claude Code request's
+/// is its first streamed token, a few seconds after the provider read it.
+pub fn lapses_at(used: i64, lifetime: Duration) -> i64 {
+    used.saturating_add(lifetime_ms(
+        lifetime.saturating_sub(safety_margin(lifetime)),
+    ))
+}
+
+/// How long before its lifetime ends a cache counts as lapsed, 30 seconds
+/// or a tenth of a shorter lifetime.
+pub fn safety_margin(lifetime: Duration) -> Duration {
+    (lifetime / 10).min(Duration::from_secs(30))
 }
 
 fn lifetime_ms(lifetime: Duration) -> i64 {
@@ -109,7 +118,8 @@ pub fn recache(cache: &CacheStatus) -> Option<String> {
 pub fn tooltip(timer: CacheTimer, cache: &CacheStatus, now: i64) -> String {
     match timer {
         CacheTimer::Counting { .. } => {
-            let until = expires_at(cache)
+            let until = cache
+                .expires_at()
                 .map(|at| when(at.div_euclid(1000), now))
                 .unwrap_or_default();
             let mut text = format!("The prompt cache keeps this conversation until {until}.");
@@ -276,22 +286,23 @@ mod tests {
         }
     }
 
+    /// A five-minute cache counts as lapsed 30 seconds early, at 4:30.
     #[test]
     fn the_timer_counts_down_while_idle() {
         let cache = cache(5, 0);
         // 3:12 left.
-        let timer = CacheTimer::of(&cache, false, 300_000 - 192_000).unwrap();
+        let timer = CacheTimer::of(&cache, false, 270_000 - 192_000).unwrap();
         assert_eq!(timer.label(), "cache 3:12");
         assert!(!timer.warns());
         // Half a second left reads 0:01, and it warns.
-        let timer = CacheTimer::of(&cache, false, 299_500).unwrap();
+        let timer = CacheTimer::of(&cache, false, 269_500).unwrap();
         assert_eq!(timer.label(), "cache 0:01");
         assert!(timer.warns());
         // The last minute warns from its first moment.
-        assert!(CacheTimer::of(&cache, false, 240_000).unwrap().warns());
-        assert!(!CacheTimer::of(&cache, false, 239_999).unwrap().warns());
+        assert!(CacheTimer::of(&cache, false, 210_000).unwrap().warns());
+        assert!(!CacheTimer::of(&cache, false, 209_999).unwrap().warns());
         assert_eq!(
-            CacheTimer::of(&cache, false, 300_000),
+            CacheTimer::of(&cache, false, 270_000),
             Some(CacheTimer::Expired)
         );
         assert_eq!(CacheTimer::Expired.label(), "cache expired");
@@ -317,7 +328,7 @@ mod tests {
     fn the_time_left_never_passes_the_lifetime() {
         let hour = cache(60, 0);
         let timer = CacheTimer::of(&hour, false, 1_000).unwrap();
-        assert_eq!(timer.label(), "cache 59:59");
+        assert_eq!(timer.label(), "cache 59:29");
         // The request is dated ten minutes after now.
         let ahead = cache(5, 600_000);
         let timer = CacheTimer::of(&ahead, false, 0).unwrap();
@@ -397,8 +408,9 @@ mod tests {
             .single()
             .unwrap();
         let now = at.timestamp_millis();
-        // Refreshed at 13:55 with five minutes: it lapses at 14:00.
-        let cache = cache(5, now - 5 * 60_000);
+        // Refreshed at 13:55:30 with five minutes, it lapses at 14:00, 30
+        // seconds early.
+        let cache = cache(5, now - 5 * 60_000 + 30_000);
         let timer = CacheTimer::Counting { left: 120_000 };
         assert_eq!(
             tooltip(timer, &cache, now - 120_000),
@@ -409,6 +421,18 @@ mod tests {
         assert!(when(tomorrow.div_euclid(1000), now).contains(':'));
         let later = (at + chrono::Duration::days(30)).timestamp_millis();
         assert_eq!(when(later.div_euclid(1000), now), "Nov 21");
+    }
+
+    /// The margin is 30 seconds for both of Anthropic's lifetimes, and a
+    /// tenth of a shorter one.
+    #[test]
+    fn a_cache_lapses_a_safety_margin_early() {
+        let minutes = |minutes: u64| Duration::from_secs(minutes * 60);
+        assert_eq!(safety_margin(minutes(5)), Duration::from_secs(30));
+        assert_eq!(safety_margin(minutes(60)), Duration::from_secs(30));
+        assert_eq!(safety_margin(minutes(2)), Duration::from_secs(12));
+        assert_eq!(lapses_at(1_000, minutes(60)), 1_000 + 3_570_000);
+        assert_eq!(lapses_at(1_000, minutes(2)), 1_000 + 108_000);
     }
 
     #[test]

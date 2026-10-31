@@ -203,12 +203,12 @@ fn minutes_left(expires_at: std::time::SystemTime) -> u64 {
 
 /// When the main agent's prompt cache expires: its latest request, the
 /// latest refresh that kept it warm, or (resumed) what the session's record
-/// says of them, plus its lifetime, as the status line counts them. `None`
-/// while either is unknown.
+/// says of them, plus its lifetime less the safety margin
+/// ([`lapses_at`](crate::cache_timer::lapses_at)), as the status line counts
+/// them. `None` while either is unknown.
 pub(crate) fn cache_expiry(stats: &crate::ui::Stats) -> Option<std::time::SystemTime> {
-    let used = stats.cache_refreshed_at?;
-    let used = std::time::UNIX_EPOCH + Duration::from_millis(u64::try_from(used).ok()?);
-    Some(used + stats.cache_lifetime?)
+    let lapses = crate::cache_timer::lapses_at(stats.cache_refreshed_at?, stats.cache_lifetime?);
+    Some(std::time::UNIX_EPOCH + Duration::from_millis(u64::try_from(lapses).ok()?))
 }
 
 /// The workflow's name in new sessions.
@@ -2754,7 +2754,8 @@ impl Harness {
             return;
         }
         // Continuing a worker whose prompt cache expired re-reads its whole
-        // conversation, so Arko says what that costs first. A client that
+        // conversation, so Arko says what that costs first. It asks too for
+        // a worker an older Arko saved, whose cache isn't known. A client that
         // waits for the verdict asks the user, and sends it again confirmed.
         // At the line prompt, which has no question to ask, the same
         // `/message` again continues it. That is only for sends without a
@@ -2762,7 +2763,7 @@ impl Harness {
         // client.
         let now = chrono::Utc::now();
         let asked = (to.trim().to_ascii_lowercase(), text.to_string());
-        if let Some(cache) = self.crew.as_ref().and_then(|crew| crew.worker_cache(to))
+        if let Some(cache) = self.crew.as_ref().and_then(|crew| crew.cache_state(to))
             && cache.asks(now)
             && !confirmed
             && (reply.tracked() || self.continue_asked.take() != Some(asked.clone()))

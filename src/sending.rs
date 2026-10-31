@@ -119,7 +119,7 @@ pub(crate) struct Sent {
     /// for what isn't an app's message.
     images: Option<Vec<ui::Attachment>>,
     /// The user agreed, as they sent it, to continue a worker whose prompt
-    /// cache expired. It holds for this send alone.
+    /// cache expired or isn't known. It holds for this send alone.
     confirmed: bool,
     pub(crate) reply: Reply,
 }

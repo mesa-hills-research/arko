@@ -296,6 +296,7 @@ impl RandomSession {
                 subagent: None,
                 sizes: None,
                 bytes_per_token: 4.0,
+                sent_at: None,
             },
         );
         let text = self.words(6);
