@@ -374,13 +374,17 @@ impl KeptNotes {
             "# Kept notes moved out of the list\n".to_string()
         };
         for note in &moved {
-            text.push_str(&format!(
+            let section = format!(
                 "\n## Kept note {}, for {}, {}\n\n{}\n",
                 note.id,
                 note.audience.describe(),
                 note.created.format("%Y-%m-%d %H:%M UTC"),
                 note.text
-            ));
+            );
+            // A move stopped between its two writes put it there already.
+            if !text.contains(&section) {
+                text.push_str(&section);
+            }
         }
         crate::session::write_whole(&overflow, text.as_bytes()).map_err(|error| {
             format!(
@@ -1142,6 +1146,32 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(&overflow).unwrap(), moved);
         assert_eq!(notes.add("Next.", Audience::Lead).unwrap().id, 5);
+    }
+
+    /// A move of an old list that stopped after it wrote the overflow file
+    /// and before it saved the list moves the notes again on the next read,
+    /// and the file holds each note's section once.
+    #[test]
+    fn an_old_list_moved_again_after_a_stop_is_in_the_file_once() {
+        let (temp, notes) = notes();
+        let old = format!("a{}b", "\n".repeat(8 * 1024 - 2));
+        let list = serde_json::json!({"next": 2, "notes": [
+            {"id": 1, "text": old, "audience": "all_workers", "created": "2026-10-01T10:00:00Z"},
+            {"id": 2, "text": "Use tabs.", "audience": "lead", "created": "2026-10-02T10:00:00Z"},
+        ]})
+        .to_string();
+        std::fs::write(temp.path().join(FILE), &list).unwrap();
+        notes.list().unwrap();
+        let moved = std::fs::read_to_string(temp.path().join(OVERFLOW_FILE)).unwrap();
+        // As if it had stopped before saving the list.
+        std::fs::write(temp.path().join(FILE), &list).unwrap();
+        let again = KeptNotes::new(temp.path()).list().unwrap();
+        assert_eq!(again.len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(OVERFLOW_FILE)).unwrap(),
+            moved
+        );
+        assert_eq!(moved.matches("## Kept note 1, ").count(), 1);
     }
 
     /// A list at the cap goes to the main agent as one note and to a worker as

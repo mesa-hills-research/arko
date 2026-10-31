@@ -3472,10 +3472,19 @@ async fn a_long_list_of_kept_notes_comes_back_whole_after_a_compaction() {
         "the list went in parts"
     );
     // The hooks' parts joined again, after the inputs sent.
-    let hooked = arko_agents::rejoin_context_updates(hooks.iter().map(|hook| {
-        hook.strip_prefix("# Workflow context update\n\n")
-            .unwrap_or(hook)
-    }));
+    let joined = hooks
+        .iter()
+        .map(|hook| {
+            hook.strip_prefix("# Workflow context update\n\n")
+                .unwrap_or(hook)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .replace(
+            "\n(This update goes on in the next one.)\n\n(Continued from the previous update.)\n",
+            "",
+        );
+    let hooked = [joined];
     let given: Vec<String> = log[compacted..]
         .iter()
         .filter_map(|entry| entry["text"].as_str())

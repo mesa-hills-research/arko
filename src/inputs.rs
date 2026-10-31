@@ -259,7 +259,7 @@ pub(crate) fn waits_with(
     let id = job.job_id.to_string();
     task.pending_context_injections
         .iter()
-        .any(|content| content.contains(&id))
+        .any(|content| content.text.contains(&id))
         || jobs.is_some_and(|jobs| jobs.has_alerts(job.owner))
 }
 
@@ -280,8 +280,8 @@ pub(crate) fn alert_waits(
     use arko_agents::terminal::{AlertKind, JobKind, note_wakes};
     let mut warning = None;
     for note in &task.pending_context_injections {
-        match note_wakes(note) {
-            Some(AlertKind::EndsSoon) => warning = warning.or(Some(note.as_str())),
+        match note_wakes(&note.text) {
+            Some(AlertKind::EndsSoon) => warning = warning.or(Some(note.text.as_str())),
             Some(_) => {
                 return Some(Alert {
                     owner,
