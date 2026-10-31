@@ -168,6 +168,10 @@ pub fn recache(cache: &CacheStatus) -> Option<String> {
     Some(text)
 }
 
+/// What a tooltip adds while keep-warm waits for the next message.
+pub const KEEP_WARM_WAITS: &str =
+    "Keep-warm waits for your next message, as Arko can't tell how long ago the cache was used.";
+
 /// What the timer means, for a tooltip or a line of help.
 pub fn tooltip(timer: CacheTimer, cache: &CacheStatus, now: i64) -> String {
     match timer {
@@ -179,6 +183,10 @@ pub fn tooltip(timer: CacheTimer, cache: &CacheStatus, now: i64) -> String {
             let mut text = format!("The prompt cache keeps this conversation until {until}.");
             if let Some(recache) = recache(cache) {
                 text.push_str(&format!(" Letting it expire re-caches {recache}."));
+            }
+            if cache.keep_warm.is_some_and(|kept| kept.waits) {
+                text.push(' ');
+                text.push_str(KEEP_WARM_WAITS);
             }
             text
         }

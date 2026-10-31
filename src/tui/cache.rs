@@ -214,6 +214,7 @@ pub(super) mod tests {
             ends_at: Some(ends),
             left: None,
             next_at: Some(AT + 240_000),
+            waits: false,
         };
         app.reading.cache.keep_warm = Some(kept);
         let (rows, buffer) = drawn(&mut app, 80, 8);
@@ -226,6 +227,7 @@ pub(super) mod tests {
             ends_at: None,
             left: Some(3),
             next_at: Some(AT + 240_000),
+            waits: false,
         });
         assert_eq!(
             app.cache_label(),

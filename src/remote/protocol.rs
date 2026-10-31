@@ -1500,6 +1500,8 @@ pub struct KeepWarmData {
     pub left: Option<u32>,
     /// When its next refresh goes, none while none comes before it stops.
     pub next_at: Option<i64>,
+    /// It waits for the next message, since Arko can't tell the cache's age.
+    pub waits: bool,
 }
 
 /// The keep-warm setting for every session (`/keep-warm default`).

@@ -160,11 +160,6 @@ impl Memory {
 pub(crate) struct Restored {
     /// When the request went out (Unix milliseconds), never later than now.
     pub at: i64,
-    /// When that was on the session's monotonic clock, where the session can
-    /// vouch for it: its age on the wall clock is from 0 to the lifetime.
-    /// None for a time after now or longer ago, which keep-warm doesn't
-    /// refresh.
-    pub seen: Option<std::time::Instant>,
     pub lifetime: Duration,
     pub read: usize,
     pub written: usize,
@@ -179,9 +174,8 @@ pub(crate) struct Basis<'a> {
     /// shows in its cache writes (`learns`), which the record kept.
     pub lifetime: Option<Duration>,
     pub learns: bool,
-    /// The clock now (Unix milliseconds), and the monotonic clock then.
+    /// The clock now (Unix milliseconds).
     pub now: i64,
-    pub seen: std::time::Instant,
 }
 
 /// The cache `entry` left, as the session can show it now, or `None` where
@@ -197,13 +191,8 @@ pub(crate) fn restore(entry: &Entry, basis: Basis) -> Option<Restored> {
     if !basis.learns && basis.lifetime != Some(lifetime) {
         return None;
     }
-    let now = crate::keep_warm::Moment {
-        seen: basis.seen,
-        at: basis.now,
-    };
     Some(Restored {
         at: entry.at.min(basis.now),
-        seen: crate::keep_warm::Moment::kept(entry.at, now, lifetime).map(|used| used.seen),
         lifetime,
         read: entry.read,
         written: entry.written,
@@ -240,7 +229,6 @@ impl crate::Harness {
                         lifetime: stats.cache_lifetime,
                         learns: stats.learns_cache_lifetime,
                         now: chrono::Utc::now().timestamp_millis(),
-                        seen: std::time::Instant::now(),
                     },
                 )
             });
@@ -269,7 +257,8 @@ impl Stats {
         match restored {
             Some(restored) => {
                 self.cache_refreshed_at = Some(restored.at);
-                self.cache_seen = restored.seen;
+                // (Its time is the record's: keep-warm waits for a request.)
+                self.cache_seen = None;
                 self.cache_use = Some((restored.read, restored.written));
                 if self.learns_cache_lifetime {
                     self.cache_lifetime = Some(restored.lifetime);
@@ -301,17 +290,8 @@ mod tests {
         }
     }
 
-    /// The monotonic clock the tests' bases have, a day on so that their
-    /// requests' times can be counted back from it.
-    fn seen() -> std::time::Instant {
-        static NOW: std::sync::LazyLock<std::time::Instant> =
-            std::sync::LazyLock::new(|| std::time::Instant::now() + Duration::from_secs(86_400));
-        *NOW
-    }
-
     fn basis(now: i64) -> Basis<'static> {
         Basis {
-            seen: seen(),
             model: "claude-opus-5-5",
             lifetime: Some(HOUR),
             learns: false,
@@ -427,13 +407,10 @@ mod tests {
         let at = 1_000_000;
         let valid = restore(&entry(at), basis(at + 20 * 60_000)).unwrap();
         assert_eq!(valid.at, at);
-        // Keep-warm counts its time from twenty minutes before now.
-        assert_eq!(valid.seen, Some(seen() - Duration::from_secs(1_200)));
         assert_eq!(valid.lifetime, HOUR);
         assert_eq!((valid.read, valid.written), (170_000, 10_000));
         let expired = restore(&entry(at), basis(at + 90 * 60_000)).unwrap();
         assert_eq!(expired.at, at);
-        assert_eq!(expired.seen, None, "past its lifetime");
     }
 
     /// A clock that went back dates the request in the future: it counts
@@ -442,8 +419,6 @@ mod tests {
     fn a_request_from_the_future_counts_from_now() {
         let restored = restore(&entry(5_000_000), basis(1_000_000)).unwrap();
         assert_eq!(restored.at, 1_000_000);
-        // Shown from now, but keep-warm doesn't refresh it until a request.
-        assert_eq!(restored.seen, None);
     }
 
     /// Another model's cache is not this one's, and neither is one with
@@ -492,6 +467,8 @@ mod tests {
         stats.set_cache(Some(restored));
         assert_eq!(stats.cache_lifetime, Some(HOUR));
         assert_eq!(stats.cache_refreshed_at, Some(5));
+        // Shown, but keep-warm can't tell its age until a request.
+        assert_eq!(stats.cache_used(), None);
         assert_eq!(stats.cache_use, Some((170_000, 10_000)));
         stats.set_cache(None);
         assert_eq!((stats.cache_refreshed_at, stats.cache_use), (None, None));

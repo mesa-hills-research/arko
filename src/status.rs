@@ -481,7 +481,13 @@ pub(crate) fn cache_status(
                 lifetime: stats.cache_lifetime,
                 quote: refresh_quote(stats, models),
             };
-            stats.keep_warm.status(&limits, cache, turn)
+            stats.keep_warm.status(
+                &limits,
+                cache,
+                stats.cache_refreshed_at.is_some(),
+                turn,
+                crate::keep_warm::Moment::now(),
+            )
         });
     let model = providers::resolve_model(&models.main).ok();
     let on_plan = main_plan(model.as_ref(), models).map(|plan| match plan {
@@ -637,9 +643,10 @@ mod tests {
         assert_eq!(cache.on_plan, Some("your Claude plan"));
         // Keep-warm shows for a model that refreshes out of band, with its
         // next refresh while no turn runs.
+        let used = crate::keep_warm::Moment::now();
         let kept = Stats {
-            cache_refreshed_at: Some(0),
-            cache_seen: Some(std::time::Instant::now()),
+            cache_refreshed_at: Some(used.at),
+            cache_seen: Some(used.seen),
             ..stats.clone()
         };
         // (Under the setting, the session's own choice being none.)
@@ -651,7 +658,10 @@ mod tests {
         let status = cache_status(&kept, &models, setting, false)
             .keep_warm
             .unwrap();
-        assert_eq!((status.left, status.next_at), (Some(3), Some(55 * 60_000)));
+        assert_eq!(
+            (status.left, status.next_at),
+            (Some(3), Some(used.at + 55 * 60_000))
+        );
         assert_eq!(
             cache_status(&kept, &models, setting, true)
                 .keep_warm

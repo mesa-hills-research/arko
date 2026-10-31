@@ -84,6 +84,11 @@ pub struct Status {
     /// cache doesn't lapse at its `expires_at`, so a reminder of that waits.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_at: Option<i64>,
+    /// It waits for the user's next message before it refreshes: the
+    /// session can't tell how long ago the cache was used (Arko opened
+    /// again, the computer slept or its clock changed).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub waits: bool,
 }
 
 /// Whether the main agent's prompt cache on `model`, as Arko configures it,
@@ -376,8 +381,12 @@ pub(crate) enum Stop {
     Idle(u32),
     /// Its next refresh would cost more than its dollars.
     Dollars(f64),
-    /// The cache lapsed before its refresh (the computer slept).
+    /// The cache lapsed before its refresh.
     Lapsed,
+    /// The two clocks disagree on how long ago the cache was used (the
+    /// computer slept, or its clock changed). It starts again with the next
+    /// request.
+    Clock,
     /// A refresh failed, for this reason.
     Failed(String),
     /// The provider takes no refresh out of band.
@@ -460,7 +469,7 @@ pub(crate) struct KeepWarm {
     /// It said that Arko has no price for the refreshes.
     unpriced_told: bool,
     /// When the session saw its `requested_at` on its monotonic clock, none
-    /// where it can't vouch for it (kept from a clock that was ahead).
+    /// where it didn't see it (it opened since, or its clocks disagreed).
     #[serde(skip)]
     requested_seen: Option<Instant>,
     /// When the session's own end comes on its monotonic clock.
@@ -470,18 +479,14 @@ pub(crate) struct KeepWarm {
 
 impl KeepWarm {
     /// The session's keep-warm, as its folder `dir` keeps it, as the session
-    /// opens at `now`. None kept (or unreadable) follows the setting.
+    /// opens at `now`. None kept (or unreadable) follows the setting. The
+    /// session didn't see the request it kept, so it refreshes nothing until
+    /// the next one.
     pub(crate) fn load(dir: &Path, now: Moment) -> Self {
         let mut kept: Self = std::fs::read_to_string(dir.join(SESSION_FILE))
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();
-        kept.requested_seen = kept
-            .requested_at
-            .and_then(|at| {
-                Moment::kept(at, now, Duration::from_secs(u64::from(MOST_HOURS) * 3_600))
-            })
-            .map(|request| request.seen);
         if let Choice::On(limits) = kept.choice {
             kept.ends_seen = limits.ends_at.map(|at| seen_at(at, now));
         }
@@ -517,8 +522,7 @@ impl KeepWarm {
         self.requested_seen = Some(at.seen);
     }
 
-    /// The latest request it didn't send, where the session can vouch for
-    /// its time.
+    /// The latest request it didn't send, where the session saw it.
     fn request(&self) -> Option<Moment> {
         Some(Moment {
             seen: self.requested_seen?,
@@ -591,7 +595,7 @@ impl KeepWarm {
     }
 
     /// Whether its hours stopped it in this idle stretch, or there is no
-    /// request it can vouch for to count them from.
+    /// request the session saw to count them from.
     fn paused(&self, limits: &Limits) -> bool {
         limits.idle_hours.is_some()
             && (self.request().is_none() || self.paused == self.requested_at)
@@ -604,8 +608,9 @@ impl KeepWarm {
         self.ends(limits).is_none_or(|end| !end.passed(at))
     }
 
-    /// When the next refresh of `cache` goes under `limits`, if one comes
-    /// before it stops and the limits leave one.
+    /// When the next refresh of `cache` goes under `limits` (on the
+    /// monotonic clock), if one comes before it stops and the limits leave
+    /// one.
     fn next(&self, limits: &Limits, cache: Cache) -> Option<Moment> {
         if self.left(limits) == Some(0)
             || self.spent_out(limits, cache.quote)
@@ -628,11 +633,9 @@ impl KeepWarm {
         if self.paused(limits) {
             return None;
         }
-        [self.next(limits, cache), self.ends(limits)]
-            .into_iter()
-            .flatten()
-            .map(|at| at.deadline(now))
-            .min()
+        let next = self.next(limits, cache).map(|due| due.seen);
+        let end = self.ends(limits).map(|end| end.deadline(now));
+        [next, end].into_iter().flatten().min()
     }
 
     /// What it does at `now` under `limits`, for `cache`.
@@ -660,9 +663,11 @@ impl KeepWarm {
         else {
             return Step::Wait;
         };
-        if !due.passed(now) {
+        if !used.agrees(now) {
+            Step::Stop(Stop::Clock)
+        } else if now.seen < due.seen {
             Step::Wait
-        } else if used.plus(cache_timer::lapse_after(lifetime)).passed(now) {
+        } else if now.seen >= used.seen + cache_timer::lapse_after(lifetime) {
             Step::Stop(Stop::Lapsed)
         } else {
             Step::Refresh
@@ -679,28 +684,41 @@ impl KeepWarm {
     }
 
     /// Stops it for `stop`, and says why and what it sent since it last
-    /// said, on the plan `on_plan` if one pays. Its hours stop it until the
-    /// next request, and anything else ends it for the session.
+    /// said, on the plan `on_plan` if one pays. Its hours, and clocks that
+    /// disagree, stop it until the next request, and anything else ends it
+    /// for the session.
     fn stop(&mut self, stop: &Stop, on_plan: Option<&str>) -> String {
         let said = self.report();
-        if matches!(stop, Stop::Idle(_)) {
-            self.paused = self.requested_at;
-        } else {
-            self.choice = Choice::Off;
+        match stop {
+            Stop::Idle(_) => self.paused = self.requested_at,
+            Stop::Clock => self.requested_seen = None,
+            _ => self.choice = Choice::Off,
         }
         stopped(stop, said, on_plan)
     }
 
-    /// The status under `limits`, for `cache`, while a turn's requests run
-    /// (`turn`) or not.
-    pub(crate) fn status(&self, limits: &Limits, cache: Cache, turn: bool) -> Status {
+    /// The status under `limits` at `now`, for `cache`, while a turn's
+    /// requests run (`turn`) or not. A refresh shows only where the session
+    /// can tell the cache's age, and it waits for the next message where a
+    /// cache that it can't tell the age of shows (`shown`).
+    pub(crate) fn status(
+        &self,
+        limits: &Limits,
+        cache: Cache,
+        shown: bool,
+        turn: bool,
+        now: Moment,
+    ) -> Status {
+        let told = cache.used.is_some_and(|used| used.agrees(now))
+            && (limits.idle_hours.is_none() || self.request().is_some());
         Status {
             ends_at: self.ends(limits).map(|end| end.at),
             left: self.left(limits),
-            next_at: (!turn)
+            next_at: (!turn && told)
                 .then(|| self.next(limits, cache))
                 .flatten()
                 .map(|due| due.at),
+            waits: !turn && shown && !told,
         }
     }
 }
@@ -715,8 +733,8 @@ fn seen_at(at: i64, now: Moment) -> Instant {
 /// costs.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Cache {
-    /// When it was last used, `None` while the session can't vouch for that
-    /// time (none yet, or a record from a clock that was ahead).
+    /// When it was last used, as the session saw it: `None` where it
+    /// didn't (none yet, or a time from before the session opened).
     pub(crate) used: Option<Moment>,
     /// How long it lasts, where the provider says.
     pub(crate) lifetime: Option<Duration>,
@@ -726,10 +744,10 @@ pub(crate) struct Cache {
 }
 
 /// A moment as the session saw it: on its monotonic clock, which no one
-/// sets, and on the wall clock the page shows (Unix milliseconds). It has
-/// passed once either clock says so, since a clock set back makes the wall
-/// clock say less, and a computer that slept makes the monotonic clock say
-/// less (it doesn't count the sleep).
+/// sets, and on the wall clock the page shows (Unix milliseconds). The
+/// refreshes go by the monotonic clock, while the two agree on how long ago
+/// the cache was used ([`agrees`](Self::agrees)). An end has passed once
+/// either clock says so, since stopping sooner spends nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Moment {
     pub(crate) seen: Instant,
@@ -759,19 +777,14 @@ impl Moment {
         }
     }
 
-    /// The moment of the wall time `at` (Unix milliseconds) the session
-    /// kept, from its age at `now`, where that is from 0 to `within`.
-    /// `None` for a time after now (the clock was ahead) or older, which the
-    /// session can't vouch for.
-    pub(crate) fn kept(at: i64, now: Moment, within: Duration) -> Option<Self> {
-        let age = Duration::from_millis(u64::try_from(now.at - at).ok()?);
-        if age > within {
-            return None;
-        }
-        Some(Self {
-            seen: now.seen.checked_sub(age)?,
-            at,
-        })
+    /// Whether the two clocks agree, within [`CLOCKS_AGREE`], on how long
+    /// ago it was at `now`. They disagree after the computer slept (the
+    /// monotonic clock doesn't count the sleep) or its clock changed, and
+    /// then no one can tell how long ago it was.
+    fn agrees(self, now: Moment) -> bool {
+        let seen = i64::try_from(now.seen.saturating_duration_since(self.seen).as_millis())
+            .unwrap_or(i64::MAX);
+        (now.at - self.at).abs_diff(seen) <= CLOCKS_AGREE.as_millis() as u64
     }
 
     /// `wait` later, on both clocks.
@@ -784,19 +797,19 @@ impl Moment {
         }
     }
 
-    /// Whether it has passed at `now`, by either clock.
+    /// Whether an end at it has passed at `now`, by either clock.
     fn passed(self, now: Moment) -> bool {
         now.seen >= self.seen || now.at >= self.at
     }
 
-    /// When it comes on the monotonic clock, by whichever clock says sooner
-    /// at `now`.
+    /// When an end at it comes on the monotonic clock, by whichever clock
+    /// says sooner at `now`.
     fn deadline(self, now: Moment) -> Instant {
         let wall = Duration::from_millis(u64::try_from(self.at - now.at).unwrap_or(0));
         self.seen.min(now.seen + wall)
     }
 
-    /// The first to pass of it and `other`, by either clock.
+    /// The first to pass of two ends, by either clock.
     fn earliest(self, other: Moment) -> Self {
         Self {
             seen: self.seen.min(other.seen),
@@ -805,9 +818,12 @@ impl Moment {
     }
 }
 
+/// How far the two clocks may differ on how long ago something was, for
+/// [`Moment::agrees`].
+const CLOCKS_AGREE: Duration = Duration::from_secs(2);
+
 impl crate::ui::Stats {
-    /// When the cache was last used, as the session saw it, where it can
-    /// vouch for that time.
+    /// When the cache was last used, as the session saw it.
     pub(crate) fn cache_used(&self) -> Option<Moment> {
         Some(Moment {
             seen: self.cache_seen?,
@@ -862,7 +878,10 @@ fn stopped(stop: &Stop, said: Totals, on_plan: Option<&str>) -> String {
             format!("Keep-warm stopped at its {} limit. {tally}", dollars(*most))
         }
         Stop::Lapsed => format!(
-            "Keep-warm stopped because the prompt cache expired before its refresh, as happens when the computer sleeps. {tally}"
+            "Keep-warm stopped because the prompt cache expired before its refresh. {tally}"
+        ),
+        Stop::Clock => format!(
+            "Keep-warm paused because the computer slept or its clock changed. It starts again after your next message. {tally}"
         ),
         Stop::Failed(why) => {
             let why = crate::ui::sentence(why.trim_end_matches('.'));
@@ -1006,9 +1025,16 @@ impl crate::Harness {
     /// and says why, with what it sent.
     fn stop_keep_warm(&mut self, stop: Stop) {
         let on_plan = self.keep_warm_plan();
-        let text = lock(&self.stats).keep_warm.stop(&stop, on_plan);
+        let text = {
+            let mut stats = lock(&self.stats);
+            // (No one can tell the cache's age until the next request.)
+            if stop == Stop::Clock {
+                stats.cache_seen = None;
+            }
+            stats.keep_warm.stop(&stop, on_plan)
+        };
         let level = match stop {
-            Stop::Lapsed | Stop::Failed(_) | Stop::Unsupported => Level::Warn,
+            Stop::Lapsed | Stop::Clock | Stop::Failed(_) | Stop::Unsupported => Level::Warn,
             _ => Level::Info,
         };
         self.say(level, &text);
@@ -1163,6 +1189,10 @@ impl crate::Harness {
         if let Some(each) = cache_timer::refresh_each(&cache) {
             text.push_str(&format!(" {each}"));
         }
+        if cache.keep_warm.is_some_and(|kept| kept.waits) {
+            text.push(' ');
+            text.push_str(cache_timer::KEEP_WARM_WAITS);
+        }
         if kept.follows_setting() {
             text.push_str(" The setting turned it on, and /keep-warm off turns it off here.");
         }
@@ -1196,6 +1226,11 @@ mod tests {
             seen: base() + Duration::from_millis(ms as u64),
             at: ms,
         }
+    }
+
+    /// The status for `cache`, at its last use (when the clocks agree).
+    fn seen_status(kept: &KeepWarm, limits: &Limits, cache: Cache, turn: bool) -> Status {
+        kept.status(limits, cache, true, turn, cache.used.unwrap_or(t(0)))
     }
 
     /// When the loop wakes at `now`, in milliseconds from the tests' start.
@@ -1262,12 +1297,12 @@ mod tests {
         refresh(&mut kept, &mut used, 4 * MINUTE);
         assert_eq!(wake(&kept, &limits, five(used), used), Some(8 * MINUTE));
         assert_eq!(
-            kept.status(&limits, five(used), false).next_at,
+            seen_status(&kept, &limits, five(used), false).next_at,
             Some(8 * MINUTE)
         );
         // None goes while a turn runs, and a cache whose time the session
         // can't vouch for waits for a request.
-        assert_eq!(kept.status(&limits, five(used), true).next_at, None);
+        assert_eq!(seen_status(&kept, &limits, five(used), true).next_at, None);
         assert_eq!(
             kept.step(t(9 * MINUTE), &limits, cached(None, Some(FIVE))),
             Step::Wait
@@ -1286,7 +1321,7 @@ mod tests {
         let cache = cached(Some(turn), Some(FIVE));
         assert_eq!(wake(&kept, &limits, cache, turn), Some(10 * MINUTE));
         assert_eq!(kept.step(t(8 * MINUTE), &limits, cache), Step::Wait);
-        assert_eq!(kept.status(&limits, cache, false).left, Some(2));
+        assert_eq!(seen_status(&kept, &limits, cache, false).left, Some(2));
     }
 
     /// The end stops it, and a refresh that would come after it isn't sent.
@@ -1304,7 +1339,7 @@ mod tests {
         let mut used = 0;
         refresh(&mut kept, &mut used, 4 * MINUTE);
         let cache = cached(Some(used), Some(FIVE));
-        assert_eq!(kept.status(&limits, cache, false).next_at, None);
+        assert_eq!(seen_status(&kept, &limits, cache, false).next_at, None);
         assert_eq!(wake(&kept, &limits, cache, used), Some(end));
         assert_eq!(
             kept.step(t(end), &limits, cache),
@@ -1313,7 +1348,7 @@ mod tests {
         // A refresh due right at the end doesn't go, and the status doesn't
         // show it: the end at 8:00, when the refresh after 4:00 would be.
         let (kept, limits) = on(ending(Some(8 * MINUTE), None));
-        assert_eq!(kept.status(&limits, cache, false).next_at, None);
+        assert_eq!(seen_status(&kept, &limits, cache, false).next_at, None);
         assert_eq!(wake(&kept, &limits, cache, used), Some(8 * MINUTE));
         assert_eq!(
             kept.step(t(8 * MINUTE), &limits, cache),
@@ -1324,8 +1359,7 @@ mod tests {
         let mut used = 0;
         refresh(&mut kept, &mut used, 4 * MINUTE);
         assert_eq!(
-            kept.status(&limits, cached(Some(used), Some(FIVE)), false)
-                .left,
+            seen_status(&kept, &limits, cached(Some(used), Some(FIVE)), false).left,
             Some(1)
         );
         refresh(&mut kept, &mut used, 8 * MINUTE);
@@ -1373,37 +1407,44 @@ mod tests {
         );
     }
 
-    /// A cache counts as lapsed once either clock says so. A wall clock set
-    /// back can't make an expired cache look warm, and neither can a
-    /// computer that slept, which the monotonic clock doesn't count. The
-    /// loop wakes by whichever clock says sooner.
+    /// While the two clocks disagree on how long ago the cache was used, by
+    /// more than a couple of seconds, no one can tell its age, so nothing is
+    /// sent: a wall clock set forward, a computer that slept and a wall clock
+    /// set back each pause keep-warm. While they agree, the refresh goes by
+    /// the monotonic clock, and the loop sleeps by it.
     #[test]
-    fn a_cache_lapses_when_either_clock_says_so() {
+    fn clocks_that_disagree_pause_it() {
         let (kept, limits) = on(ending(None, Some(5)));
         let cache = cached(Some(0), Some(FIVE));
         let at = |seen: i64, wall: i64| Moment {
             seen: t(seen).seen,
             at: wall,
         };
-        // 4:40 on the monotonic clock, past the lapse at 4:30, while the
-        // wall clock was set back and says 1:00.
-        let set_back = at(280_000, MINUTE);
+        // The wall clock set forward: 1:00 on the monotonic clock, 4:10 on
+        // the wall. The loop still sleeps until 4:00 by the monotonic clock.
+        let forward = at(MINUTE, 250_000);
+        assert_eq!(kept.step(forward, &limits, cache), Step::Stop(Stop::Clock));
         assert_eq!(
-            kept.step(set_back, &limits, cache),
-            Step::Stop(Stop::Lapsed)
+            kept.wake_at(&limits, cache, forward),
+            Some(t(4 * MINUTE).seen)
         );
-        // The computer slept: 1:00 on the monotonic clock, 4:40 on the wall.
-        let slept = at(MINUTE, 280_000);
-        assert_eq!(kept.step(slept, &limits, cache), Step::Stop(Stop::Lapsed));
-        // At 4:10 on both, the refresh goes.
-        assert_eq!(kept.step(t(250_000), &limits, cache), Step::Refresh);
-        // At 1:00 on the monotonic clock and 3:00 on the wall, the refresh
-        // due at 4:00 wakes the loop a minute on, as the wall says.
-        let ahead = at(MINUTE, 3 * MINUTE);
+        // The computer slept: 4:00 on the monotonic clock, hours on the wall.
+        let slept = at(4 * MINUTE, 6 * 60 * MINUTE);
+        assert_eq!(kept.step(slept, &limits, cache), Step::Stop(Stop::Clock));
+        // The wall clock set back: 4:40 on the monotonic clock, 1:00 on the
+        // wall.
+        let back = at(280_000, MINUTE);
+        assert_eq!(kept.step(back, &limits, cache), Step::Stop(Stop::Clock));
+        // A second apart is the clocks agreeing: the refresh goes at 4:00.
         assert_eq!(
-            kept.wake_at(&limits, cache, ahead),
-            Some(t(2 * MINUTE).seen)
+            kept.step(at(4 * MINUTE, 4 * MINUTE + 1_000), &limits, cache),
+            Step::Refresh
         );
+        // The status shows no refresh while they disagree, and says it
+        // waits.
+        let status = kept.status(&limits, cache, true, false, forward);
+        assert_eq!((status.next_at, status.waits), (None, true));
+        assert!(!seen_status(&kept, &limits, cache, false).waits);
     }
 
     /// Each refresh, the first too, is priced before it goes, from the cache
@@ -1426,7 +1467,10 @@ mod tests {
             kept.step(t(4 * MINUTE), &limits, five(Some(0.04))),
             Step::Stop(Stop::Dollars(0.01))
         );
-        assert_eq!(kept.status(&limits, five(Some(0.04)), false).next_at, None);
+        assert_eq!(
+            seen_status(&kept, &limits, five(Some(0.04)), false).next_at,
+            None
+        );
         // Without a price, it goes by its other limits.
         assert_eq!(wake(&kept, &limits, five(None), 0), Some(4 * MINUTE));
         // A cache that grew after a cheap refresh: $0.01 spent and $0.50
@@ -1480,7 +1524,7 @@ mod tests {
         assert_eq!((sent, used), (14, 56 * MINUTE));
         // The status shows no refresh at 60:00, as none goes there.
         let cache = cached(Some(used), Some(FIVE));
-        assert_eq!(kept.status(&limits, cache, false).next_at, None);
+        assert_eq!(seen_status(&kept, &limits, cache, false).next_at, None);
         assert_eq!(
             kept.stop(&Stop::Idle(1), Some("your Claude plan")),
             "Keep-warm stopped 1 hour after your last message, and starts again after your next one. It sent 14 refreshes for $0.56."
@@ -1493,7 +1537,7 @@ mod tests {
         let cache = cached(Some(turn), Some(FIVE));
         assert_eq!(wake(&kept, &limits, cache, turn), Some(94 * MINUTE));
         assert_eq!(
-            kept.status(&limits, cache, false).ends_at,
+            seen_status(&kept, &limits, cache, false).ends_at,
             Some(150 * MINUTE)
         );
     }
@@ -1521,7 +1565,22 @@ mod tests {
         kept.save(temp.path()).unwrap();
         let mut back = KeepWarm::load(temp.path(), t(13 * MINUTE));
         assert_eq!(back.counted().sent, 3);
-        assert_eq!(back.request(), Some(t(0)));
+        assert_eq!(back.requested_at, Some(0));
+        // The session didn't see that request, so its hours wait for the
+        // next one, and so does a cache restored with it.
+        assert_eq!(back.request(), None);
+        assert_eq!(
+            wake(&back, &setting, cached(None, Some(FIVE)), 13 * MINUTE),
+            None
+        );
+        let restored = back.status(
+            &setting,
+            cached(None, Some(FIVE)),
+            true,
+            false,
+            t(13 * MINUTE),
+        );
+        assert_eq!((restored.next_at, restored.waits), (None, true));
         // The same setting again, or a lower one, keeps what was spent: $0.12
         // passes a limit of $0.10.
         let lower = Limits {
@@ -1534,20 +1593,6 @@ mod tests {
             Step::Stop(Stop::Dollars(0.1))
         );
         assert!(!back.spent_out(&setting, Some(0.04)));
-        // Opened with the clock set back before the request: no request to
-        // count the hours from.
-        let early = KeepWarm::load(
-            temp.path(),
-            Moment {
-                seen: t(MINUTE).seen,
-                at: -MINUTE,
-            },
-        );
-        assert_eq!(early.request(), None);
-        assert_eq!(
-            wake(&early, &setting, cached(Some(used), Some(FIVE)), MINUTE),
-            None
-        );
         // Off stays off when the session opens again.
         assert_eq!(back.off().sent, 3);
         back.save(temp.path()).unwrap();
@@ -1912,6 +1957,44 @@ mod tests {
             "{stopped}"
         );
         assert_eq!(harness.keep_warm_wake(), None);
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// Clocks that disagree pause keep-warm with a notice and send nothing,
+    /// and the next request starts it again.
+    #[tokio::test]
+    async fn clocks_that_disagree_pause_it_until_the_next_message() {
+        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+        let server = model(bodies.clone(), false).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) = answered(temp.path(), &server).await;
+        assert!(harness.live_command("/keep-warm 8h", Source::Terminal));
+        let used = lock(&harness.stats).cache_used().unwrap();
+        // A second on the monotonic clock, ten minutes on the wall.
+        let skewed = Moment {
+            seen: used.seen + Duration::from_secs(1),
+            at: used.at + 10 * MINUTE,
+        };
+        harness.keep_warm_tick(skewed).await;
+        assert_eq!(bodies.lock().unwrap().len(), 1, "nothing was sent");
+        assert_eq!(
+            said(&harness.feed).pop().unwrap(),
+            "Keep-warm paused because the computer slept or its clock changed. It starts again after your next message. It sent no refreshes."
+        );
+        assert_eq!(lock(&harness.stats).cache_used(), None);
+        assert_eq!(
+            harness
+                .keep_warm_limits()
+                .map(|limits| limits.ends_at.is_some()),
+            Some(true)
+        );
+        let status = crate::remote::Meter::read(harness.gauges.as_ref()).cache;
+        assert!(status.keep_warm.unwrap().waits);
+        harness
+            .turn(Prompt::User("Again.".into()), &mut inputs)
+            .await;
+        assert!(lock(&harness.stats).cache_used().is_some());
+        assert!(harness.keep_warm_wake().is_some());
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 

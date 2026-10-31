@@ -774,6 +774,11 @@ pub fn cache_title(left: f64, cache: &CacheData, until: &str) -> String {
     if let Some(recache) = recache {
         text.push_str(&format!(" Letting it expire re-caches {recache}."));
     }
+    if cache.keep_warm.is_some_and(|kept| kept.waits) {
+        text.push_str(
+            " Keep-warm waits for your next message, as Arko can't tell how long ago the cache was used.",
+        );
+    }
     text
 }
 
@@ -1095,6 +1100,7 @@ mod tests {
             ends_at: Some(8 * 3_600_000),
             left: None,
             next_at: Some(240_000),
+            waits: false,
         };
         let cache = CacheData {
             lifetime: Some(300_000),
@@ -1115,6 +1121,20 @@ mod tests {
             ..cache.clone()
         };
         assert_eq!(kept_warm(&none_comes, false, 250_000.0), None);
+        // Where Arko can't tell the cache's age, it waits, and says so.
+        let waits = CacheData {
+            keep_warm: Some(KeepWarmData {
+                next_at: None,
+                waits: true,
+                ..kept
+            }),
+            ..cache.clone()
+        };
+        assert_eq!(kept_warm(&waits, false, 250_000.0), None);
+        assert!(
+            cache_title(20_000.0, &waits, "14:05")
+                .ends_with(" Keep-warm waits for your next message, as Arko can't tell how long ago the cache was used.")
+        );
         assert_eq!(kept_warm_label(&kept, "07:00"), "cache warm until 07:00");
         assert_eq!(
             kept_warm_title(&kept, &cache, "07:00"),
@@ -1124,6 +1144,7 @@ mod tests {
             ends_at: None,
             left: Some(9),
             next_at: Some(240_000),
+            waits: false,
         };
         assert_eq!(
             kept_warm_label(&counted, ""),
