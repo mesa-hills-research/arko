@@ -329,7 +329,7 @@ pub fn Tray(draft: RwSignal<String>) -> impl IntoView {
                     <Show when=move || draft.with(|text| has_message(text))>
                         <label class="tray-message">
                             "Include message"
-                            <button type="button" class="switch" role="switch" aria-label="Include message"
+                            <button type="button" class="switch" role="switch"
                                 aria-checked=move || rows.includes_message().to_string()
                                 disabled=move || rows.sending.get()
                                 on:click=move |_| rows.flip_message()>
