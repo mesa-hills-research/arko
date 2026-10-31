@@ -85,6 +85,11 @@ struct Entry {
     /// A command's block shows its whole output, or an agent's thinking
     /// shows whole (a click opened it).
     open: bool,
+    /// An agent's thinking is opened in the quiet view, which a click does
+    /// and nothing else (`open` is for the full view).
+    open_quiet: bool,
+    /// When it came.
+    created: Instant,
     /// When it came, or last changed (text streamed into it).
     changed: Instant,
 }
@@ -95,6 +100,8 @@ impl Entry {
             item,
             cache: None,
             open: false,
+            open_quiet: false,
+            created: Instant::now(),
             changed: Instant::now(),
         }
     }
@@ -104,8 +111,10 @@ struct Cached {
     /// What the lines were drawn for.
     width: usize,
     style: u64,
-    /// A running call's time.
+    /// A running call's time, or how long a thinking that stopped took.
     clock: Option<String>,
+    open: bool,
+    quiet: bool,
     lines: Vec<Wrapped>,
 }
 
@@ -647,6 +656,9 @@ impl Transcript {
         let mut counters: HashMap<Option<u64>, usize> = HashMap::new();
         let mut last_group: Option<Group> = blocks.first().map(|_| Group::Prose);
         let now = chrono::Utc::now().timestamp_millis();
+        // (Before the lines, because the thinking that streams is labelled so.)
+        self.motion = self.motion(filter);
+        let quiet = matches!(filter, Filter::Main(View::Quiet));
         for index in self.order() {
             let item = &self.entries[index].item;
             let shown = match filter.show(item) {
@@ -704,12 +716,23 @@ impl Transcript {
                             .and_then(|worker| worker.parent.clone()),
                         _ => None,
                     };
+                    let streams = self.motion.thinking == Some(self.entries[*index].item.id);
                     let entry = &mut self.entries[*index];
-                    let clock = running_time(&entry.item, now);
-                    let fresh = entry
-                        .cache
-                        .as_ref()
-                        .is_some_and(|c| c.width == width && c.style == style && c.clock == clock);
+                    // Only a click opens thinking in the quiet view.
+                    let quiet = quiet && entry.item.kind == Kind::Thinking;
+                    let open = if quiet { entry.open_quiet } else { entry.open };
+                    let clock = if entry.item.kind == Kind::Thinking {
+                        (!streams).then(|| thought_time(entry))
+                    } else {
+                        running_time(&entry.item, now)
+                    };
+                    let fresh = entry.cache.as_ref().is_some_and(|c| {
+                        c.width == width
+                            && c.style == style
+                            && c.clock == clock
+                            && c.open == open
+                            && c.quiet == quiet
+                    });
                     if !fresh {
                         entry.cache = Some(Cached {
                             width,
@@ -720,10 +743,15 @@ impl Transcript {
                                 width,
                                 own,
                                 under.as_deref(),
-                                entry.open,
-                                clock.as_deref(),
+                                Look {
+                                    open,
+                                    quiet,
+                                    clock: clock.as_deref(),
+                                },
                             ),
                             clock,
+                            open,
+                            quiet,
                         });
                     }
                     entry.cache.as_ref().map_or(0, |c| c.lines.len())
@@ -738,7 +766,6 @@ impl Transcript {
                 tail: false,
             });
         }
-        self.motion = self.motion(filter);
         if self.motion.working {
             // Where the agent's output comes next: above the notes it hasn't
             // read, which wait at the end.
@@ -991,14 +1018,15 @@ impl Transcript {
                     && self.motion.thinking == Some(self.entries[entry].item.id)
                     && line == usize::from(block.gap)
                 {
-                    motion::paint(buffer, (area.x, row), text_width(THINKING), theme, ms);
+                    let x = area.x + SPINNER as u16;
+                    motion::paint(buffer, (x, row), text_width(THINKING), theme, ms);
                     moving = true;
                 }
                 if block.shown == Shown::Working {
                     // (Not text: the mouse finds the line above it.)
                     if line == usize::from(block.gap) {
                         let label = text_width(&glyphs::render(WORKING));
-                        let x = area.x + WORKING_SPINNER as u16;
+                        let x = area.x + SPINNER as u16;
                         motion::paint(buffer, (x, row), label, theme, ms);
                         moving = true;
                     }
@@ -1134,7 +1162,7 @@ impl Transcript {
                 // The spinner stands in the column of the rail a command's
                 // output hangs from, under it, and the word after it.
                 let mut line = Wrapped::line(vec![
-                    Span::raw(" ".repeat(WORKING_SPINNER + 2)),
+                    Span::raw(" ".repeat(LABEL)),
                     Span::styled(label, theme.dim().add_modifier(Modifier::BOLD)),
                 ]);
                 line.bare = true;
@@ -1219,11 +1247,16 @@ impl Transcript {
     /// Opens or closes the fold of the block `key`, its fold line held on
     /// the screen's row `y` at the next draw. Returns that line.
     pub fn toggle(&mut self, key: u64, y: u16, filter: &Filter, theme: &Theme) -> Option<usize> {
+        let quiet = matches!(filter, Filter::Main(View::Quiet));
         let entry = self.find_mut(key)?;
         if !folds(&entry.item) {
             return None;
         }
-        entry.open = !entry.open;
+        if quiet && entry.item.kind == Kind::Thinking {
+            entry.open_quiet = !entry.open_quiet;
+        } else {
+            entry.open = !entry.open;
+        }
         entry.cache = None;
         self.pin = Some((key, y.saturating_sub(self.drawn.area.y) as usize));
         Some(self.rows_of(key, filter, theme)?.len() - 1)
@@ -1602,33 +1635,51 @@ const MARGIN: usize = 2;
 /// on it shows the first lines again.
 const FOLD_CLOSE: &str = "↑ show the first lines only";
 
-/// The label of an agent's thinking.
+/// The label of an agent's thinking while it streams, and after it.
 const THINKING: &str = "Thinking";
+const THOUGHT: &str = "Thought";
 
 /// The line that says the agent works, while it waits on its model.
 const WORKING: &str = "Working…";
-/// The column of the "Working…" line's spinner: the column of the rail a
-/// command's output hangs from (`gutter`), so the rail runs into it.
-const WORKING_SPINNER: usize = MARGIN;
+/// The column of the spinner, on the "Working…" line and on the thinking
+/// row, where the fold's triangle stands while it is still. It is the
+/// column of the rail a command's output hangs from (`gutter`), so the rail
+/// runs into it.
+const SPINNER: usize = MARGIN;
+/// The column of the word after the spinner.
+const LABEL: usize = SPINNER + 2;
 
 /// The last line of an agent's thinking shown whole: a click on it folds
 /// it to its first line again.
 const THINKING_CLOSE: &str = "↑ show the first line only";
 
+/// How an item's lines look beyond the item itself.
+#[derive(Clone, Copy, Default)]
+struct Look<'a> {
+    /// A command's block shows its whole output, or an agent's thinking
+    /// shows whole.
+    open: bool,
+    /// An agent's thinking in the quiet view, which has no preview of it.
+    quiet: bool,
+    /// How long a running call has run, or how long a thinking that stopped
+    /// took (`for 12s`, empty when unknown). `None` for a thinking that
+    /// streams.
+    clock: Option<&'a str>,
+}
+
 /// An item's lines at `width` (margins included), with what a copy of each
 /// needs. `own`: in its worker's own view, a worker's lines don't name it.
 /// `under`: the worker that started the item's worker, which a notice names.
-/// `open`: a command's block shows its whole output. `clock`: how long a
-/// running call has run.
+/// `look`: how they look.
 fn entry_lines(
     item: &Item,
     theme: &Theme,
     width: usize,
     own: bool,
     under: Option<&str>,
-    open: bool,
-    clock: Option<&str>,
+    look: Look,
 ) -> Vec<Wrapped> {
+    let Look { open, quiet, clock } = look;
     let inner = width.saturating_sub(MARGIN).max(1);
     let blank = || Span::raw(" ".repeat(MARGIN));
     let mark = |symbol: &str, style: Style| {
@@ -1846,15 +1897,29 @@ fn entry_lines(
             // (Upright: in italic, some terminals draw an arrow over the
             // letter after it.)
             let style = theme.dim();
-            let mut spans = worker_prefix(item);
+            // The fold's triangle stands in the spinner's cell, so the
+            // label stays put when the thinking stops.
+            let mut spans = vec![mark(if open { "▾" } else { "▸" }, theme.dim())];
+            spans.extend(worker_prefix(item));
+            let label = match clock {
+                None => THINKING.to_string(),
+                Some("") => THOUGHT.to_string(),
+                Some(took) => format!("{THOUGHT} {took}"),
+            };
             spans.push(Span::styled(
-                THINKING.to_string(),
+                label,
                 theme.dim().add_modifier(Modifier::BOLD),
             ));
             // (The label isn't the agent's text: a copy leaves it out.)
             let label = spans_width(&spans);
             let text = wrap::clean(&item.text);
             let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+            if !open && quiet {
+                // One line, its text behind a click.
+                let mut line = Wrapped::line(spans);
+                line.skip = label;
+                return wrap::prefixed(vec![line], blank(), blank());
+            }
             if !open {
                 // One line: the label and the first line, which a click
                 // opens.
@@ -2229,6 +2294,20 @@ pub fn duration(ms: i64) -> String {
         0..=59 => format!("{seconds}s"),
         60..=3599 => format!("{}m", seconds / 60),
         _ => format!("{}h {}m", seconds / 3600, seconds % 3600 / 60),
+    }
+}
+
+/// How long a thinking that stopped took, as "for 12s", or empty when the
+/// feed can't tell or it took under a second.
+fn thought_time(entry: &Entry) -> String {
+    let ms = entry
+        .changed
+        .saturating_duration_since(entry.created)
+        .as_millis() as i64;
+    if ms >= 1000 {
+        format!("for {}", duration(ms))
+    } else {
+        String::new()
     }
 }
 
@@ -2671,16 +2750,21 @@ mod tests {
         t.apply(Update::Item(
             item(3, Kind::Thinking, "Where is the parser?").agent("r1"),
         ));
-        let folded = ["  Thinking · Planning …", "", "  Running them."];
+        // The first took 12 s, as far as the feed can tell.
+        t.entries[0].created -= Duration::from_secs(12);
+        let folded = ["  ▸ Thought for 12s · Planning …", "", "  Running them."];
         assert_eq!(rows(&mut t, &full(), 40, 3), folded);
-        assert_eq!(rows(&mut t, &Filter::Main(View::Quiet), 40, 3), folded);
+        assert_eq!(
+            rows(&mut t, &Filter::Main(View::Quiet), 40, 3),
+            ["  ▸ Thought for 12s", "", "  Running them."]
+        );
         assert_eq!(
             rows(&mut t, &Filter::Main(View::Messages), 40, 1),
             ["  Running them."]
         );
         assert_eq!(
             rows(&mut t, &Filter::Worker("r1".into()), 40, 1),
-            ["  Thinking · Where is the parser?"]
+            ["  ▸ Thought · Where is the parser?"]
         );
         // Its line opens it, and the last line folds it again.
         rows(&mut t, &full(), 40, 8);
@@ -2691,7 +2775,7 @@ mod tests {
         assert_eq!(
             open[..5],
             [
-                "  Thinking",
+                "  ▾ Thought for 12s",
                 "  Planning",
                 "  Read the tests first.",
                 "  ↑ show the first line only",
@@ -2709,13 +2793,18 @@ mod tests {
         shown.apply(Update::Item(item(1, Kind::Thinking, "All of it.")));
         assert_eq!(
             rows(&mut shown, &full(), 40, 3),
-            ["  Thinking", "  All of it.", "  ↑ show the first line only"]
+            [
+                "  ▾ Thought",
+                "  All of it.",
+                "  ↑ show the first line only"
+            ]
         );
     }
 
-    /// What follows the spinner at the start of `row`, if it has one.
+    /// What follows the spinner in its column of `row`, if it has one.
     fn after_spinner(row: &str) -> Option<&str> {
         let (frames, _) = glyphs::spinner_frames(glyphs::symbols());
+        let row = row.strip_prefix(" ".repeat(SPINNER).as_str())?;
         let first = row.chars().next()?;
         let spins = frames.contains(&first.to_string().as_str());
         spins.then(|| &row[first.len_utf8()..])
@@ -2724,9 +2813,118 @@ mod tests {
     /// Whether `row` is the "Working…" line: its spinner in the column of
     /// the rail a command's output hangs from, then the word.
     fn is_working(row: &str) -> bool {
-        row.strip_prefix(" ".repeat(WORKING_SPINNER).as_str())
-            .and_then(after_spinner)
-            == Some(" Working…")
+        after_spinner(row) == Some(" Working…")
+    }
+
+    /// The thinking that streams has its spinner in the "Working…" line's
+    /// column, and its word in that line's column. Once it stops, the fold's
+    /// triangle takes the spinner's cell and the word stays, and a click on
+    /// the triangle opens and closes it.
+    #[test]
+    fn the_thinking_spinner_stands_in_the_working_line_column() {
+        let theme = Theme::terminal();
+        let (frames, _) = glyphs::spinner_frames(glyphs::symbols());
+        let columns = |row: &str, word: char| {
+            let cell = row
+                .chars()
+                .position(|c| frames.contains(&c.to_string().as_str()) || c == '▸' || c == '▾');
+            (cell, row.chars().position(|c| c == word))
+        };
+        let thinking = |shown: &[String]| {
+            let at = shown
+                .iter()
+                .position(|row| row.contains("Thi") || row.contains("Tho"));
+            at.unwrap_or_else(|| panic!("{shown:?}"))
+        };
+        let mut t = Transcript::new();
+        let mut user = item(1, Kind::User, "Fix the tests");
+        user.delivery = Some(Delivery::Turn);
+        t.apply(Update::Item(user));
+        t.working = Some(0);
+        let shown = rows(&mut t, &full(), 40, 4);
+        let working = columns(&shown[2], 'W');
+        assert_eq!(working, (Some(SPINNER), Some(LABEL)), "{shown:?}");
+        t.apply(Update::Item(item(2, Kind::Thinking, "Where to start?")));
+        let shown = rows(&mut t, &full(), 40, 4);
+        let streaming = &shown[thinking(&shown)];
+        assert_eq!(
+            after_spinner(streaming),
+            Some(" Thinking · Where to start?")
+        );
+        assert_eq!(columns(streaming, 'T'), working, "{shown:?}");
+        // The reply ends it: a triangle stands in the cell, and the word
+        // stays.
+        t.entries[1].created -= Duration::from_secs(12);
+        t.apply(Update::Item(item(3, Kind::Reply, "Done.")));
+        let shown = rows(&mut t, &full(), 40, 4);
+        let row = thinking(&shown);
+        assert_eq!(
+            shown[row], "  ▸ Thought for 12s · Where to start?",
+            "{shown:?}"
+        );
+        assert_eq!(columns(&shown[row], 'T'), working, "{shown:?}");
+        // A click on the triangle opens it, and another closes it.
+        let y = row as u16;
+        assert_eq!(t.fold_at(SPINNER as u16, y, &full(), &theme), Some(2));
+        t.toggle(2, y, &full(), &theme);
+        t.follow();
+        let shown = rows(&mut t, &full(), 40, 6);
+        let row = thinking(&shown);
+        assert_eq!(shown[row], "  ▾ Thought for 12s", "{shown:?}");
+        assert_eq!(columns(&shown[row], 'T'), working, "{shown:?}");
+        let close = shown.iter().position(|row| row.contains('↑')).unwrap() as u16;
+        assert_eq!(t.fold_at(SPINNER as u16, close, &full(), &theme), Some(2));
+        t.toggle(2, close, &full(), &theme);
+        t.follow();
+        let shown = rows(&mut t, &full(), 40, 4);
+        let row = thinking(&shown);
+        assert_eq!(
+            shown[row], "  ▸ Thought for 12s · Where to start?",
+            "{shown:?}"
+        );
+    }
+
+    /// In the quiet view a thinking row has no preview, and only a click
+    /// opens it, also with thinking open by default. The full view keeps
+    /// its own state.
+    #[test]
+    fn the_quiet_view_shows_thinking_only_when_clicked_open() {
+        let theme = Theme::terminal();
+        let quiet = Filter::Main(View::Quiet);
+        let mut t = Transcript::new();
+        t.set_open_thinking(true);
+        t.apply(Update::Item(item(1, Kind::Thinking, "Where to start?")));
+        // It streams, so it has just the label. Then a reply comes.
+        assert_eq!(
+            rows(&mut t, &full(), 40, 3)[..2],
+            ["  ▾ Thought", "  Where to start?"]
+        );
+        t.working = Some(0);
+        assert_eq!(
+            after_spinner(&rows(&mut t, &quiet, 40, 1)[0]),
+            Some(" Thinking")
+        );
+        t.entries[0].created -= Duration::from_secs(125);
+        t.apply(Update::Item(item(2, Kind::Reply, "Done.")));
+        t.working = None;
+        assert_eq!(rows(&mut t, &quiet, 40, 3)[..1], ["  ▸ Thought for 2m"]);
+        // A click opens it there, and leaves the full view as it was.
+        assert_eq!(t.fold_at(SPINNER as u16, 0, &quiet, &theme), Some(1));
+        t.toggle(1, 0, &quiet, &theme);
+        t.follow();
+        assert_eq!(
+            rows(&mut t, &quiet, 40, 6)[..3],
+            [
+                "  ▾ Thought for 2m",
+                "  Where to start?",
+                "  ↑ show the first line only"
+            ]
+        );
+        assert_eq!(rows(&mut t, &full(), 40, 6)[0], "  ▾ Thought for 2m");
+        t.toggle(1, 0, &quiet, &theme);
+        t.follow();
+        assert_eq!(rows(&mut t, &quiet, 40, 3)[..1], ["  ▸ Thought for 2m"]);
+        assert_eq!(rows(&mut t, &full(), 40, 5)[..1], ["  ▾ Thought for 2m"]);
     }
 
     /// While the main agent waits on its model with nothing on the screen
@@ -2775,7 +2973,7 @@ mod tests {
         t.apply(Update::Change(call));
         let shown = rows(&mut t, &full(), 40, 5);
         assert_eq!(
-            shown[2], "  Thinking · Where to start?",
+            shown[2], "  ▸ Thought · Where to start?",
             "it no longer moves"
         );
         assert_eq!(shown[3], "▸ $ cargo test · ✓", "no blank line before it");
@@ -2788,7 +2986,7 @@ mod tests {
         let rail = shown
             .iter()
             .find_map(|row| row.chars().position(|c| c == '│'));
-        assert_eq!(rail, Some(WORKING_SPINNER), "{shown:?}");
+        assert_eq!(rail, Some(SPINNER), "{shown:?}");
         assert!(shown.last().is_some_and(|row| is_working(row)), "{shown:?}");
 
         // Two calls side by side: while one runs, it shows the agent works.
@@ -2855,7 +3053,7 @@ mod tests {
             item(2, Kind::Text, "Done planning.").agent("r1"),
         ));
         let shown = rows(&mut t, &own, 40, 7);
-        assert_eq!(shown[2], "  Thinking", "{shown:?}");
+        assert_eq!(shown[2], "  ▾ Thought", "{shown:?}");
         assert!(!t.drawn.moving);
         t.apply(Update::Item(item(3, Kind::Thinking, "More.").agent("r1")));
         rows(&mut t, &own, 40, 12);
@@ -2980,7 +3178,7 @@ mod tests {
             user.delivery = Some(delivery);
             user.pending = pending;
             user.source = source;
-            let lines = entry_lines(&user, &theme, 40, false, None, false, None);
+            let lines = entry_lines(&user, &theme, 40, false, None, Look::default());
             assert_eq!(lines.len(), 2);
             assert_eq!(spans_width(&lines[0].spans), 40);
             let last = lines[0].spans.last().unwrap();
@@ -3035,7 +3233,7 @@ mod tests {
             let mut user = item(1, Kind::User, text);
             user.delivery = Some(Delivery::Note);
             user.pending = true;
-            let lines = entry_lines(&user, &theme, 20, false, None, false, None);
+            let lines = entry_lines(&user, &theme, 20, false, None, Look::default());
             assert_eq!(shown(&lines), rows, "{text}");
             assert_eq!(lines.last().unwrap().bare, rows.len() > 1, "{text}");
             assert_eq!(
@@ -3091,7 +3289,7 @@ mod tests {
                     user.pending = pending;
                     user.source = source;
                     let tag = cut_end(&user_tag(&user).unwrap(), inner);
-                    let lines = entry_lines(&user, &theme, width, false, None, false, None);
+                    let lines = entry_lines(&user, &theme, width, false, None, Look::default());
                     let rows = shown(&lines);
                     let case = format!("{width} {tag:?} {text:?}\n{}", rows.join("\n"));
                     assert!(
