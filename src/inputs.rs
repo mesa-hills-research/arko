@@ -108,7 +108,14 @@ impl Inputs {
         tokio::select! {
             input = self.receiver.recv() => Event::Input(input),
             Some(question) = self.questions.recv() => Event::Question(question),
-            Some(action) = self.remote.recv() => Event::Remote(action),
+            Some(action) = self.remote.recv() => match action {
+                // As a client's send, from the web page.
+                Action::Send { action, reply } => {
+                    self.reply = reply.take();
+                    Event::Remote(*action)
+                }
+                action => Event::Remote(action),
+            },
             Some(request) = self.requests.recv() => match request {
                 // What a client sent with a verdict to come is the user's
                 // input, and its verdict waits for whoever reads it.
@@ -159,6 +166,12 @@ impl Inputs {
         while let Ok(request) = self.requests.try_recv() {
             if let Request::Send { reply, .. } = request {
                 let _ = reply.send(Verdict::closed());
+            }
+        }
+        self.remote.close();
+        while let Ok(action) = self.remote.try_recv() {
+            if let Action::Send { reply, .. } = action {
+                reply.answer(Verdict::closed());
             }
         }
     }

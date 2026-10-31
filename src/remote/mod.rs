@@ -120,6 +120,56 @@ pub enum Action {
     Background { item: Option<u64> },
     /// Stops the background job `job` (as [`JobSummary::id`] names it).
     StopJob { job: uuid::Uuid },
+    /// `action`, which the user sent, with where its [`Verdict`] goes.
+    Send {
+        action: Box<Action>,
+        reply: VerdictReply,
+    },
+}
+
+/// Where the verdict on what the page sent goes ([`Action::Send`]). Its
+/// clones share it, and it answers once.
+#[derive(Clone)]
+pub struct VerdictReply(Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Verdict>>>>);
+
+impl VerdictReply {
+    /// A reply, and where its verdict comes.
+    pub fn new() -> (Self, tokio::sync::oneshot::Receiver<Verdict>) {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        (
+            Self(Arc::new(std::sync::Mutex::new(Some(sender)))),
+            receiver,
+        )
+    }
+
+    /// Takes where the verdict goes, if no one has.
+    pub(crate) fn take(&self) -> Option<tokio::sync::oneshot::Sender<Verdict>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
+    /// Answers with `verdict`, unless it was answered.
+    pub fn answer(&self, verdict: Verdict) {
+        if let Some(sender) = self.take() {
+            let _ = sender.send(verdict);
+        }
+    }
+}
+
+impl PartialEq for VerdictReply {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for VerdictReply {}
+
+impl std::fmt::Debug for VerdictReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VerdictReply")
+    }
 }
 
 /// Reads what the page's status shows of the session as it asks.

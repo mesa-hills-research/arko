@@ -190,27 +190,28 @@ impl Harness {
             }
             Event::Remote(Action::Message(text)) => {
                 self.echo_web(&text);
-                sent(text, Source::Web, Vec::new(), Reply::default())
+                sent(text, Source::Web, Vec::new(), input.reply())
             }
             Event::Remote(Action::Continue(text)) => {
                 self.echo_web(&text);
                 self.confirm_continue(&text);
-                sent(text, Source::Web, Vec::new(), Reply::default())
+                sent(text, Source::Web, Vec::new(), input.reply())
             }
             Event::Remote(Action::Reply { text, answers }) => {
                 self.echo_web(&text);
-                sent(text, Source::Web, answers, Reply::default())
+                sent(text, Source::Web, answers, input.reply())
             }
             Event::Remote(Action::Answer { question, text }) => {
+                let mut reply = input.reply();
                 let attached = match reporting {
                     true => Vec::new(),
                     false => match self.card_answered(question) {
                         Some(attached) => attached,
-                        None => return self.card_closed(&mut Reply::default()),
+                        None => return self.card_closed(&mut reply),
                     },
                 };
                 self.echo_web(&text);
-                sent(text, Source::Web, attached, Reply::default())
+                sent(text, Source::Web, attached, reply)
             }
             _ => Read::Other,
         }

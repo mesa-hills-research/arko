@@ -28,7 +28,7 @@ use tokio::task::JoinHandle;
 use super::feed::{Activity, Feed, Following, Item, Kind, Received, Snapshot, Update};
 use super::highlight;
 use super::protocol::{IMAGE_TYPES, ImageData};
-use super::{Action, Info, Meter, Reading};
+use super::{Action, Info, Meter, Reading, RefusalKind, Verdict};
 use crate::images::Images;
 
 // The page, written in Rust with Leptos in `web/` and built into `page/`.
@@ -1310,10 +1310,18 @@ struct MessageBody {
     /// "Replying to" chip).
     #[serde(default)]
     answers: Vec<String>,
-    /// The user confirmed continuing a worker whose prompt cache expired,
-    /// after the 409 that said what it costs.
+    /// The user agreed to continue a worker whose prompt cache expired,
+    /// after the refusal that said what it costs.
     #[serde(default)]
     confirm_uncached: bool,
+}
+
+/// The feed a send's page showed, as its latest `reset` named it, which
+/// every send carries ([`send`]).
+#[derive(Deserialize)]
+struct Fence {
+    #[serde(default)]
+    feed: Option<String>,
 }
 
 /// The text as typed: line ends as `\n`, and not blank.
@@ -1322,9 +1330,43 @@ fn typed(text: &str) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
-/// `POST /api/message` with `{"text": ...}`: as if typed at the prompt. A
-/// line that reads as a command but isn't one is refused (422), with what
-/// to tell the user.
+/// Hands `action`, what the user sent from the page, to the session, and
+/// answers with what became of it, as a [`Verdict`], however long the
+/// session takes to read it. One sent from a page that showed another feed
+/// (Arko started again since it loaded) is refused before the session
+/// sees it, so it can't land in a session it wasn't meant for.
+async fn send(app: &App, body: &[u8], action: Action) -> Response {
+    let feed = serde_json::from_slice::<Fence>(body)
+        .ok()
+        .and_then(|fence| fence.feed);
+    if feed.is_some_and(|feed| feed != format!("{:016x}", app.feed.id())) {
+        return axum::Json(Verdict::refused(
+            RefusalKind::Stale,
+            "Not sent, because Arko restarted. Your text is kept.",
+        ))
+        .into_response();
+    }
+    let (reply, verdict) = super::VerdictReply::new();
+    let action = Action::Send {
+        action: Box::new(action),
+        reply,
+    };
+    if app.actions.send(action).is_err() {
+        return axum::Json(Verdict::closed()).into_response();
+    }
+    match verdict.await {
+        Ok(verdict) => axum::Json(verdict).into_response(),
+        // (The session stopped while it read the send.)
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error_body("Arko stopped before saying whether it went."),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /api/message` with `{"text": ...}`: as if typed at the prompt,
+/// answered with what became of it ([`send`]).
 async fn message(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1334,105 +1376,43 @@ async fn message(
     if let Err(refusal) = app.authorize(&headers, peer.ip()) {
         return refusal.into_response();
     }
-    let Ok(body) = serde_json::from_slice::<MessageBody>(&body) else {
+    let Some(sent) = serde_json::from_slice::<MessageBody>(&body)
+        .ok()
+        .and_then(|sent| Some((typed(&sent.text)?, sent)))
+    else {
         return (StatusCode::BAD_REQUEST, error_body("send {\"text\": ...}")).into_response();
     };
-    // A mistyped command is said, and the page keeps the text to put right,
-    // in a worker's view too.
-    if let Some(why) = typed(&body.text)
-        .and_then(|text| crate::commands::unknown(&text, crate::commands::on_page()))
-    {
-        return (StatusCode::UNPROCESSABLE_ENTITY, error_body(&why)).into_response();
-    }
-    // While the old model writes its report for a switch, a message to the
-    // main agent isn't sent, and the page keeps it. (Commands, and messages
-    // to a worker, go.)
-    if app.feed.activity().reporting
-        && body.to.as_deref().is_none_or(str::is_empty)
-        && typed(&body.text).is_some_and(|text| crate::harness::command(text.trim()).is_none())
-    {
-        return reporting();
-    }
-    // A reply to the main agent's questions.
-    if !body.answers.is_empty()
-        && body.to.is_none()
-        && let Some(text) = typed(&body.text)
-        && crate::commands::find(&text).is_none()
-    {
-        if let Some(refused) = refused_reply(&app, &body.answers, &text) {
-            return refused;
-        }
-        return app.act(Action::Reply {
-            text,
-            answers: body.answers,
-        });
-    }
-    match typed(&body.text).map(|text| (text, body.to)) {
-        // Text like "/usr/bin is missing" is a message, not a command.
-        Some((text, Some(worker)))
-            if crate::commands::find(&text).is_none()
-                && !worker.is_empty()
-                && !worker.contains(char::is_whitespace) =>
-        {
-            let command = format!("/message {worker} {}", text.trim());
-            continue_worker(&app, command, body.confirm_uncached)
-        }
-        Some((text, _)) if crate::worker_cache::message_parts(&text).is_some() => {
-            continue_worker(&app, text, body.confirm_uncached)
-        }
-        Some((text, _)) => {
-            // While the agent waits, a message is the answer.
-            if crate::commands::find(&text).is_none()
-                && let Some(refused) = refused_reply(&app, &[], &text)
-            {
-                return refused;
-            }
-            app.act(Action::Message(text))
-        }
-        None => (StatusCode::BAD_REQUEST, error_body("send {\"text\": ...}")).into_response(),
-    }
-}
-
-/// The `/message` `command` to a worker. One that continues a worker whose
-/// prompt cache expired, and re-reads enough to matter, waits for the
-/// page's confirmation (`confirmed`): until then the page gets a 409 with
-/// what it costs and `"confirm": "continue"`, and keeps the text.
-fn continue_worker(app: &App, command: String, confirmed: bool) -> Response {
-    if confirmed {
-        return app.act(Action::Continue(command));
-    }
-    let now = chrono::Utc::now();
-    let cache = crate::worker_cache::message_parts(&command)
-        .and_then(|(to, _)| app.feed.worker_summary_named(to))
-        .and_then(|worker| worker.cache())
-        .filter(|cache| cache.asks(now));
-    match cache {
-        Some(cache) => (
-            StatusCode::CONFLICT,
-            axum::Json(serde_json::json!({
-                "error": cache.warning(now),
-                "confirm": "continue",
-            })),
-        )
-            .into_response(),
-        None => app.act(Action::Message(command)),
-    }
-}
-
-/// The 413 for a message that answers questions (those `attached`, or
-/// without any, those the agent waits for) but is too long to send as their
-/// answer, as the session would refuse it after the page cleared its box.
-fn refused_reply(app: &App, attached: &[String], text: &str) -> Option<Response> {
-    let open = app.feed.open_questions();
-    let ids: Vec<String> = if attached.is_empty() {
-        open.iter()
-            .filter(|question| question.waits)
-            .map(|question| question.id.clone())
-            .collect()
-    } else {
-        attached.to_vec()
+    let (
+        text,
+        MessageBody {
+            to,
+            answers,
+            confirm_uncached,
+            ..
+        },
+    ) = sent;
+    let to = to.filter(|worker| !worker.is_empty() && !worker.contains(char::is_whitespace));
+    // Text like "/usr/bin is missing" is a message, not a command, and one
+    // that reads as a mistyped command is the session's to refuse.
+    let reads_as_command = crate::commands::find(&text).is_some()
+        || crate::commands::unknown(&text, crate::commands::on_page()).is_some();
+    let line = match &to {
+        // From a worker's view, it goes to that worker, as `/message`.
+        Some(worker) if !reads_as_command => format!("/message {worker} {}", text.trim()),
+        _ => text,
     };
-    crate::questions::reply_refusal(&open, &ids, text.trim()).map(|refusal| too_long(&refusal))
+    let action = match () {
+        // A reply to the main agent's questions.
+        _ if !answers.is_empty() && to.is_none() && !reads_as_command => Action::Reply {
+            text: line,
+            answers,
+        },
+        _ if confirm_uncached && crate::worker_cache::message_parts(&line).is_some() => {
+            Action::Continue(line)
+        }
+        _ => Action::Message(line),
+    };
+    send(&app, &body, action).await
 }
 
 #[derive(Deserialize)]
@@ -1442,7 +1422,8 @@ struct AnswerBody {
 }
 
 /// `POST /api/answer` with `{"question": ID, "text": ...}`: answers the
-/// agent's question, if it is still the one asked.
+/// agent's question, if it is still the one asked, answered with what
+/// became of it ([`send`]).
 async fn answer(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1462,56 +1443,14 @@ async fn answer(
         )
             .into_response();
     };
-    let open: Vec<_> = app
-        .feed
-        .card_questions(question)
-        .into_iter()
-        .filter(|asked| asked.state.is_open())
-        .collect();
-    if open.is_empty() {
-        return (
-            StatusCode::CONFLICT,
-            error_body("that question is no longer asked"),
-        )
-            .into_response();
-    }
-    let ids: Vec<String> = open.iter().map(|asked| asked.id.clone()).collect();
-    if let Some(refusal) = crate::questions::reply_refusal(&open, &ids, &text) {
-        return too_long(&refusal);
-    }
-    // (An answer in words is a message, which waits for the report.)
-    if app.feed.activity().reporting {
-        return reporting();
-    }
-    app.act(Action::Answer { question, text })
-}
-
-/// The 409 for a message sent while the old model writes its report for a
-/// switch.
-fn reporting() -> Response {
-    (StatusCode::CONFLICT, error_body(crate::switch::REPORTING)).into_response()
-}
-
-/// The 413 for answers too long to send, with what to shorten them to.
-fn too_long(refusal: &str) -> Response {
-    (StatusCode::PAYLOAD_TOO_LARGE, error_body(refusal)).into_response()
-}
-
-/// The 409 for questions that aren't open.
-fn not_open() -> Response {
-    (
-        StatusCode::CONFLICT,
-        error_body("those questions are no longer open"),
-    )
-        .into_response()
+    send(&app, &body, Action::Answer { question, text }).await
 }
 
 /// `POST /api/questions/answer` with
 /// `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "..."}, {"id": "q6"}]}`:
 /// the answer panel's answers to the main agent's open questions, naming
 /// every question it shows (`{"id": "q6"}` unanswered). Those unanswered
-/// stay open. 409 when none of the questions it names is open, and 413,
-/// with what to shorten them to, when the answers are too long to send.
+/// stay open. It's answered with what became of them ([`send`]).
 async fn answer_questions(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1531,18 +1470,7 @@ async fn answer_questions(
         )
             .into_response();
     };
-    let open = app.feed.open_questions();
-    if !answers
-        .answers
-        .iter()
-        .any(|given| open.iter().any(|question| question.id == given.id))
-    {
-        return not_open();
-    }
-    if let Some(refusal) = crate::questions::answers_refusal(&open, &answers) {
-        return too_long(&refusal);
-    }
-    app.act(Action::AnswerQuestions(answers))
+    send(&app, &body, Action::AnswerQuestions(answers)).await
 }
 
 #[derive(Deserialize)]
@@ -1551,8 +1479,8 @@ struct DismissBody {
     ids: Vec<String>,
 }
 
-/// `POST /api/questions/dismiss` with `{"ids": ["q5"]}`: "Not now". 409
-/// when none of them is open.
+/// `POST /api/questions/dismiss` with `{"ids": ["q5"]}`: "Not now",
+/// answered with what became of it ([`send`]).
 async fn dismiss_questions(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1569,19 +1497,14 @@ async fn dismiss_questions(
     else {
         return (StatusCode::BAD_REQUEST, error_body("send {\"ids\": [...]}")).into_response();
     };
-    let open = app.feed.open_questions();
-    if !ids.iter().any(|id| open.iter().any(|q| &q.id == id)) {
-        return not_open();
-    }
-    app.act(Action::DismissQuestions(ids))
+    send(&app, &body, Action::DismissQuestions(ids)).await
 }
 
 /// `POST /api/approvals` with `{"choices": [{"id": "a1", "approve": true,
 /// "option": true}, {"id": "a2", "approve": false}], "words": "..."}`: the
 /// answer to the approval tray's requests, naming every request the page
-/// shows, with the words its message box held. 409 when none of them waits
-/// any more, and 413, with what to shorten them to, when the words are too
-/// long to send.
+/// shows, with the words its message box held, answered with what became
+/// of it ([`send`]).
 async fn answer_approvals(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1601,26 +1524,7 @@ async fn answer_approvals(
         )
             .into_response();
     };
-    let waiting = app.feed.approvals();
-    if !answers
-        .choices
-        .iter()
-        .any(|choice| waiting.iter().any(|request| request.id == choice.id))
-    {
-        return (
-            StatusCode::CONFLICT,
-            error_body("those approvals are no longer open"),
-        )
-            .into_response();
-    }
-    if let Some(refusal) = answers
-        .words
-        .as_deref()
-        .and_then(crate::approvals::approval_words_refusal)
-    {
-        return too_long(&refusal);
-    }
-    app.act(Action::AnswerApprovals(answers))
+    send(&app, &body, Action::AnswerApprovals(answers)).await
 }
 
 /// A link to the page for `GET /api/links`.
@@ -1868,6 +1772,7 @@ async fn image(
 
 #[cfg(test)]
 mod tests {
+    use super::super::{Confirm, Refusal};
     use super::*;
 
     /// Whether the built page holds `text`, as its code writes it.
@@ -2196,6 +2101,44 @@ mod tests {
                 request = request.header(header::COOKIE, cookie);
             }
             request.send().await.unwrap()
+        }
+
+        /// Posts `body` to `path`, as the page sends what the user sent,
+        /// and answers its send with `verdict`, as the session would. Returns
+        /// the response, and the action the session got.
+        async fn send(
+            &mut self,
+            path: &str,
+            cookie: Option<&str>,
+            body: &str,
+            verdict: Verdict,
+        ) -> (reqwest::Response, Action) {
+            let mut request = self
+                .http
+                .post(format!("{}{path}", self.base))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(body.to_string());
+            if let Some(cookie) = cookie {
+                request = request.header(header::COOKIE, cookie);
+            }
+            let response = tokio::spawn(request.send());
+            let Some(Action::Send { action, reply }) = self.actions.recv().await else {
+                panic!("a send")
+            };
+            reply.answer(verdict);
+            (response.await.unwrap().unwrap(), *action)
+        }
+
+        /// [`send`](Self::send), accepted. Returns the action the session
+        /// got.
+        async fn sent(&mut self, path: &str, cookie: Option<&str>, body: &str) -> Action {
+            let accepted = Verdict::accepted(super::super::Delivery::Turn, Some(7));
+            let (response, action) = self.send(path, cookie, body, accepted.clone()).await;
+            assert_eq!(response.status(), StatusCode::OK, "{body}");
+            let verdict: Verdict =
+                serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+            assert_eq!(verdict, accepted);
+            action
         }
 
         /// Trades the key for a session cookie, as `name=value`.
@@ -3595,147 +3538,86 @@ mod tests {
         assert_eq!(reset["status"]["info"]["model"], "claude-opus-5-5");
     }
 
-    /// Messages, answers and stops come out as actions; an answer to a
-    /// question that isn't asked is refused.
+    /// What the user sends comes out as actions with where their verdicts
+    /// go, and the response is the verdict. Stops, moves to the
+    /// background and a job's stop come out as they are.
     #[tokio::test]
     async fn actions_come_out_of_the_channel() {
         let feed = Feed::new("main");
         let mut served = serve(&feed);
         let cookie = served.login().await;
-        let response = served
-            .post(
-                "/api/message",
-                Some(&cookie),
-                r#"{"text": "Use tabs.\r\nThanks."}"#,
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let cookie = Some(cookie.as_str());
         assert_eq!(
-            served.actions.recv().await.unwrap(),
+            served
+                .sent(
+                    "/api/message",
+                    cookie,
+                    r#"{"text": "Use tabs.\r\nThanks."}"#
+                )
+                .await,
             Action::Message("Use tabs.\nThanks.".into())
         );
         let response = served
-            .post("/api/message", Some(&cookie), r#"{"text": "  "}"#)
+            .post("/api/message", cookie, r#"{"text": "  "}"#)
             .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        // From a worker's view: text goes to the worker, a command doesn't.
+        // From a worker's view: text goes to the worker. A command doesn't,
+        // and neither does one that reads as a mistyped command, which the
+        // session refuses, though one with a space first does.
         for (text, sent) in [
             ("/usr/bin is missing", "/message r1 /usr/bin is missing"),
             ("Use tabs.", "/message r1 Use tabs."),
             ("/outside on", "/outside on"),
+            ("/sesion", "/sesion"),
+            (" /sesion", "/message r1 /sesion"),
         ] {
             let body = serde_json::json!({ "text": text, "to": "r1" }).to_string();
-            let response = served.post("/api/message", Some(&cookie), &body).await;
-            assert_eq!(response.status(), StatusCode::ACCEPTED);
             assert_eq!(
-                served.actions.recv().await.unwrap(),
-                Action::Message(sent.into())
+                served.sent("/api/message", cookie, &body).await,
+                Action::Message(sent.into()),
+                "{text}"
             );
         }
-        // A mistyped command is refused in either view, with the text left
-        // to put right, and a space first sends it.
-        for to in [None, Some("r1")] {
-            let body = serde_json::json!({ "text": "/sesion", "to": to }).to_string();
-            let response = served.post("/api/message", Some(&cookie), &body).await;
-            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-            let error: serde_json::Value =
-                serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-            assert_eq!(
-                error["error"],
-                "/sesion isn't a command. Did you mean /session? Start with a space to send it as a message."
-            );
-        }
-        let body = serde_json::json!({ "text": " /sesion", "to": "r1" }).to_string();
-        let response = served.post("/api/message", Some(&cookie), &body).await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        assert_eq!(
-            served.actions.recv().await.unwrap(),
-            Action::Message("/message r1 /sesion".into())
-        );
-        // While the old model writes its report for a switch, a message to
-        // the main agent is refused, with the words to show, and the page
-        // keeps it. A command and a message to a worker go.
-        feed.reporting(true);
-        let response = served
-            .post("/api/message", Some(&cookie), r#"{"text": "Hello."}"#)
+        // The session's refusal is the response, with its words.
+        let refusal = Verdict::refused(RefusalKind::Reporting, crate::switch::REPORTING);
+        let (response, _) = served
+            .send(
+                "/api/message",
+                cookie,
+                r#"{"text": "Hello."}"#,
+                refusal.clone(),
+            )
             .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let error: serde_json::Value =
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
             serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
         assert_eq!(
-            error["error"],
-            "The report is being written. Stopping skips it."
+            body,
+            serde_json::json!({
+                "outcome": "refused",
+                "kind": "reporting",
+                "words": "The report is being written. Stopping skips it.",
+                "confirm": null,
+            })
         );
-        for (body, sent) in [
-            (r#"{"text": "/workers"}"#, "/workers"),
-            (
-                r#"{"text": "Use tabs.", "to": "r1"}"#,
-                "/message r1 Use tabs.",
-            ),
-        ] {
-            let response = served.post("/api/message", Some(&cookie), body).await;
-            assert_eq!(response.status(), StatusCode::ACCEPTED);
-            assert_eq!(
-                served.actions.recv().await.unwrap(),
-                Action::Message(sent.into())
-            );
-        }
-        feed.reporting(false);
-        let response = served
-            .post("/api/message", Some(&cookie), r#"{"text": "Hello."}"#)
-            .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(
-            served.actions.recv().await.unwrap(),
-            Action::Message("Hello.".into())
-        );
-
-        let response = served
-            .post(
-                "/api/answer",
-                Some(&cookie),
-                r#"{"question": 1, "text": "Yes"}"#,
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let run = uuid::Uuid::new_v4();
-        feed.questions_run(Some(run));
-        let id = feed.ask(
-            run,
-            &[crate::questions::AskedQuestion {
-                id: "q1".into(),
-                question: arko_agents::questions::Question {
-                    question: "Tabs or spaces?".into(),
-                    choices: vec!["Tabs".into(), "Spaces".into()],
-                    ..Default::default()
-                },
-            }],
-            false,
-        );
-        let response = served
-            .post(
-                "/api/answer",
-                Some(&cookie),
-                &format!(r#"{{"question": {id}, "text": "Tabs"}}"#),
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        assert_eq!(
-            served.actions.recv().await.unwrap(),
+            served
+                .sent("/api/answer", cookie, r#"{"question": 4, "text": "Tabs"}"#)
+                .await,
             Action::Answer {
-                question: id,
+                question: 4,
                 text: "Tabs".into()
             }
         );
 
-        let response = served.post("/api/stop", Some(&cookie), "").await;
+        let response = served.post("/api/stop", cookie, "").await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(served.actions.recv().await.unwrap(), Action::Stop);
 
         // Move to background, for one call or the main agent's, and a job's
         // Stop.
         for (body, item) in [(r#"{"item": 12}"#, Some(12)), ("", None), ("{}", None)] {
-            let response = served.post("/api/background", Some(&cookie), body).await;
+            let response = served.post("/api/background", cookie, body).await;
             assert_eq!(response.status(), StatusCode::ACCEPTED);
             assert_eq!(
                 served.actions.recv().await.unwrap(),
@@ -3744,11 +3626,7 @@ mod tests {
         }
         let job = uuid::Uuid::new_v4();
         let response = served
-            .post(
-                "/api/jobs/stop",
-                Some(&cookie),
-                &format!(r#"{{"job": "{job}"}}"#),
-            )
+            .post("/api/jobs/stop", cookie, &format!(r#"{{"job": "{job}"}}"#))
             .await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(
@@ -3759,90 +3637,80 @@ mod tests {
             ("/api/jobs/stop", r#"{"job": "nine"}"#),
             ("/api/background", r#"{"item": "first"}"#),
         ] {
-            let response = served.post(path, Some(&cookie), body).await;
+            let response = served.post(path, cookie, body).await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
         }
-        // Without the session's cookie, nothing moves or stops.
+        // Without the session's cookie, nothing moves, stops or is sent.
         let response = served.post("/api/background", None, "{}").await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = served
+            .post("/api/message", None, r#"{"text": "Hello."}"#)
+            .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    /// A plain message while the agent waits is the waited questions'
-    /// answer, so one too long to send as it is refused with a 413 before it
-    /// is taken, and the same message shorter goes. Without a wait, a long
-    /// message isn't held to it.
+    /// A send from a page that showed another feed (Arko started again
+    /// since it loaded) is refused before the session sees it, and one from
+    /// a page of this feed goes. A send the session can no longer read is
+    /// refused as closed, and one it stopped reading in the middle of says
+    /// so.
     #[tokio::test]
-    async fn a_plain_message_too_long_for_a_waited_answer_is_refused() {
+    async fn sends_from_another_feed_or_to_a_closed_session_are_refused() {
         let feed = Feed::new("main");
         let mut served = serve(&feed);
         let cookie = served.login().await;
-        let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
-        let message = |text: &str| serde_json::json!({ "text": text }).to_string();
-        let run = uuid::Uuid::new_v4();
-        feed.questions_run(Some(run));
-        let asked = |id: &str| crate::questions::AskedQuestion {
-            id: id.into(),
-            question: arko_agents::questions::Question {
-                question: format!("{id}?"),
-                ..Default::default()
-            },
-        };
-        feed.ask(run, &[asked("q1")], false);
+        let cookie = Some(cookie.as_str());
+        let stale = serde_json::json!({ "text": "Hello.", "feed": "0000000000000001" });
         let response = served
-            .post("/api/message", Some(&cookie), &message(&long))
+            .post("/api/message", cookie, &stale.to_string())
             .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED, "no wait");
+        let verdict: Verdict = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert!(matches!(
+            verdict,
+            Verdict::Refused(Refusal {
+                kind: RefusalKind::Stale,
+                ..
+            })
+        ));
+        assert!(served.actions.try_recv().is_err());
+        let ours = serde_json::json!({ "text": "Hello.", "feed": format!("{:016x}", feed.id()) });
         assert_eq!(
-            served.actions.recv().await.unwrap(),
-            Action::Message(long.clone())
+            served.sent("/api/message", cookie, &ours.to_string()).await,
+            Action::Message("Hello.".into())
         );
-        feed.ask(run, &[asked("q2")], true);
+        // The session drops what it was reading.
+        let request = served
+            .http
+            .post(format!("{}/api/message", served.base))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::COOKIE, cookie.unwrap())
+            .body(r#"{"text": "Hello."}"#);
+        let response = tokio::spawn(request.send());
+        drop(served.actions.recv().await.unwrap());
+        let response = response.await.unwrap().unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        // The session closed.
+        served.actions.close();
         let response = served
-            .post("/api/message", Some(&cookie), &message(&long))
+            .post("/api/message", cookie, r#"{"text": "Hello."}"#)
             .await;
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let error: serde_json::Value =
-            serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-        assert_eq!(
-            error["error"],
-            "Your message is too long to send as an answer. Shorten it to 15 KB."
-        );
-        assert_eq!(feed.open_questions().len(), 2);
-        let response = served
-            .post("/api/message", Some(&cookie), &message("main"))
-            .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        assert_eq!(
-            served.actions.recv().await.unwrap(),
-            Action::Message("main".into())
-        );
+        let verdict: Verdict = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(verdict, Verdict::closed());
     }
 
-    /// The approval tray's endpoint: an answer that names a request waiting
-    /// becomes its action. One that names none waiting gets a 409, words too
-    /// long a 413 that says how short to make them, and a body without
-    /// choices a 400.
+    /// The approval tray's endpoint: an answer becomes its action, and a
+    /// body without choices gets a 400.
     #[tokio::test]
     async fn the_tray_is_answered_through_its_endpoint() {
-        use crate::approvals::{Approval, ApprovalAnswers, ApprovalChoice};
+        use crate::approvals::{ApprovalAnswers, ApprovalChoice};
         let feed = Feed::new("main");
         let mut served = serve(&feed);
         let cookie = served.login().await;
         let answer = r#"{"choices": [{"id": "a1", "approve": true, "option": true}, {"id": "a9", "approve": false}], "words": "Fine."}"#;
-        let response = served.post("/api/approvals", Some(&cookie), answer).await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let (_, _waiting) = feed.request_approval(
-            uuid::Uuid::new_v4(),
-            None,
-            Approval::Profile(crate::profiles::approval(
-                &crate::profiles::Profile::new("judge", "Judges"),
-                crate::profiles::Place::User,
-            )),
-        );
-        let response = served.post("/api/approvals", Some(&cookie), answer).await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(
-            served.actions.recv().await.unwrap(),
+            served
+                .sent("/api/approvals", Some(cookie.as_str()), answer)
+                .await,
             Action::AnswerApprovals(ApprovalAnswers {
                 choices: vec![
                     ApprovalChoice {
@@ -3859,14 +3727,6 @@ mod tests {
                 words: Some("Fine.".into()),
             })
         );
-        let long = serde_json::json!({
-            "choices": [{"id": "a1", "approve": true}],
-            "words": "y".repeat(crate::approvals::MAX_APPROVAL_WORDS + 1),
-        });
-        let response = served
-            .post("/api/approvals", Some(&cookie), &long.to_string())
-            .await;
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         let response = served
             .post("/api/approvals", Some(&cookie), r#"{"choices": []}"#)
             .await;
@@ -3875,45 +3735,18 @@ mod tests {
 
     /// The answer panel's endpoints: answers (per question a choice, text
     /// or "you decide"), dismissals and a message that answers questions
-    /// become their actions. Questions that aren't open get a 409, a body
-    /// that says nothing a 400. An older page's "anything_else" is ignored.
+    /// become their actions, and a body that says nothing gets a 400. An
+    /// older page's "anything_else" is ignored.
     #[tokio::test]
     async fn questions_are_answered_dismissed_and_replied_to() {
         use crate::questions::{Answer, Answers, QuestionAnswer};
         let feed = Feed::new("main");
         let mut served = serve(&feed);
         let cookie = served.login().await;
+        let cookie = Some(cookie.as_str());
         let answer = r#"{"answers": [{"id": "q1", "choices": ["Spaces"]}, {"id": "q2", "you_decide": true}], "anything_else": "Keep it short."}"#;
-        // Nothing is open yet.
-        let response = served
-            .post("/api/questions/answer", Some(&cookie), answer)
-            .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let response = served
-            .post(
-                "/api/questions/dismiss",
-                Some(&cookie),
-                r#"{"ids": ["q1"]}"#,
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-
-        let run = uuid::Uuid::new_v4();
-        feed.questions_run(Some(run));
-        let asked = |id: &str| crate::questions::AskedQuestion {
-            id: id.into(),
-            question: arko_agents::questions::Question {
-                question: format!("{id}?"),
-                ..Default::default()
-            },
-        };
-        let card = feed.ask(run, &[asked("q1"), asked("q2")], false);
-        let response = served
-            .post("/api/questions/answer", Some(&cookie), answer)
-            .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(
-            served.actions.recv().await.unwrap(),
+            served.sent("/api/questions/answer", cookie, answer).await,
             Action::AnswerQuestions(Answers {
                 answers: vec![
                     QuestionAnswer::new(
@@ -3940,91 +3773,29 @@ mod tests {
             r#"{"answers": [{"id": "q1"}], "anything_else": "Keep it short."}"#,
             "nonsense",
         ] {
-            let response = served
-                .post("/api/questions/answer", Some(&cookie), bad)
-                .await;
+            let response = served.post("/api/questions/answer", cookie, bad).await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{bad}");
         }
-        let response = served
-            .post(
-                "/api/questions/answer",
-                Some(&cookie),
-                r#"{"answers": [{"id": "q9", "text": "Yes"}]}"#,
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        // Answers too long for the note that carries them are refused before
-        // anything is taken: an answer, a message that answers, and an
-        // answer to a question card as older pages send it.
-        let long = "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES);
-        for (path, body) in [
-            (
-                "/api/questions/answer",
-                serde_json::json!({"answers": [{"id": "q1", "text": long}]}),
-            ),
-            (
-                "/api/message",
-                serde_json::json!({"text": long, "answers": ["q1"]}),
-            ),
-            (
-                "/api/answer",
-                serde_json::json!({"question": card, "text": long}),
-            ),
-        ] {
-            let response = served.post(path, Some(&cookie), &body.to_string()).await;
-            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE, "{path}");
-            let error: serde_json::Value =
-                serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-            let error = error["error"].as_str().unwrap().to_string();
-            assert!(
-                [
-                    "Your answer is too long to send. Shorten it to 15 KB.",
-                    "Your message is too long to send as an answer. Shorten it to 15 KB.",
-                ]
-                .contains(&error.as_str()),
-                "{error}"
-            );
-        }
-        assert_eq!(feed.open_questions().len(), 2);
-        let response = served
-            .post(
-                "/api/questions/dismiss",
-                Some(&cookie),
-                r#"{"ids": ["q2"]}"#,
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(
-            served.actions.recv().await.unwrap(),
+            served
+                .sent("/api/questions/dismiss", cookie, r#"{"ids": ["q2"]}"#)
+                .await,
             Action::DismissQuestions(vec!["q2".to_string()])
         );
         // Every question is named: a page can't dismiss questions it
         // doesn't show (another conversation's).
         for body in ["", "{}", r#"{"ids": []}"#] {
-            let response = served
-                .post("/api/questions/dismiss", Some(&cookie), body)
-                .await;
+            let response = served.post("/api/questions/dismiss", cookie, body).await;
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
         }
-        let response = served
-            .post(
-                "/api/questions/dismiss",
-                Some(&cookie),
-                r#"{"ids": ["q7"]}"#,
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-
-        let response = served
-            .post(
-                "/api/message",
-                Some(&cookie),
-                r#"{"text": "Spaces, and push.", "answers": ["q1", "q2"]}"#,
-            )
-            .await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(
-            served.actions.recv().await.unwrap(),
+            served
+                .sent(
+                    "/api/message",
+                    cookie,
+                    r#"{"text": "Spaces, and push.", "answers": ["q1", "q2"]}"#
+                )
+                .await,
             Action::Reply {
                 text: "Spaces, and push.".into(),
                 answers: vec!["q1".into(), "q2".into()]
@@ -4035,80 +3806,53 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    /// A message that continues a worker whose prompt cache expired gets a
-    /// 409 with what continuing costs and `"confirm": "continue"`, from the
-    /// worker's view and as a `/message`, however the worker is typed. With
-    /// `confirm_uncached` it goes, marked confirmed. A warm cache sends it as
-    /// before.
+    /// A message that continues a worker goes as `/message`, from the
+    /// worker's view or typed, and the session's refusal of one whose cache
+    /// expired is the response, with what confirming takes. Confirmed, it
+    /// goes as continuing the worker without asking.
     #[tokio::test]
-    async fn continuing_a_worker_whose_cache_expired_waits_for_the_pages_confirmation() {
-        use super::super::WorkerChange;
-        use crate::worker_cache::WorkerCache;
+    async fn continuing_a_worker_waits_for_the_pages_confirmation() {
         let feed = Feed::new("main");
-        feed.worker("r3", "Fix the flaky test", WorkerChange::Started);
-        feed.worker(
-            "r3",
-            "Fix the flaky test",
-            WorkerChange::Finished { report: "Done." },
-        );
-        let cache = |expires_at| WorkerCache {
-            worker: "r3".into(),
-            expires_at,
-            cost: crate::details::SwitchCost {
-                tokens: 340_000,
-                dollars: Some(1.36),
-                plan: None,
-            },
-        };
-        let now = chrono::Utc::now();
-        feed.worker_cache("r3", Some(&cache(now - chrono::Duration::hours(2))));
         let mut served = serve(&feed);
         let cookie = served.login().await;
-        // (A tab, and the worker's name in capitals, as the session reads
-        // them.)
+        let cookie = Some(cookie.as_str());
+        let uncached = Verdict::Refused(Refusal {
+            kind: RefusalKind::Uncached {
+                worker: "r3".into(),
+            },
+            words: "r3's cache expired 2 hours ago.".into(),
+            confirm: Some(Confirm::ContinueUncached),
+        });
         for body in [
             serde_json::json!({"text": "Go on.", "to": "r3"}),
-            serde_json::json!({"text": "Go on.", "to": "R3"}),
             serde_json::json!({"text": "/message r3 Go on."}),
-            serde_json::json!({"text": "/message\tR3 Go on."}),
         ] {
-            let response = served
-                .post("/api/message", Some(&cookie), &body.to_string())
+            let (response, action) = served
+                .send("/api/message", cookie, &body.to_string(), uncached.clone())
                 .await;
-            assert_eq!(response.status(), StatusCode::CONFLICT, "{body}");
-            let error: serde_json::Value =
+            assert_eq!(action, Action::Message("/message r3 Go on.".into()));
+            let refused: serde_json::Value =
                 serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
             assert_eq!(
-                error,
+                refused,
                 serde_json::json!({
-                    "error": "r3's cache expired 2 hours ago. Continuing re-reads about 340k tokens without it (≈ $1.36 at API prices).",
-                    "confirm": "continue",
+                    "outcome": "refused",
+                    "kind": "uncached",
+                    "worker": "r3",
+                    "words": "r3's cache expired 2 hours ago.",
+                    "confirm": "continue_uncached",
                 })
             );
         }
-        assert!(served.actions.try_recv().is_err());
         for body in [
             serde_json::json!({"text": "Go on.", "to": "r3", "confirm_uncached": true}),
             serde_json::json!({"text": "/message r3 Go on.", "confirm_uncached": true}),
         ] {
-            let response = served
-                .post("/api/message", Some(&cookie), &body.to_string())
-                .await;
-            assert_eq!(response.status(), StatusCode::ACCEPTED, "{body}");
             assert_eq!(
-                served.actions.recv().await.unwrap(),
+                served.sent("/api/message", cookie, &body.to_string()).await,
                 Action::Continue("/message r3 Go on.".into())
             );
         }
-        // While the cache lasts, the message goes as any other.
-        feed.worker_cache("r3", Some(&cache(now + chrono::Duration::minutes(5))));
-        let body = serde_json::json!({"text": "Go on.", "to": "r3"}).to_string();
-        let response = served.post("/api/message", Some(&cookie), &body).await;
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        assert_eq!(
-            served.actions.recv().await.unwrap(),
-            Action::Message("/message r3 Go on.".into())
-        );
     }
 
     /// A stopped server ends its streams, and when it keeps its sessions in

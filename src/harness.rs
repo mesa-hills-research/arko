@@ -4613,7 +4613,8 @@ impl Harness {
                     | Action::Reply { .. }
                     | Action::AnswerQuestions(_)
                     | Action::DismissQuestions(_)
-                    | Action::AnswerApprovals(_),
+                    | Action::AnswerApprovals(_)
+                    | Action::Send { .. },
                 )
                 | Event::Input(Some(
                     Input::Message(_)
@@ -4622,10 +4623,11 @@ impl Harness {
                     | Input::DismissQuestions(_)
                     | Input::AnswerApprovals(_),
                 )) => {
-                    self.feed.notice(
-                        Level::Warn,
-                        "Arko is only waiting for the workers now, so messages aren't taken.",
-                    );
+                    const WORDS: &str =
+                        "Arko is only waiting for the workers now, so messages aren't taken.";
+                    if !input.reply().refuse(RefusalKind::Closed, WORDS) {
+                        self.feed.notice(Level::Warn, WORDS);
+                    }
                 }
                 Event::Input(Some(Input::Interrupt | Input::Eof | Input::Quit(_)) | None)
                 | Event::Remote(Action::Stop) => {
@@ -9776,7 +9778,15 @@ pub(crate) mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), 202);
+            assert_eq!(response.status(), 200);
+            let verdict: crate::Verdict = response.json().await.unwrap();
+            assert!(matches!(
+                verdict,
+                crate::Verdict::Accepted {
+                    delivery: Delivery::Answer,
+                    ..
+                }
+            ));
         });
         let end = tokio::time::timeout(
             Duration::from_secs(30),
@@ -9838,7 +9848,8 @@ pub(crate) mod tests {
                         .send()
                         .await
                         .unwrap();
-                    assert_eq!(response.status(), 202);
+                    assert_eq!(response.status(), 200);
+                    response.json::<crate::Verdict>().await.unwrap()
                 }
             }
         };
@@ -9847,7 +9858,18 @@ pub(crate) mod tests {
             let post = post.clone();
             async move {
                 until(|| feed.activity().working).await;
-                post("Also count the directories.").await;
+                let verdict = post("Also count the directories.").await;
+                assert!(
+                    matches!(
+                        verdict,
+                        crate::Verdict::Accepted {
+                            delivery: Delivery::Note,
+                            item: Some(_),
+                            ..
+                        }
+                    ),
+                    "{verdict:?}"
+                );
                 until(|| has(&feed, "user", "Also count the directories.", "note")).await;
                 release.notify_one();
             }
@@ -9863,7 +9885,8 @@ pub(crate) mod tests {
         sending.await.unwrap();
         assert!(has(&harness.feed, "call", "list workers", ""));
 
-        post("Thanks.").await;
+        // Sent while no one reads, it waits for its verdict.
+        let thanks = tokio::spawn(post("Thanks."));
         let message = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Event::Remote(action) = inputs.next_event(true).await {
@@ -9874,6 +9897,11 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(message, Action::Message("Thanks.".into()));
+        inputs.reply().accept(Delivery::Turn, None);
+        assert_eq!(
+            thanks.await.unwrap(),
+            crate::Verdict::accepted(Delivery::Turn, None)
+        );
         harness.stop_remote().await;
     }
 
