@@ -47,9 +47,10 @@ use tokio::sync::mpsc;
 pub use arko_ai::{ExtraUsage, PlanCredits};
 pub(crate) use feed::family_order_of;
 pub use feed::{
-    Activity, Batches, CallStatus, Delivery, Feed, Item, JobKind, JobStart, JobState, JobSummary,
-    Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Snapshot, Source, Update, WorkerChange,
-    WorkerInfo, WorkerState, WorkerSummary, family_order, family_order_with_levels,
+    Activity, Batches, CallStatus, Delivery, Feed, Following, Item, JobKind, JobStart, JobState,
+    JobSummary, Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Received, Snapshot, Source,
+    Update, WorkerChange, WorkerInfo, WorkerState, WorkerSummary, family_order,
+    family_order_with_levels,
 };
 pub use history::items as history;
 pub(crate) use history::own_words;

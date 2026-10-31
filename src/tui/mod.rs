@@ -51,7 +51,7 @@ use crossterm::terminal::{
 use crossterm::{Command, cursor, execute, queue};
 use futures_util::{FutureExt, StreamExt};
 use ratatui::Terminal;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::glyphs;
 use crate::remote;
@@ -136,7 +136,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     for warning in &catalog.warnings {
         setup.feed.notice(remote::Level::Warn, warning);
     }
-    let (snapshot, updates) = setup.feed.subscribe();
+    let (snapshot, updates) = setup.feed.follow();
     let workspace = setup
         .workspace
         .file_name()
@@ -363,7 +363,7 @@ async fn run(
     mut terminal: Terminal<CursorBackend<Stdout>>,
     mut app: App,
     mut setup: Setup,
-    mut updates: broadcast::Receiver<remote::Update>,
+    mut updates: remote::Following,
     mut stop: oneshot::Receiver<()>,
 ) -> Option<String> {
     let mut events = EventStream::new();
@@ -437,32 +437,14 @@ async fn run(
                 handle(&mut app, batch, &mut enter, &mut burst);
                 draw_now = true;
             }
-            update = updates.recv() => {
-                match update {
-                    Ok(update) => {
-                        let mut asked = asks(&update);
-                        bell |= app.update(update, || setup.feed.activity());
-                        // Those waiting too, before the next frame.
-                        while let Ok(update) = updates.try_recv() {
-                            asked |= asks(&update);
-                            bell |= app.update(update, || setup.feed.activity());
-                        }
-                        // The web page just started says so in the feed:
-                        // its links show at once. So do the agent's
-                        // questions, in the answer panel.
-                        if app.waits_for_page() || asked {
-                            app.set_reading(setup.meter.read());
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        let (snapshot, fresh) = setup.feed.subscribe();
-                        updates = fresh;
-                        bell |= app.reset(snapshot);
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        // (The feed outlives the view.)
-                        tokio::time::sleep(Duration::from_secs(3600)).await;
-                    }
+            received = updates.next() => {
+                let (rings, asked) = take_updates(&mut app, received, &mut updates, &setup.feed);
+                bell |= rings;
+                // The web page just started says so in the feed: its links
+                // show at once. So do the agent's questions, in the answer
+                // panel.
+                if app.waits_for_page() || asked {
+                    app.set_reading(setup.meter.read());
                 }
                 // Drawn at the next frame: streaming text doesn't redraw at
                 // every chunk.
@@ -680,10 +662,36 @@ fn clear_for_redraw<B: ratatui::backend::Backend>(
     terminal.resize(area)
 }
 
-/// The events already waiting, without waiting for more. (Polled in this
-/// task, not with a no-op waker: the stream registers the waker of its
-/// first pending poll only, so a no-op one would leave the next keys unread
-/// until something else woke the loop, crossterm/src/event/stream.rs:112-131.)
+/// Takes `received` from the feed and the updates that wait after it,
+/// before the next frame. Where the view fell behind, also while it takes
+/// those, it starts over from the snapshot it gets instead. Returns whether
+/// the bell should sound, and whether the status should be read again, for
+/// the agent's questions (also when the view started over, as some may
+/// have come while it was behind).
+fn take_updates(
+    app: &mut App,
+    received: remote::Received,
+    updates: &mut remote::Following,
+    feed: &remote::Feed,
+) -> (bool, bool) {
+    let (mut bell, mut asked) = (false, false);
+    let mut next = Some(received);
+    while let Some(received) = next {
+        match received {
+            remote::Received::Update(update) => {
+                asked |= asks(&update);
+                bell |= app.update(update, || feed.activity());
+            }
+            remote::Received::Reset(snapshot) => {
+                asked = true;
+                bell |= app.reset(snapshot);
+            }
+        }
+        next = updates.try_next();
+    }
+    (bell, asked)
+}
+
 /// Whether `update` is of a question card: the agent asked, or its
 /// questions changed.
 fn asks(update: &remote::Update) -> bool {
@@ -694,6 +702,10 @@ fn asks(update: &remote::Update) -> bool {
     )
 }
 
+/// The events already waiting, without waiting for more. (Polled in this
+/// task, not with a no-op waker: the stream registers the waker of its
+/// first pending poll only, so a no-op one would leave the next keys unread
+/// until something else woke the loop, crossterm/src/event/stream.rs:112-131.)
 async fn waiting(events: &mut EventStream) -> Vec<Event> {
     let mut batch = Vec::new();
     while let Ok(Some(Ok(event))) = tokio::time::timeout(Duration::ZERO, events.next()).await {
@@ -917,7 +929,7 @@ mod tests {
     fn a_lagging_view_keeps_its_recording() {
         use crate::dictation::{DictationEvent, DictationUpdate};
         let feed = remote::Feed::new(remote::MAIN_AGENT);
-        let (_, mut updates) = feed.subscribe();
+        let (_, mut updates) = feed.follow();
         let mut app = app::tests::app();
         let (events, mut received) = mpsc::unbounded_channel();
         let mut sink = recording_sink(events);
@@ -950,17 +962,54 @@ mod tests {
             event: text(" world"),
         });
         // The subscription lagged, and the view starts over as its loop does.
-        assert!(matches!(
-            updates.try_recv(),
-            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
-        ));
-        app.reset(feed.subscribe().0);
+        let behind = updates.try_next().unwrap();
+        assert!(matches!(behind, remote::Received::Reset(_)));
+        take_updates(&mut app, behind, &mut updates, &feed);
         deliver(&mut app);
         assert_eq!(app.editor.text(), "Hello world");
         assert_eq!(
             app.recording.as_ref().map(|recording| recording.phase),
             Some(dictation::Phase::Listening)
         );
+    }
+
+    /// A view that falls behind the feed while it takes the updates that
+    /// wait starts over from the history, and rings the bell for the turn
+    /// that ended meanwhile, as it does when it falls behind while it waits.
+    #[test]
+    fn a_view_that_falls_behind_while_it_takes_updates_starts_over() {
+        let feed = remote::Feed::new(remote::MAIN_AGENT);
+        let (snapshot, mut updates) = feed.follow();
+        let mut app = app::tests::app();
+        app.focused = false;
+        app.reset(snapshot);
+        feed.turn_started();
+        let started = updates.next().now_or_never().unwrap();
+        assert!(!take_updates(&mut app, started, &mut updates, &feed).0);
+        assert!(app.activity.working);
+        // The loop takes one update, and more come before it takes the
+        // rest: the turn's end and more than the broadcast keeps.
+        feed.notice(remote::Level::Info, "first");
+        let first = updates.next().now_or_never().unwrap();
+        feed.turn_ended("3 s · $0.01", None);
+        for n in 0..3000 {
+            feed.notice(remote::Level::Info, &format!("note {n}"));
+        }
+        let (bell, asked) = take_updates(&mut app, first, &mut updates, &feed);
+        assert!(bell, "the turn ended while it was behind");
+        assert!(asked, "the status is read again");
+        assert!(!app.activity.working);
+        let shown = |app: &App| {
+            let newest = feed.subscribe().0.items.last().unwrap().id;
+            app.transcript.item(newest).map(|item| item.text.clone())
+        };
+        assert_eq!(shown(&app).as_deref(), Some("note 2999"));
+        // It goes on from the snapshot it started over from.
+        feed.notice(remote::Level::Info, "after");
+        let after = updates.next().now_or_never().unwrap();
+        assert!(matches!(&after, remote::Received::Update(_)));
+        take_updates(&mut app, after, &mut updates, &feed);
+        assert_eq!(shown(&app).as_deref(), Some("after"));
     }
 
     /// Giving the terminal back undoes all the view did to it: the

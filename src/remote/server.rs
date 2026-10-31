@@ -22,10 +22,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
-use super::feed::{Activity, Feed, Item, Kind, Update};
+use super::feed::{Activity, Feed, Following, Item, Kind, Received, Snapshot, Update};
 use super::highlight;
 use super::protocol::{IMAGE_TYPES, ImageData};
 use super::{Action, Info, Meter, Reading};
@@ -999,10 +999,11 @@ async fn events(
         Err(refusal) => return refusal.into_response(),
     };
     let app_for_renewal = app.clone();
+    let (snapshot, updates) = app.feed.follow();
     let mut stream = Stream {
         session,
         closed: app.closed.clone(),
-        updates: app.feed.subscribe().1,
+        updates,
         pings: app.pings.subscribe(),
         app,
         pending: VecDeque::new(),
@@ -1011,7 +1012,7 @@ async fn events(
         ending: false,
         streaming: HashMap::new(),
     };
-    stream.reset();
+    stream.start(snapshot);
     let events = futures_util::stream::unfold(stream, Stream::next);
     let response = Sse::new(events)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
@@ -1025,7 +1026,7 @@ struct Stream {
     app: Arc<App>,
     /// The hash of the session cookie it was let in with, if any.
     session: Option<String>,
-    updates: broadcast::Receiver<Update>,
+    updates: Following,
     closed: watch::Receiver<bool>,
     pings: watch::Receiver<u64>,
     pending: VecDeque<Event>,
@@ -1073,10 +1074,14 @@ impl<'a> PageItem<'a> {
 }
 
 impl Stream {
-    /// Starts over: the history and the status.
+    /// Starts over from the history as it is now.
     fn reset(&mut self) {
-        let (snapshot, updates) = self.app.feed.subscribe();
-        self.updates = updates;
+        let snapshot = self.updates.restart();
+        self.start(snapshot);
+    }
+
+    /// Starts from `snapshot`: the history and the status.
+    fn start(&mut self, snapshot: Snapshot) {
         self.pending.clear();
         self.status = self.app.status(&snapshot.activity);
         let status: serde_json::Value = serde_json::from_str(&self.status).unwrap_or_default();
@@ -1120,6 +1125,15 @@ impl Stream {
         self.status = self.app.status(&self.app.feed.activity());
         self.pending
             .push_back(Event::default().event("status").data(self.status.clone()));
+    }
+
+    /// Takes what the feed sent: an update, or the history to start over
+    /// from where the stream fell behind.
+    fn receive(&mut self, received: Received) {
+        match received {
+            Received::Update(update) => self.take(update),
+            Received::Reset(snapshot) => self.start(snapshot),
+        }
     }
 
     fn take(&mut self, update: Update) {
@@ -1248,8 +1262,8 @@ impl Stream {
             if *self.closed.borrow() {
                 // What came before the server stopped (why it stops, say)
                 // goes out, then the stream ends.
-                while let Ok(update) = self.updates.try_recv() {
-                    self.take(update);
+                while let Some(received) = self.updates.try_next() {
+                    self.receive(received);
                 }
                 self.ending = true;
                 continue;
@@ -1260,11 +1274,7 @@ impl Stream {
                         self.ending = true;
                     }
                 }
-                update = self.updates.recv() => match update {
-                    Ok(update) => self.take(update),
-                    Err(broadcast::error::RecvError::Lagged(_)) => self.reset(),
-                    Err(broadcast::error::RecvError::Closed) => self.ending = true,
-                },
+                received = self.updates.next() => self.receive(received),
                 Ok(()) = self.pings.changed() => {
                     let count = *self.pings.borrow();
                     self.pending
@@ -1276,15 +1286,11 @@ impl Stream {
                 // setting, and with it. Only that, so a steady stream of
                 // updates can't hold the stream here.
                 _ = self.tick.tick() => {
-                    for _ in 0..self.updates.len() {
-                        match self.updates.try_recv() {
-                            Ok(update) => self.take(update),
-                            Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                                self.reset();
-                                break;
-                            }
-                            Err(_) => break,
-                        }
+                    for _ in 0..self.updates.waiting() {
+                        let Some(received) = self.updates.try_next() else {
+                            break;
+                        };
+                        self.receive(received);
                     }
                     self.send_status();
                 }

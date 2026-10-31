@@ -4003,17 +4003,22 @@ mod tests {
     /// order, within what the feed keeps.
     #[test]
     fn a_view_that_starts_over_shows_what_one_that_followed_does() {
+        use crate::remote::Received;
         use crate::testing::{FeedMirror, RandomSession};
         for seed in 0..8 {
             let mut session = RandomSession::new(seed);
             let feed = session.feed().clone();
-            let (start, mut updates) = feed.subscribe();
+            let (start, mut updates) = feed.follow();
             let mut followed = Transcript::new();
             followed.reset(start);
-            for _ in 0..800 {
+            for step in 0..800 {
                 session.step();
-                while let Ok(update) = updates.try_recv() {
-                    followed.apply(update);
+                // (It takes them after each call, so it never falls behind.)
+                while let Some(received) = updates.try_next() {
+                    match received {
+                        Received::Update(update) => followed.apply(update),
+                        Received::Reset(_) => panic!("seed {seed}, step {step}: behind"),
+                    }
                 }
             }
             let (snapshot, _) = feed.subscribe();

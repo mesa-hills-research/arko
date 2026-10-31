@@ -698,7 +698,7 @@ const ENDED_JOBS: usize = 100;
 ///
 /// - A state update is a change to what the [`Snapshot`] holds. A client
 ///   that applies it and one that takes a new snapshot end in the same
-///   place, so a client that falls behind [`Feed::subscribe`]'s broadcast
+///   place, so a client that falls behind the broadcast ([`Feed::follow`])
 ///   starts over from a snapshot and loses nothing. Most carry their change.
 ///   Two are latest-value, where a client keeps only the newest.
 ///   [`Update::Worker`] carries a whole summary, sent a few times a second
@@ -775,6 +775,63 @@ impl Batches {
             batch.push(update);
         }
         (!batch.is_empty()).then(|| merged(batch))
+    }
+}
+
+/// A broadcast client's updates, from [`Feed::follow`]. The broadcast keeps
+/// a few thousand, and a client that falls further behind gets a new
+/// snapshot to start over from in place of those it missed, whether it
+/// waits for the next update or takes those that wait.
+pub struct Following {
+    feed: Feed,
+    updates: broadcast::Receiver<Update>,
+}
+
+/// What a [`Following`] client gets next.
+// (It is as large as an update, which comes by value anyway.)
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub enum Received {
+    /// The next update.
+    Update(Update),
+    /// The client fell behind, so it starts over from this snapshot, and
+    /// the updates after it follow.
+    Reset(Snapshot),
+}
+
+impl Following {
+    /// The next update, after waiting for it, or a snapshot to start over
+    /// from.
+    pub async fn next(&mut self) -> Received {
+        match self.updates.recv().await {
+            Ok(update) => Received::Update(update),
+            Err(broadcast::error::RecvError::Lagged(_)) => Received::Reset(self.restart()),
+            // (It holds the feed, which holds the sender.)
+            Err(broadcast::error::RecvError::Closed) => unreachable!("the feed is gone"),
+        }
+    }
+
+    /// The next update if one waits, or a snapshot to start over from.
+    pub fn try_next(&mut self) -> Option<Received> {
+        match self.updates.try_recv() {
+            Ok(update) => Some(Received::Update(update)),
+            Err(broadcast::error::TryRecvError::Lagged(_)) => Some(Received::Reset(self.restart())),
+            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
+                None
+            }
+        }
+    }
+
+    /// How many updates wait.
+    pub fn waiting(&self) -> usize {
+        self.updates.len()
+    }
+
+    /// Starts over now: a new snapshot, which the updates after it follow.
+    pub fn restart(&mut self) -> Snapshot {
+        let (snapshot, updates) = self.feed.subscribe();
+        self.updates = updates;
+        snapshot
     }
 }
 
@@ -1277,10 +1334,25 @@ impl Feed {
     }
 
     /// The history, the workers and the activity now, and the updates
-    /// from then on.
+    /// from then on. The broadcast drops what a client leaves unread too
+    /// long, so a client that keeps what the updates hold follows the feed
+    /// instead ([`follow`](Self::follow)), which starts it over then. This
+    /// is for one that only wakes when something changed.
     pub fn subscribe(&self) -> (Snapshot, broadcast::Receiver<Update>) {
         let state = self.lock();
         (self.snapshot(&state), self.inner.updates.subscribe())
+    }
+
+    /// The history, the workers and the activity now, and the updates from
+    /// then on, through the broadcast. A client that falls behind gets a new
+    /// snapshot in place of what it missed ([`Received::Reset`]).
+    pub fn follow(&self) -> (Snapshot, Following) {
+        let (snapshot, updates) = self.subscribe();
+        let following = Following {
+            feed: self.clone(),
+            updates,
+        };
+        (snapshot, following)
     }
 
     /// The history, the workers and the activity now, and from then on
@@ -3525,6 +3597,48 @@ mod tests {
         assert_eq!(updates(&mut first).len(), 3);
         assert_eq!(updates(&mut second).len(), 1);
         assert_eq!(feed.subscribe().0.seq, 3);
+    }
+
+    /// A client that falls behind the broadcast gets a snapshot to start
+    /// over from in place of what it missed, whether it waits for the next
+    /// update or takes those that wait, and the updates after the snapshot
+    /// follow.
+    #[test]
+    fn a_follower_that_falls_behind_gets_a_snapshot_in_place_of_what_it_missed() {
+        use futures_util::FutureExt;
+        let feed = Feed::new("main");
+        let (_, mut waits) = feed.follow();
+        let (_, mut takes) = feed.follow();
+        feed.notice(Level::Info, "first");
+        assert!(matches!(
+            takes.try_next(),
+            Some(Received::Update(Update::Item(item))) if item.text == "first"
+        ));
+        // More than the broadcast keeps, for both.
+        for n in 0..=BACKLOG {
+            feed.notice(Level::Info, &format!("note {n}"));
+        }
+        let Some(Received::Reset(taken)) = takes.try_next() else {
+            panic!("behind")
+        };
+        let Some(Received::Reset(waited)) = waits.next().now_or_never() else {
+            panic!("behind")
+        };
+        for snapshot in [&taken, &waited] {
+            assert_eq!(snapshot.seq, BACKLOG as u64 + 2);
+            assert_eq!(
+                snapshot.items.last().unwrap().text,
+                format!("note {BACKLOG}")
+            );
+        }
+        assert!(takes.try_next().is_none() && waits.waiting() == 0);
+        feed.notice(Level::Info, "after");
+        for following in [&mut takes, &mut waits] {
+            assert!(matches!(
+                following.try_next(),
+                Some(Received::Update(Update::Item(item))) if item.text == "after"
+            ));
+        }
     }
 
     /// A batched client misses nothing however far behind it falls: 10,000
