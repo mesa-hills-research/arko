@@ -6344,4 +6344,154 @@ mod tests {
             .sum();
         assert!(main <= MAIN_BUDGET.bytes);
     }
+
+    // ----- clients made from snapshots -----
+
+    use crate::testing::{FeedMirror, RandomSession};
+
+    /// The updates waiting for `receiver`. These tests read after each
+    /// call, so a client that fell behind fails them.
+    fn delivered(receiver: &mut broadcast::Receiver<Update>) -> Vec<Update> {
+        let mut out = Vec::new();
+        loop {
+            match receiver.try_recv() {
+                Ok(update) => out.push(update),
+                Err(broadcast::error::TryRecvError::Empty) => return out,
+                Err(other) => panic!("{other:?}"),
+            }
+        }
+    }
+
+    /// Whatever a session does, a client made from a snapshot taken at any
+    /// moment, which then applies the updates after it, ends where a client
+    /// made from the latest snapshot does, within what the feed keeps. So
+    /// does a client that followed every update from the start, and a
+    /// batched client whatever its batches. Each snapshot counts the
+    /// updates sent before it. The activity is read as each update comes,
+    /// as clients read it, so a change of it that went out without an
+    /// update would show.
+    #[test]
+    fn a_client_made_from_any_snapshot_ends_where_the_feed_is() {
+        for seed in 0..24 {
+            let mut session = RandomSession::new(seed);
+            let feed = session.feed().clone();
+            let (start, mut updates) = feed.subscribe();
+            let (_, mut batches) = feed.subscribe_batched();
+            let mut clients = vec![FeedMirror::new(&start)];
+            let mut batched = FeedMirror::new(&start);
+            let mut count = start.seq;
+            let steps = 300 + session.pick(1200);
+            let mut done = Vec::new();
+            for step in 0..steps {
+                done.push(session.step());
+                for update in delivered(&mut updates) {
+                    count += 1;
+                    for client in &mut clients {
+                        client.apply(&update, || feed.activity());
+                    }
+                }
+                let check = step + 1 == steps || session.pick(steps / 12 + 1) == 0;
+                if (check || session.pick(5) == 0)
+                    && let Some(batch) = batches.try_next()
+                {
+                    for update in &batch {
+                        batched.apply(update, || feed.activity());
+                    }
+                }
+                if !check {
+                    continue;
+                }
+                let (snapshot, _) = feed.subscribe();
+                assert_eq!(snapshot.seq, count, "seed {seed}, step {step}");
+                let rebuilt = FeedMirror::new(&snapshot);
+                for (at, client) in clients.iter().chain([&batched]).enumerate() {
+                    if let Some(difference) = client.within(&snapshot).difference(&rebuilt) {
+                        let last = &done[done.len().saturating_sub(10)..];
+                        panic!(
+                            "seed {seed}, step {step}, client {at}: {difference}\nlast calls {last:?}"
+                        );
+                    }
+                }
+                clients.push(rebuilt);
+            }
+        }
+    }
+
+    /// A client that subscribes while a worker's summary waits to go out
+    /// gets the newer summary in its snapshot. Once the summary goes out,
+    /// it and a client that subscribed before both end where the feed is.
+    #[tokio::test]
+    async fn a_snapshot_taken_while_a_summary_waits_ends_where_the_feed_is() {
+        let feed = Feed::new("main");
+        feed.worker("r1", "Count", WorkerChange::Started);
+        let (before, mut early) = feed.subscribe();
+        let mut follower = FeedMirror::new(&before);
+        // Within a quarter of a second of the last summary, so the new one
+        // waits.
+        feed.event(&event("worker", shell(Uuid::new_v4(), "ls")), Some("r1"));
+        let (during, mut late) = feed.subscribe();
+        let mut rebuilt = FeedMirror::new(&during);
+        assert_eq!(during.workers[0].tool_calls, 1, "the snapshot has it");
+        for update in delivered(&mut early) {
+            follower.apply(&update, || feed.activity());
+        }
+        assert_eq!(follower.workers[0].tool_calls, 0, "its update waits");
+        tokio::time::sleep(WORKER_EVERY * 2).await;
+        for update in delivered(&mut early) {
+            follower.apply(&update, || feed.activity());
+        }
+        for update in delivered(&mut late) {
+            rebuilt.apply(&update, || feed.activity());
+        }
+        let end = FeedMirror::new(&feed.subscribe().0);
+        assert_eq!(follower.difference(&end), None);
+        assert_eq!(rebuilt.difference(&end), None);
+    }
+
+    /// A client that fell behind while a note moved to where the agent read
+    /// it and the conversation was cut back starts over from a snapshot,
+    /// and with what follows ends where the feed is.
+    #[test]
+    fn a_client_behind_a_cut_and_a_moved_note_starts_over_where_the_feed_is() {
+        let feed = Feed::new("main");
+        let (_, mut updates) = feed.subscribe();
+        let first = feed.user("First.", Source::Terminal, Delivery::Turn);
+        let note = feed.note("Also this.", Source::Web, 1, Vec::new());
+        // Enough text to fall behind, in few items.
+        let mut cut = None;
+        for at in 0..BACKLOG {
+            feed.event(&event("main", chunk("Working. ")), None);
+            if at == BACKLOG / 2 {
+                let call = Uuid::new_v4();
+                feed.event(&event("main", shell(call, "ls")), None);
+                feed.event(&event("main", result(call, "Exit code: 0\nfile")), None);
+                cut = Some(feed.user("Second.", Source::Terminal, Delivery::Turn));
+            }
+        }
+        let read = AgentEvent::ContextInjected {
+            ids: vec!["note:1".into()],
+            bytes: 10,
+        };
+        feed.event(&event("main", read), None);
+        let moved = feed.subscribe().0.items.last().unwrap().clone();
+        assert!(moved.id > note && moved.text == "Also this.", "{moved:?}");
+        let cut = cut.unwrap();
+        feed.truncate(cut);
+        assert!(matches!(
+            updates.try_recv(),
+            Err(broadcast::error::TryRecvError::Lagged(_))
+        ));
+        let (snapshot, mut fresh) = feed.subscribe();
+        let mut client = FeedMirror::new(&snapshot);
+        assert!(client.items.contains_key(&first));
+        assert!(!client.items.contains_key(&note) && !client.items.contains_key(&moved.id));
+        assert!(client.items.keys().all(|id| *id < cut));
+        feed.user("Third.", Source::Terminal, Delivery::Turn);
+        for update in delivered(&mut fresh) {
+            client.apply(&update, || feed.activity());
+        }
+        let end = feed.subscribe().0;
+        assert_eq!(end.seq, snapshot.seq + 1);
+        assert_eq!(client.difference(&FeedMirror::new(&end)), None);
+    }
 }

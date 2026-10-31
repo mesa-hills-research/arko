@@ -3997,4 +3997,50 @@ mod tests {
         let own = rows(&mut t, &Filter::Worker("r1".into()), 60, 4);
         assert!(own[0].contains("r1 Test it · finished · 2h 5m"), "{own:?}");
     }
+
+    /// A view that followed every update of a random session shows what a
+    /// view that starts over from the session's snapshot shows, in the same
+    /// order, within what the feed keeps.
+    #[test]
+    fn a_view_that_starts_over_shows_what_one_that_followed_does() {
+        use crate::testing::{FeedMirror, RandomSession};
+        for seed in 0..8 {
+            let mut session = RandomSession::new(seed);
+            let feed = session.feed().clone();
+            let (start, mut updates) = feed.subscribe();
+            let mut followed = Transcript::new();
+            followed.reset(start);
+            for _ in 0..800 {
+                session.step();
+                while let Ok(update) = updates.try_recv() {
+                    followed.apply(update);
+                }
+            }
+            let (snapshot, _) = feed.subscribe();
+            let mut restarted = Transcript::new();
+            restarted.reset(snapshot.clone());
+            let shown = |t: &Transcript| {
+                FeedMirror {
+                    items: t
+                        .entries
+                        .iter()
+                        .map(|entry| (entry.item.id, entry.item.clone()))
+                        .collect(),
+                    workers: t.workers.clone(),
+                    ..FeedMirror::default()
+                }
+                .within(&snapshot)
+            };
+            let (a, b) = (shown(&followed), shown(&restarted));
+            assert_eq!(a.difference(&b), None, "seed {seed}");
+            let order = |t: &Transcript| -> Vec<u64> {
+                t.entries
+                    .iter()
+                    .map(|entry| entry.item.id)
+                    .filter(|id| b.items.contains_key(id))
+                    .collect()
+            };
+            assert_eq!(order(&followed), order(&restarted), "seed {seed}");
+        }
+    }
 }

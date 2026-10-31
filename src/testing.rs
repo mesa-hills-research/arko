@@ -5,6 +5,11 @@
 
 pub use crate::mock_model::*;
 pub use crate::options::GivenClient;
+/// A session's feed at random, from a seed, and a client of a feed reduced
+/// to what the feed promises it, for testing a client of the feed. A client
+/// that starts over from a snapshot at any moment should end where one
+/// that followed every update does.
+pub use crate::remote::random_session::{FeedMirror, RandomSession};
 /// Stand-ins for the models that name sessions, which name those in the
 /// Arko folder they are set for ([`name_sessions_with`]).
 pub use crate::session_names::fake::{

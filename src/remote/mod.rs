@@ -26,6 +26,8 @@ mod no_server;
 pub(crate) mod protocol;
 #[cfg(feature = "remote")]
 mod qr;
+#[cfg(any(test, feature = "testing"))]
+pub(crate) mod random_session;
 mod render;
 #[cfg(feature = "remote")]
 mod server;
