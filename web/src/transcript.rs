@@ -258,7 +258,7 @@ fn quiet_row(
         let words = words();
         let mut class = "row call quiet".to_string();
         if words.failed.is_some() {
-            class.push_str(" failed");
+            class.push_str(" has-failure");
         }
         if words.muted {
             class.push_str(" muted");
