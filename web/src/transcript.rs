@@ -843,6 +843,47 @@ mod tests {
         });
     }
 
+    /// Two workers' counts of as many calls in the same turn are other
+    /// rows, so switching between them draws the count of the worker shown,
+    /// with its first call to keep the reader's place by.
+    #[test]
+    fn equal_counts_of_two_workers_are_other_rows() {
+        use crate::app::{take_reset, tests::reset_of};
+        use crate::store::tests::item;
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let rows = laid_out(page.version, page.view, page.worker);
+            let counts = move || {
+                rows.with(|(feed, rows)| {
+                    rows.iter()
+                        .filter(|row| matches!(row, Row::Count { .. }))
+                        .map(|row| row_key(*feed, row))
+                        .collect::<Vec<_>>()
+                })
+            };
+            let call = |id, agent| {
+                let mut call = item(id, Kind::Call, agent, "cat");
+                call.status = Some(CallStatus::Ok);
+                call.turn = Some(1);
+                call
+            };
+            let items = vec![
+                item(1, Kind::User, MAIN, "go"),
+                call(2, "r1"),
+                call(3, "r2"),
+            ];
+            take_reset(page, reset_of(1, items, Vec::new()), 0.0);
+            page.view.set(View::Messages);
+            page.worker.set(Some("r1".into()));
+            let first = counts();
+            page.worker.set(Some("r2".into()));
+            let second = counts();
+            assert_eq!((first.len(), second.len()), (1, 1));
+            assert_ne!(first, second);
+        });
+    }
+
     /// Switching the view while a worker is shown lays its transcript out
     /// again in that view at once.
     #[test]

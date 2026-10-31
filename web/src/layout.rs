@@ -77,8 +77,10 @@ impl Row {
     pub fn key(&self) -> String {
         match self {
             Row::Item(id, _) => format!("i{id}"),
-            Row::Count { turn, .. } => format!(
-                "c{}",
+            // (Its first call too: two workers' counts of the same turn
+            // are other rows.)
+            Row::Count { turn, id, .. } => format!(
+                "c{}:{id}",
                 turn.map_or("none".to_string(), |turn| turn.to_string())
             ),
             Row::Working => "working".into(),
@@ -465,7 +467,7 @@ mod tests {
             ["i1", "i2", "i3", "i6"]
         );
         let messages = layout(&items, View::Messages, None);
-        assert_eq!(ids(&messages), ["i1", "c1", "i6"]);
+        assert_eq!(ids(&messages), ["i1", "c1:3", "i6"]);
         assert_eq!(
             messages[1],
             Row::Count {
@@ -515,7 +517,7 @@ mod tests {
             ["i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9"]
         );
         let messages = layout(&items, View::Messages, None);
-        assert_eq!(ids(&messages), ["i1", "c1", "i3", "i9"]);
+        assert_eq!(ids(&messages), ["i1", "c1:2", "i3", "i9"]);
         assert!(matches!(
             messages[1],
             Row::Count {
@@ -578,7 +580,7 @@ mod tests {
         );
         assert_eq!(ids(&own(View::Quiet)), ids(&own(View::Full)));
         let messages = own(View::Messages);
-        assert_eq!(ids(&messages), ["i2", "i4", "c1", "i8", "i10", "i11"]);
+        assert_eq!(ids(&messages), ["i2", "i4", "c1:5", "i8", "i10", "i11"]);
         assert_eq!(
             messages[2],
             Row::Count {
@@ -820,7 +822,7 @@ mod tests {
         call.status = Some(CallStatus::Ok);
         let items = vec![item(1, Kind::User, MAIN, "go"), call];
         let rows = layout(&items, View::Messages, None);
-        assert_eq!(ids(&rows), ["i1", "c1"]);
+        assert_eq!(ids(&rows), ["i1", "c1:3"]);
         assert_eq!(
             jump_label(&rows, &store_of(&items), 3, &[3].into()),
             "Latest"
