@@ -170,10 +170,10 @@ fn esc_cancels_and_takes_the_recordings_words_out() {
     assert_eq!(app.editor.text(), "Note: ");
 }
 
-/// Words typed elsewhere while recording start a new run at the cursor,
-/// and Esc takes out only the run still as it came.
+/// Esc takes out every word the recording put in, wherever the cursor took
+/// them, and none of the user's, even typed alike.
 #[test]
-fn words_typed_meanwhile_stay() {
+fn esc_takes_out_only_the_recordings_words() {
     let mut app = listening("");
     event(&mut app, 7, text("alpha", ""));
     key(&mut app, KeyCode::Home);
@@ -181,7 +181,32 @@ fn words_typed_meanwhile_stay() {
     event(&mut app, 7, text(" beta", ""));
     assert_eq!(app.editor.text(), "X betaalpha");
     key(&mut app, KeyCode::Esc);
-    assert_eq!(app.editor.text(), "Xalpha");
+    assert_eq!(app.editor.text(), "X");
+
+    let mut app = listening("");
+    event(&mut app, 7, text("cat", ""));
+    key(&mut app, KeyCode::Home);
+    for c in "cat dog ".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.editor.text(), "cat dog ");
+}
+
+/// Once the recording is done, its words are the user's: a later Esc
+/// leaves them.
+#[test]
+fn a_finished_recordings_words_stay() {
+    let mut app = listening("");
+    event(&mut app, 7, text("kept", ""));
+    key(&mut app, KeyCode::Enter);
+    event(&mut app, 7, DictationEvent::Done);
+    ctrl_r(&mut app);
+    app.dictation_opened(8);
+    event(&mut app, 8, DictationEvent::Listening);
+    event(&mut app, 8, text(" more", ""));
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.editor.text(), "kept");
 }
 
 #[test]

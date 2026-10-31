@@ -2,7 +2,8 @@
 //! recording, and press again to stop it (Enter stops it too). The words go
 //! into the box at the cursor as they settle, the tentative ones dimmed
 //! after it. The text then stays to edit, and Enter sends it. Esc cancels
-//! and takes the recording's words out again.
+//! and takes out the words the recording put in that are still there, which
+//! the editor follows through edits. What the user typed meanwhile stays.
 //!
 //! The view keeps the recording's state. What it asks of the service and
 //! the microphone comes out as [`Dictate`] effects, which the view's loop
@@ -53,10 +54,8 @@ pub struct Recording {
     /// The dictation's ID, once the service opened it.
     pub id: Option<u64>,
     pub phase: Phase,
-    /// Where the latest run of settled words starts in the box, and the
-    /// words, which Esc takes out while they're still there as they were.
-    start: usize,
-    inserted: String,
+    /// Some of its words went into the box.
+    wrote: bool,
     /// The model was downloaded first, which takes minutes: the microphone
     /// doesn't open by surprise once it's done.
     downloaded: bool,
@@ -89,8 +88,7 @@ impl App {
         self.recording = Some(Recording {
             id: None,
             phase: Phase::Starting,
-            start: self.editor.cursor(),
-            inserted: String::new(),
+            wrote: false,
             downloaded: false,
         });
         self.effects_push(Effect::Dictate(Dictate::Open { download }));
@@ -174,29 +172,18 @@ impl App {
         }
     }
 
-    /// Settled words go in at the cursor, and the tentative ones show after
-    /// it. Words typed elsewhere meanwhile start a new run where the cursor
-    /// is.
+    /// Settled words go in at the cursor, wherever it is, and the tentative
+    /// ones show after it.
     fn dictated(&mut self, settled: &str, tentative: &str) {
         let Some(recording) = &mut self.recording else {
             return;
         };
         let editor = &mut self.editor;
-        let mut wrote = !recording.inserted.is_empty();
         if !settled.is_empty() {
-            let end = recording.start + recording.inserted.chars().count();
-            let goes_on = editor.cursor() == end
-                && editor.slice(recording.start, end).as_deref() == Some(&recording.inserted);
-            if !goes_on {
-                recording.start = editor.cursor();
-                recording.inserted.clear();
-            }
-            let text = spaced(editor.before_cursor(), wrote, settled);
-            editor.insert_text(&text);
-            recording.inserted.push_str(&text);
-            wrote = true;
+            editor.insert_dictated(&spaced(editor.before_cursor(), recording.wrote, settled));
+            recording.wrote = true;
         }
-        editor.set_tentative(&spaced(editor.before_cursor(), wrote, tentative));
+        editor.set_tentative(&spaced(editor.before_cursor(), recording.wrote, tentative));
     }
 
     /// Ctrl+R or Enter while listening: the microphone stops and the last
@@ -206,24 +193,20 @@ impl App {
         self.effects_push(Effect::Dictate(Dictate::Finish));
     }
 
-    /// Esc: the recording ends, and its words leave the box, if they're
-    /// still there as they came.
+    /// Esc: the recording ends, and the words it put in leave the box.
     fn cancel_dictation(&mut self) {
-        let Some(recording) = self.recording.take() else {
+        if self.recording.take().is_none() {
             return;
-        };
-        let end = recording.start + recording.inserted.chars().count();
-        if !recording.inserted.is_empty()
-            && self.editor.slice(recording.start, end).as_deref() == Some(&recording.inserted)
-        {
-            self.editor.remove(recording.start, end);
         }
+        self.editor.remove_dictated();
         self.editor.set_tentative("");
         self.effects_push(Effect::Dictate(Dictate::Cancel));
     }
 
+    /// The recording ended: its words stay, as the user's.
     fn end_recording(&mut self) {
         self.recording = None;
+        self.editor.keep_dictated();
         self.editor.set_tentative("");
     }
 

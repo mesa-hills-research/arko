@@ -8,7 +8,7 @@ runs on, and recordings aren't kept.
 In the full-screen view, `/dictate` or Ctrl+R starts recording, and the status line says
 listening. Words show dimmed after the cursor as you speak and go into the box as they settle.
 Ctrl+R or Enter stops, the words stay in the box to edit, and Enter sends them. Esc cancels and
-takes the recording's words out again.
+takes out the words the recording put in, wherever they are, and what you typed meanwhile stays.
 
 At the line prompt (`--repl`), `/dictate` prints the words as they settle until you press Enter,
 then leaves them at the prompt to edit and send.
