@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 #[path = "message_switch.rs"]
 mod message_switch;
-pub use message_switch::{MessageRevision, MessageSwitch};
+pub use message_switch::MessageSwitch;
 
 /// What an item is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

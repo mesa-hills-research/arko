@@ -292,15 +292,16 @@ fn the_switch_follows_new_requests_but_not_refreshes_or_cursor_moves() {
     press(&mut app, KeyCode::Left);
     assert!(!app.includes_message());
     press(&mut app, KeyCode::Char('x'));
-    press(&mut app, KeyCode::Backspace);
-    assert_eq!(app.editor.text(), "Draft");
-    assert!(app.includes_message(), "an edit counts even if undone");
+    assert!(
+        !app.includes_message(),
+        "continuing the older draft keeps it out"
+    );
     app.set_reading(Reading {
         approvals: vec![request("a1", skill())],
         ..Reading::default()
     });
     assert!(
-        app.includes_message(),
+        !app.includes_message(),
         "removing a request keeps the choice"
     );
     alt_a(&mut app);
@@ -308,9 +309,82 @@ fn the_switch_follows_new_requests_but_not_refreshes_or_cursor_moves() {
     press(&mut app, KeyCode::Esc);
     app.newline();
     assert!(
-        !app.includes_message(),
+        app.includes_message(),
         "the manual choice wins over later edits"
     );
+}
+
+#[test]
+fn history_and_cancelled_dictation_do_not_attach_an_older_draft() {
+    for dictation in [false, true] {
+        let mut app = super::super::app::tests::app();
+        app.editor.set("Earlier message");
+        app.editor.take();
+        app.paste("Draft");
+        app.set_reading(Reading {
+            approvals: vec![request("a1", skill())],
+            ..Reading::default()
+        });
+        if dictation {
+            use crate::dictation::{DictationEvent, DictationUpdate};
+            app.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+            app.dictation_opened(7);
+            app.dictation_event(DictationUpdate {
+                id: 7,
+                event: DictationEvent::Listening,
+            });
+            app.dictation_event(DictationUpdate {
+                id: 7,
+                event: DictationEvent::Text {
+                    settled: "More".into(),
+                    tentative: String::new(),
+                },
+            });
+            press(&mut app, KeyCode::Esc);
+        } else {
+            assert!(app.editor.history_back());
+            assert!(app.editor.history_forward());
+        }
+        assert_eq!(app.editor.text(), "Draft");
+        assert!(!app.includes_message());
+        alt_a(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(sent(&mut app)[0].words, None);
+        assert_eq!(app.editor.text(), "Draft");
+    }
+}
+
+#[test]
+fn a_refused_send_restores_the_switch_with_its_draft() {
+    for manual in [false, true] {
+        let mut app = super::super::app::tests::app();
+        app.paste("Draft");
+        app.set_reading(Reading {
+            approvals: vec![request("a1", skill())],
+            ..Reading::default()
+        });
+        if manual {
+            alt_a(&mut app);
+            press(&mut app, KeyCode::Char('m'));
+            press(&mut app, KeyCode::Esc);
+        }
+        press(&mut app, KeyCode::Enter);
+        let sending = app
+            .take_effects()
+            .into_iter()
+            .find_map(|effect| match effect {
+                Effect::Send(sending) => Some(sending),
+                _ => None,
+            })
+            .expect("sent");
+        screen(&mut app, 80, 24);
+        app.verdict(
+            sending,
+            crate::Verdict::refused(crate::RefusalKind::TooLong, "Shorten the message."),
+        );
+        assert_eq!(app.editor.text(), "Draft");
+        assert_eq!(app.includes_message(), manual);
+    }
 }
 
 #[test]

@@ -88,7 +88,6 @@ pub fn Composer() -> impl IntoView {
     let input: NodeRef<leptos::html::Textarea> = NodeRef::new();
     let empty = ask.box_empty;
     let draft = RwSignal::new(session_get(DRAFT).unwrap_or_default());
-    let revision = RwSignal::new(crate::approvals::MessageRevision::default());
     // The text reached the box's height, which the expand button lifts.
     let tall = RwSignal::new(false);
     let expanded = RwSignal::new(false);
@@ -205,7 +204,6 @@ pub fn Composer() -> impl IntoView {
         empty.set(text.trim().is_empty());
         if draft.with_untracked(|draft| *draft != text) {
             draft.set(text.clone());
-            revision.update(|revision| revision.edited(text.is_empty()));
         }
         session_set(DRAFT, Some(&text));
     };
@@ -392,7 +390,7 @@ pub fn Composer() -> impl IntoView {
                 // the last one gave too.
                 {move || {
                     page.feeds.track();
-                    view! { <crate::approvals::Tray draft=draft revision=revision /> }
+                    view! { <crate::approvals::Tray draft=draft /> }
                 }}
                 <form
                     class="compose"

@@ -17,7 +17,6 @@ use crate::protocol::{
     reject_label,
 };
 
-pub use crate::protocol::MessageRevision;
 use crate::protocol::MessageSwitch;
 
 /// What the tray remembers of its rows, by request.
@@ -48,30 +47,23 @@ impl Rows {
         }
     }
 
-    fn requests_changed(self, ids: &HashSet<String>, revision: MessageRevision) {
-        self.message.update(|message| message.requests(ids.clone(), revision));
+    fn requests_changed(self, ids: &HashSet<String>, has_text: bool) {
+        self.message
+            .update(|message| message.requests(ids.clone(), has_text));
     }
 
-    fn includes_message(self, revision: MessageRevision) -> bool {
-        self.message.with(|message| message.includes(revision))
+    fn includes_message(self) -> bool {
+        self.message.with(MessageSwitch::includes)
     }
 
-    fn flip_message(self, revision: MessageRevision) {
-        self.message.update(|message| message.flip(revision));
+    fn flip_message(self) {
+        self.message.update(MessageSwitch::flip);
     }
 
-    fn answers(
-        self,
-        requests: &[ApprovalRequest],
-        approve: bool,
-        words: &str,
-        revision: MessageRevision,
-    ) -> ApprovalAnswers {
-        let words = if self.includes_message(revision) {
-            words
-        } else {
-            ""
-        };
+    fn answers(self, requests: &[ApprovalRequest], approve: bool, words: &str) -> ApprovalAnswers {
+        self.message
+            .update(|message| message.edited(has_message(words)));
+        let words = if self.includes_message() { words } else { "" };
         self.unchecked.with_untracked(|unchecked| {
             self.options.with_untracked(|options| {
                 ApprovalAnswers::of(
@@ -127,10 +119,10 @@ fn words_view(text: &str) -> impl IntoView + use<> {
 /// approved and the others rejected, else all are rejected. The message
 /// box's included words go with it. Once Arko has them, the box empties
 /// unless the user wrote something else there meanwhile.
-fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows, revision: MessageRevision) {
+fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
     let area = message_box();
     let words = area.as_ref().map(|area| area.value()).unwrap_or_default();
-    let answers = rows.answers(&requests, approve, &words, revision);
+    let answers = rows.answers(&requests, approve, &words);
     rows.sending.set(true);
     // (Its words are the message box's, of the view it's sent from.)
     let sender = Sender::from_view();
@@ -168,7 +160,7 @@ fn flip(set: RwSignal<HashSet<String>>, id: &str) {
 
 /// The tray, while requests wait.
 #[component]
-pub fn Tray(draft: RwSignal<String>, revision: RwSignal<MessageRevision>) -> impl IntoView {
+pub fn Tray(draft: RwSignal<String>) -> impl IntoView {
     let page = page();
     let requests = Memo::new(move |_| page.status.with(|status| status.approvals.clone()));
     let rows = Rows::new();
@@ -176,7 +168,7 @@ pub fn Tray(draft: RwSignal<String>, revision: RwSignal<MessageRevision>) -> imp
     Effect::new(move |_| {
         let ids: HashSet<String> =
             requests.with(|requests| requests.iter().map(|request| request.id.clone()).collect());
-        rows.requests_changed(&ids, revision.get_untracked());
+        rows.requests_changed(&ids, draft.with_untracked(|text| has_message(text)));
         for set in [rows.unchecked, rows.options, rows.open] {
             if set.with_untracked(|set| set.iter().any(|id| !ids.contains(id))) {
                 set.update(|set| set.retain(|id| ids.contains(id)));
@@ -189,6 +181,10 @@ pub fn Tray(draft: RwSignal<String>, revision: RwSignal<MessageRevision>) -> imp
             rows.files
                 .update(|files| files.retain(|id, _| ids.contains(id)));
         }
+    });
+    Effect::new(move |_| {
+        let has_text = draft.with(|text| has_message(text));
+        rows.message.update(|message| message.edited(has_text));
     });
     let count = move || requests.with(Vec::len);
     let waiting = move || count() != 0;
@@ -217,19 +213,19 @@ pub fn Tray(draft: RwSignal<String>, revision: RwSignal<MessageRevision>) -> imp
                         <label class="tray-message">
                             "Include message"
                             <button type="button" class="switch" role="switch" aria-label="Include message"
-                                aria-checked=move || rows.includes_message(revision.get()).to_string()
+                                aria-checked=move || rows.includes_message().to_string()
                                 disabled=move || rows.sending.get()
-                                on:click=move |_| rows.flip_message(revision.get_untracked())>
+                                on:click=move |_| rows.flip_message()>
                                 <span></span>
                             </button>
                         </label>
                     </Show>
                     <button type="button" class="btn outline small" disabled=move || rows.sending.get()
-                        on:click=move |_| answer(requests.get_untracked(), false, rows, revision.get_untracked())>
+                        on:click=move |_| answer(requests.get_untracked(), false, rows)>
                         {move || reject_label(count())}
                     </button>
                     <button type="button" class="btn primary small" disabled=move || rows.sending.get()
-                        on:click=move |_| answer(requests.get_untracked(), true, rows, revision.get_untracked())>
+                        on:click=move |_| answer(requests.get_untracked(), true, rows)>
                         {move || approve_label(checked(), count())}
                     </button>
                 </div>
@@ -404,10 +400,10 @@ mod tests {
             .collect()
     }
 
-    fn follow(rows: Rows, requests: &[ApprovalRequest], revision: MessageRevision) {
+    fn follow(rows: Rows, requests: &[ApprovalRequest], has_text: bool) {
         rows.requests_changed(
             &requests.iter().map(|request| request.id.clone()).collect(),
-            revision,
+            has_text,
         );
     }
 
@@ -418,11 +414,9 @@ mod tests {
                 let rows = Rows::new();
                 let requests = requests(&["a1"]);
                 let text = "Half-written message";
-                let mut revision = MessageRevision::default();
-                revision.edited(false);
-                follow(rows, &requests, revision);
-                assert!(!rows.includes_message(revision));
-                let answers = rows.answers(&requests, approve, text, revision);
+                follow(rows, &requests, true);
+                assert!(!rows.includes_message());
+                let answers = rows.answers(&requests, approve, text);
                 assert_eq!(answers.words, None);
                 assert_eq!(answers.choices[0].approve, approve);
                 assert!(
@@ -432,8 +426,8 @@ mod tests {
                         .is_none()
                 );
                 assert!(!clears_message(true, &answers, text, text));
-                rows.flip_message(revision);
-                let answers = rows.answers(&requests, approve, text, revision);
+                rows.flip_message();
+                let answers = rows.answers(&requests, approve, text);
                 assert_eq!(answers.words.as_deref(), Some(text));
                 assert!(clears_message(true, &answers, text, text));
             }
@@ -447,15 +441,14 @@ mod tests {
                 for flips in 0..=2 {
                     let rows = Rows::new();
                     let requests = requests(&["a1"]);
-                    let mut revision = MessageRevision::default();
-                    follow(rows, &requests, revision);
-                    revision.edited(false);
-                    assert!(rows.includes_message(revision));
+                    follow(rows, &requests, false);
+                    rows.message.update(|message| message.edited(true));
+                    assert!(rows.includes_message());
                     for _ in 0..flips {
-                        rows.flip_message(revision);
+                        rows.flip_message();
                     }
                     let include = flips != 1;
-                    let answers = rows.answers(&requests, approve, " Reason ", revision);
+                    let answers = rows.answers(&requests, approve, " Reason ");
                     assert_eq!(answers.words.as_deref(), include.then_some("Reason"));
                     assert_eq!(answers.choices[0].approve, approve);
                     assert_eq!(
@@ -474,11 +467,10 @@ mod tests {
         Owner::new().with(|| {
             let rows = Rows::new();
             let requests = requests(&["a1"]);
-            let revision = MessageRevision::default();
-            follow(rows, &requests, revision);
+            follow(rows, &requests, false);
             for text in ["", " ", "\n"] {
                 assert!(!has_message(text));
-                let answers = rows.answers(&requests, true, text, revision);
+                let answers = rows.answers(&requests, true, text);
                 assert!(answers.words.is_none());
                 assert!(!clears_message(true, &answers, text, text));
             }

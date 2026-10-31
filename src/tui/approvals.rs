@@ -28,7 +28,7 @@ use crate::approvals::{
     ApprovalAnswers, ApprovalRequest, Look, approvals_heading, approve_label, reject_label,
 };
 use crate::glyphs;
-use crate::remote::protocol::{MessageRevision, MessageSwitch};
+use crate::remote::protocol::MessageSwitch;
 use crate::ui::Input;
 
 /// The rows of a box (a profile's instructions, a skill's SKILL.md) in
@@ -84,6 +84,7 @@ impl App {
     /// gone goes, the cursor stays on a row, and the bell rings for new ones
     /// while the window isn't focused.
     pub(super) fn approvals_changed(&mut self) {
+        self.sync_message();
         let ids: HashSet<String> = self
             .approvals()
             .iter()
@@ -98,7 +99,9 @@ impl App {
         if ids.iter().any(|id| !self.tray.rung.contains(id)) {
             self.panel.ring |= !self.focused;
         }
-        self.tray.message.requests(ids.clone(), self.message_revision());
+        self.tray
+            .message
+            .requests(ids.clone(), self.editor.has_text());
         self.tray.rung = ids.clone();
         if ids.is_empty() {
             self.tray.focused = false;
@@ -130,6 +133,7 @@ impl App {
     /// The tray's keys, while it has them. False for the keys that work
     /// anywhere (Ctrl+C, Ctrl+L, Ctrl+O).
     pub(super) fn tray_key(&mut self, key: KeyEvent) -> bool {
+        self.sync_message();
         if !self.tray.focused || self.approvals().is_empty() {
             self.tray.focused = false;
             return false;
@@ -177,7 +181,7 @@ impl App {
                 }
             }
             KeyCode::Char('m') if self.editor.has_text() => {
-                self.tray.message.flip(self.message_revision());
+                self.tray.message.flip();
             }
             KeyCode::PageDown => self.tray.scroll += BOX_ROWS / 2,
             KeyCode::PageUp => self.tray.scroll = self.tray.scroll.saturating_sub(BOX_ROWS / 2),
@@ -199,12 +203,16 @@ impl App {
         }
     }
 
-    fn message_revision(&self) -> MessageRevision {
-        MessageRevision { changed: self.editor.revision(), emptied: self.editor.emptied_at() }
+    pub(super) fn sync_message(&mut self) {
+        if self.editor.take_emptied() {
+            self.tray.message.edited(false);
+        }
+        self.tray.message.edited(self.editor.has_text());
     }
 
-    fn includes_message(&self) -> bool {
-        self.tray.message.includes(self.message_revision())
+    fn includes_message(&mut self) -> bool {
+        self.sync_message();
+        self.tray.message.includes()
     }
 
     /// Enter approves those selected, R rejects all. Included words leave
@@ -223,15 +231,16 @@ impl App {
             |id| tray.options.contains(id),
             &words,
         );
-        if !words.trim().is_empty() {
-            self.editor.take();
-        }
+        let message = if !words.trim().is_empty() {
+            self.take_box().1
+        } else {
+            None
+        };
         self.tray.focused = false;
-        self.effects_push(Effect::Send(super::app::Sending::of_box(
-            Input::AnswerApprovals(answers),
-            words,
-            Vec::new(),
-        )));
+        self.effects_push(Effect::Send(
+            super::app::Sending::of_box(Input::AnswerApprovals(answers), words, Vec::new())
+                .with_message(message),
+        ));
         self.transcript.follow();
     }
 }
@@ -291,7 +300,11 @@ fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize) {
     }
     lines.push(Line::from(first));
     if has_message {
-        let mark = if app.includes_message() { "[x]" } else { "[ ]" };
+        let mark = if app.tray.message.includes() {
+            "[x]"
+        } else {
+            "[ ]"
+        };
         let label = format!("{mark} Include message");
         let mut controls = vec![Span::raw(" ")];
         if tray.focused {
@@ -490,6 +503,7 @@ fn fitting(theme: &Theme, pairs: &[(&str, &str)], width: usize) -> Vec<Span<'sta
 /// Draws the tray at the bottom of `above` and returns its height (0 when
 /// no approvals wait).
 pub fn draw_tray(frame: &mut Frame, app: &mut App, above: Rect) -> u16 {
+    app.sync_message();
     if app.approvals().is_empty() || above.height < 3 {
         return 0;
     }
