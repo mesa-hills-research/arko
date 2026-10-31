@@ -23,6 +23,7 @@ use crate::crew::Crew;
 use crate::inputs::{Alert, Asker, Event, Inputs, alert_waits, unread_notes, waits_with};
 use crate::openings::{Opening, Subjects};
 use crate::remote::{Action, Delivery, Level, REFRESH_MESSAGE, Source};
+use crate::sending::{Admitted, Phase, Read};
 use crate::session::{Mode, Session, Settings};
 use crate::shell::{Shell, ShellTool};
 use crate::status::Gauges;
@@ -1392,7 +1393,7 @@ impl Harness {
     pub(crate) async fn repl(&mut self, input: &mut Inputs) {
         let mut last_interrupt: Option<Instant> = None;
         loop {
-            let (line, source, attached) = match input.next_event(true).await {
+            let sent = match input.next_event(true).await {
                 Event::Woken => {
                     if let News::Exit = self.deliver_news(input).await {
                         break;
@@ -1478,25 +1479,6 @@ impl Harness {
                         .line(&self.output.dim("(Ctrl-C again, Ctrl-D or /exit to quit)"));
                     continue;
                 }
-                Event::Input(Some(Input::Line(line))) => {
-                    (input.coalesce(line).await, self.input_source, Vec::new())
-                }
-                Event::Input(Some(Input::Message(message))) => {
-                    let answers = message.answers.clone();
-                    if message.continue_uncached {
-                        self.confirm_continue(&message.text);
-                    }
-                    match self.message_text(message) {
-                        Some(text) => (text, self.input_source, answers),
-                        None => continue,
-                    }
-                }
-                Event::Input(Some(Input::Answer { question, text })) => {
-                    let Some(answers) = self.card_answered(question) else {
-                        continue;
-                    };
-                    (text, self.input_source, answers)
-                }
                 Event::Input(Some(Input::AnswerQuestions(answers))) => {
                     if self.answer_questions(answers).is_some()
                         && let News::Exit = self.deliver_answers(input).await
@@ -1520,19 +1502,6 @@ impl Harness {
                 Event::Remote(Action::AnswerApprovals(answers)) => {
                     self.answer_approvals(answers, Some(Source::Web));
                     continue;
-                }
-                Event::Remote(Action::Message(text)) => {
-                    self.echo_web(&text);
-                    (text, Source::Web, Vec::new())
-                }
-                Event::Remote(Action::Continue(text)) => {
-                    self.echo_web(&text);
-                    self.confirm_continue(&text);
-                    (text, Source::Web, Vec::new())
-                }
-                Event::Remote(Action::Reply { text, answers }) => {
-                    self.echo_web(&text);
-                    (text, Source::Web, answers)
                 }
                 Event::Remote(Action::AnswerQuestions(answers)) => {
                     if self.answer_questions(answers).is_some()
@@ -1559,80 +1528,26 @@ impl Harness {
                     self.page_job_action(action);
                     continue;
                 }
-                Event::Remote(Action::Answer { question, text }) => {
-                    let Some(answers) = self.card_answered(question) else {
-                        continue;
-                    };
-                    self.echo_web(&text);
-                    (text, Source::Web, answers)
-                }
+                event => match self.read_sent(event, input, Phase::Idle).await {
+                    Read::Sent(sent) => sent,
+                    Read::Done | Read::Other => continue,
+                },
             };
-            let text = line.trim();
-            if text.is_empty() && self.pending_images.is_empty() {
-                continue;
-            }
-            self.user_present();
-            if let Some(command) = command(text) {
-                // (Images go with messages only.)
-                self.pending_images.clear();
-                self.pending_refs.clear();
-                if self.refused(command, source) {
-                    continue;
-                }
-                if is_remote_command(command) {
-                    self.remote_command(command, source).await;
-                    continue;
-                }
-                if let Some(argument) = openrouter_words(command) {
-                    self.openrouter_live(command, argument, source).await;
-                    continue;
-                }
-                // A new conversation that carries this one over.
-                if let Some(switch) = self.switch_of(command) {
-                    self.feed.user(command, source, Delivery::Command);
-                    if self.switch(switch, source, input).await {
+            let (text, source, attached) = match self.admit(sent, Phase::Idle) {
+                None => continue,
+                Some(Admitted::Command { command, source }) => {
+                    if self.run_command(&command, source, Phase::Idle, input).await {
                         break;
                     }
                     continue;
                 }
-                if self.live_command(command, source) {
-                    continue;
-                }
-                self.feed.user(command, source, Delivery::Command);
-                if let Some(argument) = conversations::resume_argument(command) {
-                    self.resume_command(argument).await;
-                    continue;
-                }
-                let quit = self.mirrored(|harness| match command {
-                    "/exit" | "/quit" => harness.may_exit(Some(harness.jobs_shown.clone())),
-                    "/new" => {
-                        harness.new_conversation();
-                        false
-                    }
-                    other => {
-                        match crate::switch::new_argument(other) {
-                            Some(Err(error)) => harness.output.line(&harness.output.error(&error)),
-                            _ => harness.command(other),
-                        }
-                        false
-                    }
-                });
-                if quit {
-                    break;
-                }
-                continue;
-            }
-            if self.unknown_command(&line, source) {
-                self.pending_images.clear();
-                self.pending_refs.clear();
-                continue;
-            }
-            // An answer too long to send isn't sent, and its questions stay
-            // open.
-            if let Some(refusal) = self.reply_refused(text, &attached) {
-                self.say(Level::Warn, &refusal);
-                continue;
-            }
+                Some(Admitted::Message {
+                    text,
+                    source,
+                    attached,
+                }) => (text, source, attached),
+            };
+            let text = text.as_str();
             let shown = std::mem::take(&mut self.pending_refs);
             // What the user typed that the agent didn't read goes first, as
             // the message carries it.
@@ -2769,21 +2684,9 @@ impl Harness {
         self.gauges.touch();
     }
 
-    /// The text of an app's message, with its images kept to go with it,
-    /// or `None` when it can't be sent (the user is told why).
-    pub(crate) fn message_text(&mut self, message: ui::Message) -> Option<String> {
-        match self.attach(message.images) {
-            Ok(()) => Some(message.text),
-            Err(why) => {
-                self.say(Level::Error, &why);
-                None
-            }
-        }
-    }
-
     /// The images a message sends: checked for the main agent's model,
     /// kept for the transcript, and pending for the message's turn or note.
-    fn attach(&mut self, attachments: Vec<ui::Attachment>) -> Result<(), String> {
+    pub(crate) fn attach(&mut self, attachments: Vec<ui::Attachment>) -> Result<(), String> {
         self.pending_images.clear();
         self.pending_refs.clear();
         let model = &self.main_config.llm_config.model;
@@ -3895,7 +3798,7 @@ impl Harness {
             tokio::select! {
                 outcome = &mut call => break outcome,
                 event = input.next_event(false) => {
-                    let (line, source, attached) = match event {
+                    let sent = match event {
                         Event::Request(request) => {
                             Box::pin(self.request(request, input.waiting())).await;
                             continue;
@@ -3912,45 +3815,6 @@ impl Harness {
                         Event::Input(Some(Input::Background(agent))) => {
                             self.move_to_background(&agent);
                             continue;
-                        }
-                        Event::Input(Some(Input::Line(line))) => {
-                            (input.coalesce(line).await, self.input_source, Vec::new())
-                        }
-                        Event::Input(Some(Input::Message(message))) => {
-                            let answers = message.answers.clone();
-                            if message.continue_uncached {
-                                self.confirm_continue(&message.text);
-                            }
-                            match self.message_text(message) {
-                                Some(text) => (text, self.input_source, answers),
-                                None => continue,
-                            }
-                        }
-                        Event::Remote(Action::Message(text)) => {
-                            self.echo_web(&text);
-                            (text, Source::Web, Vec::new())
-                        }
-                        Event::Remote(Action::Continue(text)) => {
-                            self.echo_web(&text);
-                            self.confirm_continue(&text);
-                            (text, Source::Web, Vec::new())
-                        }
-                        Event::Remote(Action::Reply { text, answers }) => {
-                            self.echo_web(&text);
-                            (text, Source::Web, answers)
-                        }
-                        Event::Remote(Action::Answer { question, text }) => {
-                            let Some(answers) = self.card_answered(question) else {
-                                continue;
-                            };
-                            self.echo_web(&text);
-                            (text, Source::Web, answers)
-                        }
-                        Event::Input(Some(Input::Answer { question, text })) => {
-                            let Some(answers) = self.card_answered(question) else {
-                                continue;
-                            };
-                            (text, self.input_source, answers)
                         }
                         // Their note reaches the agent at its next step.
                         Event::Input(Some(Input::AnswerQuestions(answers)))
@@ -3997,59 +3861,34 @@ impl Harness {
                             }
                             continue;
                         }
+                        event => match self.read_sent(event, input, Phase::Turn).await {
+                            Read::Sent(sent) => sent,
+                            Read::Done | Read::Other => continue,
+                        },
+                    };
+                    let (text, source, attached) = match self.admit(sent, Phase::Turn) {
+                        None => continue,
+                        Some(Admitted::Command { command, source }) => {
+                            if self.run_command(&command, source, Phase::Turn, input).await {
+                                exit = true;
+                                stopping |= self.stop(&workflow);
+                            }
+                            continue;
+                        }
+                        Some(Admitted::Message {
+                            text,
+                            source,
+                            attached,
+                        }) => (text, source, attached),
                     };
                     // The images an app's message sends go with its note.
                     let images = std::mem::take(&mut self.pending_images);
                     let shown = std::mem::take(&mut self.pending_refs);
-                    let text = line.trim().to_string();
-                    if text.is_empty() && images.is_empty() {
-                        continue;
-                    }
-                    self.user_present();
-                    if let Some(command) = command(&text) {
-                        if self.refused(command, source) {
-                            continue;
-                        }
-                        if is_remote_command(command) {
-                            self.remote_command(command, source).await;
-                            continue;
-                        }
-                        if let Some(argument) = openrouter_words(command) {
-                            self.openrouter_live(command, argument, source).await;
-                            continue;
-                        }
-                        if self.live_command(command, source) {
-                            continue;
-                        }
-                        self.feed.user(command, source, Delivery::Command);
-                        let quit = self.mirrored(|harness| {
-                            if matches!(command, "/exit" | "/quit") {
-                                harness.may_exit(Some(harness.jobs_shown.clone()))
-                            } else {
-                                harness.command(command);
-                                false
-                            }
-                        });
-                        if quit {
-                            exit = true;
-                            stopping |= self.stop(&workflow);
-                        }
-                        continue;
-                    }
-                    if self.unknown_command(&line, source) {
-                        continue;
-                    }
-                    if let Some(refusal) = self.reply_refused(&text, &attached) {
-                        self.pending_images = images;
-                        self.pending_refs = shown;
-                        self.say(Level::Warn, &refusal);
-                        continue;
-                    }
                     // A message that answers questions the agent waits for
                     // is the answer.
                     let Some(labelled) = self.reply_text(&text, &attached) else {
                         self.output.echo(&self.output.dim("  ✎ answered"));
-                        self.feed.user(line.trim(), source, Delivery::Answer);
+                        self.feed.user(&text, source, Delivery::Answer);
                         continue;
                     };
                     // One that answers questions went as their note, which

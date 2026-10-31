@@ -23,7 +23,8 @@ use crate::agents::{Effort, ModelSettings};
 use crate::conversations::Conversations;
 use crate::earlier;
 use crate::inputs::{Event, Inputs};
-use crate::remote::{Action, Delivery, Level, Source};
+use crate::remote::{Action, Level, Source};
+use crate::sending::{Admitted, Phase, Read};
 use crate::session::Settings;
 use crate::{Conversation, Harness, Input, lock, providers};
 
@@ -789,68 +790,25 @@ impl Harness {
     /// the report began, and the notice repeats its words. Returns whether
     /// the user quit.
     async fn sent_during_report(&mut self, event: Event, input: &mut Inputs) -> bool {
-        // (With how many images an app's message sends.)
-        let (text, source, images) = match event {
-            Event::Input(Some(Input::Line(line))) => {
-                (input.coalesce(line).await, self.input_source, 0)
-            }
-            Event::Input(Some(Input::Message(message))) => {
-                if message.continue_uncached {
-                    self.confirm_continue(&message.text);
-                }
-                (message.text, self.input_source, message.images.len())
-            }
-            Event::Input(Some(Input::Answer { text, .. })) => (text, self.input_source, 0),
-            Event::Remote(Action::Continue(text)) => {
-                self.echo_web(&text);
-                self.confirm_continue(&text);
-                (text, Source::Web, 0)
-            }
-            Event::Remote(
-                Action::Message(text) | Action::Reply { text, .. } | Action::Answer { text, .. },
-            ) => {
-                self.echo_web(&text);
-                (text, Source::Web, 0)
-            }
-            _ => return false,
+        let Read::Sent(sent) = self.read_sent(event, input, Phase::Reporting).await else {
+            return false;
         };
-        let text = text.trim().to_string();
-        if text.is_empty() && images == 0 {
-            return false;
+        match self.admit(sent, Phase::Reporting) {
+            Some(Admitted::Command { command, source }) => {
+                self.run_command(&command, source, Phase::Reporting, input)
+                    .await
+            }
+            _ => false,
         }
-        self.user_present();
-        if let Some(command) = crate::harness::command(&text) {
-            if self.refused(command, source) {
-                return false;
-            }
-            if crate::harness::is_remote_command(command) {
-                self.remote_command(command, source).await;
-                return false;
-            }
-            if let Some(argument) = crate::harness::openrouter_words(command) {
-                self.openrouter_live(command, argument, source).await;
-                return false;
-            }
-            if self.live_command(command, source) {
-                return false;
-            }
-            self.feed.user(command, source, Delivery::Command);
-            return self.mirrored(|harness| {
-                if matches!(command, "/exit" | "/quit") {
-                    harness.may_exit(Some(harness.jobs_shown.clone()))
-                } else {
-                    harness.command(command);
-                    false
-                }
-            });
-        }
-        if self.unknown_command(&text, source) {
-            return false;
-        }
-        // (Its words, so that they aren't lost.)
+    }
+
+    /// Tells the user that the message `text` (empty for one of images
+    /// alone) wasn't sent because the old model writes its report, with its
+    /// words, so that they aren't lost.
+    pub(crate) fn not_sent_while_reporting(&self, text: &str) {
         let what = match text.is_empty() {
             true => "Your message".to_string(),
-            false => format!("“{}”", crate::ui::cut(&text, 200)),
+            false => format!("“{}”", crate::ui::cut(text, 200)),
         };
         self.output.echo(
             &self
@@ -859,7 +817,6 @@ impl Harness {
         );
         self.feed
             .notice(Level::Warn, &format!("{what} wasn't sent. {REPORTING}"));
-        false
     }
 
     /// The configuration the next new conversation starts on, when it isn't
