@@ -135,6 +135,18 @@ impl Store {
         self.jobs.insert(summary.id.clone(), summary);
     }
 
+    /// The IDs of the background jobs that run, in order.
+    pub fn running_jobs(&self) -> Vec<String> {
+        let mut running: Vec<String> = self
+            .jobs
+            .values()
+            .filter(|job| job.state.is_running())
+            .map(|job| job.id.clone())
+            .collect();
+        running.sort();
+        running
+    }
+
     /// When the latest turn began (the time of its first item).
     pub fn turn_since(&self) -> Option<i64> {
         let mut turn = None;
@@ -166,19 +178,20 @@ impl Store {
 
 /// What a call's line offers: Move to background while it runs and the
 /// status lists it among the calls that can move (`movable`), and Stop
-/// (the job's ID) while the background job it made runs.
-pub fn call_actions(item: &ItemData, store: &Store, movable: &[u64]) -> (bool, Option<String>) {
+/// (the job's ID) while the background job it made runs (`runs`). Each is
+/// asked only where it could apply, so a line that reads them reactively
+/// follows the status only while its call runs, and the jobs only while
+/// it has one.
+pub fn call_actions(
+    item: &ItemData,
+    movable: impl FnOnce(u64) -> bool,
+    runs: impl FnOnce(&str) -> bool,
+) -> (bool, Option<String>) {
     if item.kind != Kind::Call {
         return (false, None);
     }
-    let moves =
-        item.status == Some(crate::protocol::CallStatus::Running) && movable.contains(&item.id);
-    let stop = item
-        .job
-        .as_ref()
-        .and_then(|job| store.jobs.get(job))
-        .filter(|job| job.state.is_running())
-        .map(|job| job.id.clone());
+    let moves = item.status == Some(crate::protocol::CallStatus::Running) && movable(item.id);
+    let stop = item.job.clone().filter(|job| runs(job));
     (moves, stop)
 }
 
@@ -285,13 +298,23 @@ pub mod tests {
         assert_eq!(store.turn_since(), Some(2000));
     }
 
+    /// `call_actions` with the calls that can move and the store's jobs.
+    fn actions(call: &ItemData, store: &Store, movable: &[u64]) -> (bool, Option<String>) {
+        let running = store.running_jobs();
+        call_actions(
+            call,
+            |id| movable.contains(&id),
+            |job| running.iter().any(|running| running == job),
+        )
+    }
+
     #[test]
     fn a_running_call_that_can_move_offers_it_and_a_running_job_offers_stop() {
         let mut store = Store::default();
         let mut call = item(5, Kind::Call, MAIN, "sleep 100");
         call.status = Some(CallStatus::Running);
-        assert_eq!(call_actions(&call, &store, &[5]), (true, None));
-        assert_eq!(call_actions(&call, &store, &[]), (false, None));
+        assert_eq!(actions(&call, &store, &[5]), (true, None));
+        assert_eq!(actions(&call, &store, &[]), (false, None));
         call.status = Some(CallStatus::Ok);
         call.job = Some("j1".into());
         let job = JobSummary {
@@ -309,14 +332,56 @@ pub mod tests {
             expires_at: None,
         };
         store.job(job.clone());
-        assert_eq!(
-            call_actions(&call, &store, &[5]),
-            (false, Some("j1".into()))
-        );
+        assert_eq!(actions(&call, &store, &[5]), (false, Some("j1".into())));
         store.job(JobSummary {
             state: JobState::Finished,
             ..job
         });
-        assert_eq!(call_actions(&call, &store, &[]), (false, None));
+        assert_eq!(actions(&call, &store, &[]), (false, None));
+    }
+
+    /// A settled call without a job asks neither what can move nor which
+    /// jobs run, so its line follows neither.
+    #[test]
+    fn a_settled_call_asks_nothing() {
+        let mut call = item(5, Kind::Call, MAIN, "ls");
+        call.status = Some(CallStatus::Ok);
+        let asked = |_| -> bool { panic!("asked") };
+        assert_eq!(
+            call_actions(&call, asked, |_| panic!("asked")),
+            (false, None)
+        );
+        // One that made a job asks only about its job.
+        call.job = Some("j1".into());
+        assert_eq!(
+            call_actions(&call, asked, |job| job == "j1"),
+            (false, Some("j1".into()))
+        );
+    }
+
+    #[test]
+    fn running_jobs_are_listed_in_order() {
+        let mut store = Store::default();
+        for (id, state) in [
+            ("j2", JobState::Running),
+            ("j1", JobState::Running),
+            ("j3", JobState::Finished),
+        ] {
+            store.job(JobSummary {
+                id: id.into(),
+                agent: MAIN.into(),
+                call: None,
+                kind: JobKind::Command,
+                label: "sleep 100".into(),
+                state,
+                started_at: 0,
+                ended_at: None,
+                outcome: None,
+                watching: None,
+                alerts: None,
+                expires_at: None,
+            });
+        }
+        assert_eq!(store.running_jobs(), ["j1", "j2"]);
     }
 }
