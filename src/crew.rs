@@ -48,11 +48,14 @@ pub const LEAD_TOOL_NAMES: &[&str] = &[
     WORKER_OPTIONS,
     SAVE_WORKER_PROFILE,
 ];
-pub const WORKER_TOOL_NAMES: &[&str] = &[MESSAGE_AGENT, WAIT_FOR_AGENTS];
+/// Every worker's tools besides the shared ones: it messages the agents it
+/// works with, waits for them, and answers the user who writes to it.
+pub const WORKER_TOOL_NAMES: &[&str] =
+    &[MESSAGE_AGENT, WAIT_FOR_AGENTS, crate::message::MESSAGE_USER];
 /// The tools that let a worker start workers of its own, the framework's
 /// own four. Only a worker started with `nested` has them, and the start
-/// hook gives them with the run's setup. (It has `message_agent` and
-/// `wait_for_agents` as every worker does. Choosing a setup with
+/// hook gives them with the run's setup. (It has the [`WORKER_TOOL_NAMES`]
+/// as every worker does. Choosing a setup with
 /// `worker_options` and saving a profile stay with the main agent, which
 /// tells the worker what to use.)
 pub const NESTED_TOOL_NAMES: &[&str] = &[START_AGENT, LIST_AGENTS, STOP_AGENT, "link_agents"];
@@ -217,9 +220,12 @@ pub type Refuse = Arc<dyn Fn(&arko_ai::Model) -> Option<String> + Send + Sync>;
 
 /// What opens the user's message to a worker in the worker's mail. Like the
 /// main agent's notes (see `agents::operator_note_hint`) it says text written
-/// only in thinking may never reach the user. The user watches the worker's
-/// own view, which shows the text it writes and its report.
-pub const USER_MESSAGE_HEADING: &str = "The user sent you a message directly. Text you write only in your thinking may never reach them, so answer in your text or in your report:";
+/// only in thinking may never reach the user, and the worker answers with
+/// `message_user`, which shows in its own view and in the main transcript.
+/// A worker saved before workers had `message_user` lacks it until its next
+/// handover, and Arko can't tell which tools a saved run has, so such a
+/// worker is told to tell its lead instead.
+pub const USER_MESSAGE_HEADING: &str = "The user sent you a message directly. Answer them with `message_user`, or tell your lead if you don't have that tool. Never answer only in your thinking, which may never reach them:";
 
 /// How long each worker of the session ran, by its handle (milliseconds),
 /// in its folder.

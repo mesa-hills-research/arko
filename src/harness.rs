@@ -885,6 +885,9 @@ impl Harness {
             for tool in &self.tools {
                 builder = builder.agent_tool(WORKER, tool.clone());
             }
+            // A worker answers the user who writes to it (a worker saved
+            // before workers had it isn't offered it).
+            builder = builder.agent_tool(WORKER, Arc::new(message::MessageUser));
             builder = builder.resume_only_agent_tool(WORKER, self.mcp.worker_tool(access.clone()));
             // A worker's call of a server's own tool also needs a server
             // workers may reach.

@@ -240,9 +240,12 @@ fn item_row(id: u64, cell: Cell, thinking: Memo<Option<u64>>) -> AnyView {
             .into_any()
         }
         Kind::Message => {
-            let from = item.from.as_deref().map(|from| if from == MAIN { "the lead" } else { from });
-            let label = match from {
+            let from = item.from.clone().map(|from| if from == MAIN { "the lead".into() } else { from });
+            let agent = item.agent.clone();
+            // A worker's message to the user names the worker outside its own view.
+            let label = move || match &from {
                 Some(from) => format!("Message from {from}"),
+                None if agent != MAIN && page.worker.get().is_none() => format!("{agent} to you"),
                 None => "Message".into(),
             };
             view! {

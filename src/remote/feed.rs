@@ -153,8 +153,8 @@ pub struct Item {
     /// Whether it is a worker's stop notice. The web page doesn't get it.
     #[serde(skip)]
     pub stop: bool,
-    /// Who sent a worker's `message`, [`MAIN_AGENT`] (its lead) or another
-    /// worker's ID.
+    /// Who sent a `message` the worker got, [`MAIN_AGENT`] (its lead) or
+    /// another worker's ID. None for an agent's message to the user.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
     /// The call a `result` is of. Clients show it under that call, which
@@ -247,6 +247,13 @@ impl Item {
     /// Whether it is the main transcript's (or a worker's).
     pub fn is_main(&self) -> bool {
         self.agent == MAIN_AGENT
+    }
+
+    /// Whether it is an agent's message to the user (`message_user`). A
+    /// worker's shows in its own transcript and in the main one, which
+    /// names the worker. (A message a worker got has its sender in `from`.)
+    pub fn is_to_user(&self) -> bool {
+        self.kind == Kind::Message && self.from.is_none()
     }
 
     /// Whether it goes beside the agent's output rather than after it. That

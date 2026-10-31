@@ -1,6 +1,8 @@
-//! `message_user`: the main agent answers the user while it works, without
-//! ending its turn. The event printer shows the message as the call is
-//! made (see `ui`), in order with the agent's other output.
+//! `message_user`: an agent answers the user while it works, without ending
+//! its turn or its task. The event printer shows the message as the call is
+//! made (see `ui`), in order with the agent's other output, and names the
+//! worker that sent it. The workers have it too, to answer what the user
+//! writes to them directly.
 
 use std::collections::HashMap;
 
@@ -24,7 +26,7 @@ impl Tool for MessageUser {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: MESSAGE_USER.to_string(),
-            description: "Shows the user a message now, without ending your turn.".to_string(),
+            description: "Shows the user a message now, without stopping your work.".to_string(),
             output_based_example: None,
             parameters: vec![ToolParameterDefinition {
                 name: MESSAGE_PARAM.to_string(),

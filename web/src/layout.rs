@@ -90,6 +90,12 @@ pub fn serious(item: &ItemData) -> bool {
     matches!(item.level, Some(Level::Warn | Level::Error))
 }
 
+/// Whether `item` is an agent's message to the user, which the main
+/// transcript shows for a worker too. (A message a worker got has a sender.)
+pub fn is_to_user(item: &ItemData) -> bool {
+    item.kind == Kind::Message && item.from.is_none()
+}
+
 /// What the Messages view keeps of the main transcript.
 fn shown_in_messages(item: &ItemData) -> bool {
     match item.kind {
@@ -163,7 +169,8 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
         if placed.contains(&item.id) && !orphan(item) {
             continue;
         }
-        let main = item.agent == MAIN;
+        // A worker's message to the user shows as the main agent's does.
+        let main = item.agent == MAIN || is_to_user(item);
         match view {
             View::Full => {
                 // The workers' calls and troubles inline. Their text, their
@@ -803,7 +810,10 @@ mod tests {
     fn a_workers_reply_and_messages_count_in_its_own_view_only() {
         let items = vec![
             item(1, Kind::User, MAIN, "go"),
-            item(2, Kind::Message, "r1", "Also the docs."),
+            ItemData {
+                from: Some(MAIN.into()),
+                ..item(2, Kind::Message, "r1", "Also the docs.")
+            },
             item(3, Kind::Text, "r1", "On it."),
             item(4, Kind::Reply, "r1", "Fixed."),
         ];
@@ -819,6 +829,35 @@ mod tests {
         items.push(call);
         assert_eq!(says(&items, View::Full, None, 1), "1 new");
         assert_eq!(says(&items, View::Quiet, None, 1), "Latest");
+    }
+
+    /// A worker's message to the user (one without a sender) is a row of
+    /// its own view and of every main view, and counts in each. A message
+    /// the worker got stays in its own view.
+    #[test]
+    fn a_workers_message_to_the_user_shows_in_its_view_and_the_main_one() {
+        let items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            ItemData {
+                from: Some(MAIN.into()),
+                ..item(2, Kind::Message, "r1", "Also the docs.")
+            },
+            item(3, Kind::Text, "r1", "On it."),
+            item(4, Kind::Message, "r1", "Found it."),
+        ];
+        for view in View::ALL {
+            assert_eq!(
+                layout(&items, view, None),
+                [Row::Item(1), Row::Item(4)],
+                "{view:?}"
+            );
+            assert_eq!(says(&items, view, None, 1), "1 new", "{view:?}");
+        }
+        assert_eq!(
+            layout(&items, View::Full, Some("r1")),
+            [Row::Item(2), Row::Item(3), Row::Item(4)]
+        );
+        assert!(is_to_user(&items[3]) && !is_to_user(&items[1]));
     }
 
     #[test]

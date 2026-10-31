@@ -1521,9 +1521,13 @@ impl Filter {
                     };
                 }
                 if !item.is_main() {
-                    // A worker's calls and what went wrong show in Full, and
-                    // so does its stop (an Info notice). Its text, its report
+                    // A worker's message to the user shows in every view.
+                    // Its calls and what went wrong show in Full, and so
+                    // does its stop (an Info notice). Its text, its report
                     // and what the user wrote to it are its own view's.
+                    if item.is_to_user() {
+                        return Show::Item;
+                    }
                     return match (view, item.kind) {
                         (View::Full, Kind::Call) => Show::Item,
                         (View::Full, Kind::Notice)
@@ -1709,11 +1713,17 @@ fn entry_lines(
         }
         Kind::Message => {
             let mut lines = Vec::new();
-            // A worker's message says whose it is.
-            if let Some(from) = &item.from {
-                let from = if from == MAIN_AGENT { "the lead" } else { from };
+            // A message a worker got says whose it is, and outside its own
+            // view a worker's message to the user says whose it is too.
+            let header = match &item.from {
+                Some(from) if from == MAIN_AGENT => Some("Message from the lead".to_string()),
+                Some(from) => Some(format!("Message from {from}")),
+                None if !item.is_main() && !own => Some(format!("{} to you", item.agent)),
+                None => None,
+            };
+            if let Some(header) = header {
                 lines.push(Wrapped::line(vec![Span::styled(
-                    format!("Message from {from}"),
+                    header,
                     theme.dim().add_modifier(Modifier::BOLD),
                 )]));
             }
@@ -2509,6 +2519,30 @@ mod tests {
         assert_eq!(
             rows(&mut t, &Filter::Worker("r1".into()), 40, 2),
             ["✉ Message from the lead", "  Also the docs."]
+        );
+    }
+
+    /// A worker's message to the user shows in its own view as the main
+    /// agent's does in the main transcript, and in every view of the main
+    /// transcript under its name. Its text stays in its own view.
+    #[test]
+    fn a_workers_message_to_the_user_shows_in_its_view_and_the_main_one() {
+        let mut t = Transcript::new();
+        t.apply(Update::Item(item(1, Kind::User, "Fix it")));
+        t.apply(Update::Item(item(2, Kind::Text, "Looking.").agent("r3")));
+        t.apply(Update::Item(
+            item(3, Kind::Message, "Found it.").agent("r3"),
+        ));
+        for view in View::ALL {
+            assert_eq!(
+                rows(&mut t, &Filter::Main(view), 40, 5),
+                ["▎ Fix it", "", "✉ r3 to you", "  Found it.", ""],
+                "{view:?}"
+            );
+        }
+        assert_eq!(
+            rows(&mut t, &Filter::Worker("r3".into()), 40, 3),
+            ["  Looking.", "", "✉ Found it."]
         );
     }
 

@@ -1931,7 +1931,9 @@ fn to_r1(feed: &remote::Feed) -> Vec<(String, Option<remote::Source>)> {
 /// `/message r1 …` typed while the main agent waits for its worker: the
 /// running worker reads it at its next step, marked as from the user, and
 /// the lead's wait returns a copy with the report. The feed has it as the
-/// user's message to r1.
+/// user's message to r1. The worker answers with `message_user`, which the
+/// feed has as r1's message to the user, for its own view and the main
+/// transcript, and the page reads it as such.
 #[tokio::test]
 async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
     let temp = tempfile::tempdir().unwrap();
@@ -1944,8 +1946,14 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
             let hold = hold.clone();
             Box::pin(async move {
                 if body.contains("You are agent run r1") {
-                    if body.contains("call_w1") {
-                        complete("w2", "Used tabs.")
+                    if body.contains("call_w2") {
+                        complete("w3", "Used tabs.")
+                    } else if body.contains("call_w1") {
+                        tool_call(
+                            "w2",
+                            crate::message::MESSAGE_USER,
+                            serde_json::json!({"message": "Tabs it is."}),
+                        )
                     } else {
                         hold.notified().await;
                         tool_call("w1", SHELL_TOOL, serde_json::json!({"command": "echo hi"}))
@@ -1995,20 +2003,49 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
     assert_eq!(summary(&harness), "All done.");
     let worker = body(&bodies, "call_w1", "");
     assert!(
-        worker.contains("The user sent you a message directly. Text you write only in your thinking may never reach them, so answer in your text or in your report:\\n  Use tabs."),
+        worker.contains("The user sent you a message directly. Answer them with `message_user`, or tell your lead if you don't have that tool. Never answer only in your thinking, which may never reach them:\\n  Use tabs."),
         "{worker}"
+    );
+    // Its answer went through.
+    let answered = body(&bodies, "call_w2", "");
+    assert!(
+        answered.contains("The user has your message. Carry on with your work."),
+        "{answered}"
     );
     let lead = body(&bodies, "Used tabs.", "You are agent run r1");
     assert!(
         lead.contains("The user sent r1 a message directly (a copy for you):"),
         "{lead}"
     );
+    assert!(!lead.contains("Tabs it is."), "{lead}");
     assert_eq!(
         to_r1(&harness.feed),
         [("Use tabs.".to_string(), Some(remote::Source::Terminal))]
     );
     // The command itself isn't in the transcript.
     assert!(!says(&harness.feed, "user", "/message"));
+    // The answer is r1's message to the user, as the page reads it too.
+    let answers: Vec<remote::Item> = harness
+        .feed
+        .subscribe()
+        .0
+        .items
+        .into_iter()
+        .filter(|item| item.text == "Tabs it is.")
+        .collect();
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    let answer = &answers[0];
+    assert_eq!(
+        (answer.agent.as_str(), answer.kind, answer.from.as_deref()),
+        ("r1", remote::Kind::Message, None)
+    );
+    assert!(answer.is_to_user());
+    let read: crate::remote::protocol::ItemData =
+        serde_json::from_value(serde_json::to_value(answer).unwrap()).unwrap();
+    assert_eq!(
+        (read.agent.as_str(), read.kind, read.from, read.text.as_str()),
+        ("r1", remote::Kind::Message, None, "Tabs it is.")
+    );
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
