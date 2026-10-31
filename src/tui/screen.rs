@@ -43,7 +43,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let list_rows = rows.len() as u16;
     let text_width = (area.width as usize).saturating_sub(4).max(4);
     app.input_width = text_width;
-    let mut input = app.editor.lines(text_width, theme.text(), theme.key());
+    let mut input = app
+        .editor
+        .lines(text_width, theme.text(), theme.key(), theme.dim());
     let (mut cursor_row, cursor_column) = app.editor.position(text_width);
     // The cursor after a full last row is on a row of its own.
     if cursor_row == input.len() {
@@ -149,7 +151,7 @@ fn draw_input(
     );
     let x = rect.x + 3;
     let width = rect.width.saturating_sub(4);
-    if app.editor.is_empty() {
+    if app.editor.is_empty() && !app.editor.has_tentative() {
         let placeholder = if !app.panel.attached.is_empty() {
             "Your answer".to_string()
         } else if answering {
@@ -510,6 +512,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             theme.dim(),
         ));
     }
+    // A recording, which is what the box is doing.
+    let dictation = app.dictation_status();
+    if let Some((words, _)) = dictation.as_ref().filter(|(words, _)| !words.is_empty()) {
+        left.push(sep());
+        left.push(Span::styled(words.clone(), theme.accent()));
+    }
     let reading = &app.reading;
     // The risky setting, only while it is on, first.
     if app.outside() {
@@ -604,7 +612,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" "),
         ]
     } else {
-        let pairs: &[(&str, &str)] = if app.list_focus.is_some() {
+        let pairs: &[(&str, &str)] = if let Some((_, keys)) = dictation {
+            keys
+        } else if app.list_focus.is_some() {
             &[("Enter", "view"), ("Esc", "back to the box")]
         } else if app.watching.is_some() && app.command_running() {
             &[("Ctrl+B", "background"), ("Esc", "back")]

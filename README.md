@@ -20,6 +20,8 @@ models, and on your Claude plan through an installed Claude Code.
 - Search indexes of code and docs (`arko index`), kept current while Arko runs
 - A web page for following a session and taking part from a browser, such as a phone's
   (`--remote`)
+- [Dictation](docs/dictation.md) into the message box (`/dictate`, Ctrl+R), recognized on your
+  computer
 - Any model on OpenRouter, from a list you can filter, with [routing settings](docs/openrouter.md)
   for zero data retention, a region and the providers that serve it
 - A model and effort for each worker, which the agent chooses or takes from

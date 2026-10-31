@@ -36,6 +36,14 @@ pub struct Editor {
     recall: Option<Recall>,
     /// The column ↑ and ↓ keep to.
     goal: Option<usize>,
+    /// Dictation's words that may still change, shown dimmed after the
+    /// cursor. They aren't part of the text.
+    tentative: Vec<char>,
+    /// The parts of the text a recording put in, for Esc to take out. They
+    /// follow the text through every edit. Text typed inside one splits it,
+    /// since that text is the user's, and deleting part of one leaves the
+    /// rest.
+    dictated: Vec<std::ops::Range<usize>>,
 }
 
 impl Editor {
@@ -48,7 +56,114 @@ impl Editor {
             history,
             recall: None,
             goal: None,
+            tentative: Vec::new(),
+            dictated: Vec::new(),
         }
+    }
+
+    /// Inserts `chars` at `at`, with the dictated ranges following the
+    /// text. The cursor stays.
+    fn splice_in(&mut self, at: usize, chars: &[char]) {
+        let count = chars.len();
+        self.text.splice(at..at, chars.iter().copied());
+        let mut after = Vec::new();
+        for range in &mut self.dictated {
+            if range.start >= at {
+                range.start += count;
+                range.end += count;
+            } else if range.end > at {
+                after.push(at + count..range.end + count);
+                range.end = at;
+            }
+        }
+        self.dictated.extend(after);
+    }
+
+    /// Removes the characters from `from` to `to` and returns them, with
+    /// the dictated ranges following the text. The cursor stays.
+    fn splice_out(&mut self, from: usize, to: usize) -> Vec<char> {
+        let removed: Vec<char> = self.text.drain(from..to).collect();
+        let moved = |at: usize| {
+            if at <= from {
+                at
+            } else if at < to {
+                from
+            } else {
+                at - (to - from)
+            }
+        };
+        for range in &mut self.dictated {
+            *range = moved(range.start)..moved(range.end);
+        }
+        self.dictated.retain(|range| !range.is_empty());
+        removed
+    }
+
+    /// Inserts a recording's words at the cursor, as its own.
+    pub fn insert_dictated(&mut self, text: &str) {
+        let start = self.cursor;
+        self.insert_text(text);
+        if self.cursor > start {
+            match self.dictated.iter_mut().find(|range| range.end == start) {
+                Some(range) => range.end = self.cursor,
+                None => self.dictated.push(start..self.cursor),
+            }
+        }
+    }
+
+    /// Takes out what the recording put in that's still there.
+    pub fn remove_dictated(&mut self) {
+        let mut ranges = std::mem::take(&mut self.dictated);
+        ranges.sort_by_key(|range| std::cmp::Reverse(range.start));
+        for range in ranges {
+            self.remove(range.start, range.end);
+        }
+    }
+
+    /// The recording's words become the user's.
+    pub fn keep_dictated(&mut self) {
+        self.dictated.clear();
+    }
+
+    /// Shows dictation's tentative words after the cursor, in place of
+    /// those shown before.
+    pub fn set_tentative(&mut self, text: &str) {
+        self.tentative = text.chars().filter(|c| !c.is_control()).collect();
+    }
+
+    pub fn has_tentative(&self) -> bool {
+        !self.tentative.is_empty()
+    }
+
+    /// Inserts `text` at the cursor as typed (dictated text: never a chip).
+    fn insert_text(&mut self, text: &str) {
+        let chars: Vec<char> = text
+            .chars()
+            .filter(|c| *c == '\n' || !c.is_control())
+            .collect();
+        self.splice_in(self.cursor, &chars);
+        self.cursor += chars.len();
+        self.edited();
+    }
+
+    /// The character before the cursor.
+    pub fn before_cursor(&self) -> Option<char> {
+        self.cursor.checked_sub(1).map(|at| self.text[at])
+    }
+
+    /// Removes the characters from `from` to `to`; the cursor keeps its
+    /// place in what's left.
+    pub fn remove(&mut self, from: usize, to: usize) {
+        if from >= to || to > self.text.len() {
+            return;
+        }
+        self.splice_out(from, to);
+        if self.cursor >= to {
+            self.cursor -= to - from;
+        } else if self.cursor > from {
+            self.cursor = from;
+        }
+        self.edited();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -130,6 +245,7 @@ impl Editor {
     pub fn clear(&mut self) {
         self.text.clear();
         self.chips.clear();
+        self.dictated.clear();
         self.cursor = 0;
         self.recall = None;
         self.goal = None;
@@ -139,6 +255,7 @@ impl Editor {
     pub fn set(&mut self, text: &str) {
         self.text.clear();
         self.chips.clear();
+        self.dictated.clear();
         self.cursor = 0;
         self.paste(text);
         self.goal = None;
@@ -158,7 +275,7 @@ impl Editor {
     }
 
     pub fn insert(&mut self, c: char) {
-        self.text.insert(self.cursor, c);
+        self.splice_in(self.cursor, &[c]);
         self.cursor += 1;
         self.edited();
     }
@@ -178,12 +295,12 @@ impl Editor {
                 self.insert(c);
             }
         } else {
-            for c in text.chars() {
-                if c == '\n' || !c.is_control() {
-                    self.text.insert(self.cursor, c);
-                    self.cursor += 1;
-                }
-            }
+            let chars: Vec<char> = text
+                .chars()
+                .filter(|c| *c == '\n' || !c.is_control())
+                .collect();
+            self.splice_in(self.cursor, &chars);
+            self.cursor += chars.len();
             self.edited();
         }
     }
@@ -196,7 +313,7 @@ impl Editor {
         }
         let pasted: String = self.text[start..self.cursor].iter().collect();
         if pasted.lines().count() > CHIP_LINES || pasted.chars().count() > CHIP_CHARS {
-            self.text.drain(start..self.cursor);
+            self.splice_out(start, self.cursor);
             self.cursor = start;
             self.paste(&pasted);
         }
@@ -216,7 +333,7 @@ impl Editor {
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
             self.cursor -= 1;
-            self.text.remove(self.cursor);
+            self.splice_out(self.cursor, self.cursor + 1);
             self.edited();
         }
     }
@@ -224,7 +341,7 @@ impl Editor {
     /// Deletes the character under the cursor; false when there is none.
     pub fn delete(&mut self) -> bool {
         if self.cursor < self.text.len() {
-            self.text.remove(self.cursor);
+            self.splice_out(self.cursor, self.cursor + 1);
             self.edited();
             true
         } else {
@@ -300,7 +417,7 @@ impl Editor {
 
     fn cut(&mut self, from: usize, to: usize) {
         if from < to {
-            self.kill = self.text.drain(from..to).collect();
+            self.kill = self.splice_out(from, to).into_iter().collect();
             self.cursor = from;
             self.edited();
         }
@@ -335,10 +452,8 @@ impl Editor {
     /// Ctrl+Y: what the last kill took.
     pub fn yank(&mut self) {
         let kill: Vec<char> = self.kill.chars().collect();
-        for c in kill {
-            self.text.insert(self.cursor, c);
-            self.cursor += 1;
-        }
+        self.splice_in(self.cursor, &kill);
+        self.cursor += kill.len();
         self.edited();
     }
 
@@ -349,13 +464,30 @@ impl Editor {
     /// past its edge), so the next row starts with the word. A chip is a
     /// word of its own.
     fn rows(&self, width: usize) -> Vec<Vec<usize>> {
+        self.rows_of(&self.text, width)
+    }
+
+    /// The text as the box shows it: with the tentative words at the
+    /// cursor.
+    fn laid_out(&self) -> std::borrow::Cow<'_, [char]> {
+        if self.tentative.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.text);
+        }
+        let mut shown = self.text[..self.cursor].to_vec();
+        shown.extend_from_slice(&self.tentative);
+        shown.extend_from_slice(&self.text[self.cursor..]);
+        std::borrow::Cow::Owned(shown)
+    }
+
+    /// [`rows`](Self::rows) of `text`.
+    fn rows_of(&self, text: &[char], width: usize) -> Vec<Vec<usize>> {
         let width = width.max(2);
         let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
         let mut used = 0;
         // The word being laid out: where it starts in the row, and the
         // width of the row before it.
         let mut word: Option<(usize, usize)> = None;
-        for (index, c) in self.text.iter().enumerate() {
+        for (index, c) in text.iter().enumerate() {
             if *c == '\n' {
                 rows.last_mut().unwrap().push(index);
                 rows.push(Vec::new());
@@ -410,9 +542,11 @@ impl Editor {
         }
     }
 
-    /// The cursor's row and column at `width`.
+    /// The cursor's row and column at `width`, as the box shows the text
+    /// (tentative words after the cursor).
     pub fn position(&self, width: usize) -> (usize, usize) {
-        let rows = self.rows(width);
+        let text = self.laid_out();
+        let rows = self.rows_of(&text, width);
         let last = rows.len() - 1;
         for (row, indices) in rows.into_iter().enumerate() {
             let mut column = 0;
@@ -420,8 +554,8 @@ impl Editor {
                 if index == self.cursor {
                     return (row, column);
                 }
-                if self.text[index] != '\n' {
-                    column += self.width_of(self.text[index]);
+                if text[index] != '\n' {
+                    column += self.width_of(text[index]);
                 }
             }
             // After the last character. A full row leaves the cursor no
@@ -519,31 +653,42 @@ impl Editor {
         true
     }
 
-    /// The box's lines at `width` as spans (a chip in `chip` style), and
-    /// the cursor's row and column.
-    pub fn lines(&self, width: usize, text: Style, chip: Style) -> Vec<Vec<Span<'static>>> {
-        self.rows(width)
+    /// The box's lines at `width` as spans (a chip in `chip` style, the
+    /// tentative words in `tentative` style).
+    pub fn lines(
+        &self,
+        width: usize,
+        text: Style,
+        chip: Style,
+        tentative: Style,
+    ) -> Vec<Vec<Span<'static>>> {
+        let shown = self.laid_out();
+        let dictated = self.cursor..self.cursor + self.tentative.len();
+        self.rows_of(&shown, width)
             .into_iter()
             .map(|indices| {
                 let mut spans = Vec::new();
+                // The run of characters in one style, and that style.
                 let mut run = String::new();
+                let mut style = text;
                 for index in indices {
-                    let c = self.text[index];
+                    let c = shown[index];
                     if c == '\n' {
                         continue;
                     }
-                    match self.chip(c) {
-                        Some(label) => {
-                            if !run.is_empty() {
-                                spans.push(Span::styled(std::mem::take(&mut run), text));
-                            }
-                            spans.push(Span::styled(label, chip));
-                        }
-                        None => run.push(c),
+                    let (piece, piece_style) = match self.chip(c) {
+                        _ if dictated.contains(&index) => (c.to_string(), tentative),
+                        Some(label) => (label, chip),
+                        None => (c.to_string(), text),
+                    };
+                    if piece_style != style && !run.is_empty() {
+                        spans.push(Span::styled(std::mem::take(&mut run), style));
                     }
+                    style = piece_style;
+                    run.push_str(&piece);
                 }
                 if !run.is_empty() {
-                    spans.push(Span::styled(run, text));
+                    spans.push(Span::styled(run, style));
                 }
                 spans
             })
@@ -563,6 +708,62 @@ mod tests {
         for c in text.chars() {
             editor.insert(c);
         }
+    }
+
+    /// A recording's words are followed through edits, and only they are
+    /// taken out: text typed before them moves them, text typed inside one
+    /// splits it, and part of one deleted leaves the rest.
+    #[test]
+    fn dictated_words_are_followed_through_edits() {
+        // Typed text equal to the dictated words, where they were, stays.
+        let mut e = editor();
+        e.insert_dictated("cat");
+        e.home();
+        typed(&mut e, "cat dog ");
+        assert_eq!(e.text(), "cat dog cat");
+        e.remove_dictated();
+        assert_eq!(e.text(), "cat dog ");
+        assert_eq!(e.cursor(), 8);
+
+        // Runs in several places, one split by typing, one partly deleted.
+        let mut e = editor();
+        typed(&mut e, "Hi ");
+        e.insert_dictated("one two");
+        e.insert_dictated(" three");
+        e.left();
+        e.left();
+        e.left();
+        e.left();
+        typed(&mut e, "X");
+        assert_eq!(e.text(), "Hi one two tXhree");
+        e.home();
+        e.insert_dictated("Zero ");
+        e.end();
+        e.backspace();
+        assert_eq!(e.text(), "Zero Hi one two tXhre");
+        e.remove_dictated();
+        assert_eq!(e.text(), "Hi X");
+
+        // Once kept, the words are the user's.
+        let mut e = editor();
+        e.insert_dictated("mine");
+        e.keep_dictated();
+        e.remove_dictated();
+        assert_eq!(e.text(), "mine");
+
+        // Emptying the box forgets them, and a cut and paste back is typed.
+        let mut e = editor();
+        e.insert_dictated("gone");
+        e.clear();
+        typed(&mut e, "gone");
+        e.remove_dictated();
+        assert_eq!(e.text(), "gone");
+        let mut e = editor();
+        e.insert_dictated("word");
+        e.kill_word();
+        e.yank();
+        e.remove_dictated();
+        assert_eq!(e.text(), "word");
     }
 
     #[test]

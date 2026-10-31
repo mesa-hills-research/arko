@@ -664,7 +664,7 @@ fn field_rows(
         editor.insert(c);
     }
     editor.set_cursor(cursor);
-    let mut rows = editor.lines(width, style, style);
+    let mut rows = editor.lines(width, style, style, style);
     let (row, column) = editor.position(width);
     while rows.len() <= row {
         rows.push(Vec::new());

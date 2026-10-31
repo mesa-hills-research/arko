@@ -47,6 +47,9 @@ remote = [
 # `Options::client`), for tests only, also those of an app built on the
 # library. Not for builds that ship.
 testing = []
+# Dictation (/dictate, Ctrl+R): speech recognized on this computer, and the
+# microphone. It needs Rust 1.97, and ALSA's headers on Linux.
+dictation = ["dep:speech", "dep:cpal"]
 
 [dependencies]
 # The framework, from crates.io. CONTRIBUTING.md shows how to build against
@@ -65,6 +68,8 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "json
 base64 = "0.22.1"
 chrono = { version = "0.4.38", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"], optional = true }
+# The microphone, for dictation (ALSA on Linux, CoreAudio, WASAPI).
+cpal = { version = "0.15.3", optional = true }
 # The full-screen view (the default front end), with terminal events as a
 # stream and copying through the terminal (OSC 52).
 crossterm = { version = "0.29.0", features = ["event-stream", "osc52"], optional = true }
@@ -113,6 +118,9 @@ serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.115"
 # The web page keeps its session cookies by their SHA-256, never as they are.
 sha2 = "0.10.9"
+# Dictation's speech engine, under a key of its own so that only this line
+# (and the profile below) name the package.
+speech = { package = "telmo", version = "0.2", default-features = false, optional = true }
 subtle = "2.6.1"
 tokio = { version = "1.37.0", features = ["full"] }
 unicode-segmentation = "1.12.0"
@@ -135,3 +143,7 @@ zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 # backtrace shows addresses instead of function names.
 [profile.release]
 strip = true
+
+# The speech engine is far too slow to dictate with unoptimized.
+[profile.dev.package.telmo]
+opt-level = 3

@@ -3626,6 +3626,16 @@ impl Harness {
                     other.split_whitespace().next().unwrap_or(other)
                 ));
             }
+            // (The prompt runs it when it reads a terminal.)
+            other
+                if commands::find(other)
+                    .is_some_and(|command| command.runs == commands::Runs::Terminal) =>
+            {
+                out.line(&format!(
+                    "{} works at Arko's prompt in a terminal.",
+                    other.split_whitespace().next().unwrap_or(other)
+                ));
+            }
             _ => {
                 for line in commands::help_lines() {
                     out.line(&line);

@@ -361,16 +361,18 @@ pub fn stop_reading() {
 /// prompt is a line editor with history, and the returned printer prints
 /// above it; without one, lines are read from standard input as they come.
 /// `/keys add PROVIDER` is read here, with the key's input hidden, and
-/// added to `keys`: neither reaches the session as a line. While the
-/// session's `feed` says the old model writes its report for a switch, a
-/// message stays in the box.
+/// added to `keys`: neither reaches the session as a line. So is
+/// `/dictate`, whose words then wait at the prompt. While the session's
+/// `feed` says the old model writes its report for a switch, a message
+/// stays in the box. `root` is Arko's folder, which keeps the history.
 #[cfg(feature = "tui")]
 pub fn spawn_input(
-    history: PathBuf,
+    root: PathBuf,
     sender: mpsc::UnboundedSender<Input>,
     keys: Option<Arc<crate::keys::Keys>>,
     feed: Option<crate::remote::Feed>,
 ) -> Option<Box<dyn Printer>> {
+    let history = root.join("history.txt");
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         let (printer_sender, printer_receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -418,6 +420,10 @@ pub fn spawn_input(
                             crate::keys::add_at_prompt(keys, key);
                             continue;
                         }
+                        if line.trim() == "/dictate" {
+                            kept = dictate_at_prompt(&root);
+                            continue;
+                        }
                         // While the old model writes its report for a
                         // switch, a message stays in the box. (A command
                         // goes.)
@@ -452,6 +458,134 @@ pub fn spawn_input(
         std::thread::spawn(move || read_lines(sender));
         None
     }
+}
+
+/// `/dictate` at the line prompt: records until Enter, printing the words
+/// as they settle, and returns them to edit at the prompt. A missing model
+/// is asked about first.
+#[cfg(feature = "tui")]
+fn dictate_at_prompt(root: &std::path::Path) -> Option<String> {
+    use crate::dictation::{
+        self, DictationError, DictationEvent, DictationOptions, DictationService, Sink, Source,
+    };
+    enum Heard {
+        Update(dictation::DictationUpdate),
+        Enter,
+    }
+    let (sender, heard) = std::sync::mpsc::channel();
+    let open = |download: bool| {
+        let sender = sender.clone();
+        let sink: Sink = Box::new(move |update| {
+            let _ = sender.send(Heard::Update(update));
+        });
+        DictationService::shared(root).open(DictationOptions { download }, sink)
+    };
+    let mut stdout = std::io::stdout();
+    let opened = match open(false) {
+        Err(DictationError::NeedsDownload(model)) => {
+            print!(
+                "{}\n{}\nDownload it? [Y/n] ",
+                dictation::DOWNLOAD_TITLE,
+                model.offer()
+            );
+            let _ = stdout.flush();
+            let mut answer = String::new();
+            let read = std::io::stdin().read_line(&mut answer).unwrap_or(0);
+            if read == 0 || !matches!(answer.trim().to_lowercase().as_str(), "" | "y" | "yes") {
+                return None;
+            }
+            open(true)
+        }
+        opened => opened,
+    };
+    let mut open_dictation = match opened {
+        Ok(dictation) => Some(dictation),
+        Err(error) => {
+            println!("{error}");
+            return None;
+        }
+    };
+    if dictation::over_ssh() {
+        println!("{}.", dictation::OVER_SSH);
+    }
+    println!("Press Enter to stop.");
+    // Enter is read on a thread of its own while the words come.
+    let enter = sender.clone();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        let _ = enter.send(Heard::Enter);
+    });
+    // The microphone records while `_capture` holds it.
+    let (mut _capture, mut listening, mut entered, mut preparing) = (None, false, false, false);
+    let mut text = String::new();
+    // What ended it early, said once Enter is read (else the thread
+    // reading it would take the next line).
+    let mut ended: Option<String> = None;
+    while let Ok(heard) = heard.recv() {
+        match heard {
+            Heard::Enter => {
+                entered = true;
+                _capture = None;
+                match open_dictation.as_mut() {
+                    // (Kept until Done: dropping it would cancel it.)
+                    Some(dictation) if listening => dictation.finish(),
+                    // (Still getting ready: a download resumes next time.)
+                    Some(_) => return None,
+                    None if ended.is_some() => return None,
+                    None => {}
+                }
+            }
+            Heard::Update(update) => match update.event {
+                DictationEvent::Preparing(step) => {
+                    print!("\r{}   ", step.label());
+                    let _ = stdout.flush();
+                    preparing = true;
+                }
+                DictationEvent::Listening => {
+                    if preparing {
+                        println!();
+                    }
+                    listening = true;
+                    let recorded = open_dictation
+                        .as_ref()
+                        .map(|dictation| dictation.record(&Source::from_env()));
+                    match recorded {
+                        Some(Ok(recording)) => {
+                            _capture = Some(recording);
+                            println!("Listening.");
+                        }
+                        Some(Err(why)) => {
+                            open_dictation = None;
+                            println!("{why} Press Enter.");
+                            ended = Some(why);
+                        }
+                        None => {}
+                    }
+                }
+                DictationEvent::Text { settled, .. } => {
+                    print!("{settled}");
+                    let _ = stdout.flush();
+                    text.push_str(&settled);
+                }
+                DictationEvent::Done => {
+                    println!();
+                    break;
+                }
+                DictationEvent::Failed(why) => {
+                    open_dictation = None;
+                    _capture = None;
+                    if entered {
+                        println!("\n{why}");
+                        return None;
+                    }
+                    println!("\n{why} Press Enter.");
+                    ended = Some(why);
+                }
+            },
+        }
+    }
+    (!text.is_empty()).then_some(text)
 }
 
 #[cfg(feature = "tui")]

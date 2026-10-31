@@ -112,6 +112,11 @@ pub enum Effect {
     /// model lacks (the result comes to [`App::names_checked`]), until
     /// asked to stop.
     CheckNames(Cancel),
+    /// What a recording needs of the dictation service and the microphone.
+    Dictate(super::dictation::Dictate),
+    /// A notice in the transcript, for what must outlast the status line's
+    /// hint (a failure).
+    Notice(crate::remote::Level, String),
 }
 
 /// A check that its asker can end: set to stop it.
@@ -355,6 +360,8 @@ pub struct App {
     /// How far OpenRouter's models in memory had changed when the view last
     /// looked.
     openrouter_seen: u64,
+    /// The recording `/dictate` or Ctrl+R started, until it ends.
+    pub recording: Option<super::dictation::Recording>,
 }
 
 /// The argument being typed on a command line, and what it may be.
@@ -447,6 +454,7 @@ impl App {
             }),
             model_names: Default::default(),
             openrouter_seen: crate::openrouter::generation(),
+            recording: None,
         }
     }
 
@@ -942,6 +950,9 @@ impl App {
             self.overlay_key(key);
             return;
         }
+        if self.dictation_key(key) {
+            return;
+        }
         // The approval tray takes the keys, and gives them back.
         if let KeyCode::Char('a') = key.code
             && alt
@@ -974,6 +985,7 @@ impl App {
             KeyCode::Char('o') if ctrl => return self.cycle_view(),
             KeyCode::Char('t') if ctrl => return self.focus_list(),
             KeyCode::Char('l') if ctrl => return self.effects.push(Effect::Clear),
+            KeyCode::Char('r') if ctrl => return self.toggle_dictation(),
             KeyCode::PageUp => return self.transcript.scroll(-self.page()),
             KeyCode::PageDown => return self.transcript.scroll(self.page()),
             KeyCode::Up if shift && !ctrl && !alt => return self.transcript.scroll(-WHEEL),
@@ -1409,6 +1421,10 @@ impl App {
                     self.overlay = Some(Overlay::Help { scroll: 0 });
                     true
                 }
+                ("/dictate", _) => {
+                    self.toggle_dictation();
+                    true
+                }
                 ("/exit", _) => {
                     self.quit();
                     true
@@ -1726,6 +1742,7 @@ impl App {
             // another have started, the session asks again. No leaves the
             // choice unsaved, so the next quit asks again.
             // Esc is Cancel, and either button goes back to the settings.
+            Overlay::Download { model, choice } => self.download_key(key, model, choice),
             Overlay::AskOff { row, choice } => match key.code {
                 _ if close => Some(Overlay::Settings { row, picker: None }),
                 KeyCode::Left

@@ -16,6 +16,7 @@ mod approvals;
 mod backend;
 mod cache;
 mod clipboard;
+mod dictation;
 mod input;
 mod keys_menu;
 mod markdown;
@@ -121,7 +122,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
                 "arko: the full-screen view couldn't start ({error}), so Arko uses the line prompt"
             );
             if let Some(printer) = ui::spawn_input(
-                history,
+                setup.root.clone(),
                 setup.input.clone(),
                 Some(setup.keys.clone()),
                 Some(setup.feed.clone()),
@@ -230,10 +231,17 @@ impl Command for EnableMouse {
 fn open() -> std::io::Result<(Terminal<CursorBackend<Stdout>>, bool)> {
     crossterm::terminal::enable_raw_mode()?;
     OPEN.store(true, std::sync::atomic::Ordering::SeqCst);
-    // A panic restores the terminal before its message prints (as
-    // ratatui's init does, ratatui/src/init.rs:566).
+    // A panic that ends the view restores the terminal before its message
+    // prints (as ratatui's init does, ratatui/src/init.rs:566). Another
+    // thread's, which dictation's thread recovers from (and the speech
+    // engine's workers, whose panics it rethrows there), goes to the log
+    // and leaves the screen.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        if !ends_the_view(std::thread::current().name()) {
+            log::error!("{info}");
+            return;
+        }
         close();
         previous(info);
     }));
@@ -275,6 +283,13 @@ fn clear_new_screen(writer: &mut impl Write) -> std::io::Result<()> {
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         cursor::MoveTo(0, 0)
     )
+}
+
+/// Whether a panic on the thread named `thread` ends the view: the main
+/// thread's, or the runtime's, which runs the view (tokio's default name,
+/// which the command's runtime keeps).
+fn ends_the_view(thread: Option<&str>) -> bool {
+    matches!(thread, Some("main" | "tokio-runtime-worker"))
 }
 
 /// The keyboard protocol was pushed: it is popped as the view closes.
@@ -375,6 +390,13 @@ async fn run(
     // one after another, and their results come back here.
     let settings_worker = openrouter_menu::Worker::start();
     let (settings_done, mut settings_results) = mpsc::unbounded_channel();
+    // The view's dictation and its microphone, while it records, and where
+    // its events come.
+    let mut recording: (
+        Option<crate::dictation::Dictation>,
+        Option<crate::dictation::Capture>,
+    ) = (None, None);
+    let (recording_events, mut recording_received) = mpsc::unbounded_channel();
     loop {
         if draw_now {
             draw(&mut terminal, &mut app);
@@ -450,6 +472,13 @@ async fn run(
                 app.openrouter_done(result);
                 draw_now = true;
             }
+            Some(update) = recording_received.recv() => {
+                app.dictation_event(update);
+                while let Ok(update) = recording_received.try_recv() {
+                    app.dictation_event(update);
+                }
+                draw_now = true;
+            }
             _ = frames.tick(), if dirty => draw_now = true,
             _ = animation.tick(), if app.transcript.drawn.moving => draw_now = true,
             _ = clock.tick() => {
@@ -503,68 +532,143 @@ async fn run(
         if bell {
             let _ = std::io::stdout().write_all(b"\x07");
         }
-        for effect in app.take_effects() {
-            match effect {
-                Effect::Input(input) => {
-                    let _ = setup.input.send(input);
+        // (Carrying out one can ask for another, such as a dictation's
+        // notice.)
+        let mut effects = app.take_effects();
+        while !effects.is_empty() {
+            for effect in effects {
+                match effect {
+                    Effect::Notice(level, text) => setup.feed.notice(level, &text),
+                    Effect::Input(input) => {
+                        let _ = setup.input.send(input);
+                    }
+                    Effect::Copy { text, what } => {
+                        // The terminal's clipboard, and the system's: the status
+                        // line says "Copied" only when the system's took it.
+                        let mut stdout = std::io::stdout();
+                        let _ = execute!(
+                            stdout,
+                            crossterm::clipboard::CopyToClipboard::to_clipboard_from(
+                                text.as_bytes()
+                            )
+                        );
+                        app.say(match clipboard::copy(&text) {
+                            clipboard::Copied::System => format!("Copied {what}"),
+                            clipboard::Copied::Terminal => {
+                                "Sent to the terminal's clipboard".into()
+                            }
+                            clipboard::Copied::Failed(why) => why,
+                        });
+                    }
+                    Effect::Mouse(on) => {
+                        let _ = if on {
+                            execute!(std::io::stdout(), EnableMouse)
+                        } else {
+                            execute!(std::io::stdout(), DisableMouseCapture)
+                        };
+                    }
+                    Effect::Clear => {
+                        let _ = clear_for_redraw(&mut terminal);
+                    }
+                    Effect::AddKey { key, value } => {
+                        let outcome = setup.keys.add(key, value);
+                        app.keys_done(key, outcome);
+                        // The models it makes reachable, for `/model`'s picker.
+                        app.set_reading(setup.meter.read());
+                    }
+                    Effect::RemoveKey(key) => {
+                        let outcome = setup.keys.remove(key);
+                        app.keys_done(key, outcome);
+                        app.set_reading(setup.meter.read());
+                    }
+                    Effect::OpenRouter { root, edit } => {
+                        let done = settings_done.clone();
+                        settings_worker.submit(move || {
+                            let _ = done.send(openrouter_menu::make(&root, &edit));
+                        });
+                    }
+                    Effect::Dictate(dictate) => {
+                        carry_out(dictate, &mut app, &setup, &mut recording, &recording_events)
+                    }
+                    Effect::CheckNames(cancel) => {
+                        let found = names_found.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let missing = crate::session_names::missing_until(&cancel.0);
+                            if !cancel.0.load(std::sync::atomic::Ordering::Relaxed) {
+                                let _ = found.send((cancel, missing));
+                            }
+                        });
+                    }
                 }
-                Effect::Copy { text, what } => {
-                    // The terminal's clipboard, and the system's: the status
-                    // line says "Copied" only when the system's took it.
-                    let mut stdout = std::io::stdout();
-                    let _ = execute!(
-                        stdout,
-                        crossterm::clipboard::CopyToClipboard::to_clipboard_from(text.as_bytes())
-                    );
-                    app.say(match clipboard::copy(&text) {
-                        clipboard::Copied::System => format!("Copied {what}"),
-                        clipboard::Copied::Terminal => "Sent to the terminal's clipboard".into(),
-                        clipboard::Copied::Failed(why) => why,
-                    });
-                }
-                Effect::Mouse(on) => {
-                    let _ = if on {
-                        execute!(std::io::stdout(), EnableMouse)
-                    } else {
-                        execute!(std::io::stdout(), DisableMouseCapture)
-                    };
-                }
-                Effect::Clear => {
-                    let _ = clear_for_redraw(&mut terminal);
-                }
-                Effect::AddKey { key, value } => {
-                    let outcome = setup.keys.add(key, value);
-                    app.keys_done(key, outcome);
-                    // The models it makes reachable, for `/model`'s picker.
-                    app.set_reading(setup.meter.read());
-                }
-                Effect::RemoveKey(key) => {
-                    let outcome = setup.keys.remove(key);
-                    app.keys_done(key, outcome);
-                    app.set_reading(setup.meter.read());
-                }
-                Effect::OpenRouter { root, edit } => {
-                    let done = settings_done.clone();
-                    settings_worker.submit(move || {
-                        let _ = done.send(openrouter_menu::make(&root, &edit));
-                    });
-                }
-                Effect::CheckNames(cancel) => {
-                    let found = names_found.clone();
-                    tokio::task::spawn_blocking(move || {
-                        let missing = crate::session_names::missing_until(&cancel.0);
-                        if !cancel.0.load(std::sync::atomic::Ordering::Relaxed) {
-                            let _ = found.send((cancel, missing));
-                        }
-                    });
-                }
+                draw_now = true;
             }
-            draw_now = true;
+            effects = app.take_effects();
         }
     }
     let reply = app.transcript.last_reply().map(str::to_string);
     close();
     reply
+}
+
+/// Carries out what the view's recording needs of the dictation service
+/// and the microphone. Its events come back on the view's own channel.
+fn carry_out(
+    dictate: dictation::Dictate,
+    app: &mut App,
+    setup: &Setup,
+    (open, capture): &mut (
+        Option<crate::dictation::Dictation>,
+        Option<crate::dictation::Capture>,
+    ),
+    events: &mpsc::UnboundedSender<crate::dictation::DictationUpdate>,
+) {
+    use crate::dictation::{DictationOptions, DictationService, Source};
+    match dictate {
+        dictation::Dictate::Open { download } => {
+            let sink = recording_sink(events.clone());
+            match DictationService::shared(&setup.root).open(DictationOptions { download }, sink) {
+                Ok(dictation) => {
+                    app.dictation_opened(dictation.id());
+                    *open = Some(dictation);
+                }
+                Err(error) => app.dictation_refused(error),
+            }
+        }
+        dictation::Dictate::Record => {
+            if let Some(dictation) = open.as_ref() {
+                match dictation.record(&Source::from_env()) {
+                    Ok(recording) => *capture = Some(recording),
+                    Err(why) => {
+                        *open = None;
+                        app.dictation_failed(why);
+                    }
+                }
+            }
+        }
+        // (The dictation is kept until it ends, so Esc can still cancel it.)
+        dictation::Dictate::Finish => {
+            *capture = None;
+            if let Some(dictation) = open.as_mut() {
+                dictation.finish();
+            }
+        }
+        // (Dropping the dictation cancels it, if it hasn't ended.)
+        dictation::Dictate::Cancel | dictation::Dictate::Close => {
+            *capture = None;
+            *open = None;
+        }
+    }
+}
+
+/// Where the view's own recording's events go: to the view's loop, on a
+/// channel of their own. The feed's subscription drops what a lagging view
+/// misses and starts over from a history that holds no recording.
+fn recording_sink(
+    events: mpsc::UnboundedSender<crate::dictation::DictationUpdate>,
+) -> crate::dictation::Sink {
+    Box::new(move |update| {
+        let _ = events.send(update);
+    })
 }
 
 fn clear_for_redraw<B: ratatui::backend::Backend>(
@@ -773,6 +877,90 @@ mod tests {
         );
         assert_eq!(app.editor.text(), "a\nb");
         assert!(app.take_effects().is_empty());
+    }
+
+    /// Only panics on the threads that run the view give the terminal back.
+    /// Dictation's thread recovers from its own, and the speech engine's
+    /// workers' come back to it.
+    #[test]
+    fn only_the_views_threads_panics_give_the_terminal_back() {
+        assert!(ends_the_view(Some("main")));
+        assert!(ends_the_view(Some("tokio-runtime-worker")));
+        for other in [
+            Some("arko-dictation"),
+            Some("speech-worker-3"),
+            Some("arko-microphone"),
+            None,
+        ] {
+            assert!(!ends_the_view(other), "{other:?}");
+        }
+        // The names the threads have.
+        let dictation = std::thread::Builder::new()
+            .name("arko-dictation".into())
+            .spawn(|| ends_the_view(std::thread::current().name()))
+            .unwrap();
+        assert!(!dictation.join().unwrap());
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let ended = runtime
+            .block_on(runtime.spawn(async { ends_the_view(std::thread::current().name()) }))
+            .unwrap();
+        assert!(ended, "the view's runtime");
+    }
+
+    /// When the feed's subscription lags and the view starts over from the
+    /// history, its recording keeps its words and still gets every event,
+    /// which come on their own channel.
+    #[test]
+    fn a_lagging_view_keeps_its_recording() {
+        use crate::dictation::{DictationEvent, DictationUpdate};
+        let feed = remote::Feed::new(remote::MAIN_AGENT);
+        let (_, mut updates) = feed.subscribe();
+        let mut app = app::tests::app();
+        let (events, mut received) = mpsc::unbounded_channel();
+        let mut sink = recording_sink(events);
+        app.toggle_dictation();
+        app.dictation_opened(7);
+        app.take_effects();
+        let text = |words: &str| DictationEvent::Text {
+            settled: words.into(),
+            tentative: String::new(),
+        };
+        let mut deliver = |app: &mut App| {
+            while let Ok(update) = received.try_recv() {
+                app.dictation_event(update);
+            }
+        };
+        sink(DictationUpdate {
+            id: 7,
+            event: DictationEvent::Listening,
+        });
+        sink(DictationUpdate {
+            id: 7,
+            event: text("Hello"),
+        });
+        deliver(&mut app);
+        for n in 0..5000 {
+            feed.notice(remote::Level::Info, &format!("note {n}"));
+        }
+        sink(DictationUpdate {
+            id: 7,
+            event: text(" world"),
+        });
+        // The subscription lagged, and the view starts over as its loop does.
+        assert!(matches!(
+            updates.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+        ));
+        app.reset(feed.subscribe().0);
+        deliver(&mut app);
+        assert_eq!(app.editor.text(), "Hello world");
+        assert_eq!(
+            app.recording.as_ref().map(|recording| recording.phase),
+            Some(dictation::Phase::Listening)
+        );
     }
 
     /// Giving the terminal back undoes all the view did to it: the

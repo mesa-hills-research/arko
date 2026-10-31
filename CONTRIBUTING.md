@@ -29,6 +29,16 @@ arko_index = { path = "../arko_framework/arko_index" }
 The checkout's crate versions must match the ones `Cargo.toml` asks for. Cargo records the
 override in `Cargo.lock`, so regenerate the lock without the override before committing.
 
+## Dictation
+
+The tests that run the real speech model skip unless `ARKO_TEST_SPEECH_PACK` names Granite
+Speech's int8 pack and `ARKO_TEST_SPEECH_WAV` a LibriSpeech clip (`260-123286-0018`), and the full
+install test needs `ARKO_TEST_GRANITE_DIR`, a folder of Granite Speech's files.
+
+```bash
+cargo test --features dictation
+```
+
 ## The web page
 
 The remote web page is written in Rust with Leptos, in `web/`. Its built files are in
