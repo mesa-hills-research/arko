@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::protocol::{CallStatus, Delivery, ItemData, Kind, Level, StatusData, WorkerState};
+use crate::quiet::{self, Words};
 use crate::store::{MAIN, Store};
 
 /// The transcript's views.
@@ -31,7 +32,7 @@ impl View {
     pub fn about(self) -> &'static str {
         match self {
             View::Full => "Everything, with the workers’ calls inline.",
-            View::Quiet => "Each worker as one line that updates in place.",
+            View::Quiet => "Each call in a few words, and each worker as one line.",
             View::Messages => "Just the messages, with a count of each turn’s tool calls.",
         }
     }
@@ -68,6 +69,14 @@ pub enum Row {
         id: u64,
         count: Count,
     },
+    /// Calls in a few words (Quiet), by the ID of the first: what the row
+    /// says, and the rows of its calls as Full shows them, which show when
+    /// it's open.
+    Quiet {
+        id: u64,
+        words: Words,
+        calls: Vec<Row>,
+    },
     /// The agent waits on its model.
     Working,
 }
@@ -83,6 +92,7 @@ impl Row {
                 "c{}:{id}",
                 turn.map_or("none".to_string(), |turn| turn.to_string())
             ),
+            Row::Quiet { id, .. } => format!("q{id}"),
             Row::Working => "working".into(),
         }
     }
@@ -114,6 +124,13 @@ pub fn moves_rows(old: &ItemData, new: &ItemData, view: View) -> bool {
         || serious(old) != serious(new)
         // A call's status moves a Messages count.
         || (view == View::Messages && old.status != new.status)
+        // What a call did and how it went words its Quiet row.
+        || (view == View::Quiet
+            && (old.status != new.status
+                || old.act != new.act
+                || old.outcome != new.outcome
+                || old.job != new.job
+                || old.images.len() != new.images.len()))
 }
 
 /// What the Messages view keeps of the main transcript.
@@ -247,7 +264,84 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
             }
         }
     }
+    if view == View::Quiet {
+        rows = quiet_rows(rows, &items);
+    }
     rows
+}
+
+/// The Quiet view's rows: each run of the agent's calls as rows of a few
+/// words ([`quiet::rows`], as the terminal makes them), and the rest as it
+/// is. A call's results go in its row, and show under the row only when
+/// the call failed alone.
+fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
+    let by_id: HashMap<u64, &ItemData> = items.iter().map(|item| (item.id, *item)).collect();
+    // The rows, each with the results of its own.
+    let mut shown: Vec<(Row, Vec<Row>)> = Vec::new();
+    for row in rows {
+        if let Row::Item(id, Kind::Result) = row
+            && let Some((Row::Item(call, Kind::Call), results)) = shown.last_mut()
+            && by_id.get(&id).and_then(|result| result.call) == Some(*call)
+        {
+            results.push(row);
+            continue;
+        }
+        shown.push((row, Vec::new()));
+    }
+    let steps: Vec<quiet::Step> = shown
+        .iter()
+        .map(|(row, _)| match row {
+            Row::Item(id, Kind::Call) => match by_id.get(id) {
+                Some(item) => quiet::Step::Call(quiet::Call {
+                    act: item.act.as_ref(),
+                    status: item.status,
+                    outcome: item.outcome.as_deref(),
+                    job: item.job.is_some(),
+                    images: !item.images.is_empty(),
+                    turn: item.turn,
+                }),
+                None => quiet::Step::Other,
+            },
+            Row::Item(_, Kind::Thinking) => quiet::Step::Thinking,
+            _ => quiet::Step::Other,
+        })
+        .collect();
+    let mut out = Vec::with_capacity(shown.len());
+    for piece in quiet::rows(&steps) {
+        match piece {
+            quiet::Piece::Step(at) => {
+                let (row, results) = &shown[at];
+                out.push(row.clone());
+                out.extend(results.iter().cloned());
+            }
+            quiet::Piece::Row(row) => {
+                // A call that failed alone keeps its output under it.
+                let alone = row.members.len() == 1 && row.words.failed.is_some();
+                let mut calls = Vec::new();
+                let mut under = Vec::new();
+                for at in &row.members {
+                    let (member, results) = &shown[*at];
+                    calls.push(member.clone());
+                    if alone {
+                        under.extend(results.iter().cloned());
+                    } else {
+                        calls.extend(results.iter().cloned());
+                    }
+                }
+                let id = match calls.first() {
+                    Some(Row::Item(id, _)) => *id,
+                    _ => continue,
+                };
+                out.push(Row::Quiet {
+                    id,
+                    words: row.words,
+                    calls,
+                });
+                out.extend(under);
+            }
+        }
+    }
+    out
 }
 
 /// The first line of an agent's thinking, for its folded row: the first
@@ -409,6 +503,10 @@ pub fn unseen(rows: &[Row], store: &Store, seen: u64) -> usize {
         .filter(|row| match row {
             Row::Item(id, _) => *id > seen && store.get(*id).is_some_and(is_read),
             Row::Count { id, .. } => *id > seen,
+            // As one thing, new when a call of it is.
+            Row::Quiet { calls, .. } => calls
+                .iter()
+                .any(|row| matches!(row, Row::Item(id, Kind::Call) if *id > seen)),
             Row::Working => false,
         })
         .count()
@@ -993,6 +1091,65 @@ mod tests {
         assert_eq!(says(&hidden, View::Full, None, 1), "2 new");
     }
 
+    /// Quiet says each call in a few words, as the terminal does: reads of
+    /// a file being edited join its edits, a test run that failed stands
+    /// alone with its output under it, and the agent's text ends a run.
+    #[test]
+    fn quiet_merges_calls_into_rows_of_a_few_words() {
+        use crate::protocol::{Act, ActKind};
+        let call = |id: u64, kind: ActKind, target: &str, status: CallStatus| ItemData {
+            status: Some(status),
+            act: Some(Act {
+                kind,
+                target: target.into(),
+                ..Act::default()
+            }),
+            ..item(id, Kind::Call, MAIN, "call")
+        };
+        let mut test = call(5, ActKind::Command, "cargo test", CallStatus::Failed);
+        if let Some(act) = test.act.as_mut() {
+            act.ran = true;
+            act.news = "1 failed, 3 passed".into();
+        }
+        let mut result = item(6, Kind::Result, MAIN, "test a ... FAILED");
+        result.call = Some(5);
+        let mut edit_result = item(4, Kind::Result, MAIN, "1 | a");
+        edit_result.call = Some(3);
+        let items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            call(2, ActKind::Read, "src/app.rs", CallStatus::Ok),
+            call(3, ActKind::Edit, "src/app.rs", CallStatus::Ok),
+            edit_result,
+            test,
+            result,
+            item(7, Kind::Text, MAIN, "Fixing the test."),
+            call(8, ActKind::Edit, "src/app.rs", CallStatus::Ok),
+            // A call without an act shows as Full does.
+            ItemData {
+                status: Some(CallStatus::Ok),
+                ..item(9, Kind::Call, MAIN, "ls")
+            },
+        ];
+        let rows = layout(&items, View::Quiet, None);
+        assert_eq!(ids(&rows), ["i1", "q2", "q5", "i6", "i7", "q8", "i9"]);
+        let said = |row: &Row| match row {
+            Row::Quiet { words, calls, .. } => (words.clone(), ids(calls)),
+            other => panic!("{other:?}"),
+        };
+        let (words, calls) = said(&rows[1]);
+        assert_eq!(words.text, "Made 1 edit to app.rs");
+        assert_eq!(calls, ["i2", "i3", "i4"]);
+        let (words, calls) = said(&rows[2]);
+        assert_eq!(words.text, "Ran cargo test");
+        assert_eq!(words.failed.as_deref(), Some("1 failed, 3 passed"));
+        assert_eq!(calls, ["i5"]);
+        // Full keeps every call's row.
+        assert_eq!(
+            ids(&layout(&items, View::Full, None)),
+            ["i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9"]
+        );
+    }
+
     /// A change lays the rows out again only when it changes what they're
     /// laid out by, as a text that becomes the reply does in every view.
     #[test]
@@ -1010,12 +1167,17 @@ mod tests {
             assert!(moves(&|item| item.level = Some(Level::Warn), view));
             assert!(moves(&|item| item.from = Some(MAIN.into()), view));
             assert!(!moves(&|item| item.text.push_str(" Mostly."), view));
-            assert!(!moves(&|item| item.outcome = Some("ok".into()), view));
             assert!(!moves(&|item| item.level = Some(Level::Info), view));
+            // How a call went words its Quiet row.
+            assert_eq!(
+                moves(&|item| item.outcome = Some("ok".into()), view),
+                view == View::Quiet
+            );
         }
-        // A call's status counts in Messages alone.
+        // A call's status counts in Messages and words a Quiet row.
         let status = |item: &mut ItemData| item.status = Some(CallStatus::Failed);
         assert!(moves(&status, View::Messages));
+        assert!(moves(&status, View::Quiet));
         assert!(!moves(&status, View::Full));
     }
 }

@@ -2450,6 +2450,147 @@ mod tests {
         }
     }
 
+    /// The Quiet view's calls as the feed sends them: two edits of a file,
+    /// a test run that failed with its output, and a message to a worker.
+    fn quiet_calls(app: &mut App) {
+        use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Level, Update};
+        let call = |id: u64, text: &str, act: Act, status: CallStatus| {
+            let mut call = Item::new(Kind::Call, text);
+            call.id = id;
+            call.turn = Some(1);
+            call.status = Some(status);
+            call.act = Some(act);
+            call
+        };
+        let on = |kind: ActKind, target: &str| Act {
+            kind,
+            target: target.into(),
+            ..Act::default()
+        };
+        let mut user = Item::new(Kind::User, "Fix it");
+        user.id = 1;
+        user.turn = Some(1);
+        app.transcript.apply(Update::Item(user));
+        for (id, text, act) in [
+            (2, "read src/app.rs", on(ActKind::Read, "src/app.rs")),
+            (3, "edit src/app.rs", on(ActKind::Edit, "src/app.rs")),
+            (4, "edit src/app.rs", on(ActKind::Edit, "src/app.rs")),
+        ] {
+            app.transcript
+                .apply(Update::Item(call(id, text, act, CallStatus::Ok)));
+        }
+        let test = Act {
+            news: "1 failed, 3 passed".into(),
+            ran: true,
+            alone: true,
+            ..on(ActKind::Command, "cargo test")
+        };
+        let mut failed = call(5, "$ cargo test", test, CallStatus::Failed);
+        failed.outcome = Some("exit 101 · 1 failed, 3 passed".into());
+        app.transcript.apply(Update::Item(failed));
+        let mut result = Item::new(Kind::Result, "exit code 101, 2.0 s")
+            .detail("test a ... FAILED")
+            .level(Level::Warn);
+        result.id = 6;
+        result.call = Some(5);
+        app.transcript.apply(Update::Item(result));
+        let mut message = call(
+            7,
+            "message r3 “Use the UTC time…”",
+            on(ActKind::Message, "r3"),
+            CallStatus::Ok,
+        )
+        .detail("Use the UTC time from the stats, not the local clock.");
+        message.outcome = Some("sent".into());
+        app.transcript.apply(Update::Item(message));
+    }
+
+    /// In the Quiet view each call says what it did in a few words,
+    /// neighbours of a kind merge, a failure keeps its output under it, and
+    /// a click on a row's line opens it to the calls as Full shows them.
+    #[test]
+    fn quiet_rows_merge_calls_and_a_click_opens_one() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        app.set_view(crate::tui::transcript::View::Quiet);
+        quiet_calls(&mut app);
+        let rows = screen(&mut app, 70, 24);
+        let at = |rows: &[String], text: &str| {
+            rows.iter()
+                .position(|row| row.contains(text))
+                .unwrap_or_else(|| panic!("{text}: {rows:#?}"))
+        };
+        let edits = at(&rows, "▸ Made 2 edits to app.rs");
+        assert_eq!(
+            rows[edits + 1..edits + 4],
+            [
+                "▸ Ran cargo test · ✗ 1 failed, 3 passed",
+                "  │ test a ... FAILED",
+                "▸ Messaged r3",
+            ],
+            "{rows:#?}"
+        );
+        assert!(!rows.iter().any(|row| row.contains("read src/app.rs")));
+        // Its line opens it, and the same line closes it.
+        let left = MouseButton::Left;
+        mouse(&mut app, MouseEventKind::Down(left), 4, edits as u16);
+        mouse(&mut app, MouseEventKind::Up(left), 4, edits as u16);
+        let open = screen(&mut app, 70, 24);
+        let edits = at(&open, "▾ Made 2 edits to app.rs");
+        assert_eq!(
+            open[edits + 1..edits + 4],
+            [
+                "  ▸ read src/app.rs · ✓",
+                "  ▸ edit src/app.rs · ✓",
+                "  ▸ edit src/app.rs · ✓",
+            ],
+            "{open:#?}"
+        );
+        mouse(&mut app, MouseEventKind::Down(left), 4, edits as u16);
+        mouse(&mut app, MouseEventKind::Up(left), 4, edits as u16);
+        assert_eq!(screen(&mut app, 70, 24), rows);
+    }
+
+    /// Ctrl+G puts the keyboard on the last row that opens, ↑ and ↓ move it,
+    /// Enter opens and closes a row, and Esc gives the keys back to the box.
+    #[test]
+    fn ctrl_g_opens_quiet_rows_from_the_keyboard() {
+        let mut app = app();
+        app.set_view(crate::tui::transcript::View::Quiet);
+        quiet_calls(&mut app);
+        screen(&mut app, 70, 24);
+        app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert_eq!(app.transcript.focus, Some(7));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let rows = screen(&mut app, 70, 24);
+        let message = rows
+            .iter()
+            .position(|row| row.contains("▾ Messaged r3"))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        assert!(
+            rows[message + 1..]
+                .iter()
+                .any(|row| row.contains("Use the UTC time from the stats, not the local clock.")),
+            "{rows:#?}"
+        );
+        app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.transcript.focus, Some(2), "the edits' row, by its read");
+        app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        let rows = screen(&mut app, 70, 24);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("▾ Made 2 edits to app.rs"))
+        );
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.transcript.focus, None);
+        // A key of the box's goes to it.
+        app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        app.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(app.transcript.focus, None);
+        assert_eq!(app.editor.text(), "x");
+    }
+
     /// A question card is one quiet line while its questions are open, and
     /// a click on it opens the answer panel on them.
     #[test]

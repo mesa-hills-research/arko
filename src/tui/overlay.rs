@@ -470,6 +470,10 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     ("Ctrl+O", "the next view (full, quiet, messages)"),
     (
+        "Ctrl+G",
+        "the transcript's rows that open, where ↑ ↓ move and Enter opens or closes one",
+    ),
+    (
         "Ctrl+R",
         "dictate into the box, and again to stop and edit the words (Enter stops too, Esc takes them out)",
     ),
@@ -493,7 +497,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "Click",
-        "open a worker's line, a row of the agent list, a count of calls, a command's whole output at its \"more lines\", or an agent's thinking at its Thinking line",
+        "open a worker's line, a row of the agent list, a count of calls, a quiet row of calls, a command's whole output at its \"more lines\", or an agent's thinking at its Thinking line",
     ),
 ];
 
@@ -634,7 +638,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect, selected: usize) {
                 ),
                 match app.view {
                     View::Full => "Everything, with the workers' calls inline.",
-                    View::Quiet => "Each worker as one line that updates in place.",
+                    View::Quiet => "Each call in a few words, and each worker as one line.",
                     View::Messages => "Just the messages, with a count of each turn's tool calls.",
                 }
                 .to_string(),

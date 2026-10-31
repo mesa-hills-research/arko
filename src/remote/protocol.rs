@@ -237,6 +237,88 @@ pub enum CallStatus {
     Failed,
 }
 
+/// What a call did, for the Quiet view's rows (`quiet.rs` words them and
+/// merges neighbours). The server makes it from the call's tool and
+/// parameters, and completes it from the result.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub struct Act {
+    pub kind: ActKind,
+    /// What it works on: a file's path from the working directory, a
+    /// folder, a command's first line, an index, a skill, the agent runs a
+    /// message or a wait is for (comma-separated), a job, an MCP tool.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub target: String,
+    /// A search's query.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub query: String,
+    /// The words of a call of another kind, which never merges, while it
+    /// runs ("Starting a worker"), once it ended ("Queued r12") and after
+    /// "Couldn’t" when it failed ("start a worker").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub doing: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub done: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub verb: String,
+    /// What its row says of how it went, once it ended: a test run's counts
+    /// ("24 passed"), "no results", a command's exit code ("exit 101").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub news: String,
+    /// It has a row of its own whatever its neighbours are (a test run).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alone: bool,
+    /// A command that ran, which says "Ran" even when it failed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ran: bool,
+    /// What came while a wait waited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub came: Option<Came>,
+}
+
+/// The kinds of call the Quiet view words and merges.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActKind {
+    /// Any other call, worded by the act's `doing`, `done` and `verb`. It
+    /// never merges.
+    #[default]
+    Other,
+    Read,
+    List,
+    Write,
+    Edit,
+    Command,
+    Search,
+    Skill,
+    Message,
+    Wait,
+    /// A look at a job (`terminal_status`, a wait on it).
+    Check,
+    Note,
+    /// A call of an MCP server's tool.
+    Mcp,
+}
+
+/// What reached a wait: the runs that finished or stopped, the messages,
+/// and the updates (a note, a terminal update, a monitor's alert).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub struct Came {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finished: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stopped: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub messages: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub updates: u32,
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
+}
+
 /// The question card the main agent waits on: its item `id`, and its
 /// text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -386,6 +468,9 @@ pub struct ItemData {
     pub status: Option<CallStatus>,
     #[serde(default)]
     pub outcome: Option<String>,
+    /// What a call did, for the Quiet view's rows.
+    #[serde(default)]
+    pub act: Option<Act>,
     /// The worker a `start_agent` call started at once. The Quiet view
     /// leaves out such a call, because the worker's own line stands for it.
     #[serde(default)]

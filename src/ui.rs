@@ -1469,13 +1469,23 @@ fn named_runs(parameters: &HashMap<String, serde_json::Value>) -> Vec<String> {
     }
 }
 
+/// The runs a `wait_for_agents` call waits for: those it names, else `own`,
+/// the runs its agent has going. None when it waits for a message.
+pub fn waited_runs(parameters: &HashMap<String, serde_json::Value>, own: &[String]) -> Vec<String> {
+    let named = named_runs(parameters);
+    if named.is_empty() {
+        own.to_vec()
+    } else {
+        named
+    }
+}
+
 /// What a `wait_for_agents` call waits for, in words. It waits for the
 /// runs it names, else for `own`, the runs its agent has going, and with
 /// none it waits for a message. A few runs are named ("waiting for r1, r2")
 /// and many are counted ("waiting for r1, r2 and 3 more").
 pub fn waiting_for(parameters: &HashMap<String, serde_json::Value>, own: &[String]) -> String {
-    let named = named_runs(parameters);
-    let runs: &[String] = if named.is_empty() { own } else { &named };
+    let runs = waited_runs(parameters, own);
     if runs.is_empty() {
         "waiting for a message".to_string()
     } else if runs.len() <= RUNS_NAMED {

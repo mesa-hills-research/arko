@@ -67,8 +67,8 @@ pub(crate) const WORKER_EVERY: Duration = Duration::from_millis(250);
 
 // The types the web page reads too, which it compiles from the same file.
 pub use super::protocol::{
-    Activity, CallStatus, Delivery, JobKind, JobState, JobSummary, Kind, Level, Question, Source,
-    WorkerState,
+    Act, ActKind, Activity, CallStatus, Came, Delivery, JobKind, JobState, JobSummary, Kind, Level,
+    Question, Source, WorkerState,
 };
 
 /// The message that keeps the prompt cache warm where the provider takes
@@ -106,6 +106,10 @@ pub struct Item {
     /// call's own line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    /// What a call did, for the Quiet view's rows, which every client words
+    /// and merges the same way ([`quiet`](super::quiet)).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub act: Option<Act>,
     /// For a `start_agent` call that started its worker at once, the
     /// worker's ID. A worker that waits for a place, a refused start and a
     /// call without its result yet have none. The quiet view leaves out the
@@ -202,6 +206,7 @@ impl Item {
             delivery: None,
             status: None,
             outcome: None,
+            act: None,
             started: None,
             whole: None,
             tool: None,
@@ -1655,6 +1660,7 @@ impl Feed {
             lane.call_output(call.item, output, budget);
         }
         if let Some(item) = lane.find(call.item) {
+            outcome.settled.apply(&mut item.act);
             item.status = Some(outcome.status);
             item.outcome = outcome.text;
             item.started = outcome.started;
@@ -1767,11 +1773,12 @@ impl Feed {
                 &id,
                 Outcome {
                     status: CallStatus::Failed,
-                    text: Some("interrupted".into()),
+                    text: Some(super::quiet::INTERRUPTED.into()),
                     block: None,
                     output: None,
                     job: None,
                     started: None,
+                    settled: render::Settled::default(),
                 },
             );
         }
@@ -1947,10 +1954,10 @@ impl Feed {
                 // A stop cancels the calls that run ("The task was
                 // cancelled while this call was running").
                 let message = if why.contains("cancelled") {
-                    "stopped".to_string()
+                    super::quiet::STOPPED.to_string()
                 } else if why == arko_agents::claude_code::HELD_FOR_COMPACTION {
                     // The agent makes the call again after the compaction.
-                    "held for the compaction".to_string()
+                    super::quiet::HELD.to_string()
                 } else if why.is_empty() {
                     "refused".to_string()
                 } else {

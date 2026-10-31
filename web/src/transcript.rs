@@ -154,6 +154,8 @@ fn row_key(feed: Option<u64>, row: &Row) -> (Option<u64>, String) {
             count.failed,
             count.running
         ),
+        // What it says and how many rows it holds.
+        Row::Quiet { words, calls, .. } => format!("{}:{words:?}:{}", row.key(), calls.len()),
         _ => row.key(),
     };
     (feed, key)
@@ -168,6 +170,7 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
         }
         .into_any(),
         Row::Count { id, count, .. } => count_row(id, count),
+        Row::Quiet { id, words, calls } => quiet_row(id, words, calls, thinking),
         Row::Item(id, _) => match cell(id) {
             Some(cell) => item_row(id, cell.for_row(), thinking),
             None => ().into_any(),
@@ -195,6 +198,103 @@ fn count_row(id: u64, count: Count) -> AnyView {
                 {(running > 0).then_some(" · running")}
             </button>
         </div>
+    }
+    .into_any()
+}
+
+/// Calls in a few words (Quiet), by the first one's ID. A click on its line
+/// (or Enter on it) opens it to the rows of its calls as Full shows them,
+/// which are made only then. A row of one call that runs offers what the
+/// call's own row does (Move to background, Stop).
+fn quiet_row(
+    id: u64,
+    words: crate::quiet::Words,
+    calls: Vec<Row>,
+    thinking: Memo<Option<u64>>,
+) -> AnyView {
+    let page = page();
+    let open = move || page.quiet_open.with(|open| open.contains(&id));
+    let mut class = "row call quiet".to_string();
+    if words.failed.is_some() {
+        class.push_str(" failed");
+    }
+    if words.muted {
+        class.push_str(" muted");
+    }
+    let crate::quiet::Words {
+        text,
+        failed,
+        note,
+        running,
+        ..
+    } = words;
+    let single: Vec<u64> = calls
+        .iter()
+        .filter_map(|row| match row {
+            Row::Item(id, Kind::Call) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let actions = match (running, single.as_slice()) {
+        (true, [call]) => cell(*call).map(|cell| {
+            let data = cell.for_row().data;
+            let call = *call;
+            let actions = Memo::new(move |_| {
+                data.with(|item| {
+                    call_actions(
+                        item,
+                        |id| page.movable.with(|movable| movable.contains(&id)),
+                        |job| {
+                            page.running_jobs
+                                .with(|running| running.iter().any(|running| running == job))
+                        },
+                    )
+                })
+            });
+            move || {
+                let (moves, stop) = actions.get();
+                view! {
+                    {moves.then(|| view! { <MoveButton id=call /> })}
+                    {stop.map(|job| view! { <StopJobButton job=job /> })}
+                }
+            }
+        }),
+        _ => None,
+    };
+    let inside = move || {
+        open().then(|| {
+            calls
+                .iter()
+                .cloned()
+                .map(|row| row_view(row, thinking))
+                .collect_view()
+        })
+    };
+    view! {
+        <details class=class data-id=id prop:open=open>
+            <summary on:click=move |event| {
+                event.prevent_default();
+                page.quiet_open.update(|open| {
+                    if !open.remove(&id) {
+                        open.insert(id);
+                    }
+                });
+            }>
+                <span class="call-line">
+                    <span class="mark">"▸"</span>
+                    <span class="what" title=text.clone()>{text.clone()}</span>
+                    {failed.map(|why| view! {
+                        <span class="outcome" title=why.clone()><span class="failed">"✗"</span>" "{why.clone()}</span>
+                    })}
+                    {note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
+                    {running.then(|| view! {
+                        <span class="outcome"><span class="running"><Spinner /></span></span>
+                    })}
+                    {actions}
+                </span>
+            </summary>
+            <div class="quiet-calls">{inside}</div>
+        </details>
     }
     .into_any()
 }
@@ -900,6 +1000,7 @@ mod tests {
                         .map(|row| match row {
                             Row::Item(_, kind) => format!("{kind:?}"),
                             Row::Count { count, .. } => format!("{} calls", count.calls),
+                            Row::Quiet { words, .. } => words.text.clone(),
                             Row::Working => "working".into(),
                         })
                         .collect::<Vec<_>>()

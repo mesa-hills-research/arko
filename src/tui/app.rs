@@ -1112,6 +1112,9 @@ impl App {
         if self.list_focus.is_some() && self.list_key(key) {
             return;
         }
+        if self.transcript.focus.is_some() && self.row_key(key) {
+            return;
+        }
         // Keys that work whatever is typed.
         match key.code {
             // (Else back a character, as in readline.)
@@ -1119,6 +1122,7 @@ impl App {
             KeyCode::Char('c') if ctrl => return self.interrupt(),
             KeyCode::Char('o') if ctrl => return self.cycle_view(),
             KeyCode::Char('t') if ctrl => return self.focus_list(),
+            KeyCode::Char('g') if ctrl => return self.focus_rows(),
             KeyCode::Char('l') if ctrl => return self.effects.push(Effect::Clear),
             KeyCode::Char('r') if ctrl => return self.toggle_dictation(),
             KeyCode::PageUp => return self.transcript.scroll(-self.page()),
@@ -1476,6 +1480,49 @@ impl App {
             .position(|row| row.map(|w| w.id.as_str()) == self.watching.as_deref())
             .unwrap_or(0);
         self.list_focus = Some(row);
+    }
+
+    /// Ctrl+G: the keyboard goes to the transcript's rows that open, on the
+    /// last one, and again back to the input box.
+    fn focus_rows(&mut self) {
+        if self.transcript.focus.take().is_some() {
+            return;
+        }
+        let (filter, theme) = (self.filter(), self.theme.clone());
+        if !self.transcript.move_focus(0, &filter, &theme) {
+            self.say("Nothing to open");
+        }
+    }
+
+    /// A key while the keyboard is on the transcript's rows; false when it
+    /// isn't theirs (it goes on as a key of the input box's, or
+    /// everywhere's).
+    fn row_key(&mut self, key: KeyEvent) -> bool {
+        let (filter, theme) = (self.filter(), self.theme.clone());
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let rows = &mut self.transcript;
+        match key.code {
+            KeyCode::Up => {
+                rows.move_focus(-1, &filter, &theme);
+            }
+            KeyCode::Down => {
+                rows.move_focus(1, &filter, &theme);
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => rows.open_focus(None, &filter, &theme),
+            KeyCode::Right => rows.open_focus(Some(true), &filter, &theme),
+            KeyCode::Left => rows.open_focus(Some(false), &filter, &theme),
+            KeyCode::Esc => rows.focus = None,
+            KeyCode::Char('g') if ctrl => rows.focus = None,
+            // Keys that work everywhere (scrolling, Ctrl+C, the views) keep
+            // the keyboard here; others (typing, editing) go to the input box.
+            KeyCode::PageUp | KeyCode::PageDown => return false,
+            KeyCode::Char('c' | 'o' | 'l') if ctrl => return false,
+            _ => {
+                rows.focus = None;
+                return false;
+            }
+        }
+        true
     }
 
     /// A key while the agent list has the focus; false when it isn't the

@@ -26,6 +26,7 @@ mod no_server;
 pub(crate) mod protocol;
 #[cfg(feature = "remote")]
 mod qr;
+pub mod quiet;
 #[cfg(any(test, feature = "testing"))]
 pub(crate) mod random_session;
 mod render;
@@ -47,10 +48,10 @@ use tokio::sync::mpsc;
 pub use arko_ai::{ExtraUsage, PlanCredits};
 pub(crate) use feed::family_order_of;
 pub use feed::{
-    Activity, Batches, CallStatus, Delivery, ENDED_JOBS, Feed, Following, Item, JobKind, JobStart,
-    JobState, JobSummary, Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Received, Snapshot,
-    Source, Update, WorkerChange, WorkerInfo, WorkerState, WorkerSummary, family_order,
-    family_order_with_levels,
+    Act, ActKind, Activity, Batches, CallStatus, Came, Delivery, ENDED_JOBS, Feed, Following, Item,
+    JobKind, JobStart, JobState, JobSummary, Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE,
+    Received, Snapshot, Source, Update, WorkerChange, WorkerInfo, WorkerState, WorkerSummary,
+    family_order, family_order_with_levels,
 };
 pub use history::items as history;
 pub(crate) use history::own_words;

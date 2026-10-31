@@ -264,6 +264,7 @@ pub mod tests {
             delivery: None,
             status: None,
             outcome: None,
+            act: None,
             started: None,
             worker: None,
             from: None,

@@ -119,6 +119,8 @@ pub struct Page {
     pub pinned: RwSignal<bool>,
     /// The agent's questions as the page shows them.
     pub ask: crate::questions::Asking,
+    /// The Quiet view's rows the reader opened, by their first call.
+    pub quiet_open: RwSignal<HashSet<u64>>,
 }
 
 thread_local! {
@@ -249,6 +251,7 @@ impl Page {
             grown: RwSignal::new(HashSet::new()),
             pinned: RwSignal::new(true),
             ask: crate::questions::Asking::new(),
+            quiet_open: RwSignal::new(HashSet::new()),
         };
         PAGE.with(|cell| cell.set(Some(page)));
         page
@@ -1023,6 +1026,8 @@ fn start_feed(page: Page) {
     // The new Arko may be another version, with other commands.
     page.commands.set(None);
     page.feeds.update(|feeds| *feeds += 1);
+    // Another feed's items have other ids.
+    page.quiet_open.update(HashSet::clear);
 }
 
 /// Gives a cell the item as Arko has it now, setting only what changed, and

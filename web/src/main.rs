@@ -30,6 +30,11 @@ mod words;
 #[path = "../../src/remote/protocol.rs"]
 mod protocol;
 
+// The Quiet view's rows, as the terminal makes them.
+#[allow(dead_code)]
+#[path = "../../src/remote/quiet.rs"]
+mod quiet;
+
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;

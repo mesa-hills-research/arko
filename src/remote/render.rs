@@ -15,7 +15,10 @@ use arko_workflows::services::RUN_WORKFLOW_AGENT_TOOL_NAME;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::feed::{CallStatus, Item, Kind, Level};
+use arko_agents::LOAD_SKILL_TOOL_NAME;
+
+use super::feed::{Act, ActKind, CallStatus, Came, Item, Kind, Level};
+use super::quiet;
 use crate::crew;
 use crate::message;
 use crate::shell::{IN_THE_BACKGROUND, SHELL_TOOL_NAME};
@@ -57,8 +60,418 @@ pub fn call(tool: &str, parameters: &Parameters, running: &[String]) -> Option<I
         // (In the order of their names: a `HashMap` has none.)
         let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
         item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
+        item.act = Some(act(tool, parameters, running));
     }
     Some(item)
+}
+
+/// What a call of `tool` does, for the Quiet view's row ([`quiet`]).
+fn act(tool: &str, parameters: &Parameters, running: &[String]) -> Act {
+    let text = |name: &str| text(parameters, name).trim().to_string();
+    let on = |kind: ActKind, target: String| Act {
+        kind,
+        target,
+        ..Act::default()
+    };
+    // A call of another kind, in its own words.
+    let other = |doing: String, done: String, verb: String| Act {
+        doing,
+        done,
+        verb,
+        ..Act::default()
+    };
+    let path = |name: &str| {
+        let path = text(name);
+        if path.is_empty() {
+            ".".to_string()
+        } else {
+            path
+        }
+    };
+    let job = || {
+        let id = text("job_id");
+        format!("job {}", id.get(..8).unwrap_or(&id))
+    };
+    match tool {
+        READ_FILE_TOOL_NAME | "Read" => on(
+            ActKind::Read,
+            path(if tool == "Read" { "file_path" } else { "path" }),
+        ),
+        LIST_FILES_TOOL_NAME => on(ActKind::List, path("directory")),
+        WRITE_FILE_TOOL_NAME => on(ActKind::Write, path("path")),
+        "Write" => on(ActKind::Write, path("file_path")),
+        EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => on(ActKind::Edit, path("path")),
+        "Edit" | "MultiEdit" => on(ActKind::Edit, path("file_path")),
+        SHELL_TOOL_NAME | "Bash" => on(
+            ActKind::Command,
+            command_words(&text("command"), &text("cwd")),
+        ),
+        "index_search" => Act {
+            query: cut(&text("query"), 60),
+            ..on(ActKind::Search, index_name(&text("index")))
+        },
+        "Grep" | "Glob" => Act {
+            query: cut(&text("pattern"), 60),
+            ..on(ActKind::Search, String::new())
+        },
+        LOAD_SKILL_TOOL_NAME => on(ActKind::Skill, text("name")),
+        crew::MESSAGE_AGENT => on(ActKind::Message, text("to")),
+        crew::WAIT_FOR_AGENTS => on(
+            ActKind::Wait,
+            ui::waited_runs(parameters, running).join(", "),
+        ),
+        "terminal_status" => on(ActKind::Check, job()),
+        "terminal_control" => match text("action").as_str() {
+            "wait" => on(ActKind::Check, job()),
+            "list" => other(
+                "Listing jobs".into(),
+                "Listed jobs".into(),
+                "list jobs".into(),
+            ),
+            "cancel" => other(
+                format!("Stopping {}", job()),
+                format!("Stopped {}", job()),
+                format!("stop {}", job()),
+            ),
+            action => other(
+                format!("Using {action} on {}", job()),
+                format!("Used {action} on {}", job()),
+                format!("use {action} on {}", job()),
+            ),
+        },
+        "terminal_input" => other(
+            format!("Typing into {}", job()),
+            format!("Typed into {}", job()),
+            format!("type into {}", job()),
+        ),
+        "terminal_start" => {
+            let command = command_words(&text("command"), "");
+            other(
+                format!("Starting {command} in a terminal"),
+                format!("Started {command} in a terminal"),
+                format!("start {command} in a terminal"),
+            )
+        }
+        "monitor_start" => {
+            let command = command_words(&text("command"), "");
+            other(
+                format!("Starting to watch {command}"),
+                format!("Started watching {command}"),
+                format!("watch {command}"),
+            )
+        }
+        "monitor_control" => match text("action").as_str() {
+            "list" => other(
+                "Listing monitors".into(),
+                "Listed monitors".into(),
+                "list monitors".into(),
+            ),
+            "rearm" => other(
+                "Keeping a monitor going".into(),
+                "Kept a monitor going".into(),
+                "keep a monitor going".into(),
+            ),
+            _ => other(
+                "Stopping a monitor".into(),
+                "Stopped a monitor".into(),
+                "stop a monitor".into(),
+            ),
+        },
+        "keep_note"
+            if parameters
+                .get("replaces")
+                .is_some_and(|value| !value.is_null()) =>
+        {
+            let number = match parameters.get("replaces") {
+                Some(Value::Number(number)) => number.to_string(),
+                _ => text("replaces"),
+            };
+            other(
+                format!("Changing note {number}"),
+                format!("Changed note {number}"),
+                format!("change note {number}"),
+            )
+        }
+        "keep_note" => on(
+            ActKind::Note,
+            match text("audience").as_str() {
+                "" | "lead" => String::new(),
+                audience => audience.to_string(),
+            },
+        ),
+        "forget_note" => {
+            let number = match parameters.get("id") {
+                Some(Value::Number(number)) => number.to_string(),
+                _ => text("id"),
+            };
+            other(
+                format!("Forgetting note {number}"),
+                format!("Forgot note {number}"),
+                format!("forget note {number}"),
+            )
+        }
+        crate::mcp::MCP_TOOL_NAME => {
+            let server = text("server");
+            match text("action").as_str() {
+                "call" => on(ActKind::Mcp, format!("{} on {server}", text("tool"))),
+                "servers" => other(
+                    "Listing the MCP servers".into(),
+                    "Listed the MCP servers".into(),
+                    "list the MCP servers".into(),
+                ),
+                "tools" => other(
+                    format!("Listing {server}’s tools"),
+                    format!("Listed {server}’s tools"),
+                    format!("list {server}’s tools"),
+                ),
+                "start" => other(
+                    format!("Starting {server}"),
+                    format!("Started {server}"),
+                    format!("start {server}"),
+                ),
+                "stop" => other(
+                    format!("Stopping {server}"),
+                    format!("Stopped {server}"),
+                    format!("stop {server}"),
+                ),
+                "add" => other(
+                    format!("Adding the {server} server"),
+                    format!("Added the {server} server"),
+                    format!("add the {server} server"),
+                ),
+                "remove" => other(
+                    format!("Removing the {server} server"),
+                    format!("Removed the {server} server"),
+                    format!("remove the {server} server"),
+                ),
+                action => other(
+                    format!("Using {action} on {server}"),
+                    format!("Used {action} on {server}"),
+                    format!("use {action} on {server}"),
+                ),
+            }
+        }
+        crew::START_AGENT => other(
+            "Starting a worker".into(),
+            "Started a worker".into(),
+            "start a worker".into(),
+        ),
+        crew::STOP_AGENT => {
+            let run = text("run");
+            let worktree = if flag(parameters, "remove_workspace") {
+                " and removed its worktree"
+            } else {
+                ""
+            };
+            other(
+                format!("Stopping {run}"),
+                format!("Stopped {run}{worktree}"),
+                format!("stop {run}"),
+            )
+        }
+        crew::LIST_AGENTS => other(
+            "Listing workers".into(),
+            "Listed workers".into(),
+            "list workers".into(),
+        ),
+        "link_agents" => other(
+            "Linking workers".into(),
+            "Linked workers".into(),
+            "link workers".into(),
+        ),
+        crew::WORKER_OPTIONS => other(
+            "Checking worker options".into(),
+            "Checked worker options".into(),
+            "check worker options".into(),
+        ),
+        crew::SAVE_WORKER_PROFILE => {
+            let name = text("name");
+            other(
+                format!("Saving the {name} profile"),
+                format!("Saved the {name} profile"),
+                format!("save the {name} profile"),
+            )
+        }
+        crate::skill_install::ADD_SKILL
+        | crate::skill_install::EDIT_SKILL
+        | crate::skill_install::REMOVE_SKILL => {
+            let name = text("name");
+            let (doing, done, verb) = match tool {
+                crate::skill_install::ADD_SKILL => ("Saving", "Saved", "save"),
+                crate::skill_install::EDIT_SKILL => ("Changing", "Changed", "change"),
+                _ => ("Removing", "Removed", "remove"),
+            };
+            other(
+                format!("{doing} the {name} skill"),
+                format!("{done} the {name} skill"),
+                format!("{verb} the {name} skill"),
+            )
+        }
+        "close_questions" => other(
+            "Closing questions".into(),
+            "Closed questions".into(),
+            "close questions".into(),
+        ),
+        HANDOVER_REPORT_TOOL_NAME => other(
+            "Writing a handover report".into(),
+            "Wrote a handover report".into(),
+            "write a handover report".into(),
+        ),
+        crate::earlier::TOOL_NAME => other(
+            "Reading the earlier conversation".into(),
+            "Read the earlier conversation".into(),
+            "read the earlier conversation".into(),
+        ),
+        RUN_WORKFLOW_AGENT_TOOL_NAME => other(
+            "Running a worker".into(),
+            "Ran a worker".into(),
+            "run a worker".into(),
+        ),
+        "index_status" => {
+            let index = index_name(&text("index"));
+            let which = if index.is_empty() {
+                "the indexes".to_string()
+            } else {
+                format!("the {index} index")
+            };
+            other(
+                format!("Checking {which}"),
+                format!("Checked {which}"),
+                format!("check {which}"),
+            )
+        }
+        "index_create" => {
+            let name = index_name(&path("path"));
+            other(
+                format!("Indexing {name}"),
+                format!("Indexed {name}"),
+                format!("index {name}"),
+            )
+        }
+        "index_manage" => {
+            let index = index_name(&text("index"));
+            let the = format!("the {index} index");
+            let (doing, done, verb) = match text("action").as_str() {
+                "rebuild" => ("Rebuilding", "Rebuilt", "rebuild"),
+                "embed" => ("Embedding", "Embedded", "embed"),
+                "estimate" => {
+                    return other(
+                        format!("Estimating embedding {index}"),
+                        format!("Estimated embedding {index}"),
+                        format!("estimate embedding {index}"),
+                    );
+                }
+                "monitor_on" => {
+                    return other(
+                        format!("Turning on watching for {index}"),
+                        format!("Turned on watching for {index}"),
+                        format!("turn on watching for {index}"),
+                    );
+                }
+                "monitor_off" => {
+                    return other(
+                        format!("Turning off watching for {index}"),
+                        format!("Turned off watching for {index}"),
+                        format!("turn off watching for {index}"),
+                    );
+                }
+                "remove" => ("Removing", "Removed", "remove"),
+                _ => ("Changing", "Changed", "change"),
+            };
+            other(
+                format!("{doing} {the}"),
+                format!("{done} {the}"),
+                format!("{verb} {the}"),
+            )
+        }
+        "WebFetch" => {
+            let url = text("url");
+            let host = url
+                .split("://")
+                .nth(1)
+                .unwrap_or(&url)
+                .split('/')
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            other(
+                format!("Fetching {host}"),
+                format!("Fetched {host}"),
+                format!("fetch {host}"),
+            )
+        }
+        "WebSearch" => {
+            let query = format!("“{}”", cut(&text("query"), 60));
+            other(
+                format!("Searching the web for {query}"),
+                format!("Searched the web for {query}"),
+                format!("search the web for {query}"),
+            )
+        }
+        "TodoWrite" => other(
+            "Updating the plan".into(),
+            "Updated the plan".into(),
+            "update the plan".into(),
+        ),
+        other_tool => match crate::mcp::split_tool_name(other_tool) {
+            Some((server, name)) => on(ActKind::Mcp, format!("{name} on {server}")),
+            None => other(
+                format!("Using {other_tool}"),
+                format!("Used {other_tool}"),
+                format!("use {other_tool}"),
+            ),
+        },
+    }
+}
+
+/// A command as its row names it: its first line, at most
+/// [`quiet::COMMAND_CHARS`] characters, with a program run by its path named
+/// by its file name, and after a `cd dir &&` that becomes "in dir", as the
+/// folder `cwd` does.
+fn command_words(command: &str, cwd: &str) -> String {
+    let mut line = command.trim().lines().next().unwrap_or_default().trim();
+    let mut folder = match cwd.trim() {
+        "" | "." => String::new(),
+        cwd => last_part(cwd),
+    };
+    if let Some(rest) = line.strip_prefix("cd ")
+        && let Some((dir, then)) = rest.split_once("&&")
+    {
+        folder = last_part(dir.trim().trim_matches(['"', '\'']));
+        line = then.trim();
+    }
+    // `target/debug/arko --resume x` as `arko --resume x`.
+    let line = match line.split_once(char::is_whitespace) {
+        Some((program, rest)) if program.contains('/') && !program.contains('=') => {
+            format!("{} {rest}", last_part(program))
+        }
+        None if line.contains('/') && !line.contains('=') => last_part(line),
+        _ => line.to_string(),
+    };
+    let words = cut(&line, quiet::COMMAND_CHARS);
+    if folder.is_empty() {
+        words
+    } else {
+        format!("{words} in {folder}")
+    }
+}
+
+/// The last part of a path: `web` of `../arko/web`.
+fn last_part(path: &str) -> String {
+    path.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// An index as a call names it (its name, or a folder inside it), by name.
+fn index_name(index: &str) -> String {
+    if index.contains(['/', '\\']) {
+        last_part(index)
+    } else {
+        index.to_string()
+    }
 }
 
 /// A call's item, as the terminal shows it.
@@ -254,6 +667,21 @@ pub struct Outcome {
     /// The worker a `start_agent` call started at once (not one that waits
     /// for a place).
     pub started: Option<String>,
+    /// What the result adds to the call's act.
+    pub settled: Settled,
+}
+
+/// What a call's result adds to its act ([`Act`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Settled {
+    news: String,
+    alone: bool,
+    ran: bool,
+    /// The index a search searched, as its result names it.
+    index: Option<String>,
+    came: Option<Came>,
+    /// The call's words once it ended, when the result decides them.
+    done: Option<String>,
 }
 
 impl Outcome {
@@ -266,6 +694,7 @@ impl Outcome {
             output: None,
             job: None,
             started: None,
+            settled: Settled::default(),
         }
     }
 
@@ -299,6 +728,31 @@ impl Outcome {
             output: (!message.is_empty()).then(|| message.into()),
             job: None,
             started: None,
+            settled: Settled::default(),
+        }
+    }
+}
+
+impl Settled {
+    /// Completes `act`, the act of the call whose result this is.
+    pub fn apply(&self, act: &mut Option<Act>) {
+        let Some(act) = act.as_mut() else {
+            return;
+        };
+        let settled = self;
+        if !settled.news.is_empty() {
+            act.news.clone_from(&settled.news);
+        }
+        act.alone |= settled.alone;
+        act.ran |= settled.ran;
+        if let Some(index) = &settled.index {
+            act.target.clone_from(index);
+        }
+        if settled.came.is_some() {
+            act.came.clone_from(&settled.came);
+        }
+        if let Some(done) = &settled.done {
+            act.done.clone_from(done);
         }
     }
 }
@@ -397,6 +851,7 @@ fn brief(tool: &str, output: &str) -> Outcome {
                     output: None,
                     job: None,
                     started: None,
+                    settled: Settled::default(),
                 },
                 _ => Outcome::ok(cut(first, OUTCOME_CHARS)),
             }
@@ -409,7 +864,13 @@ fn brief(tool: &str, output: &str) -> Outcome {
                     started: Some(id.to_string()),
                     ..Outcome::ok(id)
                 },
-                (Some("Queued"), Some(id)) => Outcome::ok(format!("{id} queued")),
+                (Some("Queued"), Some(id)) => Outcome {
+                    settled: Settled {
+                        done: Some(format!("Queued {id}")),
+                        ..Settled::default()
+                    },
+                    ..Outcome::ok(format!("{id} queued"))
+                },
                 _ => Outcome::ok(cut(output, OUTCOME_CHARS)),
             }
         }
@@ -420,14 +881,28 @@ fn brief(tool: &str, output: &str) -> Outcome {
                 .lines()
                 .filter(|line| line.starts_with("[mail "))
                 .count();
-            if mail > 0 {
+            let mut outcome = if mail > 0 {
                 Outcome::ok(plural(mail, "message", "messages"))
             } else {
                 Outcome::ok(cut(
                     output.lines().next().unwrap_or_default(),
                     OUTCOME_CHARS,
                 ))
+            };
+            outcome.settled.came = Some(came(output));
+            outcome
+        }
+        "index_search" => {
+            let mut outcome = Outcome::ok(cut(
+                output.lines().next().unwrap_or_default(),
+                OUTCOME_CHARS,
+            ));
+            let (index, none) = searched(output);
+            outcome.settled.index = index;
+            if none {
+                outcome.settled.news = "no results".into();
             }
+            outcome
         }
         RUN_WORKFLOW_AGENT_TOOL_NAME => {
             Outcome::ok(format!("reported ({})", plural(lines(), "line", "lines")))
@@ -440,6 +915,51 @@ fn brief(tool: &str, output: &str) -> Outcome {
                 .unwrap_or_default(),
         ),
     }
+}
+
+/// What reached a wait, from its result: the mail it holds, by its
+/// headings ("r1 (agent `worker`) finished. Its report:"), and the update
+/// (a note, a terminal update, a monitor's alert) that ended it early.
+fn came(output: &str) -> Came {
+    let mut came = Came::default();
+    let first = output.lines().next().unwrap_or_default();
+    if first.starts_with("An update for you arrived") || first.starts_with("A note for you arrived")
+    {
+        came.updates += 1;
+    }
+    for line in output.lines() {
+        let Some((_, heading)) = line
+            .strip_prefix("[mail ")
+            .and_then(|rest| rest.split_once("] "))
+        else {
+            continue;
+        };
+        let run = heading.split_whitespace().next().unwrap_or_default();
+        if heading.contains(") finished. Its report") {
+            came.finished.push(run.to_string());
+        } else if heading.contains(") stopped ") {
+            came.stopped.push(run.to_string());
+        } else {
+            came.messages += 1;
+        }
+    }
+    came
+}
+
+/// The index a search's result says it searched ("6 results from arko
+/// (code, hybrid):"), the first of several, and whether it found nothing.
+fn searched(output: &str) -> (Option<String>, bool) {
+    let first = output.lines().next().unwrap_or_default();
+    let (names, none) = match first.strip_prefix("No results for ") {
+        Some(rest) => (rest.split_once(" in ").map(|(_, names)| names), true),
+        None => (first.split_once(" from ").map(|(_, names)| names), false),
+    };
+    let index = names
+        .and_then(|names| names.split(" (").next())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
+    (index, none)
 }
 
 /// A shell command's outcome: its tests' counts when it ran tests, else
@@ -462,6 +982,18 @@ fn command_outcome(output: &str) -> Outcome {
     // "exit code 1, 2.0 s", "cancelled, 0.4 s", "stopped after 60 s (timeout_seconds), 60.0 s"
     let (how, time) = status.rsplit_once(", ").unwrap_or((status, ""));
     let tests = tests(&rest);
+    // Its row says how its tests went, or how it failed, and that it ran.
+    let settled = Settled {
+        news: match (&tests, how.strip_prefix("exit code ")) {
+            (Some(tests), _) => tests.clone(),
+            (None, _) if ok => String::new(),
+            (None, Some(code)) => format!("exit {code}"),
+            (None, None) => how.to_string(),
+        },
+        alone: tests.is_some(),
+        ran: true,
+        ..Settled::default()
+    };
     let text = if let Some(job) = job {
         format!("{MOVED_OUTCOME}{}", job.get(..8).unwrap_or(job))
     } else if ok {
@@ -506,6 +1038,7 @@ fn command_outcome(output: &str) -> Outcome {
         output: None,
         job: None,
         started: None,
+        settled,
     }
 }
 
@@ -797,6 +1330,138 @@ mod tests {
         assert_eq!(failed.text.as_deref(), Some("boom"));
         assert_eq!(failed.block.unwrap().text, "boom\nat line 3");
         assert!(Outcome::failed("short").block.is_none());
+    }
+
+    /// Each call says what it does for the Quiet view, and its result
+    /// completes that: a test run's counts, the index a search used, what
+    /// reached a wait.
+    #[test]
+    fn calls_carry_their_act_and_results_complete_it() {
+        let act = |tool: &str, pairs: &[(&str, Value)]| {
+            call(tool, &params(pairs))
+                .and_then(|item| item.act)
+                .unwrap()
+        };
+        let read = act(READ_FILE_TOOL_NAME, &[("path", "src/tui/app.rs".into())]);
+        assert_eq!(
+            (read.kind, read.target.as_str()),
+            (ActKind::Read, "src/tui/app.rs")
+        );
+        let shell = act(
+            SHELL_TOOL_NAME,
+            &[(
+                "command",
+                "cd ../arko/web && cargo test -p arko-web\nls".into(),
+            )],
+        );
+        assert_eq!(
+            (shell.kind, shell.target.as_str()),
+            (ActKind::Command, "cargo test -p arko-web in web")
+        );
+        let program = act(
+            SHELL_TOOL_NAME,
+            &[(
+                "command",
+                "/home/me/Desktop/arko/target/debug/arko --resume 20261027 --remote 127.0.0.1:1"
+                    .into(),
+            )],
+        );
+        assert_eq!(
+            program.target,
+            "arko --resume 20261027 --remote 127.0.0.1:1"
+        );
+        let message = act(
+            crew::MESSAGE_AGENT,
+            &[("to", "lead".into()), ("message", "Done.".into())],
+        );
+        assert_eq!(
+            (message.kind, message.target.as_str()),
+            (ActKind::Message, "lead")
+        );
+        let wait = super::call(
+            crew::WAIT_FOR_AGENTS,
+            &params(&[]),
+            &["r3".into(), "r4".into()],
+        )
+        .and_then(|item| item.act)
+        .unwrap();
+        assert_eq!((wait.kind, wait.target.as_str()), (ActKind::Wait, "r3, r4"));
+        let start = act(crew::START_AGENT, &[("task", "Fix it.".into())]);
+        assert_eq!(
+            (start.kind, start.doing.as_str(), start.verb.as_str()),
+            (ActKind::Other, "Starting a worker", "start a worker")
+        );
+        let mcp = act("mcp__github__create_issue", &[]);
+        assert_eq!(
+            (mcp.kind, mcp.target.as_str()),
+            (ActKind::Mcp, "create_issue on github")
+        );
+        // What results add.
+        let settled = |tool: &str, output: &str, mut act: Act| {
+            let mut act = Some(std::mem::take(&mut act));
+            outcome(tool, output).settled.apply(&mut act);
+            act.unwrap()
+        };
+        let tested = settled(
+            SHELL_TOOL_NAME,
+            "exit code 101, 3.0 s\n===== 1 failed, 4 passed in 0.31s =====",
+            shell.clone(),
+        );
+        assert_eq!(
+            (tested.news.as_str(), tested.alone, tested.ran),
+            ("1 failed, 4 passed", true, true)
+        );
+        let built = settled(SHELL_TOOL_NAME, "exit code 2, 3.0 s\nerror", shell.clone());
+        assert_eq!((built.news.as_str(), built.alone), ("exit 2", false));
+        let quiet = settled(SHELL_TOOL_NAME, "exit code 0, 0.1 s\n(no output)", shell);
+        assert_eq!((quiet.news.as_str(), quiet.ran), ("", true));
+        let search = act("index_search", &[("query", "cache timer".into())]);
+        let found = settled(
+            "index_search",
+            "6 results from arko (code, hybrid):\n...",
+            search.clone(),
+        );
+        assert_eq!((found.target.as_str(), found.news.as_str()), ("arko", ""));
+        let none = settled(
+            "index_search",
+            "No results for \"x\" in gpui (code, hybrid). Try other words.",
+            search,
+        );
+        assert_eq!(
+            (none.target.as_str(), none.news.as_str()),
+            ("gpui", "no results")
+        );
+        let waited = settled(
+            crew::WAIT_FOR_AGENTS,
+            "Still running: r4.\n\n[mail 2] r3 (agent `worker`) finished. Its report:\n\nDone.\n\n[end of mail 2]\n\n[mail 3] r4 (agent `worker`) sent you a message:\n\nHalfway.\n\n[end of mail 3]",
+            wait.clone(),
+        );
+        assert_eq!(
+            waited.came,
+            Some(Came {
+                finished: vec!["r3".into()],
+                messages: 1,
+                ..Came::default()
+            })
+        );
+        let woken = settled(
+            crew::WAIT_FOR_AGENTS,
+            "An update for you arrived while you waited. It follows. Wait again if you still need to. Still running: r3.",
+            wait,
+        );
+        assert_eq!(
+            woken.came,
+            Some(Came {
+                updates: 1,
+                ..Came::default()
+            })
+        );
+        let queued = settled(
+            crew::START_AGENT,
+            "Queued r5 (agent `worker`): 4 agent runs are running.",
+            start,
+        );
+        assert_eq!(queued.done, "Queued r5");
     }
 
     /// A command's block keeps its whole output when it shows less of it:

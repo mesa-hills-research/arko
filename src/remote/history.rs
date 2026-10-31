@@ -111,6 +111,7 @@ fn items_from(
                             }
                             let call = &mut items[index];
                             call.status = Some(outcome.status);
+                            outcome.settled.apply(&mut call.act);
                             call.outcome = outcome.text;
                             call.started = outcome.started.clone();
                             call.output = outcome.output;
@@ -208,7 +209,7 @@ fn items_from(
                     if call_item {
                         // Without a result (the session stopped first).
                         item.status = Some(super::CallStatus::Failed);
-                        item.outcome = Some("interrupted".into());
+                        item.outcome = Some(super::quiet::INTERRUPTED.into());
                     }
                     let index = push(&mut items, item);
                     if (call_item || call.name == ASK_USER_TOOL_NAME)
