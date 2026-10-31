@@ -1203,6 +1203,10 @@ struct Call {
     agent: String,
     /// A `message_agent` call's message, for the worker that gets it.
     message: Option<String>,
+    /// The background job it started, as it started and as it ended. The
+    /// result may come after the job ended, when the feed no longer keeps
+    /// the job, and its line says how the job ended from this.
+    job: Option<JobSummary>,
 }
 
 /// Where an agent's output stood as its model request went out.
@@ -1660,9 +1664,17 @@ impl Feed {
             self.publish(state, Update::Job(summary));
         }
         // A job that ended before the call's result came (in a parallel
-        // group, whose results come together) ends its line now.
+        // group, whose results come together) ends its line now. The feed
+        // may have dropped one it saw run, and the call keeps how that one
+        // ended. One it never saw run is among the ends it didn't see.
         if let Some(job) = outcome.job.map(|job| job.to_string()) {
-            let ended = match state.jobs.iter().find(|summary| summary.id == job) {
+            let seen = state
+                .jobs
+                .iter()
+                .find(|summary| summary.id == job)
+                .cloned()
+                .or(call.job.filter(|summary| summary.id == job));
+            let ended = match &seen {
                 Some(summary) => summary
                     .ended_at
                     .map(|at| (summary.state, Some(summary.started_at), at)),
@@ -1679,12 +1691,7 @@ impl Feed {
                 }
             }
             // A monitor's line follows its monitor from its start.
-            if let Some(summary) = state
-                .jobs
-                .iter()
-                .find(|summary| summary.id == job && summary.kind == JobKind::Monitor)
-                .cloned()
-            {
+            if let Some(summary) = seen.filter(|summary| summary.kind == JobKind::Monitor) {
                 self.follow_monitor(state, &call.agent, call.item, &summary);
             }
         }
@@ -1891,6 +1898,7 @@ impl Feed {
                             item: id,
                             agent: agent.clone(),
                             message: render::message(tool_name, parameters),
+                            job: None,
                         },
                     );
                 }
@@ -2332,6 +2340,9 @@ impl Feed {
             watching,
             expires_at,
         };
+        if let Some(call) = start.tool_call.and_then(|call| state.calls.get_mut(&call)) {
+            call.job = Some(summary.clone());
+        }
         state.jobs.push(summary.clone());
         self.publish(&mut state, Update::Job(summary));
     }
@@ -2366,6 +2377,15 @@ impl Feed {
         job.outcome = outcome;
         let job = job.clone();
         self.publish(&mut state, Update::Job(job.clone()));
+        // The call that started it, if its result hasn't come, keeps how
+        // it ended for its line.
+        if let Some(call) = state
+            .calls
+            .values_mut()
+            .find(|call| call.job.as_ref().is_some_and(|started| started.id == id))
+        {
+            call.job = Some(job.clone());
+        }
         // Past the ended jobs kept, the one that started first goes, which
         // may be this one.
         let kept = state
@@ -4297,6 +4317,77 @@ mod tests {
         feed.job_ended(job, JobState::Stopped, None);
         assert_eq!(outcome(&feed).as_deref(), Some("stopped"));
         assert!(feed.subscribe().0.jobs.is_empty());
+    }
+
+    /// A job that ended before its call's result came ends the call's line
+    /// as the result comes, also when the feed dropped the job meanwhile,
+    /// as it started before the ended jobs the feed keeps. So does a
+    /// monitor.
+    #[test]
+    fn a_job_the_feed_dropped_before_its_calls_result_still_ends_its_line() {
+        let newer_ended = |feed: &Feed| {
+            for _ in 0..ENDED_JOBS {
+                let id = Uuid::new_v4();
+                feed.job_started(JobStart::new(id, MAIN_AGENT, JobKind::Command, "test"));
+                feed.job_ended(id, JobState::Finished, None);
+            }
+        };
+        let dropped = |feed: &Feed, job: Uuid| {
+            let jobs = feed.subscribe().0.jobs;
+            jobs.iter().all(|summary| summary.id != job.to_string())
+        };
+        let result = |feed: &Feed, call: Uuid, tool: &str, output: String| {
+            let returned = AgentEvent::ToolResult {
+                tool_call_id: call,
+                tool_name: tool.into(),
+                output,
+            };
+            feed.event(&event("main", returned), None);
+        };
+
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.event(&event("main", lookup(call)), None);
+        feed.job_started(
+            JobStart::new(job, MAIN_AGENT, JobKind::Call, "mcp__search__lookup").made_by(call),
+        );
+        newer_ended(&feed);
+        feed.job_ended(job, JobState::Failed, None);
+        assert!(dropped(&feed, job));
+        result(&feed, call, "mcp__search__lookup", moved(job));
+        assert_eq!(
+            call_item(&feed, "lookup").outcome.as_deref(),
+            Some("failed in the background")
+        );
+
+        let feed = Feed::new("main");
+        let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut parameters = HashMap::new();
+        parameters.insert("command".to_string(), serde_json::json!("npm run dev"));
+        let monitor = AgentEvent::ToolCallFormatted {
+            tool_call_id: call,
+            tool_name: "monitor_start".into(),
+            parameters,
+        };
+        feed.event(&event("main", monitor), None);
+        feed.job_started(
+            JobStart::new(job, MAIN_AGENT, JobKind::Monitor, "npm run dev")
+                .made_by(call)
+                .started(now_ms() - 30 * 60_000)
+                .monitoring("lines that match error", now_ms()),
+        );
+        newer_ended(&feed);
+        feed.job_ended(job, JobState::Expired, None);
+        assert!(dropped(&feed, job));
+        let output = format!(
+            "Monitor {job} started. It runs `npm run dev` and alerts you of lines that match `error`, until 12:00 UTC (30 min). It has printed nothing yet."
+        );
+        result(&feed, call, "monitor_start", output);
+        let line = call_item(&feed, "monitor $ npm run dev");
+        assert_eq!(
+            (line.status, line.outcome.as_deref()),
+            (Some(CallStatus::Ok), Some("ended after 30 min"))
+        );
     }
 
     /// A restored line of a call that moved to the background says how its
