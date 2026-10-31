@@ -797,9 +797,10 @@ impl Harness {
             Some(Admitted::Command {
                 command,
                 source,
+                confirmed,
                 reply,
             }) => {
-                self.run_command(&command, source, Phase::Reporting, input, reply)
+                self.run_command(&command, source, Phase::Reporting, input, reply, confirmed)
                     .await
             }
             _ => false,

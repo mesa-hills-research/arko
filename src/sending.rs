@@ -106,6 +106,9 @@ pub(crate) struct Sent {
     /// An app's message's images, which [`Harness::admit`] attaches. `None`
     /// for what isn't an app's message.
     images: Option<Vec<ui::Attachment>>,
+    /// The user agreed, as they sent it, to continue a worker whose prompt
+    /// cache expired. It holds for this send alone.
+    confirmed: bool,
     pub(crate) reply: Reply,
 }
 
@@ -115,6 +118,8 @@ pub(crate) enum Admitted {
     Command {
         command: String,
         source: Source,
+        /// As [`Sent::confirmed`].
+        confirmed: bool,
         reply: Reply,
     },
     /// A message, trimmed, with the open questions it answers.
@@ -156,6 +161,7 @@ impl Harness {
                 source,
                 attached,
                 images: None,
+                confirmed: false,
                 reply,
             })
         };
@@ -165,18 +171,14 @@ impl Harness {
                 let line = input.coalesce(line).await;
                 sent(line, self.input_source, Vec::new(), reply)
             }
-            Event::Input(Some(Input::Message(message))) => {
-                if message.continue_uncached {
-                    self.confirm_continue(&message.text);
-                }
-                Read::Sent(Sent {
-                    line: message.text,
-                    source: self.input_source,
-                    attached: message.answers,
-                    images: Some(message.images),
-                    reply: input.reply(),
-                })
-            }
+            Event::Input(Some(Input::Message(message))) => Read::Sent(Sent {
+                line: message.text,
+                source: self.input_source,
+                attached: message.answers,
+                images: Some(message.images),
+                confirmed: message.continue_uncached,
+                reply: input.reply(),
+            }),
             Event::Input(Some(Input::Answer { question, text })) => {
                 let mut reply = input.reply();
                 let attached = match reporting {
@@ -192,10 +194,16 @@ impl Harness {
                 self.echo_web(&text);
                 sent(text, Source::Web, Vec::new(), input.reply())
             }
-            Event::Remote(Action::Continue(text)) => {
-                self.echo_web(&text);
-                self.confirm_continue(&text);
-                sent(text, Source::Web, Vec::new(), input.reply())
+            Event::Remote(Action::Continue(line)) => {
+                self.echo_web(&line);
+                Read::Sent(Sent {
+                    line,
+                    source: Source::Web,
+                    attached: Vec::new(),
+                    images: None,
+                    confirmed: true,
+                    reply: input.reply(),
+                })
             }
             Event::Remote(Action::Reply { text, answers }) => {
                 self.echo_web(&text);
@@ -238,6 +246,7 @@ impl Harness {
             source,
             attached,
             images,
+            confirmed,
             mut reply,
         } = sent;
         // (While the report is written, an app's message doesn't go, so its
@@ -286,6 +295,7 @@ impl Harness {
             return Some(Admitted::Command {
                 command: command.to_string(),
                 source,
+                confirmed,
                 reply,
             });
         }
@@ -337,6 +347,7 @@ impl Harness {
         phase: Phase,
         input: &mut Inputs,
         mut reply: Reply,
+        confirmed: bool,
     ) -> bool {
         if is_remote_command(command) {
             self.remote_command(command, source).await;
@@ -359,7 +370,7 @@ impl Harness {
         }
         // A message to a worker went once the worker has it.
         if let Some(("/message", argument)) = split_live_command(command) {
-            self.message_command(argument, source, &mut reply);
+            self.message_command(argument, source, &mut reply, confirmed);
             return false;
         }
         if self.live_command(command, source) {

@@ -321,6 +321,7 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
         "r1 Check the docs.",
         Source::App,
         &mut crate::sending::Reply::to(Some(reply)),
+        false,
     );
     match verdict.await.unwrap() {
         crate::remote::Verdict::Refused(refusal) => {
@@ -345,6 +346,23 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
     assert_eq!(warnings(&harness), 1);
     assert!(shown(&harness.feed).iter().any(|(_, text, _)| text
         == "r1's cache expired just now. Continuing re-reads about 50k tokens without it, using your ChatGPT plan. The same /message again continues it."));
+    // That warning at the line prompt confirms nothing for a client that
+    // sends the same message unconfirmed: it is refused.
+    let (reply, verdict) = oneshot::channel();
+    harness.message_command(
+        "r1 Check the docs.",
+        Source::App,
+        &mut crate::sending::Reply::to(Some(reply)),
+        false,
+    );
+    assert!(matches!(
+        verdict.await.unwrap(),
+        crate::remote::Verdict::Refused(crate::remote::Refusal {
+            kind: crate::remote::RefusalKind::Uncached { .. },
+            ..
+        })
+    ));
+    assert!(!got(&seen, "r1", "Check the docs."));
     // Another message asks again, and the first again then asks again too.
     assert!(harness.live_command("/message r1 Check the tests.", Source::Terminal));
     assert_eq!(warnings(&harness), 2);
@@ -367,22 +385,65 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
             .unwrap()
             .asks(chrono::Utc::now())
     );
-    // A client's send, confirmed, is accepted once r1 has it.
-    harness.confirm_continue("/message r1 Check the build.");
+    // A client's send confirmed but refused for its images leaves no
+    // permission behind: the same message from the line prompt asks.
+    let image = ui::Attachment {
+        bytes: Arc::from(&b"pixels"[..]),
+        mime: "image/png".into(),
+        name: None,
+    };
+    let (reply, verdict) = oneshot::channel();
+    inputs.reply = Some(reply);
+    let confirmed = Input::Message(ui::Message {
+        text: "/message r1 Check the lint.".into(),
+        images: vec![image],
+        continue_uncached: true,
+        ..Default::default()
+    });
+    let crate::sending::Read::Sent(sent) = harness
+        .read_sent(
+            Event::Input(Some(confirmed)),
+            &mut inputs,
+            crate::sending::Phase::Idle,
+        )
+        .await
+    else {
+        panic!("read as sent");
+    };
+    assert!(harness.admit(sent, crate::sending::Phase::Idle).is_none());
+    assert!(matches!(
+        verdict.await.unwrap(),
+        crate::remote::Verdict::Refused(crate::remote::Refusal {
+            kind: crate::remote::RefusalKind::WorkerTextOnly,
+            ..
+        })
+    ));
+    assert!(harness.live_command("/message r1 Check the lint.", Source::Terminal));
+    assert_eq!(warnings(&harness), 3);
+    assert!(!got(&seen, "r1", "Check the lint."));
+
+    // A client's send, confirmed, is accepted once r1 has it, as the item
+    // of the message in r1's transcript.
     let (reply, verdict) = oneshot::channel();
     harness.message_command(
         "r1 Check the build.",
         Source::App,
         &mut crate::sending::Reply::to(Some(reply)),
+        true,
     );
-    assert!(matches!(
-        verdict.await.unwrap(),
+    match verdict.await.unwrap() {
         crate::remote::Verdict::Accepted {
             delivery: Delivery::Command,
+            item: Some(item),
             ..
+        } => {
+            let shown = harness.feed.subscribe().0.items;
+            let copy = shown.iter().find(|shown| shown.id == item).unwrap();
+            assert_eq!((copy.agent.as_str(), copy.text.as_str()), ("r1", "Check the build."));
         }
-    ));
-    assert_eq!(warnings(&harness), 2);
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(warnings(&harness), 3);
     until(|| got(&seen, "r1", "Check the build.")).await;
     harness.crew.as_ref().unwrap().shutdown().await;
 }

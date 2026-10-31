@@ -1540,10 +1540,11 @@ impl Harness {
                 Some(Admitted::Command {
                     command,
                     source,
+                    confirmed,
                     reply,
                 }) => {
                     if self
-                        .run_command(&command, source, Phase::Idle, input, reply)
+                        .run_command(&command, source, Phase::Idle, input, reply, confirmed)
                         .await
                     {
                         break;
@@ -2047,7 +2048,7 @@ impl Harness {
         };
         // (It shows as the user's message to the worker, not as a command.)
         if name == "/message" {
-            self.message_command(argument, source, &mut Reply::default());
+            self.message_command(argument, source, &mut Reply::default(), false);
             return true;
         }
         self.feed.user(command, source, Delivery::Command);
@@ -2719,8 +2720,15 @@ impl Harness {
     /// `/message WORKER TEXT`: the user's message goes to the worker as its
     /// lead's would, and the lead gets a copy with its next news when
     /// `/message-copies` is on. It went once the worker has it, which
-    /// `reply` says.
-    pub(crate) fn message_command(&mut self, argument: &str, source: Source, reply: &mut Reply) {
+    /// `reply` says. `confirmed` says the user agreed, as they sent it, to
+    /// continue a worker whose prompt cache expired.
+    pub(crate) fn message_command(
+        &mut self,
+        argument: &str,
+        source: Source,
+        reply: &mut Reply,
+        confirmed: bool,
+    ) {
         let (to, text) = argument
             .split_once(char::is_whitespace)
             .map_or((argument, ""), |(to, text)| (to, text.trim()));
@@ -2735,12 +2743,16 @@ impl Harness {
         // Continuing a worker whose prompt cache expired re-reads its whole
         // conversation, so Arko says what that costs first. A client that
         // waits for the verdict asks the user, and sends it again confirmed.
-        // At the terminal, the same `/message` again continues it.
+        // At the line prompt, which has no question to ask, the same
+        // `/message` again continues it. That is only for sends without a
+        // verdict to come, so a warning there confirms nothing for another
+        // client.
         let now = chrono::Utc::now();
         let asked = (to.trim().to_ascii_lowercase(), text.to_string());
         if let Some(cache) = self.crew.as_ref().and_then(|crew| crew.worker_cache(to))
             && cache.asks(now)
-            && self.continue_asked.take() != Some(asked.clone())
+            && !confirmed
+            && (reply.tracked() || self.continue_asked.take() != Some(asked.clone()))
         {
             let warning = cache.warning(now);
             let uncached = RefusalKind::Uncached {
@@ -2761,10 +2773,10 @@ impl Harness {
         };
         match sent {
             Ok(id) => {
-                self.feed.to_worker(&id, text, source);
+                let item = self.feed.to_worker(&id, text, source);
                 self.output
                     .echo(&self.output.dim(&format!("  ✉ sent to {id}")));
-                reply.accept(Delivery::Command, None);
+                reply.accept(Delivery::Command, Some(item));
             }
             Err(why) => {
                 // (The model's advice after the reason isn't the user's.)
@@ -2774,14 +2786,6 @@ impl Harness {
                     self.say(Level::Warn, &format!("{words} It said “{text}”."));
                 }
             }
-        }
-    }
-
-    /// The `/message` in `text` continues its worker without asking, though
-    /// its prompt cache expired: the user confirmed it in a front end.
-    pub(crate) fn confirm_continue(&mut self, text: &str) {
-        if let Some((to, words)) = crate::worker_cache::message_parts(text) {
-            self.continue_asked = Some((to.to_ascii_lowercase(), words.to_string()));
         }
     }
 
@@ -3882,8 +3886,16 @@ impl Harness {
                     };
                     let (text, source, attached, mut reply) = match self.admit(sent, Phase::Turn) {
                         None => continue,
-                        Some(Admitted::Command { command, source, reply }) => {
-                            if self.run_command(&command, source, Phase::Turn, input, reply).await {
+                        Some(Admitted::Command {
+                            command,
+                            source,
+                            confirmed,
+                            reply,
+                        }) => {
+                            if self
+                                .run_command(&command, source, Phase::Turn, input, reply, confirmed)
+                                .await
+                            {
                                 exit = true;
                                 stopping |= self.stop(&workflow);
                             }
