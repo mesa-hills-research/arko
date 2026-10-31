@@ -917,11 +917,14 @@ mod tests {
         let sent = app.take_effects();
         assert_eq!(
             sent,
-            [Effect::Send(crate::tui::app::Sending::of_box(
-                Input::Line("one\ntwo".into()),
-                "one\ntwo",
-                Vec::new()
-            ))]
+            [Effect::Send(
+                crate::tui::app::Sending::of_box(
+                    Input::Line("one\ntwo".into()),
+                    "one\ntwo",
+                    Vec::new()
+                )
+                .with_message(Some(app.tray.message.clone()))
+            )]
         );
         // An Enter a key follows at once was a paste's.
         handle(

@@ -399,6 +399,36 @@ fn history_and_cancelled_dictation_do_not_attach_an_older_draft() {
 }
 
 #[test]
+fn a_request_during_a_refused_send_does_not_take_its_restored_draft() {
+    let mut app = super::super::app::tests::app();
+    app.paste("Draft");
+    press(&mut app, KeyCode::Enter);
+    let sending = app
+        .take_effects()
+        .into_iter()
+        .find_map(|effect| match effect {
+            Effect::Send(sending) => Some(sending),
+            _ => None,
+        })
+        .expect("sent");
+    app.set_reading(Reading {
+        approvals: vec![request("a1", skill())],
+        ..Reading::default()
+    });
+    screen(&mut app, 80, 24);
+    app.verdict(
+        sending,
+        crate::Verdict::refused(crate::RefusalKind::TooLong, "Shorten the message."),
+    );
+    assert_eq!(app.editor.text(), "Draft");
+    assert!(!app.includes_message());
+    alt_a(&mut app);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(sent(&mut app)[0].words, None);
+    assert_eq!(app.editor.text(), "Draft");
+}
+
+#[test]
 fn a_refused_send_restores_the_switch_with_its_draft() {
     for manual in [false, true] {
         let mut app = super::super::app::tests::app();

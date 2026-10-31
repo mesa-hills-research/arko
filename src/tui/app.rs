@@ -732,7 +732,7 @@ impl App {
 
     pub(super) fn take_box(&mut self) -> (String, Option<crate::remote::protocol::MessageSwitch>) {
         self.sync_message();
-        let message = (!self.approvals().is_empty()).then(|| self.tray.message.clone());
+        let message = Some(self.tray.message.clone());
         (self.editor.take(), message)
     }
 
