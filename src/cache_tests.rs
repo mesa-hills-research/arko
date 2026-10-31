@@ -106,13 +106,13 @@ async fn a_resumed_session_counts_its_cache_from_the_wall_clock() {
     assert_eq!((restored.read, restored.written), (Some(900), Some(0)));
     assert_eq!(restored.tokens, first.tokens);
     // For two clocks, 1:48 and a little over thirty minutes after the
-    // request.
+    // request (it counts as lapsed 30 seconds before its thirty minutes end).
     use crate::cache_timer::CacheTimer;
     let timer = |cache: &crate::remote::CacheStatus, now: i64| CacheTimer::of(cache, false, now);
     let counting = timer(&restored, at + 108_000).unwrap();
-    assert_eq!(counting.label(), "cache 28:12");
+    assert_eq!(counting.label(), "cache 27:42");
     assert!(!counting.warns());
-    assert!(timer(&restored, at + 1_750_000).unwrap().warns());
+    assert!(timer(&restored, at + 1_720_000).unwrap().warns());
     assert_eq!(timer(&restored, at + 1_801_000), Some(CacheTimer::Expired));
     assert!(
         CacheTimer::of(&restored, false, now_ms())
@@ -140,7 +140,7 @@ async fn a_resumed_session_counts_its_cache_from_the_wall_clock() {
     let fresh = say_and_wait(&seam, "Two.", |cache| cache.read == Some(0)).await;
     assert!(fresh.refreshed_at.unwrap() >= before);
     let counting = CacheTimer::of(&fresh, false, now_ms()).unwrap();
-    assert!(matches!(counting, CacheTimer::Counting { left } if left > 1_790_000));
+    assert!(matches!(counting, CacheTimer::Counting { left } if left > 1_760_000));
     assert_eq!((fresh.read, fresh.written), (Some(0), Some(0)), "a miss");
     quit(seam, ended).await;
     assert_eq!(

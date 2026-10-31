@@ -199,12 +199,12 @@ fn minutes_left(expires_at: std::time::SystemTime) -> u64 {
 
 /// When the main agent's prompt cache expires: its latest request, the
 /// latest refresh that kept it warm, or (resumed) what the session's record
-/// says of them, plus its lifetime, as the status line counts them. `None`
-/// while either is unknown.
+/// says of them, plus its lifetime less the safety margin
+/// ([`lapses_at`](crate::cache_timer::lapses_at)), as the status line counts
+/// them. `None` while either is unknown.
 pub(crate) fn cache_expiry(stats: &crate::ui::Stats) -> Option<std::time::SystemTime> {
-    let used = stats.cache_refreshed_at?;
-    let used = std::time::UNIX_EPOCH + Duration::from_millis(u64::try_from(used).ok()?);
-    Some(used + stats.cache_lifetime?)
+    let lapses = crate::cache_timer::lapses_at(stats.cache_refreshed_at?, stats.cache_lifetime?);
+    Some(std::time::UNIX_EPOCH + Duration::from_millis(u64::try_from(lapses).ok()?))
 }
 
 /// The workflow's name in new sessions.

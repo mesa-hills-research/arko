@@ -473,9 +473,9 @@ mod tests {
     }
 
     /// What the monitors plan from, the cache's expiry, is the restored time
-    /// plus the lifetime: in the past for a cache that lapsed (the monitors
-    /// take a time that passed as now), and never more than the lifetime
-    /// from now.
+    /// plus the lifetime, less the 30-second safety margin: in the past for
+    /// a cache that lapsed (the monitors take a time that passed as now), and
+    /// never more than the lifetime from now.
     #[test]
     fn a_restored_cache_gives_the_monitors_its_expiry() {
         let at = 5_000_000;
@@ -493,9 +493,9 @@ mod tests {
                 .unwrap()
                 .as_millis() as i64
         };
-        assert_eq!(millis(expiry(at, at + 1_000)), at + 3_600_000);
-        assert_eq!(millis(expiry(at, at + 7_200_000)), at + 3_600_000);
-        assert_eq!(millis(expiry(at + 9_000_000, at)), at + 3_600_000);
+        assert_eq!(millis(expiry(at, at + 1_000)), at + 3_570_000);
+        assert_eq!(millis(expiry(at, at + 7_200_000)), at + 3_570_000);
+        assert_eq!(millis(expiry(at + 9_000_000, at)), at + 3_570_000);
     }
 
     /// The entry kept for a request holds what the status knows, and none
