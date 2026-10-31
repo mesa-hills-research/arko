@@ -1,7 +1,7 @@
 //! Audio capture behind an interface of Arko's own, so the microphone crate
 //! (cpal) can be replaced: [`open`] starts a [`Source`] and hands its audio,
 //! mono at the source's own rate, to a callback until the [`Capture`] is
-//! dropped.
+//! dropped. A source that fails once started says why, once.
 
 use std::path::Path;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -11,6 +11,8 @@ use super::Source;
 
 /// What takes the audio: mono samples, and their rate.
 pub type OnAudio = Box<dyn FnMut(&[f32], u32) + Send>;
+/// What hears that the source stopped after it started, and why.
+pub type OnFailure = Box<dyn FnMut(String) + Send>;
 
 /// A source being recorded, until dropped.
 pub struct Capture {
@@ -19,9 +21,9 @@ pub struct Capture {
 }
 
 /// Starts recording `source` into `on_audio`.
-pub fn open(source: &Source, on_audio: OnAudio) -> Result<Capture, String> {
+pub fn open(source: &Source, on_audio: OnAudio, on_failure: OnFailure) -> Result<Capture, String> {
     match source {
-        Source::Microphone => microphone(on_audio),
+        Source::Microphone => microphone(on_audio, on_failure),
         Source::File(path) => wav_file(path, on_audio),
     }
 }
@@ -62,14 +64,14 @@ fn wav_file(path: &Path, mut on_audio: OnAudio) -> Result<Capture, String> {
 /// Records the default microphone at its own rate and sample format, mixed
 /// to mono. The stream lives on a thread of its own, since cpal's isn't
 /// `Send` on every system.
-fn microphone(on_audio: OnAudio) -> Result<Capture, String> {
+fn microphone(on_audio: OnAudio, on_failure: OnFailure) -> Result<Capture, String> {
     let (stop, stopped) = mpsc::channel::<()>();
     let (ready, started) = mpsc::channel::<Result<(), String>>();
     std::thread::Builder::new()
         .name("arko-microphone".into())
         .spawn(move || {
             use cpal::traits::StreamTrait;
-            let stream = match input_stream(on_audio) {
+            let stream = match input_stream(on_audio, on_failure) {
                 Ok(stream) => stream,
                 Err(error) => {
                     let _ = ready.send(Err(error));
@@ -91,7 +93,7 @@ fn microphone(on_audio: OnAudio) -> Result<Capture, String> {
     Ok(Capture { _stop: stop })
 }
 
-fn input_stream(on_audio: OnAudio) -> Result<cpal::Stream, String> {
+fn input_stream(on_audio: OnAudio, on_failure: OnFailure) -> Result<cpal::Stream, String> {
     use cpal::SampleFormat as F;
     use cpal::traits::{DeviceTrait, HostTrait};
     let device = cpal::default_host()
@@ -105,16 +107,16 @@ fn input_stream(on_audio: OnAudio) -> Result<cpal::Stream, String> {
     let device = &device;
     let config = &config;
     match format {
-        F::F32 => build::<f32>(device, config, on_audio),
-        F::F64 => build::<f64>(device, config, on_audio),
-        F::I8 => build::<i8>(device, config, on_audio),
-        F::I16 => build::<i16>(device, config, on_audio),
-        F::I32 => build::<i32>(device, config, on_audio),
-        F::I64 => build::<i64>(device, config, on_audio),
-        F::U8 => build::<u8>(device, config, on_audio),
-        F::U16 => build::<u16>(device, config, on_audio),
-        F::U32 => build::<u32>(device, config, on_audio),
-        F::U64 => build::<u64>(device, config, on_audio),
+        F::F32 => build::<f32>(device, config, on_audio, on_failure),
+        F::F64 => build::<f64>(device, config, on_audio, on_failure),
+        F::I8 => build::<i8>(device, config, on_audio, on_failure),
+        F::I16 => build::<i16>(device, config, on_audio, on_failure),
+        F::I32 => build::<i32>(device, config, on_audio, on_failure),
+        F::I64 => build::<i64>(device, config, on_audio, on_failure),
+        F::U8 => build::<u8>(device, config, on_audio, on_failure),
+        F::U16 => build::<u16>(device, config, on_audio, on_failure),
+        F::U32 => build::<u32>(device, config, on_audio, on_failure),
+        F::U64 => build::<u64>(device, config, on_audio, on_failure),
         other => Err(format!(
             "The microphone's sample format ({other}) isn't supported."
         )),
@@ -125,6 +127,7 @@ fn build<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     mut on_audio: OnAudio,
+    on_failure: OnFailure,
 ) -> Result<cpal::Stream, String>
 where
     T: cpal::SizedSample,
@@ -134,6 +137,8 @@ where
     let channels = config.channels.max(1) as usize;
     let rate = config.sample_rate.0;
     let mut mono = Vec::new();
+    // (Told once: the microphone is gone, or its stream broke.)
+    let mut on_failure = Some(on_failure);
     device
         .build_input_stream(
             config,
@@ -144,7 +149,12 @@ where
                 }));
                 on_audio(&mono, rate);
             },
-            |error| log::warn!("microphone: {error}"),
+            move |error| {
+                log::warn!("microphone: {error}");
+                if let Some(mut tell) = on_failure.take() {
+                    tell(error.to_string());
+                }
+            },
             None,
         )
         .map_err(|error| format!("Couldn't open the microphone ({error})."))
@@ -196,6 +206,7 @@ mod tests {
                 let silent = samples.iter().all(|s| *s == 0.0);
                 into.lock().unwrap().push((samples.len(), rate, silent));
             }),
+            Box::new(|why| panic!("{why}")),
         )
         .unwrap();
         std::thread::sleep(Duration::from_millis(200));
@@ -220,6 +231,7 @@ mod tests {
         let Err(error) = open(
             &Source::File("/nowhere/clip.wav".into()),
             Box::new(|_, _| {}),
+            Box::new(|_| {}),
         ) else {
             panic!("opened");
         };

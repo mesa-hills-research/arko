@@ -67,4 +67,5 @@ time, in place of the microphone.
 
 An app opens a dictation with `arko::dictation::DictationService::shared`, hands it audio with
 `Dictation::push` or `Dictation::record`, and passes its events to `Feed::dictation`, which sends
-them to every client as `Update::Dictation`.
+them to every client as `Update::Dictation`. It keeps the `Dictation` until `Done` or `Failed`
+comes, since dropping it cancels the dictation.

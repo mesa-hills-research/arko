@@ -82,11 +82,53 @@ fn one_dictation_at_a_time() {
     assert!(matches!(open(), Err(DictationError::Busy)));
     let first_id = first.id();
     first.cancel();
-    let second = open().unwrap();
+    let mut second = open().unwrap();
     assert_ne!(second.id(), first_id);
-    // A finished one leaves the place to the next at once.
+    // A finished one keeps its place until it's let go, after Done.
     second.finish();
+    assert!(matches!(open(), Err(DictationError::Busy)));
+    drop(second);
     assert!(open().is_ok());
+}
+
+/// Audio that piles up past the backlog overloads the dictation once, and
+/// later audio is dropped.
+#[test]
+fn audio_past_the_backlog_overloads_once() {
+    let (sender, received) = mpsc::channel();
+    let intake = Intake::default();
+    let second = vec![0.0; 16_000];
+    for _ in 0..BACKLOG_SECONDS {
+        intake.send(&sender, &second, 16_000);
+    }
+    assert!(!intake.overloaded.load(Ordering::SeqCst));
+    intake.send(&sender, &second, 16_000);
+    intake.send(&sender, &second, 16_000);
+    let messages: Vec<Message> = received.try_iter().collect();
+    assert_eq!(messages.len(), BACKLOG_SECONDS + 1);
+    assert!(matches!(messages.last(), Some(Message::Overloaded)));
+    assert_eq!(
+        intake.queued.load(Ordering::SeqCst),
+        BACKLOG_SECONDS * 16_000
+    );
+    // Cancelled, nothing more goes.
+    let intake = Intake::default();
+    intake.cancelled.store(true, Ordering::SeqCst);
+    intake.send(&sender, &second, 16_000);
+    assert!(received.try_recv().is_err());
+}
+
+/// A pass that's due without new audio waits for audio, rather than look
+/// again at once.
+#[test]
+fn a_due_pass_without_audio_doesnt_spin() {
+    let now = Instant::now();
+    assert_eq!(wait_for(None, now), POLL);
+    assert_eq!(wait_for(Some(now - Duration::from_secs(1)), now), POLL);
+    assert_eq!(wait_for(Some(now), now), POLL);
+    let soon = Duration::from_millis(30);
+    assert_eq!(wait_for(Some(now + soon), now), soon);
+    assert_eq!(wait_for(Some(now + Duration::from_secs(5)), now), POLL);
 }
 
 /// A dictation cancelled while it waits for the server sends nothing
@@ -202,7 +244,7 @@ fn a_wav_file_is_dictated_end_to_end() {
 
     let record = |expect_loading: bool| {
         let (sink, updates) = sink();
-        let dictation = service.open(DictationOptions::default(), sink).unwrap();
+        let mut dictation = service.open(DictationOptions::default(), sink).unwrap();
         let next = || {
             updates
                 .recv_timeout(Duration::from_secs(60))
@@ -247,4 +289,46 @@ fn a_wav_file_is_dictated_end_to_end() {
     assert!(tentatives > 0, "no tentative words before they settled");
     let (again, _) = record(false);
     assert!(again.to_lowercase().contains("hamburg"), "{again:?}");
+
+    // Each of these ends the dictation, and nothing follows.
+    let listening = || {
+        let (sink, updates) = sink();
+        let dictation = service.open(DictationOptions::default(), sink).unwrap();
+        let first = updates.recv_timeout(Duration::from_secs(60)).unwrap();
+        assert_eq!(first.event, DictationEvent::Listening);
+        (dictation, updates)
+    };
+    let quiet = |updates: &Receiver<DictationUpdate>| {
+        let after = updates.recv_timeout(Duration::from_secs(3));
+        assert!(after.is_err(), "{after:?}");
+    };
+    // Cancelled while the last words come: no Done.
+    let (mut dictation, updates) = listening();
+    let capture = dictation.record(&source).unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    drop(capture);
+    dictation.finish();
+    dictation.cancel();
+    let texts: Vec<DictationEvent> = updates.try_iter().map(|update| update.event).collect();
+    assert!(!texts.contains(&DictationEvent::Done), "{texts:?}");
+    quiet(&updates);
+    // More audio at once than the computer could keep up with.
+    let (dictation, updates) = listening();
+    dictation.push(&vec![0.0; 16_000 * (BACKLOG_SECONDS + 1)], 16_000);
+    let failed = updates.recv_timeout(Duration::from_secs(10)).unwrap().event;
+    assert_eq!(failed, DictationEvent::Failed(OVERLOADED.into()));
+    quiet(&updates);
+    drop(dictation);
+    // A microphone that stops.
+    let (dictation, updates) = listening();
+    dictation
+        .sender
+        .send(Message::CaptureFailed("the device is gone".into()))
+        .unwrap();
+    let failed = updates.recv_timeout(Duration::from_secs(10)).unwrap().event;
+    assert_eq!(
+        failed,
+        DictationEvent::Failed("The microphone stopped (the device is gone).".into())
+    );
+    quiet(&updates);
 }

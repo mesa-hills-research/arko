@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -26,6 +26,12 @@ use super::{
 const HUGGING_FACE: &str = "https://huggingface.co";
 /// How often a dictation waiting for audio looks whether it was cancelled.
 const POLL: Duration = Duration::from_millis(100);
+/// The most audio that may wait for the engine, in seconds. More means the
+/// computer can't keep up, and the dictation fails rather than fall further
+/// behind.
+const BACKLOG_SECONDS: usize = 15;
+/// What a dictation says when its audio piles up.
+const OVERLOADED: &str = "Dictation can't keep up on this computer.";
 
 /// Runs dictations, one at a time, on a thread of its own.
 pub struct DictationService {
@@ -41,14 +47,56 @@ struct Job {
     id: u64,
     model: &'static SpeechModel,
     audio: mpsc::Receiver<Message>,
-    cancel: Arc<AtomicBool>,
+    intake: Arc<Intake>,
     sink: Sink,
     idle: Duration,
 }
 
 enum Message {
-    Audio { samples: Vec<f32>, rate: u32 },
+    Audio {
+        samples: Vec<f32>,
+        rate: u32,
+    },
+    /// More than [`BACKLOG_SECONDS`] of audio waited.
+    Overloaded,
+    /// The microphone stopped, for this reason.
+    CaptureFailed(String),
     Finish,
+}
+
+/// What a dictation's handle, its microphone and the service's thread share.
+#[derive(Default)]
+struct Intake {
+    cancelled: AtomicBool,
+    /// Samples sent and not yet taken.
+    queued: AtomicUsize,
+    overloaded: AtomicBool,
+}
+
+impl Intake {
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Sends audio, unless too much already waits, which overloads the
+    /// dictation once.
+    fn send(&self, sender: &mpsc::Sender<Message>, samples: &[f32], rate: u32) {
+        if self.is_cancelled() || self.overloaded.load(Ordering::SeqCst) {
+            return;
+        }
+        let limit = rate as usize * BACKLOG_SECONDS;
+        if self.queued.fetch_add(samples.len(), Ordering::SeqCst) + samples.len() > limit {
+            self.queued.fetch_sub(samples.len(), Ordering::SeqCst);
+            if !self.overloaded.swap(true, Ordering::SeqCst) {
+                let _ = sender.send(Message::Overloaded);
+            }
+            return;
+        }
+        let _ = sender.send(Message::Audio {
+            samples: samples.to_vec(),
+            rate,
+        });
+    }
 }
 
 /// The model in memory, and its pack.
@@ -109,19 +157,19 @@ impl DictationService {
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let (sender, audio) = mpsc::channel();
-        let cancel = Arc::new(AtomicBool::new(false));
+        let intake = Arc::new(Intake::default());
         let job = Job {
             id,
             model,
             audio,
-            cancel: cancel.clone(),
+            intake: intake.clone(),
             sink,
             idle: settings.idle(),
         };
         let dictation = Dictation {
             id,
-            sender: Some(sender),
-            cancel,
+            sender,
+            intake,
             busy: self.busy.clone(),
         };
         if self.jobs.send(job).is_err() {
@@ -154,13 +202,13 @@ pub(super) fn engine_type(family: Family) -> ModelType {
     }
 }
 
-/// An open dictation. Dropping it cancels it, as [`cancel`](Self::cancel)
-/// does.
+/// An open dictation. Keep it until [`DictationEvent::Done`] or
+/// [`DictationEvent::Failed`] comes: dropping it cancels the dictation, as
+/// [`cancel`](Self::cancel) does, and nothing more is sent.
 pub struct Dictation {
     id: u64,
-    /// `None` once finished.
-    sender: Option<mpsc::Sender<Message>>,
-    cancel: Arc<AtomicBool>,
+    sender: mpsc::Sender<Message>,
+    intake: Arc<Intake>,
     busy: Arc<AtomicBool>,
 }
 
@@ -171,39 +219,31 @@ impl Dictation {
     }
 
     /// Mono audio at `rate` samples a second. Audio before
-    /// [`DictationEvent::Listening`] waits for the model.
+    /// [`DictationEvent::Listening`] waits for the model. More than 15
+    /// seconds of audio waiting fails the dictation, since the computer
+    /// can't keep up.
     pub fn push(&self, samples: &[f32], rate: u32) {
-        if let Some(sender) = &self.sender {
-            let _ = sender.send(Message::Audio {
-                samples: samples.to_vec(),
-                rate,
-            });
-        }
+        self.intake.send(&self.sender, samples, rate);
     }
 
     /// Records from `source` into this dictation until the [`Capture`] is
-    /// dropped.
+    /// dropped. A microphone that stops fails the dictation.
     pub fn record(&self, source: &Source) -> Result<Capture, String> {
-        let Some(sender) = self.sender.clone() else {
-            return Err("The dictation has ended.".into());
-        };
+        let (sender, intake) = (self.sender.clone(), self.intake.clone());
+        let failed = self.sender.clone();
         capture::open(
             source,
-            Box::new(move |samples: &[f32], rate: u32| {
-                let _ = sender.send(Message::Audio {
-                    samples: samples.to_vec(),
-                    rate,
-                });
+            Box::new(move |samples: &[f32], rate: u32| intake.send(&sender, samples, rate)),
+            Box::new(move |why: String| {
+                let _ = failed.send(Message::CaptureFailed(why));
             }),
         )
     }
 
     /// Ends the audio. The last words settle, then [`DictationEvent::Done`]
-    /// comes. Another dictation may open at once.
-    pub fn finish(mut self) {
-        if let Some(sender) = self.sender.take() {
-            let _ = sender.send(Message::Finish);
-        }
+    /// comes.
+    pub fn finish(&mut self) {
+        let _ = self.sender.send(Message::Finish);
     }
 
     /// Ends it at once, with no more events (a download stops, and resumes
@@ -213,9 +253,8 @@ impl Dictation {
 
 impl Drop for Dictation {
     fn drop(&mut self) {
-        if self.sender.take().is_some() {
-            self.cancel.store(true, Ordering::SeqCst);
-        }
+        // (After the dictation ended, this changes nothing.)
+        self.intake.cancelled.store(true, Ordering::SeqCst);
         self.busy.store(false, Ordering::SeqCst);
     }
 }
@@ -243,12 +282,14 @@ fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
         };
         let mut job = job;
         idle = job.idle;
+        // (The full-screen view's panic hook leaves this thread's panics to
+        // it, and to the engine's own threads, which it rethrows here.)
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run(root, base, &mut job, &mut loaded)
         }));
         if ran.is_err() {
             loaded = None;
-            if !job.cancel.load(Ordering::SeqCst) {
+            if !job.intake.is_cancelled() {
                 (job.sink)(DictationUpdate {
                     id: job.id,
                     event: DictationEvent::Failed(
@@ -261,10 +302,16 @@ fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
 }
 
 /// One dictation: the model made ready, then the audio until it ends.
+/// Nothing is sent once it's cancelled.
 fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
     let id = job.id;
+    let intake = job.intake.clone();
     let sink = &mut job.sink;
-    let mut send = |event: DictationEvent| sink(DictationUpdate { id, event });
+    let mut send = |event: DictationEvent| {
+        if !intake.is_cancelled() {
+            sink(DictationUpdate { id, event });
+        }
+    };
     let pack = job.model.pack(root);
     if !pack.is_file() {
         // Each megabyte once.
@@ -278,7 +325,7 @@ fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
             }
             send(DictationEvent::Preparing(step));
         };
-        match download::install(job.model, root, base, &mut progress, &job.cancel) {
+        match download::install(job.model, root, base, &mut progress, &intake.cancelled) {
             Ok(()) => {}
             Err(download::Error::Cancelled) => return,
             Err(download::Error::Failed(message)) => {
@@ -287,7 +334,7 @@ fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
             }
         }
     }
-    if job.cancel.load(Ordering::SeqCst) {
+    if intake.is_cancelled() {
         return;
     }
     let model = match loaded.as_ref().filter(|loaded| loaded.pack == pack) {
@@ -315,18 +362,27 @@ fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
             }
         }
     };
-    if job.cancel.load(Ordering::SeqCst) {
+    if intake.is_cancelled() {
         return;
     }
     send(DictationEvent::Listening);
-    listen(&job.audio, &job.cancel, model, &mut send);
+    listen(&job.audio, &intake, model, &mut send);
+}
+
+/// When to look at the audio next: at the pass that's due, else after
+/// [`POLL`], since new audio wakes it anyway.
+fn wait_for(next_pass: Option<Instant>, now: Instant) -> Duration {
+    match next_pass {
+        Some(at) if at > now => (at - now).min(POLL),
+        _ => POLL,
+    }
 }
 
 /// Takes the audio, running passes as Telmo's `Stream` does, until the
-/// dictation finishes or is cancelled.
+/// dictation finishes, fails or is cancelled.
 fn listen(
     audio: &mpsc::Receiver<Message>,
-    cancel: &AtomicBool,
+    intake: &Intake,
     model: Arc<Model>,
     send: &mut dyn FnMut(DictationEvent),
 ) {
@@ -337,16 +393,17 @@ fn listen(
         DictationEvent::Failed(format!("Speech recognition failed ({error})."))
     };
     loop {
-        let wait = next_pass
-            .map_or(POLL, |at| at.saturating_duration_since(Instant::now()))
-            .min(POLL);
         let mut finishing = false;
         // Everything waiting is taken before a pass, so passes never fall
-        // behind.
-        let mut message = audio.recv_timeout(wait);
+        // behind. The backlog's bound keeps that short.
+        let mut message = audio.recv_timeout(wait_for(next_pass, Instant::now()));
         loop {
+            if intake.is_cancelled() {
+                return;
+            }
             match message {
                 Ok(Message::Audio { samples, rate }) => {
+                    intake.queued.fetch_sub(samples.len(), Ordering::SeqCst);
                     let streamer = streamer.get_or_insert_with(|| {
                         Streamer::new(
                             model.clone(),
@@ -359,6 +416,12 @@ fn listen(
                     // (Only voice activity's events, which change no text.)
                     streamer.push(&samples);
                 }
+                Ok(Message::Overloaded) => return send(DictationEvent::Failed(OVERLOADED.into())),
+                Ok(Message::CaptureFailed(why)) => {
+                    return send(DictationEvent::Failed(format!(
+                        "The microphone stopped ({why})."
+                    )));
+                }
                 Ok(Message::Finish) | Err(RecvTimeoutError::Disconnected) => finishing = true,
                 Err(RecvTimeoutError::Timeout) => {}
             }
@@ -366,9 +429,6 @@ fn listen(
                 Ok(next) => message = Ok(next),
                 Err(_) => break,
             }
-        }
-        if cancel.load(Ordering::SeqCst) {
-            return;
         }
         if finishing {
             if let Some(streamer) = &mut streamer {

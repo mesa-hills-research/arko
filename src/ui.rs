@@ -530,13 +530,11 @@ fn dictate_at_prompt(root: &std::path::Path, feed: Option<&remote::Feed>) -> Opt
             Heard::Enter => {
                 entered = true;
                 _capture = None;
-                match open_dictation.take() {
+                match open_dictation.as_mut() {
+                    // (Kept until Done: dropping it would cancel it.)
                     Some(dictation) if listening => dictation.finish(),
                     // (Still getting ready: a download resumes next time.)
-                    Some(dictation) => {
-                        dictation.cancel();
-                        return None;
-                    }
+                    Some(_) => return None,
                     None if ended.is_some() => return None,
                     None => {}
                 }

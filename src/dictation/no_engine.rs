@@ -47,7 +47,7 @@ impl Dictation {
         match self.0 {}
     }
 
-    pub fn finish(self) {
+    pub fn finish(&mut self) {
         match self.0 {}
     }
 

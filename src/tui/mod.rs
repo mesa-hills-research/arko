@@ -637,9 +637,10 @@ fn carry_out(
                 }
             }
         }
+        // (The dictation is kept until it ends, so Esc can still cancel it.)
         dictation::Dictate::Finish => {
             *capture = None;
-            if let Some(dictation) = open.take() {
+            if let Some(dictation) = open.as_mut() {
                 dictation.finish();
             }
         }
