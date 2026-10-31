@@ -2551,6 +2551,61 @@ mod tests {
         assert_eq!(screen(&mut app, 70, 24), rows);
     }
 
+    /// Inside an open Quiet row, a command's whole output opens at its
+    /// "more lines" line, by a click or from the keyboard, as it does on its
+    /// own.
+    #[test]
+    fn a_commands_output_opens_inside_a_quiet_row() {
+        use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Update};
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        app.set_view(crate::tui::transcript::View::Quiet);
+        let mut user = Item::new(Kind::User, "List it");
+        user.id = 1;
+        app.transcript.apply(Update::Item(user));
+        let mut call = Item::new(Kind::Call, "$ ls");
+        call.id = 2;
+        call.status = Some(CallStatus::Ok);
+        call.act = Some(Act {
+            kind: ActKind::Command,
+            target: "ls".into(),
+            ..Act::default()
+        });
+        app.transcript.apply(Update::Item(call));
+        let mut result =
+            Item::new(Kind::Result, "exit code 0, 0.1 s").detail("1\n2\n3\n4\n… 3 more lines");
+        result.id = 3;
+        result.call = Some(2);
+        result.whole = Some("1\n2\n3\n4\n5\n6\n7".into());
+        app.transcript.apply(Update::Item(result));
+        let at = |rows: &[String], text: &str| {
+            rows.iter()
+                .position(|row| row.contains(text))
+                .unwrap_or_else(|| panic!("{text}: {rows:#?}"))
+        };
+        let left = MouseButton::Left;
+        let click = |app: &mut App, y: usize| {
+            mouse(app, MouseEventKind::Down(left), 6, y as u16);
+            mouse(app, MouseEventKind::Up(left), 6, y as u16);
+        };
+        let rows = screen(&mut app, 60, 20);
+        click(&mut app, at(&rows, "▸ Ran ls"));
+        let rows = screen(&mut app, 60, 20);
+        let more = at(&rows, "… 3 more lines");
+        assert!(!rows.iter().any(|row| row.contains("│ 7")), "{rows:#?}");
+        click(&mut app, more);
+        let rows = screen(&mut app, 60, 20);
+        assert!(rows.iter().any(|row| row.contains("│ 7")), "{rows:#?}");
+        // The keyboard reaches it too, and closes it again.
+        app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert_eq!(app.transcript.focus, Some(3));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let rows = screen(&mut app, 60, 20);
+        assert!(!rows.iter().any(|row| row.contains("│ 7")), "{rows:#?}");
+        app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.transcript.focus, Some(2));
+    }
+
     /// Ctrl+G puts the keyboard on the last row that opens, ↑ and ↓ move it,
     /// Enter opens and closes a row, and Esc gives the keys back to the box.
     #[test]

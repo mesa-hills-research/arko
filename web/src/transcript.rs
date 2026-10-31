@@ -221,8 +221,9 @@ fn count_row(id: u64, count: Count) -> AnyView {
 /// place in the page while calls join it and its words change, so focus and
 /// what's open inside it stay ([`QUIET`]). A click on its line (or Enter on
 /// it) opens it to the rows of its calls as Full shows them, which are made
-/// only then. A row of one call that runs offers what that call's own row
-/// does (Move to background, Stop).
+/// only then. A row of one call offers what that call's own row does (Move
+/// to background, Stop), and shows the images its tool returned outside the
+/// disclosure, as Full does.
 fn quiet_row(
     id: u64,
     words: crate::quiet::Words,
@@ -265,9 +266,6 @@ fn quiet_row(
         class
     };
     let actions = move || {
-        if !words().running {
-            return None;
-        }
         let cell = single()?;
         let (moves, stop) = cell.data.with(|item| {
             call_actions(
@@ -284,6 +282,13 @@ fn quiet_row(
             {moves.then(|| view! { <MoveButton id=call /> })}
             {stop.map(|job| view! { <StopJobButton job=job /> })}
         })
+    };
+    // (Open, the call's own row shows them.)
+    let images = move || {
+        if open() {
+            return None;
+        }
+        single().map(|cell| view! { <Thumbnails data=cell.for_row().data /> })
     };
     let inside = move || {
         open().then(|| {
@@ -322,6 +327,7 @@ fn quiet_row(
                 </summary>
                 <div class="quiet-calls">{inside}</div>
             </details>
+            {images}
         </div>
     }
     .into_any()

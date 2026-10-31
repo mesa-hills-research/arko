@@ -172,6 +172,8 @@ struct QuietCached {
     style: u64,
     clock: Option<String>,
     lines: Vec<Wrapped>,
+    /// Where each item's lines are among them, while the row is open.
+    spans: Vec<(u64, std::ops::Range<usize>)>,
 }
 
 /// What a view shows in order, before it's laid out in blocks.
@@ -853,7 +855,7 @@ impl Transcript {
                             && c.clock == clock
                     });
                     if !fresh {
-                        let lines = self.quiet_lines(row, theme, width, now);
+                        let (lines, spans) = self.quiet_lines(row, theme, width, now);
                         self.quiet_cache.insert(
                             key,
                             QuietCached {
@@ -863,6 +865,7 @@ impl Transcript {
                                 style,
                                 clock,
                                 lines,
+                                spans,
                             },
                         );
                     }
@@ -1033,14 +1036,21 @@ impl Transcript {
 
     /// The lines of a Quiet row: its words, and when it's open the rows of
     /// its calls as Full shows them, with their whole parameters.
-    fn quiet_lines(&self, row: &QuietRow, theme: &Theme, width: usize, now: i64) -> Vec<Wrapped> {
+    fn quiet_lines(
+        &self,
+        row: &QuietRow,
+        theme: &Theme,
+        width: usize,
+        now: i64,
+    ) -> (Vec<Wrapped>, Vec<(u64, std::ops::Range<usize>)>) {
         let open = self
             .quiet_open
             .contains(&self.entries[row.members[0]].item.id);
         let clock = self.quiet_clock(row, now);
         let mut lines = quiet_line(&row.words, open, theme, width, clock.as_deref());
+        let mut spans = Vec::new();
         if !open {
-            return lines;
+            return (lines, spans);
         }
         let inner = width.saturating_sub(2).max(1);
         let indent = || Span::raw("  ");
@@ -1066,9 +1076,31 @@ impl Transcript {
             {
                 rows.extend(gutter(detail, theme.dim(), theme, inner));
             }
+            let start = lines.len();
             lines.extend(rows.into_iter().map(|line| line.decorated(indent())));
+            spans.push((item.id, start..lines.len()));
         }
-        lines
+        (lines, spans)
+    }
+
+    /// The line of `block` the keyboard is on, if it's there. That is a
+    /// block's first line, or inside an open Quiet row the line that opens
+    /// and closes a call's output or thinking (its last).
+    fn focus_line(&self, block: &Block) -> Option<usize> {
+        let focus = self.focus?;
+        let gap = usize::from(block.gap);
+        if block.key == focus {
+            return Some(gap);
+        }
+        let Shown::Quiet(_) = block.shown else {
+            return None;
+        };
+        let cached = self.quiet_cache.get(&block.key)?;
+        cached
+            .spans
+            .iter()
+            .find(|(id, _)| *id == focus)
+            .map(|(_, lines)| gap + lines.end - 1)
     }
 
     /// The entries in the order they are drawn: by ID, except that a
@@ -1174,18 +1206,18 @@ impl Transcript {
             top = (top as i64 + self.pending_scroll).clamp(0, bottom as i64) as usize;
             self.pending_scroll = 0;
         }
-        // The row the keyboard moved to comes into sight.
+        // The line the keyboard moved to comes into sight.
         if std::mem::take(&mut self.reveal)
-            && let Some(index) = self
-                .focus
-                .and_then(|key| blocks.iter().position(|block| block.key == key))
+            && let Some((index, line)) = blocks
+                .iter()
+                .enumerate()
+                .find_map(|(index, block)| self.focus_line(block).map(|line| (index, line)))
         {
-            let start = starts[index];
-            let end = start + blocks[index].height();
-            if start < top {
-                top = start;
-            } else if end > top + height {
-                top = end.saturating_sub(height).min(start);
+            let at = starts[index] + line;
+            if at < top {
+                top = at;
+            } else if at >= top + height {
+                top = at + 1 - height;
             }
         }
         top = top.min(bottom);
@@ -1254,6 +1286,7 @@ impl Transcript {
             }
             // The user's messages sit on a band the width of the screen.
             let band = self.is_user(block).then(|| Style::new().bg(theme.user));
+            let focused = self.focus_line(block);
             for (line, wrapped) in self
                 .block_rows(block, theme, width)
                 .iter()
@@ -1268,8 +1301,8 @@ impl Transcript {
                     buffer.set_style(Rect::new(area.x, row, area.width, 1), band);
                 }
                 buffer.set_line(area.x, row, &Line::from(wrapped.spans.clone()), area.width);
-                // The row the keyboard is on, at its first line.
-                if self.focus == Some(block.key) && line == usize::from(block.gap) {
+                // The line the keyboard is on.
+                if focused == Some(line) {
                     buffer.set_style(Rect::new(area.x, row, area.width, 1), highlight);
                 }
                 if let Some((from, to)) =
@@ -1388,7 +1421,10 @@ impl Transcript {
             // (As `blocks` drew them just before.)
             Shown::Quiet(row) => match self.quiet_cache.get(&block.key) {
                 Some(cached) if cached.row == **row => cached.lines.clone(),
-                _ => self.quiet_lines(row, theme, width, chrono::Utc::now().timestamp_millis()),
+                _ => {
+                    self.quiet_lines(row, theme, width, chrono::Utc::now().timestamp_millis())
+                        .0
+                }
             },
             Shown::Worker(id) => vec![margin(worker_line(
                 self.worker(id),
@@ -1509,9 +1545,21 @@ impl Transcript {
     /// thinking.
     pub fn fold_at(&mut self, x: u16, y: u16, filter: &Filter, theme: &Theme) -> Option<u64> {
         let row = self.drawn.row_at(x, y)?;
-        // A Quiet row opens and closes at its line.
+        // A Quiet row opens and closes at its line, and a call's output or
+        // thinking inside it at its last, as they do on their own.
         if let Some(gap) = self.quiet_row(row.key, filter, theme) {
-            return (row.line == usize::from(gap)).then_some(row.key);
+            let gap = usize::from(gap);
+            if row.line == gap {
+                return Some(row.key);
+            }
+            let cached = self.quiet_cache.get(&row.key)?;
+            return cached
+                .spans
+                .iter()
+                .find(|(id, lines)| {
+                    gap + lines.end == row.line + 1 && self.item(*id).is_some_and(folds)
+                })
+                .map(|(id, _)| *id);
         }
         if !folds(self.item(row.key)?) {
             return None;
@@ -1541,6 +1589,8 @@ impl Transcript {
             entry.open = !entry.open;
         }
         entry.cache = None;
+        // (It may be inside a Quiet row.)
+        self.quiet_cache.clear();
         self.pin = Some((key, y.saturating_sub(self.drawn.area.y) as usize));
         Some(self.rows_of(key, filter, theme)?.len() - 1)
     }
@@ -1559,15 +1609,27 @@ impl Transcript {
     /// rows, the agents' thinking and commands' whole outputs.
     fn openable(&mut self, filter: &Filter, theme: &Theme) -> Vec<u64> {
         let width = self.drawn.area.width as usize;
-        self.blocks(filter, theme, width)
-            .into_iter()
-            .filter(|block| match &block.shown {
-                Shown::Quiet(_) => true,
-                Shown::Entry(index) => folds(&self.entries[*index].item),
-                _ => false,
-            })
-            .map(|block| block.key)
-            .collect()
+        let mut keys = Vec::new();
+        for block in self.blocks(filter, theme, width) {
+            match &block.shown {
+                Shown::Quiet(_) => {
+                    keys.push(block.key);
+                    // The outputs and thinking inside it, while it's open.
+                    if let Some(cached) = self.quiet_cache.get(&block.key) {
+                        keys.extend(
+                            cached
+                                .spans
+                                .iter()
+                                .map(|(id, _)| *id)
+                                .filter(|id| self.item(*id).is_some_and(folds)),
+                        );
+                    }
+                }
+                Shown::Entry(index) if folds(&self.entries[*index].item) => keys.push(block.key),
+                _ => {}
+            }
+        }
+        keys
     }
 
     /// Puts the keyboard on the last block that opens, or `by` blocks that
@@ -1611,6 +1673,8 @@ impl Transcript {
         {
             entry.open = open.unwrap_or(!entry.open);
             entry.cache = None;
+            // (It may be inside a Quiet row.)
+            self.quiet_cache.clear();
         }
     }
 
