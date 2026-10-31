@@ -119,7 +119,7 @@ fn the_status_line_says_listening_with_the_keys_that_stop_and_cancel() {
     );
     event(&mut app, 1, DictationEvent::Listening);
     let row = status(&mut app);
-    assert!(row.starts_with(" ● listening"), "{row}");
+    assert!(row.starts_with(" listening "), "{row}");
     assert!(row.ends_with("Enter  stop   Esc  cancel"), "{row}");
 }
 

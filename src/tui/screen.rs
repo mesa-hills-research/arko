@@ -516,12 +516,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let dictation = app.dictation_status();
     if let Some((words, _)) = dictation.as_ref().filter(|(words, _)| !words.is_empty()) {
         left.push(sep());
-        let words = if words == "listening" {
-            format!("{dot} {words}")
-        } else {
-            words.clone()
-        };
-        left.push(Span::styled(words, theme.accent()));
+        left.push(Span::styled(words.clone(), theme.accent()));
     }
     let reading = &app.reading;
     // The risky setting, only while it is on, first.
