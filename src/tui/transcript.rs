@@ -4011,8 +4011,14 @@ mod tests {
             let (start, mut updates) = feed.follow();
             let mut followed = Transcript::new();
             followed.reset(start);
-            for step in 0..800 {
-                session.step();
+            for step in 0..=800 {
+                // (At the end, the time passes for which the feed holds the
+                // workers' summaries back.)
+                if step == 800 {
+                    session.settle();
+                } else {
+                    session.step();
+                }
                 // (It takes them after each call, so it never falls behind.)
                 while let Some(received) = updates.try_next() {
                     match received {

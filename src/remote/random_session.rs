@@ -5,6 +5,8 @@
 //! it, to compare a client with.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use arko_agents::AgentEvent;
 use arko_workflows::WorkflowEvent;
@@ -12,7 +14,8 @@ use uuid::Uuid;
 
 use super::feed::{
     Activity, Delivery, ENDED_JOBS, Feed, Item, JobKind, JobStart, JobState, JobSummary, Kind,
-    Level, MAIN_AGENT, Snapshot, Source, Update, WorkerChange, WorkerSummary,
+    Level, MAIN_AGENT, ManualClock, Snapshot, Source, Update, WORKER_EVERY, WorkerChange,
+    WorkerState, WorkerSummary,
 };
 use crate::approvals::{Answer, Approval, ApprovalAnswers, ApprovalChoice};
 use crate::questions::{AskedQuestion, QuestionState};
@@ -30,9 +33,12 @@ const WORDS: [&str; 16] = [
 /// streamed text and thinking, calls and results, failed responses, the
 /// user's messages and notes, questions, approvals, workers, background
 /// jobs, cuts, conversations and a resumed history. Some text is long, so
-/// the feed's budgets drop old items and old whole outputs.
+/// the feed's budgets drop old items and old whole outputs. Its feed's time
+/// moves only as the session's calls let it pass, so the summaries the feed
+/// holds back go out at the session's moments.
 pub struct RandomSession {
     feed: Feed,
+    clock: Arc<ManualClock>,
     rng: Rng,
     /// The main agent's conversation.
     run: Uuid,
@@ -43,6 +49,8 @@ pub struct RandomSession {
     made: Vec<Uuid>,
     /// The workers, and whether each runs.
     workers: Vec<(String, bool)>,
+    /// The workers' ends, in order.
+    ended: Vec<(String, WorkerState)>,
     /// The background jobs running, and whether each is a monitor.
     jobs: Vec<(Uuid, bool)>,
     /// The notes the agent hasn't read, by their numbers.
@@ -61,13 +69,16 @@ pub struct RandomSession {
 impl RandomSession {
     /// A session from `seed`, on a feed of its own.
     pub fn new(seed: u64) -> Self {
+        let clock = ManualClock::new();
         Self {
-            feed: Feed::new(MAIN),
+            feed: Feed::with_clock(MAIN, clock.clone()),
+            clock,
             rng: Rng(seed),
             run: Uuid::new_v4(),
             calls: Vec::new(),
             made: Vec::new(),
             workers: Vec::new(),
+            ended: Vec::new(),
             jobs: Vec::new(),
             notes: Vec::new(),
             next_note: 1,
@@ -90,9 +101,39 @@ impl RandomSession {
         self.rng.below(below)
     }
 
-    /// Makes one more of the session's calls on the feed, and says which.
+    /// Lets the time pass for which the feed holds back the workers'
+    /// summaries, so none waits to go out.
+    pub fn settle(&mut self) {
+        self.clock.advance(WORKER_EVERY);
+    }
+
+    /// The workers' ends the session made (finished, failed or stopped),
+    /// in order.
+    pub fn ended(&self) -> &[(String, WorkerState)] {
+        &self.ended
+    }
+
+    /// Starts a background job that runs on, then starts and ends more
+    /// than the feed keeps once ended, so it drops the oldest of them.
+    pub fn jobs_past_the_budget(&mut self) -> &'static str {
+        let running = Uuid::new_v4();
+        let start = JobStart::new(running, MAIN_AGENT, JobKind::Command, "cargo watch");
+        self.feed.job_started(start);
+        self.jobs.push((running, false));
+        for _ in 0..ENDED_JOBS + 20 {
+            let id = Uuid::new_v4();
+            let start = JobStart::new(id, MAIN_AGENT, JobKind::Command, "cargo test");
+            self.feed.job_started(start);
+            self.feed
+                .job_ended(id, JobState::Finished, Some("exit 0".into()));
+        }
+        "jobs past the budget"
+    }
+
+    /// Makes one more of the session's calls on the feed, or lets some
+    /// time pass, and says which.
     pub fn step(&mut self) -> &'static str {
-        match self.rng.below(100) {
+        match self.rng.below(108) {
             0..=17 => self.text(Kind::Text),
             18..=24 => self.text(Kind::Thinking),
             25..=34 => self.call(),
@@ -118,8 +159,16 @@ impl RandomSession {
             92..=93 => self.images(),
             94 => self.mark_message(),
             95 => self.restore(),
-            _ => self.long_text(),
+            96..=99 => self.long_text(),
+            _ => self.time(),
         }
+    }
+
+    /// Up to 0.4 seconds pass.
+    fn time(&mut self) -> &'static str {
+        let by = Duration::from_millis(self.rng.below(400));
+        self.clock.advance(by);
+        "time passed"
     }
 
     fn words(&mut self, count: u64) -> String {
@@ -303,16 +352,26 @@ impl RandomSession {
             _ if !running.is_empty() => {
                 let at = running[self.rng.below(running.len() as u64) as usize];
                 let id = self.workers[at].0.clone();
-                let change = match self.rng.below(3) {
-                    0 => WorkerChange::Finished { report: "Done." },
-                    1 => WorkerChange::Failed {
-                        error: "It failed.",
-                    },
-                    _ => WorkerChange::Stopped {
-                        reason: "The user stopped it.",
-                    },
+                let (change, ended) = match self.rng.below(3) {
+                    0 => (
+                        WorkerChange::Finished { report: "Done." },
+                        WorkerState::Finished,
+                    ),
+                    1 => (
+                        WorkerChange::Failed {
+                            error: "It failed.",
+                        },
+                        WorkerState::Failed,
+                    ),
+                    _ => (
+                        WorkerChange::Stopped {
+                            reason: "The user stopped it.",
+                        },
+                        WorkerState::Stopped,
+                    ),
                 };
                 self.feed.worker(&id, "", change);
+                self.ended.push((id.clone(), ended));
                 self.workers[at].1 = false;
                 self.calls
                     .retain(|(_, agent)| agent.as_deref() != Some(&id));

@@ -63,7 +63,7 @@ const EARLY_READS: usize = 64;
 const BACKLOG: usize = 2048;
 /// A worker's summary goes out at most this often while it works (four
 /// times a second); a change of its state goes out at once.
-const WORKER_EVERY: Duration = Duration::from_millis(250);
+pub(crate) const WORKER_EVERY: Duration = Duration::from_millis(250);
 
 // The types the web page reads too, which it compiles from the same file.
 pub use super::protocol::{
@@ -6597,59 +6597,168 @@ mod tests {
         }
     }
 
+    /// The clients of a session in the tests below: those that follow the
+    /// broadcast, each from a snapshot of its own, and a batched one.
+    struct Clients {
+        updates: broadcast::Receiver<Update>,
+        batches: Batches,
+        following: Vec<FeedMirror>,
+        batched: FeedMirror,
+        /// The updates sent, as the clients count them.
+        count: u64,
+        /// The workers' ends the first follower and the batched client were
+        /// told of, each with the state the client had the worker in then.
+        ends: [Vec<(String, WorkerState, Option<WorkerState>)>; 2],
+    }
+
+    impl Clients {
+        fn new(feed: &Feed) -> Self {
+            let (start, updates) = feed.subscribe();
+            let (_, batches) = feed.subscribe_batched();
+            Self {
+                updates,
+                batches,
+                following: vec![FeedMirror::new(&start)],
+                batched: FeedMirror::new(&start),
+                count: start.seq,
+                ends: Default::default(),
+            }
+        }
+
+        /// Gives the followers the updates that came, and the batched client
+        /// a batch if `batch`.
+        fn take(&mut self, feed: &Feed, batch: bool) {
+            for update in delivered(&mut self.updates) {
+                self.count += 1;
+                for client in &mut self.following {
+                    client.apply(&update, || feed.activity());
+                }
+                self.ends[0].extend(end_of(&update, &self.following[0]));
+            }
+            if batch && let Some(batch) = self.batches.try_next() {
+                for update in &batch {
+                    self.batched.apply(update, || feed.activity());
+                    self.ends[1].extend(end_of(update, &self.batched));
+                }
+            }
+        }
+
+        fn all(&self) -> impl Iterator<Item = &FeedMirror> {
+            self.following.iter().chain([&self.batched])
+        }
+    }
+
+    /// The worker's end that `update` tells of, if it does, with the state
+    /// `client`, which took it, has the worker in.
+    fn end_of(
+        update: &Update,
+        client: &FeedMirror,
+    ) -> Option<(String, WorkerState, Option<WorkerState>)> {
+        let Update::WorkerEnded { id, outcome } = update else {
+            return None;
+        };
+        let state = client
+            .workers
+            .iter()
+            .find(|worker| worker.id == *id)
+            .map(|worker| worker.state);
+        Some((id.clone(), *outcome, state))
+    }
+
     /// Whatever a session does, a client made from a snapshot taken at any
     /// moment, which then applies the updates after it, ends where a client
-    /// made from the latest snapshot does, within what the feed keeps. So
-    /// does a client that followed every update from the start, and a
-    /// batched client whatever its batches. Each snapshot counts the
-    /// updates sent before it. The activity is read as each update comes,
-    /// as clients read it, so a change of it that went out without an
-    /// update would show.
+    /// made from that moment's snapshot does, within what the feed keeps.
+    /// So does a client that followed every update from the start, and a
+    /// batched client whatever its batches. The items, jobs and activity
+    /// match at once, and the workers' summaries once the feed holds none
+    /// back. Each snapshot counts the updates sent before it. The activity
+    /// is read as each update comes, as clients read it, so a change of it
+    /// that went out without an update would show. Each client is told of
+    /// each worker's end once, after the summary it ended with, and the
+    /// last end of a worker that didn't go on is its state.
     #[test]
     fn a_client_made_from_any_snapshot_ends_where_the_feed_is() {
+        let without_workers = |client: &FeedMirror| FeedMirror {
+            workers: Vec::new(),
+            ..client.clone()
+        };
+        // The checks at which a summary was held back.
+        let mut held = 0;
         for seed in 0..24 {
             let mut session = RandomSession::new(seed);
             let feed = session.feed().clone();
-            let (start, mut updates) = feed.subscribe();
-            let (_, mut batches) = feed.subscribe_batched();
-            let mut clients = vec![FeedMirror::new(&start)];
-            let mut batched = FeedMirror::new(&start);
-            let mut count = start.seq;
+            let mut clients = Clients::new(&feed);
+            // The same start whatever the seed, past the ended jobs the feed
+            // keeps.
+            let mut done = vec![session.jobs_past_the_budget()];
+            clients.take(&feed, true);
+            assert!(clients.following[0].jobs.len() > feed.subscribe().0.jobs.len());
             let steps = 300 + session.pick(1200);
-            let mut done = Vec::new();
             for step in 0..steps {
                 done.push(session.step());
-                for update in delivered(&mut updates) {
-                    count += 1;
-                    for client in &mut clients {
-                        client.apply(&update, || feed.activity());
-                    }
-                }
                 let check = step + 1 == steps || session.pick(steps / 12 + 1) == 0;
-                if (check || session.pick(5) == 0)
-                    && let Some(batch) = batches.try_next()
-                {
-                    for update in &batch {
-                        batched.apply(update, || feed.activity());
-                    }
-                }
+                let batch = check || session.pick(5) == 0;
+                clients.take(&feed, batch);
                 if !check {
                     continue;
                 }
+                let differs = |at: usize, difference: String| {
+                    let last = &done[done.len().saturating_sub(10)..];
+                    panic!(
+                        "seed {seed}, step {step}, client {at}: {difference}\nlast calls {last:?}"
+                    )
+                };
                 let (snapshot, _) = feed.subscribe();
-                assert_eq!(snapshot.seq, count, "seed {seed}, step {step}");
+                assert_eq!(snapshot.seq, clients.count, "seed {seed}, step {step}");
                 let rebuilt = FeedMirror::new(&snapshot);
-                for (at, client) in clients.iter().chain([&batched]).enumerate() {
-                    if let Some(difference) = client.within(&snapshot).difference(&rebuilt) {
-                        let last = &done[done.len().saturating_sub(10)..];
-                        panic!(
-                            "seed {seed}, step {step}, client {at}: {difference}\nlast calls {last:?}"
-                        );
+                for (at, client) in clients.all().enumerate() {
+                    let within = without_workers(&client.within(&snapshot));
+                    if let Some(difference) = within.difference(&without_workers(&rebuilt)) {
+                        differs(at, difference);
                     }
                 }
-                clients.push(rebuilt);
+                held += usize::from(clients.following[0].workers != rebuilt.workers);
+                clients.following.push(rebuilt);
+                session.settle();
+                clients.take(&feed, true);
+                let (settled, _) = feed.subscribe();
+                assert_eq!(settled.seq, clients.count, "seed {seed}, step {step}");
+                for (at, client) in clients.all().enumerate() {
+                    if let Some(difference) = mismatch(client, &settled) {
+                        differs(at, difference);
+                    }
+                }
+            }
+            let ended = session.ended();
+            assert!(!ended.is_empty(), "seed {seed}");
+            for (client, ends) in ["the follower", "the batched client"]
+                .iter()
+                .zip(&clients.ends)
+            {
+                let told: Vec<(String, WorkerState)> = ends
+                    .iter()
+                    .map(|(id, outcome, _)| (id.clone(), *outcome))
+                    .collect();
+                assert_eq!(told, ended, "seed {seed}, {client}");
+                for (id, outcome, state) in ends {
+                    assert_eq!(*state, Some(*outcome), "seed {seed}, {client}, {id}");
+                }
+            }
+            let end = feed.subscribe().0;
+            for worker in end
+                .workers
+                .iter()
+                .filter(|worker| !worker.state.is_active())
+            {
+                let last = ended
+                    .iter()
+                    .rev()
+                    .find(|(id, _)| *id == worker.id)
+                    .map(|(_, outcome)| *outcome);
+                assert_eq!(last, Some(worker.state), "seed {seed}, {}", worker.id);
             }
         }
+        assert!(held > 0);
     }
 
     /// How `client` differs from a client made from `snapshot`, within what
@@ -6711,6 +6820,23 @@ mod tests {
         assert!(end.jobs.iter().all(|job| job.id != first.to_string()));
         assert_eq!(mismatch(&seen, &end), None);
         assert!(mismatch(&client, &end).is_some(), "a running job");
+
+        // The feed changed a worker's summary without an update, which a
+        // summary held back would have sent by now.
+        let clock = ManualClock::new();
+        let feed = Feed::with_clock("main", clock.clone());
+        feed.worker("r1", "Count", WorkerChange::Started);
+        let (start, mut updates) = feed.subscribe();
+        let mut client = FeedMirror::new(&start);
+        feed.lock().workers[0].summary.tool_calls += 1;
+        clock.advance(WORKER_EVERY);
+        for update in delivered(&mut updates) {
+            client.apply(&update, || feed.activity());
+        }
+        assert!(
+            mismatch(&client, &feed.subscribe().0).is_some(),
+            "a summary"
+        );
 
         // The feed changed an item and the activity without an update.
         for change in [
