@@ -7,11 +7,17 @@
 
 use serde::{Deserialize, Serialize};
 
+// The terminal and the page use these two, and a build without the terminal
+// leaves them unused.
+#[allow(dead_code)]
 #[path = "message_switch.rs"]
 mod message_switch;
+#[allow(unused_imports)]
 pub use message_switch::MessageSwitch;
+#[allow(dead_code)]
 #[path = "shown_approvals.rs"]
 mod shown_approvals;
+#[allow(unused_imports)]
 pub use shown_approvals::ShownApprovals;
 
 /// What an item is.
