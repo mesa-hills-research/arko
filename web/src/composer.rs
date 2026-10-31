@@ -194,6 +194,9 @@ pub fn Composer() -> impl IntoView {
         refresh_menu();
     });
 
+    // (The box starts with it, so no first fit can save an empty box over
+    // it, whichever way the effects run.)
+    let saved = session_get(DRAFT).unwrap_or_default();
     let resize = move || {
         let Some(area) = input.get_untracked() else {
             return;
@@ -206,10 +209,8 @@ pub fn Composer() -> impl IntoView {
         expanded.track();
         resize();
     });
-    input.on_load(move |area| {
-        if let Some(draft) = session_get(DRAFT) {
-            area.set_value(&draft);
-        }
+    input.on_load(move |_| {
+        // Fits the box again once laid out.
         let frame = wasm_bindgen::closure::Closure::once_into_js(resize);
         use wasm_bindgen::JsCast;
         let _ = window().request_animation_frame(frame.unchecked_ref());
@@ -434,6 +435,7 @@ pub fn Composer() -> impl IntoView {
                     <div class="field">
                         <textarea
                             node_ref=input
+                            prop:value=saved
                             rows="1"
                             aria-label=placeholder
                             placeholder=placeholder
