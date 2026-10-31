@@ -295,6 +295,7 @@ impl Item {
         96 + self.text.len()
             + self.detail.as_ref().map_or(0, String::len)
             + self.outcome.as_ref().map_or(0, String::len)
+            + self.act.as_ref().map_or(0, act_size)
     }
 
     /// The bytes of its whole output.
@@ -319,6 +320,28 @@ impl Item {
         self.parameters = None;
         self.output = None;
     }
+}
+
+/// The bytes of a call's act, which every client gets with the call.
+fn act_size(act: &Act) -> usize {
+    [
+        &act.target,
+        &act.query,
+        &act.doing,
+        &act.done,
+        &act.verb,
+        &act.news,
+    ]
+    .into_iter()
+    .map(String::len)
+    .sum::<usize>()
+        + act.came.as_ref().map_or(0, |came| {
+            came.finished
+                .iter()
+                .chain(&came.stopped)
+                .map(String::len)
+                .sum()
+        })
 }
 
 /// A worker, as a line such as
@@ -1161,6 +1184,18 @@ impl Lane {
         self.keep_wholes(budget);
     }
 
+    /// Changes the item `id` with `change`, counting what it grows or
+    /// shrinks by in the budget. Returns it as it is then.
+    fn change(&mut self, id: u64, change: impl FnOnce(&mut Item)) -> Option<Item> {
+        let item = self.find(id)?;
+        let before = item.size();
+        change(item);
+        let after = item.size();
+        let item = item.clone();
+        self.bytes = (self.bytes + after).saturating_sub(before);
+        Some(item)
+    }
+
     /// The call `id`'s whole result came: it is kept with the latest.
     fn call_output(&mut self, id: u64, output: Arc<str>, budget: Budget) {
         let Some(item) = self.find(id) else {
@@ -1673,13 +1708,14 @@ impl Feed {
         if let Some(output) = outcome.output {
             lane.call_output(call.item, output, budget);
         }
-        if let Some(item) = lane.find(call.item) {
+        let job = outcome.job;
+        if let Some(item) = lane.change(call.item, |item| {
             item.settle(outcome.status, outcome.text, &outcome.settled);
             item.started = outcome.started;
-            if let Some(job) = outcome.job {
+            if let Some(job) = job {
                 item.job = Some(job.to_string());
             }
-            let item = item.clone();
+        }) {
             self.publish(state, Update::Change(item));
         }
         if let Some(job) = outcome.job
@@ -2290,9 +2326,12 @@ impl Feed {
             JobState::Stopped => (CallStatus::Ok, "stopped"),
             _ => (CallStatus::Ok, "ended"),
         };
-        call.settle(status, Some(text.to_string()), &render::Settled::job());
-        let call = call.clone();
-        self.publish(state, Update::Change(call));
+        let settled = render::Settled::job();
+        if let Some(call) = lane.change(item, |call| {
+            call.settle(status, Some(text.to_string()), &settled);
+        }) {
+            self.publish(state, Update::Change(call));
+        }
     }
 
     /// What the transcript shows of the call `call` (one of the latest),
@@ -2509,9 +2548,10 @@ impl Feed {
         if call.outcome.as_deref() == Some(text.as_str()) && call.status == Some(status) {
             return;
         }
-        call.settle(status, Some(text), &render::Settled::job());
-        let call = call.clone();
-        self.publish(state, Update::Change(call));
+        let settled = render::Settled::job();
+        if let Some(call) = lane.change(item, |call| call.settle(status, Some(text), &settled)) {
+            self.publish(state, Update::Change(call));
+        }
     }
 
     /// The call `item` of `agent`, if its line says it moved to the
@@ -2555,8 +2595,10 @@ impl Feed {
             JobState::Interrupted => (CallStatus::Failed, "interrupted".to_string()),
             _ => (CallStatus::Failed, "stopped".to_string()),
         };
-        call.settle(status, Some(text), &render::Settled::job());
-        let call = call.clone();
+        let settled = render::Settled::job();
+        let Some(call) = lane.change(item, |call| call.settle(status, Some(text), &settled)) else {
+            return;
+        };
         self.publish(state, Update::Change(call));
     }
 
@@ -6472,6 +6514,42 @@ mod tests {
                 .iter()
                 .all(|(kind, ..)| matches!(kind, Kind::Call | Kind::WorkerLine))
         );
+    }
+
+    /// A call's act counts in the budget of what every client gets, also
+    /// when its result changes it, and a parameter it names is clipped as
+    /// Full clips a path.
+    #[test]
+    fn a_calls_act_counts_in_the_budget() {
+        let mut lane = Lane::default();
+        let mut call = render::call(
+            "read_file",
+            &[(
+                "path".to_string(),
+                serde_json::Value::from("a/".repeat(5000)),
+            )]
+            .into_iter()
+            .collect(),
+            &[],
+        )
+        .unwrap();
+        call.id = 1;
+        assert!(call.act.as_ref().unwrap().target.chars().count() <= 161);
+        let without_act = Item {
+            act: None,
+            ..call.clone()
+        };
+        assert!(call.size() > without_act.size());
+        lane.push(call, MAIN_BUDGET);
+        let settled = render::outcome(
+            "shell",
+            "exit code 0, 1.0 s\ntest result: ok. 12 passed; 0 failed",
+        );
+        lane.change(1, |item| {
+            item.settle(CallStatus::Ok, Some("x".repeat(500)), &settled.settled);
+        });
+        let counted: usize = lane.items.iter().map(Item::size).sum();
+        assert_eq!(lane.bytes, counted);
     }
 
     /// A command's whole output stays on its block for the terminal's

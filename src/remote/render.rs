@@ -67,7 +67,9 @@ pub fn call(tool: &str, parameters: &Parameters, running: &[String]) -> Option<I
 
 /// What a call of `tool` does, for the Quiet view's row ([`quiet`]).
 fn act(tool: &str, parameters: &Parameters, running: &[String]) -> Act {
-    let text = |name: &str| text(parameters, name).trim().to_string();
+    // A parameter as a row names it, at most as long as Full shows a path.
+    let raw = |name: &str| text(parameters, name).trim().to_string();
+    let text = |name: &str| cut(&raw(name), 160);
     let on = |kind: ActKind, target: String| Act {
         kind,
         target,
@@ -103,10 +105,10 @@ fn act(tool: &str, parameters: &Parameters, running: &[String]) -> Act {
         EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => on(ActKind::Edit, path("path")),
         "Edit" | "MultiEdit" => on(ActKind::Edit, path("file_path")),
         SHELL_TOOL_NAME | "Bash" => Act {
-            alone: runs_tests(&text("command")),
+            alone: runs_tests(&raw("command")),
             ..on(
                 ActKind::Command,
-                command_words(&text("command"), &text("cwd")),
+                command_words(&raw("command"), &text("cwd")),
             )
         },
         "index_search" => Act {
@@ -148,7 +150,7 @@ fn act(tool: &str, parameters: &Parameters, running: &[String]) -> Act {
             format!("type into {}", job()),
         ),
         "terminal_start" => {
-            let command = command_words(&text("command"), "");
+            let command = command_words(&raw("command"), "");
             other(
                 format!("Starting {command} in a terminal"),
                 format!("Started {command} in a terminal"),
@@ -156,7 +158,7 @@ fn act(tool: &str, parameters: &Parameters, running: &[String]) -> Act {
             )
         }
         "monitor_start" => {
-            let command = command_words(&text("command"), "");
+            let command = command_words(&raw("command"), "");
             other(
                 format!("Starting to watch {command}"),
                 format!("Started watching {command}"),
