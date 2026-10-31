@@ -53,7 +53,7 @@ fn every_key_survives_a_round_trip() {
     assert_eq!(Profile::parse("quick", &small.render()).unwrap(), small);
 }
 
-/// `skills` and `mcp` are lists in the front matter: names separated by
+/// `skills` and `mcp` are lists in the front matter, meaning names separated by
 /// commas, or `none`. A line with nothing in it leaves the set to the
 /// starter, and a bad one is said.
 #[test]
@@ -348,7 +348,7 @@ fn a_file_that_cant_be_read_hides_no_other() {
         "reviewer",
         "---\ndescription: The user's\n---\n",
     );
-    // Nearer, broken: the user's is still the profile in force.
+    // Nearer, broken, so the user's is still the profile in force.
     write(
         &roots,
         Place::Project,
@@ -753,7 +753,7 @@ fn the_same_folder_reached_twice_is_read_once() {
 }
 
 /// A profile can't hold what would make the question that asks the user to
-/// approve it show something else: control and escape characters, a
+/// approve it show something else, meaning control and escape characters, a
 /// direction override, a zero-width character. A file with one is listed as
 /// unreadable.
 #[test]
@@ -942,7 +942,7 @@ fn an_isolated_key_from_an_earlier_file_is_kept_and_means_nothing() {
 }
 
 /// What a file makes a reason or a list say can't move a terminal's cursor
-/// or be as long as the file likes: a value or a name with a control
+/// or be as long as the file likes. A value or a name with a control
 /// character is shown with a replacement mark.
 #[test]
 fn a_reason_or_a_name_from_a_file_has_no_control_characters() {

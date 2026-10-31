@@ -582,7 +582,7 @@ impl Settings {
         .map_err(std::io::Error::other)
     }
 
-    /// Zero data retention: only providers that keep no data serve a
+    /// Zero data retention. Only providers that keep no data serve a
     /// request, and the list of models shows only the models offered so.
     pub fn zdr(&self) -> bool {
         self.provider.zdr == Some(true)
@@ -592,7 +592,7 @@ impl Settings {
         self.provider.zdr = on.then_some(true);
     }
 
-    /// No data collection: only providers that don't collect prompts serve a
+    /// No data collection. Only providers that don't collect prompts serve a
     /// request.
     pub fn deny_data_collection(&self) -> bool {
         self.provider.data_collection == Some(DataCollection::Deny)
@@ -797,7 +797,7 @@ impl Settings {
         (!parts.is_empty()).then(|| parts.join(", "))
     }
 
-    /// What decides the list of models: the choices that rule models out.
+    /// What decides the list of models, meaning the choices that rule models out.
     fn filters(&self, local: Option<&str>) -> Key {
         Key {
             local: local.map(str::to_string),
@@ -816,7 +816,7 @@ impl Settings {
 pub(crate) fn client_with(key: &str, settings: &Settings, local: Option<&str>) -> OpenRouterClient {
     let client = OpenRouterClient::new(key).with_default_options(settings.options());
     match local {
-        // (Tests: a local server serves everything.)
+        // (In tests, a local server serves everything.)
         Some(url) => client.with_base_url(url),
         None if settings.region == Region::UsOrEu => {
             // The US address, unless the models in memory say the EU's.
@@ -907,7 +907,7 @@ fn in_use(root: &Path) -> String {
     )
 }
 
-/// A lock on a file beside the settings, for the other Arko processes: a
+/// A lock on a file beside the settings, for the other Arko processes. A
 /// change waits while one holds it. The operating system holds the lock for
 /// the open file, and lets it go when this ends or the process does. The
 /// file stays.
@@ -1002,7 +1002,7 @@ fn reads_of(root: &Path) -> usize {
     crate::lock(&READS).get(&folder(root)).copied().unwrap_or(0)
 }
 
-// For tests, on the thread: how long a change waits for the lock instead of
+// For tests, on the thread, meaning how long a change waits for the lock instead of
 // the usual, and what the lock on a file fails with.
 #[cfg(test)]
 thread_local! {
@@ -1301,7 +1301,7 @@ fn show(root: &Path) -> Result<String, String> {
 
 impl crate::Harness {
     /// `/openrouter`, typed at the line prompt or sent from the page or an
-    /// app: says the settings and the forms that change them, or changes one
+    /// app, says the settings and the forms that change them, or changes one
     /// (the full-screen view has its own menu, opened by `/openrouter` alone).
     /// The open sessions of this process use a change from their next
     /// request. This one waits for the change on this thread, where a session
@@ -1312,7 +1312,7 @@ impl crate::Harness {
     }
 
     /// [`openrouter_command`](Self::openrouter_command) for a line the session
-    /// reads: the change waits for its lock on a thread made for waiting, so
+    /// reads. The change waits for its lock on a thread made for waiting, so
     /// the session's tasks go on, and it is said once it is made and installed.
     pub(crate) async fn openrouter_live(
         &mut self,
@@ -1344,7 +1344,7 @@ impl crate::Harness {
 /// A model OpenRouter lists, for a picker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Listed {
-    /// As `/model` takes it: `openrouter:moonshotai/kimi-k3`.
+    /// As `/model` takes it, as `openrouter:moonshotai/kimi-k3`.
     pub name: String,
     /// What people call it (`Kimi K3`), without its maker's name before it.
     pub label: String,
@@ -1419,7 +1419,7 @@ impl Listed {
     }
 }
 
-/// `262k`, `1M`: a number of tokens in few characters.
+/// `262k` and `1M` are numbers of tokens in few characters.
 fn tokens(count: u64) -> String {
     if count >= 1_000_000 {
         let millions = format!("{:.1}", count as f64 / 1_000_000.0);
@@ -1429,7 +1429,7 @@ fn tokens(count: u64) -> String {
     }
 }
 
-/// `$0.60`, `$15.00`, `$0.075`: a price in dollars with at least cents.
+/// `$0.60`, `$15.00` and `$0.075` are prices in dollars with at least cents.
 fn price(dollars: f64) -> String {
     let mut text = format!("{dollars:.4}");
     while text.ends_with('0')
@@ -1512,7 +1512,7 @@ impl Catalog {
     }
 }
 
-/// What decides the models listed: the filters, and (tests) the server.
+/// What decides the models listed, meaning the filters, and (in tests) the server.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Key {
     local: Option<String>,
@@ -1590,7 +1590,7 @@ pub fn loading_for(root: &Path) -> bool {
     settings_in_memory(root, false).is_some_and(|settings| fetching(&settings.filters(None)))
 }
 
-/// The settings as this process has them, for what draws: no file is read
+/// The settings as this process has them, for what draws. No file is read
 /// here. Before they have been read it asks for them in the background (and
 /// for the models once they are, with `models`) and says nothing yet, and a
 /// view finds out when [`generation`] moves.
@@ -1673,7 +1673,7 @@ pub async fn refresh(root: &Path, force: bool) -> Catalog {
     refresh_at(&Settings::load(root).filters(None), force, Some(root)).await
 }
 
-/// [`refresh`], for an app's background thread: it waits for the fetch
+/// [`refresh`], for an app's background thread. It waits for the fetch
 /// (ten seconds at most) on a runtime of its own.
 pub fn refresh_blocking(root: &Path, force: bool) -> Catalog {
     let key = Settings::load(root).filters(None);
@@ -1778,7 +1778,7 @@ fn refresh_key_soon(key: Key, root: &Path) {
     if is_fresh(&key) || failed_lately(&key) || fetching(&key) {
         return;
     }
-    // (A runtime of its own: the caller may have none.)
+    // (A runtime of its own, because the caller may have none.)
     let root = root.to_path_buf();
     std::thread::spawn(move || {
         blocking(key, false, root);
@@ -1858,7 +1858,7 @@ async fn fetch(
     let mut entries: Vec<Value> = Vec::new();
     let mut zones: HashMap<String, Zone> = HashMap::new();
     for ((zone, _), result) in lists.iter().zip(results) {
-        // (All of them, or none: a half is a different list.)
+        // (All of them, or none, because a half is a different list.)
         for entry in result? {
             let Some(id) = entry.get("id").and_then(Value::as_str).map(str::to_string) else {
                 continue;
@@ -2031,7 +2031,7 @@ fn known_in(root: &Path, slug: &str, local: Option<&str>) -> Option<Model> {
     })
 }
 
-/// The catalog for a session start's check: refreshed when due. `local` is
+/// The catalog for a session start's check, refreshed when due. `local` is
 /// a server standing in for OpenRouter (tests).
 pub(crate) async fn checked(
     root: &Path,
@@ -2336,7 +2336,7 @@ mod tests {
         assert_eq!(recent(root).len(), RECENT);
     }
 
-    /// A session open on a folder, with a feed, as a front end opens one:
+    /// A session open on a folder, with a feed, as a front end opens one, and
     /// it has the key it started with.
     fn session(root: &Path) -> (Arc<crate::keys::Keys>, crate::remote::Feed) {
         let feed = crate::remote::Feed::new("main");
@@ -2389,7 +2389,7 @@ mod tests {
         assert_eq!((notices(&feed), notices(&other_feed)), (1, 1));
         assert_eq!(keys.installed().unwrap().0, "sk-or-first");
 
-        // Saved by a session: it has it, and its own words say so.
+        // Saved by a session, so it has it, and its own words say so.
         Settings::edit(root, keys.id(), |settings| settings.set_zdr(false)).unwrap();
         assert!(!zdr_installed(&keys) && !zdr_installed(&other));
         assert_eq!((notices(&feed), notices(&other_feed)), (1, 2));
@@ -2432,7 +2432,7 @@ mod tests {
         assert_eq!(file["provider"]["zdr"], true, "{file}");
         assert_eq!(file["recent"], json!(["acme/picked"]), "{file}");
         assert!(zdr_installed(&keys));
-        // And the other way: the change has read, and the model waits.
+        // And the other way, where the change has read and the model waits.
         let (wait_for_it, go) = pause_next_change(&root);
         let changed = {
             let root = root.clone();
@@ -2474,9 +2474,9 @@ mod tests {
         assert!(error.contains("openrouter.json can't be read"), "{error}");
     }
 
-    /// Another Arko process holds the file's lock: a change waits for it, and
+    /// Another Arko process holds the file's lock. A change waits for it, and
     /// goes on once it lets go. A holder that has held it longer than the old
-    /// stale age, as the file's age says, is still the holder: nothing takes
+    /// stale age, as the file's age says, is still the holder. Nothing takes
     /// the lock over, the wait ends with a clear error, and the lock file is
     /// never removed.
     #[test]
@@ -2524,7 +2524,7 @@ mod tests {
         assert!(path.exists(), "the lock file is never removed");
     }
 
-    /// A file system that can't lock files can't have the settings changed:
+    /// A file system that can't lock files can't have the settings changed, because
     /// another Arko process could change the file meanwhile, and the privacy
     /// settings may be in it. Nothing is written, no client is installed, and
     /// the message says why. Any other lock error fails the same way.
@@ -2557,7 +2557,7 @@ mod tests {
                 "no client was installed"
             );
         }
-        // And on a folder with no file yet: none is made.
+        // And on a folder with no file yet, so none is made.
         let empty = temp.path().join("empty");
         LOCK_FAILS.with(|fails| fails.set(Some(std::io::ErrorKind::Unsupported)));
         assert!(Settings::update(&empty, |s| s.set_zdr(true)).is_err());
@@ -2600,7 +2600,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
-    /// An empty file, or one of blanks, isn't settings: only a missing file
+    /// An empty file, or one of blanks, isn't settings. Only a missing file
     /// is none set. (A truncated file must not read as unrestricted.)
     #[test]
     fn an_empty_file_isnt_settings_and_only_a_missing_one_is_none_set() {
@@ -2628,7 +2628,7 @@ mod tests {
     }
 
     /// What draws asks the settings as this process has them, and reads no
-    /// file when it has none yet: it asks for them in the background, says
+    /// file when it has none yet. It asks for them in the background, says
     /// nothing meanwhile, and asks only once, an unreadable file too.
     #[test]
     fn what_draws_reads_no_file_before_the_settings_are_known() {
@@ -2839,7 +2839,7 @@ mod tests {
         assert!(!head.contains("authorization"), "no key is sent: {head}");
         assert!(head.contains("accept-encoding: gzip"), "{head}");
 
-        // Fresh: no second fetch, but a forced one fetches.
+        // Fresh, so no second fetch, but a forced one fetches.
         assert_eq!(refresh_at(&key, false, None).await, catalog);
         assert_eq!(server.requests().len(), 1);
         refresh_at(&key, true, None).await;
@@ -3078,7 +3078,7 @@ mod tests {
             "262k context, $0.60 in and $2.50 out per million tokens"
         );
 
-        // Picked with the models in memory: the details are written.
+        // Picked with the models in memory, so the details are written.
         remember_in(root, "openrouter:other/unlisted", Some(&server.url));
         remember_in(root, "openrouter:moonshotai/kimi-k3", Some(&server.url));
         let file: Value =
@@ -3175,7 +3175,7 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         assert!(completions(other.path(), "openrouter:moon").is_empty());
         // Once the settings are known, completing (as the input box does at
-        // every draw) needs no file: it goes by them as this process has them.
+        // every draw) needs no file. It goes by them as this process has them.
         std::fs::remove_dir_all(root).unwrap();
         assert_eq!(
             completions(root, "openrouter:moon"),
@@ -3186,7 +3186,7 @@ mod tests {
     }
 
     /// The models of another list being fetched don't hold back the models
-    /// the settings need now: a change of region while the first fetch is
+    /// the settings need now. A change of region while the first fetch is
     /// slow still fetches the new list, with no one asking again.
     #[tokio::test]
     async fn a_fetch_of_other_models_does_not_hold_back_the_models_needed_now() {

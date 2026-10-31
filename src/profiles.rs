@@ -122,7 +122,7 @@ impl Place {
         Place::User,
     ];
 
-    /// The word the commands and the agent's tool take: `session`,
+    /// The word the commands and the agent's tool take, one of `session`,
     /// `project` or `user`. (The repository's is `repository`, which they
     /// don't take.)
     pub fn name(self) -> &'static str {
@@ -144,7 +144,7 @@ impl Place {
     }
 
     /// Who can use a profile in this place, as a phrase that follows
-    /// "for": `this session`, `this project`, `this repository` or `every
+    /// "for", such as `this session`, `this project`, `this repository` or `every
     /// project`.
     pub fn reach(self) -> &'static str {
         match self {
@@ -217,7 +217,7 @@ pub struct Profile {
     pub skills: Option<Vec<String>>,
     /// The MCP servers a worker with the profile reaches, in the same way.
     pub mcp: Option<Vec<String>>,
-    /// Who wrote the file when it isn't the user: [`MADE_BY_AGENT`].
+    /// Who wrote the file when it isn't the user, which is [`MADE_BY_AGENT`].
     pub made_by: Option<String>,
     /// The standing instructions, up to [`MAX_INSTRUCTIONS`] characters.
     pub instructions: String,
@@ -478,7 +478,7 @@ impl Profile {
     }
 
     /// What workers with the profile are limited to, as sentences for its
-    /// approval card: "Workers with it get only the skills ponytail and
+    /// approval card, as "Workers with it get only the skills ponytail and
     /// release-notes." Nothing for a set the profile leaves to the starter.
     pub fn limits(&self) -> Vec<String> {
         crate::crew::narrowing_phrases(self.skills.as_deref(), self.mcp.as_deref())
@@ -507,7 +507,7 @@ impl Profile {
         ))
     }
 
-    /// What the profile runs on, as a phrase: `sol at high effort`, `opus`,
+    /// What the profile runs on, as a phrase, such as `sol at high effort`, `opus`,
     /// or `the session's worker model`.
     pub fn runs_on(&self) -> String {
         let model = self
@@ -557,7 +557,7 @@ fn unquote(value: &str) -> String {
     let bytes = value.as_bytes();
     if value.len() >= 2 && bytes[0] == b'"' && bytes[value.len() - 1] == b'"' {
         // Quotes inside that nothing escapes mean the outer ones aren't a
-        // pair around the whole value (`"a" and "b"`): it is read as written.
+        // pair around the whole value (`"a" and "b"`). It is read as written.
         let inner = &value[1..value.len() - 1];
         let mut escaped = false;
         for c in inner.chars() {
@@ -594,7 +594,7 @@ fn unquote(value: &str) -> String {
     }
 }
 
-/// `value` as the file writes it: bare when that reads back the same,
+/// `value` as the file writes it, bare when that reads back the same,
 /// else in double quotes.
 fn quoted(value: &str) -> String {
     let plain = value == value.trim()
@@ -614,7 +614,7 @@ fn quoted(value: &str) -> String {
     )
 }
 
-/// The first character of `text` that a profile can't hold: a control
+/// The first character of `text` that a profile can't hold, meaning a control
 /// character other than a line break or a tab (an escape sequence moves the
 /// cursor, a lone carriage return overwrites a line), a direction override
 /// or a zero-width character. They would make the question that asks the
@@ -645,7 +645,7 @@ fn cut(text: &str, most: usize) -> String {
     }
 }
 
-/// `text` on one line: its lines joined by single spaces.
+/// `text` on one line, meaning its lines joined by single spaces.
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -829,7 +829,7 @@ impl Roots {
             .collect()
     }
 
-    /// The directory that holds the `.arko` of a project place: the working
+    /// The directory that holds the `.arko` of a project place, meaning the working
     /// directory, or the root of the repository it is in.
     fn project_dir(&self, place: Place) -> Option<PathBuf> {
         let workspace = self.workspace.as_deref()?;
@@ -883,7 +883,7 @@ impl Found {
         in_older_folder(self.place, &self.file)
     }
 
-    /// [`Place::reach`], with the folder named when it is the older one:
+    /// [`Place::reach`], with the folder named when it is the older one, as
     /// `this project (.agents/profiles)`.
     pub fn reach(&self) -> String {
         reach_of(self.place, &self.file)
@@ -1074,7 +1074,7 @@ fn has_entry(folder: &Path, name: &str) -> bool {
     })
 }
 
-/// A name that can be a file's name here: the file name rules without the
+/// A name that can be a file's name here, meaning the file name rules without the
 /// reserved names and the device names (those can't be saved, and a file by
 /// one is shown as unreadable).
 fn check_file_name(name: &str) -> Result<(), String> {
@@ -1308,7 +1308,7 @@ fn remove_older(
     }
 }
 
-/// Whether an agent may save a profile called `name`: not when a profile of
+/// Whether an agent may save a profile called `name`. Not when a profile of
 /// that name that the user made is in any place (it would replace it, or
 /// hide it behind a nearer one), nor over a file that can't be read. A
 /// profile an agent made, in any place, may be replaced. [`save`] checks this
@@ -1476,7 +1476,7 @@ pub fn approval(profile: &Profile, place: Place) -> crate::approvals::ProfileApp
     }
 }
 
-/// Where a save in `place` writes, as a phrase that follows "in": "this
+/// Where a save in `place` writes, as a phrase that follows "in", as "this
 /// project's .arko/profiles folder".
 fn saved_in(place: Place) -> String {
     let [dir, folder] = PROJECT_FOLDER;

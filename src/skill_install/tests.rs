@@ -557,7 +557,7 @@ async fn a_bundle_is_unpacked_with_its_files() {
     }
 }
 
-/// A URL is read by its first bytes: a zip archive is a bundle whatever its
+/// A URL is read by its first bytes. A zip archive is a bundle whatever its
 /// name, and anything else is Markdown. A download asks the user, in either
 /// scope, with the URL and its size on the card.
 #[tokio::test]
@@ -1275,7 +1275,7 @@ async fn an_update_of_bytes_the_text_doesnt_show_is_shown() {
 }
 
 /// An update's card comes from what the stamp of the saved skill read, which
-/// opens nothing through a link: a link in the skill to a folder or a file
+/// opens nothing through a link. A link in the skill to a folder or a file
 /// outside it is listed as going, and a file too big for a save is compared
 /// by its hash. What the links lead to stays as it was.
 #[cfg(unix)]
@@ -2019,7 +2019,7 @@ fn sizes_read_as_people_read_them() {
     assert_eq!(thousands(84), "84");
 }
 
-/// A local server with a few paths: a body, one over the limit, chains of
+/// A local server with a few paths, meaning a body, one over the limit, chains of
 /// redirects, a redirect away from https, and a missing file.
 async fn server() -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,6 +1,6 @@
-//! The API keys while Arko runs: `/keys` lists the providers' keys, and adds,
+//! The API keys while Arko runs. `/keys` lists the providers' keys, and adds,
 //! replaces and removes them. A key is saved in Arko's `.env` as the setup
-//! screen saves, and used at once: the session's model client gets the
+//! screen saves, and used at once. The session's model client gets the
 //! provider for the agents' next requests, and the search indexes embed with
 //! a Voyage key. Nothing is sent to the provider until an agent or a search
 //! uses the key. It travels from the screen to here as a [`Secret`], so it
@@ -9,7 +9,7 @@
 //! A replaced key is used from the next request on, by the agents already
 //! running too (the old one may be why it was replaced). A removed key is
 //! kept by the agents already using it until Arko quits, and nothing new
-//! starts on it: the session stops offering its provider, new workers can't
+//! starts on it. The session stops offering its provider, new workers can't
 //! start on it, and searches go back to keywords.
 
 use std::sync::{Arc, Mutex};
@@ -83,10 +83,10 @@ pub struct Keys {
     pub(crate) client: Arc<LLMClient>,
     indexes: Option<Arc<index::Indexes>>,
     pub(crate) feed: Option<remote::Feed>,
-    /// The session's context: its settings and keys are read and saved as
+    /// The session's context, meaning its settings and keys are read and saved as
     /// the session's, whatever thread calls (an app's).
     pub(crate) context: Option<Arc<crate::context::SessionContext>>,
-    /// Where the providers are reached: their own addresses, or (tests) a
+    /// Where the providers are reached, meaning their own addresses, or (tests) a
     /// local server for all of them.
     pub(crate) local: std::sync::OnceLock<String>,
     /// The session's `--codex-auth` file, which comes before ARKO_CODEX_AUTH
@@ -99,7 +99,7 @@ pub struct Keys {
 }
 
 struct State {
-    /// How the client reaches OpenAI models; `None` when it doesn't.
+    /// How the client reaches OpenAI models, and `None` when it doesn't.
     openai: Option<OpenAiAuth>,
     /// The providers whose key was removed with no other to take its place.
     withdrawn: Vec<Provider>,
@@ -216,7 +216,7 @@ impl Keys {
         self.hear_openrouter(&root);
     }
 
-    /// [`share`](Self::share) for a session starting in a task: the OpenRouter
+    /// [`share`](Self::share) for a session starting in a task. The OpenRouter
     /// settings, which may wait for a change in progress, are taken on a
     /// thread that can wait. It returns once they are.
     pub(crate) async fn share_async(self: &Arc<Self>, root: std::path::PathBuf) {
@@ -257,7 +257,7 @@ impl Keys {
                 if change.origin == keys.id || change.root != root {
                     continue;
                 }
-                // Removed: what this session reads next, if anything. (Reading
+                // Removed, meaning what this session reads next, if anything. (Reading
                 // files and settings keys, away from this task.)
                 let now = {
                     let keys = keys.clone();
@@ -487,7 +487,7 @@ impl Keys {
         }
     }
 
-    /// Uses `value` as `key` from now on (none: the key was removed, and
+    /// Uses `value` as `key` from now on (none means the key was removed, and
     /// none takes its place). Returns what that means, as a sentence.
     pub(crate) fn apply(&self, key: &Key, value: Option<&str>) -> String {
         let provider = match key.name {
@@ -509,7 +509,7 @@ impl Keys {
             }
         };
         // For OpenRouter, the key and the settings installed are the latest
-        // of both: a change to the settings waits while this runs. (The
+        // of both. A change to the settings waits while this runs. (The
         // lock of the settings comes before the state's.)
         let _settings = (provider == Provider::OpenRouter)
             .then(|| {
@@ -553,7 +553,7 @@ impl Keys {
             )),
             _ => {
                 state.openrouter = Some(value.to_string());
-                // A file that can't be read leaves the client as it is: the
+                // A file that can't be read leaves the client as it is, with the
                 // key and settings it has, else none. The settings may hold
                 // restrictions, so a client without them isn't installed.
                 match self.openrouter_settings() {
@@ -704,7 +704,7 @@ fn models_of(provider: &Provider) -> &'static str {
     }
 }
 
-/// "OpenAI API key" with a capital: as a sentence starts.
+/// "OpenAI API key" with a capital, as a sentence starts.
 fn capitalized(text: &str) -> String {
     let mut chars = text.chars();
     chars
@@ -718,7 +718,7 @@ fn without_article(what: &str) -> &str {
     what.split_once(' ').map_or(what, |(_, rest)| rest)
 }
 
-/// `/keys` as the line prompt and the web page show it: each key, masked
+/// `/keys` as the line prompt and the web page show it, meaning each key, masked
 /// (`values`, at the terminal only), and where it comes from or what it is
 /// for.
 pub fn list(states: &[KeyState], values: bool) -> Vec<String> {
@@ -752,7 +752,7 @@ pub fn added_at_prompt(line: &str) -> Option<&'static Key> {
     }
 }
 
-/// The line prompt's `/keys add`: reads `key` with the input hidden, saves
+/// The line prompt's `/keys add` reads `key` with the input hidden, saves
 /// it and uses it, saying what happens. (On the input thread, so that the
 /// terminal is the prompt's.)
 #[cfg(feature = "tui")]
@@ -763,7 +763,7 @@ pub fn add_at_prompt(keys: &Keys, key: &'static Key) {
         Ok(None) => return out.line(&out.dim("No key was added.")),
         Err(error) => return out.line(&out.error(&crate::ui::sentence(&error))),
     };
-    // Its start and last 4 characters: the key pasted is the one meant.
+    // Its start and last 4 characters, so the key pasted is the one meant.
     out.line(&out.dim(&format!(
         "{} {}",
         capitalized(without_article(key.what)),
@@ -781,7 +781,7 @@ pub fn add_at_prompt(keys: &Keys, key: &'static Key) {
 }
 
 impl crate::Harness {
-    /// `/keys`, typed at the line prompt or sent from the page: lists the
+    /// `/keys`, typed at the line prompt or sent from the page, lists the
     /// API keys (masked at the terminal, and only whether each is set on the
     /// page), and removes one Arko saved. Adding one takes hidden input,
     /// which the full-screen view and the line prompt read themselves.

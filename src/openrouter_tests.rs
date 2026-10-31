@@ -1,4 +1,4 @@
-// End-to-end tests of the OpenRouter settings: a change saved while Arko
+// End-to-end tests of the OpenRouter settings. A change saved while Arko
 // runs reaches the agents' next request, the words of `/openrouter` change
 // the file, and a model switched to is kept and sized from what is known of
 // it. (Included in `main`'s tests, whose helpers they use.)
@@ -73,7 +73,7 @@ async fn saved_settings_reach_the_agents_at_their_next_request() {
     let first = bodies.lock().unwrap()[0].clone();
     assert_eq!(first["provider"], serde_json::json!({"sort": "price"}));
 
-    // Saved by an app (nobody's own session): the agents use it at once, and
+    // Saved by an app (nobody's own session). The agents use it at once, and
     // the session says so.
     let mut settings = crate::openrouter::Settings::load(&root);
     settings.set_zdr(true);
@@ -298,7 +298,7 @@ async fn a_model_switched_to_is_kept_and_sized_from_what_is_known() {
 }
 
 /// The model server for a main agent that starts one worker, both on
-/// OpenRouter: every request body and head is kept.
+/// OpenRouter, and every request body and head is kept.
 async fn lead_and_worker() -> (ModelServer, Arc<Mutex<Vec<serde_json::Value>>>) {
     let bodies = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
     let seen = bodies.clone();
@@ -385,7 +385,7 @@ async fn the_openrouter_command_changes_its_own_sessions_requests_and_its_worker
 }
 
 /// A key replaced while a change to the settings is made is used with the
-/// settings as the change leaves them, whichever came first: the request
+/// settings as the change leaves them, whichever came first. The request
 /// goes out with the new key and the new settings.
 #[tokio::test]
 async fn a_key_replaced_during_a_settings_change_goes_out_with_both() {
@@ -555,7 +555,7 @@ async fn a_key_replaced_while_the_settings_cant_be_read_installs_no_unrestricted
     assert!(fresh.reaches(&arko_ai::Provider::OpenRouter));
 }
 
-/// Another process holds the settings file's lock for `held`: for this long
+/// Another process holds the settings file's lock for `held`, meaning for this long
 /// a change must wait.
 fn hold_the_settings_lock(root: &std::path::Path, held: Duration) -> std::thread::JoinHandle<()> {
     std::fs::create_dir_all(root).unwrap();
@@ -573,7 +573,7 @@ fn hold_the_settings_lock(root: &std::path::Path, held: Duration) -> std::thread
     })
 }
 
-/// A task that counts, as an async heartbeat: it stops if the thread the
+/// A task that counts, as an async heartbeat, which stops if the thread the
 /// runtime has is held up.
 fn heartbeat() -> (
     Arc<std::sync::atomic::AtomicUsize>,
@@ -590,8 +590,8 @@ fn heartbeat() -> (
     (beats, task)
 }
 
-/// `/openrouter` waits for the settings' lock away from the session's tasks:
-/// while another process holds it, the session goes on (a heartbeat keeps
+/// `/openrouter` waits for the settings' lock away from the session's tasks.
+/// While another process holds it, the session goes on (a heartbeat keeps
 /// beating), and the change is made, installed and said once it lets go.
 #[tokio::test]
 async fn the_openrouter_command_waits_for_the_lock_without_holding_up_the_session() {
@@ -635,7 +635,7 @@ async fn a_session_starting_waits_for_a_change_in_progress_without_stopping_task
     let keys = crate::keys::Keys::new(Arc::new(LLMClient::new()), None, None, None);
     keys.apply(&credentials::OPENROUTER, Some("sk-or-test"));
     crate::openrouter::Settings::update(&root, |settings| settings.set_zdr(true)).unwrap();
-    // A change is in progress in this process: it has the folder's lock.
+    // A change is in progress in this process, so it has the folder's lock.
     let (reached, go) = crate::openrouter::pause_next_change(&root);
     let change = {
         let root = root.clone();
@@ -671,7 +671,7 @@ async fn a_session_starting_waits_for_a_change_in_progress_without_stopping_task
 }
 
 /// A file emptied or blanked, as a truncated write leaves it, isn't "no
-/// settings": a client that has the restrictions keeps them when a key is
+/// settings". A client that has the restrictions keeps them when a key is
 /// replaced, and a session without one gets none.
 #[tokio::test]
 async fn an_emptied_settings_file_installs_no_unrestricted_client() {
@@ -704,7 +704,7 @@ async fn an_emptied_settings_file_installs_no_unrestricted_client() {
 }
 
 /// A key removed, then added again while the settings can't be read, comes
-/// back once the file is fixed and changed: the replacement is installed,
+/// back once the file is fixed and changed. The replacement is installed,
 /// and the removal no longer holds.
 #[tokio::test]
 async fn a_key_added_after_its_removal_returns_once_the_settings_are_fixed() {

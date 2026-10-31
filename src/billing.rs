@@ -1,4 +1,4 @@
-//! Worker billing: whether a worker may start on a model billed per token
+//! Worker billing covers whether a worker may start on a model billed per token
 //! (an API key, Gemini, OpenRouter) or only on the user's plans (the `cc:`
 //! models on a Claude plan, OpenAI models on the ChatGPT login), and the
 //! daily API budget. The session's `worker_billing` setting chooses
@@ -12,7 +12,7 @@
 //! model isn't asked about again.
 //!
 //! The budget counts what was billed since local midnight, across the
-//! sessions of an Arko folder: each session keeps its own day's spend, from
+//! sessions of an Arko folder. Each session keeps its own day's spend, from
 //! its cost ledger, in a file of the folder ([`DaySpend`]), and adds up the
 //! others'. The main agent's calls count too, but only new workers are held
 //! to it. Workers already running go on.
@@ -132,7 +132,7 @@ pub fn budget_about(budget: Option<f64>) -> String {
     }
 }
 
-/// `budget` if a session can have it: a positive amount of dollars.
+/// `budget` if a session can have it, meaning a positive amount of dollars.
 pub fn check_budget(budget: f64) -> Result<f64, String> {
     if budget.is_finite() && budget > 0.0 {
         Ok(budget)
@@ -143,7 +143,7 @@ pub fn check_budget(budget: f64) -> Result<f64, String> {
     }
 }
 
-/// Reads `text` as `/api-budget` and `--api-budget` take it: `off`, `on`
+/// Reads `text` as `/api-budget` and `--api-budget` take it, which is `off`, `on`
 /// for [`DEFAULT_BUDGET`], or dollars (`20`, `$7.50`).
 pub fn parse_budget(text: &str) -> Result<Option<f64>, String> {
     match text.trim() {
@@ -163,12 +163,12 @@ pub fn parse_budget(text: &str) -> Result<Option<f64>, String> {
     }
 }
 
-/// An amount of dollars as people write it: `$20`, `$7.50`, `$0.25`.
+/// An amount of dollars as people write it, such as `$20`, `$7.50`, `$0.25`.
 pub fn money(amount: f64) -> String {
     crate::remote::protocol::money(amount)
 }
 
-/// A price per million tokens in dollars, as people write it: `5`,
+/// A price per million tokens in dollars, as people write it, such as `5`,
 /// `1.25`, `0.10`, `0.075`.
 fn per_million(amount: f64) -> String {
     crate::remote::protocol::per_million(amount)
@@ -184,7 +184,7 @@ fn prices(model: &Model) -> Option<(f64, f64)> {
     (input > 0.0 || output > 0.0).then_some((input, output))
 }
 
-/// How a model billed per token shows its billing beside its name: `API,
+/// How a model billed per token shows its billing beside its name, as `API,
 /// $5/$25` (per million input and output tokens), or `API` when its price
 /// isn't known. A plan's model gets no label, since the lists say which
 /// plan pays.
@@ -197,7 +197,7 @@ pub(crate) fn api_label(model: &Model) -> String {
 
 /// How the model `name` (as `/model` takes it) is billed, for a model
 /// picker beside its name, when the session reaches OpenAI models by
-/// `openai_auth`: `API, $5/$25` (per million input and output tokens) for a
+/// `openai_auth`, it is `API, $5/$25` (per million input and output tokens) for a
 /// model billed per token, and `None` for one a plan pays for, which needs
 /// no label beside the others.
 pub fn label(name: &str, openai_auth: Option<OpenAiAuth>) -> Option<String> {
@@ -410,7 +410,7 @@ impl Allowed {
 /// day.
 pub(crate) const SPEND_FILE: &str = "api-spend.json";
 
-/// What [`SPEND_FILE`] holds: the day, and each session's spend on it.
+/// What [`SPEND_FILE`] holds, meaning the day, and each session's spend on it.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SpendFile {
     day: String,
@@ -418,7 +418,7 @@ struct SpendFile {
     sessions: BTreeMap<String, f64>,
 }
 
-/// The file's text `text` (empty or unreadable: none) with `session`'s spend
+/// The file's text `text` (none if empty or unreadable) with `session`'s spend
 /// on `day` set to `amount`, and that day's spend across the sessions. A
 /// file of another day is replaced.
 fn recorded(text: &str, day: &str, session: &str, amount: f64) -> (String, f64) {
@@ -484,7 +484,7 @@ struct SpendState {
 }
 
 impl DaySpend {
-    /// The day's spend of `session`, shared in Arko's folder `root` (none:
+    /// The day's spend of `session`, shared in Arko's folder `root` (none means
     /// kept to itself).
     pub(crate) fn new(root: Option<&Path>, session: &str) -> Self {
         Self {
@@ -504,7 +504,7 @@ impl DaySpend {
         let today = now.date_naive();
         let start = match state.day {
             Some((day, start)) if day == today => start,
-            // A new day: what was billed before it, from the ledger's times.
+            // A new day, so what was billed before it comes from the ledger's times.
             _ => {
                 let ledger = workflow.cost_ledger();
                 let start = total - billed_since(&ledger.entries, day_start(now));
@@ -516,7 +516,7 @@ impl DaySpend {
     }
 
     /// The day's API spend across the folder's sessions, with this one's
-    /// from `workflow` now (none: nothing yet). This session's is written to the file when it
+    /// from `workflow` now (none means nothing yet). This session's is written to the file when it
     /// changed, so the others count it, and the others' are read then.
     /// `force` reads them (and writes) also when it didn't change.
     pub(crate) fn today(&self, workflow: Option<&Workflow>, force: bool) -> f64 {
@@ -550,8 +550,8 @@ impl DaySpend {
         }
     }
 
-    /// Whether the user is to be told today that the budget was reached:
-    /// true once a day.
+    /// Whether the user is to be told today that the budget was reached.
+    /// It is true once a day.
     pub(crate) fn tell_once(&self) -> bool {
         let today = Local::now().date_naive();
         let mut state = crate::lock(&self.state);

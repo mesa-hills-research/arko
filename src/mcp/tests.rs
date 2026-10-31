@@ -118,7 +118,7 @@ fn tool_names_are_ones_the_providers_take() {
     );
     assert_eq!(long.len(), 64);
     assert_ne!(long, other);
-    // The same name every time: sessions keep tool names.
+    // The same name every time, because sessions keep tool names.
     assert_eq!(
         long,
         tool_name(
@@ -173,7 +173,7 @@ fn servers_come_from_the_flag_the_project_and_fins_folder() {
         "{notes:?}"
     );
 
-    // Approved, they start; changed, they wait again.
+    // Approved, they start, and changed, they wait again.
     let mut approvals = Approvals::default();
     approvals.projects.insert(
         workspace.display().to_string(),
@@ -216,7 +216,7 @@ fn servers_come_from_the_flag_the_project_and_fins_folder() {
     // A file --mcp-config names must be readable.
     let missing = temp.path().join("missing.json");
     assert!(plan(&root, &workspace, std::slice::from_ref(&missing), true).is_err());
-    // An app's: its servers aren't started, and a note names it; the
+    // An app's servers aren't started, a note names it, and the
     // others start.
     let (servers, notes) = plan(&root, &workspace, std::slice::from_ref(&missing), false)
         .unwrap()
@@ -231,7 +231,7 @@ fn servers_come_from_the_flag_the_project_and_fins_folder() {
     );
 }
 
-/// The project's servers wait for the front end's answer: the plan
+/// The project's servers wait for the front end's answer. The plan
 /// says what it would ask, the answer starts them or not, and is
 /// remembered until the file's servers change. With no answer (no one
 /// can ask), they don't start.
@@ -261,7 +261,7 @@ fn project_mcp_servers_wait_for_the_prompters_answer() {
         [("proj".to_string(), "project-server --fast".to_string())]
     );
     assert_eq!(approval.skipped.len(), 1, "{approval:?}");
-    // No one to ask: they don't start, and nothing is remembered.
+    // No one to ask, so they don't start, and nothing is remembered.
     let (servers, notes) = asked.decide(&[None]).unwrap();
     assert!(servers.is_empty());
     assert!(
@@ -269,7 +269,7 @@ fn project_mcp_servers_wait_for_the_prompters_answer() {
         "{notes:?}"
     );
     assert!(plan(&root, &workspace, &[], true).unwrap().approvals.len() == 1);
-    // Yes: they start, and the next session doesn't ask.
+    // Yes, so they start, and the next session doesn't ask.
     let (servers, _) = plan(&root, &workspace, &[], true)
         .unwrap()
         .decide(&[Some(true)])
@@ -461,7 +461,7 @@ async fn a_tool_of_a_server_not_started_says_so() {
     );
 }
 
-/// The files are read in this order: the given ones, the project's
+/// The files are read in this order, meaning the given ones, the project's
 /// `.arko/mcp.json`, its `.mcp.json`, then Arko's `mcp.json`. The first to
 /// name a server wins, and the two project files are asked about in that
 /// order.
@@ -543,7 +543,7 @@ fn a_projects_arko_file_is_asked_about_when_unknown_and_started_when_remembered(
         asked.approvals[0].servers,
         [("committed".to_string(), "someone-elses-server".to_string())]
     );
-    // No one to ask: it doesn't start.
+    // No one to ask, so it doesn't start.
     let (servers, notes) = asked.decide(&[None]).unwrap();
     assert!(servers.is_empty());
     assert!(
@@ -552,7 +552,7 @@ fn a_projects_arko_file_is_asked_about_when_unknown_and_started_when_remembered(
             .any(|note| note.contains(".arko") && note.contains("aren't started")),
         "{notes:?}"
     );
-    // Approved: it starts, and the next session doesn't ask.
+    // Approved, so it starts, and the next session doesn't ask.
     let (servers, _) = plan(&root, &workspace, &[], true)
         .unwrap()
         .decide(&[Some(true)])

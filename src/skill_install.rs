@@ -10,7 +10,7 @@
 //! folder skills are read from is refused, since agents would load it
 //! before anyone approved it, so an agent writes its draft somewhere else,
 //! such as a scratch folder. Arko reads the source into memory once, by the
-//! code that loads skills, and checks it before anyone is asked: its front
+//! code that loads skills, and checks it before anyone is asked, meaning its front
 //! matter, its name (one no other skill has), its size, links and files.
 //! That copy is what the card shows and what is saved, so a change to the
 //! source after it was read isn't saved, and nothing reaches a skill folder
@@ -20,7 +20,7 @@
 //! in a skill runs when it is saved.
 //!
 //! The user approves a save in the session's approval tray, whose card
-//! shows the skill's text and files, and for an update what changes:
+//! shows the skill's text and files, and for an update what changes, meaning
 //! `SKILL.md`'s changed lines and the other files added, removed and
 //! changed.
 //!
@@ -93,7 +93,7 @@ const ADD_DESCRIPTION: &str = "Saves a skill that you and later conversations lo
 
 const EDIT_DESCRIPTION: &str = "Updates a skill that you or another agent saved with add_skill, from a new version of it, in the scope it was saved in. Write the whole new version outside the skill folders, as for add_skill, and give it as the source. The user approves the update as they would the save, and sees what changes. A name no agent saved a skill under is refused, and add_skill saves a new one. load_skill loads the new version at once.";
 
-/// Whom a save asks: the session's approval tray.
+/// Whom a save asks, the session's approval tray.
 #[async_trait]
 pub(crate) trait Approver: Send + Sync {
     /// Whether anyone can answer (there is a terminal, or an app).
@@ -120,7 +120,7 @@ pub(crate) trait Fetch: Send + Sync {
     async fn fetch(&self, url: &str) -> Result<Vec<u8>, String>;
 }
 
-/// Downloads over https: redirects only to https and at most
+/// Downloads over https, with redirects only to https and at most
 /// [`MAX_REDIRECTS`] of them, [`DOWNLOAD_TIME`] in all, no cookies or
 /// credentials, and at most [`MAX_BYTES`]. (Tests reach a local server over
 /// plain http.)
@@ -317,7 +317,7 @@ struct Stamp {
     hash: [u8; 32],
 }
 
-/// The most a stamp reads of a folder: its files, folders and other
+/// The most a stamp reads of a folder, meaning its files, folders and other
 /// entries, their bytes, and how deep its folders go. A skill's folder that
 /// holds more isn't replaced, since the user has put more in it than a save
 /// does.
@@ -326,7 +326,7 @@ const STAMP_BYTES: u64 = 4 * MAX_UNPACKED;
 const STAMP_DEPTH: usize = 16;
 
 /// What a stamp saw in a skill's folder, for an update's card, so the card
-/// shows what the stamp read and nothing read again: each file by its path
+/// shows what the stamp read and nothing read again, meaning each file by its path
 /// in the folder (`/` between folders) with a hash of its bytes, anything
 /// else (a link, a pipe) by its path alone, unopened, and the top
 /// `SKILL.md`'s bytes while they are at most [`MAX_BYTES`].
@@ -561,7 +561,7 @@ fn workers_parameter(params: &HashMap<String, Value>) -> Result<Option<bool>, To
     }
 }
 
-/// Why `name` can't name a skill, if it can't: kebab-case, letters and
+/// Why `name` can't name a skill, if it can't, meaning kebab-case, letters and
 /// digits in lower case and hyphens, up to [`MAX_NAME`] characters.
 fn name_problem(name: &str) -> Option<String> {
     let kebab = !name.is_empty()
@@ -650,7 +650,7 @@ fn parse_skill_md(name: &str, text: &str) -> Result<Parsed, String> {
     })
 }
 
-/// `text` with its front matter's `workers` set: `workers: false` for
+/// `text` with its front matter's `workers` set, as `workers: false` for
 /// `false`, and no line (the default, true) for `true`. `None` when it has
 /// no front matter.
 fn set_workers(text: &str, workers: bool) -> Option<String> {
@@ -818,7 +818,7 @@ fn bundle_files(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     }
 }
 
-/// `source` as a path: `~/` is the home directory, and a relative path is
+/// `source` as a path, where `~/` is the home directory, and a relative path is
 /// in the project.
 fn source_path(context: &Context, source: &str) -> PathBuf {
     let path = match (source.strip_prefix("~/"), &context.home) {
@@ -877,7 +877,7 @@ struct Plan {
     replaces: Option<SkillRecord>,
     /// What the update changes, for the card.
     update: Option<SkillUpdate>,
-    /// What was at `dest` when the card was made: nothing, or the folder of
+    /// What was at `dest` when the card was made, meaning nothing, or the folder of
     /// the agent's skill it updates.
     found: Option<Stamp>,
     why: String,
@@ -1494,7 +1494,7 @@ impl AddSkill {
     }
 }
 
-/// What is at the skill's folder `dest`, `name` in `target`, now: nothing,
+/// What is at the skill's folder `dest`, `name` in `target`, now, meaning nothing,
 /// or the folder of the agent's skill a save replaces (with `replaces`),
 /// whose stamp it gives. Refuses a link, and anything else.
 fn found_at(
@@ -1547,7 +1547,7 @@ fn found_seeing(
     }
 }
 
-/// The word `scope` takes for `scope`: project or user.
+/// The word `scope` takes for `scope`, either project or user.
 fn scope_word(scope: Scope) -> &'static str {
     match scope {
         Scope::Project => "project",
@@ -1696,7 +1696,7 @@ fn line_diff(before: &str, after: &str) -> String {
             }
         }
     } else {
-        // Too large to match line by line: the middle is changed whole.
+        // Too large to match line by line, so the middle is changed whole.
         ops.extend(a.iter().map(|line| ('-', *line)));
         ops.extend(b.iter().map(|line| ('+', *line)));
     }
@@ -1898,7 +1898,7 @@ impl Tool for AddSkill {
     }
 }
 
-/// Removes the skill an agent saved in the folder `path`: deletes the
+/// Removes the skill an agent saved in the folder `path`. It deletes the
 /// folder and drops its record. Refuses a skill no agent saved, which is
 /// found by the folder's real path, so a link that leads to another folder
 /// isn't followed. For `/skills remove` and an app's Remove (see
@@ -2110,7 +2110,7 @@ fn thousands(number: usize) -> String {
     groups.into_iter().rev().collect::<Vec<_>>().join(",")
 }
 
-/// A size in bytes as people read it: "300 bytes", "14 KB", "1 MB".
+/// A size in bytes as people read it, as "300 bytes", "14 KB", "1 MB".
 fn size_words(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} bytes")

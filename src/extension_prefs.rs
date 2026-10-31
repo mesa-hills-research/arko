@@ -209,7 +209,7 @@ fn state(on: bool) -> &'static str {
 
 impl Harness {
     /// `/extensions`, typed at the prompt, sent from the page or chosen in
-    /// the settings: says the switches for what agents add, or with a
+    /// the settings, it says the switches for what agents add, or with a
     /// switch's word and `on` or `off` changes it. It applies to the next
     /// thing an agent adds, and the agents aren't told.
     pub(crate) fn extensions_command(&mut self, argument: &str, source: Source) {

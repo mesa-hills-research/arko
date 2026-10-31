@@ -1,4 +1,4 @@
-//! Skills: instructions for particular kinds of work, each a folder with a
+//! Skills are instructions for particular kinds of work, each a folder with a
 //! `SKILL.md` (a name and description in YAML front matter, then the
 //! instructions) and the files it uses. The agents see each skill's name
 //! and description, and load a skill with arko_agents' `load_skill` when a
@@ -18,7 +18,7 @@
 //! name in the folders replaces.
 //!
 //! A skill's `models` lists the models whose agents see it in their skill
-//! list. Each agent gets the names its own model goes by ([`model_names`]):
+//! list. Each agent gets the names its own model goes by ([`model_names`]), meaning
 //! its registry ID and alias, `cc:` names in Claude Code, and its
 //! `openrouter:` slug, which gets the plain names too when
 //! [`OPENROUTER_EQUIVALENTS`](crate::providers::OPENROUTER_EQUIVALENTS)
@@ -53,7 +53,7 @@ pub fn user_folder(root: &Path) -> PathBuf {
     root.join(SAVED_FOLDER)
 }
 
-/// The skill folders, the project's first: a skill's name in more than one
+/// The skill folders, the project's first. A skill's name in more than one
 /// is kept from the first, and the others are renamed (`name-2`). The two
 /// folders agents save in are there whether they exist or not, and the
 /// others when they exist.
@@ -128,7 +128,7 @@ pub(crate) fn folders_in(
 }
 
 /// The names the agent on `model` goes by, which a skill's `models` are
-/// matched against: its registry ID and its aliases, those with `cc:` in
+/// matched against, meaning its registry ID and its aliases, those with `cc:` in
 /// front in Claude Code, and on OpenRouter its `openrouter:` slug, with the
 /// ID and aliases of the model the slug is in
 /// [`OPENROUTER_EQUIVALENTS`](crate::providers::OPENROUTER_EQUIVALENTS) for
@@ -173,7 +173,7 @@ fn embedded(builtin: &BuiltinSkills) -> Vec<EmbeddedSkill> {
 }
 
 /// The skills of `folders` and the built-in skills `builtin` gives, for no
-/// agent in particular (every skill listed); `None` without skill folders or
+/// agent in particular (every skill listed), and `None` without skill folders or
 /// built-in skills. A folder that isn't there has no skills, without a
 /// warning, so one made later is read.
 pub fn config(folders: &[PathBuf], builtin: &BuiltinSkills) -> Option<SkillsConfig> {
@@ -197,7 +197,7 @@ pub fn config(folders: &[PathBuf], builtin: &BuiltinSkills) -> Option<SkillsConf
     })
 }
 
-/// [`config`] for an agent on `model` (a model as a session saves it): the
+/// [`config`] for an agent on `model` (a model as a session saves it), meaning the
 /// main agent's or, with `worker`, a worker's, which leaves out the skills
 /// marked `workers: false`. Its skill list holds the skills for its model
 /// ([`model_names`]). `load_skill` is offered even without a skill to load,
@@ -218,7 +218,7 @@ pub fn agent_config(
 }
 
 /// The skill files and folders in `folders` now, then the built-in skills
-/// `builtin` gives, each with what loading makes of it: the name the agents
+/// `builtin` gives, each with what loading makes of it, meaning the name the agents
 /// load it under, or why it is skipped. Read as `list` reads them, by the
 /// same code.
 pub fn scan(
@@ -232,7 +232,7 @@ pub fn scan(
     }
 }
 
-/// The skills in `folders` now and the built-in skills `builtin` gives:
+/// The skills in `folders` now and the built-in skills `builtin` gives, meaning
 /// those loaded on demand, and those always in the instructions.
 #[cfg(test)]
 pub fn list(
@@ -297,7 +297,7 @@ mod tests {
             folders_in(None, &root, Some(&home)),
             [root.join("skills"), home.join(".claude/skills")]
         );
-        // The home directory as the working directory: each folder once.
+        // The home directory as the working directory, with each folder once.
         assert_eq!(
             folders_in(Some(&home), &root, Some(&home)),
             [
@@ -336,7 +336,7 @@ mod tests {
         model_names(&providers::resolve_model(name).unwrap())
     }
 
-    /// A model's names: its ID and alias through the API, those and their
+    /// A model's names, meaning its ID and alias through the API, those and their
     /// `cc:` forms in Claude Code, and on OpenRouter its slug, with the ID
     /// and alias for a tabled slug, also with a routing suffix.
     #[test]
@@ -414,7 +414,7 @@ mod tests {
             assert!(lists(&["haiku"], &model), "{model}");
             assert!(lists(&["claude-haiku-*"], &model), "{model}");
         }
-        // The kinds of the table in DESIGN: a family by its pattern, and
+        // The kinds of the table in DESIGN, meaning a family by its pattern, and
         // Claude Code only by a cc: pattern.
         assert!(lists(&["gpt-6*"], "luna"));
         assert!(lists(&["gpt-6*"], "openrouter:openai/gpt-6.1-terra"));

@@ -309,8 +309,8 @@ fn a_profile_says_its_mode_cache_and_nesting() {
     );
 }
 
-/// The tray's words: its heading, and the approve button by how many are
-/// selected.
+/// The tray's words (its heading, and the approve button by how many are
+/// selected).
 #[test]
 fn the_buttons_count_the_selection() {
     assert_eq!(approvals_heading(1), "1 approval");
@@ -425,7 +425,7 @@ fn requests_and_answers_cross_the_wire() {
     );
 }
 
-/// No one to answer (`-p`, no terminal): nothing waits, and the answer is
+/// No one to answer (`-p`, no terminal), nothing waits, and the answer is
 /// that none came.
 #[tokio::test]
 async fn no_one_to_answer_asks_nothing() {
@@ -498,7 +498,7 @@ async fn a_request_waits_for_its_answer() {
     assert!(feed.approvals().is_empty());
 }
 
-/// `/approve` and `/reject` at the line prompt: numbers pick the requests
+/// `/approve` and `/reject` at the line prompt, where numbers pick the requests
 /// to approve (`+` turns the option on), and the words after go with the
 /// answer.
 #[test]

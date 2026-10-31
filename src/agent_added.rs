@@ -1,4 +1,4 @@
-//! The record of what agents added: the skills an agent saved and the MCP
+//! The record of what agents added, the skills an agent saved and the MCP
 //! servers it added, in `agent-added.json` in Arko's folder.
 //!
 //! The record lives in Arko's folder rather than in the skill or the
@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 /// The record's file, in Arko's folder.
 pub const FILE: &str = "agent-added.json";
 
-/// Where an agent added something: this project, or every project.
+/// Where an agent added something, in this project or in every project.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
@@ -76,7 +76,7 @@ pub fn file_id(path: &Path) -> Option<FileId> {
 }
 
 impl SkillRecord {
-    /// Whether it is the record of the skill in the folder `path`: the
+    /// Whether it is the record of the skill in the folder `path`, which holds when the
     /// folder's real path is its path, and the folder is the one the agent
     /// saved, by its identity (a record without one goes by the path). A
     /// folder put in its place, such as the user's skill of that name, isn't.
@@ -109,7 +109,7 @@ pub struct SkillRecord {
 }
 
 impl ServerRecord {
-    /// Whether its entry is in the file at `file`: the file's real path is
+    /// Whether its entry is in the file at `file`, which holds when the file's real path is
     /// its file, and the folder that really holds it is the one the add
     /// wrote in, by its identity (a record without one goes by the path). A
     /// folder moved into the place, such as another project's `.arko`,
@@ -239,7 +239,7 @@ fn lock_record(root: &Path) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
-/// `path` as it really is: absolute, without `.` and `..`, and with every
+/// `path` as it really is, meaning absolute, without `.` and `..`, and with every
 /// link on the way resolved, as far as it exists. A record holds a skill's
 /// folder by it.
 pub fn real_path(path: &Path) -> PathBuf {

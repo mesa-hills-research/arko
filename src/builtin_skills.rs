@@ -1,4 +1,4 @@
-//! The skills built into Arko: general advice on writing, held in the
+//! The skills built into Arko, general advice on writing, held in the
 //! program so no file is needed. They are listed with the skills of the
 //! skill folders, a skill of the same name in those folders replaces one, and
 //! `ARKO_BUILTIN_SKILLS`, `ARKO_BUILTIN_SKILLS_OFF`, their flags and
@@ -67,7 +67,7 @@ impl Builtin {
         folded.join(" ")
     }
 
-    /// The `SKILL.md` the agents' skill system loads: `text`, with
+    /// The `SKILL.md` the agents' skill system loads, which is `text` with
     /// `auto_load: true` in its front matter when the skill is pre-loaded.
     pub fn skill_md(&self) -> std::borrow::Cow<'static, str> {
         // The front matter closes at the first line of three dashes after
@@ -104,7 +104,7 @@ pub(crate) fn find(name: &str) -> Option<&'static Builtin> {
     BUILTIN.iter().find(|skill| skill.name == name)
 }
 
-/// Which built-in skills a session gives its agents: all but those turned
+/// Which built-in skills a session gives its agents, meaning all but those turned
 /// off. It is a session setting, kept with the session.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BuiltinSkills {
@@ -170,7 +170,7 @@ impl BuiltinSkills {
 
 impl Harness {
     /// `/builtin-skills`, typed at the prompt, sent from the page or chosen
-    /// in the settings: says which built-in skills the agents get, or with
+    /// in the settings, it says which built-in skills the agents get, or with
     /// `on` or `off` (all of them) or a name and `on` or `off` (one) changes
     /// that. Before the conversation starts the agents are built again.
     /// After it the running workflow gives the main agent and the workers

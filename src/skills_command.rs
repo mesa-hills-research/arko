@@ -10,7 +10,7 @@ use crate::details::SkillFacts;
 use crate::remote::Level;
 use crate::skill_install;
 
-/// What `/skills` adds to a skill's place: who saved it, the models it is
+/// What `/skills` adds to a skill's place, meaning who saved it, the models it is
 /// listed for, and that only the main agent gets it, as in
 /// ", added by the agent 28 Oct, for haiku, main agent only".
 pub(crate) fn place_notes(skill: &SkillFacts) -> String {
@@ -70,7 +70,7 @@ impl Harness {
         })
     }
 
-    /// `/skills` with `argument`: `remove NAME`, or a skill's name.
+    /// `/skills` with `argument`, which is `remove NAME`, or a skill's name.
     pub(crate) fn skills_command(&self, argument: &str) {
         let words: Vec<&str> = argument.split_whitespace().collect();
         let lines = match words.as_slice() {
@@ -108,7 +108,7 @@ impl Harness {
         }
     }
 
-    /// `/skills NAME`'s lines: the skill's name, description and place, who
+    /// `/skills NAME`'s lines, meaning the skill's name, description and place, who
     /// saved it and why, who gets it, its models and its files.
     fn skill_lines(&self, name: &str) -> Vec<String> {
         let out = &self.output;
@@ -183,7 +183,7 @@ impl Harness {
     }
 }
 
-/// A skill's files, `SKILL.md` first with its length: "SKILL.md (3,210
+/// A skill's files, `SKILL.md` first with its length, as "SKILL.md (3,210
 /// characters), checklist.md, scripts/release.sh". A skill that is a file
 /// (a `.md`, or a bundle) is that file.
 fn files_line(path: &Path) -> String {
