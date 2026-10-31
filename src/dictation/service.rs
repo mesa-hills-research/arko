@@ -12,14 +12,15 @@ use std::time::{Duration, Instant};
 
 use speech::model::ModelType;
 use speech::stream::{Event, StreamConfig, Streamer};
-use speech::{Model, Options};
+use speech::{Model, Options, SpecialWords};
 
 use super::capture::{self, Capture};
 use super::download;
 use super::models::{Family, SpeechModel};
 use super::settings::Settings;
 use super::{
-    DictationError, DictationEvent, DictationOptions, DictationUpdate, Preparing, Sink, Source,
+    DictationError, DictationEvent, DictationOptions, DictationUpdate, Preparing, SessionWord,
+    Sink, Source,
 };
 
 /// Where models download from.
@@ -55,6 +56,8 @@ struct Job {
     intake: Arc<Intake>,
     sink: Sink,
     idle: Duration,
+    /// The words to favour, none when the settings turn them off.
+    special_words: Vec<SessionWord>,
 }
 
 enum Message {
@@ -170,6 +173,11 @@ impl DictationService {
             intake: intake.clone(),
             sink,
             idle: settings.idle(),
+            special_words: if settings.session_words {
+                options.special_words
+            } else {
+                Vec::new()
+            },
         };
         let dictation = Dictation {
             id,
@@ -371,7 +379,21 @@ fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
         return;
     }
     send(DictationEvent::Listening);
-    listen(&job.audio, &intake, model, &mut send);
+    let words = special_words(&job.special_words);
+    listen(&job.audio, &intake, model, &words, &mut send);
+}
+
+/// The words in Telmo's list, best first. Those it refuses are left out.
+fn special_words(words: &[SessionWord]) -> SpecialWords {
+    let mut list = SpecialWords::new();
+    for word in words {
+        let _ = if word.code {
+            list.add_code_word(&word.text)
+        } else {
+            list.add(&word.text)
+        };
+    }
+    list
 }
 
 /// When to look at the audio next: at the pass that's due, else after
@@ -384,11 +406,12 @@ fn wait_for(next_pass: Option<Instant>, now: Instant) -> Duration {
 }
 
 /// Takes the audio, running passes as Telmo's `Stream` does, until the
-/// dictation finishes, fails or is cancelled.
+/// dictation finishes, fails or is cancelled. The passes favour `words`.
 fn listen(
     audio: &mpsc::Receiver<Message>,
     intake: &Intake,
     model: Arc<Model>,
+    words: &SpecialWords,
     send: &mut dyn FnMut(DictationEvent),
 ) {
     let mut streamer: Option<Streamer> = None;
@@ -411,13 +434,15 @@ fn listen(
                 Ok(Message::Audio { samples, rate }) => {
                     intake.queued.fetch_sub(samples.len(), Ordering::SeqCst);
                     let streamer = streamer.get_or_insert_with(|| {
-                        Streamer::new(
+                        let mut streamer = Streamer::new(
                             model.clone(),
                             StreamConfig {
                                 input_rate: rate,
                                 ..StreamConfig::default()
                             },
-                        )
+                        );
+                        streamer.set_special_words(words);
+                        streamer
                     });
                     // (Only voice activity's events, which change no text.)
                     let events = streamer.push(&samples);

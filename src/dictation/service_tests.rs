@@ -63,7 +63,15 @@ fn an_agreed_download_that_fails_says_why() {
         let root = root_with(settings);
         let service = DictationService::downloading_from(root.path(), NO_SERVER);
         let (sink, updates) = sink();
-        let dictation = service.open(DictationOptions { download }, sink).unwrap();
+        let dictation = service
+            .open(
+                DictationOptions {
+                    download,
+                    ..DictationOptions::default()
+                },
+                sink,
+            )
+            .unwrap();
         let update = updates.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(update.id, dictation.id());
         assert_eq!(
@@ -77,7 +85,15 @@ fn an_agreed_download_that_fails_says_why() {
 fn one_dictation_at_a_time() {
     let root = root_with(r#"{"model": "granite"}"#);
     let service = DictationService::downloading_from(root.path(), NO_SERVER);
-    let open = || service.open(DictationOptions { download: true }, sink().0);
+    let open = || {
+        service.open(
+            DictationOptions {
+                download: true,
+                ..DictationOptions::default()
+            },
+            sink().0,
+        )
+    };
     let first = open().unwrap();
     assert!(matches!(open(), Err(DictationError::Busy)));
     let first_id = first.id();
@@ -216,12 +232,24 @@ fn a_cancelled_dictation_sends_nothing_more() {
     let service = DictationService::downloading_from(root.path(), &base);
     let (first_sink, first) = sink();
     service
-        .open(DictationOptions { download: true }, first_sink)
+        .open(
+            DictationOptions {
+                download: true,
+                ..DictationOptions::default()
+            },
+            first_sink,
+        )
         .unwrap()
         .cancel();
     let (second_sink, second) = sink();
     let next = service
-        .open(DictationOptions { download: true }, second_sink)
+        .open(
+            DictationOptions {
+                download: true,
+                ..DictationOptions::default()
+            },
+            second_sink,
+        )
         .unwrap();
     std::thread::sleep(Duration::from_millis(500));
     assert!(first.try_recv().is_err(), "the cancelled one spoke");
@@ -288,30 +316,130 @@ fn a_batch_of_the_engines_events_is_one_text_event() {
     assert_eq!(shown.take(vec![tentative(1, " Then")]), None);
 }
 
-/// A recording from a WAV file, through the service and Granite Speech's
-/// real pack: the model loads, the words come and settle, and `finish`
-/// ends it. A second recording finds the model loaded. It runs only with
-/// `ARKO_TEST_SPEECH_PACK` naming Granite's int8 pack and
-/// `ARKO_TEST_SPEECH_WAV` LibriSpeech's clip 260-123286-0018 (Telmo's
-/// tests have both).
 #[test]
-fn a_wav_file_is_dictated_end_to_end() {
+fn the_words_telmo_refuses_are_left_out() {
+    let word = |text: &str, code| SessionWord {
+        text: text.into(),
+        code,
+    };
+    let list = special_words(&[
+        word("DictationOptions", true),
+        // Two letters or digits are kept in code only.
+        word("r5", true),
+        word("ab", false),
+        word("Sol", false),
+        word("Sol", false),
+        word("日本語", true),
+        word("one two three four five six", false),
+        word("Cargo.toml", true),
+    ]);
+    assert_eq!(
+        list.words().collect::<Vec<_>>(),
+        ["DictationOptions", "r5", "Sol", "Cargo.toml"]
+    );
+}
+
+/// Arko's folder with `dictation.json` holding `settings` and Granite
+/// Speech's real pack, and the clip to dictate, when `ARKO_TEST_SPEECH_PACK`
+/// names Granite's int8 pack and `ARKO_TEST_SPEECH_WAV` LibriSpeech's clip
+/// 260-123286-0018 (Telmo's tests have both).
+fn granite_and_clip(settings: &str) -> Option<(tempfile::TempDir, Source)> {
     let (Some(pack), Some(wav)) = (
         std::env::var_os("ARKO_TEST_SPEECH_PACK"),
         std::env::var_os("ARKO_TEST_SPEECH_WAV"),
     ) else {
         eprintln!("skipped: ARKO_TEST_SPEECH_PACK and ARKO_TEST_SPEECH_WAV aren't set");
-        return;
+        return None;
     };
-    let root = root_with(r#"{"model": "granite"}"#);
+    let root = root_with(settings);
     let dir = GRANITE.dir(root.path());
     std::fs::create_dir_all(&dir).unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(&pack, GRANITE.pack(root.path())).unwrap();
     #[cfg(not(unix))]
     std::fs::copy(&pack, GRANITE.pack(root.path())).unwrap();
+    Some((root, Source::File(wav.into())))
+}
+
+/// The words settled when the clip is dictated through `service` with
+/// `options`.
+fn dictated(service: &DictationService, source: &Source, options: DictationOptions) -> String {
+    let (sink, updates) = sink();
+    let mut dictation = service.open(options, sink).unwrap();
+    let next = || {
+        updates
+            .recv_timeout(Duration::from_secs(60))
+            .expect("an event")
+            .event
+    };
+    loop {
+        match next() {
+            DictationEvent::Preparing(_) => {}
+            DictationEvent::Listening => break,
+            other => panic!("{other:?} before listening"),
+        }
+    }
+    let capture = dictation.record(source).unwrap();
+    let mut settled = String::new();
+    // The clip is 5.7 s, then silence ends the utterance.
+    while !settled.contains("length") {
+        match next() {
+            DictationEvent::Text { settled: words, .. } => settled.push_str(&words),
+            other => panic!("{other:?} while listening"),
+        }
+    }
+    drop(capture);
+    dictation.finish();
+    loop {
+        match next() {
+            DictationEvent::Text { settled: words, .. } => settled.push_str(&words),
+            DictationEvent::Done => return settled,
+            other => panic!("{other:?} while finishing"),
+        }
+    }
+}
+
+/// The session's words reach the streamer. Given the clip's "Hamburg" in
+/// another spelling, the words come out in it, and not once the settings
+/// turn session words off. It runs with the clip and the pack, as
+/// [`a_wav_file_is_dictated_end_to_end`] does.
+#[test]
+fn the_session_words_reach_the_streamer() {
+    let Some((root, source)) = granite_and_clip(r#"{"model": "granite"}"#) else {
+        return;
+    };
     let service = DictationService::downloading_from(root.path(), NO_SERVER);
-    let source = Source::File(wav.into());
+    let options = DictationOptions {
+        special_words: vec![SessionWord {
+            text: "Hamburgh".into(),
+            code: false,
+        }],
+        ..DictationOptions::default()
+    };
+    let text = dictated(&service, &source, options.clone());
+    assert!(text.contains("Hamburgh"), "{text:?}");
+    std::fs::write(
+        root.path().join(super::super::settings::FILE),
+        r#"{"model": "granite", "session_words": false}"#,
+    )
+    .unwrap();
+    let text = dictated(&service, &source, options);
+    assert!(
+        text.contains("Hamburg") && !text.contains("Hamburgh"),
+        "{text:?}"
+    );
+}
+
+/// A recording from a WAV file, through the service and Granite Speech's
+/// real pack: the model loads, the words come and settle, and `finish`
+/// ends it. A second recording finds the model loaded. It runs only with
+/// the pack and the clip ([`granite_and_clip`]).
+#[test]
+fn a_wav_file_is_dictated_end_to_end() {
+    let Some((root, source)) = granite_and_clip(r#"{"model": "granite"}"#) else {
+        return;
+    };
+    let service = DictationService::downloading_from(root.path(), NO_SERVER);
 
     let record = |expect_loading: bool| {
         let (sink, updates) = sink();

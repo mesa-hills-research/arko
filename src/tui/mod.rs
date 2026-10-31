@@ -72,6 +72,8 @@ const FRAME: Duration = Duration::from_millis(33);
 /// What the view needs of the session.
 pub struct Setup {
     pub feed: remote::Feed,
+    /// The session's details, for the words dictation favours.
+    pub details: Arc<crate::details::Details>,
     pub meter: Arc<dyn remote::Meter>,
     /// Where the user's input goes: the session reads it as the terminal's.
     pub input: mpsc::UnboundedSender<Input>,
@@ -129,6 +131,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
                 setup.input.clone(),
                 Some(setup.keys.clone()),
                 Some(setup.feed.clone()),
+                Some(setup.details.clone()),
             ) {
                 output.attach(printer);
             }
@@ -619,7 +622,11 @@ fn carry_out(
     match dictate {
         dictation::Dictate::Open { download } => {
             let sink = recording_sink(events.clone());
-            match DictationService::shared(&setup.root).open(DictationOptions { download }, sink) {
+            let options = DictationOptions {
+                download,
+                special_words: crate::dictation::session_words(&setup.feed, &setup.details),
+            };
+            match DictationService::shared(&setup.root).open(options, sink) {
                 Ok(dictation) => {
                     app.dictation_opened(dictation.id());
                     *open = Some(dictation);

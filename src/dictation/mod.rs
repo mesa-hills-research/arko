@@ -14,6 +14,7 @@
 //! stored.
 
 pub mod models;
+pub mod session_words;
 pub mod settings;
 
 #[cfg(feature = "dictation")]
@@ -34,6 +35,7 @@ pub use models::SpeechModel;
 pub use no_engine::{Capture, Dictation, DictationService};
 #[cfg(feature = "dictation")]
 pub use service::{Dictation, DictationService};
+pub use session_words::{SessionWord, session_words};
 
 /// What a dictation reports, in order: preparing steps, `Listening`, text as
 /// it's recognized, then `Done` (or `Failed` at any point).
@@ -91,12 +93,15 @@ pub struct DictationUpdate {
 pub type Sink = Box<dyn FnMut(DictationUpdate) + Send>;
 
 /// What [`DictationService::open`] needs to know.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DictationOptions {
     /// The user agreed to download the model now, if it's missing. Without
     /// it a missing model is [`DictationError::NeedsDownload`], unless the
     /// settings download it without asking.
     pub download: bool,
+    /// The words to favour, best first, the session's from
+    /// [`session_words()`]. The settings can turn them off.
+    pub special_words: Vec<SessionWord>,
 }
 
 /// Why a dictation couldn't start.

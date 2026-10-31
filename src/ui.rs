@@ -362,15 +362,17 @@ pub fn stop_reading() {
 /// above it; without one, lines are read from standard input as they come.
 /// `/keys add PROVIDER` is read here, with the key's input hidden, and
 /// added to `keys`: neither reaches the session as a line. So is
-/// `/dictate`, whose words then wait at the prompt. While the session's
-/// `feed` says the old model writes its report for a switch, a message
-/// stays in the box. `root` is Arko's folder, which keeps the history.
+/// `/dictate`, whose words then wait at the prompt, favouring the words of
+/// the session `feed` and `details` describe. While the session's `feed`
+/// says the old model writes its report for a switch, a message stays in
+/// the box. `root` is Arko's folder, which keeps the history.
 #[cfg(feature = "tui")]
 pub fn spawn_input(
     root: PathBuf,
     sender: mpsc::UnboundedSender<Input>,
     keys: Option<Arc<crate::keys::Keys>>,
     feed: Option<crate::remote::Feed>,
+    details: Option<Arc<crate::details::Details>>,
 ) -> Option<Box<dyn Printer>> {
     let history = root.join("history.txt");
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
@@ -421,7 +423,13 @@ pub fn spawn_input(
                             continue;
                         }
                         if line.trim() == "/dictate" {
-                            kept = dictate_at_prompt(&root);
+                            let words = match (&feed, &details) {
+                                (Some(feed), Some(details)) => {
+                                    crate::dictation::session_words(feed, details)
+                                }
+                                _ => Vec::new(),
+                            };
+                            kept = dictate_at_prompt(&root, words);
                             continue;
                         }
                         // While the old model writes its report for a
@@ -462,9 +470,12 @@ pub fn spawn_input(
 
 /// `/dictate` at the line prompt: records until Enter, printing the words
 /// as they settle, and returns them to edit at the prompt. A missing model
-/// is asked about first.
+/// is asked about first. The recording favours `special_words`.
 #[cfg(feature = "tui")]
-fn dictate_at_prompt(root: &std::path::Path) -> Option<String> {
+fn dictate_at_prompt(
+    root: &std::path::Path,
+    special_words: Vec<crate::dictation::SessionWord>,
+) -> Option<String> {
     use crate::dictation::{
         self, DictationError, DictationEvent, DictationOptions, DictationService, Sink, Source,
     };
@@ -478,7 +489,11 @@ fn dictate_at_prompt(root: &std::path::Path) -> Option<String> {
         let sink: Sink = Box::new(move |update| {
             let _ = sender.send(Heard::Update(update));
         });
-        DictationService::shared(root).open(DictationOptions { download }, sink)
+        let options = DictationOptions {
+            download,
+            special_words: special_words.clone(),
+        };
+        DictationService::shared(root).open(options, sink)
     };
     let mut stdout = std::io::stdout();
     let opened = match open(false) {

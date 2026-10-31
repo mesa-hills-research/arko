@@ -684,6 +684,15 @@ impl Details {
         })
     }
 
+    /// The worker profiles the agents have, as `/profiles` lists them.
+    pub fn profiles(&self) -> crate::profiles::Profiles {
+        crate::profiles::list(
+            &crate::profiles::Roots::new(&self.root)
+                .workspace(self.session().workspace)
+                .session(&self.session_dir),
+        )
+    }
+
     /// The search indexes of the session's workspace, by name, as the
     /// banner lists them. A chat has none, and neither does a session whose
     /// indexes couldn't be opened.
