@@ -253,6 +253,12 @@ impl Page {
     }
 }
 
+/// The feed the store's items are of, which what the page keeps of a
+/// session belongs to.
+pub fn feed() -> Option<u64> {
+    STORE.with(|store| store.borrow().feed)
+}
+
 /// The signals of the item `id`, while it's kept.
 pub fn cell(id: u64) -> Option<Cell> {
     CELLS.with(|cells| cells.borrow().get(&id).cloned())

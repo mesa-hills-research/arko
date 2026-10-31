@@ -17,10 +17,23 @@ use crate::slash::{self, Menu};
 const CHOICES_FRESH: f64 = 10_000.0;
 
 thread_local! {
+    /// The words an argument may be, and when they came, by what was asked
+    /// of which feed (another Arko has other workers).
     static CHOICES: std::cell::RefCell<HashMap<String, (Option<Vec<String>>, f64)>> = std::cell::RefCell::new(HashMap::new());
-    /// What to know of the words that came, by word (how a model billed per
-    /// token is billed).
-    static NOTES: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::new());
+    /// What to know of the words that came, by feed and word (how a model
+    /// billed per token is billed).
+    static NOTES: std::cell::RefCell<HashMap<(Option<u64>, String), String>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// What the page knows of `word`, from the feed `feed`'s choices.
+fn note_of(feed: Option<u64>, word: &str) -> String {
+    NOTES.with(|notes| {
+        notes
+            .borrow()
+            .get(&(feed, word.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    })
 }
 
 /// A message as it was sent: its text, and the worker whose view it was
@@ -163,7 +176,7 @@ pub fn Composer() -> impl IntoView {
                 &commands,
                 &value,
                 &mut |name, before, typed| choices_of(name, before, typed, choices_came),
-                &|word| NOTES.with(|notes| notes.borrow().get(word).cloned().unwrap_or_default()),
+                &|word| note_of(crate::app::feed(), word),
             );
         }
         if !value.starts_with('/') {
@@ -463,6 +476,13 @@ pub fn Composer() -> impl IntoView {
     }
 }
 
+/// What the words an argument of `name` may be after `before` (and `typed`,
+/// for a list completed from the start typed) are kept by, for the feed
+/// they're asked of.
+fn choices_key(feed: Option<u64>, name: &str, before: &[String], typed: Option<&str>) -> String {
+    serde_json::json!([feed, name, before, typed]).to_string()
+}
+
 /// The words an argument may be after `before`, asked of Arko and kept a
 /// while, or none while they're on their way.
 fn choices_of(
@@ -473,11 +493,8 @@ fn choices_of(
 ) -> Option<Vec<String>> {
     // An OpenRouter model is completed from its list, for the start typed.
     let openrouter = name == "/model" && typed.to_lowercase().starts_with("openrouter:");
-    let key = if openrouter {
-        serde_json::json!([name, before, typed]).to_string()
-    } else {
-        serde_json::json!([name, before]).to_string()
-    };
+    let feed = crate::app::feed();
+    let key = choices_key(feed, name, before, openrouter.then_some(typed));
     let now = js_sys::Date::now();
     let hit = CHOICES.with(|choices| choices.borrow().get(&key).cloned());
     if let Some((words, at)) = &hit
@@ -508,7 +525,15 @@ fn choices_of(
         let answer = get_json::<Answer>("/api/choices", Some(body)).await;
         let words = answer
             .map(|answer| {
-                NOTES.with(|notes| notes.borrow_mut().extend(answer.notes));
+                NOTES.with(|notes| {
+                    let notes = &mut *notes.borrow_mut();
+                    notes.extend(
+                        answer
+                            .notes
+                            .into_iter()
+                            .map(|(word, note)| ((feed, word), note)),
+                    );
+                });
                 answer.choices
             })
             .unwrap_or_default();
@@ -585,6 +610,26 @@ fn fit(area: &HtmlTextAreaElement, tall: RwSignal<bool>, expanded: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The words an argument may be, and what's known of them, are another
+    /// feed's for an Arko started again, whose r1 is another worker.
+    #[test]
+    fn choices_and_their_notes_are_each_feeds_own() {
+        let before = ["r1".to_string()];
+        let key = |feed| choices_key(feed, "/message", &before, None);
+        assert_eq!(key(Some(1)), key(Some(1)));
+        assert_ne!(key(Some(1)), key(Some(2)));
+        assert_ne!(
+            choices_key(Some(1), "/model", &[], Some("openrouter:a")),
+            choices_key(Some(1), "/model", &[], Some("openrouter:b"))
+        );
+        NOTES.with(|notes| {
+            let notes = &mut *notes.borrow_mut();
+            notes.insert((Some(1), "gpt".into()), "billed per token".into());
+        });
+        assert_eq!(note_of(Some(1), "gpt"), "billed per token");
+        assert_eq!(note_of(Some(2), "gpt"), "");
+    }
 
     fn draft(text: &str, to: Option<&str>) -> Draft {
         Draft {

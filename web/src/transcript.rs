@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use leptos::prelude::*;
 use lucide_leptos::{ArrowDown, ChevronRight};
 
-use crate::app::{Page, RowCell, STORE, cell, page, post, track_worker};
+use crate::app::{Page, RowCell, STORE, cell, feed, page, post, track_worker};
 use crate::copy::CopyButton;
 use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
@@ -584,11 +584,6 @@ thread_local! {
     /// feed it's a place among the rows of.
     static MAIN_PLACE: std::cell::Cell<Option<(Option<u64>, (u64, f64))>> =
         const { std::cell::Cell::new(None) };
-}
-
-/// The feed the store's items are of.
-fn feed() -> Option<u64> {
-    STORE.with(|store| store.borrow().feed)
 }
 
 /// Where the reader was in the main transcript of `feed`, taken to go back

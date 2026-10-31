@@ -10,7 +10,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
 use crate::app::{
-    Posted, STORE, Sheet, get_json, local_get, local_set, on_item, page, send as send_to_arko,
+    Posted, STORE, Sheet, feed, get_json, local_get, local_set, on_item, page, send as send_to_arko,
 };
 use crate::composer::gloo_wait;
 use crate::layout::View;
@@ -115,18 +115,20 @@ thread_local! {
 const ANSWER_WAIT_MS: i32 = 3000;
 
 /// What the settings show meanwhile: the setting's key and the value it's
-/// turning to.
+/// turning to. And what Arko said of a setting's command, by the feed it
+/// was said in and the setting.
 #[derive(Clone, Copy)]
 struct Settings {
     shows: RwSignal<Option<(&'static str, String)>>,
-    notes: RwSignal<HashMap<&'static str, (String, bool)>>,
+    notes: RwSignal<HashMap<(Option<u64>, &'static str), (String, bool)>>,
 }
 
 impl Settings {
     fn note(&self, key: &'static str, text: String, error: bool) {
+        let key = (feed(), key);
         self.notes.update(|notes| {
             if text.is_empty() {
-                notes.remove(key);
+                notes.remove(&key);
             } else {
                 notes.insert(key, (text, error));
             }
@@ -342,7 +344,7 @@ fn Note(key: &'static str) -> impl IntoView {
     move || {
         settings
             .notes
-            .with(|notes| notes.get(key).cloned())
+            .with(|notes| notes.get(&(feed(), key)).cloned())
             .map(|(text, error)| {
                 view! {
                     <p class="note" class:error=error>{text}</p>
@@ -455,7 +457,12 @@ pub fn SettingsSheet() -> impl IntoView {
     });
     view! {
         <Dialog which=Sheet::Settings title="Settings">
-            <SettingsBody />
+            // Drawn again for another feed (Arko started again), without the
+            // last one's links and questions. The theme and the view stay.
+            {move || {
+                page.feeds.track();
+                view! { <SettingsBody /> }
+            }}
         </Dialog>
     }
 }
@@ -475,7 +482,8 @@ fn SettingsBody() -> impl IntoView {
     let whose = RwSignal::new(String::new());
     let links = RwSignal::new(None::<Vec<LinkData>>);
     spawn_local(async move {
-        links.set(get_json::<Vec<LinkData>>("/api/links", None).await);
+        // (The sheet may be gone by then.)
+        links.try_set(get_json::<Vec<LinkData>>("/api/links", None).await);
     });
     let cc = move || {
         page.status.with(|status| {
