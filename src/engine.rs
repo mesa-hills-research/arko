@@ -5499,4 +5499,47 @@ note("stop")
 
     include!("cache_tests.rs");
     include!("mcp_engine_tests.rs");
+
+    /// What an app sends with `Seam::send` comes back as its verdict: a
+    /// message as the turn it starts, a command that doesn't exist as
+    /// refused, and a quit as read. Once the session closed, a send is
+    /// refused as closed.
+    #[tokio::test]
+    async fn an_apps_sends_get_their_verdicts_until_the_session_closes() {
+        use crate::{RefusalKind, Verdict};
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        let wait = |verdict: oneshot::Receiver<Verdict>| async move {
+            tokio::time::timeout(Duration::from_secs(30), verdict)
+                .await
+                .expect("a verdict in time")
+                .expect("a verdict")
+        };
+        let started = wait(seam.send(Input::Message(app_message("Count the pears.")))).await;
+        assert!(
+            matches!(
+                started,
+                Verdict::Accepted {
+                    delivery: crate::remote::Delivery::Turn,
+                    item: Some(_),
+                    ..
+                }
+            ),
+            "{started:?}"
+        );
+        answered(&seam, &bodies, 1).await;
+        let refused = wait(seam.send(Input::Message(app_message("/nosuch")))).await;
+        assert!(
+            matches!(&refused, Verdict::Refused(refusal) if refusal.kind == RefusalKind::UnknownCommand),
+            "{refused:?}"
+        );
+        let quit = wait(seam.send(Input::Quit(Some(Vec::new())))).await;
+        assert!(matches!(quit, Verdict::Accepted { .. }), "{quit:?}");
+        let end = tokio::time::timeout(Duration::from_secs(30), ended).await;
+        assert_eq!(end.unwrap().unwrap(), RunEnd::Quit);
+        let late = wait(seam.send(Input::Message(app_message("Late.")))).await;
+        assert_eq!(late, Verdict::closed());
+    }
 }

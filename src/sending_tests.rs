@@ -627,3 +627,210 @@ async fn refusals_read_as_before_without_a_verdict_and_as_kinds_with_one() {
         assert_eq!(notices(&harness).len(), before, "{what} left no notice");
     }
 }
+
+/// Posts `body` to the page's `path`, as the page does, and gives the
+/// session's verdict.
+async fn post_verdict(
+    http: &reqwest::Client,
+    base: &str,
+    cookie: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> Verdict {
+    let response = http
+        .post(format!("{base}{path}"))
+        .header("cookie", cookie)
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{path} {body}");
+    response.json().await.unwrap()
+}
+
+/// The web page's sends get the session's own verdicts: a message as the
+/// turn it starts, and refusals for a command that doesn't exist (also one
+/// mistyped in a worker's view), a message to a worker that isn't there,
+/// answers to questions and approvals that aren't open, and a send from a
+/// page of another feed.
+#[tokio::test]
+async fn the_web_pages_sends_get_the_sessions_verdicts() {
+    let server = ModelServer::start(Arc::new(|_, _| {
+        Box::pin(async { complete("1", "Done.") })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let (http, base, cookie) = web(&mut harness).await;
+    let feed = harness.feed.clone();
+    let client = async move {
+        let started = post_verdict(
+            &http,
+            &base,
+            &cookie,
+            "/api/message",
+            serde_json::json!({"text": "Count the pears."}),
+        )
+        .await;
+        let (delivery, item) = accepted(&started).expect("accepted");
+        assert_eq!(delivery, Delivery::Turn);
+        assert_eq!(feed.main_item(item.unwrap()).unwrap().text, "Count the pears.");
+        until(|| !feed.activity().working).await;
+        for (path, body, kind) in [
+            ("/api/message", serde_json::json!({"text": "/nosuch"}), RefusalKind::UnknownCommand),
+            (
+                "/api/message",
+                serde_json::json!({"text": "/sesion", "to": "r1"}),
+                RefusalKind::UnknownCommand,
+            ),
+            (
+                "/api/message",
+                serde_json::json!({"text": "/message r9 Check it."}),
+                RefusalKind::Undelivered,
+            ),
+            (
+                "/api/answer",
+                serde_json::json!({"question": 999, "text": "Tabs."}),
+                RefusalKind::NotOpen,
+            ),
+            (
+                "/api/questions/dismiss",
+                serde_json::json!({"ids": ["q9"]}),
+                RefusalKind::NotOpen,
+            ),
+            (
+                "/api/questions/answer",
+                serde_json::json!({"answers": [{"id": "q9", "text": "Main."}]}),
+                RefusalKind::NotOpen,
+            ),
+            (
+                "/api/approvals",
+                serde_json::json!({"choices": [{"id": "a9", "approve": true}]}),
+                RefusalKind::NotOpen,
+            ),
+            (
+                "/api/message",
+                serde_json::json!({"text": "Hello.", "feed": "0000000000000001"}),
+                RefusalKind::Stale,
+            ),
+        ] {
+            let verdict = post_verdict(&http, &base, &cookie, path, body.clone()).await;
+            assert_eq!(refused(&verdict), Some(&kind), "{path} {body}: {verdict:?}");
+        }
+        sender.send(Input::Eof).unwrap();
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    harness.stop_remote().await;
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A model whose first request with `held` in it waits for `gate`, and
+/// which ends every turn with "Done.". `started` says the request came.
+async fn held_turn(held: &'static str, gate: Arc<Notify>, started: Arc<std::sync::atomic::AtomicBool>) -> ModelServer {
+    ModelServer::start(Arc::new(move |_, body: String| {
+        let (gate, started) = (gate.clone(), started.clone());
+        Box::pin(async move {
+            if body.contains(held) && !started.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                gate.notified().await;
+            }
+            complete("1", "Done.")
+        })
+    }))
+    .await
+}
+
+/// Without a terminal, a message while a turn runs waits for a turn of its
+/// own, and is accepted as queued, with its item.
+#[tokio::test]
+async fn a_message_queued_for_a_turn_of_its_own_is_accepted_as_queued() {
+    let gate = Arc::new(Notify::new());
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server = held_turn("Start the work.", gate.clone(), started.clone()).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), false);
+    let requests = wire(&mut inputs);
+    let feed = harness.feed.clone();
+    let client = async move {
+        assert!(accepted(&send(&requests, message("Start the work.")).await).is_some());
+        until(|| started.load(std::sync::atomic::Ordering::SeqCst)).await;
+        let queued = send(&requests, message("Then the docs.")).await;
+        let (delivery, item) = accepted(&queued).expect("accepted");
+        assert_eq!(delivery, Delivery::Queued);
+        assert_eq!(feed.main_item(item.unwrap()).unwrap().text, "Then the docs.");
+        gate.notify_one();
+        until(|| has(&feed, "user", "Then the docs.", "turn") || !feed.activity().working).await;
+        sender.send(Input::Eof).unwrap();
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// While a turn runs, a message that answers a question went as their note
+/// even when the board refuses the note and the images with it: the
+/// verdict says both wait.
+#[tokio::test]
+async fn a_note_and_its_images_the_board_refuses_are_said_in_the_verdict() {
+    let gate = Arc::new(Notify::new());
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server = held_turn("Start the work.", gate.clone(), started.clone()).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let requests = wire(&mut inputs);
+    let run = uuid::Uuid::new_v4();
+    harness.feed.questions_run(Some(run));
+    ask_later(&mut harness, run, "q1", "Tabs or spaces?");
+    harness.notes_refused = true;
+    let feed = harness.feed.clone();
+    let client = async move {
+        assert!(accepted(&send(&requests, message("Start the work.")).await).is_some());
+        until(|| started.load(std::sync::atomic::Ordering::SeqCst)).await;
+        let answer = Input::Message(ui::Message {
+            text: "Tabs, as in this picture.".into(),
+            answers: vec!["q1".into()],
+            images: vec![ui::Attachment {
+                bytes: Arc::from(&b"pixels"[..]),
+                mime: "image/png".into(),
+                name: None,
+            }],
+            ..Default::default()
+        });
+        let verdict = send(&requests, answer).await;
+        assert!(
+            matches!(
+                verdict,
+                Verdict::Accepted {
+                    delivery: Delivery::Note,
+                    item: Some(_),
+                    ..
+                }
+            ),
+            "{verdict:?}"
+        );
+        let words = partial_words(&verdict).expect("words");
+        assert!(
+            words.starts_with("Couldn't pass your answers on")
+                && words.contains("The images didn't go with it"),
+            "{words}"
+        );
+        gate.notify_one();
+        until(|| !feed.activity().working).await;
+        sender.send(Input::Eof).unwrap();
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
