@@ -17,21 +17,8 @@ use crate::protocol::{
     reject_label,
 };
 
-/// Edits to the message box, including the last one that emptied it.
-#[derive(Clone, Copy, Default)]
-pub struct MessageRevision {
-    changed: u64,
-    emptied: u64,
-}
-
-impl MessageRevision {
-    pub fn edited(&mut self, empty: bool) {
-        self.changed = self.changed.wrapping_add(1);
-        if empty {
-            self.emptied = self.changed;
-        }
-    }
-}
+pub use crate::protocol::MessageRevision;
+use crate::protocol::MessageSwitch;
 
 /// What the tray remembers of its rows, by request.
 #[derive(Clone, Copy)]
@@ -46,9 +33,7 @@ struct Rows {
     files: RwSignal<HashMap<String, usize>>,
     /// An answer is on its way.
     sending: RwSignal<bool>,
-    seen: StoredValue<HashSet<String>>,
-    message_revision: RwSignal<u64>,
-    message_choice: RwSignal<Option<(bool, u64)>>,
+    message: RwSignal<MessageSwitch>,
 }
 
 impl Rows {
@@ -59,35 +44,20 @@ impl Rows {
             open: RwSignal::new(HashSet::new()),
             files: RwSignal::new(HashMap::new()),
             sending: RwSignal::new(false),
-            seen: StoredValue::new(HashSet::new()),
-            message_revision: RwSignal::new(0),
-            message_choice: RwSignal::new(None),
+            message: RwSignal::new(MessageSwitch::default()),
         }
     }
 
     fn requests_changed(self, ids: &HashSet<String>, revision: MessageRevision) {
-        if self
-            .seen
-            .with_value(|seen| ids.iter().any(|id| !seen.contains(id)))
-        {
-            self.message_revision.set(revision.changed);
-            self.message_choice.set(None);
-        }
-        self.seen.set_value(ids.clone());
+        self.message.update(|message| message.requests(ids.clone(), revision));
     }
 
     fn includes_message(self, revision: MessageRevision) -> bool {
-        if let Some((include, emptied_at)) = self.message_choice.get()
-            && emptied_at == revision.emptied
-        {
-            return include;
-        }
-        self.message_revision.get() != revision.changed
+        self.message.with(|message| message.includes(revision))
     }
 
     fn flip_message(self, revision: MessageRevision) {
-        self.message_choice
-            .set(Some((!self.includes_message(revision), revision.emptied)));
+        self.message.update(|message| message.flip(revision));
     }
 
     fn answers(
@@ -496,56 +466,6 @@ mod tests {
                     assert!(!clears_message(true, &answers, " Reason ", "Another draft"));
                 }
             }
-        });
-    }
-
-    #[test]
-    fn a_manual_choice_survives_edits_until_the_box_empties() {
-        Owner::new().with(|| {
-            let rows = Rows::new();
-            let requests = requests(&["a1"]);
-            let mut revision = MessageRevision::default();
-            revision.edited(false);
-            follow(rows, &requests, revision);
-            revision.edited(false);
-            assert!(
-                rows.includes_message(revision),
-                "editing an older draft includes it"
-            );
-            rows.flip_message(revision);
-            revision.edited(false);
-            assert!(!rows.includes_message(revision), "the manual choice wins");
-            rows.flip_message(revision);
-            revision.edited(false);
-            assert!(rows.includes_message(revision));
-            rows.flip_message(revision);
-            revision.edited(true);
-            revision.edited(false);
-            assert!(
-                rows.includes_message(revision),
-                "an empty box resets the choice"
-            );
-        });
-    }
-
-    #[test]
-    fn only_new_requests_reset_the_switch() {
-        Owner::new().with(|| {
-            let rows = Rows::new();
-            let mut revision = MessageRevision::default();
-            follow(rows, &requests(&["a1"]), revision);
-            revision.edited(false);
-            assert!(rows.includes_message(revision));
-            follow(rows, &requests(&["a1", "a2"]), revision);
-            assert!(!rows.includes_message(revision));
-            rows.flip_message(revision);
-            follow(rows, &requests(&["a1", "a2"]), revision);
-            assert!(rows.includes_message(revision));
-            follow(rows, &requests(&["a1"]), revision);
-            assert!(rows.includes_message(revision));
-            follow(rows, &[], revision);
-            follow(rows, &requests(&["a3"]), revision);
-            assert!(!rows.includes_message(revision));
         });
     }
 

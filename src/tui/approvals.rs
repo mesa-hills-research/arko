@@ -28,6 +28,7 @@ use crate::approvals::{
     ApprovalAnswers, ApprovalRequest, Look, approvals_heading, approve_label, reject_label,
 };
 use crate::glyphs;
+use crate::remote::protocol::{MessageRevision, MessageSwitch};
 use crate::ui::Input;
 
 /// The rows of a box (a profile's instructions, a skill's SKILL.md) in
@@ -51,10 +52,7 @@ pub struct Tray {
     pub scroll: usize,
     /// The requests the bell rang for.
     pub rung: HashSet<String>,
-    /// The box's revision at the newest request.
-    message_revision: u64,
-    /// A manual choice, until a new request or an empty box.
-    message_choice: Option<(bool, u64)>,
+    pub(super) message: MessageSwitch,
 }
 
 impl App {
@@ -99,9 +97,8 @@ impl App {
         }
         if ids.iter().any(|id| !self.tray.rung.contains(id)) {
             self.panel.ring |= !self.focused;
-            self.tray.message_revision = self.editor.revision();
-            self.tray.message_choice = None;
         }
+        self.tray.message.requests(ids.clone(), self.message_revision());
         self.tray.rung = ids.clone();
         if ids.is_empty() {
             self.tray.focused = false;
@@ -180,8 +177,7 @@ impl App {
                 }
             }
             KeyCode::Char('m') if self.editor.has_text() => {
-                self.tray.message_choice =
-                    Some((!self.includes_message(), self.editor.emptied_at()));
+                self.tray.message.flip(self.message_revision());
             }
             KeyCode::PageDown => self.tray.scroll += BOX_ROWS / 2,
             KeyCode::PageUp => self.tray.scroll = self.tray.scroll.saturating_sub(BOX_ROWS / 2),
@@ -203,13 +199,12 @@ impl App {
         }
     }
 
+    fn message_revision(&self) -> MessageRevision {
+        MessageRevision { changed: self.editor.revision(), emptied: self.editor.emptied_at() }
+    }
+
     fn includes_message(&self) -> bool {
-        if let Some((include, emptied_at)) = self.tray.message_choice
-            && emptied_at == self.editor.emptied_at()
-        {
-            return include;
-        }
-        self.tray.message_revision != self.editor.revision()
+        self.tray.message.includes(self.message_revision())
     }
 
     /// Enter approves those selected, R rejects all. Included words leave
