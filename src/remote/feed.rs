@@ -1494,6 +1494,18 @@ impl Feed {
         (self.snapshot(&state), Batches { updates })
     }
 
+    /// Calls `read` with the main transcript's items (the user's, the main
+    /// agent's and Arko's), the newest first, then with the workers' items,
+    /// the newest first, until it returns false or none are left. The feed
+    /// is locked meanwhile, so `read` should be quick.
+    pub fn read_newest_main_first(&self, mut read: impl FnMut(&Item) -> bool) {
+        let state = self.lock();
+        let main = state.main.items.iter().rev();
+        let _ = main
+            .chain(state.workers_lane.items.iter().rev())
+            .all(&mut read);
+    }
+
     /// A number that tells this feed from any other, made at random as it
     /// is made. Each snapshot carries it ([`Snapshot::feed`]), so a client
     /// that connects again can tell whether it is the feed it had.
@@ -7101,5 +7113,28 @@ mod tests {
         let end = feed.subscribe().0;
         assert_eq!(end.seq, snapshot.seq + 1);
         assert_eq!(client.difference(&FeedMirror::new(&end)), None);
+    }
+
+    /// Reading the newest items goes back from the main transcript's latest,
+    /// then from the workers' latest, and stops when asked.
+    #[test]
+    fn the_newest_items_are_read_main_first_until_reading_stops() {
+        let feed = Feed::new("main");
+        feed.output("first");
+        feed.event(&event("worker", shell(Uuid::new_v4(), "ls")), Some("r1"));
+        feed.output("third");
+        let mut read = Vec::new();
+        feed.read_newest_main_first(|item| {
+            read.push(item.text.clone());
+            true
+        });
+        // (The worker's line in the main transcript, then its call.)
+        assert_eq!(read, ["third", "r1", "first", "$ ls"]);
+        let mut two = 0;
+        feed.read_newest_main_first(|_| {
+            two += 1;
+            two < 2
+        });
+        assert_eq!(two, 2);
     }
 }

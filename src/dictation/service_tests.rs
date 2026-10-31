@@ -288,30 +288,151 @@ fn a_batch_of_the_engines_events_is_one_text_event() {
     assert_eq!(shown.take(vec![tentative(1, " Then")]), None);
 }
 
-/// A recording from a WAV file, through the service and Granite Speech's
-/// real pack: the model loads, the words come and settle, and `finish`
-/// ends it. A second recording finds the model loaded. It runs only with
-/// `ARKO_TEST_SPEECH_PACK` naming Granite's int8 pack and
-/// `ARKO_TEST_SPEECH_WAV` LibriSpeech's clip 260-123286-0018 (Telmo's
-/// tests have both).
+/// Words given to a dictation go to it, and nowhere once it's cancelled.
 #[test]
-fn a_wav_file_is_dictated_end_to_end() {
+fn words_go_to_their_dictation_while_it_lasts() {
+    let (sender, received) = mpsc::channel();
+    let intake = Arc::new(Intake::default());
+    let words = || WordsSender {
+        sender: sender.clone(),
+        intake: intake.clone(),
+    };
+    let word = vec![SessionWord {
+        text: "Telmo".into(),
+        code: false,
+    }];
+    assert!(words().wanted());
+    words().send(word.clone());
+    assert!(matches!(received.try_recv(), Ok(Message::Words(given)) if given == word));
+    intake.cancelled.store(true, Ordering::SeqCst);
+    assert!(!words().wanted());
+    words().send(word);
+    assert!(received.try_recv().is_err());
+}
+
+#[test]
+fn the_words_telmo_refuses_are_left_out() {
+    let word = |text: &str, code| SessionWord {
+        text: text.into(),
+        code,
+    };
+    let list = special_words(&[
+        word("DictationOptions", true),
+        // Two letters or digits are kept in code only.
+        word("r5", true),
+        word("ab", false),
+        word("Sol", false),
+        word("Sol", false),
+        word("日本語", true),
+        word("one two three four five six", false),
+        word("Cargo.toml", true),
+    ]);
+    assert_eq!(
+        list.words().collect::<Vec<_>>(),
+        ["DictationOptions", "r5", "Sol", "Cargo.toml"]
+    );
+}
+
+/// Arko's folder with `dictation.json` holding `settings` and Granite
+/// Speech's real pack, and the clip to dictate, when `ARKO_TEST_SPEECH_PACK`
+/// names Granite's int8 pack and `ARKO_TEST_SPEECH_WAV` LibriSpeech's clip
+/// 260-123286-0018 (Telmo's tests have both).
+fn granite_and_clip(settings: &str) -> Option<(tempfile::TempDir, Source)> {
     let (Some(pack), Some(wav)) = (
         std::env::var_os("ARKO_TEST_SPEECH_PACK"),
         std::env::var_os("ARKO_TEST_SPEECH_WAV"),
     ) else {
         eprintln!("skipped: ARKO_TEST_SPEECH_PACK and ARKO_TEST_SPEECH_WAV aren't set");
-        return;
+        return None;
     };
-    let root = root_with(r#"{"model": "granite"}"#);
+    let root = root_with(settings);
     let dir = GRANITE.dir(root.path());
     std::fs::create_dir_all(&dir).unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(&pack, GRANITE.pack(root.path())).unwrap();
     #[cfg(not(unix))]
     std::fs::copy(&pack, GRANITE.pack(root.path())).unwrap();
+    Some((root, Source::File(wav.into())))
+}
+
+/// The words settled when the clip is dictated through `service`, given
+/// `words` to favour as a front end gives them, once the dictation opened.
+fn dictated(service: &DictationService, source: &Source, words: &[SessionWord]) -> String {
+    let (sink, updates) = sink();
+    let mut dictation = service.open(DictationOptions::default(), sink).unwrap();
+    dictation.words_sender().send(words.to_vec());
+    let next = || {
+        updates
+            .recv_timeout(Duration::from_secs(60))
+            .expect("an event")
+            .event
+    };
+    loop {
+        match next() {
+            DictationEvent::Preparing(_) => {}
+            DictationEvent::Listening => break,
+            other => panic!("{other:?} before listening"),
+        }
+    }
+    let capture = dictation.record(source).unwrap();
+    let mut settled = String::new();
+    // The clip is 5.7 s, then silence ends the utterance.
+    while !settled.contains("length") {
+        match next() {
+            DictationEvent::Text { settled: words, .. } => settled.push_str(&words),
+            other => panic!("{other:?} while listening"),
+        }
+    }
+    drop(capture);
+    dictation.finish();
+    loop {
+        match next() {
+            DictationEvent::Text { settled: words, .. } => settled.push_str(&words),
+            DictationEvent::Done => return settled,
+            other => panic!("{other:?} while finishing"),
+        }
+    }
+}
+
+/// The session's words reach the streamer. Given the clip's "Hamburg" in
+/// another spelling, the words come out in it, and not once the settings
+/// turn session words off, which the service checks whatever a front end
+/// sends. It runs with the clip and the pack, as
+/// [`a_wav_file_is_dictated_end_to_end`] does.
+#[test]
+fn the_session_words_reach_the_streamer() {
+    let Some((root, source)) = granite_and_clip(r#"{"model": "granite"}"#) else {
+        return;
+    };
     let service = DictationService::downloading_from(root.path(), NO_SERVER);
-    let source = Source::File(wav.into());
+    let words = [SessionWord {
+        text: "Hamburgh".into(),
+        code: false,
+    }];
+    let text = dictated(&service, &source, &words);
+    assert!(text.contains("Hamburgh"), "{text:?}");
+    std::fs::write(
+        root.path().join(super::super::settings::FILE),
+        r#"{"model": "granite", "session_words": false}"#,
+    )
+    .unwrap();
+    let text = dictated(&service, &source, &words);
+    assert!(
+        text.contains("Hamburg") && !text.contains("Hamburgh"),
+        "{text:?}"
+    );
+}
+
+/// A recording from a WAV file, through the service and Granite Speech's
+/// real pack: the model loads, the words come and settle, and `finish`
+/// ends it. A second recording finds the model loaded. It runs only with
+/// the pack and the clip ([`granite_and_clip`]).
+#[test]
+fn a_wav_file_is_dictated_end_to_end() {
+    let Some((root, source)) = granite_and_clip(r#"{"model": "granite"}"#) else {
+        return;
+    };
+    let service = DictationService::downloading_from(root.path(), NO_SERVER);
 
     let record = |expect_loading: bool| {
         let (sink, updates) = sink();

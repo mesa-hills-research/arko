@@ -23,6 +23,12 @@ pub struct Settings {
     pub idle_minutes: u64,
     /// `ask` before downloading a missing model, or `automatic`.
     pub download: String,
+    /// Favour the session's words, such as its names, identifiers and file
+    /// names ([`session_words`](super::session_words())).
+    pub session_words: bool,
+    /// Leave out of the session's words the values that context marks as
+    /// secret, such as what follows `PASSWORD=` or `--token`.
+    pub leave_out_secrets: bool,
 }
 
 impl Default for Settings {
@@ -32,6 +38,8 @@ impl Default for Settings {
             language: None,
             idle_minutes: 10,
             download: "ask".into(),
+            session_words: true,
+            leave_out_secrets: false,
         }
     }
 }
@@ -90,6 +98,12 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{"download": "automatic"}"#).unwrap();
         assert!(settings.downloads_without_asking());
         assert_eq!(settings.model, "automatic");
+        assert!(settings.session_words);
+        assert!(!settings.leave_out_secrets);
+        let settings: Settings =
+            serde_json::from_str(r#"{"session_words": false, "leave_out_secrets": true}"#).unwrap();
+        assert!(!settings.session_words);
+        assert!(settings.leave_out_secrets);
     }
 
     #[test]

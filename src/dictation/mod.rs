@@ -14,6 +14,7 @@
 //! stored.
 
 pub mod models;
+pub mod session_words;
 pub mod settings;
 
 #[cfg(feature = "dictation")]
@@ -34,6 +35,7 @@ pub use models::SpeechModel;
 pub use no_engine::{Capture, Dictation, DictationService};
 #[cfg(feature = "dictation")]
 pub use service::{Dictation, DictationService};
+pub use session_words::{SessionWord, favour_session_words, session_words};
 
 /// What a dictation reports, in order: preparing steps, `Listening`, text as
 /// it's recognized, then `Done` (or `Failed` at any point).

@@ -5,7 +5,7 @@ use std::convert::Infallible;
 use std::path::Path;
 
 use super::models::{GRANITE, SpeechModel};
-use super::{DictationError, DictationOptions, Sink, Source};
+use super::{DictationError, DictationOptions, SessionWord, Sink, Source};
 
 pub struct DictationService;
 
@@ -52,6 +52,23 @@ impl Dictation {
     }
 
     pub fn cancel(self) {
+        match self.0 {}
+    }
+
+    pub(crate) fn words_sender(&self) -> WordsSender {
+        match self.0 {}
+    }
+}
+
+/// Never made in this build.
+pub(crate) struct WordsSender(Infallible);
+
+impl WordsSender {
+    pub(crate) fn wanted(&self) -> bool {
+        match self.0 {}
+    }
+
+    pub(crate) fn send(self, _words: Vec<SessionWord>) {
         match self.0 {}
     }
 }
