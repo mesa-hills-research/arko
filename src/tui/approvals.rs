@@ -5,8 +5,9 @@
 //! to the message box. While it has them, ↑↓ move between the rows, Space
 //! selects one (all start selected), A selects all or none, V opens a row's
 //! details, O turns its option on, Enter approves those selected and rejects
-//! the others, and R rejects them all. Whatever the message box holds goes
-//! to the agent with the answer, and the box empties.
+//! the others, and R rejects them all. M flips Include message. It starts
+//! off for text begun before the newest request. When on, the words go with
+//! the answer and the box empties.
 
 use std::collections::HashSet;
 
@@ -50,6 +51,10 @@ pub struct Tray {
     pub scroll: usize,
     /// The requests the bell rang for.
     pub rung: HashSet<String>,
+    /// The box's revision at the newest request.
+    message_revision: u64,
+    /// A manual choice, until a new request or an empty box.
+    message_choice: Option<(bool, u64)>,
 }
 
 impl App {
@@ -94,6 +99,8 @@ impl App {
         }
         if ids.iter().any(|id| !self.tray.rung.contains(id)) {
             self.panel.ring |= !self.focused;
+            self.tray.message_revision = self.editor.revision();
+            self.tray.message_choice = None;
         }
         self.tray.rung = ids.clone();
         if ids.is_empty() {
@@ -172,6 +179,10 @@ impl App {
                     self.tray.options.insert(id);
                 }
             }
+            KeyCode::Char('m') if !self.editor.text().trim().is_empty() => {
+                self.tray.message_choice =
+                    Some((!self.includes_message(), self.editor.emptied_at()));
+            }
             KeyCode::PageDown => self.tray.scroll += BOX_ROWS / 2,
             KeyCode::PageUp => self.tray.scroll = self.tray.scroll.saturating_sub(BOX_ROWS / 2),
             KeyCode::Enter => self.answer_tray(true),
@@ -192,12 +203,23 @@ impl App {
         }
     }
 
-    /// Enter (`approve`: those selected are approved, the others rejected)
-    /// or R (all rejected). The message box's text goes with the answer,
-    /// and the box empties. When the session refuses it, the words come
-    /// back.
+    fn includes_message(&self) -> bool {
+        if let Some((include, emptied_at)) = self.tray.message_choice
+            && emptied_at == self.editor.emptied_at()
+        {
+            return include;
+        }
+        self.tray.message_revision != self.editor.revision()
+    }
+
+    /// Enter approves those selected, R rejects all. Included words leave
+    /// the box and come back if the session refuses the answer.
     fn answer_tray(&mut self, approve: bool) {
-        let words = self.editor.text();
+        let words = if self.includes_message() {
+            self.editor.text()
+        } else {
+            String::new()
+        };
         let requests = self.approvals().to_vec();
         let tray = &self.tray;
         let answers = ApprovalAnswers::of(
@@ -221,8 +243,8 @@ impl App {
 
 /// The tray's lines at `width`: its heading with the keys, a row for each
 /// request, and the details of the open one. Also the line the cursor's row
-/// is on.
-fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize) {
+/// is on, and how many heading lines stay in sight.
+fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize, usize) {
     let theme = &app.theme;
     let requests = app.approvals();
     let count = requests.len();
@@ -241,13 +263,16 @@ fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize) {
         .open
         .as_ref()
         .and_then(|id| requests.iter().find(|request| &request.id == id));
+    let has_message = !app.editor.text().trim().is_empty();
     let mut pairs: Vec<(&str, &str)> = Vec::new();
     if tray.focused {
         if count > 1 {
             pairs.extend([("Space", "select"), ("A", "all")]);
         }
-        pairs.push(("Enter", approve.as_str()));
-        pairs.push(("R", reject.as_str()));
+        if !has_message {
+            pairs.push(("Enter", approve.as_str()));
+            pairs.push(("R", reject.as_str()));
+        }
         pairs.push(("V", if open.is_some() { "close" } else { "view" }));
         if requests[cursor].approval.option().is_some() && open.is_some() {
             pairs.push(("O", "option"));
@@ -270,6 +295,25 @@ fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize) {
         first.append(&mut keys);
     }
     lines.push(Line::from(first));
+    if has_message {
+        let mark = if app.includes_message() { "[x]" } else { "[ ]" };
+        let label = format!("{mark} Include message");
+        let mut controls = vec![Span::raw(" ")];
+        if tray.focused {
+            controls.extend(hints(
+                theme,
+                &[("Enter", &approve), ("R", &reject), ("M", &label)],
+            ));
+        } else {
+            controls.push(Span::styled(label, theme.text()));
+        }
+        lines.extend(
+            wrap::wrap(&controls, width.max(1), 1)
+                .into_iter()
+                .map(Line::from),
+        );
+    }
+    let fixed = lines.len();
     // The rows.
     let names = requests
         .iter()
@@ -334,7 +378,7 @@ fn tray_lines(app: &App, width: usize) -> (Vec<Line<'static>>, usize) {
             lines.extend(detail_lines(app, request, width));
         }
     }
-    (lines, cursor_line)
+    (lines, cursor_line, fixed)
 }
 
 /// The details of `request`, under its row.
@@ -455,15 +499,17 @@ pub fn draw_tray(frame: &mut Frame, app: &mut App, above: Rect) -> u16 {
         return 0;
     }
     let width = above.width as usize;
-    let (lines, cursor_line) = tray_lines(app, width.saturating_sub(1));
-    let room = (above.height as usize * 2 / 3).max(2);
+    let (lines, cursor_line, fixed) = tray_lines(app, width.saturating_sub(1));
+    let room = (above.height as usize * 2 / 3)
+        .max(fixed + 1)
+        .min(above.height as usize);
     let height = lines.len().min(room);
-    // The heading stays, and the rest scrolls to keep the cursor's row and
-    // what follows it in sight.
-    let body = height - 1;
+    // The heading and message switch stay while the rows scroll.
+    let fixed = fixed.min(height);
+    let body = height - fixed;
     let skip = cursor_line
-        .saturating_sub(1)
-        .min(lines.len().saturating_sub(1 + body));
+        .saturating_sub(fixed)
+        .min(lines.len().saturating_sub(fixed + body));
     let rect = Rect::new(
         above.x,
         above.bottom() - height as u16,
@@ -478,7 +524,10 @@ pub fn draw_tray(frame: &mut Frame, app: &mut App, above: Rect) -> u16 {
         Style::new().bg(theme.raised)
     };
     frame.buffer_mut().set_style(rect, surface);
-    let shown = std::iter::once(&lines[0]).chain(lines.iter().skip(1 + skip).take(body));
+    let shown = lines
+        .iter()
+        .take(fixed)
+        .chain(lines.iter().skip(fixed + skip).take(body));
     for (row, line) in shown.enumerate() {
         frame
             .buffer_mut()

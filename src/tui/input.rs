@@ -26,6 +26,10 @@ struct Recall {
 /// The input box's text.
 pub struct Editor {
     text: Vec<char>,
+    /// Changes to the box's text, excluding cursor moves and tentative words.
+    revision: u64,
+    /// The last revision that emptied the box.
+    emptied_at: u64,
     /// Where the cursor is: before `text[cursor]`.
     cursor: usize,
     /// The pasted blocks, by chip.
@@ -50,6 +54,8 @@ impl Editor {
     pub fn new(history: History) -> Self {
         Self {
             text: Vec::new(),
+            revision: 0,
+            emptied_at: 0,
             cursor: 0,
             chips: Vec::new(),
             kill: String::new(),
@@ -65,6 +71,7 @@ impl Editor {
     /// text. The cursor stays.
     fn splice_in(&mut self, at: usize, chars: &[char]) {
         let count = chars.len();
+        self.revision = self.revision.wrapping_add(u64::from(count != 0));
         self.text.splice(at..at, chars.iter().copied());
         let mut after = Vec::new();
         for range in &mut self.dictated {
@@ -83,6 +90,10 @@ impl Editor {
     /// the dictated ranges following the text. The cursor stays.
     fn splice_out(&mut self, from: usize, to: usize) -> Vec<char> {
         let removed: Vec<char> = self.text.drain(from..to).collect();
+        self.revision = self.revision.wrapping_add(u64::from(!removed.is_empty()));
+        if self.text.is_empty() {
+            self.emptied_at = self.revision;
+        }
         let moved = |at: usize| {
             if at <= from {
                 at
@@ -170,6 +181,14 @@ impl Editor {
         self.text.is_empty()
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn emptied_at(&self) -> u64 {
+        self.emptied_at
+    }
+
     /// The text as typed, with each chip's label: what the command menu
     /// looks at.
     pub fn shown(&self) -> String {
@@ -243,6 +262,8 @@ impl Editor {
 
     /// Empties the box.
     pub fn clear(&mut self) {
+        self.revision = self.revision.wrapping_add(u64::from(!self.text.is_empty()));
+        self.emptied_at = self.revision;
         self.text.clear();
         self.chips.clear();
         self.dictated.clear();
@@ -253,11 +274,15 @@ impl Editor {
 
     /// Puts `text` in the box, the cursor at its end.
     pub fn set(&mut self, text: &str) {
+        self.revision = self.revision.wrapping_add(u64::from(!self.text.is_empty()));
         self.text.clear();
         self.chips.clear();
         self.dictated.clear();
         self.cursor = 0;
         self.paste(text);
+        if self.text.is_empty() {
+            self.emptied_at = self.revision;
+        }
         self.goal = None;
     }
 

@@ -222,9 +222,157 @@ fn a_selects_all_or_none_and_r_rejects_all() {
     );
 }
 
-/// The words in the message box go with the answer, and the box empties.
-/// With an empty box nothing goes with it. Words too long to send stay,
-/// and the user is told.
+#[test]
+fn a_message_begun_before_the_newest_request_stays() {
+    for key in [KeyCode::Enter, KeyCode::Char('r')] {
+        let mut app = super::super::app::tests::app();
+        app.paste("Half-written message");
+        app.set_reading(Reading {
+            approvals: vec![request("a1", skill())],
+            ..Reading::default()
+        });
+        assert!(!app.includes_message());
+        assert!(screen(&mut app, 80, 24).contains("[ ] Include message"));
+        alt_a(&mut app);
+        press(&mut app, key);
+        let answers = sent(&mut app);
+        assert_eq!(answers[0].words, None);
+        assert_eq!(answers[0].choices[0].approve, key == KeyCode::Enter);
+        assert_eq!(app.editor.text(), "Half-written message");
+    }
+}
+
+#[test]
+fn edits_after_a_request_include_the_message_and_m_flips_it() {
+    for key in [KeyCode::Enter, KeyCode::Char('r')] {
+        for flips in 0..=2 {
+            let mut app = three();
+            app.paste("Reason");
+            assert!(app.includes_message());
+            alt_a(&mut app);
+            for _ in 0..flips {
+                press(&mut app, KeyCode::Char('m'));
+            }
+            let include = flips != 1;
+            let mark = if include { "[x]" } else { "[ ]" };
+            let rows = flat(&screen(&mut app, 80, 24));
+            assert!(
+                rows.contains(&format!("M {mark} Include message")),
+                "{rows}"
+            );
+            press(&mut app, key);
+            let answers = sent(&mut app);
+            assert_eq!(answers[0].words.as_deref(), include.then_some("Reason"));
+            assert_eq!(app.editor.text(), if include { "" } else { "Reason" });
+        }
+    }
+    // Pre-existing words can be included explicitly too.
+    let mut app = super::super::app::tests::app();
+    app.paste("Draft");
+    app.set_reading(Reading {
+        approvals: vec![request("a1", skill())],
+        ..Reading::default()
+    });
+    alt_a(&mut app);
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(sent(&mut app)[0].words.as_deref(), Some("Draft"));
+    assert!(app.editor.is_empty());
+}
+
+#[test]
+fn the_switch_follows_new_requests_but_not_refreshes_or_cursor_moves() {
+    let mut app = three();
+    app.paste("Draft");
+    app.set_reading(Reading {
+        approvals: vec![request("a1", skill()), request("a4", server())],
+        ..Reading::default()
+    });
+    assert!(!app.includes_message());
+    press(&mut app, KeyCode::Left);
+    assert!(!app.includes_message());
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(app.editor.text(), "Draft");
+    assert!(app.includes_message(), "an edit counts even if undone");
+    app.set_reading(Reading {
+        approvals: vec![request("a1", skill())],
+        ..Reading::default()
+    });
+    assert!(
+        app.includes_message(),
+        "removing a request keeps the choice"
+    );
+    alt_a(&mut app);
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Esc);
+    app.newline();
+    assert!(
+        !app.includes_message(),
+        "the manual choice wins over later edits"
+    );
+}
+
+#[test]
+fn emptying_the_box_resets_its_manual_choice() {
+    for how in 0..4 {
+        let mut app = three();
+        app.paste("Reason");
+        alt_a(&mut app);
+        press(&mut app, KeyCode::Char('m'));
+        press(&mut app, KeyCode::Esc);
+        app.paste(" more");
+        assert!(!app.includes_message());
+        match how {
+            0 => app.editor.clear(),
+            1 => {
+                app.editor.take();
+            }
+            2 => app.editor.set(""),
+            _ => {
+                while !app.editor.is_empty() {
+                    press(&mut app, KeyCode::Backspace);
+                }
+            }
+        }
+        app.paste("Another reason");
+        assert!(app.includes_message());
+        alt_a(&mut app);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(sent(&mut app)[0].words.as_deref(), Some("Another reason"));
+    }
+}
+
+#[test]
+fn the_message_switch_stays_visible_while_rows_scroll() {
+    let mut app = with(
+        (0..20)
+            .map(|n| request(&format!("a{n}"), skill()))
+            .collect(),
+    );
+    app.paste("Reason");
+    alt_a(&mut app);
+    for _ in 0..19 {
+        press(&mut app, KeyCode::Down);
+    }
+    let rows = flat(&screen(&mut app, 50, 24));
+    assert!(rows.contains("[x] Include message"), "{rows}");
+    assert!(rows.contains("R reject all"), "{rows}");
+}
+
+#[test]
+fn an_empty_message_has_no_switch() {
+    let mut app = three();
+    assert!(!screen(&mut app, 80, 24).contains("Include message"));
+    app.paste(" ");
+    assert!(!screen(&mut app, 80, 24).contains("Include message"));
+    app.editor.clear();
+    alt_a(&mut app);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(sent(&mut app)[0].words, None);
+}
+
+/// Included words leave the box and come back on refusal.
 #[test]
 fn the_message_box_gives_the_answer_its_words() {
     let mut app = three();

@@ -1,8 +1,8 @@
 //! The approval tray above the message box: the requests that wait for the
 //! user's approval, a row each, which a tap opens to its details. With
 //! several, each row has a box, all checked at first. Approve approves the
-//! rows checked and rejects the others, Reject all rejects them all, and the
-//! message box's text goes to the agent with the answer.
+//! rows checked and rejects the others, and Reject all rejects them all.
+//! Include message starts off for text begun before the newest request.
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,6 +17,22 @@ use crate::protocol::{
     reject_label,
 };
 
+/// Edits to the message box, including the last one that emptied it.
+#[derive(Clone, Copy, Default)]
+pub struct MessageRevision {
+    changed: u64,
+    emptied: u64,
+}
+
+impl MessageRevision {
+    pub fn edited(&mut self, empty: bool) {
+        self.changed = self.changed.wrapping_add(1);
+        if empty {
+            self.emptied = self.changed;
+        }
+    }
+}
+
 /// What the tray remembers of its rows, by request.
 #[derive(Clone, Copy)]
 struct Rows {
@@ -30,9 +46,80 @@ struct Rows {
     files: RwSignal<HashMap<String, usize>>,
     /// An answer is on its way.
     sending: RwSignal<bool>,
+    seen: StoredValue<HashSet<String>>,
+    message_revision: RwSignal<u64>,
+    message_choice: RwSignal<Option<(bool, u64)>>,
 }
 
-/// The message box, whose text goes with the answer.
+impl Rows {
+    fn new() -> Self {
+        Self {
+            unchecked: RwSignal::new(HashSet::new()),
+            options: RwSignal::new(HashSet::new()),
+            open: RwSignal::new(HashSet::new()),
+            files: RwSignal::new(HashMap::new()),
+            sending: RwSignal::new(false),
+            seen: StoredValue::new(HashSet::new()),
+            message_revision: RwSignal::new(0),
+            message_choice: RwSignal::new(None),
+        }
+    }
+
+    fn requests_changed(self, ids: &HashSet<String>, revision: MessageRevision) {
+        if self
+            .seen
+            .with_value(|seen| ids.iter().any(|id| !seen.contains(id)))
+        {
+            self.message_revision.set(revision.changed);
+            self.message_choice.set(None);
+        }
+        self.seen.set_value(ids.clone());
+    }
+
+    fn includes_message(self, revision: MessageRevision) -> bool {
+        if let Some((include, emptied_at)) = self.message_choice.get()
+            && emptied_at == revision.emptied
+        {
+            return include;
+        }
+        self.message_revision.get() != revision.changed
+    }
+
+    fn flip_message(self, revision: MessageRevision) {
+        self.message_choice
+            .set(Some((!self.includes_message(revision), revision.emptied)));
+    }
+
+    fn answers(
+        self,
+        requests: &[ApprovalRequest],
+        approve: bool,
+        words: &str,
+        revision: MessageRevision,
+    ) -> ApprovalAnswers {
+        let words = if self.includes_message(revision) {
+            words
+        } else {
+            ""
+        };
+        self.unchecked.with_untracked(|unchecked| {
+            self.options.with_untracked(|options| {
+                ApprovalAnswers::of(
+                    requests,
+                    |id| approve && !unchecked.contains(id),
+                    |id| options.contains(id),
+                    words,
+                )
+            })
+        })
+    }
+}
+
+fn has_message(text: &str) -> bool {
+    !text.trim().is_empty()
+}
+
+/// The message box, whose text can go with the answer.
 fn message_box() -> Option<web_sys::HtmlTextAreaElement> {
     document()
         .query_selector(".compose textarea")
@@ -68,32 +155,21 @@ fn words_view(text: &str) -> impl IntoView + use<> {
 
 /// Sends the answer to `requests`: when `approve`, those checked are
 /// approved and the others rejected, else all are rejected. The message
-/// box's words go with it, and the box empties once Arko has them, unless
-/// the user wrote something else there meanwhile.
-fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
+/// box's included words go with it. Once Arko has them, the box empties
+/// unless the user wrote something else there meanwhile.
+fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows, revision: MessageRevision) {
     let area = message_box();
     let words = area.as_ref().map(|area| area.value()).unwrap_or_default();
-    let answers = rows.unchecked.with_untracked(|unchecked| {
-        rows.options.with_untracked(|options| {
-            ApprovalAnswers::of(
-                &requests,
-                |id| approve && !unchecked.contains(id),
-                |id| options.contains(id),
-                &words,
-            )
-        })
-    });
+    let answers = rows.answers(&requests, approve, &words, revision);
     rows.sending.set(true);
     // (Its words are the message box's, of the view it's sent from.)
     let sender = Sender::from_view();
     spawn_local(async move {
         let body = serde_json::to_value(&answers).unwrap_or_default();
         let outcome = send_to_arko("/api/approvals", body, &sender).await;
-        if sender.take(outcome) == Some(Posted::Taken)
-            && answers.words.is_some()
-            && let Some(area) = area
-            // (A draft begun while the answer was on its way stays.)
-            && area.value() == words
+        let taken = sender.take(outcome) == Some(Posted::Taken);
+        if let Some(area) = area
+            && clears_message(taken, &answers, &words, &area.value())
         {
             area.set_value("");
             // The box fits itself again and forgets its draft.
@@ -104,6 +180,11 @@ fn answer(requests: Vec<ApprovalRequest>, approve: bool, rows: Rows) {
         // (A new feed's tray took the place of this one meanwhile.)
         rows.sending.try_set(false);
     });
+}
+
+/// An included message clears only once taken, if the box still holds it.
+fn clears_message(taken: bool, answers: &ApprovalAnswers, sent: &str, now: &str) -> bool {
+    taken && answers.words.is_some() && sent == now
 }
 
 /// Adds `id` to `set`, or takes it out.
@@ -117,20 +198,15 @@ fn flip(set: RwSignal<HashSet<String>>, id: &str) {
 
 /// The tray, while requests wait.
 #[component]
-pub fn Tray() -> impl IntoView {
+pub fn Tray(draft: RwSignal<String>, revision: RwSignal<MessageRevision>) -> impl IntoView {
     let page = page();
     let requests = Memo::new(move |_| page.status.with(|status| status.approvals.clone()));
-    let rows = Rows {
-        unchecked: RwSignal::new(HashSet::new()),
-        options: RwSignal::new(HashSet::new()),
-        open: RwSignal::new(HashSet::new()),
-        files: RwSignal::new(HashMap::new()),
-        sending: RwSignal::new(false),
-    };
+    let rows = Rows::new();
     // What was set for requests no longer waiting goes.
     Effect::new(move |_| {
         let ids: HashSet<String> =
             requests.with(|requests| requests.iter().map(|request| request.id.clone()).collect());
+        rows.requests_changed(&ids, revision.get_untracked());
         for set in [rows.unchecked, rows.options, rows.open] {
             if set.with_untracked(|set| set.iter().any(|id| !ids.contains(id))) {
                 set.update(|set| set.retain(|id| ids.contains(id)));
@@ -167,12 +243,23 @@ pub fn Tray() -> impl IntoView {
                     </For>
                 </ul>
                 <div class="tray-foot">
+                    <Show when=move || draft.with(|text| has_message(text))>
+                        <label class="tray-message">
+                            "Include message"
+                            <button type="button" class="switch" role="switch" aria-label="Include message"
+                                aria-checked=move || rows.includes_message(revision.get()).to_string()
+                                disabled=move || rows.sending.get()
+                                on:click=move |_| rows.flip_message(revision.get_untracked())>
+                                <span></span>
+                            </button>
+                        </label>
+                    </Show>
                     <button type="button" class="btn outline small" disabled=move || rows.sending.get()
-                        on:click=move |_| answer(requests.get_untracked(), false, rows)>
+                        on:click=move |_| answer(requests.get_untracked(), false, rows, revision.get_untracked())>
                         {move || reject_label(count())}
                     </button>
                     <button type="button" class="btn primary small" disabled=move || rows.sending.get()
-                        on:click=move |_| answer(requests.get_untracked(), true, rows)>
+                        on:click=move |_| answer(requests.get_untracked(), true, rows, revision.get_untracked())>
                         {move || approve_label(checked(), count())}
                     </button>
                 </div>
@@ -332,6 +419,152 @@ fn Details(request: ApprovalRequest, rows: Rows) -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn requests(ids: &[&str]) -> Vec<ApprovalRequest> {
+        ids.iter()
+            .map(|id| ApprovalRequest {
+                id: (*id).into(),
+                batch: 1,
+                approval: Approval::WorkerBilling(crate::protocol::BillingApproval {
+                    model: "Opus".into(),
+                    task: "Review".into(),
+                    ..Default::default()
+                }),
+            })
+            .collect()
+    }
+
+    fn follow(rows: Rows, requests: &[ApprovalRequest], revision: MessageRevision) {
+        rows.requests_changed(
+            &requests.iter().map(|request| request.id.clone()).collect(),
+            revision,
+        );
+    }
+
+    #[test]
+    fn pre_existing_words_stay_for_both_answers() {
+        Owner::new().with(|| {
+            for approve in [false, true] {
+                let rows = Rows::new();
+                let requests = requests(&["a1"]);
+                let text = "Half-written message";
+                let mut revision = MessageRevision::default();
+                revision.edited(false);
+                follow(rows, &requests, revision);
+                assert!(!rows.includes_message(revision));
+                let answers = rows.answers(&requests, approve, text, revision);
+                assert_eq!(answers.words, None);
+                assert_eq!(answers.choices[0].approve, approve);
+                assert!(
+                    serde_json::to_value(&answers)
+                        .unwrap()
+                        .get("words")
+                        .is_none()
+                );
+                assert!(!clears_message(true, &answers, text, text));
+                rows.flip_message(revision);
+                let answers = rows.answers(&requests, approve, text, revision);
+                assert_eq!(answers.words.as_deref(), Some(text));
+                assert!(clears_message(true, &answers, text, text));
+            }
+        });
+    }
+
+    #[test]
+    fn later_typing_includes_words_and_the_switch_flips_both_answers() {
+        Owner::new().with(|| {
+            for approve in [false, true] {
+                for flips in 0..=2 {
+                    let rows = Rows::new();
+                    let requests = requests(&["a1"]);
+                    let mut revision = MessageRevision::default();
+                    follow(rows, &requests, revision);
+                    revision.edited(false);
+                    assert!(rows.includes_message(revision));
+                    for _ in 0..flips {
+                        rows.flip_message(revision);
+                    }
+                    let include = flips != 1;
+                    let answers = rows.answers(&requests, approve, " Reason ", revision);
+                    assert_eq!(answers.words.as_deref(), include.then_some("Reason"));
+                    assert_eq!(answers.choices[0].approve, approve);
+                    assert_eq!(
+                        clears_message(true, &answers, " Reason ", " Reason "),
+                        include
+                    );
+                    assert!(!clears_message(false, &answers, " Reason ", " Reason "));
+                    assert!(!clears_message(true, &answers, " Reason ", "Another draft"));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn a_manual_choice_survives_edits_until_the_box_empties() {
+        Owner::new().with(|| {
+            let rows = Rows::new();
+            let requests = requests(&["a1"]);
+            let mut revision = MessageRevision::default();
+            revision.edited(false);
+            follow(rows, &requests, revision);
+            revision.edited(false);
+            assert!(
+                rows.includes_message(revision),
+                "editing an older draft includes it"
+            );
+            rows.flip_message(revision);
+            revision.edited(false);
+            assert!(!rows.includes_message(revision), "the manual choice wins");
+            rows.flip_message(revision);
+            revision.edited(false);
+            assert!(rows.includes_message(revision));
+            rows.flip_message(revision);
+            revision.edited(true);
+            revision.edited(false);
+            assert!(
+                rows.includes_message(revision),
+                "an empty box resets the choice"
+            );
+        });
+    }
+
+    #[test]
+    fn only_new_requests_reset_the_switch() {
+        Owner::new().with(|| {
+            let rows = Rows::new();
+            let mut revision = MessageRevision::default();
+            follow(rows, &requests(&["a1"]), revision);
+            revision.edited(false);
+            assert!(rows.includes_message(revision));
+            follow(rows, &requests(&["a1", "a2"]), revision);
+            assert!(!rows.includes_message(revision));
+            rows.flip_message(revision);
+            follow(rows, &requests(&["a1", "a2"]), revision);
+            assert!(rows.includes_message(revision));
+            follow(rows, &requests(&["a1"]), revision);
+            assert!(rows.includes_message(revision));
+            follow(rows, &[], revision);
+            follow(rows, &requests(&["a3"]), revision);
+            assert!(!rows.includes_message(revision));
+        });
+    }
+
+    #[test]
+    fn an_empty_box_has_no_switch_or_words() {
+        Owner::new().with(|| {
+            let rows = Rows::new();
+            let requests = requests(&["a1"]);
+            let revision = MessageRevision::default();
+            follow(rows, &requests, revision);
+            for text in ["", " ", "\n"] {
+                assert!(!has_message(text));
+                let answers = rows.answers(&requests, true, text, revision);
+                assert!(answers.words.is_none());
+                assert!(!clears_message(true, &answers, text, text));
+            }
+            assert!(has_message("Reason"));
+        });
+    }
 
     #[test]
     fn backticks_mark_code() {
