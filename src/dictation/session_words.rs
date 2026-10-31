@@ -26,6 +26,7 @@ use crate::builtin_skills::BuiltinSkills;
 use crate::details::Details;
 use crate::profiles::Roots;
 use crate::remote::{Feed, Item, Kind};
+use crate::shell::SHELL_TOOL_NAME;
 
 /// The most words a list holds, the size Telmo's accuracy was measured
 /// with.
@@ -127,12 +128,24 @@ struct Tail {
     read: usize,
 }
 
-/// A text of the transcript, whether it's code (a call's line), and what a
-/// mention in it counts.
+/// A text of the transcript, where it's from, and what a mention in it
+/// counts.
 struct Text {
     text: String,
-    code: bool,
+    context: Context,
     weight: f64,
+}
+
+/// Where a text is from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Context {
+    /// A message, the agents' text, a worker's task.
+    Prose,
+    /// A call's line, which is code.
+    Call,
+    /// A shell call's command line, whose commands are code whatever their
+    /// shape (`rg`, `cargo`).
+    Shell,
 }
 
 impl Tail {
@@ -145,7 +158,7 @@ impl Tail {
         {
             self.tools.insert(tool.clone());
         }
-        let Some((text, code)) = readable(item) else {
+        let Some((text, context)) = readable(item) else {
             return true;
         };
         let weight = 0.5f64.powf(self.read as f64 / HALF_LIFE_BYTES);
@@ -161,7 +174,7 @@ impl Tail {
         if !kept.is_empty() {
             self.texts.push(Text {
                 text: kept.to_string(),
-                code,
+                context,
                 weight,
             });
         }
@@ -169,22 +182,30 @@ impl Tail {
     }
 }
 
-/// The text of `item` that's read, and whether it's code. Command output,
+/// The text of `item` that's read, and where it's from. Command output,
 /// Arko's notices, the agents' thinking and the code a call writes aren't
 /// read.
-fn readable(item: &Item) -> Option<(&str, bool)> {
+fn readable(item: &Item) -> Option<(&str, Context)> {
     let task = matches!(
         item.tool.as_deref(),
         Some(crate::crew::START_AGENT | crate::crew::MESSAGE_AGENT | RUN_WORKFLOW_AGENT_TOOL_NAME)
     );
     Some(match item.kind {
         Kind::User | Kind::Text | Kind::Message | Kind::Reply | Kind::Question => {
-            (&item.text, false)
+            (&item.text, Context::Prose)
         }
         // A worker's task or a message to one, whole when the line has only
         // its start.
-        Kind::Call if task => (item.detail.as_deref().unwrap_or(&item.text), false),
-        Kind::Call => (&item.text, true),
+        Kind::Call if task => (item.detail.as_deref().unwrap_or(&item.text), Context::Prose),
+        // (Without the folder it ran in, "(in src) ".)
+        Kind::Call if item.tool.as_deref() == Some(SHELL_TOOL_NAME) => (
+            item.text
+                .strip_prefix("(in ")
+                .and_then(|line| line.split_once(") "))
+                .map_or(item.text.as_str(), |(_, line)| line),
+            Context::Shell,
+        ),
+        Kind::Call => (&item.text, Context::Call),
         _ => return None,
     })
 }
@@ -245,7 +266,11 @@ fn rank(
         scores.add(name, true, SESSION_WEIGHT);
     }
     for text in &tail.texts {
-        scores.read(&text.text, text.code, text.weight);
+        scores.read(&text.text, text.context, text.weight);
+    }
+    // (Each command once, as the tools.)
+    for command in std::mem::take(&mut scores.commands) {
+        scores.add(command, true, SESSION_WEIGHT);
     }
     scores.best()
 }
@@ -262,6 +287,8 @@ struct Scores<'a> {
     home: Vec<String>,
     /// Leave out what context marks as secret.
     secrets: bool,
+    /// The commands the shell lines ran.
+    commands: BTreeSet<&'a str>,
 }
 
 #[derive(Default)]
@@ -292,40 +319,54 @@ impl<'a> Scores<'a> {
         entry.sure = true;
     }
 
-    /// Counts the words of `text` (all of it code with `code`), each
-    /// mention with `weight`. What context marks as secret takes no part
-    /// when those are left out.
-    fn read(&mut self, text: &'a str, code: bool, weight: f64) {
+    /// Counts the words of `text`, from `context`, each mention with
+    /// `weight`. What context marks as secret takes no part when those are
+    /// left out.
+    fn read(&mut self, text: &'a str, context: Context, weight: f64) {
         let hidden = if self.secrets {
             secrets::secret_ranges(text)
         } else {
             Vec::new()
         };
         let mut hidden = hidden.into_iter().peekable();
+        let (code, shell) = (context != Context::Prose, context == Context::Shell);
         // Whether the next word starts a sentence, where a capital says
-        // nothing.
-        let mut opens = true;
-        let mut in_code = code;
-        let mut start = None;
+        // nothing, and whether it's the command a shell line runs.
+        let (mut opens, mut in_code, mut command) = (true, code, shell);
+        // Where the word under way starts, and what comes before it.
+        let (mut start, mut before, mut previous) = (None, '\n', '\n');
         for (at, c) in text.char_indices().chain([(text.len(), '\n')]) {
             while hidden.next_if(|range| range.end <= at).is_some() {}
             let secret = hidden.peek().is_some_and(|range| range.start <= at);
             if !secret && (c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/')) {
-                start.get_or_insert(at);
+                if start.is_none() {
+                    start = Some(at);
+                    before = previous;
+                }
+                previous = c;
                 continue;
             }
             if let Some(from) = start.take() {
                 let run = &text[from..at];
+                if command && !run.contains('/') {
+                    self.commands.insert(trimmed(run));
                 // (A word a shortened line ends in is cut.)
-                if c != '…' {
-                    self.run(run, in_code, opens, weight);
+                } else if c != '…' {
+                    let alone = before == '`' && c == '`';
+                    self.run(run, in_code, opens, weight, alone);
                 }
+                command = false;
                 // (A full stop, a list's dash, a comment's slashes.)
                 opens = run.ends_with(['.', '-', '/']);
             }
+            previous = c;
             match c {
                 _ if secret && c != '`' => {}
                 '`' => in_code = code || !in_code,
+                '|' | '&' | ';' if shell => {
+                    command = true;
+                    opens = true;
+                }
                 '\n' | '!' | '?' | ':' | ';' | '|' | '#' | '>' | '=' | '{' | '}' => opens = true,
                 // Space and opening marks leave it as it was.
                 '"' | '\'' | '(' | '[' | '*' | '“' | '‘' => {}
@@ -335,11 +376,11 @@ impl<'a> Scores<'a> {
         }
     }
 
-    /// A run of letters, digits and `_-./`. A path counts by its file and
-    /// folder names, since a path said aloud is those with "slash" between,
-    /// and a dotted name by its parts (`self.stats`) unless it's a file name,
-    /// a domain or a version.
-    fn run(&mut self, run: &'a str, in_code: bool, opens: bool, weight: f64) {
+    /// A run of letters, digits and `_-./`, `alone` between backticks. A
+    /// path counts by its file and folder names, since a path said aloud is
+    /// those with "slash" between, and a dotted name by its parts
+    /// (`self.stats`) unless it's a file name, a domain or a version.
+    fn run(&mut self, run: &'a str, in_code: bool, opens: bool, weight: f64, alone: bool) {
         let run = trimmed(run);
         let in_path = run.contains('/');
         for part in run.split('/').map(trimmed) {
@@ -350,22 +391,30 @@ impl<'a> Scores<'a> {
                 .rsplit_once('.')
                 .is_none_or(|(_, last)| ends_file_name(last));
             if whole {
-                self.word(part, in_code || in_path, opens || in_path, weight);
+                let alone = alone && !in_path;
+                self.word(part, in_code || in_path, opens || in_path, weight, alone);
             } else {
                 for word in part.split('.').map(trimmed) {
-                    self.word(word, in_code || in_path, true, weight);
+                    self.word(word, in_code || in_path, true, weight, false);
                 }
             }
         }
     }
 
-    fn word(&mut self, word: &'a str, in_code: bool, opens: bool, weight: f64) {
+    /// Counts `word`. A word alone between backticks (`alone`) is code
+    /// whatever its shape. Without that, a plain word or one of two letters
+    /// (`UI`, `rg`) counts only toward a name the workspace or the session
+    /// gives.
+    fn word(&mut self, word: &'a str, in_code: bool, opens: bool, weight: f64, alone: bool) {
         let Some(shape) = shape(word) else {
             return;
         };
         if shape == Shape::Plain {
             *self.lowercase.entry(word).or_default() += 1;
-            // (A plain word counts only as a name the session gives.)
+        }
+        let short = word.chars().filter(|c| c.is_alphanumeric()).count() < 3
+            && !word.chars().any(|c| c.is_ascii_digit());
+        if !alone && (shape == Shape::Plain || short) {
             if let Some(entry) = self.words.get_mut(word) {
                 entry.score += weight;
             }
@@ -373,6 +422,11 @@ impl<'a> Scores<'a> {
         }
         let entry = self.words.entry(word.to_string()).or_default();
         entry.score += weight;
+        if alone {
+            entry.code = true;
+            entry.sure = true;
+            return;
+        }
         match shape {
             Shape::Code => {
                 entry.code = true;
@@ -543,14 +597,11 @@ const EXTENSIONS: &[&str] = &[
     "co",
 ];
 
-/// Whether `word` could be said: it has a letter, three letters or digits
-/// (two with a digit, such as r5), at most [`LONGEST`] characters, and
-/// nothing [`hard_to_say`].
+/// Whether `word` could be said: it has a letter, two letters or digits or
+/// more, at most [`LONGEST`] characters, and nothing [`hard_to_say`].
 fn sayable(word: &str) -> bool {
-    let alphanumeric = word.chars().filter(|c| c.is_alphanumeric()).count();
-    let digits = word.chars().any(|c| c.is_ascii_digit());
     word.chars().any(char::is_alphabetic)
-        && (alphanumeric >= 3 || (alphanumeric == 2 && digits))
+        && word.chars().filter(|c| c.is_alphanumeric()).count() >= 2
         && word.chars().count() <= LONGEST
         && !hard_to_say(word)
 }
@@ -935,6 +986,31 @@ mod tests {
             assert!(found.contains(&word), "{word}: {found:?}");
         }
         for word in ["OutputWord", "ThinkingWord", "CodeWritten", "long_file_na"] {
+            assert!(!found.contains(&word), "{word}: {found:?}");
+        }
+        assert!(words.iter().all(|word| word.code));
+    }
+
+    /// A word of two letters counts as code alone between backticks, as the
+    /// command a shell line runs or as a name the session gives, and a short
+    /// word of prose doesn't.
+    #[test]
+    fn short_words_need_code_or_the_sessions_names() {
+        let items = [
+            Item::new(
+                Kind::User,
+                "Search with `rg` in the UI, not AI. Open `UI` and go to it, it is ok.",
+            ),
+            call("shell", "(in src) cd web && rg -n Foo | head -3", ""),
+        ];
+        let words = rank(&tail(&items), Path::new(""), &[], &["qa".into()], false);
+        let found = texts(&words);
+        for word in ["rg", "UI", "cd", "head", "qa"] {
+            assert!(found.contains(&word), "{word}: {found:?}");
+        }
+        for word in [
+            "AI", "go", "it", "is", "ok", "in", "to", "web", "src", "Foo", "Search", "Open",
+        ] {
             assert!(!found.contains(&word), "{word}: {found:?}");
         }
         assert!(words.iter().all(|word| word.code));
