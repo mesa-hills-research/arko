@@ -1404,7 +1404,7 @@ impl EventPrinter {
                 text.push(format!("  │ {}", cut(line, 160)));
             }
             if rest.len() > SHOWN {
-                text.push(format!("  │ … {} more lines", rest.len() - SHOWN));
+                text.push(format!("  │ {}", more_lines(rest.len() - SHOWN)));
             }
         }
         for line in text {
@@ -1417,6 +1417,12 @@ impl EventPrinter {
             self.output.dim(&status)
         });
     }
+}
+
+/// The line that counts the lines of an output left out: "… 1 more line",
+/// "… 12 more lines".
+pub fn more_lines(count: usize) -> String {
+    format!("… {count} more line{}", if count == 1 { "" } else { "s" })
 }
 
 /// A command's first line, with a count of the others.

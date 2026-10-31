@@ -485,7 +485,7 @@ fn command_outcome(output: &str) -> Outcome {
             shown
         }));
         if rest.len() > SHOWN_LINES {
-            shown.push(format!("… {} more lines", rest.len() - SHOWN_LINES));
+            shown.push(ui::more_lines(rest.len() - SHOWN_LINES));
         }
     }
     let block = (!shown.is_empty()).then(|| {
@@ -837,6 +837,24 @@ short
             ),
             Some("1\n2\n3\n4\n5".into())
         );
+    }
+
+    /// The line that counts what a command's block leaves out says "line"
+    /// for one.
+    #[test]
+    fn a_block_counts_the_lines_it_leaves_out() {
+        let left_out = |lines: usize| {
+            let output: Vec<String> = (1..=lines).map(|n| n.to_string()).collect();
+            outcome(
+                SHELL_TOOL_NAME,
+                &format!("exit code 0, 0.1 s\n{}", output.join("\n")),
+            )
+            .block
+            .and_then(|block| block.detail)
+            .and_then(|detail| detail.lines().last().map(str::to_string))
+        };
+        assert_eq!(left_out(5).as_deref(), Some("… 1 more line"));
+        assert_eq!(left_out(7).as_deref(), Some("… 3 more lines"));
     }
 
     /// A command moved to the background shows as such, with its output so
