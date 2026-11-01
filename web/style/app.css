@@ -545,6 +545,7 @@ details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
   display: block;
   width: 100%;
   pointer-events: none;
+  -webkit-user-select: none;
   user-select: none;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
   mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
