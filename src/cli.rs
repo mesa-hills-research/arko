@@ -473,7 +473,10 @@ pub fn cli_main() -> ExitCode {
         }
     };
     #[cfg(unix)]
-    runtime.spawn(end_on_signals());
+    {
+        runtime.spawn(end_on_signals());
+        end_when_stuck();
+    }
     let code = runtime.block_on(run(args));
     // A name a model is still being asked for ends with the process, and so
     // does the Claude Code it runs.
@@ -647,9 +650,65 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
     Ok(code)
 }
 
+/// How long the usual end has after a SIGTERM or a SIGHUP before the process
+/// ends at once.
+#[cfg(unix)]
+const END_GRACE: Duration = Duration::from_secs(5);
+
+/// The session's log, once it has one.
+static LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Ends the process [`END_GRACE`] after a SIGTERM or a SIGHUP when the usual
+/// end ([`end_on_signals`]) hasn't. That end runs on the runtime, which may be
+/// stuck, so this waits on a thread of its own, and it says so in the
+/// session's log with a handle of its own.
+#[cfg(unix)]
+fn end_when_stuck() {
+    ends_after(&[libc::SIGTERM, libc::SIGHUP], END_GRACE, |signal| {
+        let name = if signal == libc::SIGHUP {
+            "SIGHUP"
+        } else {
+            "SIGTERM"
+        };
+        if let Some(log) = LOG.get() {
+            crate::watchdog::write(
+                log,
+                &format!(
+                    "Arko didn't end within {} s of {name}, so it ended at once",
+                    END_GRACE.as_secs()
+                ),
+            );
+        }
+        arko_agents::kill_stop_aware_commands();
+        arko_agents::kill_mcp_servers();
+        term::restore();
+        // SAFETY: ends the process without the destructors and the flush of
+        // standard output, which may wait on what holds the runtime.
+        unsafe { libc::_exit(128 + signal) }
+    });
+}
+
+/// Calls `end` with the signal, on a thread of its own, `grace` after the
+/// first of `signals` comes.
+#[cfg(unix)]
+fn ends_after(signals: &[i32], grace: Duration, end: impl FnOnce(i32) + Send + 'static) {
+    let Ok(mut caught) = signal_hook::iterator::Signals::new(signals) else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("arko-end".into())
+        .spawn(move || {
+            if let Some(signal) = caught.forever().next() {
+                std::thread::sleep(grace);
+                end(signal);
+            }
+        });
+}
+
 /// Logs go to the `arko.log` of the session in `dir`, not the terminal.
 /// `RUST_LOG` sets the level (info by default).
 pub(crate) fn start_log(dir: &Path) {
+    let _ = LOG.set(dir.join(session::LOG_FILE));
     let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -697,6 +756,23 @@ fn session_lines(root: &Path) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::agents::{Effort, ModelSettings, resolve_model};
+
+    /// A signal ends the process after the grace, from a thread of its own,
+    /// which a stuck runtime can't hold up.
+    #[cfg(unix)]
+    #[test]
+    fn a_signal_ends_the_process_after_its_grace() {
+        let (ended, end) = std::sync::mpsc::channel();
+        let grace = Duration::from_millis(200);
+        ends_after(&[libc::SIGUSR2], grace, move |signal| {
+            let _ = ended.send(signal);
+        });
+        let sent = std::time::Instant::now();
+        // SAFETY: raises a signal the handler above takes.
+        assert_eq!(unsafe { libc::raise(libc::SIGUSR2) }, 0);
+        assert_eq!(end.recv_timeout(Duration::from_secs(5)), Ok(libc::SIGUSR2));
+        assert!(sent.elapsed() >= grace);
+    }
 
     /// The listing names each session as the sidebar of an app does, the
     /// short name from its first words, a model's, or the user's.

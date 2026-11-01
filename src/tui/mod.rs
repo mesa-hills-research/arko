@@ -405,8 +405,17 @@ async fn run(
         Option<crate::dictation::Capture>,
     ) = (None, None);
     let (recording_events, mut recording_received) = mpsc::unbounded_channel();
+    // Its clock turns the loop twice a second, so a loop that doesn't turn
+    // for long is stuck, and the log says where.
+    let watchdog = {
+        let feed = setup.feed.clone();
+        let log = setup.session_dir.join(crate::session::LOG_FILE);
+        crate::watchdog::Watchdog::start("The full screen's loop", log, move || feed.holder())
+    };
     loop {
+        watchdog.turned();
         if draw_now {
+            watchdog.stage("drawing");
             draw(&mut terminal, &mut app);
             draw_now = false;
             dirty = false;
@@ -423,13 +432,16 @@ async fn run(
             .as_ref()
             .map_or_else(Instant::now, |burst| burst.until);
         let mut bell = false;
+        watchdog.stage("waiting");
         tokio::select! {
             _ = &mut stop => break,
             Some(ask) = setup.quit_asks.recv() => {
+                watchdog.stage("asking to quit");
                 app.ask_quit(ask.jobs);
                 draw_now = true;
             }
             Some((check, missing)) = names_checks.recv() => {
+                watchdog.stage("taking a check of the session names");
                 app.names_checked(&check, missing);
                 draw_now = true;
             }
@@ -440,6 +452,7 @@ async fn run(
                     give(&setup.requests, &verdict_done, control(Input::Eof));
                     continue;
                 };
+                watchdog.stage("taking keys");
                 // What came together comes as one batch.
                 let mut batch = vec![event];
                 batch.extend(waiting(&mut events).await);
@@ -447,12 +460,14 @@ async fn run(
                 draw_now = true;
             }
             received = updates.next() => {
+                watchdog.stage("taking the feed's updates");
                 let (rings, asked) = take_updates(&mut app, received, &mut updates, &setup.feed);
                 bell |= rings;
                 // The web page just started says so in the feed, so its links
                 // show at once. So do the agent's questions, in the answer
                 // panel.
                 if app.waits_for_page() || asked {
+                    watchdog.stage("reading the status");
                     app.set_reading(setup.meter.read());
                 }
                 // Drawn at the next frame, because streaming text doesn't redraw at
@@ -460,6 +475,7 @@ async fn run(
                 dirty = true;
             }
             Some((sending, verdict)) = verdicts.recv() => {
+                watchdog.stage("taking what became of a send");
                 match verdict {
                     Some(verdict) => app.verdict(sending, verdict),
                     None => app.no_verdict(sending),
@@ -467,10 +483,12 @@ async fn run(
                 draw_now = true;
             }
             Some(result) = settings_results.recv() => {
+                watchdog.stage("taking OpenRouter's settings");
                 app.openrouter_done(result);
                 draw_now = true;
             }
             Some(update) = recording_received.recv() => {
+                watchdog.stage("taking the dictation's events");
                 app.dictation_event(update);
                 while let Ok(update) = recording_received.try_recv() {
                     app.dictation_event(update);
@@ -480,6 +498,7 @@ async fn run(
             _ = frames.tick(), if dirty => draw_now = true,
             _ = animation.tick(), if app.transcript.drawn.moving => draw_now = true,
             _ = clock.tick() => {
+                watchdog.stage("reading the status");
                 let reading = setup.meter.read();
                 let workers = app.list_ticks();
                 // (The quit popup's jobs show how long they have run.)
@@ -502,11 +521,13 @@ async fn run(
             }
             _ = tokio::time::sleep_until(preview_at.unwrap_or_else(Instant::now).into()), if preview_at.is_some() => {
                 // The theme picker's selection has rested, and its preview is drawn.
+                watchdog.stage("previewing a theme");
                 if app.preview(Instant::now()) {
                     draw_now = true;
                 }
             }
             _ = tokio::time::sleep_until(enter_at.into()), if enter.is_some() => {
+                watchdog.stage("taking keys");
                 let batch = waiting(&mut events).await;
                 if batch.is_empty() {
                     // No key followed the Enter, so it was typed, and sends.
@@ -518,6 +539,7 @@ async fn run(
                 draw_now = true;
             }
             _ = tokio::time::sleep_until(burst_at.into()), if burst.is_some() => {
+                watchdog.stage("taking keys");
                 let batch = waiting(&mut events).await;
                 if batch.is_empty() {
                     if let Some(burst) = burst.take() {
@@ -529,6 +551,7 @@ async fn run(
                 draw_now = true;
             }
         }
+        watchdog.stage("carrying out what the view asked");
         bell |= app.take_ring();
         if bell {
             let _ = std::io::stdout().write_all(b"\x07");
