@@ -493,6 +493,17 @@ const HOLDER: &str = "ARKO_TEST_LOCK_HOLDER";
 /// What the holder prints once it holds the lock.
 const HELD: &str = "install lock held";
 
+/// A child process, killed when dropped, so a test that fails leaves it
+/// running no longer.
+struct Killed(std::process::Child);
+
+impl Drop for Killed {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// A process that dies holding the lock lets go of it, however it ends.
 #[test]
 fn a_lock_whose_holder_dies_is_free() {
@@ -505,19 +516,21 @@ fn a_lock_whose_holder_dies_is_free() {
     }
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(LOCK_FILE);
-    let mut holder = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "dictation::download::tests::a_lock_whose_holder_dies_is_free",
-            "--nocapture",
-            "--test-threads",
-            "1",
-        ])
-        .env(HOLDER, &path)
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut lines = BufReader::new(holder.stdout.take().unwrap()).lines();
+    let mut holder = Killed(
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "dictation::download::tests::a_lock_whose_holder_dies_is_free",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(HOLDER, &path)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut lines = BufReader::new(holder.0.stdout.take().unwrap()).lines();
     assert!(
         lines.any(|line| line.is_ok_and(|line| line.ends_with(HELD))),
         "the holder didn't take the lock"
@@ -527,8 +540,8 @@ fn a_lock_whose_holder_dies_is_free() {
         Some(Error::Cancelled),
         "the lock was free while held"
     );
-    holder.kill().unwrap();
-    holder.wait().unwrap();
+    holder.0.kill().unwrap();
+    holder.0.wait().unwrap();
     InstallLock::take(&path, &AtomicBool::new(false), || panic!("waited")).unwrap();
 }
 

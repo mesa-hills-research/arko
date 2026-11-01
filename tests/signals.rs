@@ -3,6 +3,7 @@
 
 #![cfg(all(unix, feature = "tui"))]
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -36,6 +37,44 @@ fn alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
+/// Kills, when dropped, `arko` and the stub server whose process ID is in
+/// `pid_file`, unless the test saw the server end. So a run that fails
+/// leaves neither running.
+struct Reaper {
+    arko: std::process::Child,
+    pid_file: PathBuf,
+    script: PathBuf,
+    ended: bool,
+}
+
+impl Drop for Reaper {
+    fn drop(&mut self) {
+        let _ = self.arko.kill();
+        let _ = self.arko.wait();
+        if self.ended {
+            return;
+        }
+        let pid = std::fs::read_to_string(&self.pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse().ok());
+        if let Some(pid) = pid
+            && is_server(pid, &self.script)
+        {
+            // SAFETY: a signal to the stub server this test started.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+    }
+}
+
+/// Whether `pid` is the stub server running `script`. Where /proc tells
+/// the command line, it must be the stub's, in case the ID was reused.
+fn is_server(pid: i32, script: &Path) -> bool {
+    match std::fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(line) => String::from_utf8_lossy(&line).contains(&*script.to_string_lossy()),
+        Err(_) => !Path::new("/proc/self").exists() && alive(pid),
+    }
+}
+
 fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     let start = Instant::now();
     while !done() {
@@ -63,7 +102,7 @@ fn a_sigterm_ends_the_mcp_servers_with_arko() {
         .to_string(),
     )
     .unwrap();
-    let mut arko = Command::new(env!("CARGO_BIN_EXE_arko"))
+    let arko = Command::new(env!("CARGO_BIN_EXE_arko"))
         .args(["--repl", "-m", "luna", "--mcp-config"])
         .arg(&config)
         .current_dir(&work)
@@ -76,6 +115,12 @@ fn a_sigterm_ends_the_mcp_servers_with_arko() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
+    let mut reaper = Reaper {
+        arko,
+        pid_file: pid_file.clone(),
+        script: script.clone(),
+        ended: false,
+    };
     wait_for("the server's start", || {
         std::fs::read_to_string(&pid_file).is_ok_and(|text| !text.is_empty())
     });
@@ -87,11 +132,15 @@ fn a_sigterm_ends_the_mcp_servers_with_arko() {
     assert!(alive(server));
     // The input stays open until Arko has ended, so that its end doesn't
     // close the session first.
-    let input = arko.stdin.take();
+    let input = reaper.arko.stdin.take();
     // SAFETY: a signal to the child this test started.
-    assert_eq!(unsafe { libc::kill(arko.id() as i32, libc::SIGTERM) }, 0);
-    let status = arko.wait().unwrap();
-    assert_eq!(status.code(), Some(128 + libc::SIGTERM), "{status:?}");
+    assert_eq!(
+        unsafe { libc::kill(reaper.arko.id() as i32, libc::SIGTERM) },
+        0
+    );
+    let status = reaper.arko.wait().unwrap();
     wait_for("the server's end", || !alive(server));
+    reaper.ended = true;
+    assert_eq!(status.code(), Some(128 + libc::SIGTERM), "{status:?}");
     drop(input);
 }
