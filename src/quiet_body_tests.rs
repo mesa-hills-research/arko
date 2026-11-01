@@ -145,10 +145,31 @@ const FORMS: [(remote::CallStatus, Option<&str>, usize); 6] = [
     (remote::CallStatus::Failed, Some(quiet::STOPPED), 0),
 ];
 
+/// The forms of `value` a row's words may show for the parameter `name` of
+/// a call of `tool`, as text: the value itself, a number written out, each
+/// run of a wait's list, and "lead" by the lead's name ("main" here).
+fn forms_of(tool: &str, name: &str, value: &serde_json::Value) -> Vec<String> {
+    let mut forms = match value {
+        serde_json::Value::String(text) => vec![text.clone()],
+        serde_json::Value::Number(number) => vec![number.to_string()],
+        _ => Vec::new(),
+    };
+    if tool == "wait_for_agents" && name == "runs" {
+        let parameters: HashMap<String, serde_json::Value> =
+            [(name.to_string(), value.clone())].into_iter().collect();
+        forms.extend(crate::ui::waited_runs(&parameters, &[]));
+    }
+    if tool == "message_agent" && name == "to" && value == "lead" {
+        forms.push("main".into());
+    }
+    forms
+}
+
 /// Checks that each of `parameters` of a call of `tool` shows whole in the
-/// call's body, or in its row's words in every form the row takes. A choice
-/// must be one [`CHOICES`] lists, with its phrase in each form. Returns how
-/// many values it checked.
+/// call's body, or in its row's words in every form the row takes. A text
+/// the words show must be the value itself or a defined form of it
+/// ([`forms_of`]). A choice must be one [`CHOICES`] lists, with its phrase
+/// in each form. Returns how many values it checked.
 fn check(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> usize {
     let made = crate::remote::call_said(tool, parameters, "main");
     let Some((act, said)) = made.and_then(|(item, said)| Some((item.act?, said))) else {
@@ -181,7 +202,12 @@ fn check(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> usize {
         let claimed = said.all().iter().find(|(said, _)| said == name);
         match claimed.map(|(_, shown)| shown) {
             Some(Shown::Text(parts)) => {
+                let forms = forms_of(tool, name, value);
                 for part in parts {
+                    assert!(
+                        forms.contains(part),
+                        "{tool}.{name}: the words are said to show {part:?}, which isn't {value:?} or a form of it"
+                    );
                     for (_, words) in &words {
                         assert!(
                             words.contains(part.as_str()),
@@ -238,7 +264,8 @@ fn check(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> usize {
 /// and an MCP server's own tool, shows whole in the body of the call's
 /// Quiet row, or in the row's words in every form the row takes (while it
 /// runs, once it ended, failed, refused, held or stopped). What the branch
-/// that made the words says they show is checked against the words, and a
+/// that made the words says they show is checked against the value (a text
+/// must be the value or a defined form of it) and against the words, and a
 /// choice against the test's own list of the words each value makes
 /// ([`CHOICES`]). Each tool's calls come with all its parameters at once,
 /// each varied in turn, so parameters that change each other's words are
