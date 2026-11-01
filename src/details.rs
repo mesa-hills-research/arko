@@ -545,8 +545,8 @@ impl Details {
         let (main_parts, workers) = match (&workflow, self.settings()) {
             (Some(workflow), Some(settings)) => {
                 // (The current conversation's, which a turn under way uses.)
-                let current =
-                    providers::resolve_model(&lock(&self.gauges.models).conversation).ok();
+                let conversation = lock(&self.gauges.models).conversation.clone();
+                let current = providers::resolve_model(&conversation).ok();
                 providers::cost_shares(
                     &workflow.cost_ledger(),
                     &settings,
@@ -705,10 +705,8 @@ impl Details {
 
     /// The session's workers.
     pub fn workers(&self) -> Vec<WorkerFacts> {
-        lock(&self.gauges.crew)
-            .as_ref()
-            .map(|crew| crew.facts())
-            .unwrap_or_default()
+        let crew = lock(&self.gauges.crew).clone();
+        crew.map(|crew| crew.facts()).unwrap_or_default()
     }
 
     /// The prompt cache of worker `id` once it ended, and what continuing it

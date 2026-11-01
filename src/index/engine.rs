@@ -860,8 +860,8 @@ impl Indexes {
     }
 
     pub(crate) fn watch_state(&self, layout: &Layout) -> WatchState {
-        lock(&self.entries)
-            .get(&layout.id())
+        let entry = lock(&self.entries).get(&layout.id()).cloned();
+        entry
             .map(|entry| lock(&entry.live).watch.clone())
             .unwrap_or_default()
     }

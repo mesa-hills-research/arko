@@ -4389,7 +4389,8 @@ impl Harness {
     pub(crate) fn tell_monitors_of_the_cache(&self) {
         self.tell_monitors_of_the_window();
         if let (Some(run), Some(jobs)) = (self.conversation_run(), self.background.manager()) {
-            jobs.set_prompt_cache_expiry(run, cache_expiry(&lock(&self.stats)));
+            let expiry = cache_expiry(&lock(&self.stats));
+            jobs.set_prompt_cache_expiry(run, expiry);
         }
     }
 

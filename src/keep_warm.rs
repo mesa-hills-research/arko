@@ -1088,14 +1088,10 @@ impl crate::Harness {
     /// The plan that pays for the main agent's refreshes, as the status
     /// names it ("your Claude plan"), if one does.
     fn keep_warm_plan(&self) -> Option<&'static str> {
-        crate::status::cache_status(
-            &lock(&self.stats),
-            &lock(&self.gauges.models),
-            None,
-            None,
-            false,
-        )
-        .on_plan
+        // (One lock at a time, as in a read of the status.)
+        let stats = lock(&self.stats).clone();
+        let models = lock(&self.gauges.models).clone();
+        crate::status::cache_status(&stats, &models, None, None, false).on_plan
     }
 
     /// `/keep-warm`, typed at the prompt or sent from the web page.
@@ -1241,13 +1237,9 @@ impl crate::Harness {
         }
         text.push('.');
         let route = self.refresh_route();
-        let cache = crate::status::cache_status(
-            &lock(&self.stats),
-            &lock(&self.gauges.models),
-            route.as_ref(),
-            setting,
-            false,
-        );
+        let stats = lock(&self.stats).clone();
+        let models = lock(&self.gauges.models).clone();
+        let cache = crate::status::cache_status(&stats, &models, route.as_ref(), setting, false);
         if let Some(each) = cache_timer::refresh_each(&cache) {
             text.push_str(&format!(" {each}"));
         }

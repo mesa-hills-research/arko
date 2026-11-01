@@ -646,10 +646,8 @@ fn prepare(
     }
     let setup = match new {
         Some(new) => {
-            let runs = workflow
-                .lock()
-                .unwrap()
-                .upgrade()
+            let current = workflow.lock().unwrap().upgrade();
+            let runs = current
                 .map(|workflow| workflow.subagents())
                 .unwrap_or_default();
             // Counting and keeping a place for this start are one step, so

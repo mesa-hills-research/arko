@@ -212,7 +212,8 @@ impl Output {
     /// Prints `text` (one or more lines) as progress, with its symbols as
     /// the terminal shows them.
     pub fn line(&self, text: &str) {
-        if let Some(feed) = self.feed.lock().unwrap().as_ref() {
+        let feed = self.feed.lock().unwrap().clone();
+        if let Some(feed) = feed {
             feed.output(&remote::plain(text));
             return;
         }
