@@ -717,8 +717,12 @@ pub(super) mod tests {
             })
             .await
             .unwrap();
+            // (The full screen's watchdog tells how long it has waited,
+            // from when the writer's thread took the first frame.)
+            while kept.waiting().is_none() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
-            // (The full screen's watchdog tells how long it has waited.)
             assert!(kept.waiting() >= Some(Duration::from_millis(100)));
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
