@@ -1563,7 +1563,7 @@ fn flag(parameters: &HashMap<String, serde_json::Value>, name: &str) -> bool {
 /// A file tool's call, meaning its verb (`read`, `write`, `edit`, `list`) and what
 /// it reads or changes (`src/main.rs:10-40`, `src/new.rs (12 lines)`,
 /// `src/lib.rs (all)` for an edit of every occurrence).
-fn file_call(
+pub(crate) fn file_call(
     tool: &str,
     parameters: &HashMap<String, serde_json::Value>,
 ) -> (&'static str, String) {

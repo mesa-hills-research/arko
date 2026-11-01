@@ -63,10 +63,73 @@ pub fn call(tool: &str, parameters: &Parameters, running: &[String], lead: &str)
         // (In the order of their names, because a `HashMap` has none.)
         let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
         item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
-        item.act = Some(act(tool, parameters, running, lead));
+        let mut act = act(tool, parameters, running, lead);
+        if item.detail.is_none() {
+            act.whole = whole(tool, parameters, &act);
+        }
+        item.act = Some(act);
     }
     Some(item)
 }
+
+/// What the Quiet row's words leave out of a call of `tool`, whole, for its
+/// open row ([`Act::whole`]), from its parameters. Empty when the words say
+/// it all.
+fn whole(tool: &str, parameters: &Parameters, act: &Act) -> String {
+    let raw = |name: &str| text(parameters, name).trim().to_string();
+    match act.kind {
+        // A command as it ran, with its variables, its program's path and
+        // its folder.
+        ActKind::Command if matches!(tool, SHELL_TOOL_NAME | "Bash") => {
+            let (command, cwd) = (raw("command"), raw("cwd"));
+            if command_words(&command, &cwd) == command {
+                return String::new();
+            }
+            match cwd.as_str() {
+                "" | "." => command,
+                cwd => format!("(in {cwd}) {command}"),
+            }
+        }
+        // The path and what Full says of it (the lines read, a write's line
+        // count), when that is more than the file's name.
+        ActKind::Read | ActKind::List | ActKind::Write | ActKind::Edit => {
+            let said = match tool {
+                READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME
+                | APPLY_DIFF_TOOL_NAME | LIST_FILES_TOOL_NAME => ui::file_call(tool, parameters).1,
+                _ => act.target.clone(),
+            };
+            let path = act.target.trim_end_matches(['/', '\\']);
+            let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+            if said == name { String::new() } else { said }
+        }
+        ActKind::Search => {
+            let query = match raw("query") {
+                query if query.is_empty() => raw("pattern"),
+                query => query,
+            };
+            if cut(&query, ROW_QUERY_CHARS) == query {
+                String::new()
+            } else {
+                cut(&query, 160)
+            }
+        }
+        // (A long one is the item's `detail`.)
+        ActKind::Message => raw("message"),
+        ActKind::Wait if act.target.split(',').count() > 3 => act.target.clone(),
+        ActKind::Check => {
+            let id = raw("job_id");
+            if id.chars().count() > 8 {
+                format!("job {id}")
+            } else {
+                String::new()
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// The longest search query a Quiet row names, in characters.
+const ROW_QUERY_CHARS: usize = 60;
 
 /// What a call of `tool` does, for the Quiet view's row ([`quiet`]).
 fn act(tool: &str, parameters: &Parameters, running: &[String], lead: &str) -> Act {
@@ -115,11 +178,11 @@ fn act(tool: &str, parameters: &Parameters, running: &[String], lead: &str) -> A
             )
         },
         "index_search" => Act {
-            query: cut(&text("query"), 60),
+            query: cut(&text("query"), ROW_QUERY_CHARS),
             ..on(ActKind::Search, index_name(&text("index")))
         },
         "Grep" | "Glob" => Act {
-            query: cut(&text("pattern"), 60),
+            query: cut(&text("pattern"), ROW_QUERY_CHARS),
             ..on(ActKind::Search, String::new())
         },
         LOAD_SKILL_TOOL_NAME => on(ActKind::Skill, text("name")),
@@ -1218,6 +1281,18 @@ mod tests {
     /// A call of an agent with no runs going.
     fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
         super::call(tool, parameters, &[], "main")
+    }
+
+    /// A call's act holds what its Quiet row's words leave out of it, from
+    /// its parameters, as the shared fixtures expect ([`quiet::fixtures`]).
+    #[test]
+    fn a_calls_act_holds_what_its_row_leaves_out() {
+        for fixture in quiet::fixtures() {
+            let parameters: Parameters = serde_json::from_str(fixture.parameters).unwrap();
+            let item = super::call(fixture.tool, &parameters, &[], "main").unwrap();
+            assert_eq!(item.act.as_ref(), Some(&fixture.act), "{}", fixture.name);
+            assert_eq!(item.detail.as_deref(), fixture.detail, "{}", fixture.name);
+        }
     }
 
     /// A wait says what it waits for, with the runs its agent has going

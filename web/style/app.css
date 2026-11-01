@@ -444,6 +444,8 @@ details.thinking > summary::-webkit-details-marker,
 details.more > summary::-webkit-details-marker { display: none; }
 details.quiet > summary { display: block; }
 .row.quiet.muted .what { opacity: 0.6; }
+/* A row with nothing more to show than its words has no fold. */
+.row.quiet.still summary { cursor: default; }
 /* An open Quiet row shows what its calls hold behind one line at its left,
    under the row's triangle, starting where the row's text does. What a
    call with a line of its own holds goes under that line. */
