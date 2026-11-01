@@ -34,8 +34,9 @@ pub(crate) mod theme;
 mod transcript;
 mod working;
 mod wrap;
+mod writer;
 
-use std::io::{IsTerminal, Stdout, Write};
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -59,6 +60,7 @@ use crate::ui::{self, Input, Output};
 use app::{App, Effect, Info, Sending};
 use backend::CursorBackend;
 pub use transcript::Banner;
+use writer::Writer;
 
 /// How long Enter waits to see if more keys follow it. Keys that come
 /// together are a paste the terminal didn't mark (the classic Windows
@@ -98,7 +100,8 @@ pub struct Setup {
 /// The view while it runs.
 pub struct Screen {
     stop: oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<Option<String>>,
+    /// The last reply, once the view's loop ends.
+    reply: oneshot::Receiver<Option<String>>,
     output: Arc<Output>,
 }
 
@@ -106,6 +109,7 @@ pub struct Screen {
 /// terminal that can draw (not TERM=dumb).
 pub fn available() -> bool {
     std::io::stdin().is_terminal()
+        // (before the writer)
         && std::io::stdout().is_terminal()
         && std::env::var("TERM").map_or(true, |term| term != "dumb")
 }
@@ -119,10 +123,11 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     glyphs::symbols();
     let catalog = theme::Catalog::load(Some(&setup.root.join("themes")));
     let depth = theme::depth();
-    let terminal = match open() {
+    let terminal = match open(setup.session_dir.join(crate::session::LOG_FILE)) {
         Ok(terminal) => terminal,
         Err(error) => {
             close();
+            // (before the writer)
             eprintln!(
                 "arko: the full-screen view couldn't start ({error}), so Arko uses the line prompt"
             );
@@ -164,30 +169,79 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
         std::sync::Arc::new(move || keys.login_paths())
     };
     app.transcript.set_open_thinking(setup.show_thinking);
-    app.shift_enter = terminal.1;
+    let (mut terminal, screen, shift_enter) = terminal;
+    app.shift_enter = shift_enter;
     if !app.mouse {
-        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     }
     let (stop, stopped) = oneshot::channel();
     let input = setup.input.clone();
-    let task = tokio::spawn(async move {
-        let running = std::panic::AssertUnwindSafe(run(terminal.0, app, setup, updates, stopped));
+    let ended = input.clone();
+    let session = tokio::runtime::Handle::current();
+    let view = move || async move {
+        let running = std::panic::AssertUnwindSafe(run(
+            terminal, screen, app, setup, updates, stopped, session,
+        ));
         match running.catch_unwind().await {
             Ok(reply) => reply,
             Err(_) => {
                 // The panic hook restored the terminal and said why. The
                 // session ends as Ctrl-D ends it (it is saved).
                 close();
-                let _ = input.send(Input::Eof);
+                let _ = ended.send(Input::Eof);
                 None
             }
         }
-    });
+    };
+    let reply = match on_a_thread(crate::context::handle(), view) {
+        Ok(reply) => reply,
+        Err(error) => {
+            close();
+            to_terminal(|out| {
+                let _ = writeln!(out, "arko: the full-screen view couldn't start ({error})");
+            });
+            let _ = input.send(Input::Eof);
+            oneshot::channel().1
+        }
+    };
     Some(Screen {
         stop,
-        task,
+        reply,
         output: output.clone(),
     })
+}
+
+/// The name of the view's thread.
+const THREAD: &str = "arko-view";
+
+/// Runs the future `view` makes on a thread of its own ([`THREAD`]), with a
+/// runtime of its own, for the session of `context`. What the view waits on
+/// (a lock, a slow call) then holds up no thread of the session's runtime,
+/// and the session's runtime stuck holds up no frame of the view. The
+/// future's output comes back on the receiver.
+fn on_a_thread<F>(
+    context: Option<Arc<crate::context::SessionContext>>,
+    view: impl FnOnce() -> F + Send + 'static,
+) -> std::io::Result<oneshot::Receiver<F::Output>>
+where
+    F: std::future::Future + 'static,
+    F::Output: Send + 'static,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let (done, output) = oneshot::channel();
+    std::thread::Builder::new()
+        .name(THREAD.into())
+        .spawn(move || {
+            crate::context::within(context, || {
+                let _ = done.send(runtime.block_on(view()));
+                // (What the view started that hasn't ended, such as a check
+                // of the session names, holds up nothing.)
+                runtime.shutdown_background();
+            });
+        })?;
+    Ok(output)
 }
 
 impl Screen {
@@ -195,14 +249,19 @@ impl Screen {
     /// reply printed where the user can scroll back to it.
     pub async fn close(self) {
         let _ = self.stop.send(());
-        let reply = self.task.await.ok().flatten();
-        // Whatever happened to the task, the terminal is restored.
+        let reply = self.reply.await.ok().flatten();
+        // Whatever happened to the task, the terminal is restored, and the
+        // reply follows on the terminal's own screen.
         close();
         self.output.detach();
         if let Some(reply) = reply {
-            let reply = glyphs::render(reply.trim()).into_owned();
-            println!("{reply}\n");
+            let reply = format!("{}\n\n", glyphs::render(reply.trim()));
+            to_terminal(|out| {
+                let _ = out.write_all(reply.as_bytes());
+            });
         }
+        // (What Arko prints next goes straight to the terminal, after this.)
+        let _ = tokio::task::spawn_blocking(|| wait_given_back(CLOSE_WAIT)).await;
     }
 }
 
@@ -232,9 +291,11 @@ impl Command for EnableMouse {
 
 /// The terminal made the view's, namely raw mode, the alternate screen, the
 /// mouse, pastes and focus reported, and Shift+Enter told apart from
-/// Enter where the terminal can (the kitty keyboard protocol). Returns the
-/// terminal and whether Shift+Enter is reported.
-fn open() -> std::io::Result<(Terminal<CursorBackend<Stdout>>, bool)> {
+/// Enter where the terminal can (the kitty keyboard protocol). From then on
+/// its writer ([`Writer`]) sends it everything, and its watchdog's lines go
+/// to the log at `log`. Returns the terminal, another handle on its writer,
+/// and whether Shift+Enter is reported.
+fn open(log: PathBuf) -> std::io::Result<(Terminal<CursorBackend<Writer>>, Writer, bool)> {
     crossterm::terminal::enable_raw_mode()?;
     OPEN.store(true, std::sync::atomic::Ordering::SeqCst);
     HELD.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -249,37 +310,40 @@ fn open() -> std::io::Result<(Terminal<CursorBackend<Stdout>>, bool)> {
             log::error!("{info}");
             return;
         }
-        close();
+        close_and_wait();
         previous(info);
     }));
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouse, EnableFocusChange)?;
+    // Asked once, before events are read, and before the writer starts,
+    // since the question goes to the terminal and its answer comes back as
+    // an event (crossterm/src/terminal/sys/unix.rs:183-267). Windows
+    // answers no (crossterm/src/terminal/sys/windows.rs:75), but its
+    // console's key records carry Shift with Enter anyway.
+    let asked =
+        // (before the writer)
+        crossterm::terminal::supports_keyboard_enhancement();
+    let enhanced = matches!(asked, Ok(true));
+    let mut writer = Writer::start(writer::standard_output(), log);
+    *crate::lock(&WRITER) = Some(writer.handle());
+    execute!(writer, EnterAlternateScreen, EnableMouse, EnableFocusChange)?;
     // Not in the classic Windows console without escape codes
     // (crossterm/src/event.rs:413-435), so pastes come as keys there.
-    let _ = execute!(stdout, EnableBracketedPaste);
+    let _ = execute!(writer, EnableBracketedPaste);
     // The title is saved, to be put back (xterm's title stack, and others
     // ignore it).
     if !cfg!(windows) {
-        let _ = write!(stdout, "\x1b[22;0t");
+        let _ = write!(writer, "\x1b[22;0t");
     }
-    // Asked once, before events are read. The answer is read as an event
-    // (crossterm/src/terminal/sys/unix.rs:183-267). Windows answers no
-    // (crossterm/src/terminal/sys/windows.rs:75), but its console's key
-    // records carry Shift with Enter anyway.
-    let enhanced = matches!(
-        crossterm::terminal::supports_keyboard_enhancement(),
-        Ok(true)
-    );
     if enhanced {
         let _ = execute!(
-            stdout,
+            writer,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
     }
     ENHANCED.store(enhanced, std::sync::atomic::Ordering::SeqCst);
-    clear_new_screen(&mut stdout)?;
-    let terminal = Terminal::new(CursorBackend::new(stdout))?;
-    Ok((terminal, enhanced || cfg!(windows)))
+    clear_new_screen(&mut writer)?;
+    let screen = writer.handle();
+    let terminal = Terminal::new(CursorBackend::new(writer))?;
+    Ok((terminal, screen, enhanced || cfg!(windows)))
 }
 
 fn clear_new_screen(writer: &mut impl Write) -> std::io::Result<()> {
@@ -292,19 +356,25 @@ fn clear_new_screen(writer: &mut impl Write) -> std::io::Result<()> {
     )
 }
 
-/// Whether a panic on the thread named `thread` ends the view, the main
-/// thread's, or the runtime's, which runs the view (tokio's default name,
-/// which the command's runtime keeps).
+/// Whether a panic on the thread named `thread` ends the view, the view's
+/// own, the main thread's, or the session's runtime's (tokio's default
+/// name, which the command's runtime keeps).
 fn ends_the_view(thread: Option<&str>) -> bool {
-    matches!(thread, Some("main" | "tokio-runtime-worker"))
+    matches!(thread, Some("main" | "tokio-runtime-worker" | THREAD))
 }
 
 /// The keyboard protocol was pushed, and it is popped as the view closes.
 static ENHANCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The view has the terminal, and [`close`] gives it back once.
 static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// The view took the terminal, and [`close`] hasn't given all of it back.
+/// The view took the terminal, and the terminal hasn't taken all that gives
+/// it back.
 static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The view's writer, once it has one, for what follows the view.
+static WRITER: std::sync::Mutex<Option<Writer>> = std::sync::Mutex::new(None);
+/// How long giving the terminal back waits for it to take what is written,
+/// before what follows (a panic's message, the end of the process).
+const CLOSE_WAIT: Duration = Duration::from_secs(1);
 
 /// The terminal as it was, safe to call more than once, and from the panic
 /// hook. (Only once, because leaving the alternate screen again would put the
@@ -314,11 +384,52 @@ fn close() {
         return;
     }
     let _ = crossterm::terminal::disable_raw_mode();
-    write_close(
-        &mut std::io::stdout(),
-        ENHANCED.load(std::sync::atomic::Ordering::SeqCst),
-    );
-    HELD.store(false, std::sync::atomic::Ordering::SeqCst);
+    let pop = ENHANCED.load(std::sync::atomic::Ordering::SeqCst);
+    to_terminal(|mut out| write_close(&mut out, pop));
+    // (Without a writer, it was written. With one, see [`wait_given_back`].)
+    if writer_handle().is_none() {
+        HELD.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// [`close`], then waits at most [`CLOSE_WAIT`] for the terminal to take it,
+/// for what comes next outside the view (a panic's message, the end of the
+/// process).
+fn close_and_wait() {
+    close();
+    wait_given_back(CLOSE_WAIT);
+}
+
+/// Waits at most `wait` for the terminal to take what the view's writer
+/// has, and once it has, after [`close`], the view no longer holds it.
+fn wait_given_back(wait: Duration) {
+    let taken = writer_handle().is_none_or(|writer| writer.wait_written(wait));
+    if taken && !OPEN.load(std::sync::atomic::Ordering::SeqCst) {
+        HELD.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A handle on the view's writer, once it has one.
+fn writer_handle() -> Option<Writer> {
+    crate::lock(&WRITER).as_ref().map(Writer::handle)
+}
+
+/// Writes to the terminal with `write`, through the view's writer once it
+/// has one (a terminal that doesn't read gets it when it does), and
+/// straight to standard output before.
+fn to_terminal(write: impl FnOnce(&mut dyn Write)) {
+    match writer_handle() {
+        Some(mut writer) => {
+            write(&mut writer);
+            let _ = writer.flush();
+        }
+        None => {
+            // (before the writer)
+            let mut out = std::io::stdout();
+            write(&mut out);
+            let _ = out.flush();
+        }
+    }
 }
 
 /// What gives the terminal back, written to `out`, with the keyboard protocol
@@ -349,7 +460,7 @@ fn write_close(out: &mut impl Write, pop: bool) {
 /// process about to end without closing it (a signal). It does nothing
 /// when the view doesn't have the terminal.
 pub(crate) fn give_back_terminal() {
-    close();
+    close_and_wait();
 }
 
 /// Cancel, which ends an escape sequence that a frame cut short left open.
@@ -364,7 +475,6 @@ const CAN: u8 = 0x18;
 /// view gave the terminal back whole, or never had it.
 #[cfg(unix)]
 pub(crate) fn give_back_terminal_at_once(wait: Duration) {
-    use std::os::fd::AsFd;
     if !HELD.load(std::sync::atomic::Ordering::SeqCst) {
         return;
     }
@@ -373,16 +483,13 @@ pub(crate) fn give_back_terminal_at_once(wait: Duration) {
         &mut reset,
         ENHANCED.load(std::sync::atomic::Ordering::SeqCst),
     );
-    let Ok(out) = std::io::stdout().as_fd().try_clone_to_owned() else {
-        return;
-    };
     let (written, done) = std::sync::mpsc::channel();
     let writing = std::thread::Builder::new()
         .name("arko-reset".into())
         .spawn(move || {
             // The usual close may have finished while this thread started.
             if HELD.load(std::sync::atomic::Ordering::SeqCst) {
-                let _ = std::fs::File::from(out).write_all(&reset);
+                let _ = writer::standard_output().write_all(&reset);
             }
             let _ = written.send(());
         });
@@ -394,7 +501,8 @@ pub(crate) fn give_back_terminal_at_once(wait: Duration) {
 /// Takes the terminal as the view does, for a test of how it's given back.
 #[cfg(test)]
 pub(crate) fn take_terminal() -> std::io::Result<impl Sized> {
-    open()
+    // (With no log for its writer's watchdog.)
+    open(PathBuf::new())
 }
 
 /// What giving the terminal back undoes, and its sequence, for tests.
@@ -434,13 +542,16 @@ fn types(event: &Event) -> bool {
 }
 
 /// The view's loop over terminal events, the feed's updates and the clock, until
-/// `stop`. Returns the last reply.
+/// `stop`. What it starts for the session runs on the session's runtime
+/// (`session`). Returns the last reply.
 async fn run(
-    mut terminal: Terminal<CursorBackend<Stdout>>,
+    mut terminal: Terminal<CursorBackend<Writer>>,
+    screen: Writer,
     mut app: App,
     mut setup: Setup,
     mut updates: remote::Following,
     mut stop: oneshot::Receiver<()>,
+    session: tokio::runtime::Handle,
 ) -> Option<String> {
     let mut events = EventStream::new();
     let mut events_open = true;
@@ -454,6 +565,8 @@ async fn run(
     let mut dirty = false;
     let mut draw_now = true;
     let mut title = String::new();
+    // The terminal hasn't taken the last frame, so the next waits for it.
+    let mut held = false;
     let mut enter: Option<Instant> = None;
     let mut burst: Option<Burst> = None;
     // The cache timer's words as last seen, drawn again when they change.
@@ -479,21 +592,29 @@ async fn run(
     // for long is stuck, and the log says where.
     let watchdog = {
         let feed = setup.feed.clone();
+        let terminal = screen.handle();
         let log = setup.session_dir.join(crate::session::LOG_FILE);
-        crate::watchdog::Watchdog::start("The full screen's loop", log, move || feed.holder())
+        let watched = crate::watchdog::Watched::Loop("The full screen's loop");
+        crate::watchdog::Watchdog::start(watched, log, move || {
+            // (Its frames wait while the terminal doesn't take them.)
+            let waiting = terminal.waiting().filter(|waited| waited.as_secs() >= 1);
+            match waiting {
+                Some(waited) => format!(
+                    "{} The terminal hasn't taken a frame for {} s.",
+                    feed.holder(),
+                    waited.as_secs()
+                ),
+                None => feed.holder(),
+            }
+        })
     };
     loop {
         watchdog.turned();
         if draw_now {
             watchdog.stage("drawing");
-            draw(&mut terminal, &mut app);
+            held = !draw_when_written(&mut terminal, &screen, &mut app, &mut title);
             draw_now = false;
             dirty = false;
-            let now = app.title();
-            if now != title {
-                let _ = execute!(std::io::stdout(), crossterm::terminal::SetTitle(&now));
-                title = now;
-            }
         }
         let enter_at = enter.unwrap_or_else(Instant::now);
         let preview_at = app.preview_due();
@@ -566,6 +687,7 @@ async fn run(
                 draw_now = true;
             }
             _ = frames.tick(), if dirty => draw_now = true,
+            () = screen.written(), if held => draw_now = true,
             _ = animation.tick(), if app.transcript.drawn.moving => draw_now = true,
             _ = clock.tick() => {
                 watchdog.stage("reading the status");
@@ -622,9 +744,13 @@ async fn run(
             }
         }
         watchdog.stage("carrying out what the view asked");
+        // (What it starts, such as a notice's timer, outlives the view.)
+        let _session = session.enter();
         bell |= app.take_ring();
         if bell {
-            let _ = std::io::stdout().write_all(b"\x07");
+            let out = terminal.backend_mut();
+            let _ = out.write_all(b"\x07");
+            let _ = out.flush();
         }
         // (Carrying out one can ask for another, such as a dictation's
         // notice.)
@@ -638,9 +764,8 @@ async fn run(
                     Effect::Copy { text, what } => {
                         // The terminal's clipboard, and the system's. The status
                         // line says "Copied" only when the system's took it.
-                        let mut stdout = std::io::stdout();
                         let _ = execute!(
-                            stdout,
+                            terminal.backend_mut(),
                             crossterm::clipboard::CopyToClipboard::to_clipboard_from(
                                 text.as_bytes()
                             )
@@ -654,10 +779,11 @@ async fn run(
                         });
                     }
                     Effect::Mouse(on) => {
+                        let out = terminal.backend_mut();
                         let _ = if on {
-                            execute!(std::io::stdout(), EnableMouse)
+                            execute!(out, EnableMouse)
                         } else {
-                            execute!(std::io::stdout(), DisableMouseCapture)
+                            execute!(out, DisableMouseCapture)
                         };
                     }
                     Effect::Clear => {
@@ -931,10 +1057,32 @@ fn handle(
     }
 }
 
+/// Draws a frame of `app`, with the window's title when it changed from
+/// `title`, unless the terminal hasn't taken the last frame from `screen`,
+/// the terminal's writer, yet. Then the frame waits, and the changes go in
+/// the next one the terminal gets. Whether it was drawn.
+fn draw_when_written(
+    terminal: &mut Terminal<CursorBackend<Writer>>,
+    screen: &Writer,
+    app: &mut App,
+    title: &mut String,
+) -> bool {
+    if screen.busy() {
+        return false;
+    }
+    draw(terminal, app);
+    let now = app.title();
+    if now != *title {
+        let _ = execute!(terminal.backend_mut(), crossterm::terminal::SetTitle(&now));
+        *title = now;
+    }
+    true
+}
+
 /// A frame, drawn as one update where the terminal can (synchronized
 /// output, CSI ?2026, crossterm/src/terminal.rs:433-450, and others ignore it),
 /// so it doesn't flicker.
-fn draw(terminal: &mut Terminal<CursorBackend<Stdout>>, app: &mut App) {
+fn draw(terminal: &mut Terminal<CursorBackend<Writer>>, app: &mut App) {
     let _ = queue!(terminal.backend_mut(), BeginSynchronizedUpdate);
     let _ = terminal.draw(|frame| screen::draw(frame, app));
     let _ = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
@@ -1057,6 +1205,7 @@ mod tests {
     fn only_the_views_threads_panics_give_the_terminal_back() {
         assert!(ends_the_view(Some("main")));
         assert!(ends_the_view(Some("tokio-runtime-worker")));
+        assert!(ends_the_view(Some(THREAD)));
         for other in [
             Some("arko-dictation"),
             Some("speech-worker-3"),
@@ -1189,6 +1338,62 @@ mod tests {
         assert!(!String::from_utf8(unpushed).unwrap().contains("\x1b[<1u"));
     }
 
+    /// The view runs on a thread of its own, so a view that waits without
+    /// awaiting (for a lock, say) holds up none of the session's tasks, and
+    /// a session whose runtime is stuck holds up none of the view's frames.
+    #[test]
+    fn the_view_and_the_session_dont_hold_each_other_up() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::mpsc::channel;
+        const LONG: Duration = Duration::from_secs(5);
+        // One thread runs the session's tasks, and its timers when it rests.
+        let session = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (release, waiting) = channel::<()>();
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let view = {
+            let (ticks, stop) = (ticks.clone(), stop.clone());
+            move || async move {
+                let _ = waiting.recv();
+                let mut frames = tokio::time::interval(Duration::from_millis(10));
+                while !stop.load(Ordering::Relaxed) {
+                    frames.tick().await;
+                    ticks.fetch_add(1, Ordering::Relaxed);
+                }
+                std::thread::current().name().map(str::to_string)
+            }
+        };
+        let reply = on_a_thread(None, view).unwrap();
+
+        // The view waits, and the session's timer fires.
+        let (fired, fires) = channel();
+        session.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = fired.send(());
+        });
+        assert!(fires.recv_timeout(LONG).is_ok(), "the session was held up");
+
+        // The session's thread is stuck, and the view's frames go on.
+        release.send(()).unwrap();
+        let (unstick, stuck) = channel::<()>();
+        session.spawn(async move {
+            let _ = stuck.recv();
+        });
+        let before = ticks.load(Ordering::Relaxed);
+        let started = Instant::now();
+        while ticks.load(Ordering::Relaxed) < before + 10 {
+            assert!(started.elapsed() < LONG, "the view was held up");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        unstick.send(()).unwrap();
+        stop.store(true, Ordering::Relaxed);
+        assert_eq!(reply.blocking_recv().unwrap().as_deref(), Some(THREAD));
+    }
+
     /// What the view gives the session, its messages and its stops alike,
     /// goes in one channel, so the session reads them in the order given.
     /// When the session no longer takes anything, a send is refused as
@@ -1224,5 +1429,332 @@ mod tests {
             }
         }
         assert_eq!(closed, Some(crate::Verdict::closed()));
+    }
+
+    /// The source of the view's module, outside its tests, by file.
+    fn sources() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, found: &mut Vec<(String, String)>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, found);
+                    continue;
+                }
+                let name = path.display().to_string();
+                if !name.ends_with(".rs") || name.ends_with("tests.rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                // (Up to its tests, a module inside it under a `cfg` with `test`.)
+                let lines: Vec<&str> = text.lines().collect();
+                let end = lines.windows(2).position(|pair| {
+                    pair[0].starts_with("#[cfg(")
+                        && pair[0].contains("test")
+                        && pair[1].contains("mod ")
+                        && pair[1].trim_end().ends_with('{')
+                });
+                let code = lines[..end.unwrap_or(lines.len())].join("\n");
+                found.push((name, code));
+            }
+        }
+        let mut found = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tui"),
+            &mut found,
+        );
+        found
+    }
+
+    /// The view reaches the terminal only through its writer, so a terminal
+    /// that stops reading holds up no runtime thread. Outside the writer,
+    /// only what runs before it starts, marked "(before the writer)" on the
+    /// line above, names standard output or error, prints, or asks the
+    /// terminal itself.
+    #[test]
+    fn only_the_writer_writes_to_the_terminal() {
+        let touches = [
+            "stdout()",
+            "stderr()",
+            "Stdout",
+            "print!(",
+            "println!(",
+            "eprintln!(",
+            "supports_keyboard_enhancement",
+            "cursor::position",
+        ];
+        let sources = sources();
+        assert!(sources.len() > 20, "{} files", sources.len());
+        let mut found = Vec::new();
+        for (name, code) in &sources {
+            if name.ends_with("/writer.rs") {
+                continue;
+            }
+            let lines: Vec<&str> = code.lines().collect();
+            for (at, line) in lines.iter().enumerate() {
+                let marked = at > 0 && lines[at - 1].trim() == "// (before the writer)";
+                if touches.iter().any(|touch| line.contains(touch)) && !marked {
+                    found.push(format!("{name}:{}: {}", at + 1, line.trim()));
+                }
+            }
+        }
+        assert!(found.is_empty(), "{found:#?}");
+    }
+
+    /// A terminal's screen as the bytes sent to it draw it. Characters go at
+    /// the cursor, which moves (`CSI row;col H`), and the screen clears
+    /// (`CSI 2J`, and `CSI K` to the line's end). The other sequences
+    /// (colours, modes, the title) change nothing here.
+    #[cfg(unix)]
+    struct Grid {
+        rows: Vec<Vec<String>>,
+        at: (usize, usize),
+    }
+
+    #[cfg(unix)]
+    impl Grid {
+        fn new(width: usize, height: usize) -> Self {
+            Self {
+                rows: vec![vec![" ".to_string(); width]; height],
+                at: (0, 0),
+            }
+        }
+
+        /// The terminal took a new size, with its cells left as they were
+        /// where they still fit.
+        fn resize(&mut self, width: usize, height: usize) {
+            self.rows.resize(height, Vec::new());
+            for row in &mut self.rows {
+                row.resize(width, " ".to_string());
+            }
+        }
+
+        fn feed(&mut self, bytes: &[u8]) {
+            let text = String::from_utf8_lossy(bytes);
+            let mut chars = text.chars().peekable();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\x1b' => match chars.next() {
+                        Some('[') => {
+                            let mut params = String::new();
+                            for c in chars.by_ref() {
+                                if ('\x40'..='\x7e').contains(&c) {
+                                    self.sequence(&params, c);
+                                    break;
+                                }
+                                params.push(c);
+                            }
+                        }
+                        // An OSC (the title), to its BEL or ST.
+                        Some(']') => {
+                            while let Some(c) = chars.next() {
+                                if c == '\x07' || (c == '\x1b' && chars.next() == Some('\\')) {
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
+                    c if c < ' ' => {}
+                    c => {
+                        let width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                        let (x, y) = self.at;
+                        if let Some(row) = self.rows.get_mut(y) {
+                            if let Some(cell) = row.get_mut(x) {
+                                *cell = c.to_string();
+                            }
+                            for covered in 1..width {
+                                if let Some(cell) = row.get_mut(x + covered) {
+                                    cell.clear();
+                                }
+                            }
+                        }
+                        self.at.0 += width;
+                    }
+                }
+            }
+        }
+
+        fn sequence(&mut self, params: &str, last: char) {
+            match last {
+                'H' => {
+                    let mut parts = params
+                        .split(';')
+                        .map(|part| part.parse::<usize>().unwrap_or(1));
+                    let row = parts.next().unwrap_or(1);
+                    let column = parts.next().unwrap_or(1);
+                    self.at = (column - 1, row - 1);
+                }
+                'J' if params == "2" => {
+                    for row in &mut self.rows {
+                        row.fill(" ".to_string());
+                    }
+                }
+                'K' => {
+                    let (x, y) = self.at;
+                    if let Some(row) = self.rows.get_mut(y) {
+                        for cell in row.iter_mut().skip(x) {
+                            *cell = " ".to_string();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn lines(&self) -> Vec<String> {
+            self.rows.iter().map(|row| row.concat()).collect()
+        }
+    }
+
+    /// The lines a buffer shows, with a wide character's second cell left
+    /// out, as [`Grid::lines`] has them.
+    #[cfg(unix)]
+    fn buffer_lines(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+        let area = buffer.area;
+        (area.top()..area.bottom())
+            .map(|y| {
+                let mut line = String::new();
+                let mut skip = 0;
+                for x in area.left()..area.right() {
+                    let symbol = buffer[(x, y)].symbol();
+                    if skip > 0 {
+                        skip -= 1;
+                        continue;
+                    }
+                    skip = unicode_width::UnicodeWidthStr::width(symbol).saturating_sub(1);
+                    line.push_str(symbol);
+                }
+                line
+            })
+            .collect()
+    }
+
+    /// While the terminal doesn't read, the view takes keys and the feed's
+    /// updates, and its frames wait without holding it up. A resize comes
+    /// meanwhile. Once the terminal reads again, it takes the waiting frame,
+    /// and the next frame leaves the screen as the view shows it now.
+    #[cfg(unix)]
+    #[test]
+    fn the_view_goes_on_while_the_terminal_doesnt_read_and_catches_up() {
+        use crate::remote::{Activity, Item, Kind, Update};
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::{TerminalOptions, Viewport};
+
+        let temp = tempfile::tempdir().unwrap();
+        let (mut read, write, filled) = writer::tests::full_pipe();
+        // What the writer sent the terminal, so the test waits until the
+        // terminal read all of it.
+        struct Counted(std::fs::File, Arc<std::sync::atomic::AtomicUsize>);
+        impl Write for Counted {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let count = self.0.write(bytes)?;
+                self.1.fetch_add(count, std::sync::atomic::Ordering::SeqCst);
+                Ok(count)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.0.flush()
+            }
+        }
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let writer = Writer::start(Counted(write, sent.clone()), temp.path().join("arko.log"));
+        let screen = writer.handle();
+        let small = Rect::new(0, 0, 80, 24);
+        let mut terminal = Terminal::with_options(
+            CursorBackend::new(writer),
+            TerminalOptions {
+                viewport: Viewport::Fixed(small),
+            },
+        )
+        .unwrap();
+        let mut app = app::tests::app();
+        let mut title = String::new();
+        // The first frame goes to the writer, which waits for the terminal.
+        assert!(draw_when_written(
+            &mut terminal,
+            &screen,
+            &mut app,
+            &mut title
+        ));
+        let started = Instant::now();
+        for c in "typed while it waits".chars() {
+            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            assert!(!draw_when_written(
+                &mut terminal,
+                &screen,
+                &mut app,
+                &mut title
+            ));
+        }
+        for id in 1..=5 {
+            let mut item = Item::new(Kind::Text, format!("Update {id} from the feed"));
+            item.id = id;
+            app.update(Update::Item(item), Activity::default);
+            assert!(!draw_when_written(
+                &mut terminal,
+                &screen,
+                &mut app,
+                &mut title
+            ));
+        }
+        let large = Rect::new(0, 0, 100, 30);
+        terminal.resize(large).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(app.editor.text(), "typed while it waits");
+        assert!(screen.busy());
+
+        // The terminal reads again, and takes the first frame.
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reading = received.clone();
+        std::thread::spawn(move || {
+            let mut chunk = [0; 65536];
+            while let Ok(count) = std::io::Read::read(&mut read, &mut chunk) {
+                if count == 0 {
+                    break;
+                }
+                reading.lock().unwrap().extend_from_slice(&chunk[..count]);
+            }
+        });
+        let taken = || {
+            let count = filled + sent.load(std::sync::atomic::Ordering::SeqCst);
+            let started = Instant::now();
+            while received.lock().unwrap().len() < count {
+                assert!(started.elapsed() < Duration::from_secs(5), "read");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            count
+        };
+        assert!(screen.wait_written(Duration::from_secs(5)));
+        let first = taken();
+        assert!(draw_when_written(
+            &mut terminal,
+            &screen,
+            &mut app,
+            &mut title
+        ));
+        assert!(screen.wait_written(Duration::from_secs(5)));
+        taken();
+
+        let bytes = received.lock().unwrap().clone();
+        let mut grid = Grid::new(80, 24);
+        grid.feed(&bytes[filled..first]);
+        grid.resize(100, 30);
+        grid.feed(&bytes[first..]);
+        let mut reference = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        reference
+            .draw(|frame| screen::draw(frame, &mut app))
+            .unwrap();
+        let expected = buffer_lines(reference.backend().buffer());
+        assert_eq!(grid.lines(), expected);
+        assert!(
+            expected
+                .iter()
+                .any(|line| line.contains("Update 5 from the feed"))
+        );
+        assert!(
+            expected
+                .iter()
+                .any(|line| line.contains("typed while it waits"))
+        );
     }
 }

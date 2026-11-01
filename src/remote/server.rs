@@ -853,7 +853,8 @@ impl App {
             reading: Reading,
             info: Info,
         }
-        let reading = self.meter.read();
+        // (A read may wait for a lock, and the stream's task with it.)
+        let reading = crate::blocking(|| self.meter.read());
         // The main agent's model as the session runs it now. `/model`
         // changes it before the conversation starts, also after the page's
         // server started.
@@ -1645,9 +1646,11 @@ async fn choices(
         )
             .into_response();
     }
-    let reading = app.meter.read();
-    // (Finding the models can ask Claude Code for its login.)
+    let meter = app.meter.clone();
+    // (Finding the models can ask Claude Code for its login, and a read of
+    // the status may wait for a lock.)
     let (words, notes) = tokio::task::spawn_blocking(move || {
+        let reading = meter.read();
         let command = crate::commands::on_page().find(|command| command.name == body.command)?;
         let before: Vec<&str> = body.before.iter().map(String::as_str).collect();
         let words =

@@ -173,13 +173,22 @@ impl Gauges {
                 let Some(this) = gauges.upgrade() else {
                     break;
                 };
-                // (The day's API spend is shared with the other sessions as
-                // it grows.)
-                let crew = lock(&this.crew).clone();
-                if let Some(crew) = crew {
-                    crew.track_spend();
-                }
-                let reading = remote::Meter::read(this.as_ref());
+                // On a thread that may wait (for a lock, for the file the
+                // spend is shared in), so the runtime's other tasks go on.
+                let read = this.clone();
+                let reading = tokio::task::spawn_blocking(move || {
+                    // (The day's API spend is shared with the other sessions
+                    // as it grows.)
+                    let crew = lock(&read.crew).clone();
+                    if let Some(crew) = crew {
+                        crew.track_spend();
+                    }
+                    remote::Meter::read(read.as_ref())
+                })
+                .await;
+                let Ok(reading) = reading else {
+                    break;
+                };
                 working = feed.activity().working
                     || !reading.workers_running.is_empty()
                     || !reading.jobs.is_empty();
@@ -280,6 +289,7 @@ impl remote::Meter for Gauges {
     /// once (the full screen's, the publisher's, the page's) could each hold
     /// a lock the other waits for.
     fn read(&self) -> remote::Reading {
+        reading("reading the status's settings");
         let workflow = lock(&self.workflow).clone();
         let crew = lock(&self.crew).clone();
         let stats = lock(&self.stats).clone();
@@ -298,6 +308,7 @@ impl remote::Meter for Gauges {
         let title = lock(&self.title).clone();
         // What new workers hand over at, on their model (as the workflow
         // has them until the crew is told).
+        reading("reading the workers' sizes");
         let worker_at = |model: &arko_ai::Model, handover: Option<&arko_agents::HandoverConfig>| {
             self.handover.worker_at(
                 model,
@@ -340,16 +351,56 @@ impl remote::Meter for Gauges {
             _ => Vec::new(),
         };
         let plans = stats.plan_status.values().cloned().collect();
+        reading("reading the costs");
         let (cost, api_price, costs) = costs(workflow.as_deref());
+        reading("reading the feed");
         let turn = self
             .feed
             .as_ref()
             .is_some_and(|feed| feed.activity().working);
+        let (questions, approvals) = self
+            .feed
+            .as_ref()
+            .map(|feed| (feed.open_questions(), feed.approvals()))
+            .unwrap_or_default();
+        reading("reading the models");
         let cache = cache_status(&stats, &models, route.as_ref(), keep_warm, turn);
         let main_plan = {
             let model = providers::resolve_model(&models.main).ok();
             main_plan(model.as_ref(), &models).map(|plan| providers::plan_name(Some(plan)))
         };
+        let models = {
+            let mut models = models;
+            models.reachable = self.keys.reachable();
+            if models.openai_auth.is_none() {
+                models.openai_auth = self
+                    .keys
+                    .openai_auth()
+                    .map(|auth| auth.describe().to_string());
+            }
+            models
+        };
+        reading("reading the workers");
+        let workers_running = crew
+            .as_ref()
+            .map(|crew| crew.running_with_parents())
+            .unwrap_or_default();
+        let workers = crew
+            .filter(|crew| !crew.is_empty())
+            .map(|crew| crew.describe());
+        reading("reading the background jobs");
+        let commands = self.commands_running();
+        let jobs = self.background.manager();
+        let movable = match (&self.feed, &jobs) {
+            (Some(feed), Some(jobs)) => crate::jobs::movable(feed, jobs),
+            _ => Vec::new(),
+        };
+        // As the quit popup names them, which a reading replaces.
+        let jobs = crate::jobs::named(self.feed.as_ref(), jobs.as_deref(), self.background.jobs());
+        let background_after = self.background.after().map_or(0, |after| after.as_secs());
+        reading("reading the handover's sizes");
+        let (outside, handover_at) = (self.outside.is_on(), self.handover.at());
+        reading("reading the status");
         let last_request = stats.last_request.clone();
         remote::Reading {
             cost,
@@ -357,16 +408,11 @@ impl remote::Meter for Gauges {
             costs,
             context_tokens: stats.context_tokens,
             plan_usage: stats.plan_usage,
-            workers_running: crew
-                .as_ref()
-                .map(|crew| crew.running_with_parents())
-                .unwrap_or_default(),
-            workers: crew
-                .filter(|crew| !crew.is_empty())
-                .map(|crew| crew.describe()),
+            workers_running,
+            workers,
             settings: remote::LiveSettings {
-                outside: self.outside.is_on(),
-                handover_at: self.handover.at(),
+                outside,
+                handover_at,
                 workers_handover_at,
                 text_replies: self.text_replies.load(std::sync::atomic::Ordering::Relaxed),
                 cc_compact: self.cc_compact.load(std::sync::atomic::Ordering::Relaxed),
@@ -396,45 +442,19 @@ impl remote::Meter for Gauges {
                 keep_warm,
                 project_instructions,
                 worker_project_instructions,
-                background_after: self.background.after().map_or(0, |after| after.as_secs()),
+                background_after,
                 monitor_wakes,
                 monitor_wakes_within: monitor_wakes
                     .within(stats.cache_lifetime)
                     .map(|within| within.as_secs()),
             },
-            commands: self.commands_running(),
-            movable: match (&self.feed, self.background.manager()) {
-                (Some(feed), Some(jobs)) => crate::jobs::movable(feed, &jobs),
-                _ => Vec::new(),
-            },
-            // As the quit popup names them, which a reading replaces.
-            jobs: crate::jobs::named(
-                self.feed.as_ref(),
-                self.background.manager().as_deref(),
-                self.background.jobs(),
-            ),
-            models: {
-                let mut models = models;
-                models.reachable = self.keys.reachable();
-                if models.openai_auth.is_none() {
-                    models.openai_auth = self
-                        .keys
-                        .openai_auth()
-                        .map(|auth| auth.describe().to_string());
-                }
-                models
-            },
+            commands,
+            movable,
+            jobs,
+            models,
             conversations,
-            questions: self
-                .feed
-                .as_ref()
-                .map(remote::Feed::open_questions)
-                .unwrap_or_default(),
-            approvals: self
-                .feed
-                .as_ref()
-                .map(remote::Feed::approvals)
-                .unwrap_or_default(),
+            questions,
+            approvals,
             page,
             title,
             context_window: stats.context_window,
@@ -445,6 +465,15 @@ impl remote::Meter for Gauges {
             last_request,
         }
     }
+}
+
+/// Where a read of the status is, for the watchdog of the loop that reads
+/// it (the full screen's), should it stall there.
+fn reading(stage: &'static str) {
+    #[cfg(feature = "tui")]
+    crate::watchdog::stage(stage);
+    #[cfg(not(feature = "tui"))]
+    let _ = stage;
 }
 
 /// Takes the feed's updates waiting in `updates`, also those it fell behind

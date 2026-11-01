@@ -291,7 +291,7 @@ fn choose_at(
 
     // Credentials come first, because a model that can't start needs no more said
     // about its effort.
-    if let Some(why) = refuse.and_then(|refuse| blocking(|| refuse(&model))) {
+    if let Some(why) = refuse.and_then(|refuse| crate::blocking(|| refuse(&model))) {
         return Err(why);
     }
 
@@ -416,7 +416,7 @@ pub(crate) fn plan_models(basis: &Basis, refuse: Option<&Refuse>) -> Vec<String>
     let auth = basis.providers.openai_auth;
     let unusable = |sample: &str| {
         let model = providers::resolve_model(sample).ok()?;
-        refuse.and_then(|refuse| blocking(|| refuse(&model)))
+        refuse.and_then(|refuse| crate::blocking(|| refuse(&model)))
     };
     providers::model_menu(unusable, auth, &[], &[])
         .into_iter()
@@ -436,18 +436,6 @@ pub(crate) fn plan_models(basis: &Basis, refuse: Option<&Refuse>) -> Vec<String>
             }
         })
         .collect()
-}
-
-/// Runs `work`, which may block (Claude Code's login check runs a command),
-/// so that it holds up no other task on the runtime thread where the
-/// runtime can move them.
-fn blocking<T>(work: impl FnOnce() -> T) -> T {
-    match tokio::runtime::Handle::try_current() {
-        Ok(runtime) if runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(work)
-        }
-        _ => work(),
-    }
 }
 
 /// The profile `name`, or what the main agent is told about it.

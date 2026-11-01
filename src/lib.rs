@@ -171,3 +171,16 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
+
+/// Runs `work`, which may wait (for a lock, a file, a command), so that it
+/// holds up no other task. On a thread of a multi-threaded runtime, the
+/// thread's other tasks, and the runtime's timers and I/O, move to another
+/// thread meanwhile.
+fn blocking<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) if runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
+}

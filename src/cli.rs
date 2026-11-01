@@ -523,8 +523,10 @@ async fn end_on_signals() {
     ui::stop_reading();
     // The full-screen view's modes too (the alternate screen, the mouse,
     // focus and paste reports, the keyboard protocol, the title, the
-    // cursor), not only the line editor's.
-    tui::give_back_terminal();
+    // cursor), not only the line editor's. (It waits a moment for the
+    // terminal to take them, with the runtime's other tasks moved off this
+    // thread.)
+    crate::blocking(tui::give_back_terminal);
     arko_agents::kill_stop_aware_commands();
     arko_agents::kill_mcp_servers();
     term::restore();
@@ -781,45 +783,41 @@ mod tests {
     }
 
     /// The variable that makes [`a_stuck_end_gives_the_terminal_back`] the
-    /// process whose end gets stuck, and says how (`frozen` or `writing`).
+    /// process whose end gets stuck.
     #[cfg(target_os = "linux")]
     const STUCK: &str = "ARKO_TEST_STUCK_END";
     /// What that process writes once it is stuck.
     #[cfg(target_os = "linux")]
     const STUCK_NOW: &str = "stuck now";
 
-    /// A process whose usual end gets stuck still gives the terminal back
-    /// after the grace, with all the full-screen view did to it undone and
-    /// its modes as they were. Its runtime is frozen (`frozen`), or the
-    /// usual end waits for standard output, which a frame the terminal
-    /// didn't take holds (`writing`). The frame stopped inside an escape
-    /// sequence.
+    /// A process whose usual end gets stuck, because its runtime is frozen,
+    /// still gives the terminal back after the grace, with all the
+    /// full-screen view did to it undone and its modes as they were. A frame
+    /// stopped inside an escape sequence, and keeps standard output's lock.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_stuck_end_gives_the_terminal_back() {
-        if let Some(how) = std::env::var_os(STUCK) {
-            be_stuck(how == "frozen");
+        if std::env::var_os(STUCK).is_some() {
+            be_stuck();
         }
-        for how in ["frozen", "writing"] {
-            let (output, code, before, after) = run_stuck(how);
-            let shown = String::from_utf8_lossy(&output).to_string();
-            assert_eq!(code, Some(128 + libc::SIGTERM), "{how}: {shown:?}");
-            let stuck = shown.find(STUCK_NOW).expect("stuck") + STUCK_NOW.len();
-            let rest = &shown[stuck..];
-            assert!(rest.starts_with("\x1b[3"), "{how}: {rest:?}");
-            let reset = &rest[rest.find('\x18').expect("a CAN")..];
-            for (what, sequence) in tui::UNDONE {
-                assert!(reset.contains(sequence), "{how}, {what}: {reset:?}");
-            }
-            let modes = libc::ICANON | libc::ECHO | libc::ISIG;
-            assert_eq!(after & modes, before & modes, "{how}: the modes");
+        let (output, code, before, after) = run_stuck();
+        let shown = String::from_utf8_lossy(&output).to_string();
+        assert_eq!(code, Some(128 + libc::SIGTERM), "{shown:?}");
+        let stuck = shown.find(STUCK_NOW).expect("stuck") + STUCK_NOW.len();
+        let rest = &shown[stuck..];
+        assert!(rest.starts_with("\x1b[3"), "{rest:?}");
+        let reset = &rest[rest.find('\x18').expect("a CAN")..];
+        for (what, sequence) in tui::UNDONE {
+            assert!(reset.contains(sequence), "{what}: {reset:?}");
         }
+        let modes = libc::ICANON | libc::ECHO | libc::ISIG;
+        assert_eq!(after & modes, before & modes, "the modes");
     }
 
     /// Takes the terminal as the full-screen view does, and gets stuck
     /// ([`a_stuck_end_gives_the_terminal_back`]). It ends only by a signal.
     #[cfg(target_os = "linux")]
-    fn be_stuck(frozen: bool) -> ! {
+    fn be_stuck() -> ! {
         use std::io::Write;
         term::save();
         let _terminal = tui::take_terminal().unwrap();
@@ -828,17 +826,18 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        runtime.spawn(end_on_signals());
         end_when_stuck(Duration::from_millis(300));
-        // (The usual end takes its signals before the runtime freezes.)
-        std::thread::sleep(Duration::from_millis(200));
-        if frozen {
-            runtime.spawn(async {
-                loop {
-                    std::thread::park();
-                }
-            });
-        }
+        // The runtime's one thread takes the usual end's signals first, then
+        // gets stuck before anything else can run on it.
+        runtime.spawn(end_on_signals());
+        let (frozen, freezing) = std::sync::mpsc::channel();
+        runtime.spawn(async move {
+            let _ = frozen.send(());
+            loop {
+                std::thread::park();
+            }
+        });
+        freezing.recv().unwrap();
         let mut out = std::io::stdout().lock();
         let _ = write!(out, "{STUCK_NOW}\x1b[3");
         let _ = out.flush();
@@ -847,12 +846,25 @@ mod tests {
         }
     }
 
+    /// A child process, killed when dropped, so a test that fails leaves it
+    /// running no longer.
+    #[cfg(target_os = "linux")]
+    struct Killed(std::process::Child);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for Killed {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
     /// Runs [`be_stuck`] in a terminal of its own, answers its question
     /// about the keyboard, and sends it SIGTERM once it is stuck. Returns
     /// what it wrote, its exit code, and the terminal's local modes before
     /// and after.
     #[cfg(target_os = "linux")]
-    fn run_stuck(how: &str) -> (Vec<u8>, Option<i32>, libc::tcflag_t, libc::tcflag_t) {
+    fn run_stuck() -> (Vec<u8>, Option<i32>, libc::tcflag_t, libc::tcflag_t) {
         use std::io::{Read, Write};
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
         use std::os::unix::process::CommandExt;
@@ -899,30 +911,32 @@ mod tests {
                 "--test-threads",
                 "1",
             ])
-            .env(STUCK, how)
+            .env(STUCK, "1")
             .stdin(slave.try_clone().unwrap())
             .stdout(slave.try_clone().unwrap())
             .stderr(slave.try_clone().unwrap());
         // SAFETY: only calls that are safe between fork and exec.
-        let mut child = unsafe {
-            command.pre_exec(|| {
-                libc::setsid();
-                libc::ioctl(0, libc::TIOCSCTTY, 0);
-                Ok(())
-            })
-        }
-        .spawn()
-        .unwrap();
+        let mut child = Killed(
+            unsafe {
+                command.pre_exec(|| {
+                    libc::setsid();
+                    libc::ioctl(0, libc::TIOCSCTTY, 0);
+                    Ok(())
+                })
+            }
+            .spawn()
+            .unwrap(),
+        );
         let started = std::time::Instant::now();
         let mut output = Vec::new();
         let (mut answered, mut signalled, mut ended) = (false, false, false);
         let mut quiet_since = std::time::Instant::now();
         loop {
-            if started.elapsed() > Duration::from_secs(30) {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("{how}: {:?}", String::from_utf8_lossy(&output));
-            }
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "{:?}",
+                String::from_utf8_lossy(&output)
+            );
             let mut poll = libc::pollfd {
                 fd: master.as_raw_fd(),
                 events: libc::POLLIN,
@@ -947,15 +961,15 @@ mod tests {
             }
             if !signalled && shown.contains(STUCK_NOW) {
                 // SAFETY: a signal to the child this test started.
-                unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+                unsafe { libc::kill(child.0.id() as i32, libc::SIGTERM) };
                 signalled = true;
             }
-            ended = ended || child.try_wait().is_ok_and(|status| status.is_some());
+            ended = ended || child.0.try_wait().is_ok_and(|status| status.is_some());
             if ended && quiet_since.elapsed() > Duration::from_millis(300) {
                 break;
             }
         }
-        let code = child.wait().unwrap().code();
+        let code = child.0.wait().unwrap().code();
         (output, code, before, modes())
     }
 
