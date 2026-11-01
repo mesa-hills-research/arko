@@ -63,6 +63,7 @@ pub use links::{HOST_VARIABLE, Interface, Link};
 pub use no_server::Server;
 pub use protocol::{Confirm, Partial, Refusal, RefusalKind, Verdict};
 pub(crate) use render::duration_words;
+pub(crate) use render::outcome as call_outcome;
 #[cfg(feature = "remote")]
 pub use server::Server;
 

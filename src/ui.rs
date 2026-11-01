@@ -724,6 +724,19 @@ pub async fn print_events(
                         printer.workers.insert(event.agent_run_id, label.clone());
                         record_worker_context(&printer.stats, label, &event.event);
                     }
+                    // Who a worker's lead is, which its message to it names.
+                    if event.agent_name != MAIN
+                        && let AgentEvent::ToolCallFormatted { tool_name, .. } = &event.event
+                        && tool_name == crew::MESSAGE_AGENT
+                    {
+                        printer.lead = workflow
+                            .as_ref()
+                            .and_then(std::sync::Weak::upgrade)
+                            .and_then(|workflow| {
+                                crew::started_by(&workflow.subagents(), event.agent_run_id)
+                            })
+                            .unwrap_or_else(|| MAIN.to_string());
+                    }
                     if let AgentEvent::ToolCallFormatted { tool_name, .. } = &event.event
                         && tool_name == crew::WAIT_FOR_AGENTS
                     {
@@ -799,6 +812,9 @@ struct EventPrinter {
     running_runs: Vec<String>,
     /// Shell commands the main agent is running, by call ID.
     commands: HashMap<Uuid, String>,
+    /// Who the lead of the worker whose event comes next is ("main", or the
+    /// worker that started it), which its message to its lead names.
+    lead: String,
     /// The provider's refusal of reasoning summaries was told.
     thinking_refused: bool,
     /// The lengths of `text` and `thinking` as the main agent's latest
@@ -833,6 +849,7 @@ impl EventPrinter {
             label,
             running_runs: Vec::new(),
             commands: HashMap::new(),
+            lead: MAIN.to_string(),
             thinking_refused: false,
             request_start: (0, 0),
             printed_since_request: (false, false),
@@ -940,7 +957,8 @@ impl EventPrinter {
                     ));
                 } else if tool_name != "complete_task" {
                     let worker = self.worker(event.agent_run_id);
-                    let call = brief_waiting_for(&tool_name, &parameters, &self.running_runs);
+                    let call =
+                        brief_waiting_for(&tool_name, &parameters, &self.running_runs, &self.lead);
                     self.output
                         .echo(&self.output.dim(&format!("  ↳ {worker} {call}")));
                 }
@@ -960,10 +978,13 @@ impl EventPrinter {
                 } else if crew::LEAD_TOOL_NAMES.contains(&tool_name.as_str())
                     && tool_name != crew::START_AGENT
                 {
-                    // (A started worker is announced by the crew.)
+                    // (A started worker is announced by the crew.) Its result
+                    // is worded for the agent, so the line says it as the
+                    // feed does, from the user's side ("r1 finished").
+                    let outcome = remote::call_outcome(&tool_name, &output).text;
                     let first = output.lines().next().unwrap_or_default();
-                    self.output
-                        .echo(&self.output.dim(&format!("  ⎿ {}", cut(first, 160))));
+                    let said = outcome.unwrap_or_else(|| cut(first, 160));
+                    self.output.echo(&self.output.dim(&format!("  ⎿ {said}")));
                 } else if tool_name == RUN_WORKFLOW_AGENT_TOOL_NAME {
                     let lines = output.lines().count();
                     self.output.echo(&self.output.dim(&format!(
@@ -1502,15 +1523,17 @@ pub fn waiting_for(parameters: &HashMap<String, serde_json::Value>, own: &[Strin
 
 /// A worker's call, briefly.
 pub fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> String {
-    brief_waiting_for(tool, parameters, &[])
+    brief_waiting_for(tool, parameters, &[], MAIN)
 }
 
 /// A worker's call, briefly, where `own` are the runs the worker has going
-/// (what its `wait_for_agents` waits for).
+/// (what its `wait_for_agents` waits for) and `lead` is who its lead is
+/// ("main", or the worker that started it), which a message to it names.
 pub fn brief_waiting_for(
     tool: &str,
     parameters: &HashMap<String, serde_json::Value>,
     own: &[String],
+    lead: &str,
 ) -> String {
     let text = |name: &str| {
         parameters
@@ -1525,9 +1548,8 @@ pub fn brief_waiting_for(
             let (verb, detail) = file_call(tool, parameters);
             format!("{verb} {detail}")
         }
-        // (This view doesn't know which agent a worker's lead is.)
         crew::MESSAGE_AGENT => match text("to") {
-            "lead" => "message to its lead".to_string(),
+            "lead" => format!("message to {lead}"),
             to => format!("message to {to}"),
         },
         // A worker that starts workers makes these calls, which read as the
@@ -1838,7 +1860,17 @@ mod tests {
                 crew::MESSAGE_AGENT,
                 &params(&[("to", "lead".into()), ("message", "hi".into())])
             ),
-            "message to its lead"
+            "message to main"
+        );
+        // A worker of a worker names the worker that started it.
+        assert_eq!(
+            brief_waiting_for(
+                crew::MESSAGE_AGENT,
+                &params(&[("to", "lead".into()), ("message", "hi".into())]),
+                &[],
+                "r3"
+            ),
+            "message to r3"
         );
         // A worker has no runs, so its wait is for a message.
         assert_eq!(
@@ -1949,11 +1981,11 @@ mod tests {
         assert_eq!(brief("link_agents", &params(&[])), "link workers");
         // A worker that started workers waits for those, and names them.
         assert_eq!(
-            brief_waiting_for(crew::WAIT_FOR_AGENTS, &params(&[]), &["r4".into()]),
+            brief_waiting_for(crew::WAIT_FOR_AGENTS, &params(&[]), &["r4".into()], MAIN),
             "waiting for r4"
         );
         assert_eq!(
-            brief_waiting_for(crew::WAIT_FOR_AGENTS, &params(&[]), &[]),
+            brief_waiting_for(crew::WAIT_FOR_AGENTS, &params(&[]), &[], MAIN),
             "waiting for a message"
         );
         assert_eq!(
@@ -2288,6 +2320,52 @@ mod tests {
     /// The lines an output printed.
     #[derive(Clone, Default)]
     struct Printed(Arc<Mutex<Vec<String>>>);
+
+    /// The result of a wait prints what came as the user reads it, not as
+    /// it was worded for the agent that waited, and a worker's message to
+    /// its lead names the lead.
+    #[tokio::test]
+    async fn line_mode_says_what_came_from_the_users_side() {
+        let printed = Printed::default();
+        let output = Arc::new(Output::new(Some(Box::new(printed.clone())), true));
+        let mut printer = EventPrinter::new(output, Arc::default(), false, None);
+        let event = |agent: &str, event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: Uuid::nil(),
+            agent_name: agent.into(),
+            agent_run_id: Uuid::nil(),
+            event,
+        };
+        printer.event(event(
+            MAIN,
+            AgentEvent::ToolResult {
+                tool_call_id: Uuid::new_v4(),
+                tool_name: crew::WAIT_FOR_AGENTS.into(),
+                output: "An update for you arrived while you waited. It follows. Wait again if you still need to. Still running: r3.".into(),
+            },
+        ));
+        printer.lead = "r3".into();
+        printer.event(event(
+            "worker",
+            AgentEvent::ToolCallFormatted {
+                tool_call_id: Uuid::new_v4(),
+                tool_name: crew::MESSAGE_AGENT.into(),
+                parameters: [
+                    ("to".to_string(), "lead".into()),
+                    ("message".to_string(), "Done.".into()),
+                ]
+                .into(),
+            },
+        ));
+        let lines: Vec<String> = printed
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|line| strip_styles(line))
+            .collect();
+        assert_eq!(lines, ["  ⎿ 1 update", "  ↳ worker 1 message to r3"]);
+    }
 
     impl Printer for Printed {
         fn print(&mut self, text: String) -> Result<(), ()> {
