@@ -475,7 +475,7 @@ pub fn cli_main() -> ExitCode {
     #[cfg(unix)]
     {
         runtime.spawn(end_on_signals());
-        end_when_stuck();
+        end_when_stuck(END_GRACE);
     }
     let code = runtime.block_on(run(args));
     // A name a model is still being asked for ends with the process, and so
@@ -658,13 +658,17 @@ const END_GRACE: Duration = Duration::from_secs(5);
 /// The session's log, once it has one.
 static LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// Ends the process [`END_GRACE`] after a SIGTERM or a SIGHUP when the usual
-/// end ([`end_on_signals`]) hasn't. That end runs on the runtime, which may be
-/// stuck, so this waits on a thread of its own, and it says so in the
-/// session's log with a handle of its own.
+/// How long a forced end waits for the terminal to take what gives it back.
 #[cfg(unix)]
-fn end_when_stuck() {
-    ends_after(&[libc::SIGTERM, libc::SIGHUP], END_GRACE, |signal| {
+const RESET_WAIT: Duration = Duration::from_millis(500);
+
+/// Ends the process `grace` ([`END_GRACE`]) after a SIGTERM or a SIGHUP when
+/// the usual end ([`end_on_signals`]) hasn't. That end runs on the runtime,
+/// which may be stuck, so this waits on a thread of its own, and it says so
+/// in the session's log with a handle of its own.
+#[cfg(unix)]
+fn end_when_stuck(grace: Duration) {
+    ends_after(&[libc::SIGTERM, libc::SIGHUP], grace, move |signal| {
         let name = if signal == libc::SIGHUP {
             "SIGHUP"
         } else {
@@ -675,13 +679,15 @@ fn end_when_stuck() {
                 log,
                 &format!(
                     "Arko didn't end within {} s of {name}, so it ended at once",
-                    END_GRACE.as_secs()
+                    grace.as_secs()
                 ),
             );
         }
+        // The terminal first, with nothing that could wait on what is stuck.
+        tui::give_back_terminal_at_once(RESET_WAIT);
+        term::restore();
         arko_agents::kill_stop_aware_commands();
         arko_agents::kill_mcp_servers();
-        term::restore();
         // SAFETY: ends the process without the destructors and the flush of
         // standard output, which may wait on what holds the runtime.
         unsafe { libc::_exit(128 + signal) }
@@ -772,6 +778,185 @@ mod tests {
         assert_eq!(unsafe { libc::raise(libc::SIGUSR2) }, 0);
         assert_eq!(end.recv_timeout(Duration::from_secs(5)), Ok(libc::SIGUSR2));
         assert!(sent.elapsed() >= grace);
+    }
+
+    /// The variable that makes [`a_stuck_end_gives_the_terminal_back`] the
+    /// process whose end gets stuck, and says how (`frozen` or `writing`).
+    #[cfg(target_os = "linux")]
+    const STUCK: &str = "ARKO_TEST_STUCK_END";
+    /// What that process writes once it is stuck.
+    #[cfg(target_os = "linux")]
+    const STUCK_NOW: &str = "stuck now";
+
+    /// A process whose usual end gets stuck still gives the terminal back
+    /// after the grace, with all the full-screen view did to it undone and
+    /// its modes as they were. Its runtime is frozen (`frozen`), or the
+    /// usual end waits for standard output, which a frame the terminal
+    /// didn't take holds (`writing`). The frame stopped inside an escape
+    /// sequence.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stuck_end_gives_the_terminal_back() {
+        if let Some(how) = std::env::var_os(STUCK) {
+            be_stuck(how == "frozen");
+        }
+        for how in ["frozen", "writing"] {
+            let (output, code, before, after) = run_stuck(how);
+            let shown = String::from_utf8_lossy(&output).to_string();
+            assert_eq!(code, Some(128 + libc::SIGTERM), "{how}: {shown:?}");
+            let stuck = shown.find(STUCK_NOW).expect("stuck") + STUCK_NOW.len();
+            let rest = &shown[stuck..];
+            assert!(rest.starts_with("\x1b[3"), "{how}: {rest:?}");
+            let reset = &rest[rest.find('\x18').expect("a CAN")..];
+            for (what, sequence) in tui::UNDONE {
+                assert!(reset.contains(sequence), "{how}, {what}: {reset:?}");
+            }
+            let modes = libc::ICANON | libc::ECHO | libc::ISIG;
+            assert_eq!(after & modes, before & modes, "{how}: the modes");
+        }
+    }
+
+    /// Takes the terminal as the full-screen view does, and gets stuck
+    /// ([`a_stuck_end_gives_the_terminal_back`]). It ends only by a signal.
+    #[cfg(target_os = "linux")]
+    fn be_stuck(frozen: bool) -> ! {
+        use std::io::Write;
+        term::save();
+        let _terminal = tui::take_terminal().unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.spawn(end_on_signals());
+        end_when_stuck(Duration::from_millis(300));
+        // (The usual end takes its signals before the runtime freezes.)
+        std::thread::sleep(Duration::from_millis(200));
+        if frozen {
+            runtime.spawn(async {
+                loop {
+                    std::thread::park();
+                }
+            });
+        }
+        let mut out = std::io::stdout().lock();
+        let _ = write!(out, "{STUCK_NOW}\x1b[3");
+        let _ = out.flush();
+        loop {
+            std::thread::park();
+        }
+    }
+
+    /// Runs [`be_stuck`] in a terminal of its own, answers its question
+    /// about the keyboard, and sends it SIGTERM once it is stuck. Returns
+    /// what it wrote, its exit code, and the terminal's local modes before
+    /// and after.
+    #[cfg(target_os = "linux")]
+    fn run_stuck(how: &str) -> (Vec<u8>, Option<i32>, libc::tcflag_t, libc::tcflag_t) {
+        use std::io::{Read, Write};
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::os::unix::process::CommandExt;
+        let (mut master, slave) = {
+            let (mut master, mut slave) = (0, 0);
+            let size = libc::winsize {
+                ws_row: 24,
+                ws_col: 80,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            // SAFETY: two descriptors and a size for a new terminal.
+            let made = unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    &size,
+                )
+            };
+            assert_eq!(made, 0);
+            // SAFETY: the descriptors `openpty` just opened, owned here.
+            unsafe {
+                (
+                    std::fs::File::from(OwnedFd::from_raw_fd(master)),
+                    OwnedFd::from_raw_fd(slave),
+                )
+            }
+        };
+        let modes = || {
+            // SAFETY: `termios` is plain data that `tcgetattr` fills in.
+            let mut mode: libc::termios = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut mode) }, 0);
+            mode.c_lflag
+        };
+        let before = modes();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "cli::tests::a_stuck_end_gives_the_terminal_back",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(STUCK, how)
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave.try_clone().unwrap());
+        // SAFETY: only calls that are safe between fork and exec.
+        let mut child = unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                libc::ioctl(0, libc::TIOCSCTTY, 0);
+                Ok(())
+            })
+        }
+        .spawn()
+        .unwrap();
+        let started = std::time::Instant::now();
+        let mut output = Vec::new();
+        let (mut answered, mut signalled, mut ended) = (false, false, false);
+        let mut quiet_since = std::time::Instant::now();
+        loop {
+            if started.elapsed() > Duration::from_secs(30) {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{how}: {:?}", String::from_utf8_lossy(&output));
+            }
+            let mut poll = libc::pollfd {
+                fd: master.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one descriptor to wait on.
+            if unsafe { libc::poll(&mut poll, 1, 50) } > 0 {
+                let mut chunk = [0; 4096];
+                match master.read(&mut chunk) {
+                    Ok(count) if count > 0 => {
+                        output.extend_from_slice(&chunk[..count]);
+                        quiet_since = std::time::Instant::now();
+                    }
+                    _ => {}
+                }
+            }
+            let shown = String::from_utf8_lossy(&output);
+            if !answered && shown.contains("\x1b[c") {
+                // The kitty keyboard protocol, and the device's attributes.
+                master.write_all(b"\x1b[?1u\x1b[?62c").unwrap();
+                answered = true;
+            }
+            if !signalled && shown.contains(STUCK_NOW) {
+                // SAFETY: a signal to the child this test started.
+                unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+                signalled = true;
+            }
+            ended = ended || child.try_wait().is_ok_and(|status| status.is_some());
+            if ended && quiet_since.elapsed() > Duration::from_millis(300) {
+                break;
+            }
+        }
+        let code = child.wait().unwrap().code();
+        (output, code, before, modes())
     }
 
     /// The listing names each session as the sidebar of an app does, the

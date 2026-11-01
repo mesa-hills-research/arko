@@ -237,6 +237,7 @@ impl Command for EnableMouse {
 fn open() -> std::io::Result<(Terminal<CursorBackend<Stdout>>, bool)> {
     crossterm::terminal::enable_raw_mode()?;
     OPEN.store(true, std::sync::atomic::Ordering::SeqCst);
+    HELD.store(true, std::sync::atomic::Ordering::SeqCst);
     // A panic that ends the view restores the terminal before its message
     // prints (as ratatui's init does, ratatui/src/init.rs:566). Another
     // thread's, which dictation's thread recovers from (and the speech
@@ -302,6 +303,8 @@ fn ends_the_view(thread: Option<&str>) -> bool {
 static ENHANCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The view has the terminal, and [`close`] gives it back once.
 static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The view took the terminal, and [`close`] hasn't given all of it back.
+static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The terminal as it was, safe to call more than once, and from the panic
 /// hook. (Only once, because leaving the alternate screen again would put the
@@ -311,14 +314,18 @@ fn close() {
         return;
     }
     let _ = crossterm::terminal::disable_raw_mode();
-    write_close(&mut std::io::stdout());
+    write_close(
+        &mut std::io::stdout(),
+        ENHANCED.load(std::sync::atomic::Ordering::SeqCst),
+    );
+    HELD.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// What gives the terminal back, written to `out`, with the keyboard protocol
-/// popped (when it was pushed), the mouse, focus and paste reports off, the
-/// main screen back, the cursor shown and the title put back.
-fn write_close(out: &mut impl Write) {
-    if ENHANCED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+/// popped (`pop`, when it was pushed), the mouse, focus and paste reports
+/// off, the main screen back, the cursor shown and the title put back.
+fn write_close(out: &mut impl Write, pop: bool) {
+    if pop {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }
     let _ = execute!(
@@ -341,6 +348,62 @@ fn write_close(out: &mut impl Write) {
 pub(crate) fn give_back_terminal() {
     close();
 }
+
+/// Cancel, which ends an escape sequence that a frame cut short left open.
+#[cfg(unix)]
+const CAN: u8 = 0x18;
+
+/// Gives the terminal back now, for a process that ends at once because its
+/// runtime is stuck, where [`give_back_terminal`] may wait on what holds
+/// standard output's lock or crossterm's. It writes what [`close`] writes,
+/// after a [`CAN`], straight to standard output's descriptor, on a thread
+/// of its own that it waits for `wait` at most. It does nothing when the
+/// view gave the terminal back whole, or never had it.
+#[cfg(unix)]
+pub(crate) fn give_back_terminal_at_once(wait: Duration) {
+    use std::os::fd::AsFd;
+    if !HELD.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let mut reset = vec![CAN];
+    write_close(
+        &mut reset,
+        ENHANCED.load(std::sync::atomic::Ordering::SeqCst),
+    );
+    let Ok(out) = std::io::stdout().as_fd().try_clone_to_owned() else {
+        return;
+    };
+    let (written, done) = std::sync::mpsc::channel();
+    let writing = std::thread::Builder::new()
+        .name("arko-reset".into())
+        .spawn(move || {
+            let _ = std::fs::File::from(out).write_all(&reset);
+            let _ = written.send(());
+        });
+    if writing.is_ok() {
+        let _ = done.recv_timeout(wait);
+    }
+}
+
+/// Takes the terminal as the view does, for a test of how it's given back.
+#[cfg(test)]
+pub(crate) fn take_terminal() -> std::io::Result<impl Sized> {
+    open()
+}
+
+/// What giving the terminal back undoes, and its sequence, for tests.
+#[cfg(all(test, unix))]
+pub(crate) const UNDONE: [(&str, &str); 9] = [
+    ("keyboard protocol", "\x1b[<1u"),
+    ("button reports", "\x1b[?1000l"),
+    ("drag reports", "\x1b[?1002l"),
+    ("SGR mouse", "\x1b[?1006l"),
+    ("focus reports", "\x1b[?1004l"),
+    ("bracketed paste", "\x1b[?2004l"),
+    ("alternate screen", "\x1b[?1049l"),
+    ("cursor", "\x1b[?25h"),
+    ("title", "\x1b[23;0t"),
+];
 
 /// A paste that came as keys, with where it started in the box, and when it
 /// ends unless more come.
@@ -1107,27 +1170,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_terminal_is_given_back_whole() {
-        ENHANCED.store(true, std::sync::atomic::Ordering::SeqCst);
         let mut out = Vec::new();
-        write_close(&mut out);
+        write_close(&mut out, true);
         let written = String::from_utf8(out).unwrap();
-        for (what, sequence) in [
-            ("keyboard protocol", "\x1b[<1u"),
-            ("button reports", "\x1b[?1000l"),
-            ("drag reports", "\x1b[?1002l"),
-            ("SGR mouse", "\x1b[?1006l"),
-            ("focus reports", "\x1b[?1004l"),
-            ("bracketed paste", "\x1b[?2004l"),
-            ("alternate screen", "\x1b[?1049l"),
-            ("cursor", "\x1b[?25h"),
-            ("title", "\x1b[23;0t"),
-        ] {
+        for (what, sequence) in UNDONE {
             assert!(written.contains(sequence), "{what}: {written:?}");
         }
-        // The protocol is popped once.
-        let mut again = Vec::new();
-        write_close(&mut again);
-        assert!(!String::from_utf8(again).unwrap().contains("\x1b[<1u"));
+        // The protocol is popped only when it was pushed.
+        let mut unpushed = Vec::new();
+        write_close(&mut unpushed, false);
+        assert!(!String::from_utf8(unpushed).unwrap().contains("\x1b[<1u"));
     }
 
     /// What the view gives the session, its messages and its stops alike,
