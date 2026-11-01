@@ -116,7 +116,7 @@ fn watch(watched: &Weak<Shared>, log: &Path) {
 }
 
 /// Adds `text` to the log at `path` as a warning, in the logger's format.
-fn write(path: &Path, text: &str) {
+pub(crate) fn write(path: &Path, text: &str) {
     use std::io::Write;
     let line = format!(
         "[{} WARN  arko::watchdog] {text}\n",
