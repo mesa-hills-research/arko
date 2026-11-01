@@ -528,9 +528,10 @@ pub(crate) fn give_back_terminal() {
 /// on it (it failed, or the runtime is stuck), through its record of the
 /// reset written that way ([`Writer::reset_directly`]). Waits `wait` at most
 /// for that reset, written to what `out` opens, then puts the terminal's
-/// modes as they were when Arko started. Without `writer`, or without its
-/// lock, nothing records the reset, so it writes one of its own at its own
-/// risk of a second (harmless as Arko ends).
+/// modes as they were when Arko started. Without `writer` (the forced end
+/// couldn't get the registry's lock, or no view had the terminal), nothing
+/// records the reset, so it writes one of its own at its own risk of a
+/// second (harmless as Arko ends).
 fn restore_directly(
     writer: Option<&Writer>,
     wait: Duration,

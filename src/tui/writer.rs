@@ -24,9 +24,12 @@
 //!
 //! Its state is behind one lock, held for no write, no wait but its own
 //! Condvar's, and no call out. Those waiting are woken after it's let go.
+//! The record of the reset written without the writer is an atomic outside
+//! it, so an end that can't count on the writer waits on no lock.
 
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError, Weak};
 use std::time::{Duration, Instant};
 
@@ -51,6 +54,39 @@ struct Shared {
     /// Rings for the view when everything handed over has been written, or
     /// the writer failed.
     written: Notify,
+    /// What gives the terminal back.
+    reset: Vec<u8>,
+    /// The writer wrote the reset ([`Phase::Reset`]), for those who look
+    /// without its lock.
+    reset_written: AtomicBool,
+    /// Where the reset written without the writer is, [`NOT_STARTED`],
+    /// [`IN_FLIGHT`], [`WRITTEN`] or [`FAILED`]. Never under the lock.
+    direct: Arc<AtomicU8>,
+}
+
+/// No one writes the reset without the writer, or the thread to write it
+/// didn't start.
+const NOT_STARTED: u8 = 0;
+/// A thread of its own writes it.
+const IN_FLIGHT: u8 = 1;
+/// That thread wrote it.
+const WRITTEN: u8 = 2;
+/// That thread couldn't write it (the terminal is gone), or it broke.
+const FAILED: u8 = 3;
+
+/// How often those waiting for the reset written without the writer look.
+const POLL: Duration = Duration::from_millis(5);
+
+/// Marks the reset written without the writer failed, when the thread
+/// writing it breaks before it says what became of it.
+struct Unwound(Arc<AtomicU8>);
+
+impl Drop for Unwound {
+    fn drop(&mut self) {
+        let _ = self
+            .0
+            .compare_exchange(IN_FLIGHT, FAILED, Ordering::SeqCst, Ordering::SeqCst);
+    }
 }
 
 struct State {
@@ -65,28 +101,11 @@ struct State {
     /// How many of those were written, or dropped as the view's when it
     /// finished. The rest are being written or wait.
     settled: u64,
-    /// What gives the terminal back.
-    reset: Vec<u8>,
     phase: Phase,
     /// An end that can't count on the writer writes the reset itself, so
     /// the writer writes nothing more.
     taken_over: bool,
-    /// Where the reset written without the writer is.
-    direct: DirectReset,
     failed: Option<Failure>,
-}
-
-/// Where the reset written without the writer is ([`Writer::reset_directly`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum DirectReset {
-    /// No one writes it, or the thread to write it didn't start.
-    NotStarted,
-    /// A thread of its own writes it.
-    InFlight,
-    /// That thread wrote it.
-    Written,
-    /// That thread couldn't write it (the terminal is gone).
-    Failed,
 }
 
 /// Where giving the terminal back is.
@@ -144,14 +163,14 @@ pub(super) enum Direct {
     Failed,
     /// It's being written, and wasn't by the deadline.
     TimedOut,
-    /// The writer's lock couldn't be had, so nothing is known.
+    /// There's no writer to keep a record, so nothing is known.
     Unknown,
 }
 
 /// Cancel, which ends an escape sequence that a frame cut short left open.
 pub(super) const CAN: u8 = 0x18;
 
-/// How long an end that can't count on the writer tries for its lock.
+/// How long an end that can't count on the writer tries for a lock.
 pub(super) const LOCK_WAIT: Duration = Duration::from_millis(50);
 
 /// The name of the writer's thread.
@@ -192,14 +211,15 @@ impl Writer {
                 started: None,
                 queued: 0,
                 settled: 0,
-                reset,
                 phase: Phase::Open,
                 taken_over: false,
-                direct: DirectReset::NotStarted,
                 failed: None,
             }),
             changed: Condvar::new(),
             written: Notify::new(),
+            reset,
+            reset_written: AtomicBool::new(false),
+            direct: Arc::new(AtomicU8::new(NOT_STARTED)),
         });
         let watched = Arc::downgrade(&shared);
         let watchdog = Watchdog::start(Watched::Terminal, log, String::new);
@@ -275,8 +295,7 @@ impl Writer {
                 // (The view's bytes no write started on count as settled.)
                 state.settled += state.pending.len() as u64;
                 state.pending.clear();
-                let reset = state.reset.clone();
-                state.queue(&reset);
+                state.queue(&self.shared.reset);
                 state.phase = Phase::Finishing(state.queued);
             }
             state.queue(tail);
@@ -308,12 +327,13 @@ impl Writer {
 
     /// For an end that can't count on the writer (a stuck runtime, a failed
     /// writer): writes the reset without it, unless the writer wrote it, and
-    /// waits at most `wait` for what became of it. The first call (or the
-    /// first after a thread that didn't start) ends the writer's output and
-    /// starts a thread with `spawn` that writes [`CAN`] and the reset to
-    /// what `out` opens. Calls meanwhile wait for that thread, and later ones
-    /// get what it found. The lock is let go for the start, the write and
-    /// the wake-up.
+    /// waits at most `wait` for what became of it. Its record is an atomic of
+    /// its own, never under the writer's lock, which this takes for no wait.
+    /// The first call (or the first after a thread that didn't start) claims
+    /// it, stops the writer if it gets the writer's lock within
+    /// [`LOCK_WAIT`], and starts a thread with `spawn` that writes [`CAN`] and
+    /// the reset to what `out` opens. All calls then look at the record every
+    /// few milliseconds until their deadline.
     pub(super) fn reset_directly(
         &self,
         wait: Duration,
@@ -321,56 +341,56 @@ impl Writer {
         spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<()>,
     ) -> Direct {
         let until = Instant::now() + wait;
-        let Some(mut state) = try_lock_for(&self.shared.state, wait.min(LOCK_WAIT)) else {
-            return Direct::Unknown;
-        };
         let mut start = Some((out, spawn));
         loop {
-            if state.phase == Phase::Reset {
+            if self.shared.reset_written.load(Ordering::SeqCst) {
                 return Direct::Unneeded;
             }
-            match state.direct {
-                DirectReset::Written => return Direct::Written,
-                DirectReset::Failed => return Direct::Failed,
-                DirectReset::InFlight => {
-                    let left = until.saturating_duration_since(Instant::now());
-                    if left.is_zero() {
-                        return Direct::TimedOut;
-                    }
-                    state = self.wait_for_change(state, left);
-                }
-                DirectReset::NotStarted => {
+            match self.shared.direct.load(Ordering::SeqCst) {
+                WRITTEN => return Direct::Written,
+                FAILED => return Direct::Failed,
+                NOT_STARTED => {
                     // (This call's own thread didn't start.)
                     let Some((out, spawn)) = start.take() else {
                         return Direct::Failed;
                     };
-                    state.direct = DirectReset::InFlight;
-                    state.taken_over = true;
-                    state.pending.clear();
+                    let claimed = self.shared.direct.compare_exchange(
+                        NOT_STARTED,
+                        IN_FLIGHT,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    );
+                    if claimed.is_err() {
+                        start = Some((out, spawn));
+                        continue;
+                    }
+                    // (The writer writes no more, if its lock can be had.)
+                    let left = until.saturating_duration_since(Instant::now());
+                    if let Some(mut state) = try_lock_for(&self.shared.state, left.min(LOCK_WAIT)) {
+                        state.taken_over = true;
+                        state.pending.clear();
+                    }
                     let mut bytes = vec![CAN];
-                    bytes.extend_from_slice(&state.reset);
-                    drop(state);
-                    let shared = self.shared.clone();
+                    bytes.extend_from_slice(&self.shared.reset);
+                    let direct = self.shared.direct.clone();
                     let started = spawn(Box::new(move || {
+                        let _unwound = Unwound(direct.clone());
                         let mut out = out();
                         let wrote = out.write_all(&bytes).and_then(|()| out.flush());
-                        crate::lock(&shared.state).direct = match wrote {
-                            Ok(()) => DirectReset::Written,
-                            Err(_) => DirectReset::Failed,
-                        };
-                        shared.changed.notify_all();
+                        let outcome = if wrote.is_ok() { WRITTEN } else { FAILED };
+                        direct.store(outcome, Ordering::SeqCst);
                     }));
-                    let left = until.saturating_duration_since(Instant::now());
-                    let Some(again) = try_lock_for(&self.shared.state, left.max(LOCK_WAIT)) else {
-                        return Direct::TimedOut;
-                    };
-                    state = again;
                     if started.is_err() {
-                        state.direct = DirectReset::NotStarted;
-                        drop(state);
-                        self.shared.changed.notify_all();
+                        self.shared.direct.store(NOT_STARTED, Ordering::SeqCst);
                         return Direct::Failed;
                     }
+                }
+                _ => {
+                    let left = until.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Direct::TimedOut;
+                    }
+                    std::thread::sleep(left.min(POLL));
                 }
             }
         }
@@ -481,6 +501,7 @@ fn write_all(shared: &Weak<Shared>, mut out: impl Write, watchdog: &Watchdog) {
                         && state.settled >= end
                     {
                         state.phase = Phase::Reset;
+                        shared.reset_written.store(true, Ordering::SeqCst);
                     }
                 }
                 Err(_) => {
@@ -978,5 +999,91 @@ pub(super) mod tests {
         let unused = Gate::default();
         assert_eq!(reset_to(&refusing, &unused, LONG), Direct::Failed);
         assert!(unused.taken().is_empty());
+    }
+
+    /// A reset whose thread didn't start while something else held the
+    /// writer's lock is left for the next end, which writes it.
+    #[test]
+    fn a_reset_whose_thread_didnt_start_while_the_lock_was_held_is_tried_again() {
+        let writer = Writer::start(io::sink(), PathBuf::new(), b"[reset]".to_vec()).unwrap();
+        let shared = writer.shared.clone();
+        let (held, holding) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let mut holder = None;
+        let first = writer.reset_directly(
+            Duration::from_millis(10),
+            || Box::new(io::sink()),
+            |_| {
+                holder = Some(std::thread::spawn(move || {
+                    let state = crate::lock(&shared.state);
+                    held.send(()).unwrap();
+                    let _ = released.recv();
+                    drop(state);
+                }));
+                holding.recv().unwrap();
+                Err(io::Error::other("no thread"))
+            },
+        );
+        release.send(()).unwrap();
+        holder.unwrap().join().unwrap();
+        assert_ne!(first, Direct::Written);
+        let direct = Gate::default();
+        assert_eq!(reset_to(&writer, &direct, LONG), Direct::Written);
+        assert_eq!(direct.taken(), b"\x18[reset]");
+    }
+
+    /// A thread writing the reset that breaks leaves it failed, which those
+    /// waiting learn at once, not at their deadline.
+    #[test]
+    fn a_reset_whose_thread_breaks_counts_as_failed() {
+        let writer = Writer::start(io::sink(), PathBuf::new(), b"[reset]".to_vec()).unwrap();
+        let started = Instant::now();
+        let first = writer.reset_directly(
+            Duration::from_secs(1),
+            || -> Box<dyn Write + Send> { panic!("the reset's thread breaks") },
+            spawn,
+        );
+        assert_eq!(first, Direct::Failed);
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(reset_to(&writer, &Gate::default(), LONG), Direct::Failed);
+    }
+
+    /// One waiting for a reset in flight returns by its deadline, also while
+    /// something else holds the writer's lock.
+    #[test]
+    fn waiting_for_a_reset_ends_at_its_deadline_while_the_lock_is_held() {
+        let writer = Writer::start(io::sink(), PathBuf::new(), b"[reset]".to_vec()).unwrap();
+        let held = Gate::default();
+        held.hold(true);
+        let first = {
+            let (writer, held) = (writer.handle(), held.clone());
+            std::thread::spawn(move || reset_to(&writer, &held, LONG))
+        };
+        let started = Instant::now();
+        while held.waiting() == 0 {
+            assert!(started.elapsed() < LONG);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let waiter = {
+            let writer = writer.handle();
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let direct = writer.reset_directly(
+                    Duration::from_millis(200),
+                    || Box::new(io::sink()),
+                    spawn,
+                );
+                (direct, started.elapsed())
+            })
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        let state = crate::lock(&writer.shared.state);
+        std::thread::sleep(Duration::from_millis(600));
+        drop(state);
+        let (direct, waited) = waiter.join().unwrap();
+        held.hold(false);
+        assert_eq!(first.join().unwrap(), Direct::Written);
+        assert_eq!(direct, Direct::TimedOut);
+        assert!(waited < Duration::from_millis(400), "it waited {waited:?}");
     }
 }
