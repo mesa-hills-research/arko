@@ -1204,8 +1204,8 @@ impl Transcript {
                         clock: Some(&took),
                     };
                     // (Its lines come with a row's margin, where the bar goes.)
-                    let thought = entry_lines(item, theme, inner + MARGIN, true, None, look);
-                    rows.extend(thought.into_iter().map(undecorated));
+                    let thought = entry_lines(item, theme, inner + SPINNER, true, None, look);
+                    rows.extend(thought.into_iter().map(|line| outdented(line, SPINNER)));
                 }
                 _ => {}
             }
@@ -1584,13 +1584,9 @@ impl Transcript {
                 running,
             } => {
                 let mut spans = vec![
-                    Span::raw("  "),
+                    marker("▸", theme.dim()),
                     Span::styled(
-                        format!(
-                            "{} {calls} tool call{}",
-                            glyphs::render("▸"),
-                            if *calls == 1 { "" } else { "s" }
-                        ),
+                        format!("{calls} tool call{}", if *calls == 1 { "" } else { "s" }),
                         theme.dim(),
                     ),
                 ];
@@ -2226,8 +2222,8 @@ fn theme_key(theme: &Theme) -> u64 {
     hasher.finish()
 }
 
-/// The left margin every line has, two columns, which the user's bar and
-/// the tool lines' markers use.
+/// The left margin every line has, two columns, where the agent's text
+/// starts. A row's marker stands after it ([`SPINNER`]).
 const MARGIN: usize = 2;
 
 /// The last line of a command's block that shows its whole output. A click
@@ -2240,12 +2236,13 @@ const THOUGHT: &str = "Thought";
 
 /// The line that says the agent works, while it waits on its model.
 const WORKING: &str = "Working…";
-/// The column of the spinner, on the "Working…" line and on the thinking
-/// row, where the fold's triangle stands while it is still. It is the
-/// column of the rail a command's output hangs from (`gutter`), so the rail
-/// runs into it.
+/// The column of the spinner on the "Working…" line, and of every row's
+/// marker ([`marker`]), such as a fold's triangle, the user's bar or ✉.
+/// It is the column of the rail a command's output hangs from (`gutter`),
+/// and of the bar of an open Quiet row, so they run into it.
 const SPINNER: usize = MARGIN;
-/// The column of the word after the spinner.
+/// The column of the word after the spinner, where the text of every row
+/// with a marker starts.
 const LABEL: usize = SPINNER + 2;
 
 /// The last line of an agent's thinking shown whole. A click on it folds
@@ -2276,20 +2273,17 @@ fn quiet_line(
     width: usize,
     clock: Option<&str>,
 ) -> Vec<Wrapped> {
-    let inner = width.saturating_sub(MARGIN).max(1);
+    let inner = width.saturating_sub(LABEL).max(1);
     let spans = quiet_spans(words, theme, clock);
     let style = if words.failed.is_some() {
         theme.error()
     } else {
         theme.dim()
     };
-    let symbol = glyphs::render(if open { "▾" } else { "▸" }).into_owned();
-    let pad = MARGIN.saturating_sub(text_width(&symbol));
-    let mark = Span::styled(format!("{symbol}{}", " ".repeat(pad)), style);
     wrap::prefixed(
         wrap::wrap_lines(&spans, inner, 2),
-        mark,
-        Span::raw(" ".repeat(MARGIN)),
+        marker(if open { "▾" } else { "▸" }, style),
+        Span::raw(" ".repeat(LABEL)),
     )
 }
 
@@ -2327,12 +2321,19 @@ fn indented(lines: Vec<Wrapped>, indent: usize) -> Vec<Wrapped> {
         .collect()
 }
 
-/// `line` without the decoration it starts with (a row's margin).
-fn undecorated(mut line: Wrapped) -> Wrapped {
-    if !line.spans.is_empty() {
-        let first = line.spans.remove(0);
-        line.skip = line.skip.saturating_sub(text_width(&first.content));
+/// `line` moved left by `by` columns, which the margin it starts with
+/// gives up (a row's lines start with spaces up to their marker or text).
+fn outdented(mut line: Wrapped, by: usize) -> Wrapped {
+    let Some(first) = line.spans.first_mut() else {
+        return line;
+    };
+    let lead = first.content.chars().take_while(|c| *c == ' ').count();
+    let by = by.min(lead);
+    first.content = first.content.chars().skip(by).collect::<String>().into();
+    if first.content.is_empty() {
+        line.spans.remove(0);
     }
+    line.skip = line.skip.saturating_sub(by);
     line
 }
 
@@ -2357,6 +2358,17 @@ fn result_body(item: &Item, theme: &Theme, open: bool) -> (String, Style, bool) 
     (text, style, whole.is_some())
 }
 
+/// A row's marker (a fold's triangle, ✉, ·) in the spinner's column, and
+/// the space up to the label's column, where the row's text starts.
+fn marker(symbol: &str, style: Style) -> Span<'static> {
+    let symbol = glyphs::render(symbol).into_owned();
+    let pad = (LABEL - SPINNER).saturating_sub(text_width(&symbol));
+    Span::styled(
+        format!("{}{symbol}{}", " ".repeat(SPINNER), " ".repeat(pad)),
+        style,
+    )
+}
+
 /// An item's lines at `width` (margins included), with what a copy of each
 /// needs. `own` is set in its worker's own view, where a worker's lines don't name it.
 /// `under` is the worker that started the item's worker, which a notice names.
@@ -2370,13 +2382,13 @@ fn entry_lines(
     look: Look,
 ) -> Vec<Wrapped> {
     let Look { open, quiet, clock } = look;
+    // The agent's text starts at the margin. A row with a marker has it in
+    // the spinner's column and its text at the label's.
     let inner = width.saturating_sub(MARGIN).max(1);
+    let marked = width.saturating_sub(LABEL).max(1);
     let blank = || Span::raw(" ".repeat(MARGIN));
-    let mark = |symbol: &str, style: Style| {
-        let symbol = glyphs::render(symbol).into_owned();
-        let pad = MARGIN.saturating_sub(text_width(&symbol));
-        Span::styled(format!("{symbol}{}", " ".repeat(pad)), style)
-    };
+    let hang = || Span::raw(" ".repeat(LABEL));
+    let mark = |symbol: &str, style: Style| marker(symbol, style);
     let worker_prefix = |item: &Item| -> Vec<Span<'static>> {
         if item.is_main() || own {
             Vec::new()
@@ -2395,10 +2407,10 @@ fn entry_lines(
             } else {
                 (theme.text(), theme.accent())
             };
-            let mut lines = plain(&item.text, style, inner);
+            let mut lines = plain(&item.text, style, marked);
             if let Some(tag) = user_tag(item) {
                 // (Not the user's text, so a copy leaves it out.)
-                let tag = cut_end(&tag, inner);
+                let tag = cut_end(&tag, marked);
                 let tag_width = text_width(&tag);
                 let style = theme.dim().add_modifier(Modifier::ITALIC);
                 // At the right of the first row, two columns from its text,
@@ -2407,14 +2419,16 @@ fn entry_lines(
                 // under the last.
                 let wraps = lines.iter().any(|line| line.join != Join::Break);
                 match lines.first_mut() {
-                    Some(first) if !wraps && spans_width(&first.spans) + 2 + tag_width <= inner => {
-                        let tail = inner - spans_width(&first.spans);
+                    Some(first)
+                        if !wraps && spans_width(&first.spans) + 2 + tag_width <= marked =>
+                    {
+                        let tail = marked - spans_width(&first.spans);
                         let gap = " ".repeat(tail - tag_width);
                         first.spans.push(Span::styled(format!("{gap}{tag}"), style));
                         first.tail += tail;
                     }
                     _ => {
-                        let gap = " ".repeat(inner.saturating_sub(tag_width));
+                        let gap = " ".repeat(marked.saturating_sub(tag_width));
                         let mut line =
                             Wrapped::line(vec![Span::styled(format!("{gap}{tag}"), style)]);
                         line.bare = true;
@@ -2458,8 +2472,8 @@ fn entry_lines(
                     theme.dim().add_modifier(Modifier::BOLD),
                 )]));
             }
-            lines.extend(markdown::render(&item.text, theme.text(), theme, inner));
-            wrap::prefixed(lines, mark("✉", theme.dim()), blank())
+            lines.extend(markdown::render(&item.text, theme.text(), theme, marked));
+            wrap::prefixed(lines, mark("✉", theme.dim()), hang())
         }
         Kind::Question => {
             // One quiet line while its questions are open (the answer panel
@@ -2471,18 +2485,21 @@ fn entry_lines(
                     "Arko asked".to_string(),
                     theme.dim(),
                 )])];
-                lines.extend(markdown::render(&item.text, theme.text(), theme, inner));
-                return wrap::prefixed(lines, mark("?", theme.accent()), blank());
+                lines.extend(markdown::render(&item.text, theme.text(), theme, marked));
+                return wrap::prefixed(lines, mark("?", theme.accent()), hang());
             };
             if questions.iter().any(|question| !question.state.is_open()) {
                 return record_lines(&item.text, questions, theme, width);
             }
-            let lines: Vec<Wrapped> =
-                wrap::wrap(&[Span::styled(rendered(&item.text), theme.dim())], inner, 0)
-                    .into_iter()
-                    .map(Wrapped::line)
-                    .collect();
-            wrap::prefixed(lines, mark("?", theme.accent()), blank())
+            let lines: Vec<Wrapped> = wrap::wrap(
+                &[Span::styled(rendered(&item.text), theme.dim())],
+                marked,
+                0,
+            )
+            .into_iter()
+            .map(Wrapped::line)
+            .collect();
+            wrap::prefixed(lines, mark("?", theme.accent()), hang())
         }
         Kind::Call => {
             let mut spans = worker_prefix(item);
@@ -2519,9 +2536,9 @@ fn entry_lines(
             }
             let marker_style = if failed { theme.error() } else { theme.dim() };
             wrap::prefixed(
-                wrap::wrap_lines(&spans, inner, 2),
+                wrap::wrap_lines(&spans, marked, 2),
                 mark("▸", marker_style),
-                blank(),
+                hang(),
             )
         }
         Kind::Result => {
@@ -2553,9 +2570,9 @@ fn entry_lines(
             }
             spans.push(Span::styled(rendered(&item.text), style));
             wrap::prefixed(
-                wrap::wrap_lines(&spans, inner, 0),
+                wrap::wrap_lines(&spans, marked, 0),
                 mark(symbol, style),
-                blank(),
+                hang(),
             )
         }
         Kind::Turn | Kind::Conversation => {
@@ -2594,14 +2611,14 @@ fn entry_lines(
                 // One line, its text behind a click.
                 let mut line = Wrapped::line(spans);
                 line.skip = label;
-                return wrap::prefixed(vec![line], blank(), blank());
+                return vec![line];
             }
             if !open {
                 // One line, the label and the first line, which a click
                 // opens.
                 let first = lines.next().unwrap_or_default().replace("**", "");
                 let more = lines.next().is_some();
-                let room = inner.saturating_sub(label + 3);
+                let room = width.saturating_sub(label + 3);
                 let cut = text_width(&first) > room;
                 let mut shown = cut_end(&first, room);
                 if more && !cut && text_width(&shown) + 2 <= room {
@@ -2617,18 +2634,19 @@ fn entry_lines(
                 spans.push(Span::styled(rendered(&shown), style));
                 let mut line = Wrapped::line(spans);
                 line.skip = label + separator_width;
-                return wrap::prefixed(vec![line], blank(), blank());
+                return vec![line];
             }
             let mut heading = Wrapped::line(spans);
             heading.bare = true;
-            let mut out = vec![heading];
-            out.extend(markdown::render(&item.text, style, theme, inner));
-            out.extend(
-                plain(THINKING_CLOSE, theme.dim(), inner)
+            let mut body = markdown::render(&item.text, style, theme, marked);
+            body.extend(
+                plain(THINKING_CLOSE, theme.dim(), marked)
                     .into_iter()
                     .map(|line| Wrapped { bare: true, ..line }),
             );
-            wrap::prefixed(out, blank(), blank())
+            let mut out = vec![heading];
+            out.extend(body.into_iter().map(|line| line.decorated(hang())));
+            out
         }
         // Drawn from the worker's summary.
         Kind::WorkerLine => Vec::new(),
@@ -3199,7 +3217,7 @@ mod tests {
         questions[1].question = "Push now?".into();
         card.questions = Some(questions.clone());
         t.apply(Update::Item(card.clone()));
-        assert_eq!(rows(&mut t, &full(), 40, 1), ["? Arko asked 2 questions"]);
+        assert_eq!(rows(&mut t, &full(), 40, 1), ["  ? Arko asked 2 questions"]);
         questions[0].state = QuestionState::Answered {
             answer: "Spaces".into(),
         };
@@ -3250,11 +3268,11 @@ mod tests {
         t.apply(Update::Item(message));
         assert_eq!(
             rows(&mut t, &full(), 40, 2),
-            ["▸ message r1: Also the docs. · ✓ sent", ""]
+            ["  ▸ message r1: Also the docs. · ✓ sent", ""]
         );
         assert_eq!(
             rows(&mut t, &Filter::Worker("r1".into(), View::Full), 40, 2),
-            ["✉ main to r1", "  Also the docs."]
+            ["  ✉ main to r1", "    Also the docs."]
         );
     }
 
@@ -3272,13 +3290,13 @@ mod tests {
         for view in View::ALL {
             assert_eq!(
                 rows(&mut t, &Filter::Main(view), 40, 5),
-                ["▎ Fix it", "", "✉ r3 to you", "  Found it.", ""],
+                ["  ▎ Fix it", "", "  ✉ r3 to you", "    Found it.", ""],
                 "{view:?}"
             );
         }
         assert_eq!(
             rows(&mut t, &Filter::Worker("r3".into(), View::Full), 40, 3),
-            ["  Looking.", "", "✉ Found it."]
+            ["  Looking.", "", "  ✉ Found it."]
         );
     }
 
@@ -3296,14 +3314,14 @@ mod tests {
         for view in View::ALL {
             assert_eq!(
                 rows(&mut t, &Filter::Main(view), 50, 2),
-                ["▎ Fix it", ""],
+                ["  ▎ Fix it", ""],
                 "{view:?}"
             );
         }
         assert_eq!(
             rows(&mut t, &Filter::Worker("r1".into(), View::Full), 50, 2),
             [
-                format!("▎ Use tabs.{}from the web page", " ".repeat(22)),
+                format!("  ▎ Use tabs.{}from the web page", " ".repeat(20)),
                 String::new(),
             ]
         );
@@ -3325,16 +3343,16 @@ mod tests {
         call.at -= 900;
         t.apply(Update::Item(call.clone()));
         let own = Filter::Worker("r1".into(), View::Full);
-        assert_eq!(rows(&mut t, &own, 40, 1)[0], "▸ $ sleep 30 …");
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "  ▸ $ sleep 30 …");
         std::thread::sleep(std::time::Duration::from_millis(150));
-        assert_eq!(rows(&mut t, &own, 40, 1)[0], "▸ $ sleep 30 · 1s …");
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "  ▸ $ sleep 30 · 1s …");
         call.at -= 2 * 60_000;
         t.apply(Update::Change(call.clone()));
-        assert_eq!(rows(&mut t, &full(), 40, 1)[0], "▸ r1 $ sleep 30 · 2m …");
+        assert_eq!(rows(&mut t, &full(), 40, 1)[0], "  ▸ r1 $ sleep 30 · 2m …");
         call.status = Some(CallStatus::Ok);
         call.outcome = Some("30.0 s".into());
         t.apply(Update::Change(call));
-        assert_eq!(rows(&mut t, &own, 40, 1)[0], "▸ $ sleep 30 · ✓ 30.0 s");
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "  ▸ $ sleep 30 · ✓ 30.0 s");
     }
 
     /// A call's outcome is on its line. A command's output is a block
@@ -3349,7 +3367,7 @@ mod tests {
         let mut call = item(2, Kind::Call, "$ cargo test");
         call.status = Some(CallStatus::Running);
         t.apply(Update::Item(call.clone()));
-        assert_eq!(rows(&mut t, &full(), 40, 3)[2], "▸ $ cargo test …");
+        assert_eq!(rows(&mut t, &full(), 40, 3)[2], "  ▸ $ cargo test …");
         call.status = Some(CallStatus::Ok);
         call.outcome = Some("12 passed".into());
         t.apply(Update::Change(call));
@@ -3361,9 +3379,9 @@ mod tests {
         assert_eq!(
             rows(&mut t, &full(), 40, 8),
             [
-                "▎ Run the tests",
+                "  ▎ Run the tests",
                 "",
-                "▸ $ cargo test · ✓ 12 passed",
+                "  ▸ $ cargo test · ✓ 12 passed",
                 "  │ running 12 tests",
                 "",
                 "  All 12 pass.",
@@ -3389,9 +3407,9 @@ mod tests {
         let shown = rows(&mut t, &Filter::Main(View::Messages), 30, 8);
         let at = |text: &str| shown.iter().position(|row| row.starts_with(text));
         let (first, rule, next) = (
-            at("▎ Count the pears"),
+            at("  ▎ Count the pears"),
             at("  ── New conversation ──"),
-            at("▎ Now the apples"),
+            at("  ▎ Now the apples"),
         );
         assert!(first < rule && rule < next && first.is_some(), "{shown:?}");
         t.apply(Update::Truncate { from: 2 });
@@ -3445,9 +3463,9 @@ mod tests {
             open[..5],
             [
                 "  ▾ Thought for 12s",
-                "  Planning",
-                "  Read the tests first.",
-                "  ↑ show the first line only",
+                "    Planning",
+                "    Read the tests first.",
+                "    ↑ show the first line only",
                 "",
             ]
         );
@@ -3467,8 +3485,8 @@ mod tests {
             rows(&mut shown, &full(), 40, 3),
             [
                 "  ▾ Thought",
-                "  All of it.",
-                "  ↑ show the first line only"
+                "    All of it.",
+                "    ↑ show the first line only"
             ]
         );
     }
@@ -3486,6 +3504,60 @@ mod tests {
     /// the rail a command's output hangs from, then the word.
     fn is_working(row: &str) -> bool {
         after_spinner(row) == Some(" Working…")
+    }
+
+    /// Every row with a marker (a fold's triangle, the user's bar, ✉, ·) has
+    /// it in the column of the "Working…" line's spinner, and its text
+    /// where that line's word starts, in every view. Its other lines start
+    /// there too. The agent's text, which has no marker, starts at the
+    /// marker's column.
+    #[test]
+    fn markers_stand_under_the_working_spinner() {
+        use crate::remote::{Act, ActKind};
+        let mut t = Transcript::new();
+        let mut user = item(1, Kind::User, "Fix it");
+        user.turn = Some(1);
+        let text = item(2, Kind::Text, "Looking.");
+        let mut thinking = item(3, Kind::Thinking, "Where to start?");
+        thinking.turn = Some(1);
+        let mut call = item(4, Kind::Call, "$ cargo test");
+        call.turn = Some(1);
+        call.status = Some(CallStatus::Ok);
+        call.act = Some(Act {
+            kind: ActKind::Command,
+            target: "cargo test".into(),
+            ..Act::default()
+        });
+        let mut notice = item(5, Kind::Notice, "news");
+        notice.level = Some(Level::Info);
+        let message = item(6, Kind::Message, "Found it.\nIn a.rs.").agent("r3");
+        for item in [user, text, thinking, call, notice, message] {
+            t.apply(Update::Item(item));
+        }
+        t.working = Some(0);
+        for view in View::ALL {
+            let shown = rows(&mut t, &Filter::Main(view), 40, 16);
+            assert!(shown.iter().any(|row| is_working(row)), "{shown:?}");
+            let mut marked = 0;
+            for row in shown.iter().filter(|row| !row.trim().is_empty()) {
+                let chars: Vec<char> = row.chars().collect();
+                let at = |column: usize| chars.get(column).copied().unwrap_or(' ');
+                assert!(
+                    (0..SPINNER).all(|column| at(column) == ' '),
+                    "{view:?} {row:?}"
+                );
+                if row.trim_start() == "Looking." {
+                    continue;
+                }
+                assert!(
+                    (SPINNER + 1..LABEL).all(|column| at(column) == ' '),
+                    "{view:?} {row:?}"
+                );
+                assert_ne!(at(LABEL), ' ', "{view:?} {row:?}");
+                marked += usize::from(at(SPINNER) != ' ');
+            }
+            assert!(marked >= 3, "{view:?} {shown:?}");
+        }
     }
 
     /// The thinking that streams has its spinner in the "Working…" line's
@@ -3577,7 +3649,7 @@ mod tests {
         // It streams, so it has just the label. Then a reply comes.
         assert_eq!(
             rows(&mut t, &full(), 40, 3)[..2],
-            ["  ▾ Thought", "  Where to start?"]
+            ["  ▾ Thought", "    Where to start?"]
         );
         t.working = Some(0);
         assert_eq!(
@@ -3600,8 +3672,8 @@ mod tests {
             rows(&mut t, &quiet, 40, 6)[..3],
             [
                 "  ▾ Thought for 2m",
-                "  Where to start?",
-                "  ↑ show the first line only"
+                "    Where to start?",
+                "    ↑ show the first line only"
             ]
         );
         assert_eq!(rows(&mut t, &full(), 40, 6)[0], "  ▾ Thought for 2m");
@@ -3650,8 +3722,8 @@ mod tests {
             rows(&mut t, &quiet, 40, 6)[..3],
             [
                 "  ▾ Thought",
-                "  Where to start?",
-                "  ↑ show the first line only"
+                "    Where to start?",
+                "    ↑ show the first line only"
             ]
         );
         assert_eq!(
@@ -3678,11 +3750,11 @@ mod tests {
         let mut user = item(1, Kind::User, "Fix the tests");
         user.delivery = Some(Delivery::Turn);
         t.apply(Update::Item(user));
-        assert_eq!(last(&mut t, View::Full), "▎ Fix the tests", "idle");
+        assert_eq!(last(&mut t, View::Full), "  ▎ Fix the tests", "idle");
         t.working = Some(0);
         // A blank line on each side of it, after what was said.
         let shown = rows(&mut t, &full(), 40, 4);
-        assert_eq!(shown[..2], ["▎ Fix the tests", ""]);
+        assert_eq!(shown[..2], ["  ▎ Fix the tests", ""]);
         assert!(is_working(&shown[2]), "{shown:?}");
         assert_eq!(shown[3], "");
 
@@ -3701,7 +3773,7 @@ mod tests {
         let mut call = item(3, Kind::Call, "$ cargo test");
         call.status = Some(CallStatus::Running);
         t.apply(Update::Item(call.clone()));
-        assert_eq!(last(&mut t, View::Full), "▸ $ cargo test …");
+        assert_eq!(last(&mut t, View::Full), "  ▸ $ cargo test …");
         call.status = Some(CallStatus::Ok);
         t.apply(Update::Change(call));
         let shown = rows(&mut t, &full(), 40, 5);
@@ -3709,7 +3781,7 @@ mod tests {
             shown[2], "  ▸ Thought · Where to start?",
             "it no longer moves"
         );
-        assert_eq!(shown[3], "▸ $ cargo test · ✓", "no blank line before it");
+        assert_eq!(shown[3], "  ▸ $ cargo test · ✓", "no blank line before it");
         assert!(is_working(&shown[4]), "{shown:?}");
         assert!(is_working(&last(&mut t, View::Quiet)));
         assert!(is_working(&last(&mut t, View::Messages)));
@@ -3732,7 +3804,7 @@ mod tests {
         for call in &calls {
             t.apply(Update::Item(call.clone()));
         }
-        assert_eq!(last(&mut t, View::Full), "▸ read b.rs · ✓");
+        assert_eq!(last(&mut t, View::Full), "  ▸ read b.rs · ✓");
         calls[0].status = Some(CallStatus::Ok);
         t.apply(Update::Change(calls[0].clone()));
         assert!(is_working(&last(&mut t, View::Full)));
@@ -3780,7 +3852,7 @@ mod tests {
         let own = Filter::Worker("r1".into(), View::Full);
         let shown = rows(&mut t, &own, 40, 5);
         assert_eq!(after_spinner(&shown[2]), Some(" Thinking"), "{shown:?}");
-        assert_eq!(shown[3..], ["  Plan.", "  ↑ show the first line only"]);
+        assert_eq!(shown[3..], ["    Plan.", "    ↑ show the first line only"]);
         assert!(t.drawn.moving);
         t.apply(Update::Item(
             item(2, Kind::Text, "Done planning.").agent("r1"),
@@ -3945,20 +4017,20 @@ mod tests {
     #[test]
     fn a_message_without_room_beside_its_tag_has_it_on_a_row_under_it() {
         let theme = Theme::terminal();
-        let under = format!("▎ {}pending", " ".repeat(11));
+        let under = format!("  ▎ {}pending", " ".repeat(11));
         for (text, rows) in [
             // Exactly two spaces before the tag.
-            ("123456789", vec!["▎ 123456789  pending".to_string()]),
+            ("123456789", vec!["  ▎ 123456789  pending".to_string()]),
             // One space isn't enough.
             (
                 "1234567890",
-                vec!["▎ 1234567890".to_string(), under.clone()],
+                vec!["  ▎ 1234567890".to_string(), under.clone()],
             ),
             (
                 "One two three four five six",
                 vec![
-                    "▎ One two three four".to_string(),
-                    "▎ five six".to_string(),
+                    "  ▎ One two three four".to_string(),
+                    "  ▎ five six".to_string(),
                     under.clone(),
                 ],
             ),
@@ -3966,13 +4038,13 @@ mod tests {
             let mut user = item(1, Kind::User, text);
             user.delivery = Some(Delivery::Note);
             user.pending = true;
-            let lines = entry_lines(&user, &theme, 20, false, None, Look::default());
+            let lines = entry_lines(&user, &theme, 22, false, None, Look::default());
             assert_eq!(shown(&lines), rows, "{text}");
             assert_eq!(lines.last().unwrap().bare, rows.len() > 1, "{text}");
             assert_eq!(
                 copied(
                     lines.iter().enumerate().map(|(n, line)| ((0, n), line)),
-                    ((0, 0, 0), (0, lines.len() - 1, 19)),
+                    ((0, 0, 0), (0, lines.len() - 1, 21)),
                 )
                 .as_deref(),
                 Some(text)
@@ -4008,12 +4080,12 @@ mod tests {
             (Delivery::Queued, false, Some(Source::App)),
         ];
         for width in [5, 12, 24, 30, 40, 60, 80, 120] {
-            let inner = width - MARGIN;
+            let inner = width - LABEL;
             for text in texts {
                 // The message's rows without a tag.
                 let alone: Vec<String> = plain(text, Style::default(), inner)
                     .iter()
-                    .map(|line| format!("▎ {}", shown(std::slice::from_ref(line))[0]))
+                    .map(|line| format!("  ▎ {}", shown(std::slice::from_ref(line))[0]))
                     .collect();
                 let wraps = alone.len() > text.split('\n').count();
                 for (delivery, pending, source) in tags {
@@ -4072,11 +4144,11 @@ mod tests {
         t.apply(Update::Item(note));
         // The note's blank line sets it apart below, so it has one above too.
         let shown = rows(&mut t, &full(), 40, 5);
-        assert_eq!(shown[..2], ["▸ $ make · ✓", ""]);
+        assert_eq!(shown[..2], ["  ▸ $ make · ✓", ""]);
         assert!(is_working(&shown[2]), "{shown:?}");
         assert_eq!(
             shown[3..],
-            ["", &format!("▎ Use tabs.{}pending", " ".repeat(22))]
+            ["", &format!("  ▎ Use tabs.{}pending", " ".repeat(20))]
         );
     }
 
@@ -4209,7 +4281,10 @@ mod tests {
             let note = rows
                 .iter()
                 .position(|row| row.contains("Keep the old name."));
-            let colours = note.map(|y| (buffer[(0, y as u16)].fg, buffer[(2, y as u16)].fg));
+            let colours = note.map(|y| {
+                let at = |x: usize| buffer[(x as u16, y as u16)].fg;
+                (at(SPINNER), at(LABEL))
+            });
             (rows, colours)
         };
 
@@ -4222,7 +4297,7 @@ mod tests {
             [
                 "  It turned out to be a kit fix, so that went to the kit.",
                 "",
-                &format!("▎ Keep the old name.{}pending", " ".repeat(33)),
+                &format!("  ▎ Keep the old name.{}pending", " ".repeat(31)),
             ]
         );
         assert_eq!(colours, Some((theme.dim, theme.dim)));
@@ -4241,7 +4316,7 @@ mod tests {
             [
                 "  It turned out to be a kit fix, so that went to the kit.",
                 "",
-                "▎ Keep the old name.",
+                "  ▎ Keep the old name.",
                 "",
                 "  Renamed it back.",
             ]
@@ -4567,7 +4642,7 @@ mod tests {
         assert!(
             messages
                 .iter()
-                .any(|r| r.contains("▸ 2 tool calls · 1 failed")),
+                .any(|r| r.contains("  ▸ 2 tool calls · 1 failed")),
             "{messages:?}"
         );
         assert!(!messages.iter().any(|r| r.contains("read a.rs")));
@@ -4577,7 +4652,7 @@ mod tests {
         assert!(!worker.iter().any(|r| r.contains("Fix it")));
         // Its own view doesn't name it on its calls.
         assert!(
-            worker.iter().any(|r| r.starts_with("▸ cargo test")),
+            worker.iter().any(|r| r.starts_with("  ▸ cargo test")),
             "{worker:?}"
         );
         // A turn of text and notices only has no counter.
@@ -4642,7 +4717,7 @@ mod tests {
         let before = rows(&mut t, &quiet, 50, 4);
         assert_eq!(
             before[..2],
-            ["▸ Ran rg x · running cargo build …", "▸ Read a.rs"]
+            ["  ▸ Ran rg x · running cargo build …", "  ▸ Read a.rs"]
         );
         rows(&mut t, &Filter::Main(View::Full), 50, 4);
         assert_eq!(rows(&mut t, &quiet, 50, 4), before);
@@ -4655,7 +4730,10 @@ mod tests {
             Some(5),
         )));
         let after = rows(&mut t, &quiet, 50, 4);
-        assert_eq!(after[..2], ["▸ Ran 2 commands (rg, cargo)", "▸ Read a.rs"]);
+        assert_eq!(
+            after[..2],
+            ["  ▸ Ran 2 commands (rg, cargo)", "  ▸ Read a.rs"]
+        );
         let count = |rows: &[String]| rows.iter().filter(|row| !row.is_empty()).count();
         assert_eq!(count(&before), count(&after));
         rows(&mut t, &Filter::Main(View::Full), 50, 4);
@@ -4752,7 +4830,7 @@ mod tests {
         let shown = rows(&mut t, &quiet, 50, 4);
         assert_eq!(
             shown[..2],
-            ["▾ Made 1 edit to a.rs …", "  │ Reading a.rs …"],
+            ["  ▾ Made 1 edit to a.rs …", "  │ Reading a.rs …"],
             "{shown:?}"
         );
         let mut read = call(3, "read a.rs", ActKind::Read, CallStatus::Ok);
@@ -4761,7 +4839,7 @@ mod tests {
         let shown = rows(&mut t, &quiet, 50, 4);
         assert_eq!(
             shown[..3],
-            ["▾ Made 1 edit to a.rs", "  │ Read a.rs", ""],
+            ["  ▾ Made 1 edit to a.rs", "  │ Read a.rs", ""],
             "{shown:?}"
         );
     }
@@ -4807,7 +4885,7 @@ mod tests {
         assert_eq!(
             opened(vec![build(), output(2, 1, "Compiling arko\nFinished")], 4),
             [
-                "▾ Ran cargo build",
+                "  ▾ Ran cargo build",
                 "  │ Compiling arko",
                 "  │ Finished",
                 ""
@@ -4824,7 +4902,7 @@ mod tests {
                 7
             ),
             [
-                "▾ Ran 2 commands (cargo, rg)",
+                "  ▾ Ran 2 commands (cargo, rg)",
                 "  │ Ran cargo build",
                 "  │   Compiling arko",
                 "  │   Finished",
@@ -4846,7 +4924,7 @@ mod tests {
                 5
             ),
             [
-                "▾ Read a.rs and b.rs",
+                "  ▾ Read a.rs and b.rs",
                 "  │ Read a.rs",
                 "  │ ▸ Thought",
                 "  │ Read b.rs",
@@ -4864,11 +4942,11 @@ mod tests {
                 )],
                 3
             ),
-            ["▾ Messaged r2", "  │ a.rs is done.", ""]
+            ["  ▾ Messaged r2", "  │ a.rs is done.", ""]
         );
         assert_eq!(
             opened(vec![call(1, ActKind::Read, "read src/a.rs", "src/a.rs")], 3),
-            ["▾ Read a.rs", "  │ 12 lines", ""]
+            ["  ▾ Read a.rs", "  │ 12 lines", ""]
         );
     }
 
@@ -4996,7 +5074,7 @@ mod tests {
             "On it.",
             "Found it.",
             "Fixed.",
-            "▸ 2 tool calls",
+            "  ▸ 2 tool calls",
         ] {
             assert!(has(&messages, text), "{text}: {messages:?}");
         }
@@ -5072,7 +5150,7 @@ mod tests {
         assert_eq!(count(&full, "r1 Fix flaky test · 3 tool calls"), 1);
         let messages = rows(&mut t, &Filter::Main(View::Messages), 70, 12);
         assert!(
-            messages.iter().any(|r| r.contains("▸ 4 tool calls")),
+            messages.iter().any(|r| r.contains("  ▸ 4 tool calls")),
             "{messages:?}"
         );
         // The worker's own view keeps its lines of the workers it started.

@@ -410,6 +410,9 @@ button.cache { padding: 0; border: 0; background: none; }
 .row.call, .row.count { margin: 3px 0; color: var(--muted); font: 13px/1.45 var(--mono); }
 .call-line { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .call-line .mark { display: inline-block; flex: none; color: var(--muted); transition: transform 0.12s; }
+/* A fold's triangle has a column of its own, as wide in every row whatever
+   the row's font, so the text after it starts at one place, 16px in. */
+.call-line .mark, details.thinking > summary .mark { width: 10px; text-align: center; }
 .call-line .who {
   display: inline-block;
   flex: none;
@@ -442,9 +445,9 @@ details.more > summary::-webkit-details-marker { display: none; }
 details.quiet > summary { display: block; }
 .row.quiet.muted .what { opacity: 0.6; }
 /* An open Quiet row shows what its calls hold behind one line at its left,
-   under the row's triangle. What a call with a line of its own holds goes
-   under that line. */
-.quiet-calls { margin: 2px 0 6px 4px; padding-left: 12px; border-left: 2px solid var(--line); }
+   under the row's triangle, starting where the row's text does. What a
+   call with a line of its own holds goes under that line. */
+.quiet-calls { margin: 2px 0 6px 4px; padding-left: 10px; border-left: 2px solid var(--line); }
 .quiet-member .call-line { margin: 2px 0; }
 .quiet-member.own > .holds { padding-left: 16px; }
 .quiet-calls .row.result { margin: 0; }
@@ -515,7 +518,7 @@ details.thinking > summary .mark { flex: none; transition: transform 0.12s; }
 details.thinking > summary .what { flex: none; font-weight: 600; }
 details.thinking > summary .first { min-width: 0; overflow: hidden; font-style: italic; text-overflow: ellipsis; white-space: nowrap; }
 details.thinking[open] > summary .first { display: none; }
-details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
+details.thinking .thinking-text { margin: 4px 0 0 16px; font-style: italic; }
 
 /* The agent waits on its model, or thinks, and the word shimmers. "Working…"
    starts at the left edge of the reply text. */

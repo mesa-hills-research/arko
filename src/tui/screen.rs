@@ -2525,9 +2525,9 @@ mod tests {
         assert_eq!(
             rows[edits + 1..edits + 4],
             [
-                "▸ Ran cargo test · ✗ 1 failed, 3 passed",
+                "  ▸ Ran cargo test · ✗ 1 failed, 3 passed",
                 "  │ test a ... FAILED",
-                "▸ Messaged r3",
+                "  ▸ Messaged r3",
             ],
             "{rows:#?}"
         );
