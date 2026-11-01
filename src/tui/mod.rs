@@ -126,7 +126,6 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     let terminal = match open(setup.session_dir.join(crate::session::LOG_FILE)) {
         Ok(terminal) => terminal,
         Err(error) => {
-            close();
             // (before the writer)
             eprintln!(
                 "arko: the full-screen view couldn't start ({error}), so Arko uses the line prompt"
@@ -196,10 +195,8 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     let reply = match on_a_thread(crate::context::handle(), view) {
         Ok(reply) => reply,
         Err(error) => {
-            close();
-            to_terminal(|out| {
-                let _ = writeln!(out, "arko: the full-screen view couldn't start ({error})");
-            });
+            let said = format!("arko: the full-screen view couldn't start ({error})\n");
+            give_back(said.as_bytes());
             let _ = input.send(Input::Eof);
             oneshot::channel().1
         }
@@ -252,16 +249,15 @@ impl Screen {
         let reply = self.reply.await.ok().flatten();
         // Whatever happened to the task, the terminal is restored, and the
         // reply follows on the terminal's own screen.
-        close();
+        let reply = reply
+            .map(|reply| format!("{}\n\n", glyphs::render(reply.trim())))
+            .unwrap_or_default();
+        let given = give_back(reply.as_bytes());
         self.output.detach();
-        if let Some(reply) = reply {
-            let reply = format!("{}\n\n", glyphs::render(reply.trim()));
-            to_terminal(|out| {
-                let _ = out.write_all(reply.as_bytes());
-            });
-        }
         // (What Arko prints next goes straight to the terminal, after this.)
-        let _ = tokio::task::spawn_blocking(|| wait_given_back(CLOSE_WAIT)).await;
+        if let Some((writer, ticket)) = given {
+            let _ = tokio::task::spawn_blocking(move || writer.wait(ticket, CLOSE_WAIT)).await;
+        }
     }
 }
 
@@ -294,11 +290,10 @@ impl Command for EnableMouse {
 /// Enter where the terminal can (the kitty keyboard protocol). From then on
 /// its writer ([`Writer`]) sends it everything, and its watchdog's lines go
 /// to the log at `log`. Returns the terminal, another handle on its writer,
-/// and whether Shift+Enter is reported.
+/// and whether Shift+Enter is reported. When it fails, the terminal is as it
+/// was.
 fn open(log: PathBuf) -> std::io::Result<(Terminal<CursorBackend<Writer>>, Writer, bool)> {
     crossterm::terminal::enable_raw_mode()?;
-    OPEN.store(true, std::sync::atomic::Ordering::SeqCst);
-    HELD.store(true, std::sync::atomic::Ordering::SeqCst);
     // A panic that ends the view restores the terminal before its message
     // prints (as ratatui's init does, ratatui/src/init.rs:566). Another
     // thread's, which dictation's thread recovers from (and the speech
@@ -322,9 +317,17 @@ fn open(log: PathBuf) -> std::io::Result<(Terminal<CursorBackend<Writer>>, Write
         // (before the writer)
         crossterm::terminal::supports_keyboard_enhancement();
     let enhanced = matches!(asked, Ok(true));
-    let mut writer = Writer::start(writer::standard_output(), log);
+    let mut reset = Vec::new();
+    write_close(&mut reset, enhanced);
+    let mut writer = match Writer::start(writer::standard_output(), log, reset) {
+        Ok(writer) => writer,
+        Err(error) => {
+            let _ = crossterm::terminal::disable_raw_mode();
+            return Err(error);
+        }
+    };
     *crate::lock(&WRITER) = Some(writer.handle());
-    execute!(writer, EnterAlternateScreen, EnableMouse, EnableFocusChange)?;
+    let _ = execute!(writer, EnterAlternateScreen, EnableMouse, EnableFocusChange);
     // Not in the classic Windows console without escape codes
     // (crossterm/src/event.rs:413-435), so pastes come as keys there.
     let _ = execute!(writer, EnableBracketedPaste);
@@ -339,11 +342,17 @@ fn open(log: PathBuf) -> std::io::Result<(Terminal<CursorBackend<Writer>>, Write
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
     }
-    ENHANCED.store(enhanced, std::sync::atomic::Ordering::SeqCst);
-    clear_new_screen(&mut writer)?;
+    let _ = clear_new_screen(&mut writer);
     let screen = writer.handle();
-    let terminal = Terminal::new(CursorBackend::new(writer))?;
-    Ok((terminal, screen, enhanced || cfg!(windows)))
+    match Terminal::new(CursorBackend::new(writer)) {
+        Ok(terminal) => Ok((terminal, screen, enhanced || cfg!(windows))),
+        Err(error) => {
+            // (Waited for off the runtime's thread, as what's printed next
+            // goes straight to the terminal.)
+            crate::blocking(close_and_wait);
+            Err(error)
+        }
+    }
 }
 
 fn clear_new_screen(writer: &mut impl Write) -> std::io::Result<()> {
@@ -363,73 +372,45 @@ fn ends_the_view(thread: Option<&str>) -> bool {
     matches!(thread, Some("main" | "tokio-runtime-worker" | THREAD))
 }
 
-/// The keyboard protocol was pushed, and it is popped as the view closes.
-static ENHANCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// The view has the terminal, and [`close`] gives it back once.
-static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// The view took the terminal, and the terminal hasn't taken all that gives
-/// it back.
-static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// The view's writer, once it has one, for what follows the view.
+/// The writer of the view that has or last had the terminal, the one owner
+/// of the terminal's state. Locked only to take a handle, never together
+/// with the writer's own lock.
 static WRITER: std::sync::Mutex<Option<Writer>> = std::sync::Mutex::new(None);
 /// How long giving the terminal back waits for it to take what is written,
 /// before what follows (a panic's message, the end of the process).
 const CLOSE_WAIT: Duration = Duration::from_secs(1);
 
-/// The terminal as it was, safe to call more than once, and from the panic
-/// hook. (Only once, because leaving the alternate screen again would put the
-/// cursor back where the view started, over what was printed since.)
+/// Gives the terminal back through the view's writer ([`Writer::finish`]),
+/// with `tail` after it, and raw mode off the first time. Safe to call more
+/// than once, and from any thread. Returns the writer and the ticket to
+/// wait on, unless no view had the terminal.
+fn give_back(tail: &[u8]) -> Option<(Writer, writer::Ticket)> {
+    let writer = writer_handle()?;
+    let (ticket, ended) = writer.finish(tail);
+    if ended {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+    Some((writer, ticket))
+}
+
+/// Gives the terminal back, without waiting for it to take what does.
 fn close() {
-    if !OPEN.swap(false, std::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
-    let _ = crossterm::terminal::disable_raw_mode();
-    let pop = ENHANCED.load(std::sync::atomic::Ordering::SeqCst);
-    to_terminal(|mut out| write_close(&mut out, pop));
-    // (Without a writer, it was written. With one, see [`wait_given_back`].)
-    if writer_handle().is_none() {
-        HELD.store(false, std::sync::atomic::Ordering::SeqCst);
-    }
+    give_back(&[]);
 }
 
-/// [`close`], then waits at most [`CLOSE_WAIT`] for the terminal to take it,
-/// for what comes next outside the view (a panic's message, the end of the
-/// process).
+/// Gives the terminal back, then waits at most [`CLOSE_WAIT`] for it to take
+/// what does, for what comes next outside the view (a panic's message, the
+/// end of the process).
 fn close_and_wait() {
-    close();
-    wait_given_back(CLOSE_WAIT);
-}
-
-/// Waits at most `wait` for the terminal to take what the view's writer
-/// has, and once it has, after [`close`], the view no longer holds it.
-fn wait_given_back(wait: Duration) {
-    let taken = writer_handle().is_none_or(|writer| writer.wait_written(wait));
-    if taken && !OPEN.load(std::sync::atomic::Ordering::SeqCst) {
-        HELD.store(false, std::sync::atomic::Ordering::SeqCst);
+    if let Some((writer, ticket)) = give_back(&[]) {
+        writer.wait(ticket, CLOSE_WAIT);
     }
 }
 
 /// A handle on the view's writer, once it has one.
 fn writer_handle() -> Option<Writer> {
-    crate::lock(&WRITER).as_ref().map(Writer::handle)
-}
-
-/// Writes to the terminal with `write`, through the view's writer once it
-/// has one (a terminal that doesn't read gets it when it does), and
-/// straight to standard output before.
-fn to_terminal(write: impl FnOnce(&mut dyn Write)) {
-    match writer_handle() {
-        Some(mut writer) => {
-            write(&mut writer);
-            let _ = writer.flush();
-        }
-        None => {
-            // (before the writer)
-            let mut out = std::io::stdout();
-            write(&mut out);
-            let _ = out.flush();
-        }
-    }
+    let writer = crate::lock(&WRITER);
+    writer.as_ref().map(Writer::handle)
 }
 
 /// What gives the terminal back, written to `out`, with the keyboard protocol
@@ -467,30 +448,43 @@ pub(crate) fn give_back_terminal() {
 #[cfg(unix)]
 const CAN: u8 = 0x18;
 
+/// How long an end that can't wait tries for a lock.
+#[cfg(unix)]
+const LOCK_WAIT: Duration = Duration::from_millis(50);
+
 /// Gives the terminal back now, for a process that ends at once because its
-/// runtime is stuck, where [`give_back_terminal`] may wait on what holds
-/// standard output's lock or crossterm's. It writes what [`close`] writes,
+/// runtime is stuck, or whose writer died, where [`give_back_terminal`] may
+/// wait for what doesn't come. Unless the writer wrote the reset, it ends
+/// the view's output ([`Writer::take_over`]) and writes the reset itself,
 /// after a [`CAN`], straight to standard output's descriptor, on a thread
-/// of its own that it waits for `wait` at most. It does nothing when the
-/// view gave the terminal back whole, or never had it.
+/// of its own that it waits for `wait` at most. It does nothing when no
+/// view had the terminal.
 #[cfg(unix)]
 pub(crate) fn give_back_terminal_at_once(wait: Duration) {
-    if !HELD.load(std::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
-    let mut reset = vec![CAN];
-    write_close(
-        &mut reset,
-        ENHANCED.load(std::sync::atomic::Ordering::SeqCst),
-    );
+    let found =
+        writer::try_lock_for(&WRITER, LOCK_WAIT).map(|writer| writer.as_ref().map(Writer::handle));
+    let reset = match found {
+        Some(None) => return,
+        Some(Some(writer)) => writer.take_over(LOCK_WAIT),
+        None => writer::Reset::Unknown,
+    };
+    let reset = match reset {
+        writer::Reset::Done => return,
+        writer::Reset::Needed(reset) => reset,
+        // (Popping the keyboard protocol that wasn't pushed is harmless.)
+        writer::Reset::Unknown => {
+            let mut reset = Vec::new();
+            write_close(&mut reset, true);
+            reset
+        }
+    };
+    let mut bytes = vec![CAN];
+    bytes.extend_from_slice(&reset);
     let (written, done) = std::sync::mpsc::channel();
     let writing = std::thread::Builder::new()
         .name("arko-reset".into())
         .spawn(move || {
-            // The usual close may have finished while this thread started.
-            if HELD.load(std::sync::atomic::Ordering::SeqCst) {
-                let _ = writer::standard_output().write_all(&reset);
-            }
+            let _ = writer::standard_output().write_all(&bytes);
             let _ = written.send(());
         });
     if writing.is_ok() {
@@ -610,6 +604,20 @@ async fn run(
     };
     loop {
         watchdog.turned();
+        // The writer writes no more, because the terminal closed or the
+        // writer's thread ended, so the view ends, as when the terminal
+        // closes, and the session with it.
+        if let Some(failure) = screen.failure() {
+            if failure == writer::Failure::Died {
+                log::error!("The full screen's writer stopped, so Arko ends");
+                #[cfg(unix)]
+                give_back_terminal_at_once(CLOSE_WAIT);
+            }
+            if events_open {
+                give(&setup.requests, &verdict_done, control(Input::Eof));
+            }
+            break;
+        }
         if draw_now {
             watchdog.stage("drawing");
             held = !draw_when_written(&mut terminal, &screen, &mut app, &mut title);
@@ -1657,7 +1665,12 @@ mod tests {
             }
         }
         let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let writer = Writer::start(Counted(write, sent.clone()), temp.path().join("arko.log"));
+        let writer = Writer::start(
+            Counted(write, sent.clone()),
+            temp.path().join("arko.log"),
+            Vec::new(),
+        )
+        .unwrap();
         let screen = writer.handle();
         let small = Rect::new(0, 0, 80, 24);
         let mut terminal = Terminal::with_options(
@@ -1756,5 +1769,44 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("typed while it waits"))
         );
+    }
+
+    /// A frame that panics after it began leaves its first bytes in the
+    /// backend, which flushes them as the panic unwinds, after the panic hook
+    /// gave the terminal back. They are dropped, so the reset is the last
+    /// thing the terminal gets.
+    #[cfg(unix)]
+    #[test]
+    fn a_frame_cut_by_a_panic_writes_nothing_after_the_reset() {
+        use ratatui::layout::Rect;
+        use ratatui::{TerminalOptions, Viewport};
+        let gate = writer::tests::Gate::default();
+        let mut reset = Vec::new();
+        write_close(&mut reset, true);
+        let writer = Writer::start(gate.clone(), PathBuf::new(), reset.clone()).unwrap();
+        let hook = writer.handle();
+        let mut terminal = Terminal::with_options(
+            CursorBackend::new(writer),
+            TerminalOptions {
+                viewport: Viewport::Fixed(Rect::new(0, 0, 20, 5)),
+            },
+        )
+        .unwrap();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = queue!(terminal.backend_mut(), BeginSynchronizedUpdate);
+            let _ = terminal.draw(|_| {
+                // What the panic hook does, before the panic unwinds.
+                let (ticket, _) = hook.finish(&[]);
+                assert_eq!(
+                    hook.wait(ticket, Duration::from_secs(5)),
+                    writer::Finish::Written
+                );
+                panic!("a frame that breaks");
+            });
+        }));
+        assert!(panicked.is_err());
+        drop(terminal);
+        assert!(hook.wait_written(Duration::from_secs(5)));
+        assert_eq!(gate.taken(), reset);
     }
 }
