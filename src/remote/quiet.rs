@@ -6,7 +6,7 @@
 //! things the view shows. Within a run a call joins the row before it when
 //! it is of the same kind, or reads a file the row edits or writes. A row
 //! holds calls that follow each other, so rows never reorder, and the
-//! thinking between two calls of one row goes inside it. A call's row is
+//! thinking after a row's call goes inside it. A call's row is
 //! decided when the call comes, from what is known then, and nothing that
 //! comes later moves it. So a long call (a command, a wait, an MCP call)
 //! shows on its row while it runs ("Ran 4 commands · running cargo build"),
@@ -326,8 +326,8 @@ fn build(slots: Vec<Option<Member<'_>>>) -> Vec<Group<'_>> {
 }
 
 /// Places a run's rows `groups` in `steps[start..end]`, onto `out`, each row
-/// where its first call is, with the thinking between two of its calls, and
-/// the rest as they are.
+/// where its first call is, with the thinking after its calls, and the rest
+/// as they are.
 fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut Vec<Piece>) {
     // Which row each call is in.
     let mut row_of: HashMap<usize, usize> = HashMap::new();
@@ -339,12 +339,14 @@ fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut V
     let calls: Vec<usize> = (start..end)
         .filter(|index| matches!(steps[*index], Step::Call(_)))
         .collect();
-    // The row a thinking between two calls of one row goes in.
+    // A thinking goes in the row of the call before it as it comes, so it
+    // never leaves a row of its own when the next call joins that row. One
+    // with no call before it in the run, or after a row of one call that
+    // takes no more (a test run), has a row of its own.
     let inside = |index: usize| {
         let before = calls.iter().rev().find(|call| **call < index)?;
-        let after = calls.iter().find(|call| **call > index)?;
         let row = row_of.get(before)?;
-        (row_of.get(after) == Some(row)).then_some(*row)
+        (!groups[*row].calls.iter().any(Member::alone)).then_some(*row)
     };
     let mut rows: Vec<Option<Row>> = groups
         .iter()
@@ -1191,10 +1193,20 @@ mod tests {
             matches!(pieces.as_slice(), [Piece::Row(row)] if row.members == [0, 1, 2]),
             "{pieces:?}"
         );
-        // Thinking elsewhere stays as it is.
+        // Thinking after a row's call goes in that row, whatever comes next,
+        // and one before the run's first call stays as it is.
         assert_eq!(
             shown(&[None, ok(Read, "a.rs"), None, ok(Command, "ls"), None]),
-            ["step 0", "Read a.rs", "step 2", "Ran ls", "step 4"]
+            ["step 0", "Read a.rs", "Ran ls"]
+        );
+        // So does one after a test run, which takes no more calls.
+        let test = Act {
+            alone: true,
+            ..act(Command, "cargo test")
+        };
+        assert_eq!(
+            shown(&[Some((test, Ok)), None, ok(Command, "ls")]),
+            ["Ran cargo test", "step 1", "Ran ls"]
         );
     }
 
@@ -1458,6 +1470,13 @@ mod tests {
             vec![call(1, &x, Running), call(2, &y, Failed)],
             vec![call(1, &x, Ok), call(2, &y, Failed)],
             vec![call(1, &x, Ok), call(2, &y, Failed), call(3, &rg, Ok)],
+        ]);
+        // Thinking after a row, then a call that joins it.
+        assert_rows_only_grow(&[
+            vec![call(1, &rg, Ok)],
+            vec![call(1, &rg, Ok), Step::Thinking],
+            vec![call(1, &rg, Ok), Step::Thinking, call(3, &build, Running)],
+            vec![call(1, &rg, Ok), Step::Thinking, call(3, &build, Ok)],
         ]);
         // A failure after something showed, then more calls.
         assert_rows_only_grow(&[

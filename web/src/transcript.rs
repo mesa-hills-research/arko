@@ -45,9 +45,15 @@ pub fn Transcript() -> impl IntoView {
         })
     });
     let rows = Memo::new(move |_| {
-        let working = motion.get().1;
+        let (thinking, working) = motion.get();
         let (feed, rows) = laid_out.get();
-        STORE.with(|store| (feed, layout::with_working(rows, working, &store.borrow())))
+        // A thinking in a Quiet row has no row of its own, so the Working
+        // row says it thinks while it streams.
+        let hidden = thinking.is_some_and(|id| layout::in_quiet_row(&rows, id));
+        STORE.with(|store| {
+            let rows = layout::with_working(rows, working || hidden, &store.borrow());
+            (feed, rows)
+        })
     });
     let thinking = Memo::new(move |_| motion.get().0);
     // Quiet rows that stay follow their words and calls.
@@ -165,9 +171,14 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
     match row {
         Row::Working => {
             let page = page();
-            // What the agent's call does while it runs, else "Working…".
+            // What the agent's call does while it runs, else "Working…". It
+            // shows beside a thinking that streams only when that thinking is
+            // in a Quiet row, and then says "Thinking".
             let label = Memo::new(move |_| {
                 page.version.track();
+                if thinking.get().is_some() {
+                    return "Thinking".to_string();
+                }
                 let worker = page.worker.get();
                 STORE.with(|store| layout::working_label(&store.borrow(), worker.as_deref()))
             });

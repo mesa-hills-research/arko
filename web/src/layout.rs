@@ -506,6 +506,15 @@ pub fn working_label(store: &Store, worker: Option<&str>) -> String {
         )
 }
 
+/// Whether the item `id` is in a Quiet row of `rows` (a thinking after a
+/// call is, from the start).
+pub fn in_quiet_row(rows: &[Row], id: u64) -> bool {
+    rows.iter().rev().any(|row| {
+        matches!(row, Row::Quiet { calls, .. }
+            if calls.iter().any(|call| matches!(call, Row::Item(inner, _) if *inner == id)))
+    })
+}
+
 /// `rows` with the "Working…" row, when `working`, where the agent's
 /// output comes next, at the end, above the notes it hasn't read.
 pub fn with_working(mut rows: Vec<Row>, working: bool, store: &Store) -> Vec<Row> {
@@ -1183,6 +1192,34 @@ mod tests {
         let settled = layout(&items, View::Quiet, None);
         assert_eq!(ids(&settled), ids(&running));
         assert_eq!(said(&settled), ("Ran 2 commands (rg, cargo)".into(), false));
+    }
+
+    /// A thinking after a call is in that call's Quiet row from the start,
+    /// so no row goes when the next call joins, and the Working row stands
+    /// for it while it streams.
+    #[test]
+    fn a_thinking_after_a_call_is_in_its_row() {
+        use crate::protocol::{Act, ActKind};
+        let read = |id: u64, path: &str| ItemData {
+            status: Some(CallStatus::Ok),
+            act: Some(Act {
+                kind: ActKind::Read,
+                target: path.into(),
+                ..Act::default()
+            }),
+            ..item(id, Kind::Call, MAIN, path)
+        };
+        let mut items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            read(2, "a.rs"),
+            item(3, Kind::Thinking, MAIN, "Which next?"),
+        ];
+        let thinking = layout(&items, View::Quiet, None);
+        assert_eq!(ids(&thinking), ["i1", "q2"]);
+        assert!(in_quiet_row(&thinking, 3));
+        assert!(!in_quiet_row(&thinking, 1));
+        items.push(read(4, "b.rs"));
+        assert_eq!(ids(&layout(&items, View::Quiet, None)), ["i1", "q2"]);
     }
 
     /// An open Quiet row shows each of its calls with the output under it,

@@ -189,6 +189,8 @@ struct QuietCached {
     width: usize,
     style: u64,
     clock: Option<String>,
+    /// Its thinking that streams, if any, labelled so.
+    thinking: Option<u64>,
     lines: Vec<Wrapped>,
     /// Where each item's lines are among them, while the row is open.
     spans: Vec<(u64, std::ops::Range<usize>)>,
@@ -253,7 +255,8 @@ struct Motion {
     /// The "Working…" line, at the end.
     working: bool,
     /// What that line says instead of "Working…", in the Messages view
-    /// while a call of the agent runs ("Waiting for r91…").
+    /// while a call of the agent runs ("Waiting for r91…"), and while a
+    /// thinking in a Quiet row streams ("Thinking").
     label: Option<String>,
 }
 
@@ -681,8 +684,9 @@ impl Transcript {
 
     /// What shows that the agent of `filter`'s view is under way, besides
     /// its calls, which is its thinking as it streams, or else "Working…" while it
-    /// waits on its model with nothing else to show.
-    fn motion(&self, filter: &Filter) -> Motion {
+    /// waits on its model with nothing else to show. `placed` is what the
+    /// view shows, in order.
+    fn motion(&self, filter: &Filter, placed: &[Placed]) -> Motion {
         let Some((agent, since)) = self.under_way(filter) else {
             return Motion::default();
         };
@@ -695,6 +699,14 @@ impl Transcript {
         match self.busy(agent, since) {
             Busy::Model => working(true),
             Busy::Text(grown) => working(grown.elapsed() >= QUIET),
+            // A thinking in a Quiet row has no line of its own while the row
+            // is closed, so the line at the end says it thinks, and the row
+            // stays as it is.
+            Busy::Thinking(id) if thinking_shown && self.in_quiet_row(placed, id) => Motion {
+                thinking: Some(id),
+                working: true,
+                label: Some(THINKING.to_string()),
+            },
             Busy::Thinking(id) if thinking_shown => Motion {
                 thinking: Some(id),
                 ..Motion::default()
@@ -709,6 +721,14 @@ impl Transcript {
             },
             Busy::Tool | Busy::Done => Motion::default(),
         }
+    }
+
+    /// Whether the item `id` is in a Quiet row of `placed`.
+    fn in_quiet_row(&self, placed: &[Placed], id: u64) -> bool {
+        placed.iter().rev().any(|placed| {
+            matches!(placed, Placed::Quiet(row)
+                if row.members.iter().any(|member| self.entries[*member].item.id == id))
+        })
     }
 
     /// What the latest call of `agent` that runs does ("Running cargo
@@ -783,8 +803,6 @@ impl Transcript {
         let mut counters: HashMap<Option<u64>, usize> = HashMap::new();
         let mut last_group: Option<Group> = blocks.first().map(|_| Group::Prose);
         let now = chrono::Utc::now().timestamp_millis();
-        // (Before the lines, because the thinking that streams is labelled so.)
-        self.motion = self.motion(filter);
         let quiet = filter.view() == View::Quiet;
         let placed: Arc<Vec<Placed>> = if quiet {
             match &self.quiet_order {
@@ -802,6 +820,8 @@ impl Transcript {
         } else {
             Arc::new(self.order().into_iter().map(Placed::Entry).collect())
         };
+        // (Before the lines, because the thinking that streams is labelled so.)
+        self.motion = self.motion(filter, &placed);
         for placed in placed.iter() {
             let (index, shown) = match placed {
                 Placed::Quiet(row) => (row.members[0], Some(Shown::Quiet(row.clone()))),
@@ -918,6 +938,10 @@ impl Transcript {
                             (entry.item.id, entry.revision)
                         })
                         .collect();
+                    let thinking = self
+                        .motion
+                        .thinking
+                        .filter(|id| members.iter().any(|(member, _)| member == id));
                     let fresh = self.quiet_cache.get(&key).is_some_and(|c| {
                         c.words == row.words
                             && c.members == members
@@ -925,6 +949,7 @@ impl Transcript {
                             && c.width == width
                             && c.style == style
                             && c.clock == clock
+                            && c.thinking == thinking
                     });
                     if !fresh {
                         let (lines, spans) = self.quiet_lines(row, theme, width, now);
@@ -937,6 +962,7 @@ impl Transcript {
                                 width,
                                 style,
                                 clock,
+                                thinking,
                                 lines,
                                 spans,
                             },
@@ -1197,11 +1223,12 @@ impl Transcript {
                 }
                 Kind::Thinking => {
                     indent = 0;
-                    let took = thought_time(entry);
+                    // (One that streams says "Thinking".)
+                    let took = (self.motion.thinking != Some(item.id)).then(|| thought_time(entry));
                     let look = Look {
                         open: entry.open_quiet,
                         quiet: true,
-                        clock: Some(&took),
+                        clock: took.as_deref(),
                     };
                     // (Its lines come with a row's margin, where the bar goes.)
                     let thought = entry_lines(item, theme, inner + SPINNER, true, None, look);
@@ -3681,6 +3708,41 @@ mod tests {
         t.follow();
         assert_eq!(rows(&mut t, &quiet, 40, 3)[..1], ["  ▸ Thought for 2m"]);
         assert_eq!(rows(&mut t, &full(), 40, 5)[..1], ["  ▾ Thought for 2m"]);
+    }
+
+    /// In the Quiet view a thinking after a call is in that call's row from
+    /// the start, so the "Working…" line says it thinks while it streams,
+    /// and the row stays as it is when the next call joins it.
+    #[test]
+    fn a_thinking_in_a_quiet_row_streams_on_the_working_line() {
+        use crate::remote::{Act, ActKind};
+        let quiet = Filter::Main(View::Quiet);
+        let mut t = Transcript::new();
+        let read = |id: u64, path: &str| {
+            let mut call = item(id, Kind::Call, &format!("read {path}"));
+            call.turn = Some(1);
+            call.status = Some(CallStatus::Ok);
+            call.act = Some(Act {
+                kind: ActKind::Read,
+                target: path.into(),
+                ..Act::default()
+            });
+            call
+        };
+        t.apply(Update::Item(read(1, "a.rs")));
+        let mut thinking = item(2, Kind::Thinking, "Which next?");
+        thinking.turn = Some(1);
+        t.apply(Update::Item(thinking));
+        t.working = Some(0);
+        let shown = rows(&mut t, &quiet, 40, 4);
+        assert_eq!(shown[0], "  ▸ Read a.rs", "{shown:?}");
+        assert_eq!(after_spinner(&shown[1]), Some(" Thinking"), "{shown:?}");
+        assert!(t.drawn.moving);
+        // The row's first line stays where it was when the next read joins.
+        t.apply(Update::Item(read(3, "b.rs")));
+        let shown = rows(&mut t, &quiet, 40, 4);
+        assert_eq!(shown[0], "  ▸ Read a.rs and b.rs", "{shown:?}");
+        assert!(is_working(&shown[1]), "{shown:?}");
     }
 
     /// Times read in whole units, as the terminal and the page both say
