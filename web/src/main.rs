@@ -16,6 +16,7 @@ mod questions;
 mod scroll;
 mod select;
 mod sheets;
+mod shimmer;
 mod slash;
 mod spinner;
 mod store;

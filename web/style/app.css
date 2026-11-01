@@ -206,12 +206,13 @@ kbd {
   min-height: 48px;
 }
 
-.state { display: inline-flex; flex: none; align-items: baseline; gap: 6px; font-size: 14px; font-weight: 600; white-space: nowrap; }
-.state:empty, .state-label:empty { display: none; }
+.state { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: baseline; gap: 6px; font-size: 14px; font-weight: 600; white-space: nowrap; }
+.state-label { text-overflow: ellipsis; }
+.state:empty, .state-label:has(> .shimmer-text:empty) { display: none; }
 .state.asking { color: var(--warn); }
 .state.offline, .state.failed { color: var(--error); }
 .state.connecting { color: var(--muted); }
-.state-time { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+.state-time { flex: none; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
 /* What the state carries, on one line that takes the room left. An item
    that doesn't fit wraps to a second line out of sight, whole and with its
    gap, the last first. The first item takes no room, so a wide one goes
@@ -516,46 +517,52 @@ details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
 .row.working + :is(.row.turn, .row.conversation) { margin-top: 12px; }
 .row:is(.turn, .conversation):has(+ :is(.row.thinking, .row.working)) { margin-bottom: 12px; }
 .row.thinking:last-child, .row.working:last-child { margin-bottom: -12px; }
-/* A band of the full text color, 60 % of the word wide, sweeps across the
-   word from left to right over its muted color. The word is drawn once, in
-   its muted color, and the band is a copy of it in the text color (`.shine`'s
-   ::before) seen through a window that moves by transform while the copy
-   moves back as far, so the copy stays on the word and nothing is painted
-   again as it sweeps. (A moving background repaints the word each frame,
-   which in a long transcript costs WebKit half its main thread.) */
-.shimmer,
-details.thinking.streaming > summary .what {
+/* The mask and its text have the label's width, so their opposite
+   transforms cancel even when it wraps or is clipped. Both layers use
+   ordinary text with the same font. Only transforms move, since a moving
+   background repaints each frame and stalls WebKit in a long transcript. */
+.shimmer-label {
   position: relative;
-  display: inline-block;
-  color: var(--muted);
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
+.shimmer-text, .shine, .shine-text {
+  font: inherit;
+  letter-spacing: inherit;
+  word-spacing: inherit;
+  white-space: inherit;
+  text-overflow: inherit;
+}
+.shimmer-text, .shine-text { overflow: hidden; }
+.shimmer { color: var(--muted); }
 .shine { display: none; }
-.shimmer > .shine,
-details.thinking.streaming > summary .what > .shine {
+.shimmer > .shine {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
+  inset: 0;
   display: block;
-  width: 60%;
+  width: 100%;
   pointer-events: none;
+  user-select: none;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
   mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
+  -webkit-mask-size: 60% 100%;
+  mask-size: 60% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
   animation: shine 2s linear infinite;
 }
-.shine::before {
-  content: attr(data-text);
+.shine-text {
   position: absolute;
-  top: 0;
-  left: 0;
+  inset: 0;
+  width: 100%;
   color: var(--text);
-  white-space: nowrap;
   animation: shine-text 2s linear infinite;
 }
-/* The band's middle goes from half a word before the word to half a word
-   after it, so the window's left edge goes from -0.8 to 1.2 words. Its
-   own width is 0.6 of a word, and the copy's is a word. */
-@keyframes shine { from { transform: translateX(-133.333%); } to { transform: translateX(200%); } }
+/* The 60% band's middle sweeps from half a label before to half after. */
+@keyframes shine { from { transform: translateX(-80%); } to { transform: translateX(120%); } }
 @keyframes shine-text { from { transform: translateX(80%); } to { transform: translateX(-120%); } }
 @keyframes spin { to { transform: rotate(1turn); } }
 

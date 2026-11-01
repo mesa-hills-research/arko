@@ -11,6 +11,7 @@ use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
 use crate::protocol::{CallStatus, ItemData, Kind, Level, Source, WorkerState, duration};
+use crate::shimmer::Shimmer;
 use crate::spinner::Spinner;
 use crate::store::{Entry, MAIN, call_actions};
 use crate::{scroll, words};
@@ -173,7 +174,7 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
             });
             view! {
                 <div class="row working">
-                    <span class="what shimmer">{move || label.get()}<span class="shine" data-text=move || label.get() aria-hidden="true"></span></span>
+                    <Shimmer class="what" text=move || label.get() active=|| true />
                 </div>
             }
             .into_any()
@@ -444,7 +445,7 @@ fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
                 <details class="thinking" class:streaming=move || thinking.get() == Some(id)>
                     <summary>
                         <span class="mark">"▸"</span>
-                        <span class="what">{label}<span class="shine" data-text=label aria-hidden="true"></span></span>
+                        <Shimmer class="what" text=label active=move || thinking.get() == Some(id) />
                         {preview}
                     </summary>
                     <Md id=id text=text code=cell.code class="thinking-text" />

@@ -40,6 +40,7 @@ dependencies = [
  "pulldown-cmark",
  "serde",
  "serde_json",
+ "tachys",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

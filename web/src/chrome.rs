@@ -7,6 +7,7 @@ use lucide_leptos::{Bot, ChevronDown, ChevronLeft, Settings, ShieldOff};
 
 use crate::app::{self, STORE, Sheet, page, retry_now};
 use crate::layout::View;
+use crate::shimmer::Shimmer;
 use crate::transcript::show_worker;
 use crate::words::{self, Connection, Local};
 
@@ -168,13 +169,14 @@ pub fn Header() -> impl IntoView {
         <header class="top">
             <div class="column bar">
                 <span class=move || format!("state {}", state().0)>
-                    <span class="state-label" class:shimmer=move || state().0 == "working">
-                        {move || { let (key, label) = state(); (key != "idle").then_some(label) }}
-                        {move || {
+                    <Shimmer
+                        class="state-label"
+                        active=move || state().0 == "working"
+                        text=move || {
                             let (key, label) = state();
-                            (key == "working").then(|| view! { <span class="shine" data-text=label aria-hidden="true"></span> })
-                        }}
-                    </span>
+                            if key == "idle" { String::new() } else { label }
+                        }
+                    />
                     <span class="state-time">{time}</span>
                 </span>
                 // As much as fits, outside access, then the figures and the
