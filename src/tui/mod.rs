@@ -325,6 +325,9 @@ fn close() {
 /// popped (`pop`, when it was pushed), the mouse, focus and paste reports
 /// off, the main screen back, the cursor shown and the title put back.
 fn write_close(out: &mut impl Write, pop: bool) {
+    // A frame cut short leaves its synchronized update open, and the
+    // terminal then holds back what follows.
+    let _ = queue!(out, EndSynchronizedUpdate);
     if pop {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }
@@ -393,7 +396,8 @@ pub(crate) fn take_terminal() -> std::io::Result<impl Sized> {
 
 /// What giving the terminal back undoes, and its sequence, for tests.
 #[cfg(all(test, unix))]
-pub(crate) const UNDONE: [(&str, &str); 9] = [
+pub(crate) const UNDONE: [(&str, &str); 10] = [
+    ("synchronized update", "\x1b[?2026l"),
     ("keyboard protocol", "\x1b[<1u"),
     ("button reports", "\x1b[?1000l"),
     ("drag reports", "\x1b[?1002l"),
@@ -1164,9 +1168,9 @@ mod tests {
         assert_eq!(shown(&app).as_deref(), Some("after"));
     }
 
-    /// Giving the terminal back undoes all the view did to it, namely the
-    /// keyboard protocol, the mouse, focus and paste reports, the
-    /// alternate screen, the cursor and the title.
+    /// Giving the terminal back undoes all the view did to it, namely a
+    /// frame's synchronized update, the keyboard protocol, the mouse, focus
+    /// and paste reports, the alternate screen, the cursor and the title.
     #[cfg(unix)]
     #[test]
     fn the_terminal_is_given_back_whole() {
