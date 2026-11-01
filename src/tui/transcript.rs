@@ -32,8 +32,8 @@ use super::theme::Theme;
 use super::wrap::{self, Join, Wrapped, width as text_width};
 use crate::glyphs;
 use crate::remote::{
-    CallStatus, Delivery, Item, Kind, Level, MAIN_AGENT, Snapshot, Source, Update, WorkerState,
-    WorkerSummary, quiet,
+    CallStatus, Delivery, Fact, Item, Kind, Level, MAIN_AGENT, Snapshot, Source, Update,
+    WorkerState, WorkerSummary, quiet,
 };
 
 /// The items kept, as the feed keeps them, the main agent's and the
@@ -1080,7 +1080,6 @@ impl Transcript {
                         outcome: item.outcome.as_deref(),
                         job: item.job.is_some(),
                         turn: item.turn,
-                        detail: item.detail.is_some(),
                         output: !results.is_empty(),
                     }),
                     Kind::Thinking => quiet::Step::Thinking,
@@ -1182,10 +1181,9 @@ impl Transcript {
                         let words = quiet_spans(line, theme, clock.as_deref());
                         rows.extend(wrap::wrap_lines(&words, inner, 2));
                     }
-                    if let Some(text) =
-                        quiet::opened_text(item.act.as_ref(), item.detail.as_deref())
-                    {
-                        rows.extend(indented(plain(text, theme.dim(), room(indent)), indent));
+                    for fact in item.act.iter().flat_map(|act| &act.body) {
+                        let fact = fact_lines(fact, theme, room(indent));
+                        rows.extend(indented(fact, indent));
                     }
                     if opened.is_some_and(|call| call.outcome)
                         && let Some(outcome) = item.outcome.as_deref()
@@ -2340,6 +2338,35 @@ fn quiet_spans(words: &quiet::Words, theme: &Theme, clock: Option<&str>) -> Vec<
         ));
     }
     spans
+}
+
+/// A fact of a call's body at `width`: its label, muted, and its text after
+/// it, the text's later lines under its first. A copy takes the text.
+fn fact_lines(fact: &Fact, theme: &Theme, width: usize) -> Vec<Wrapped> {
+    if fact.label.is_empty() {
+        return plain(&fact.text, theme.dim(), width);
+    }
+    let label = rendered(&fact.label);
+    let hang = text_width(&label) + 2;
+    let text = wrap::clean(&glyphs::render(&fact.text));
+    let mut lines = Vec::new();
+    for (n, line) in text.split('\n').enumerate() {
+        let lead = if n == 0 {
+            Span::styled(
+                format!("{label}  "),
+                theme.dim().add_modifier(Modifier::ITALIC),
+            )
+        } else {
+            Span::raw(" ".repeat(hang))
+        };
+        let wrapped = wrap::wrap_lines(
+            &[Span::styled(line.to_string(), theme.dim())],
+            width.saturating_sub(hang).max(1),
+            0,
+        );
+        lines.extend(wrap::prefixed(wrapped, lead, Span::raw(" ".repeat(hang))));
+    }
+    lines
 }
 
 /// `lines` moved right by `indent` columns.
@@ -5042,9 +5069,10 @@ mod tests {
         );
     }
 
-    /// Each of the shared fixtures, alone in its Quiet row, opens to what
-    /// the row's words leave out of the call and its output, behind the
-    /// bar, and a row with nothing more to show has no fold (r127).
+    /// Each of the shared fixtures, alone in its Quiet row, opens to its
+    /// body (what the row's words leave out of the call), its outcome when
+    /// the words leave that out, and its output, behind the bar, and a row
+    /// with nothing more to show has no fold (r127).
     #[test]
     fn quiet_rows_open_to_the_fixtures_bodies() {
         let quiet = Filter::Main(View::Quiet);
@@ -5068,7 +5096,7 @@ mod tests {
             let closed = rows(&mut t, &quiet, 220, 12);
             t.toggle(1, 0, &quiet, &theme);
             let open = rows(&mut t, &quiet, 220, 12);
-            let Some(shows) = fixture.shows else {
+            if !fixture.opens {
                 assert_eq!(open, closed, "{}", fixture.name);
                 assert!(
                     closed[0].starts_with("    "),
@@ -5076,13 +5104,23 @@ mod tests {
                     fixture.name
                 );
                 continue;
-            };
+            }
             assert!(open[0].starts_with("  ▾ "), "{}: {open:?}", fixture.name);
-            let mut body: Vec<String> = shows
-                .iter()
-                .flat_map(|text| text.lines())
-                .map(|line| format!("  │ {line}"))
-                .collect();
+            // Its facts, a label before its text, and the text's later lines
+            // under its first.
+            let mut body: Vec<String> = Vec::new();
+            for fact in &fixture.act.body {
+                for (n, line) in fact.text.lines().enumerate() {
+                    body.push(match (fact.label.is_empty(), n) {
+                        (true, _) => format!("  │ {line}"),
+                        (false, 0) => format!("  │ {}  {line}", fact.label),
+                        (false, _) => format!("  │ {}{line}", " ".repeat(fact.label.len() + 2)),
+                    });
+                }
+            }
+            if fixture.outcome_shown {
+                body.push(format!("  │ {}", fixture.outcome));
+            }
             if fixture.output {
                 body.push("  │ its output".into());
             }

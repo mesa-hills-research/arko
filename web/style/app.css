@@ -467,6 +467,10 @@ details.quiet > summary { display: block; }
   overflow-wrap: anywhere;
 }
 .quiet-calls .row.thinking { margin: 4px 0; }
+/* A fact of a call's body, its parameter's name before its value. */
+.quiet-calls .fact { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.quiet-calls .fact > pre.held { flex: 1; min-width: 0; }
+.quiet-calls .fact-label { flex: none; color: var(--muted); font: italic 12.5px/1.45 var(--mono); }
 details.call[open] > summary .mark,
 details.thinking[open] > summary .mark { transform: rotate(90deg); }
 

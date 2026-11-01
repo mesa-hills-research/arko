@@ -274,13 +274,24 @@ pub struct Act {
     /// What came while a wait waited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub came: Option<Came>,
-    /// What its row's words leave out of it, whole, which its open row
-    /// shows: a command as it ran, a file's path with the lines read, a
-    /// write's line count, a search's whole query, all the runs a wait is
-    /// for, a whole job ID, a short message's text. Empty when the words
-    /// say it all, or the item's `detail` holds it.
+    /// What its open row shows besides its output, made from the call's
+    /// parameters when the call is: every parameter its row's words don't
+    /// state whole, each value whole, the call's main one first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body: Vec<Fact>,
+}
+
+/// A fact of a call's body ([`Act::body`]), one of its parameters.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub struct Fact {
+    /// The parameter's name, empty for the call's main parameter (a
+    /// command, a path, a message).
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub whole: String,
+    pub label: String,
+    /// Its value whole, or as much as a call's body keeps, with how much
+    /// more there was ("… 1,240 more lines").
+    pub text: String,
 }
 
 /// The kinds of call the Quiet view words and merges.

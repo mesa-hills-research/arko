@@ -67,8 +67,8 @@ pub(crate) const WORKER_EVERY: Duration = Duration::from_millis(250);
 
 // The types the web page reads too, which it compiles from the same file.
 pub use super::protocol::{
-    Act, ActKind, Activity, CallStatus, Came, Delivery, JobKind, JobState, JobSummary, Kind, Level,
-    Question, Source, WorkerState,
+    Act, ActKind, Activity, CallStatus, Came, Delivery, Fact, JobKind, JobState, JobSummary, Kind,
+    Level, Question, Source, WorkerState,
 };
 
 /// The message that keeps the prompt cache warm where the provider takes
@@ -351,6 +351,11 @@ fn act_size(act: &Act) -> usize {
                 .map(String::len)
                 .sum()
         })
+        + act
+            .body
+            .iter()
+            .map(|fact| fact.label.len() + fact.text.len())
+            .sum::<usize>()
 }
 
 /// A worker, as a line such as

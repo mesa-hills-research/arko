@@ -153,7 +153,7 @@ fn lead(body: &str, step: &str) -> String {
 
 /// A harness whose main agent and workers run luna, with a mock that
 /// answers workers at once and records every request.
-async fn setup(
+pub(super) async fn setup(
     temp: &Path,
 ) -> (
     Harness,
@@ -272,7 +272,7 @@ fn last_result(seen: &Seen) -> String {
         .unwrap_or_default()
 }
 
-async fn start_worker(harness: &mut Harness, inputs: &mut Inputs, message: &str) {
+pub(super) async fn start_worker(harness: &mut Harness, inputs: &mut Inputs, message: &str) {
     // (A turn that waits for an answer no one gives, as a regression in the
     // approval flow would leave it, fails here and doesn't block the run.)
     let end = tokio::time::timeout(

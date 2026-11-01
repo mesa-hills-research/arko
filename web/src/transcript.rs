@@ -363,8 +363,9 @@ fn quiet_row(id: u64, row: layout::QuietRow, thinking: Memo<Option<u64>>) -> Any
 /// What an open Quiet row shows of one of its calls, behind the row's bar,
 /// as the row's projection says ([`crate::quiet::Opened`]). That is the
 /// call's own line, except for the call the row's line names, and under it
-/// the text the call holds, its outcome and its output. The thinking after
-/// a call shows as Quiet shows it.
+/// its body (what the row's words leave out of it, [`crate::protocol::Act`]),
+/// its outcome and its output. The thinking after a call shows as Quiet
+/// shows it.
 fn quiet_member(
     row: Row,
     results: Vec<Row>,
@@ -380,12 +381,21 @@ fn quiet_member(
     let data = cell.for_row().data;
     let opened = move || quiet.with(|row| row.opened.iter().find(|call| call.id == id).cloned());
     let own = move || opened().and_then(|call| call.line);
-    // The text it holds, and how it went when the row's words leave that out.
+    // Its body, and how it went when the row's words leave that out.
     let held = move || {
         let outcome = opened().is_some_and(|call| call.outcome);
         data.with(|item| {
-            let text = crate::quiet::opened_text(item.act.as_ref(), item.detail.as_deref())
-                .map(|text| view! { <pre class="held">{text.to_string()}</pre> });
+            // Its body's facts, a label before each but the main one.
+            let text = item
+                .act
+                .iter()
+                .flat_map(|act| act.body.clone())
+                .map(|fact| {
+                    let label = (!fact.label.is_empty())
+                        .then(|| view! { <span class="fact-label">{fact.label.clone()}</span> });
+                    view! { <div class="fact">{label}<pre class="held">{fact.text}</pre></div> }
+                })
+                .collect_view();
             let outcome = item
                 .outcome
                 .clone()

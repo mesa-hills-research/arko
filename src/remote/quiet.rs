@@ -22,6 +22,8 @@
 
 use std::collections::HashMap;
 
+#[cfg(test)]
+use super::protocol::Fact;
 use super::protocol::{Act, ActKind, CallStatus, Came};
 
 /// A call's outcome when a stop cancelled it.
@@ -61,9 +63,6 @@ pub struct Call<'a> {
     /// a monitor), whose state its row says.
     pub job: bool,
     pub turn: Option<u64>,
-    /// It has a long parameter whole (the item's `detail`), which its open
-    /// row shows ([`opened_text`]).
-    pub detail: bool,
     /// It has output, a block of its result, which its open row shows.
     pub output: bool,
 }
@@ -99,8 +98,8 @@ impl Row {
 }
 
 /// What an open row shows of one of its calls, under the row's line and
-/// behind its bar: the call's own line, the text it holds
-/// ([`opened_text`]), its outcome, and its output.
+/// behind its bar: the call's own line, its body ([`Act::body`]), its
+/// outcome, and its output.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Opened {
     /// The call's item ID.
@@ -113,18 +112,6 @@ pub struct Opened {
     /// Its outcome shows on a line of its own ("11 lines"), since the row's
     /// words name the call and leave its outcome out.
     pub outcome: bool,
-}
-
-/// The text an open row shows of a call besides its output, from what the
-/// call was made with: its long parameter whole (`detail`), else what its
-/// row's words leave out of it ([`Act::whole`]).
-pub fn opened_text<'a>(act: Option<&'a Act>, detail: Option<&'a str>) -> Option<&'a str> {
-    detail
-        .filter(|detail| !detail.trim().is_empty())
-        .or_else(|| {
-            act.map(|act| act.whole.as_str())
-                .filter(|whole| !whole.trim().is_empty())
-        })
 }
 
 /// What a row says.
@@ -233,7 +220,7 @@ impl Member<'_> {
     /// Whether an open row has something of it to show besides its words
     /// and its output.
     fn more(&self) -> bool {
-        self.call.detail || !self.act.whole.trim().is_empty() || self.untold().is_some()
+        !self.act.body.is_empty() || self.untold().is_some()
     }
 
     /// Its own line in an open row, with its outcome.
@@ -1017,43 +1004,61 @@ fn one(member: &Member) -> Words {
 }
 
 /// A call as `render` makes its item from its tool and parameters, with how
-/// it went, and what an open row of it alone shows besides its output. The
-/// clients' tests share them ([`fixtures`]).
+/// it went, and what an open row of it alone shows. The clients' tests share
+/// them ([`fixtures`]).
 #[cfg(test)]
 pub(crate) struct Fixture {
     pub name: &'static str,
     pub tool: &'static str,
     /// Its parameters, as JSON.
     pub parameters: &'static str,
+    /// Its act, its body included.
     pub act: Act,
-    /// The item's `detail`.
+    /// The item's `detail`, which Full shows.
     pub detail: Option<&'static str>,
     pub status: CallStatus,
     pub outcome: &'static str,
     pub job: bool,
     /// It has a block of output.
     pub output: bool,
-    /// The lines its open row shows besides its output, its text then its
-    /// outcome, or `None` when the row doesn't open.
-    pub shows: Option<&'static [&'static str]>,
+    /// Its row opens.
+    pub opens: bool,
+    /// Its outcome shows in its open row, since the row's words leave it out.
+    pub outcome_shown: bool,
 }
 
 /// Calls of the kinds r127 found that opened to too little or to nothing:
-/// a command cut short, a read of some lines, a write, an edit of every
-/// match, a refused or failed command, messages, a long search, a wait for
-/// many runs, a moved call, and calls with nothing more to show.
+/// commands cut short or run in a folder, reads of some lines or a long
+/// path, a write, an edit of every match, a refused or failed command,
+/// messages, searches past the row's and Full's lengths, a wait for many
+/// runs, a check of a job, MCP calls, a note, worker starts, a moved call,
+/// and calls with nothing more to show.
 #[cfg(test)]
 pub(crate) fn fixtures() -> Vec<Fixture> {
-    let act = |kind: ActKind, target: &str| Act {
+    const LONG_MESSAGE: &str = "The parser drops a token after a comment at the end of a line, so the next statement starts one token late. The fix is in lexer.rs, with a test for it. Merge it once the review passes.";
+    const SEARCH: &str =
+        "how does the feed decide where a long call goes when its row is the last one";
+    const LONG_SEARCH: &str = "where does the Quiet view decide which calls share a row, and how does it keep a row in place when a long call starts, fails, or moves to the background while other calls keep coming in after it";
+    const LONG_PATH: &str = "deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/x.rs";
+    const LONG_TASK: &str = "Count the files in src that have no tests, list them by folder with how many lines each has, and say which of them changed most in the last month, so we know where tests would help first.";
+    let act = |kind: ActKind, target: &str, body: &[(&str, &str)]| Act {
         kind,
         target: target.into(),
+        body: body
+            .iter()
+            .map(|(label, text)| Fact {
+                label: label.to_string(),
+                text: text.to_string(),
+            })
+            .collect(),
         ..Act::default()
     };
-    let whole = |act: Act, whole: &str| Act {
-        whole: whole.into(),
-        ..act
+    let other = |doing: &str, done: &str, verb: &str, body: &[(&str, &str)]| Act {
+        doing: doing.into(),
+        done: done.into(),
+        verb: verb.into(),
+        ..act(ActKind::Other, "", body)
     };
-    const LONG_MESSAGE: &str = "The parser drops a token after a comment at the end of a line, so the next statement starts one token late. The fix is in lexer.rs, with a test for it. Merge it once the review passes.";
     let fixture = |name, tool, parameters, act| Fixture {
         name,
         tool,
@@ -1064,186 +1069,295 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
         outcome: "",
         job: false,
         output: false,
-        shows: None,
+        opens: true,
+        outcome_shown: false,
     };
+    let command = "CARGO_INCREMENTAL=0 printf '%s' this-is-a-command-with-a-critical-suffix";
     vec![
         Fixture {
             outcome: "0.0 s",
-            shows: Some(&[
-                "CARGO_INCREMENTAL=0 printf '%s' this-is-a-command-with-a-critical-suffix",
-                "0.0 s",
-            ]),
+            outcome_shown: true,
             ..fixture(
                 "a command cut short",
                 "shell",
                 r#"{"command": "CARGO_INCREMENTAL=0 printf '%s' this-is-a-command-with-a-critical-suffix"}"#,
-                whole(
-                    act(
-                        ActKind::Command,
-                        "printf '%s' this-is-a-command-with-a-critical-su…",
-                    ),
-                    "CARGO_INCREMENTAL=0 printf '%s' this-is-a-command-with-a-critical-suffix",
+                act(
+                    ActKind::Command,
+                    "printf '%s' this-is-a-command-with-a-critical-su…",
+                    &[("", command)],
                 ),
             )
         },
         Fixture {
-            detail: Some("cd web\ncargo build"),
+            detail: Some("printf one\nprintf two"),
             outcome: "2.0 s",
-            shows: Some(&["cd web\ncargo build", "2.0 s"]),
+            outcome_shown: true,
             ..fixture(
-                "a command of two lines",
+                "a command of two lines in a folder",
                 "shell",
-                r#"{"command": "cd web\ncargo build"}"#,
-                act(ActKind::Command, "cd web"),
+                r#"{"command": "printf one\nprintf two", "cwd": "src/specific/work"}"#,
+                act(
+                    ActKind::Command,
+                    "printf one in work",
+                    &[("", "printf one\nprintf two"), ("cwd", "src/specific/work")],
+                ),
             )
         },
         Fixture {
             outcome: "2.0 s",
             output: true,
-            shows: Some(&["cd web && cargo build", "2.0 s"]),
+            outcome_shown: true,
             ..fixture(
-                "a command in a folder",
+                "a command after cd",
                 "shell",
                 r#"{"command": "cd web && cargo build"}"#,
-                whole(
-                    act(ActKind::Command, "cargo build in web"),
-                    "cd web && cargo build",
+                act(
+                    ActKind::Command,
+                    "cargo build in web",
+                    &[("", "cd web && cargo build")],
                 ),
             )
         },
         Fixture {
             outcome: "11 lines",
-            shows: Some(&["src/specific/a.rs:100-110", "11 lines"]),
+            outcome_shown: true,
             ..fixture(
                 "a read of some lines",
                 "read_file",
                 r#"{"path": "src/specific/a.rs", "start_line": 100, "end_line": 110}"#,
-                whole(
-                    act(ActKind::Read, "src/specific/a.rs"),
-                    "src/specific/a.rs:100-110",
+                act(
+                    ActKind::Read,
+                    "src/specific/a.rs",
+                    &[("", "src/specific/a.rs:100-110")],
                 ),
             )
         },
         Fixture {
             outcome: "3 lines",
-            shows: Some(&["3 lines"]),
+            outcome_shown: true,
             ..fixture(
                 "a read of a file by its name",
                 "read_file",
                 r#"{"path": "a.rs"}"#,
-                act(ActKind::Read, "a.rs"),
+                act(ActKind::Read, "a.rs", &[]),
             )
         },
         Fixture {
-            shows: Some(&["new.rs (2 lines)"]),
             ..fixture(
-                "a write",
-                "write_file",
-                r#"{"path": "new.rs", "content": "a\nb"}"#,
-                whole(act(ActKind::Write, "new.rs"), "new.rs (2 lines)"),
+                "a read of a long path",
+                "read_file",
+                r#"{"path": "deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/x.rs"}"#,
+                act(
+                    ActKind::Read,
+                    "deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/…",
+                    &[("", LONG_PATH)],
+                ),
             )
         },
+        fixture(
+            "a write",
+            "write_file",
+            r#"{"path": "new.rs", "content": "a\nb"}"#,
+            act(ActKind::Write, "new.rs", &[("content", "a\nb")]),
+        ),
         Fixture {
             outcome: "3 replacements",
-            shows: Some(&["src/a.rs (all)", "3 replacements"]),
+            outcome_shown: true,
             ..fixture(
                 "an edit of every match",
                 "edit_file",
                 r#"{"path": "src/a.rs", "old_string": "a", "new_string": "b", "replace_all": true}"#,
-                whole(act(ActKind::Edit, "src/a.rs"), "src/a.rs (all)"),
+                act(
+                    ActKind::Edit,
+                    "src/a.rs",
+                    &[
+                        ("", "src/a.rs"),
+                        ("old_string", "a"),
+                        ("new_string", "b"),
+                        ("replace_all", "true"),
+                    ],
+                ),
             )
         },
         Fixture {
             status: CallStatus::Failed,
             outcome: "The user refused it.",
+            opens: false,
             ..fixture(
                 "a refused command",
                 "shell",
                 r#"{"command": "ls"}"#,
-                act(ActKind::Command, "ls"),
+                act(ActKind::Command, "ls", &[]),
             )
         },
         Fixture {
             status: CallStatus::Failed,
             outcome: "exit 101",
             output: true,
+            opens: false,
             ..fixture(
                 "a failed command, its output under its row",
                 "shell",
                 r#"{"command": "cargo build"}"#,
-                act(ActKind::Command, "cargo build"),
+                act(ActKind::Command, "cargo build", &[]),
             )
         },
         Fixture {
             outcome: "sent",
-            shows: Some(&["a.rs is done."]),
             ..fixture(
                 "a short message",
                 "message_agent",
                 r#"{"to": "r2", "message": "a.rs is done."}"#,
-                whole(act(ActKind::Message, "r2"), "a.rs is done."),
+                act(ActKind::Message, "r2", &[("", "a.rs is done.")]),
             )
         },
         Fixture {
             detail: Some(LONG_MESSAGE),
             outcome: "sent",
-            shows: Some(&[LONG_MESSAGE]),
             ..fixture(
                 "a long message",
                 "message_agent",
                 r#"{"to": "r2", "message": "The parser drops a token after a comment at the end of a line, so the next statement starts one token late. The fix is in lexer.rs, with a test for it. Merge it once the review passes."}"#,
-                act(ActKind::Message, "r2"),
+                act(ActKind::Message, "r2", &[("", LONG_MESSAGE)]),
             )
         },
         Fixture {
             outcome: "12 results",
-            shows: Some(&[
-                "how does the feed decide where a long call goes when its row is the last one",
-                "12 results",
-            ]),
+            outcome_shown: true,
             ..fixture(
-                "a long search",
+                "a search past the row's length",
                 "index_search",
                 r#"{"index": "arko", "query": "how does the feed decide where a long call goes when its row is the last one"}"#,
-                whole(
-                    Act {
-                        query: "how does the feed decide where a long call goes when its row…"
-                            .into(),
-                        ..act(ActKind::Search, "arko")
-                    },
-                    "how does the feed decide where a long call goes when its row is the last one",
-                ),
+                Act {
+                    query: "how does the feed decide where a long call goes when its row…".into(),
+                    ..act(ActKind::Search, "arko", &[("", SEARCH)])
+                },
+            )
+        },
+        Fixture {
+            outcome: "3 results",
+            outcome_shown: true,
+            ..fixture(
+                "a search of an index by its path, past Full's length",
+                "index_search",
+                r#"{"index": "/home/user/indexes/arko-int", "query": "where does the Quiet view decide which calls share a row, and how does it keep a row in place when a long call starts, fails, or moves to the background while other calls keep coming in after it"}"#,
+                Act {
+                    query: "where does the Quiet view decide which calls share a row, an…".into(),
+                    ..act(
+                        ActKind::Search,
+                        "arko-int",
+                        &[("", LONG_SEARCH), ("index", "/home/user/indexes/arko-int")],
+                    )
+                },
             )
         },
         Fixture {
             outcome: "nothing new",
-            shows: Some(&["r1, r2, r3, r4, r5"]),
             ..fixture(
                 "a wait for many runs",
                 "wait_for_agents",
                 r#"{"runs": "r1, r2, r3, r4, r5"}"#,
-                whole(
-                    act(ActKind::Wait, "r1, r2, r3, r4, r5"),
+                act(
+                    ActKind::Wait,
                     "r1, r2, r3, r4, r5",
+                    &[("runs", "r1, r2, r3, r4, r5")],
+                ),
+            )
+        },
+        fixture(
+            "a check of a job",
+            "terminal_status",
+            r#"{"job_id": "4d2c1a9b-1111-2222-3333-444455556666"}"#,
+            act(
+                ActKind::Check,
+                "job 4d2c1a9b",
+                &[("job_id", "4d2c1a9b-1111-2222-3333-444455556666")],
+            ),
+        ),
+        Fixture {
+            outcome: "Created issue 7.",
+            outcome_shown: true,
+            ..fixture(
+                "an MCP call",
+                "mcp",
+                r#"{"action": "call", "server": "github", "tool": "create_issue", "arguments": {"title": "Bug"}}"#,
+                act(
+                    ActKind::Mcp,
+                    "create_issue on github",
+                    &[("", "{\n  \"title\": \"Bug\"\n}")],
+                ),
+            )
+        },
+        fixture(
+            "an MCP server's own tool",
+            "mcp__github__create_issue",
+            r#"{"title": "Bug", "labels": ["p1"]}"#,
+            act(
+                ActKind::Mcp,
+                "create_issue on github",
+                &[("labels", "[\n  \"p1\"\n]"), ("title", "Bug")],
+            ),
+        ),
+        Fixture {
+            outcome: "Kept note 1.",
+            outcome_shown: true,
+            ..fixture(
+                "a note",
+                "keep_note",
+                r#"{"text": "Use tabs in the tests."}"#,
+                act(ActKind::Note, "", &[("", "Use tabs in the tests.")]),
+            )
+        },
+        fixture(
+            "a short worker start",
+            "start_agent",
+            r#"{"task": "Count.", "profile": "counter", "model": "sonnet", "effort": "high"}"#,
+            other(
+                "Starting a worker",
+                "Started a worker",
+                "start a worker",
+                &[
+                    ("", "Count."),
+                    ("effort", "high"),
+                    ("model", "sonnet"),
+                    ("profile", "counter"),
+                ],
+            ),
+        ),
+        Fixture {
+            detail: Some(LONG_TASK),
+            ..fixture(
+                "a long worker start",
+                "start_agent",
+                r#"{"task": "Count the files in src that have no tests, list them by folder with how many lines each has, and say which of them changed most in the last month, so we know where tests would help first.", "model": "sonnet"}"#,
+                other(
+                    "Starting a worker",
+                    "Started a worker",
+                    "start a worker",
+                    &[("", LONG_TASK), ("model", "sonnet")],
                 ),
             )
         },
         Fixture {
             outcome: "in the background · job 4d2c1a9b",
             job: true,
+            opens: false,
             ..fixture(
                 "a moved call",
                 "shell",
                 r#"{"command": "cargo build"}"#,
-                act(ActKind::Command, "cargo build"),
+                act(ActKind::Command, "cargo build", &[]),
             )
         },
-        fixture(
-            "a skill",
-            "load_skill",
-            r#"{"name": "ponytail"}"#,
-            act(ActKind::Skill, "ponytail"),
-        ),
+        Fixture {
+            opens: false,
+            ..fixture(
+                "a skill",
+                "load_skill",
+                r#"{"name": "ponytail"}"#,
+                act(ActKind::Skill, "ponytail", &[]),
+            )
+        },
     ]
 }
 
@@ -1314,7 +1428,6 @@ mod tests {
             outcome: Some(fixture.outcome),
             job: fixture.job,
             turn: Some(1),
-            detail: fixture.detail.is_some(),
             output: fixture.output,
         })];
         match rows(&steps).as_slice() {
@@ -1323,8 +1436,8 @@ mod tests {
         }
     }
 
-    /// An open row of one call shows what the row's words leave out of it
-    /// (its whole command, its path and lines, its message, its outcome),
+    /// An open row of one call shows its body, which holds what the row's
+    /// words leave out of it, and its outcome when the words leave that out,
     /// and a row with nothing more has no fold (r127).
     #[test]
     fn an_open_row_shows_what_its_words_leave_out() {
@@ -1334,20 +1447,10 @@ mod tests {
                 panic!("{}: {:?}", fixture.name, row.calls);
             };
             assert_eq!(opened.line, None, "{}", fixture.name);
-            let mut shows: Vec<&str> = Vec::new();
-            shows.extend(opened_text(Some(&fixture.act), fixture.detail));
-            if opened.outcome {
-                shows.push(fixture.outcome);
-            }
-            match fixture.shows {
-                Some(expected) => {
-                    assert!(row.opens, "{}", fixture.name);
-                    assert_eq!(shows, expected, "{}", fixture.name);
-                }
-                None => {
-                    assert!(!row.opens, "{}: {shows:?}", fixture.name);
-                    assert!(shows.is_empty(), "{}: {shows:?}", fixture.name);
-                }
+            assert_eq!(row.opens, fixture.opens, "{}", fixture.name);
+            assert_eq!(opened.outcome, fixture.outcome_shown, "{}", fixture.name);
+            if !fixture.opens {
+                assert!(fixture.act.body.is_empty(), "{}", fixture.name);
             }
         }
     }

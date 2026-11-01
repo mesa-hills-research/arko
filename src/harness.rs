@@ -5362,6 +5362,13 @@ pub(crate) mod tests {
         include!("worker_choice_tests.rs");
     }
 
+    /// Every tool's parameters in the Quiet view's bodies, end to end, in
+    /// their own file.
+    mod quiet_bodies {
+        use super::*;
+        include!("quiet_body_tests.rs");
+    }
+
     /// Workers that start workers, end to end, in their own file.
     mod nested_workers {
         use super::*;

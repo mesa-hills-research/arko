@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use arko_agents::LOAD_SKILL_TOOL_NAME;
 
-use super::feed::{Act, ActKind, CallStatus, Came, Item, Kind, Level};
+use super::feed::{Act, ActKind, CallStatus, Came, Fact, Item, Kind, Level};
 use super::quiet;
 use crate::crew;
 use crate::message;
@@ -62,68 +62,256 @@ pub fn call(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
         let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
         item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
         let mut act = act(tool, parameters, lead);
-        if item.detail.is_none() {
-            act.whole = whole(tool, parameters, &act);
-        }
+        act.body = body(tool, parameters, &act);
         item.act = Some(act);
     }
     Some(item)
 }
 
-/// What the Quiet row's words leave out of a call of `tool`, whole, for its
-/// open row ([`Act::whole`]), from its parameters. Empty when the words say
-/// it all.
-fn whole(tool: &str, parameters: &Parameters, act: &Act) -> String {
-    let raw = |name: &str| text(parameters, name).trim().to_string();
-    match act.kind {
-        // A command as it ran, with its variables, its program's path and
-        // its folder.
-        ActKind::Command if matches!(tool, SHELL_TOOL_NAME | "Bash") => {
-            let (command, cwd) = (raw("command"), raw("cwd"));
-            if command_words(&command, &cwd) == command {
-                return String::new();
-            }
-            match cwd.as_str() {
-                "" | "." => command,
-                cwd => format!("(in {cwd}) {command}"),
-            }
-        }
-        // The path and what Full says of it (the lines read, a write's line
-        // count), when that is more than the file's name.
-        ActKind::Read | ActKind::List | ActKind::Write | ActKind::Edit => {
-            let said = match tool {
-                READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME
-                | APPLY_DIFF_TOOL_NAME | LIST_FILES_TOOL_NAME => ui::file_call(tool, parameters).1,
-                _ => act.target.clone(),
+/// The most lines a fact of a call's body keeps.
+const BODY_LINES: usize = 400;
+/// The most characters a fact of a call's body keeps.
+const BODY_CHARS: usize = 40_000;
+
+/// The body of a call of `tool` ([`Act::body`]), from its parameters. It
+/// holds every parameter the row's words don't state whole ([`said`]),
+/// the call's main one first without a label, then the others by name,
+/// each value whole up to what a body keeps, which says how much more there
+/// was.
+fn body(tool: &str, parameters: &Parameters, act: &Act) -> Vec<Fact> {
+    let said = said(tool, parameters, act);
+    let mut left: std::collections::BTreeMap<&str, &Value> = parameters
+        .iter()
+        .filter(|(name, value)| !value.is_null() && !said.contains(&name.as_str()))
+        .map(|(name, value)| (name.as_str(), value))
+        .collect();
+    let mut facts = Vec::new();
+    let mut main = |text: String| {
+        facts.push(Fact {
+            label: String::new(),
+            text: bounded(&text),
+        });
+    };
+    match tool {
+        // A read's path and its lines, as Full writes them.
+        READ_FILE_TOOL_NAME
+            if ["path", "start_line", "end_line"]
+                .iter()
+                .any(|name| left.contains_key(name)) =>
+        {
+            let value = |name: &str| parameters.get(name).map(value_text).unwrap_or_default();
+            let range = match (value("start_line"), value("end_line")) {
+                (start, end) if start.is_empty() && end.is_empty() => String::new(),
+                (start, end) if end.is_empty() => format!(":{start}-"),
+                (start, end) if start.is_empty() => format!(":1-{end}"),
+                (start, end) => format!(":{start}-{end}"),
             };
-            let path = act.target.trim_end_matches(['/', '\\']);
-            let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-            if said == name { String::new() } else { said }
-        }
-        ActKind::Search => {
-            let query = match raw("query") {
-                query if query.is_empty() => raw("pattern"),
-                query => query,
-            };
-            if cut(&query, ROW_QUERY_CHARS) == query {
-                String::new()
-            } else {
-                cut(&query, 160)
+            main(format!("{}{range}", value("path")));
+            for name in ["path", "start_line", "end_line"] {
+                left.remove(name);
             }
         }
-        // (A long one is the item's `detail`.)
-        ActKind::Message => raw("message"),
-        ActKind::Wait if act.target.split(',').count() > 3 => act.target.clone(),
-        ActKind::Check => {
-            let id = raw("job_id");
-            if id.chars().count() > 8 {
-                format!("job {id}")
-            } else {
-                String::new()
+        _ => {
+            if let Some(name) = main_parameter(tool)
+                && let Some(value) = left.remove(name)
+            {
+                main(value_text(value));
             }
         }
-        _ => String::new(),
     }
+    // (An edit's old text before its new.)
+    for name in ["old_string", "new_string"] {
+        if let Some(value) = left.remove(name) {
+            facts.push(fact(name, value));
+        }
+    }
+    facts.extend(left.into_iter().map(|(name, value)| fact(name, value)));
+    facts
+}
+
+/// A fact of a body, the parameter `name` with `value`.
+fn fact(name: &str, value: &Value) -> Fact {
+    Fact {
+        label: name.to_string(),
+        text: bounded(&value_text(value)),
+    }
+}
+
+/// The parameter of a call of `tool` that its body shows first, without
+/// its name: what the call runs, reads, writes or says.
+fn main_parameter(tool: &str) -> Option<&'static str> {
+    Some(match tool {
+        SHELL_TOOL_NAME | "Bash" | "terminal_start" | "monitor_start" => "command",
+        READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => {
+            "path"
+        }
+        "Read" | "Write" | "Edit" | "MultiEdit" => "file_path",
+        LIST_FILES_TOOL_NAME => "directory",
+        "index_search" => "query",
+        "Grep" | "Glob" => "pattern",
+        crew::MESSAGE_AGENT => "message",
+        crew::START_AGENT => "task",
+        "keep_note" => "text",
+        crate::mcp::MCP_TOOL_NAME => "arguments",
+        _ => return None,
+    })
+}
+
+/// A parameter's value as a body shows it: text as it is, a number or a
+/// flag as written, and a list or an object as JSON.
+fn value_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.trim_end().to_string(),
+        Value::Array(_) | Value::Object(_) => {
+            serde_json::to_string_pretty(value).unwrap_or_default()
+        }
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// `text` whole, or as much as a fact of a body keeps ([`BODY_LINES`],
+/// [`BODY_CHARS`]) and how much more there was ("… 1,240 more lines").
+fn bounded(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= BODY_LINES && text.chars().count() <= BODY_CHARS {
+        return text.to_string();
+    }
+    let mut kept: Vec<&str> = Vec::new();
+    let mut chars = 0;
+    for line in &lines {
+        let length = line.chars().count() + 1;
+        if kept.len() == BODY_LINES || chars + length > BODY_CHARS {
+            break;
+        }
+        kept.push(line);
+        chars += length;
+    }
+    if kept.is_empty() {
+        // One line longer than a body keeps.
+        let shown: String = text.chars().take(BODY_CHARS).collect();
+        let more = text.chars().count() - BODY_CHARS;
+        return format!(
+            "{shown}\n… {} more character{}",
+            grouped(more),
+            plural_s(more)
+        );
+    }
+    let more = lines.len() - kept.len();
+    format!(
+        "{}\n… {} more line{}",
+        kept.join("\n"),
+        grouped(more),
+        plural_s(more)
+    )
+}
+
+fn plural_s(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
+}
+
+/// `count` with its thousands apart ("1,240").
+fn grouped(count: usize) -> String {
+    let digits = count.to_string();
+    let mut out = String::new();
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// The parameters of a call of `tool` its row's words state whole, which
+/// its body leaves out. Each is what the code that makes the words reports
+/// it kept whole: a command it didn't shorten, a path without a folder, a
+/// query the row doesn't cut, up to three runs, a number the words say, and
+/// a choice (`action`, a flag) the words are made from.
+fn said(tool: &str, parameters: &Parameters, act: &Act) -> Vec<&'static str> {
+    let raw = |name: &str| text(parameters, name).trim().to_string();
+    // A string the words show as it is.
+    let whole = |name: &str, limit: usize| {
+        let value = raw(name);
+        !value.is_empty()
+            && parameters.get(name).is_some_and(Value::is_string)
+            && cut(&value, limit) == value
+    };
+    // A path the words name by its name, which is all of it.
+    let bare = |name: &str| whole(name, 160) && !raw(name).contains(['/', '\\']);
+    let number = |name: &str| parameters.get(name).is_some_and(Value::is_number);
+    let mut said = Vec::new();
+    let mut say = |name: &'static str, kept: bool| {
+        if kept {
+            said.push(name);
+        }
+    };
+    match tool {
+        SHELL_TOOL_NAME | "Bash" => {
+            let (command, cwd) = (raw("command"), raw("cwd"));
+            say("command", command_words_kept(&command, &cwd).1);
+            say("cwd", !cwd.is_empty() && bare("cwd"));
+        }
+        "terminal_start" | "monitor_start" => {
+            say("command", command_words_kept(&raw("command"), "").1);
+        }
+        READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => {
+            say("path", bare("path"));
+        }
+        "Read" | "Write" | "Edit" | "MultiEdit" => say("file_path", bare("file_path")),
+        LIST_FILES_TOOL_NAME => say("directory", bare("directory")),
+        "index_search" => {
+            say("query", whole("query", ROW_QUERY_CHARS));
+            say(
+                "index",
+                whole("index", 160) && index_name(&raw("index")) == raw("index"),
+            );
+        }
+        "Grep" | "Glob" => say("pattern", whole("pattern", ROW_QUERY_CHARS)),
+        LOAD_SKILL_TOOL_NAME => say("name", whole("name", 160)),
+        // "lead" is said by the lead's name.
+        crew::MESSAGE_AGENT => say("to", whole("to", 160)),
+        crew::WAIT_FOR_AGENTS => {
+            let runs = ui::waited_runs(parameters, &[]);
+            say(
+                "runs",
+                (1..=3).contains(&runs.len()) && !act.target.contains('…'),
+            );
+        }
+        crew::STOP_AGENT => {
+            say("run", whole("run", 160));
+            say("remove_workspace", true);
+        }
+        // An action the words are made from, or one they show as it is.
+        "terminal_control" => say(
+            "action",
+            matches!(
+                raw("action").as_str(),
+                "wait" | "list" | "cancel" | "forget"
+            ) || whole("action", 160),
+        ),
+        "monitor_control" => say(
+            "action",
+            matches!(raw("action").as_str(), "list" | "rearm" | "stop"),
+        ),
+        "keep_note" => {
+            let audience = raw("audience");
+            say("audience", audience != "lead" && whole("audience", 160));
+            say("replaces", number("replaces"));
+        }
+        "forget_note" => say("id", number("id")),
+        crate::mcp::MCP_TOOL_NAME => {
+            let known = ["call", "servers", "tools", "start", "stop", "add", "remove"];
+            say(
+                "action",
+                known.contains(&raw("action").as_str()) || whole("action", 160),
+            );
+            say("server", raw("action") != "servers" && whole("server", 160));
+            say("tool", raw("action") == "call" && whole("tool", 160));
+        }
+        _ => {}
+    }
+    said
 }
 
 /// The longest search query a Quiet row names, in characters.
@@ -502,6 +690,12 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
 /// by its file name, and after a `cd dir &&` that becomes "in dir", as the
 /// folder `cwd` does.
 fn command_words(command: &str, cwd: &str) -> String {
+    command_words_kept(command, cwd).0
+}
+
+/// [`command_words`], and whether they state the command whole (it had one
+/// line, no variables, no `cd`, no program by its path, and it fit).
+fn command_words_kept(command: &str, cwd: &str) -> (String, bool) {
     let mut line = command.trim().lines().next().unwrap_or_default().trim();
     let mut folder = match cwd.trim() {
         "" | "." => String::new(),
@@ -543,10 +737,11 @@ fn command_words(command: &str, cwd: &str) -> String {
         _ => line.to_string(),
     };
     let words = cut(&line, quiet::COMMAND_CHARS);
+    let kept = !command.trim().is_empty() && words == command.trim();
     if folder.is_empty() {
-        words
+        (words, kept)
     } else {
-        format!("{words} in {folder}")
+        (format!("{words} in {folder}"), kept)
     }
 }
 

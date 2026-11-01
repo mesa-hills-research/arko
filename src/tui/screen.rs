@@ -2494,13 +2494,17 @@ mod tests {
         result.id = 6;
         result.call = Some(5);
         app.transcript.apply(Update::Item(result));
-        let mut message = call(
-            7,
-            "message r3 “Use the UTC time…”",
-            on(ActKind::Message, "r3"),
-            CallStatus::Ok,
-        )
-        .detail("Use the UTC time from the stats, not the local clock.");
+        // (Its body holds its message, as the feed makes it.)
+        let text = "Use the UTC time from the stats, not the local clock.";
+        let to_r3 = Act {
+            body: vec![crate::remote::Fact {
+                label: String::new(),
+                text: text.into(),
+            }],
+            ..on(ActKind::Message, "r3")
+        };
+        let mut message =
+            call(7, "message r3 “Use the UTC time…”", to_r3, CallStatus::Ok).detail(text);
         message.outcome = Some("sent".into());
         app.transcript.apply(Update::Item(message));
     }

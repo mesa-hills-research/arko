@@ -48,10 +48,10 @@ use tokio::sync::mpsc;
 pub use arko_ai::{ExtraUsage, PlanCredits};
 pub(crate) use feed::family_order_of;
 pub use feed::{
-    Act, ActKind, Activity, Batches, CallStatus, Came, Delivery, ENDED_JOBS, Feed, Following, Item,
-    JobKind, JobStart, JobState, JobSummary, Kind, Level, MAIN_AGENT, Question, REFRESH_MESSAGE,
-    Received, Snapshot, Source, Update, WorkerChange, WorkerInfo, WorkerState, WorkerSummary,
-    family_order, family_order_with_levels,
+    Act, ActKind, Activity, Batches, CallStatus, Came, Delivery, ENDED_JOBS, Fact, Feed, Following,
+    Item, JobKind, JobStart, JobState, JobSummary, Kind, Level, MAIN_AGENT, Question,
+    REFRESH_MESSAGE, Received, Snapshot, Source, Update, WorkerChange, WorkerInfo, WorkerState,
+    WorkerSummary, family_order, family_order_with_levels,
 };
 pub use history::items as history;
 pub(crate) use history::own_words;
@@ -62,6 +62,9 @@ pub use links::{HOST_VARIABLE, Interface, Link};
 #[cfg(not(feature = "remote"))]
 pub use no_server::Server;
 pub use protocol::{Confirm, Partial, Refusal, RefusalKind, Verdict};
+/// A call's item as the feed makes it, for tests of every tool's.
+#[cfg(test)]
+pub(crate) use render::call as call_item;
 pub(crate) use render::duration_words;
 pub(crate) use render::outcome as call_outcome;
 #[cfg(feature = "remote")]

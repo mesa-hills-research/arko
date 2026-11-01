@@ -310,7 +310,6 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
                     outcome: item.outcome.as_deref(),
                     job: item.job.is_some(),
                     turn: item.turn,
-                    detail: item.detail.is_some(),
                     output: !results.is_empty(),
                 }),
                 None => quiet::Step::Other(*id),
@@ -1232,24 +1231,22 @@ mod tests {
             let Some(Row::Quiet { row, .. }) = rows.get(1) else {
                 panic!("{}: {rows:?}", fixture.name);
             };
-            assert_eq!(row.opens, fixture.shows.is_some(), "{}", fixture.name);
-            let Some(shows) = fixture.shows else {
+            assert_eq!(row.opens, fixture.opens, "{}", fixture.name);
+            if !fixture.opens {
                 continue;
-            };
+            }
             let [opened] = row.opened.as_slice() else {
                 panic!("{}: {:?}", fixture.name, row.opened);
             };
             assert_eq!(opened.line, None, "{}", fixture.name);
-            let call = &items[1];
-            let mut said: Vec<String> =
-                quiet::opened_text(call.act.as_ref(), call.detail.as_deref())
-                    .map(str::to_string)
-                    .into_iter()
-                    .collect();
-            if opened.outcome {
-                said.extend(call.outcome.clone());
-            }
-            assert_eq!(said, shows, "{}", fixture.name);
+            assert_eq!(opened.outcome, fixture.outcome_shown, "{}", fixture.name);
+            // The body comes as the server made it, which the page draws.
+            assert_eq!(
+                items[1].act.as_ref().map(|act| &act.body),
+                Some(&fixture.act.body),
+                "{}",
+                fixture.name
+            );
             let output = row
                 .calls
                 .iter()
