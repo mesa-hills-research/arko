@@ -2507,7 +2507,8 @@ mod tests {
 
     /// In the Quiet view each call says what it did in a few words,
     /// neighbours of a kind merge, a failure keeps its output under it, and
-    /// a click on a row's line opens it to the calls as Full shows them.
+    /// a click on a row's line opens it to what its calls hold, each call
+    /// on a line of its own words.
     #[test]
     fn quiet_rows_merge_calls_and_a_click_opens_one() {
         use crossterm::event::{MouseButton, MouseEventKind};
@@ -2540,9 +2541,9 @@ mod tests {
         assert_eq!(
             open[edits + 1..edits + 4],
             [
-                "  ▸ read src/app.rs · ✓",
-                "  ▸ edit src/app.rs · ✓",
-                "  ▸ edit src/app.rs · ✓",
+                "  │ Read app.rs",
+                "  │ Made 1 edit to app.rs",
+                "  │ Made 1 edit to app.rs",
             ],
             "{open:#?}"
         );

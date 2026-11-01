@@ -214,10 +214,10 @@ fn count_row(id: u64, count: Count) -> AnyView {
 /// Calls in a few words (Quiet), by the first one's ID. The row keeps its
 /// place in the page while calls join it and its words change, so focus and
 /// what's open inside it stay ([`QUIET`]). A click on its line (or Enter on
-/// it) opens it to the rows of its calls as Full shows them, which are made
-/// only then. Each of its calls keeps what its own row offers (Move to
-/// background, Stop) and the images its tool returned under the line, as
-/// Full does, whatever row it's in.
+/// it) opens it to what its calls hold, behind a bar ([`quiet_member`]),
+/// which is made only then. Each of its calls keeps what its own row
+/// offers (Move to background, Stop) and the images its tool returned
+/// under the line, as Full does, whatever row it's in.
 fn quiet_row(
     id: u64,
     words: crate::quiet::Words,
@@ -284,8 +284,7 @@ fn quiet_row(
             .collect_view()
     };
     // The images the calls' tools returned, also those that come later,
-    // under the line as Full shows them. (Open, the calls' own rows show
-    // them.)
+    // under the line as Full shows them. (Open, each call shows its own.)
     let images = move || {
         (!open()).then(|| {
             members()
@@ -299,9 +298,11 @@ fn quiet_row(
         open().then(|| {
             view! {
                 <For
-                    each=move || data.with(|(_, calls)| calls.clone())
-                    key=|row| row_key(None, row)
-                    children=move |row| row_view(row, thinking)
+                    each=move || data.with(|(_, calls)| layout::quiet_members(calls))
+                    key=|(row, results)| {
+                        (row_key(None, row), results.iter().map(Row::key).collect::<Vec<_>>())
+                    }
+                    children=move |(row, results)| quiet_member(row, results, data, thinking)
                 />
             }
         })
@@ -333,6 +334,88 @@ fn quiet_row(
                 <div class="quiet-calls">{inside}</div>
             </details>
             {images}
+        </div>
+    }
+    .into_any()
+}
+
+/// What an open Quiet row shows of one of its calls, behind the row's bar.
+/// That is the call's own words, except for the call the row's line names,
+/// and under them the text it sends and its output. With nothing else to
+/// show, the call the row names says how it went ("120 lines"). The
+/// thinking between calls shows as Quiet shows it.
+fn quiet_member(
+    row: Row,
+    results: Vec<Row>,
+    quiet: RwSignal<(crate::quiet::Words, Vec<Row>)>,
+    thinking: Memo<Option<u64>>,
+) -> AnyView {
+    let Row::Item(id, Kind::Call) = row else {
+        return row_view(row, thinking);
+    };
+    let Some(cell) = cell(id) else {
+        return ().into_any();
+    };
+    let data = cell.for_row().data;
+    let own = move || {
+        let words = quiet.with(|(words, _)| words.clone());
+        data.with(|item| {
+            crate::quiet::own_words(
+                &words,
+                &crate::quiet::Call {
+                    id: item.id,
+                    act: item.act.as_ref(),
+                    status: item.status,
+                    outcome: item.outcome.as_deref(),
+                    job: item.job.is_some(),
+                    turn: item.turn,
+                },
+            )
+        })
+    };
+    let answered = !results.is_empty();
+    // The text it sends. The call the row's line names says how it went
+    // when it holds nothing else ("120 lines"), so it opens to something.
+    let held = move || {
+        let named = own().is_none();
+        let held = data.with(|item| {
+            if let Some(text) =
+                crate::quiet::held_text(item.act.as_ref(), &item.text, item.detail.as_deref())
+            {
+                return Some(text.to_string());
+            }
+            let settled = item.status == Some(CallStatus::Ok) && item.job.is_none();
+            (named && !answered && settled)
+                .then(|| item.outcome.clone())
+                .flatten()
+                .filter(|outcome| !outcome.trim().is_empty())
+        })?;
+        Some(view! { <pre class="held">{held}</pre> })
+    };
+    let line = move || {
+        own().map(|words| {
+            view! {
+                <span class="call-line">
+                    <span class="what" title=words.text.clone()>{words.text.clone()}</span>
+                    {words.failed.map(|why| view! {
+                        <span class="outcome" title=why.clone()><span class="failed">"✗"</span>" "{why.clone()}</span>
+                    })}
+                    {words.note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
+                    {words.running.then(|| view! {
+                        <span class="outcome"><span class="running"><Spinner /></span></span>
+                    })}
+                </span>
+            }
+        })
+    };
+    view! {
+        <div class="quiet-member" class:own=move || own().is_some()>
+            {line}
+            <div class="holds">
+                {held}
+                {results.into_iter().map(|row| row_view(row, thinking)).collect_view()}
+                <Thumbnails data=data />
+            </div>
         </div>
     }
     .into_any()

@@ -441,7 +441,22 @@ details.thinking > summary::-webkit-details-marker,
 details.more > summary::-webkit-details-marker { display: none; }
 details.quiet > summary { display: block; }
 .row.quiet.muted .what { opacity: 0.6; }
-.quiet-calls { padding-left: 16px; }
+/* An open Quiet row shows what its calls hold behind one line at its left,
+   under the row's triangle. What a call with a line of its own holds goes
+   under that line. */
+.quiet-calls { margin: 2px 0 6px 4px; padding-left: 12px; border-left: 2px solid var(--line); }
+.quiet-member .call-line { margin: 2px 0; }
+.quiet-member.own > .holds { padding-left: 16px; }
+.quiet-calls .row.result { margin: 0; }
+.quiet-calls pre.held, .quiet-calls .row.result pre {
+  margin: 2px 0;
+  padding: 0;
+  border-left: 0;
+  font: 12.5px/1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.quiet-calls .row.thinking { margin: 4px 0; }
 details.call[open] > summary .mark,
 details.thinking[open] > summary .mark { transform: rotate(90deg); }
 

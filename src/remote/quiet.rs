@@ -146,6 +146,40 @@ pub fn doing(act: &Act) -> String {
     phrases(&member).doing
 }
 
+/// The line an open row shows for one of its calls, which is the call's
+/// own words ("Read a.rs", "Ran cargo build"). There's none for the call
+/// whose words are the row's (a row of one call), so no line shows twice,
+/// and what that call holds goes right under the row's line.
+pub fn own_words(row: &Words, call: &Call) -> Option<Words> {
+    let act = call.act?;
+    let member = Member {
+        index: 0,
+        call: *call,
+        act,
+        name: Names::default().of(call.turn, act),
+        next: None,
+    };
+    let mut words = one(&member);
+    words.running = member.running();
+    (words.text != row.text).then_some(words)
+}
+
+/// What an open row shows of a call besides its output, which is the text
+/// it sends or its long parameter whole. `text` and `detail` are the
+/// call's line and long parameter as Full has them. A message's line
+/// quotes it whole when it's short (`message r2 “Done.”`).
+pub fn held_text<'a>(act: Option<&Act>, text: &'a str, detail: Option<&'a str>) -> Option<&'a str> {
+    if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
+        return Some(detail);
+    }
+    if act?.kind != ActKind::Message {
+        return None;
+    }
+    let start = text.find('“')? + '“'.len_utf8();
+    let end = text.rfind('”')?;
+    text.get(start..end).filter(|held| !held.trim().is_empty())
+}
+
 /// A call of a row.
 #[derive(Debug, Clone)]
 struct Member<'a> {
@@ -1021,6 +1055,80 @@ mod tests {
 
     fn ok(kind: ActKind, target: &str) -> Option<(Act, CallStatus)> {
         Some((act(kind, target), Ok))
+    }
+
+    /// An open row names each of its calls by its own words, except the
+    /// call whose words are the row's, so no line shows twice.
+    #[test]
+    fn an_open_row_names_its_calls_once() {
+        let words = |text: &str| Words {
+            text: text.into(),
+            ..Words::default()
+        };
+        let (rg, build) = (act(Command, "rg x"), act(Command, "cargo build"));
+        fn call(act: &Act, status: CallStatus) -> Call<'_> {
+            Call {
+                id: 1,
+                act: Some(act),
+                status: Some(status),
+                turn: Some(1),
+                ..Call::default()
+            }
+        }
+        let row = words("Ran 2 commands (rg, cargo)");
+        assert_eq!(
+            own_words(&row, &call(&rg, Ok))
+                .map(|own| own.text)
+                .as_deref(),
+            Some("Ran rg x")
+        );
+        let running = own_words(&row, &call(&build, Running)).unwrap();
+        assert_eq!(
+            (running.text.as_str(), running.running),
+            ("Running cargo build", true)
+        );
+        assert_eq!(own_words(&words("Ran rg x"), &call(&rg, Ok)), None);
+        let read = act(Read, "src/tui/a.rs");
+        assert_eq!(
+            own_words(&words("Made 1 edit to a.rs"), &call(&read, Ok))
+                .map(|own| own.text)
+                .as_deref(),
+            Some("Read a.rs")
+        );
+        assert_eq!(own_words(&row, &Call::default()), None);
+    }
+
+    /// What a call holds besides its output is its long parameter whole,
+    /// or the text of a short message, which its line quotes.
+    #[test]
+    fn a_call_holds_its_message() {
+        let message = act(Message, "r2");
+        assert_eq!(
+            held_text(Some(&message), "message r2 “a.rs is done.”", None),
+            Some("a.rs is done.")
+        );
+        assert_eq!(
+            held_text(
+                Some(&message),
+                "message r2 “The long one…”",
+                Some("The long one, whole.")
+            ),
+            Some("The long one, whole.")
+        );
+        let command = act(Command, "cargo build");
+        assert_eq!(held_text(Some(&command), "cargo build", None), None);
+        assert_eq!(
+            held_text(
+                Some(&command),
+                "cargo build \\",
+                Some("cargo build \\\n  --release")
+            ),
+            Some("cargo build \\\n  --release")
+        );
+        // A search's query isn't what it holds.
+        let search = act(ActKind::Search, "arko");
+        assert_eq!(held_text(Some(&search), "search arko “x”", None), None);
+        assert_eq!(held_text(Some(&message), "message r2 “”", None), None);
     }
 
     #[test]

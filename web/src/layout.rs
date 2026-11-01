@@ -70,8 +70,8 @@ pub enum Row {
         count: Count,
     },
     /// Calls in a few words (Quiet), by the ID of the first, with what the row
-    /// says, and the rows of its calls as Full shows them, which show when
-    /// it's open.
+    /// says, and the rows of its calls and their results, whose content
+    /// shows when it's open ([`quiet_members`]).
     Quiet {
         id: u64,
         words: Words,
@@ -346,6 +346,23 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
         }
     }
     out
+}
+
+/// The calls of a Quiet row ([`Row::Quiet`]'s `calls`) as the open row
+/// shows them, each with the rows of its results, which follow it there,
+/// and the thinking between them by itself.
+pub fn quiet_members(calls: &[Row]) -> Vec<(Row, Vec<Row>)> {
+    let mut members: Vec<(Row, Vec<Row>)> = Vec::new();
+    for row in calls {
+        if let Row::Item(_, Kind::Result) = row
+            && let Some((Row::Item(_, Kind::Call), results)) = members.last_mut()
+        {
+            results.push(row.clone());
+            continue;
+        }
+        members.push((row.clone(), Vec::new()));
+    }
+    members
 }
 
 /// The first line of an agent's thinking, for its folded row, the first
@@ -1166,6 +1183,41 @@ mod tests {
         let settled = layout(&items, View::Quiet, None);
         assert_eq!(ids(&settled), ids(&running));
         assert_eq!(said(&settled), ("Ran 2 commands (rg, cargo)".into(), false));
+    }
+
+    /// An open Quiet row shows each of its calls with the output under it,
+    /// and the thinking between them by itself.
+    #[test]
+    fn an_open_quiet_row_keeps_each_calls_output_with_it() {
+        let calls = [
+            Row::Item(2, Kind::Call),
+            Row::Item(3, Kind::Result),
+            Row::Item(4, Kind::Thinking),
+            Row::Item(5, Kind::Call),
+            Row::Item(6, Kind::Call),
+            Row::Item(7, Kind::Result),
+            Row::Item(8, Kind::Result),
+        ];
+        let keys = |rows: &[Row]| rows.iter().map(Row::key).collect::<Vec<_>>();
+        let members: Vec<(String, Vec<String>)> = quiet_members(&calls)
+            .iter()
+            .map(|(row, results)| (row.key(), keys(results)))
+            .collect();
+        let member = |key: &str, results: &[&str]| {
+            (
+                key.to_string(),
+                results.iter().map(|key| key.to_string()).collect(),
+            )
+        };
+        assert_eq!(
+            members,
+            [
+                member("i2", &["i3"]),
+                member("i4", &[]),
+                member("i5", &[]),
+                member("i6", &["i7", "i8"]),
+            ]
+        );
     }
 
     /// Quiet says each call in a few words, as the terminal does. Reads of
