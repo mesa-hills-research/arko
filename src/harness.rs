@@ -2166,6 +2166,10 @@ impl Harness {
             Request::KeepWarm { limits, reply } => {
                 let _ = reply.send(self.keep_warm_request(limits));
             }
+            Request::ReloadKeepWarmSetting { reply } => {
+                self.reload_keep_warm_setting();
+                let _ = reply.send(Ok(()));
+            }
             Request::ExportConversation { reply } => {
                 let _ = reply.send(self.export_conversation(working || waiting).await);
             }

@@ -235,6 +235,15 @@ pub enum Request {
         limits: Option<crate::keep_warm::Limits>,
         reply: Reply<()>,
     },
+    /// Reads the keep-warm setting for every session from Arko's folder
+    /// again ([`crate::keep_warm::load`]) and applies it, writing nothing. A
+    /// session that follows the setting takes it at once, and one that set
+    /// its own keeps that. An app that changes the setting saves it once
+    /// ([`crate::keep_warm::save`]) and then sends this to each open session,
+    /// so no two writers race and every session ends on the latest file,
+    /// whatever order the requests arrive in. Also during a turn, and
+    /// nothing shows in the feed.
+    ReloadKeepWarmSetting { reply: Reply<()> },
     /// Sends `input`, what the user sent (a message, an answer, answers
     /// from an answer panel, a dismissal, approval answers), as
     /// [`Seam::input`] does, and answers with what became of it. A refusal
@@ -3621,6 +3630,50 @@ mod tests {
         assert_eq!(keep_warm(None).await, Ok(()));
         assert_eq!(seam.meter.read().cache.keep_warm, None);
         assert_eq!(bodies.lock().unwrap().len(), 1, "it sent nothing");
+        quit(seam, ended).await;
+    }
+
+    /// An app saves the keep-warm setting itself and has the session read it
+    /// again. A session that follows the setting takes it, one that set its
+    /// own keeps that, and nothing shows in the feed.
+    #[tokio::test]
+    async fn an_app_reloads_the_keep_warm_setting() {
+        let temp = tempfile::tempdir().unwrap();
+        let (server, bodies) = counting_server().await;
+        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+        let (seam, ended) = open_app(&root, &project, &server, SessionChoice::New).await;
+        seam.input
+            .send(Input::Message(app_message("One.")))
+            .unwrap();
+        answered(&seam, &bodies, 1).await;
+        let items = seam.feed.subscribe().0.items.len();
+        let reload = || ask_for(&seam, |reply| Request::ReloadKeepWarmSetting { reply });
+        let setting = crate::keep_warm::Limits {
+            idle_hours: Some(8),
+            ..Default::default()
+        };
+        crate::keep_warm::save(&root, Some(setting)).unwrap();
+        assert_eq!(reload().await, Ok(()));
+        assert_eq!(reload().await, Ok(()));
+        let reading = seam.meter.read();
+        assert_eq!(reading.settings.keep_warm, Some(setting));
+        assert!(reading.cache.keep_warm.unwrap().follows_setting);
+        assert_eq!(seam.feed.subscribe().0.items.len(), items);
+        let own = crate::keep_warm::Limits {
+            refreshes: Some(5),
+            ..Default::default()
+        };
+        let set = ask_for(&seam, move |reply| Request::KeepWarm {
+            limits: Some(own),
+            reply,
+        });
+        assert_eq!(set.await, Ok(()));
+        crate::keep_warm::save(&root, None).unwrap();
+        assert_eq!(reload().await, Ok(()));
+        let reading = seam.meter.read();
+        assert_eq!(reading.settings.keep_warm, None);
+        let kept = reading.cache.keep_warm.unwrap();
+        assert_eq!((kept.left, kept.follows_setting), (Some(5), false));
         quit(seam, ended).await;
     }
 

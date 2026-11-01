@@ -4,7 +4,9 @@
 //! `/keep-warm` (or an app's [`Request::KeepWarm`](crate::Request::KeepWarm))
 //! turns it on for the session, and the setting, kept in Arko's folder
 //! ([`load`], [`save`]), for every session as it opens. It is off unless the
-//! user turns it on.
+//! user turns it on. An app that saves the setting itself has the open
+//! sessions take it with
+//! [`Request::ReloadKeepWarmSetting`](crate::Request::ReloadKeepWarmSetting).
 //!
 //! Each request moves its next refresh (a turn's, a refresh the user asked
 //! for), and only the refreshes it sends count toward its limits. A refresh
@@ -170,8 +172,11 @@ pub fn save(root: &Path, setting: Option<Limits>) -> Result<(), String> {
 }
 
 /// The command that sets `setting` for every session, such as
-/// `/keep-warm default 15h $5` or `/keep-warm default off`. An app sends it
-/// to the session as the user's input.
+/// `/keep-warm default 15h $5` or `/keep-warm default off`. The session that
+/// runs it saves the setting. An app with several sessions open saves it
+/// once with [`save`] instead, then sends each one
+/// [`Request::ReloadKeepWarmSetting`](crate::Request::ReloadKeepWarmSetting),
+/// so no two sessions race to write it.
 pub fn setting_command(setting: Option<Limits>) -> String {
     match setting.and_then(|limits| Some((limits.idle_hours?, limits.dollars))) {
         Some((hours, Some(dollars))) => {
@@ -1120,6 +1125,13 @@ impl crate::Harness {
         };
         self.save_keep_warm();
         done
+    }
+
+    /// Takes the setting from Arko's folder again, for an app's
+    /// [`Request::ReloadKeepWarmSetting`](crate::Request::ReloadKeepWarmSetting).
+    pub(crate) fn reload_keep_warm_setting(&self) {
+        *lock(&self.gauges.keep_warm) = load(&self.root);
+        self.gauges.touch();
     }
 
     /// Turns keep-warm on for the session, until `limits` end it, in place
