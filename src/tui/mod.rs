@@ -380,7 +380,10 @@ pub(crate) fn give_back_terminal_at_once(wait: Duration) {
     let writing = std::thread::Builder::new()
         .name("arko-reset".into())
         .spawn(move || {
-            let _ = std::fs::File::from(out).write_all(&reset);
+            // The usual close may have finished while this thread started.
+            if HELD.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = std::fs::File::from(out).write_all(&reset);
+            }
             let _ = written.send(());
         });
     if writing.is_ok() {
