@@ -86,7 +86,7 @@ impl NamesMenu {
         self.missing = Some(missing);
     }
 
-    /// A key; `close` is Esc or Ctrl+C.
+    /// A key, where `close` is Esc or Ctrl+C.
     pub fn key(&mut self, key: KeyEvent, close: bool) -> Action {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         self.said = None;
@@ -358,7 +358,7 @@ pub(super) mod tests {
     #[test]
     fn shift_with_the_arrows_moves_a_way() {
         let mut menu = menu_with(&default_ways_all());
-        // On the first way: moving up does nothing.
+        // On the first way, moving up does nothing.
         press(&mut menu, KeyCode::Down);
         press(&mut menu, KeyCode::Down);
         shifted(&mut menu, KeyCode::Up);

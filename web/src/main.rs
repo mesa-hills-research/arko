@@ -96,7 +96,7 @@ fn App() -> impl IntoView {
     }
 }
 
-/// The page's listeners: the clock, a phone back from sleep, a new link
+/// The page's listeners, the clock, a phone back from sleep, a new link
 /// opened in this tab, the back button, and the keys that move about.
 fn listen(page: Page) {
     let window = window();
@@ -142,7 +142,7 @@ fn listen(page: Page) {
         }),
     );
     // A link that differs only after the # (a new key after Arko restarted)
-    // doesn't load the page again: trade its key and connect again.
+    // doesn't load the page again, so trade its key and connect again.
     on(
         "hashchange",
         Box::new(move |_| {
@@ -185,7 +185,7 @@ fn listen(page: Page) {
                 "Escape" if page.worker.get_untracked().is_some() => {
                     transcript::show_worker(page, None)
                 }
-                // End: back to the latest, as Latest does.
+                // End goes back to the latest, as Latest does.
                 "End" if !typing && !page.pinned.get_untracked() => {
                     event.prevent_default();
                     scroll::jump_to_latest();

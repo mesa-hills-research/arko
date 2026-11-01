@@ -180,7 +180,7 @@ fn open(html: &mut String, tag: Tag) {
         Tag::TableHead => html.push_str("<thead><tr>"),
         Tag::TableRow => html.push_str("<tr>"),
         Tag::TableCell => html.push_str("<td>"),
-        // Images show as their text: the page loads only its own files.
+        // Images show as their text, because the page loads only its own files.
         Tag::Image { .. } => {}
         _ => {}
     }
@@ -392,7 +392,7 @@ impl Blocks {
     }
 }
 
-/// A finished block: its source, kept to paint it again once its code's
+/// A finished block, with its source, kept to paint it again once its code's
 /// spans come, and its HTML.
 fn finished_block(source: &str) -> (String, String) {
     (source.to_string(), to_html(source))
@@ -418,7 +418,7 @@ fn is_item(line: &str) -> bool {
     }
 }
 
-/// `text` without the open last row of a table it ends in: a line that
+/// `text` without the open last row of a table it ends in, which is a line that
 /// starts with a pipe and has fewer cells than the header or no closing
 /// pipe yet.
 fn without_open_row(text: &str) -> &str {

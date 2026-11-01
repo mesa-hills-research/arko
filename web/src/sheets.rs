@@ -1,4 +1,4 @@
-//! The sheets: the workers, and the settings (the theme and view, the
+//! The sheets are the workers, and the settings (the theme and view, the
 //! session's settings, links for other devices, and what the session is).
 
 use std::cell::RefCell;
@@ -115,7 +115,7 @@ thread_local! {
 /// server looks for changes in the status every 2 s.
 const ANSWER_WAIT_MS: i32 = 3000;
 
-/// What the settings show meanwhile: the setting's key and the value it's
+/// What the settings show meanwhile, the setting's key and the value it's
 /// turning to. And what Arko said of a setting's command, by the feed it
 /// was said in and the setting.
 #[derive(Clone, Copy)]
@@ -148,7 +148,7 @@ impl Settings {
         }
     }
 
-    /// The command is through: it worked (`ok`), or Arko said why not.
+    /// The command is through, either it worked (`ok`), or Arko said why not.
     fn settle(&self, ok: bool) {
         let Some(change) = PENDING.with(|pending| pending.borrow_mut().take()) else {
             return;
@@ -203,7 +203,7 @@ impl Settings {
                 // A command that changes no setting (a handover) is through once Arko answers.
                 return Some(item.level != Some(Level::Error));
             }
-            // An answer, and the status still the same a moment later: it didn't take.
+            // An answer, and the status still the same a moment later, so it didn't take.
             window().clear_timeout_with_handle(change.wait);
             let id = change.id;
             let later = Closure::once_into_js(move || settings.settle_if(id, false));
@@ -401,7 +401,7 @@ fn Change(
     }
 }
 
-/// The themes to pick from: the system's pair, then the light ones and the
+/// The themes to pick from, the system's pair, then the light ones and the
 /// dark ones.
 fn theme_choices() -> Vec<Choice> {
     let system = Choice {
@@ -937,7 +937,7 @@ fn LinkCard(link: LinkData) -> impl IntoView {
     }
 }
 
-/// Arko's QR code, kept only if it is shapes alone: no scripts, handlers,
+/// Arko's QR code, kept only if it is shapes alone, with no scripts, handlers,
 /// links or styles, whatever the text says.
 fn safe_svg(source: &str) -> Option<String> {
     let source = source.trim();

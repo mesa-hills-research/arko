@@ -117,7 +117,7 @@ fn scroll_to(log: &Element, top: f64) {
 }
 
 /// The scroller moved (by the reader, the spring or new output). Reaching
-/// the bottom pins it there, and only scrolling up unpins it: a scroller
+/// the bottom pins it there, and only scrolling up unpins it. A scroller
 /// that gets shorter (the message box grew) stays pinned.
 pub fn on_scroll() {
     STATE.with(|state| {
@@ -255,7 +255,7 @@ pub fn to_bottom_now() {
     });
 }
 
-/// "Latest": to the bottom at once.
+/// "Latest" goes to the bottom at once.
 pub fn jump_to_latest() {
     to_bottom_now();
 }
@@ -348,7 +348,7 @@ fn tick(now: f64) {
     }
 }
 
-/// The reader's place: the item of the first row whose bottom shows, and
+/// The reader's place, the item of the first row whose bottom shows, and
 /// how far its top is below the scroller's (above it when negative).
 pub fn first_visible() -> Option<(u64, f64)> {
     let log = STATE.with(|state| state.borrow().log.clone())?;
@@ -392,7 +392,7 @@ fn rows(log: &Element) -> Vec<(u64, Element)> {
 }
 
 /// Which of the rows, by their items in order, a place at the item `id`
-/// goes back to, and whether at the place's offset: its own row, else the
+/// goes back to, and whether at the place's offset, its own row, else the
 /// nearest before it, else (the history let go of all those) the earliest
 /// left, from its top.
 fn anchor_row(ids: &[u64], id: u64) -> Option<(usize, bool)> {
@@ -405,7 +405,7 @@ fn anchor_row(ids: &[u64], id: u64) -> Option<(usize, bool)> {
     before.or_else(|| (!ids.is_empty()).then_some((0, false)))
 }
 
-/// The offset a row goes back to, now `height` tall: `offset`, unless the
+/// The offset a row goes back to, now `height` tall. It is `offset`, unless the
 /// row got too short to show from there (a disclosure in it closed while
 /// it was away), when its top goes to the top.
 fn bounded_offset(offset: f64, height: f64) -> f64 {
@@ -413,7 +413,7 @@ fn bounded_offset(offset: f64, height: f64) -> f64 {
 }
 
 /// Keeps the reader's place at the item `id` (or the nearest row before it)
-/// across the layout that's about to change: it stays where it shows now,
+/// across the layout that's about to change. It stays where it shows now,
 /// else a third of the way down.
 pub fn keep_place(id: u64) {
     let Some(log) = STATE.with(|state| state.borrow().log.clone()) else {
@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(anchor_row(&[3, 4, 5, 9, 7], 5), Some((2, true)));
         // Gone, the nearest row before it.
         assert_eq!(anchor_row(&[3, 4, 6, 9, 7], 5), Some((1, true)));
-        // The history let go of it and of every row before it: the earliest
+        // The history let go of it and of every row before it, so the earliest
         // row left, from its top.
         assert_eq!(anchor_row(&[8, 9, 10], 5), Some((0, false)));
         assert_eq!(anchor_row(&[], 5), None);

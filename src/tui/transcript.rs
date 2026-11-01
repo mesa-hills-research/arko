@@ -1,19 +1,19 @@
-//! The transcript: the feed's items as the reader sees them. It keeps the
+//! The transcript, the feed's items as the reader sees them. It keeps the
 //! items (and the workers' summaries) as the feed sends them, and draws
-//! them through a view: a filter and grouping over the items, so changing
+//! them through a view, a filter and grouping over the items, so changing
 //! the view changes no item.
 //!
-//! - **Full**: everything, the workers' calls inline.
-//! - **Quiet**: the main agent's work; each worker is one line that
+//! - **Full** shows everything, the workers' calls inline.
+//! - **Quiet** shows the main agent's work. Each worker is one line that
 //!   changes in place.
-//! - **Messages**: what was said (the user's messages, the agent's replies,
-//!   messages and questions, warnings and errors) and the workers' lines;
-//!   each turn's tool activity is one line that counts it.
-//! - **A worker's own** (the worker view): its text, calls, results and
+//! - **Messages** shows what was said (the user's messages, the agent's replies,
+//!   messages and questions, warnings and errors) and the workers' lines.
+//!   Each turn's tool activity is one line that counts it.
+//! - **A worker's own** (the worker view) shows its text, calls, results and
 //!   report.
 //!
-//! The reading position is the reader's: while they are at the bottom the
-//! transcript follows what comes; once they scroll up it stays where it is,
+//! The reading position is the reader's. While they are at the bottom the
+//! transcript follows what comes. Once they scroll up it stays where it is,
 //! anchored on the item at the top, however much comes below, and a marker
 //! counts what is new.
 
@@ -36,7 +36,7 @@ use crate::remote::{
     WorkerSummary, quiet,
 };
 
-/// The items kept, as the feed keeps them: the main agent's and the
+/// The items kept, as the feed keeps them, the main agent's and the
 /// workers' apart.
 const KEPT: usize = 3000;
 
@@ -76,7 +76,7 @@ impl View {
 }
 
 /// About this many bytes of commands' whole outputs are kept, the latest
-/// (as the feed keeps them): an older command's block keeps its first lines.
+/// (as the feed keeps them). An older command's block keeps its first lines.
 const WHOLES_KEPT: usize = 8 * 1024 * 1024;
 
 /// An item, with its lines as last drawn.
@@ -155,7 +155,7 @@ enum Shown {
     Entry(usize),
     /// A worker's summary, where it started (`worker_line`).
     Worker(String),
-    /// A worker view's heading: the worker's task.
+    /// A worker view's heading, the worker's task.
     Heading(String),
     /// A turn's tool activity, counted (the Messages view).
     Counter {
@@ -205,7 +205,7 @@ struct Pin {
     row: usize,
 }
 
-/// Where a fold opens and closes: the item whose fold it is, the block it
+/// Where a fold opens and closes, with the item whose fold it is, the block it
 /// shows in (an open Quiet row's, for an item inside it), and its line
 /// there. A click, the keyboard and a selection all find a fold by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,7 +222,7 @@ enum Placed {
     Quiet(Arc<QuietRow>),
 }
 
-/// The key of the "Working…" line: after every item's.
+/// The key of the "Working…" line, after every item's.
 const WORKING_KEY: u64 = u64::MAX;
 
 /// Text that hasn't grown for this long, while its agent works, no longer
@@ -232,8 +232,8 @@ const QUIET: Duration = Duration::from_secs(2);
 /// What an agent that works is under way with, as its latest items say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Busy {
-    /// It waits on its model, and nothing the model sent shows it yet: a
-    /// turn began, a call's result went back, an answer came.
+    /// It waits on its model, and nothing the model sent shows it yet (a
+    /// turn began, a call's result went back, an answer came).
     Model,
     /// Its thinking streams (the item's ID).
     Thinking(u64),
@@ -259,7 +259,7 @@ struct Motion {
 
 /// A block of lines in the drawn transcript.
 struct Block {
-    /// The ID of its (first) item: where the reading position anchors.
+    /// The ID of its (first) item, where the reading position anchors.
     key: u64,
     shown: Shown,
     /// A blank line before it.
@@ -275,7 +275,7 @@ impl Block {
     }
 }
 
-/// Where the reader is: the block at the top of the screen, by its key,
+/// Where the reader is, the block at the top of the screen, by its key,
 /// and how many of its lines are above the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Anchor {
@@ -286,7 +286,7 @@ struct Anchor {
     height: usize,
 }
 
-/// A row of the screen: the block it shows, and which of its lines (the
+/// A row of the screen, with the block it shows, and which of its lines (the
 /// blank line before a block, when it has one, is line 0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RowRef {
@@ -296,7 +296,7 @@ struct RowRef {
     gap: bool,
 }
 
-/// A place in the transcript's text: a block (by its key), a line of it,
+/// A place in the transcript's text, a block (by its key), a line of it,
 /// and a column. It stays on its text as the screen scrolls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Point {
@@ -305,7 +305,7 @@ pub struct Point {
     pub col: usize,
 }
 
-/// Text the reader highlighted with the mouse: from where the drag began
+/// Text the reader highlighted with the mouse, from where the drag began
 /// (`anchor`) to where it is (`head`), in the view and at the width it was
 /// made in.
 #[derive(Debug, Clone, PartialEq)]
@@ -323,13 +323,13 @@ pub struct Drawn {
     pub area: Rect,
     /// What each row of the area shows.
     rows: Vec<Option<RowRef>>,
-    /// Where the screen's top was: what holding the view still keeps.
+    /// Where the screen's top was, what holding the view still keeps.
     top: Option<Anchor>,
     /// The "new" marker's area, while it shows.
     pub marker: Option<Rect>,
     /// The keys of the counted turns' lines.
     counters: Vec<u64>,
-    /// Something on the screen moves: it is drawn again at the next frame.
+    /// Something on the screen moves, so it is drawn again at the next frame.
     pub moving: bool,
 }
 
@@ -360,7 +360,7 @@ pub struct Transcript {
     /// `None` while following the bottom.
     anchor: Option<Anchor>,
     /// The view's height in lines when following stopped (and the view it
-    /// was): the marker counts the lines that came since.
+    /// was). The marker counts the lines that came since.
     baseline: Option<(Filter, usize)>,
     /// The session's banner, which opens the main transcript.
     pub banner: Option<Banner>,
@@ -368,7 +368,7 @@ pub struct Transcript {
     pub usual: Usual,
     /// The text highlighted with the mouse.
     pub selection: Option<Selection>,
-    /// The view holds still (a drag selects text): it doesn't follow new
+    /// The view holds still (a drag selects text). It doesn't follow new
     /// output, even at the bottom.
     hold: bool,
     /// The lines drawn last, by row.
@@ -447,7 +447,7 @@ impl Transcript {
         }
     }
 
-    /// An entry for `item`: an agent's thinking opens as `open_thinking`
+    /// An entry for `item`, where an agent's thinking opens as `open_thinking`
     /// says.
     fn entry(&self, item: Item) -> Entry {
         let item = for_terminal(item);
@@ -459,7 +459,7 @@ impl Transcript {
     }
 
     /// Starts over from the feed's `snapshot` (when a client starts, or
-    /// fell behind): the reading position and selection stay on their
+    /// fell behind). The reading position and selection stay on their
     /// items.
     pub fn reset(&mut self, snapshot: Snapshot) {
         self.generation += 1;
@@ -489,7 +489,7 @@ impl Transcript {
                 self.trim();
             }
             // (Text added at an item's end leaves what is highlighted
-            // where it is: a drag over streaming text still copies it.)
+            // where it is, so a drag over streaming text still copies it.)
             Update::Append { id, text } => {
                 if let Some(entry) = self.find_mut(id) {
                     entry.item.text.push_str(&text);
@@ -526,7 +526,7 @@ impl Transcript {
         }
     }
 
-    /// The item `id` changes (a call's outcome came): a selection over it
+    /// The item `id` changes (a call's outcome came). A selection over it
     /// may no longer be on the text it highlighted, so it goes.
     fn changed(&mut self, id: u64) {
         if let Some(selection) = &self.selection {
@@ -649,7 +649,7 @@ impl Transcript {
     /// What the agent `agent` is under way with while it works (its turn
     /// began at `since`, in Unix milliseconds), as its latest items say.
     fn busy(&self, agent: &str, since: i64) -> Busy {
-        // The calls of one response may run side by side: one that ended
+        // The calls of one response may run side by side, so one that ended
         // doesn't mean the others did.
         let mut after_call = false;
         for entry in self.entries.iter().rev() {
@@ -680,7 +680,7 @@ impl Transcript {
     }
 
     /// What shows that the agent of `filter`'s view is under way, besides
-    /// its calls: its thinking as it streams, or else "Working…" while it
+    /// its calls, which is its thinking as it streams, or else "Working…" while it
     /// waits on its model with nothing else to show.
     fn motion(&self, filter: &Filter) -> Motion {
         let Some((agent, since)) = self.under_way(filter) else {
@@ -740,7 +740,7 @@ impl Transcript {
     }
 
     /// Whether `agent` made a call or thought in its turn that began at
-    /// `since`: its own run of calls has begun. Before that, the calls of
+    /// `since`, meaning its own run of calls has begun. Before that, the calls of
     /// its workers and their cards don't make one.
     fn calls_begun(&self, agent: &str, since: i64) -> bool {
         self.entries.iter().rev().any(|entry| {
@@ -757,7 +757,7 @@ impl Transcript {
         let own = matches!(filter, Filter::Worker(..));
         let style = theme_key(theme) ^ u64::from(own);
         let mut blocks: Vec<Block> = Vec::new();
-        // (Key 0: before every item. It scrolls away with them.)
+        // (Key 0 is before every item. It scrolls away with them.)
         if let (Filter::Main(_), Some(banner)) = (filter, &self.banner) {
             blocks.push(Block {
                 key: 0,
@@ -959,7 +959,7 @@ impl Transcript {
             self.quiet_cache.retain(|key, _| keys.contains(key));
         }
         if self.motion.working {
-            // Where the agent's output comes next: above the notes it hasn't
+            // Where the agent's output comes next, above the notes it hasn't
             // read, which wait at the end.
             let mut at = blocks.len();
             while at > 0
@@ -1001,7 +1001,7 @@ impl Transcript {
         blocks
     }
 
-    /// Whether `block` is part of the agent's run of calls: a call, its
+    /// Whether `block` is part of the agent's run of calls, namely a call, its
     /// result, its thinking, a worker's line or a turn's count of calls.
     fn is_call_run(&self, block: &Block) -> bool {
         match &block.shown {
@@ -1180,7 +1180,7 @@ impl Transcript {
             .map(|(_, lines)| usize::from(block.gap) + lines.end - 1)
     }
 
-    /// The entries in the order they are drawn: by ID, except that a
+    /// The entries in the order they are drawn, by ID, except that a
     /// result's block comes right under its call (other items, such as a
     /// worker's, may have come between them), and a note the agent hasn't
     /// read waits at the end of its conversation, below the agent's output.
@@ -1236,7 +1236,7 @@ impl Transcript {
         }
         let blocks = self.blocks(filter, theme, width);
         let total: usize = blocks.iter().map(Block::height).sum();
-        // The lines of text: "Working…" comes and goes without being new.
+        // The lines of text. "Working…" comes and goes without being new.
         let text_lines = total
             - blocks
                 .iter()
@@ -1273,7 +1273,7 @@ impl Transcript {
                 }
             }
         };
-        // A fold opened or closed: the line clicked stays under the mouse.
+        // A fold opened or closed. The line clicked stays under the mouse.
         if let Some(pin) = self.pin.take()
             && let Some(index) = blocks.iter().position(|block| block.key == pin.key)
         {
@@ -1310,10 +1310,10 @@ impl Transcript {
             }
         });
         match here {
-            // At the bottom: following again (unless a drag holds it).
+            // At the bottom, following again (unless a drag holds it).
             _ if top >= bottom && !self.hold => self.anchor = None,
             Some(here) => {
-                // Following stopped (or the view changed): what comes from
+                // Following stopped (or the view changed). What comes from
                 // here on is new.
                 if self
                     .baseline
@@ -1390,7 +1390,7 @@ impl Transcript {
                     }
                 }
                 let gap = block.gap && line == 0;
-                // The thinking that streams: its label, on its first line.
+                // The thinking that streams, its label, on its first line.
                 if let Shown::Entry(entry) = block.shown
                     && self.motion.thinking == Some(self.entries[entry].item.id)
                     && line == usize::from(block.gap)
@@ -1400,7 +1400,7 @@ impl Transcript {
                     moving = true;
                 }
                 if block.shown == Shown::Working {
-                    // (Not text: the mouse finds the line above it.)
+                    // (Not text, so the mouse finds the line above it.)
                     if line == usize::from(block.gap) {
                         let label = text_width(&glyphs::render(self.working_label()));
                         let x = area.x + SPINNER as u16;
@@ -1419,7 +1419,7 @@ impl Transcript {
             skip = 0;
         }
 
-        // The marker of what is new below: the lines that came since.
+        // The marker of what is new below, the lines that came since.
         let new = self
             .baseline
             .as_ref()
@@ -1469,7 +1469,7 @@ impl Transcript {
         }
         rows.extend(self.block_lines(block, theme, width));
         if block.tail {
-            // (Not text: a copy leaves it out.)
+            // (Not text, so a copy leaves it out.)
             let mut blank = Wrapped::line(Vec::new());
             blank.bare = true;
             rows.push(blank);
@@ -1563,7 +1563,7 @@ impl Transcript {
 
     // ----- selecting text with the mouse -----
 
-    /// The place in the text at the screen's `x`, `y`, as last drawn: above
+    /// The place in the text at the screen's `x`, `y`, as last drawn. Above
     /// the transcript is its first line's start, below it (or past its
     /// text) its last line's end. `None` when nothing was drawn.
     pub fn point_at(&self, x: u16, y: u16) -> Option<Point> {
@@ -1607,7 +1607,7 @@ impl Transcript {
         });
     }
 
-    /// Holds the view still while a drag selects text: new output doesn't
+    /// Holds the view still while a drag selects text. New output doesn't
     /// move the text under the mouse (it comes below, counted by the
     /// marker), as when the reader scrolls up.
     pub fn hold(&mut self) {
@@ -1617,12 +1617,12 @@ impl Transcript {
         self.hold = true;
     }
 
-    /// The drag ended: at the bottom, the view follows again.
+    /// The drag ended. At the bottom, the view follows again.
     pub fn release(&mut self) {
         self.hold = false;
     }
 
-    /// The fold at the screen's `x`, `y`: a Quiet row's line, the last line
+    /// The fold at the screen's `x`, `y`, namely a Quiet row's line, the last line
     /// of a command's whole output or of an agent's thinking, and the same
     /// lines of those inside an open Quiet row.
     pub fn fold_at(&mut self, x: u16, y: u16, filter: &Filter, theme: &Theme) -> Option<Fold> {
@@ -1805,7 +1805,7 @@ impl Transcript {
         Some(self.block_rows(block, theme, width))
     }
 
-    /// The word at `point`: what a double click selects.
+    /// The word at `point`, which a double click selects.
     pub fn word_at(
         &mut self,
         point: Point,
@@ -1824,7 +1824,7 @@ impl Transcript {
     }
 
     /// The line at `point`, as the text has it (the display lines it was
-    /// wrapped into): what a triple click selects.
+    /// wrapped into), which a triple click selects.
     pub fn line_at(
         &mut self,
         point: Point,
@@ -1847,7 +1847,7 @@ impl Transcript {
         ))
     }
 
-    /// The highlighted text, as written: without the view's margins,
+    /// The highlighted text, as written, without the view's margins,
     /// gutters and indents, and with the lines wrapped only for the screen
     /// joined again.
     pub fn selected_text(&mut self, filter: &Filter, theme: &Theme) -> Option<String> {
@@ -1875,7 +1875,7 @@ impl Transcript {
 }
 
 /// The columns of the word at column `col` of `line` (its first and last
-/// characters'): what a double click selects.
+/// characters'), which a double click selects.
 pub(super) fn word_columns(line: &Wrapped, col: usize) -> Option<(usize, usize)> {
     let cells = cells(line);
     let at = cells.iter().position(|(_, start, w)| col < start + w)?;
@@ -1895,7 +1895,7 @@ pub(super) fn word_columns(line: &Wrapped, col: usize) -> Option<(usize, usize)>
 }
 
 /// The first and last of `rows` that the line of text on row `row` was
-/// wrapped into: what a triple click selects.
+/// wrapped into, which a triple click selects.
 pub(super) fn text_line(rows: &[Wrapped], row: usize) -> Option<(usize, usize)> {
     rows.get(row)?;
     let mut first = row;
@@ -1910,7 +1910,7 @@ pub(super) fn text_line(rows: &[Wrapped], row: usize) -> Option<(usize, usize)> 
 }
 
 /// What a copy of `range` takes of `lines` (each with its place, as
-/// (block, line)), as written: without the margins, gutters and indents,
+/// (block, line)), as written, without the margins, gutters and indents,
 /// and with the lines wrapped only for the screen joined again.
 pub(super) fn copied<'a>(
     lines: impl IntoIterator<Item = ((usize, usize), &'a Wrapped)>,
@@ -1982,7 +1982,7 @@ fn line_skip(line: &Wrapped, cells: &[(char, usize, usize)]) -> usize {
 pub(super) type Range = ((usize, usize, usize), (usize, usize, usize));
 
 /// The columns of `line` (the `at`'th line of a block, as (block, line))
-/// that `range` covers, within its text: `None` when it covers none.
+/// that `range` covers, within its text, or `None` when it covers none.
 pub(super) fn selected_columns(
     range: Range,
     at: (usize, usize),
@@ -2035,7 +2035,7 @@ fn for_terminal(mut item: Item) -> Item {
     item
 }
 
-/// Whether `item`'s block folds: a command's whole output, kept, or an
+/// Whether `item`'s block folds, a command's whole output, kept, or an
 /// agent's thinking.
 fn folds(item: &Item) -> bool {
     item.whole.is_some() || item.kind == Kind::Thinking
@@ -2135,7 +2135,7 @@ impl Filter {
     }
 }
 
-/// What kind of block an item makes, for the spacing: tool activity runs
+/// What kind of block an item makes, for the spacing. Tool activity runs
 /// together, and a blank line sets apart what is said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Group {
@@ -2153,7 +2153,7 @@ fn group(item: &Item) -> Group {
     }
 }
 
-/// A number that changes when the theme does: the lines are drawn again.
+/// A number that changes when the theme does, so the lines are drawn again.
 fn theme_key(theme: &Theme) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -2162,11 +2162,11 @@ fn theme_key(theme: &Theme) -> u64 {
     hasher.finish()
 }
 
-/// The left margin every line has: two columns, which the user's bar and
+/// The left margin every line has, two columns, which the user's bar and
 /// the tool lines' markers use.
 const MARGIN: usize = 2;
 
-/// The last line of a command's block that shows its whole output: a click
+/// The last line of a command's block that shows its whole output. A click
 /// on it shows the first lines again.
 const FOLD_CLOSE: &str = "↑ show the first lines only";
 
@@ -2184,7 +2184,7 @@ const SPINNER: usize = MARGIN;
 /// The column of the word after the spinner.
 const LABEL: usize = SPINNER + 2;
 
-/// The last line of an agent's thinking shown whole: a click on it folds
+/// The last line of an agent's thinking shown whole. A click on it folds
 /// it to its first line again.
 const THINKING_CLOSE: &str = "↑ show the first line only";
 
@@ -2246,9 +2246,9 @@ fn quiet_line(
 }
 
 /// An item's lines at `width` (margins included), with what a copy of each
-/// needs. `own`: in its worker's own view, a worker's lines don't name it.
-/// `under`: the worker that started the item's worker, which a notice names.
-/// `look`: how they look.
+/// needs. `own` is set in its worker's own view, where a worker's lines don't name it.
+/// `under` is the worker that started the item's worker, which a notice names.
+/// `look` is how they look.
 fn entry_lines(
     item: &Item,
     theme: &Theme,
@@ -2285,7 +2285,7 @@ fn entry_lines(
             };
             let mut lines = plain(&item.text, style, inner);
             if let Some(tag) = user_tag(item) {
-                // (Not the user's text: a copy leaves it out.)
+                // (Not the user's text, so a copy leaves it out.)
                 let tag = cut_end(&tag, inner);
                 let tag_width = text_width(&tag);
                 let style = theme.dim().add_modifier(Modifier::ITALIC);
@@ -2472,7 +2472,7 @@ fn entry_lines(
             wrap::prefixed(wrap::wrap_lines(&spans, inner, 0), blank(), blank())
         }
         Kind::Thinking => {
-            // (Upright: in italic, some terminals draw an arrow over the
+            // (Upright, since in italic some terminals draw an arrow over the
             // letter after it.)
             let style = theme.dim();
             // The fold's triangle stands in the spinner's cell, so the
@@ -2488,7 +2488,7 @@ fn entry_lines(
                 label,
                 theme.dim().add_modifier(Modifier::BOLD),
             ));
-            // (The label isn't the agent's text: a copy leaves it out.)
+            // (The label isn't the agent's text, so a copy leaves it out.)
             let label = spans_width(&spans);
             let text = wrap::clean(&item.text);
             let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
@@ -2499,7 +2499,7 @@ fn entry_lines(
                 return wrap::prefixed(vec![line], blank(), blank());
             }
             if !open {
-                // One line: the label and the first line, which a click
+                // One line, the label and the first line, which a click
                 // opens.
                 let first = lines.next().unwrap_or_default().replace("**", "");
                 let more = lines.next().is_some();
@@ -2540,7 +2540,7 @@ fn entry_lines(
 /// The banner's labels' column.
 const BANNER_LABELS: usize = 11;
 
-/// The banner, boxed: the title, a row for each fact (its label and its
+/// The banner, boxed, with the title, a row for each fact (its label and its
 /// value), and the notes under a rule. A copy takes the values and notes,
 /// not the box or the labels.
 fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
@@ -2583,8 +2583,8 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
         line.bare = true;
         line
     };
-    // A line in the box: `lead` (a label, or nothing) and the text, with
-    // the box's sides; the copy starts after the lead.
+    // A line in the box, `lead` (a label, or nothing) and the text, with
+    // the box's sides. The copy starts after the lead.
     let boxed = |lead: Span<'static>, text: Vec<Span<'static>>, join: Join| {
         let lead_width = text_width(&lead.content);
         let used = lead_width
@@ -2611,7 +2611,7 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
         }
     };
     let value_width = inner.saturating_sub(BANNER_LABELS).max(1);
-    // A row's value, shortened to fit: a copy of the row takes it whole.
+    // A row's value, shortened to fit, and a copy of the row takes it whole.
     let row = |label: &str, value: &str, shown: String| {
         let mut line = boxed(
             Span::styled(format!("{label:<BANNER_LABELS$}"), theme.dim()),
@@ -2623,7 +2623,7 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
         }
         line
     };
-    // A blank line above the box: one row reads as wide as the two
+    // A blank line above the box, since one row reads as wide as the two
     // columns of margin at its sides.
     let mut above = Wrapped::line(Vec::new());
     above.bare = true;
@@ -2654,7 +2654,7 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
     if !banner.tools.is_empty() {
         let tools = rendered(banner.tools.join(" · "));
         let spans = [Span::styled(tools, theme.text())];
-        // Tools may take more than a line: under their value.
+        // Tools may take more than a line, under their value.
         for (n, line) in wrap::wrap_lines(&spans, value_width, 0)
             .into_iter()
             .enumerate()
@@ -2687,7 +2687,7 @@ fn banner_lines(banner: &Banner, theme: &Theme, width: usize) -> Vec<Wrapped> {
 }
 
 /// The record of a question card whose questions settled, boxed as the
-/// answer panel is: `heading` in its top border, then each settled
+/// answer panel is, with `heading` in its top border, then each settled
 /// question, numbered as the panel numbered it, with what became of it
 /// under it. A copy takes the questions and outcomes, not the box.
 fn record_lines(
@@ -2798,7 +2798,7 @@ pub(super) fn cut_end(text: &str, width: usize) -> String {
     cut + &glyphs::render("…")
 }
 
-/// `text` in `width` columns, cut in its middle with an ellipsis: a path
+/// `text` in `width` columns, cut in its middle with an ellipsis, so a path
 /// keeps its start and its end (the folder that matters).
 fn cut_middle(text: &str, width: usize) -> String {
     if text_width(text) <= width {
@@ -2850,7 +2850,7 @@ fn plain(text: &str, style: Style, width: usize) -> Vec<Wrapped> {
     lines
 }
 
-/// `text` beside a gutter, under its call: a command's output, an error.
+/// `text` beside a gutter, under its call, such as a command's output or an error.
 /// (The gutter isn't copied.)
 fn gutter(text: &str, style: Style, theme: &Theme, width: usize) -> Vec<Wrapped> {
     let lines = plain(text, style, width.saturating_sub(2).max(1));
@@ -2879,7 +2879,7 @@ fn thought_time(entry: &Entry) -> String {
     }
 }
 
-/// How long a running call has run, once that is a second or more: a
+/// How long a running call has run, once that is a second or more, so a
 /// quick call doesn't flash a time.
 fn running_time(item: &Item, now: i64) -> Option<String> {
     let ms = now - item.at;
@@ -2910,7 +2910,7 @@ pub fn run_time(worker: &WorkerSummary, now: i64) -> Option<i64> {
         .then(|| i64::try_from(worker.run_time_ms(now)).unwrap_or(i64::MAX))
 }
 
-/// What sets a worker apart from the usual ones, for its line: its profile,
+/// What sets a worker apart from the usual ones, for its line, with its profile,
 /// or else its model when workers start on another, and its effort when that
 /// is another too (`impl-light`, `luna high`).
 pub fn setup(worker: &WorkerSummary, usual: &Usual) -> Option<String> {
@@ -2953,7 +2953,7 @@ fn fit(text: &str, room: usize) -> String {
     fitted + &ellipsis
 }
 
-/// A worker's line: `r2 Fix flaky test · 18 tool calls · 2m · running`, with
+/// A worker's line, like `r2 Fix flaky test · 18 tool calls · 2m · running`, with
 /// its setup after the task when it isn't the usual one.
 fn worker_line(
     worker: Option<&WorkerSummary>,
@@ -3021,7 +3021,7 @@ fn worker_line(
     Line::from(line)
 }
 
-/// A worker view's heading: the worker's ID, task and state.
+/// A worker view's heading, the worker's ID, task and state.
 fn heading_lines(worker: &WorkerSummary, theme: &Theme, width: usize) -> Vec<Wrapped> {
     let inner = width.saturating_sub(MARGIN).max(1);
     let (word, style) = state(worker, theme);
@@ -3216,7 +3216,7 @@ mod tests {
     }
 
     /// A running call shows how long it has run once that is a second,
-    /// and the time goes on with nothing new from the feed; its outcome
+    /// and the time goes on with nothing new from the feed. Its outcome
     /// takes its place.
     #[test]
     fn a_running_call_shows_its_time() {
@@ -3239,8 +3239,8 @@ mod tests {
         assert_eq!(rows(&mut t, &own, 40, 1)[0], "▸ $ sleep 30 · ✓ 30.0 s");
     }
 
-    /// A call's outcome is on its line; a command's output is a block
-    /// under it; the user's message has the bar; the end of a turn draws
+    /// A call's outcome is on its line. A command's output is a block
+    /// under it. The user's message has the bar. The end of a turn draws
     /// nothing (the status line says how long it ran).
     #[test]
     fn items_draw_as_the_design_says() {
@@ -3384,7 +3384,7 @@ mod tests {
         spins.then(|| &row[first.len_utf8()..])
     }
 
-    /// Whether `row` is the "Working…" line: its spinner in the column of
+    /// Whether `row` is the "Working…" line, with its spinner in the column of
     /// the rail a command's output hangs from, then the word.
     fn is_working(row: &str) -> bool {
         after_spinner(row) == Some(" Working…")
@@ -3426,7 +3426,7 @@ mod tests {
             Some(" Thinking · Where to start?")
         );
         assert_eq!(columns(streaming, 'T'), working, "{shown:?}");
-        // The reply ends it: a triangle stands in the cell, and the word
+        // The reply ends it, so a triangle stands in the cell, and the word
         // stays.
         t.entries[1].created -= Duration::from_secs(12);
         t.apply(Update::Item(item(3, Kind::Reply, "Done.")));
@@ -3588,7 +3588,7 @@ mod tests {
         assert!(is_working(&shown[2]), "{shown:?}");
         assert_eq!(shown[3], "");
 
-        // Its thinking streams: the thinking shows it, its label moving, but
+        // Its thinking streams, and the thinking shows it, its label moving, but
         // not in Messages.
         t.apply(Update::Item(item(2, Kind::Thinking, "Where to start?")));
         let thinking = last(&mut t, View::Full);
@@ -3599,7 +3599,7 @@ mod tests {
         );
         assert!(t.drawn.moving);
         assert!(is_working(&last(&mut t, View::Messages)));
-        // A call runs, then ends: the model has its result.
+        // A call runs, then ends, so the model has its result.
         let mut call = item(3, Kind::Call, "$ cargo test");
         call.status = Some(CallStatus::Running);
         t.apply(Update::Item(call.clone()));
@@ -3624,7 +3624,7 @@ mod tests {
         assert_eq!(rail, Some(SPINNER), "{shown:?}");
         assert!(shown.last().is_some_and(|row| is_working(row)), "{shown:?}");
 
-        // Two calls side by side: while one runs, it shows the agent works.
+        // Two calls side by side, and while one runs, it shows the agent works.
         let mut calls = [
             item(4, Kind::Call, "read a.rs"),
             item(5, Kind::Call, "read b.rs"),
@@ -3700,7 +3700,7 @@ mod tests {
 
     /// Text the agent writes beside a `wait_for_agents` call, and a message
     /// it shows with `message_user`, are drawn in the order they came in
-    /// every view: not folded into the waiting row, and not dropped in the
+    /// every view, not folded into the waiting row, and not dropped in the
     /// quiet view. The messages view counts the call.
     #[test]
     fn text_beside_a_wait_and_a_message_show_in_every_view() {
@@ -3882,7 +3882,7 @@ mod tests {
         }
     }
 
-    /// Whatever the tag, the width and the rows the message wraps to: a
+    /// Whatever the tag, the width and the rows the message wraps to. A
     /// message that doesn't wrap has its tag at the right of its first row
     /// when it fits there. Else the message's rows are as they are without
     /// it (the full width), and the tag has a row of its own under the
@@ -3959,7 +3959,7 @@ mod tests {
         }
     }
 
-    /// "Working…" stands where the agent's output comes next: above a
+    /// "Working…" stands where the agent's output comes next, above a
     /// note the agent hasn't read, which waits at the end.
     #[test]
     fn working_stands_above_a_note_waiting_to_be_read() {
@@ -4000,7 +4000,7 @@ mod tests {
         assert_eq!(shown[1], "");
         assert!(is_working(&shown[2]), "{shown:?}");
         assert_eq!(shown[3], "");
-        // The main agent doesn't work: its view has no such line.
+        // The main agent doesn't work, so its view has no such line.
         assert!(
             !rows(&mut t, &full(), 40, 3)
                 .iter()
@@ -4241,7 +4241,7 @@ mod tests {
     }
 
     /// Scrolled up, the screen stays put as items come, and the marker
-    /// counts them; at the bottom again, it follows.
+    /// counts them. At the bottom again, it follows.
     #[test]
     fn nothing_moves_under_the_reader() {
         let mut t = Transcript::new();
@@ -4276,7 +4276,7 @@ mod tests {
         assert!(bottom[5].contains("more and more"));
     }
 
-    /// A selection copies what the screen shows as it is written: without
+    /// A selection copies what the screen shows as it is written, without
     /// the margins, the code's gutter and the output's prefix, and with a
     /// line the screen wrapped joined again.
     #[test]
@@ -4304,7 +4304,7 @@ mod tests {
             t.selected_text(&filter, &Theme::terminal()).unwrap(),
             "A long line that the screen wraps into two\n\nfn main() {}\n\n$ ls · ✓ 2 files\na.rs\nb.rs"
         );
-        // Part of a line: from its column to the other's.
+        // Part of a line, from its column to the other's.
         let (from, to) = (t.point_at(4, 0).unwrap(), t.point_at(12, 0).unwrap());
         t.select(from, to, &filter);
         assert_eq!(
@@ -4317,7 +4317,7 @@ mod tests {
         t.draw(&mut buffer, area, &filter, &Theme::terminal());
         let reversed = |x: u16| buffer[(x, 0)].modifier.contains(Modifier::REVERSED);
         assert!(!reversed(3) && reversed(4) && reversed(12) && !reversed(13));
-        // Text added to an item keeps it; another width (lines wrapped
+        // Text added to an item keeps it. Another width (lines wrapped
         // otherwise) takes it away.
         t.apply(Update::Append {
             id: 1,
@@ -4329,7 +4329,7 @@ mod tests {
     }
 
     /// The banner is a box that fits the screen, with a blank line above it
-    /// and the same margin on both sides: its long path cut in the middle,
+    /// and the same margin on both sides, its long path cut in the middle,
     /// its notes under a rule. A copy takes the values and notes, not the
     /// box or the labels.
     #[test]
@@ -4746,7 +4746,7 @@ mod tests {
             }));
             t
         };
-        // The same items of the main agent: what the view shows of them is
+        // The same items of the main agent. What the view shows of them is
         // what it shows of the worker's, less the worker's heading.
         let mut own = build("r1");
         let mut main = build(MAIN_AGENT);
@@ -4874,7 +4874,7 @@ mod tests {
         assert_eq!(count(&own, "start worker “Count”"), 1, "{own:?}");
     }
 
-    /// A worker's line names its setup when it isn't the usual one: its
+    /// A worker's line names its setup when it isn't the usual one, with its
     /// profile, or its model when workers start on another, and the effort
     /// when that is another too.
     #[test]

@@ -1,4 +1,4 @@
-//! The agents' text as markdown, drawn with the terminal's styles: bold,
+//! The agents' text as markdown, drawn with the terminal's styles, which are bold,
 //! italics, code spans and blocks, headings, lists, quotes and rules. What
 //! isn't markdown (a table, an unclosed marker in text that is still
 //! streaming) is drawn as it is.
@@ -10,7 +10,7 @@ use super::theme::Theme;
 use super::wrap::{self, Wrapped, width as text_width};
 use crate::glyphs;
 
-/// `text` as markdown, in lines wrapped to `width` columns: with what a
+/// `text` as markdown, in lines wrapped to `width` columns, with what a
 /// copy of each needs (a gutter isn't text, a wrapped line goes on).
 pub fn render(text: &str, base: Style, theme: &Theme, width: usize) -> Vec<Wrapped> {
     let text = wrap::clean(text);
@@ -83,7 +83,7 @@ pub fn render(text: &str, base: Style, theme: &Theme, width: usize) -> Vec<Wrapp
             continue;
         }
         if trimmed.starts_with('|') {
-            // A table keeps its columns: as it is.
+            // A table keeps its columns as it is.
             lines.extend(wrap::wrap_lines(
                 &[Span::styled(line.to_string(), base)],
                 width,
@@ -118,7 +118,7 @@ fn is_rule(line: &str) -> bool {
             .any(|mark| marks.chars().all(|c| c.to_string() == *mark))
 }
 
-/// A list item: its indent, its bullet (`-`, `*`, `+`, `1.`, `1)`) and
+/// A list item, with its indent, its bullet (`-`, `*`, `+`, `1.`, `1)`) and
 /// its text.
 fn list_item(line: &str) -> Option<(usize, &str, &str)> {
     let indent = line.len() - line.trim_start().len();
@@ -136,7 +136,7 @@ fn list_item(line: &str) -> Option<(usize, &str, &str)> {
     Some((indent, &rest[..bullet_end], text.trim_start()))
 }
 
-/// A line's inline markdown as spans: `**bold**`, `*italics*`, `` `code` ``
+/// A line's inline markdown as spans, namely `**bold**`, `*italics*`, `` `code` ``
 /// and `[links](url)`.
 fn inline(text: &str, base: Style, theme: &Theme) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
@@ -244,7 +244,7 @@ fn has_closing(rest: &[char], mark: char, count: usize) -> bool {
     })
 }
 
-/// A link `[label](url)` at `start`: its label, its URL and where it ends.
+/// A link `[label](url)` at `start`, with its label, its URL and where it ends.
 fn link(chars: &[char], start: usize) -> Option<(String, String, usize)> {
     let close = (start + 1..chars.len()).find(|&at| chars[at] == ']')?;
     if chars.get(close + 1) != Some(&'(') {

@@ -115,7 +115,7 @@ fn main() {
     let (light, dark) = (find(DEFAULT_LIGHT), find(DEFAULT_DARK));
     let fallback = |theme: &Theme| if theme.dark { dark } else { light };
 
-    // A theme's syntax colors are its own: a chosen theme without one shows
+    // A theme's syntax colors are its own. A chosen theme without one shows
     // the code's color, as in the apps. The dark default's rule overrides
     // the light one's, so it unsets what it doesn't style.
     let defaults = format!(
@@ -144,7 +144,7 @@ fn main() {
 
     let mut rust = String::from(
         "// Written by web/theme-css from themes/. Don't edit.\n\n\
-         /// Every theme: its name, its slug (`data-theme`) and whether it's dark.\n\
+         /// Every theme, with its name, its slug (`data-theme`) and whether it's dark.\n\
          pub const THEMES: &[(&str, &str, bool)] = &[\n",
     );
     for theme in &themes {
@@ -232,7 +232,7 @@ fn block(theme: &Theme, fallback: &Theme, indent: &str) -> String {
     css
 }
 
-/// The editor's surface, as GPUI Kit's `editor_background` gives it: the
+/// The editor's surface, as GPUI Kit's `editor_background` gives it, the
 /// theme's `highlight.editor.background`, else that of the kit's built-in
 /// highlight colors when the theme has none at all, else the input
 /// background (the page's in a light theme, the field border at 30 % over
@@ -296,7 +296,7 @@ fn css_name(name: &str) -> String {
     name.replace('.', "-")
 }
 
-/// The theme's style of each highlight name, as variables: its own, else
+/// The theme's style of each highlight name, as variables, its own, else
 /// its first word's (`string.escape` takes `string`'s), as the kit's themes
 /// do. A name the theme gives no style has none. With `unset`, each
 /// variable the theme leaves out is written as `initial`, so a rule it
@@ -331,7 +331,7 @@ fn syntax(theme: &Theme, indent: &str, unset: bool) -> String {
     css
 }
 
-/// The rule of each highlight name: the theme's style for it, else the
+/// The rule of each highlight name, the theme's style for it, else the
 /// code's own.
 fn highlight_rules() -> String {
     protocol::HIGHLIGHT_NAMES
@@ -405,12 +405,12 @@ mod tests {
         let colors = serde_json::json!({ "background": "#101010", "input.border": "#707070" });
         let own = serde_json::json!({ "colors": colors, "highlight": { "editor.background": "#202020" } });
         assert_eq!(editor_background(&theme(true, own)), "#202020");
-        // The input background: the page's in a light theme, the field
+        // The input background, the page's in a light theme, the field
         // border at 30 % over it in a dark one.
         let unset = serde_json::json!({ "colors": colors, "highlight": {} });
         assert_eq!(editor_background(&theme(false, unset.clone())), "#101010");
         assert_eq!(editor_background(&theme(true, unset)), "#2D2D2D");
-        // No highlight colors at all: the kit's built-in ones.
+        // No highlight colors at all, the kit's built-in ones.
         let none = serde_json::json!({ "colors": colors });
         assert_eq!(editor_background(&theme(true, none.clone())), "#0a0a0a");
         assert_eq!(editor_background(&theme(false, none)), "#ffffff");

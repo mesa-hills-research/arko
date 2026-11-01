@@ -1,4 +1,4 @@
-//! The page's own select: a button that opens its list of choices over the
+//! The page's own select, a button that opens its list of choices over the
 //! page, below it or above it where there's more room, with a filter for a
 //! long list. It opens on the first tap every
 //! time, where the browser's own select on iOS stays focused once its
@@ -9,7 +9,7 @@ use std::cell::Cell;
 use leptos::prelude::*;
 use lucide_leptos::{Check, ChevronDown};
 
-/// One choice: what it sets, its name, and the group it's listed under.
+/// One choice, with what it sets, its name, and the group it's listed under.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Choice {
     pub value: String,

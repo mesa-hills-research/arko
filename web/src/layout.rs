@@ -86,7 +86,7 @@ impl Row {
     pub fn key(&self) -> String {
         match self {
             Row::Item(id, _) => format!("i{id}"),
-            // (Its first call too: two workers' counts of the same turn
+            // (Its first call too, since two workers' counts of the same turn
             // are other rows.)
             Row::Count { turn, id, .. } => format!(
                 "c{}:{id}",
@@ -348,7 +348,7 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
     out
 }
 
-/// The first line of an agent's thinking, for its folded row: the first
+/// The first line of an agent's thinking, for its folded row, the first
 /// one with text, without Markdown's bold marks.
 pub fn first_line(text: &str) -> String {
     text.lines()
@@ -420,7 +420,7 @@ fn busy(items: &[ItemData], agent: &str, since: i64) -> Busy {
     Busy::Model
 }
 
-/// What shows that the agent of a view is under way, besides its calls:
+/// What shows that the agent of a view is under way, besides its calls, namely
 /// the ID of its thinking that streams, whose label moves, and whether a
 /// "Working…" row stands at the end while it waits on its model with
 /// nothing else to show. `now` is this device's time, as the store's
@@ -490,7 +490,7 @@ pub fn working_label(store: &Store, worker: Option<&str>) -> String {
 }
 
 /// `rows` with the "Working…" row, when `working`, where the agent's
-/// output comes next: at the end, above the notes it hasn't read.
+/// output comes next, at the end, above the notes it hasn't read.
 pub fn with_working(mut rows: Vec<Row>, working: bool, store: &Store) -> Vec<Row> {
     if !working {
         return rows;
@@ -630,7 +630,7 @@ mod tests {
             start(4, CallStatus::Ok, None),
             start(5, CallStatus::Failed, None),
             start(6, CallStatus::Running, None),
-            // Several starts in a row: a line for each.
+            // Several starts in a row, a line for each.
             start(7, CallStatus::Ok, Some("r3")),
             nested,
             item(9, Kind::WorkerLine, MAIN, "r3"),
@@ -656,7 +656,7 @@ mod tests {
                 ..
             }
         ));
-        // The worker's own view follows the view too: in Quiet the line of
+        // The worker's own view follows the view too. In Quiet the line of
         // the worker it started stands for the call, and Full keeps both.
         let mut line = item(10, Kind::WorkerLine, "r1", "r2");
         line.turn = None;
@@ -667,7 +667,7 @@ mod tests {
     }
 
     /// A worker's own view is the selected view over its own items, as the
-    /// main view is over the main agent's: Full everything, Quiet without
+    /// main view is over the main agent's, with Full everything, Quiet without
     /// the call that started a worker, Messages its text, messages,
     /// replies and what the user wrote to it, with its calls counted as one
     /// line a turn.

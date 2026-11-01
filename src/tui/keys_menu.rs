@@ -1,9 +1,9 @@
-//! The API keys menu (`/keys`, and API keys in the settings): each
+//! The API keys menu (`/keys`, and API keys in the settings), with each
 //! provider's key, masked, with where it comes from, or what it is for when
-//! none is set. Enter adds or replaces the key chosen: it is pasted into a
+//! none is set. Enter adds or replaces the key chosen. It is pasted into a
 //! field that shows only its start and last 4 characters (enough to tell it
 //! is the key meant), then saved and used by the session (`keys`). Delete
-//! removes a key Arko saved. A key never reaches the input box, its history or the clipboard:
+//! removes a key Arko saved. A key never reaches the input box, its history or the clipboard, because
 //! the menu keeps it as a [`Secret`] until it goes to the session.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -24,7 +24,7 @@ use crate::keys::{self, Secret};
 pub enum Step {
     /// The keys.
     List,
-    /// Entering the chosen key: what is pasted or typed, and why the last
+    /// Entering the chosen key, with what is pasted or typed, and why the last
     /// one wasn't taken.
     Entering {
         value: Secret,
@@ -39,7 +39,7 @@ pub enum Step {
 pub struct Said {
     pub text: String,
     pub warnings: Vec<String>,
-    /// It failed: shown as an error.
+    /// It failed, so it is shown as an error.
     pub failed: bool,
 }
 
@@ -49,7 +49,7 @@ pub struct KeysMenu {
     pub states: Vec<KeyState>,
     pub selected: usize,
     pub step: Step,
-    /// The settings' row it was opened from: Esc goes back there.
+    /// The settings' row it was opened from. Esc goes back there.
     pub back_to: Option<usize>,
     pub said: Option<Said>,
 }
@@ -70,7 +70,7 @@ pub enum Action {
 }
 
 impl KeysMenu {
-    /// The menu on `states`. `words` are what followed `/keys`: `add
+    /// The menu on `states`. `words` are what followed `/keys`. `add
     /// PROVIDER` opens that key's field, and `remove PROVIDER` asks to
     /// remove it.
     pub fn open(states: Vec<KeyState>, words: &str, back_to: Option<usize>) -> Self {
@@ -135,7 +135,7 @@ impl KeysMenu {
         }
     }
 
-    /// A key, in the step open; `close` is Esc or Ctrl+C.
+    /// A key, in the step open, where `close` is Esc or Ctrl+C.
     pub fn key(&mut self, key: KeyEvent, close: bool) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -197,7 +197,7 @@ impl KeysMenu {
         Action::Stay
     }
 
-    /// A paste the terminal marked: into the field, without the line break
+    /// A paste the terminal marked. It goes into the field, without the line break
     /// or spaces a copy may have around it.
     pub fn paste(&mut self, text: &str) {
         if let Step::Entering { value, error } = &mut self.step {
@@ -212,7 +212,7 @@ impl KeysMenu {
         }
     }
 
-    /// What the session did with `key`; `states` are the keys after it.
+    /// What the session did with `key`, where `states` are the keys after it.
     pub fn done(&mut self, key: &'static Key, outcome: keys::Outcome, states: Vec<KeyState>) {
         self.states = states;
         let on_it = self.state().key == key;
@@ -228,7 +228,7 @@ impl KeysMenu {
                 });
             }
             keys::Outcome::Failed(why) if on_it && matches!(self.step, Step::Entering { .. }) => {
-                // Not saved: the field again, empty, with why.
+                // Not saved, the field again, empty, with why.
                 self.step = Step::Entering {
                     value: Secret::default(),
                     error: Some(why),
@@ -266,7 +266,7 @@ fn source_word(source: &KeySource) -> &'static str {
     }
 }
 
-/// The lines under the chosen key: where it comes from and where to change
+/// The lines under the chosen key, saying where it comes from and where to change
 /// it, or what it is for.
 fn detail(state: &KeyState) -> String {
     match &state.source {
@@ -440,7 +440,7 @@ pub(super) mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    /// Keys as a machine might have them: one Arko saved, one from the
+    /// Keys as a machine might have them, namely one Arko saved, one from the
     /// environment under Gemini's older name, one from a project's `.env`.
     pub fn states() -> Vec<KeyState> {
         credentials::KEYS
@@ -501,7 +501,7 @@ pub(super) mod tests {
     }
 
     /// Each key shows masked, with where it comes from, and the one chosen
-    /// says more under it; the footer offers what the chosen key allows.
+    /// says more under it. The footer offers what the chosen key allows.
     #[test]
     fn the_keys_show_masked_with_where_they_come_from() {
         let mut menu = KeysMenu::open(states(), "", None);
@@ -526,7 +526,7 @@ pub(super) mod tests {
         assert!(text.contains("Esc  close"), "{text}");
         // The rows fit in 80 columns.
         assert!(rows.iter().all(|row| row.chars().count() <= 80));
-        // Not set: what it is for, and only Enter to add.
+        // Not set, with what it is for and only Enter to add.
         press(&mut menu, KeyCode::Down);
         let text = screen(&menu, &Theme::terminal()).join("\n");
         assert!(
@@ -537,7 +537,7 @@ pub(super) mod tests {
             text.contains("Enter  add") && !text.contains("Delete"),
             "{text}"
         );
-        // From elsewhere: where to change it, and Delete says so.
+        // From elsewhere, with where to change it, and Delete says so.
         press(&mut menu, KeyCode::Down);
         let text = screen(&menu, &Theme::terminal()).join("\n");
         assert!(
@@ -610,7 +610,7 @@ pub(super) mod tests {
             matches!(&menu.step, Step::Entering { value, error: Some(error) }
             if value.is_empty() && error.starts_with("That looks like an Anthropic API key"))
         );
-        // Saved: the list, with what was done.
+        // Saved, the list, with what was done.
         menu.paste(key);
         press(&mut menu, KeyCode::Enter);
         menu.done(

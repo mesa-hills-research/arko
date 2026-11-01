@@ -1,4 +1,4 @@
-//! The approval tray: the requests that wait for the user's approval (see
+//! The approval tray, with the requests that wait for the user's approval (see
 //! [`crate::approvals`]), docked above the status line, a row each.
 //!
 //! Alt+A gives the tray the keys and takes them back, and Esc gives them back
@@ -73,7 +73,7 @@ impl App {
         &self.reading.approvals
     }
 
-    /// Whether the main agent waits for the user: for an answer to its
+    /// Whether the main agent waits for the user, for an answer to its
     /// question, or for an approval.
     pub fn waits_for_user(&self) -> bool {
         self.agent_waits() || !self.approvals().is_empty()
@@ -92,7 +92,7 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// The tray's requests changed (a new reading): what was set for those
+    /// The tray's requests changed (a new reading). What was set for those
     /// gone goes, the cursor stays on a row, and the bell rings for new ones
     /// while the window isn't focused.
     pub(super) fn approvals_changed(&mut self) {
@@ -126,7 +126,7 @@ impl App {
         }
     }
 
-    /// Alt+A: the tray gets the keys, or gives them back.
+    /// Alt+A gives the keys to the tray, or back.
     pub(super) fn focus_tray(&mut self) {
         if self.tray.focused {
             self.tray.focused = false;
@@ -284,7 +284,7 @@ impl App {
     }
 }
 
-/// The tray's lines at `width`: its heading with the keys, a row for each
+/// The tray's lines at `width`. They are its heading with the keys, a row for each
 /// request, and the details of the open one. Also the line the cursor's row
 /// is on, and how many heading lines stay in sight.
 struct TrayLines {

@@ -1,4 +1,4 @@
-//! The "Working…" line's spacing, measured on the whole screen: it has as
+//! The "Working…" line's spacing, measured on the whole screen. It has as
 //! many blank rows below it (before the status line's rule, or the notes
 //! that wait under it) as above it, whatever started the turn.
 
@@ -92,7 +92,7 @@ mod tests {
             Above::Nothing,
         ];
 
-        /// The blank rows on each side in the full view: one where the line
+        /// The blank rows on each side in the full view, one where the line
         /// follows what was said, none among the agent's calls.
         fn blank_rows(self) -> usize {
             match self {
@@ -209,11 +209,11 @@ mod tests {
         Some((above, below, at + 1 + below))
     }
 
-    /// The sizes the full-screen view is used at: 60, 80 and 120 columns,
+    /// The sizes the full-screen view is used at. They are 60, 80 and 120 columns,
     /// and a short terminal of 12 rows.
     const SIZES: [(u16, u16); 5] = [(60, 24), (80, 24), (120, 24), (80, 12), (60, 12)];
 
-    /// The views each size is drawn in: all of them at 80 columns, the full
+    /// The views each size is drawn in. All of them at 80 columns, the full
     /// one at the others. With ASCII symbols, two sizes.
     fn runs(ascii: bool) -> Vec<(u16, u16, View)> {
         let mut runs = Vec::new();
@@ -231,7 +231,7 @@ mod tests {
     }
 
     /// Whatever started the turn, the line has the same number of blank rows
-    /// above and below: a blank row on each side after what was said (the
+    /// above and below, a blank row on each side after what was said (the
     /// user's message, the agent's text, a message, a notice, a command's
     /// output, a reply), none on either side among the agent's calls (a
     /// call, its output, a worker's line), where it stands flush against the
@@ -256,7 +256,7 @@ mod tests {
                     let (above_rows, below_rows, next) =
                         padding(&rows).unwrap_or_else(|| panic!("no Working…: {case}"));
                     if above == Above::Nothing {
-                        // Nothing above it: it is the first row.
+                        // Nothing above it, so it is the first row.
                         assert_eq!(above_rows, 0, "{case}");
                         assert!(is_working(&rows[0]), "{case}");
                         continue;
@@ -272,7 +272,7 @@ mod tests {
                         _ => above.blank_rows(),
                     };
                     assert_eq!(above_rows, wanted, "{case}");
-                    // What follows the blank rows below: the note that
+                    // What follows the blank rows below, the note that
                     // waits, or the rule above the status line.
                     if note {
                         assert!(rows[next].contains("Use tabs."), "{case}");
@@ -284,7 +284,7 @@ mod tests {
         }
     }
 
-    /// What starts a turn: the user's message, or what Arko starts one for
+    /// What starts a turn, the user's message, or what Arko starts one for
     /// while the agent waits for the user.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Start {
@@ -452,7 +452,7 @@ mod tests {
     /// user's answers, the notes they typed, a model switch), and whatever
     /// comes in before the agent's own output (a worker's calls, a queued
     /// worker's card, a worker's warning), the line has the room the
-    /// user's message gives it: a blank row above and one below, before
+    /// user's message gives it, a blank row above and one below, before
     /// the note that waits, the chip, the panel, the menu or the status
     /// line's rule.
     #[test]
@@ -524,7 +524,7 @@ mod tests {
         assert!(padding(&rows).is_none(), "{}", rows.join("\n"));
     }
 
-    /// A worker's own view has the same room: its text above and below, a
+    /// A worker's own view has the same room, its text above and below, a
     /// blank row on each side, and none among its calls.
     #[test]
     fn a_watched_workers_line_has_as_much_room_below_as_above() {

@@ -1,4 +1,4 @@
-//! The input box's text and its editing: readline's keys, the history
+//! The input box's text and its editing, with readline's keys, the history
 //! (kept in Arko's `history.txt`, in the line editor's format, so both
 //! front ends share it), and long pastes folded into chips.
 
@@ -8,7 +8,7 @@ use ratatui::text::Span;
 use super::wrap::char_width;
 pub use crate::history::History;
 
-/// A paste of more lines than this (or more characters) is a chip: the box
+/// A paste of more lines than this (or more characters) is a chip, and the box
 /// grows to about this many lines.
 const CHIP_LINES: usize = 8;
 const CHIP_CHARS: usize = 2000;
@@ -28,7 +28,7 @@ pub struct Editor {
     text: Vec<char>,
     /// An emptying the approval switch has not observed yet.
     emptied: bool,
-    /// Where the cursor is: before `text[cursor]`.
+    /// Where the cursor is, before `text[cursor]`.
     cursor: usize,
     /// The pasted blocks, by chip.
     chips: Vec<String>,
@@ -139,7 +139,7 @@ impl Editor {
         !self.tentative.is_empty()
     }
 
-    /// Inserts `text` at the cursor as typed (dictated text: never a chip).
+    /// Inserts `text` at the cursor as typed (dictated text is never a chip).
     fn insert_text(&mut self, text: &str) {
         let chars: Vec<char> = text
             .chars()
@@ -155,7 +155,7 @@ impl Editor {
         self.cursor.checked_sub(1).map(|at| self.text[at])
     }
 
-    /// Removes the characters from `from` to `to`; the cursor keeps its
+    /// Removes the characters from `from` to `to`. The cursor keeps its
     /// place in what's left.
     pub fn remove(&mut self, from: usize, to: usize) {
         if from >= to || to > self.text.len() {
@@ -191,7 +191,7 @@ impl Editor {
         std::mem::take(&mut self.emptied)
     }
 
-    /// The text as typed, with each chip's label: what the command menu
+    /// The text as typed, with each chip's label, which the command menu
     /// looks at.
     pub fn shown(&self) -> String {
         self.text
@@ -205,8 +205,8 @@ impl Editor {
         self.text.first() == Some(&c)
     }
 
-    /// The text when it is a command's name being typed (`/se`): a slash,
-    /// then no space; cheap on a long text.
+    /// The text when it is a command's name being typed (`/se`), a slash,
+    /// then no space. Cheap on a long text.
     pub fn command_typed(&self) -> Option<String> {
         if !self.starts_with('/') {
             return None;
@@ -221,7 +221,7 @@ impl Editor {
         Some(name)
     }
 
-    /// The text when it is a command line, cursor at its end (`/view q`):
+    /// The text when it is a command line, cursor at its end (`/view q`),
     /// one short line that starts with a slash, without chips. What the
     /// argument completion looks at.
     pub fn command_line(&self) -> Option<String> {
@@ -247,7 +247,7 @@ impl Editor {
         })
     }
 
-    /// The text with the chips' pastes in place: what is sent.
+    /// The text with the chips' pastes in place, which is what is sent.
     pub fn text(&self) -> String {
         let mut text = String::new();
         for c in &self.text {
@@ -284,7 +284,7 @@ impl Editor {
         self.goal = None;
     }
 
-    /// Takes the text to send: it goes in the history, and the box empties.
+    /// Takes the text to send. It goes in the history, and the box empties.
     pub fn take(&mut self) -> String {
         let text = self.text();
         self.history.add(&text);
@@ -307,7 +307,7 @@ impl Editor {
         self.insert('\n');
     }
 
-    /// Inserts pasted `text`: a long one as a chip.
+    /// Inserts pasted `text`, a long one as a chip.
     pub fn paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         let long = text.lines().count() > CHIP_LINES || text.chars().count() > CHIP_CHARS;
@@ -328,7 +328,7 @@ impl Editor {
         }
     }
 
-    /// Folds the text typed since `start` into a chip when it is long: a
+    /// Folds the text typed since `start` into a chip when it is long, for a
     /// paste that came as keys (where the terminal doesn't mark pastes).
     pub fn fold_paste(&mut self, start: usize) {
         if start > self.cursor || start > self.text.len() {
@@ -348,7 +348,7 @@ impl Editor {
         self.goal = None;
     }
 
-    /// Where the cursor is, in characters: for [`fold_paste`].
+    /// Where the cursor is, in characters, for [`fold_paste`].
     pub fn cursor(&self) -> usize {
         self.cursor
     }
@@ -361,7 +361,7 @@ impl Editor {
         }
     }
 
-    /// Deletes the character under the cursor; false when there is none.
+    /// Deletes the character under the cursor. False when there is none.
     pub fn delete(&mut self) -> bool {
         if self.cursor < self.text.len() {
             self.splice_out(self.cursor, self.cursor + 1);
@@ -446,7 +446,7 @@ impl Editor {
         }
     }
 
-    /// Ctrl+K: to the end of the line (the line break, at its end).
+    /// Ctrl+K kills to the end of the line (the line break, at its end).
     pub fn kill_end(&mut self) {
         let end = self.line_end();
         let end = if end == self.cursor && end < self.text.len() {
@@ -457,22 +457,22 @@ impl Editor {
         self.cut(self.cursor, end);
     }
 
-    /// Ctrl+U: to the start of the line.
+    /// Ctrl+U kills to the start of the line.
     pub fn kill_start(&mut self) {
         self.cut(self.line_start(), self.cursor);
     }
 
-    /// Ctrl+W, Alt+Backspace: the word before the cursor.
+    /// Ctrl+W and Alt+Backspace kill the word before the cursor.
     pub fn kill_word(&mut self) {
         self.cut(self.word_start(), self.cursor);
     }
 
-    /// Alt+D: the word after the cursor.
+    /// Alt+D kills the word after the cursor.
     pub fn kill_word_forward(&mut self) {
         self.cut(self.cursor, self.word_end());
     }
 
-    /// Ctrl+Y: what the last kill took.
+    /// Ctrl+Y yanks what the last kill took.
     pub fn yank(&mut self) {
         let kill: Vec<char> = self.kill.chars().collect();
         self.splice_in(self.cursor, &kill);
@@ -480,8 +480,8 @@ impl Editor {
         self.edited();
     }
 
-    /// The box's rows at `width`: each row's characters (by index), wrapped
-    /// at line breaks and, at the width, at a space: a word that doesn't
+    /// The box's rows at `width`, each row's characters (by index), wrapped
+    /// at line breaks and, at the width, at a space. A word that doesn't
     /// fit moves whole to the next row, and only a word longer than a row
     /// breaks inside. Spaces stay on the row they end (they show nothing
     /// past its edge), so the next row starts with the word. A chip is a
@@ -490,7 +490,7 @@ impl Editor {
         self.rows_of(&self.text, width)
     }
 
-    /// The text as the box shows it: with the tentative words at the
+    /// The text as the box shows it, with the tentative words at the
     /// cursor.
     fn laid_out(&self) -> std::borrow::Cow<'_, [char]> {
         if self.tentative.is_empty() {
@@ -507,7 +507,7 @@ impl Editor {
         let width = width.max(2);
         let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
         let mut used = 0;
-        // The word being laid out: where it starts in the row, and the
+        // The word being laid out, as where it starts in the row, and the
         // width of the row before it.
         let mut word: Option<(usize, usize)> = None;
         for (index, c) in text.iter().enumerate() {
@@ -594,7 +594,7 @@ impl Editor {
         (0, 0)
     }
 
-    /// ↑ (`up`) or ↓ within the text; false at its first or last row (the
+    /// ↑ (`up`) or ↓ within the text. False at its first or last row (the
     /// history's turn).
     pub fn vertical(&mut self, up: bool, width: usize) -> bool {
         let rows = self.rows(width);
@@ -625,7 +625,7 @@ impl Editor {
             used += w;
             at = index + 1;
         }
-        // Past the end of a row the width wrapped: at its last character,
+        // Past the end of a row the width wrapped, at its last character,
         // not the next row's first.
         let wrapped = row.last().is_some_and(|&i| self.text[i] != '\n')
             && rows
@@ -638,7 +638,7 @@ impl Editor {
         true
     }
 
-    /// The previous message from the history; false when there is none.
+    /// The previous message from the history. False when there is none.
     pub fn history_back(&mut self) -> bool {
         let index = match &self.recall {
             Some(recall) if recall.index == 0 => return false,
@@ -656,8 +656,8 @@ impl Editor {
         true
     }
 
-    /// The next message from the history, and then what was typed before;
-    /// false when not reading the history.
+    /// The next message from the history, and then what was typed before.
+    /// False when not reading the history.
     pub fn history_forward(&mut self) -> bool {
         let Some(recall) = self.recall.take() else {
             return false;
@@ -764,7 +764,7 @@ mod tests {
     }
 
     /// A recording's words are followed through edits, and only they are
-    /// taken out: text typed before them moves them, text typed inside one
+    /// taken out. Text typed before them moves them, text typed inside one
     /// splits it, and part of one deleted leaves the rest.
     #[test]
     fn dictated_words_are_followed_through_edits() {
@@ -890,7 +890,7 @@ mod tests {
         assert_eq!(e.position(14), (0, 12));
     }
 
-    /// The box wraps at spaces: a word that crosses the edge moves whole
+    /// The box wraps at spaces. A word that crosses the edge moves whole
     /// to the next row as it is typed, comes back as it is deleted, and
     /// the cursor stays where it was in the text. Only a word longer than
     /// a row breaks inside.
@@ -907,7 +907,7 @@ mod tests {
         e.backspace();
         assert_eq!(rows(&e, 14), ["See the wrapp"]);
         assert_eq!(e.position(14), (0, 13));
-        // Typing inside the word that moved: the cursor stays in it.
+        // Typing inside the word that moved. The cursor stays in it.
         typed(&mut e, "ed");
         for _ in 0..3 {
             e.left();
@@ -917,7 +917,7 @@ mod tests {
         assert_eq!(rows(&e, 14), ["See the ", "wrapXped"]);
         assert_eq!(e.position(14), (1, 5));
         e.backspace();
-        // Before the word, after the space the row ends with: the start of
+        // Before the word, after the space the row ends with, at the start of
         // the next row.
         e.word_left();
         assert_eq!(e.position(14), (1, 0));

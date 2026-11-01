@@ -216,7 +216,7 @@ pub fn parse_feed(hex: &str) -> Option<u64> {
     u64::from_str_radix(hex, 16).ok()
 }
 
-/// What an entry of the browser's history keeps of the view it shows: the
+/// What an entry of the browser's history keeps of the view it shows, namely the
 /// worker (none for the main transcript), and the feed it was of, as
 /// another feed's r1 is another worker.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -225,7 +225,7 @@ pub struct Entry {
     pub feed: Option<u64>,
 }
 
-/// What a call's line offers: Move to background while it runs and the
+/// What a call's line offers, namely Move to background while it runs and the
 /// status lists it among the calls that can move (`movable`), and Stop
 /// (the job's ID) while the background job it made runs (`runs`). Each is
 /// asked only where it could apply, so a line that reads them reactively

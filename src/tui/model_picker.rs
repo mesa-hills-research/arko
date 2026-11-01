@@ -1,12 +1,12 @@
-//! `/model`'s picker: the model of the main agent (before the conversation
+//! `/model`'s picker, for the model of the main agent (before the conversation
 //! starts) or of new workers, in two steps. The first lists the models by
-//! the way they are reached, the ways that can be used first; a way that
+//! the way they are reached, the ways that can be used first. A way that
 //! can't is one dim row saying what it needs, so the list shows what Arko
 //! can reach without a menu that changes shape from one machine to the
 //! next. OpenRouter's group lists the models picked, with their context and
 //! prices, and a row that opens all of OpenRouter's models to filter and
 //! choose from. The second step lists the efforts that model takes, on the
-//! one it ran at last. Enter applies: the picker sends the session the
+//! one it ran at last. Enter applies. The picker sends the session the
 //! `/model` line a user would type, so the line prompt, the page and the
 //! picker change models one way.
 
@@ -34,7 +34,7 @@ pub enum Row {
     Group(String),
     /// A way that can't be used, and what it needs.
     Unavailable { group: String, needs: String },
-    /// A model: its name as `/model` takes it, and its alias.
+    /// A model, with its name as `/model` takes it, and its alias.
     Model { name: String, alias: &'static str },
     /// All of OpenRouter's models, in a step of their own.
     AllOpenRouter,
@@ -58,13 +58,13 @@ impl Row {
 pub enum Step {
     /// The models.
     Models,
-    /// Typing a model's name: what is typed, and why the last one wasn't
+    /// Typing a model's name, with what is typed, and why the last one wasn't
     /// taken.
     Typing { text: String, error: Option<String> },
     /// OpenRouter's models, filtered by what is typed (by name and slug),
     /// with the one selected among those that match.
     Browse { filter: String, selected: usize },
-    /// The efforts `model` takes; `selected` past them is Back. `last` is
+    /// The efforts `model` takes. `selected` past them is Back. `last` is
     /// the one it ran at last (found as the step opens, since drawing reads
     /// no file).
     Efforts {
@@ -105,7 +105,7 @@ pub struct ModelPicker {
     /// The plans' models have none.
     pub billing: std::collections::BTreeMap<String, String>,
     /// The filter and the model the browse step was on, while the efforts
-    /// of a model chosen there are open: Back goes there.
+    /// of a model chosen there are open. Back goes there.
     via_browse: Option<(String, usize)>,
     /// The main agent's conversation has started, so the model chosen
     /// starts a new conversation on it.
@@ -125,7 +125,7 @@ pub enum Outcome {
 }
 
 impl ModelPicker {
-    /// The picker for `target`, from the session's `models`; `needs` says
+    /// The picker for `target`, from the session's `models`, where `needs` says
     /// what a model needs that isn't there.
     #[cfg(test)]
     pub fn open(target: Target, models: &Models, needs: impl Fn(&str) -> Option<String>) -> Self {
@@ -253,7 +253,7 @@ impl ModelPicker {
             .unwrap_or_default()
     }
 
-    /// The box's title: whose model it is.
+    /// The box's title, saying whose model it is.
     pub fn title(&self) -> String {
         if self.new_conversation {
             return match &self.step {
@@ -275,7 +275,7 @@ impl ModelPicker {
         }
     }
 
-    /// The second step, for `name`; a model that doesn't reason is applied
+    /// The second step, for `name`. A model that doesn't reason is applied
     /// at once.
     fn efforts(&mut self, name: String) -> Outcome {
         let Ok(model) = providers::resolve_model(&name) else {
@@ -406,7 +406,7 @@ impl ModelPicker {
                                 self.via_browse = Some((filter.clone(), *selected));
                                 return self.efforts(name);
                             }
-                            // Nothing listed, or the list can't be had: the
+                            // Nothing listed, or the list can't be had, so the
                             // slug typed is taken as it is, by typing it.
                             None => {
                                 let typed = filter.split_whitespace().collect::<String>();
@@ -518,7 +518,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
     match &picker.step {
         Step::Models => {
             keys = &[("↑ ↓", "choose"), ("Enter", "next"), ("Esc", "close")];
-            // The columns: the name, the alias, and a note.
+            // The columns are the name, the alias, and a note.
             let name_width = picker
                 .rows
                 .iter()
@@ -658,7 +658,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ModelPicker) 
                             "Another model",
                             theme.dim().add_modifier(Modifier::BOLD),
                         )));
-                        // In line with its heading: chosen, it shows by its
+                        // In line with its heading, so when chosen, it shows by its
                         // colour alone.
                         lines.push(Line::from(Span::styled(
                             glyphs::render(
@@ -1361,7 +1361,7 @@ mod tests {
                 .any(|row| row.contains("medium") && row.contains("last used")),
             "{rows:#?}"
         );
-        // The model now, at its effort now: that says "now" and not more.
+        // The model now, at its effort now, which says "now" and not more.
         let (selected, rows) = efforts("gpt-6-luna");
         assert_eq!(selected, "high");
         assert!(
@@ -1369,7 +1369,7 @@ mod tests {
                 .any(|row| row.contains("high") && row.trim_end().ends_with("now")),
             "{rows:#?}"
         );
-        // An effort the model doesn't take, or none kept: the effort now.
+        // An effort the model doesn't take, or none kept, the effort now.
         assert_eq!(efforts("gpt-6-astra").0, "high");
         assert_eq!(efforts("gemini").0, "high");
         // A picker without Arko's folder starts on the effort now.

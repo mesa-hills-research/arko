@@ -38,7 +38,7 @@ pub fn plural(n: impl std::fmt::Display + PartialEq<u32> + Copy, one: &str, many
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
-/// A time in seconds as settings say it: `10 min`, `90 s`, `1 h`.
+/// A time in seconds as settings say it, like `10 min`, `90 s`, `1 h`.
 pub fn seconds_words(seconds: u64) -> String {
     if seconds.is_multiple_of(3600) {
         format!("{} h", seconds / 3600)
@@ -50,7 +50,7 @@ pub fn seconds_words(seconds: u64) -> String {
 }
 
 /// How long after the user's last message a monitor's warning wakes the
-/// agent: "For 2 h after your last message", "Auto (54 min)", "Always",
+/// agent, in words like "For 2 h after your last message", "Auto (54 min)", "Always",
 /// "Never".
 pub fn wakes_words(setting: Option<&str>, within: Option<u64>) -> String {
     match within {
@@ -105,14 +105,14 @@ pub const WORKER_BILLING: [(&str, &str, &str); 3] = [
 
 /// What the worker billing setting is (the library's `workers::BILLING_ABOUT`
 /// and `MODELS_APPLIES`).
-/// Why a message to the main agent waits in the box: the old model writes
+/// Why a message to the main agent waits in the box, as the old model writes
 /// its report for a switch of the main agent's model. (The session says the
 /// same when one comes anyway.)
 pub const REPORTING: &str = "The report is being written. Stopping skips it.";
 
 pub const WORKER_BILLING_ABOUT: &str = "Whether workers may run on models billed per token. A change applies to the next worker started.";
 
-/// What the daily API budget does with `budget` (none: off), as the
+/// What the daily API budget does with `budget` (none means off), as the
 /// library's `workers::budget_about` says it.
 pub fn budget_about(budget: Option<f64>) -> String {
     match budget {
@@ -124,7 +124,7 @@ pub fn budget_about(budget: Option<f64>) -> String {
     }
 }
 
-/// An amount of dollars as people write it: `$20`, `$7.50` (the library's
+/// An amount of dollars as people write it, like `$20`, `$7.50` (the library's
 /// `workers::money`).
 pub fn money(amount: f64) -> String {
     let cents = (amount * 100.0).round();
@@ -138,7 +138,7 @@ pub fn money(amount: f64) -> String {
 /// What the worker depth setting does (the library's `workers::depth_about`).
 pub const WORKER_DEPTH_ABOUT: &str = "How many levels of workers there can be, from 1 to 4. With 1 only the main agent starts workers. With more, a worker can start workers of its own when the agent that starts it says so, down to that level.";
 
-/// What the worker retry cap does with `cap` (none: off), as the library's
+/// What the worker retry cap does with `cap` (none means off), as the library's
 /// `workers::retry_cap_about` says it.
 pub fn retry_cap_about(cap: Option<u32>) -> String {
     match cap {
@@ -220,7 +220,7 @@ pub fn run_time(summary: &WorkerData, now: f64) -> Option<f64> {
     }
 }
 
-/// What a worker's model calls cost: "$0.12", or "≈ $0.31 at API prices"
+/// What a worker's model calls cost, like "$0.12", or "≈ $0.31 at API prices"
 /// when a plan covered the calls, and nothing under half a cent.
 pub fn cost_words(billed: f64, list: f64) -> String {
     if list < 0.005 || list.is_nan() {
@@ -233,7 +233,7 @@ pub fn cost_words(billed: f64, list: f64) -> String {
 }
 
 /// What a worker and the workers under it cost, once that's more than the
-/// worker alone: "$0.50 with its workers".
+/// worker alone, like "$0.50 with its workers".
 pub fn family_cost_words(summary: &WorkerData) -> String {
     let list = summary.family_cost_list;
     if list < summary.cost_list + 0.005 || list.is_nan() {
@@ -247,7 +247,7 @@ pub fn family_cost_words(summary: &WorkerData) -> String {
     }
 }
 
-/// A worker's notice label: its ID, and the worker that started it.
+/// A worker's notice label, its ID, and the worker that started it.
 pub fn notice_label(agent: &str, summary: Option<&WorkerData>) -> String {
     match summary.and_then(|summary| summary.parent.as_deref()) {
         Some(parent) => format!("{agent} (under {parent})"),
@@ -255,7 +255,7 @@ pub fn notice_label(agent: &str, summary: Option<&WorkerData>) -> String {
     }
 }
 
-/// The workers in a family's order: each worker that no listed worker
+/// The workers in a family's order, with each worker that no listed worker
 /// started, then the workers it started, depth first, in the order they
 /// started (the library's `remote::family_order`).
 pub fn family_order<'a>(summaries: &[&'a WorkerData]) -> Vec<&'a WorkerData> {
@@ -296,7 +296,7 @@ pub fn family_order<'a>(summaries: &[&'a WorkerData]) -> Vec<&'a WorkerData> {
     order
 }
 
-/// The workers in the order the sheet lists them: the families with a
+/// The workers in the order the sheet lists them, namely the families with a
 /// worker going first, in the order they started, then the others, the
 /// latest first, each family with its workers after it.
 pub fn sheet_order<'a>(summaries: &[&'a WorkerData]) -> Vec<&'a WorkerData> {
@@ -334,7 +334,7 @@ fn state_word(state: WorkerState) -> &'static str {
     }
 }
 
-/// How many skills a narrowed worker has: `no skills`, `1 skill` or `3 skills`.
+/// How many skills a narrowed worker has, like `no skills`, `1 skill` or `3 skills`.
 fn skills_words(skills: Option<&[String]>) -> Option<String> {
     skills.map(|skills| match skills.len() {
         0 => "no skills".to_string(),
@@ -342,7 +342,7 @@ fn skills_words(skills: Option<&[String]>) -> Option<String> {
     })
 }
 
-/// How many MCP servers a narrowed worker reaches: `no MCP`, `1 MCP server`
+/// How many MCP servers a narrowed worker reaches, like `no MCP`, `1 MCP server`
 /// or `3 MCP servers`.
 fn servers_words(mcp: Option<&[String]>) -> Option<String> {
     mcp.map(|mcp| match mcp.len() {
@@ -351,7 +351,7 @@ fn servers_words(mcp: Option<&[String]>) -> Option<String> {
     })
 }
 
-/// A worker's summary in words: its title, the meta line ("18 calls ·
+/// A worker's summary in words, with its title, the meta line ("18 calls ·
 /// 2m14s · running · under r1 · gpt-6.1-sol, high · profile judge ·
 /// $0.12") and what it did last. `viewing` is the worker whose own view
 /// shows, which says who started it already. `usual` has the model and
@@ -500,7 +500,7 @@ pub fn state_of(
     ("idle", "Idle".into())
 }
 
-/// The figures of the agent whose transcript shows: context, its handover
+/// The figures of the agent whose transcript shows, namely context, its handover
 /// size, the cost, and the cost at API prices of what a plan covered.
 fn agent_figures(
     status: &StatusData,
@@ -531,7 +531,7 @@ fn agent_figures(
     }
 }
 
-/// The header's figures: context against the handover size, then cost (or
+/// The header's figures, context against the handover size, then cost (or
 /// the plan's usage on a subscription).
 pub fn figures(status: &StatusData, viewing: Option<&WorkerData>) -> Vec<String> {
     let (context, handover, cost, api) = agent_figures(status, viewing);
@@ -559,7 +559,7 @@ pub fn figures(status: &StatusData, viewing: Option<&WorkerData>) -> Vec<String>
     parts
 }
 
-/// The figures' tooltip: "Context 142k tokens, handover size 250k".
+/// The figures' tooltip, like "Context 142k tokens, handover size 250k".
 pub fn context_title(status: &StatusData, viewing: Option<&WorkerData>) -> String {
     let (context, handover, ..) = agent_figures(status, viewing);
     let Some(context) = context else {
@@ -575,7 +575,7 @@ pub fn context_title(status: &StatusData, viewing: Option<&WorkerData>) -> Strin
     }
 }
 
-/// The prompt cache's timer: the time left (ms) until it lapses as Arko
+/// The prompt cache's timer, the time left (ms) until it lapses as Arko
 /// says (`expires_at`), 0 once it lapsed, or none where it's hidden (while
 /// requests run, and where Arko can't time it). Never more than the
 /// lifetime.
@@ -587,7 +587,7 @@ pub fn cache_timer(cache: &CacheData, running: bool, now: f64) -> Option<f64> {
     Some((lapses - now).min(lifetime).max(0.0))
 }
 
-/// A length of time on a clock: 0:05, 3:12, 1:02:03.
+/// A length of time on a clock, like 0:05, 3:12, 1:02:03.
 pub fn clock(ms: f64) -> String {
     let s = (ms.max(0.0) / 1000.0).floor() as u64;
     let (h, m) = (s / 3600, s / 60 % 60);
@@ -618,7 +618,7 @@ pub fn kept_warm_label(kept: &KeepWarmData, until: &str) -> String {
     }
 }
 
-/// What keep-warm does, for the timer's tooltip: "Keep-warm refreshes the
+/// What keep-warm does, for the timer's tooltip, like "Keep-warm refreshes the
 /// prompt cache before it expires, until 07:00. Each refresh ≈ $0.04."
 pub fn kept_warm_title(kept: &KeepWarmData, cache: &CacheData, until: &str) -> String {
     let mut text = "Keep-warm refreshes the prompt cache before it expires".to_string();
@@ -635,7 +635,7 @@ pub fn kept_warm_title(kept: &KeepWarmData, cache: &CacheData, until: &str) -> S
     text
 }
 
-/// What a refresh costs: "Each refresh ≈ $0.04.", or on a plan the tokens
+/// What a refresh costs, like "Each refresh ≈ $0.04.", or on a plan the tokens
 /// it reads.
 pub fn refresh_each(cache: &CacheData) -> Option<String> {
     match (cache.refresh_cost, cache.tokens, &cache.on_plan) {
@@ -648,7 +648,7 @@ pub fn refresh_each(cache: &CacheData) -> Option<String> {
     }
 }
 
-/// The keep-warm setting: "Off", "15 hours or $5.00", "1 hour".
+/// The keep-warm setting, like "Off", "15 hours or $5.00", "1 hour".
 pub fn keep_warm_setting(setting: Option<&KeepWarmSettingData>) -> String {
     let Some(hours) = setting.and_then(|setting| setting.idle_hours) else {
         return "Off".into();
@@ -678,7 +678,7 @@ pub fn cache_warns(left: f64) -> bool {
     left > 0.0 && left <= 60_000.0
 }
 
-/// A token count, short: 820, 8.2k, 142k, 1.02M.
+/// A token count, short, like 820, 8.2k, 142k, 1.02M.
 pub fn cache_tokens(count: u64) -> String {
     let trimmed = |value: f64, decimals: usize| {
         let text = format!("{value:.decimals$}");
@@ -709,7 +709,7 @@ pub fn dollars(amount: f64) -> String {
     }
 }
 
-/// What a miss writes again: "about 180k tokens, ≈ $0.90", "about 180k
+/// What a miss writes again, like "about 180k tokens, ≈ $0.90", "about 180k
 /// tokens of your Claude plan".
 fn cache_recache(cache: &CacheData) -> Option<String> {
     let mut text = format!("about {} tokens", cache_tokens(cache.tokens?));

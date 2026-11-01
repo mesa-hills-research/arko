@@ -37,7 +37,7 @@ pub enum Sheet {
     Settings,
 }
 
-/// One item's signals: its data (a call's outcome) and its text, which
+/// One item's signals, its data (a call's outcome) and its text, which
 /// grows as it streams. A row redraws when its own change. The page holds
 /// them while it keeps the item, and a row that shows the item holds them
 /// while it shows (`Cell::for_row`), so they go once both let go.
@@ -91,7 +91,7 @@ pub struct Page {
     /// the store holds it. What the page keeps of a session goes with it.
     pub feeds: RwSignal<u64>,
     /// The parts of the status that rows show, which change less often
-    /// than the status does: the calls that can move to the background,
+    /// than the status does, namely the calls that can move to the background,
     /// the background jobs running, the usual models and the app's name.
     pub movable: Memo<Vec<u64>>,
     pub running_jobs: Memo<Vec<String>>,
@@ -160,7 +160,7 @@ fn streaming_is(id: u64) -> bool {
 }
 
 /// The page let go of the item `id`, so nothing follows whether it streams.
-/// (Not when a row of it goes, as its next row may be drawn first: another
+/// (Not when a row of it goes, as its next row may be drawn first, which is another
 /// kind, or another feed's item of the same ID.)
 fn streaming_forget(id: u64) {
     STREAMING.with(|selector| {
@@ -508,7 +508,7 @@ thread_local! {
     static SENDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// One thing the user sends, and what it's sent from: the feed, and the
+/// One thing the user sends, and what it's sent from, the feed, and the
 /// view for a send that belongs to it. What became of it is for the page
 /// only while the page still shows those, and the error line is the latest
 /// send's.
@@ -557,7 +557,7 @@ impl Sender {
             .is_none_or(|view| *view == page().worker.get_untracked())
     }
 
-    /// Says `words` on the error line, while the line is still this send's:
+    /// Says `words` on the error line, while the line is still this send's, as
     /// no send began since, in the view it was sent from.
     pub fn say(&self, words: Option<String>) {
         if SENDS.with(|sends| sends.get()) == self.id && self.in_its_view() {
@@ -565,7 +565,7 @@ impl Sender {
         }
     }
 
-    /// Takes what became of it: its words on the error line (`say`), and
+    /// Takes what became of it, namely its words on the error line (`say`), and
     /// what became of it for the caller's own effects, while the page shows
     /// the feed and the view it was sent from.
     pub fn take(&self, outcome: Outcome) -> Option<Posted> {
@@ -794,7 +794,7 @@ fn connect(page: Page) {
                 return;
             };
             if let Err(why) = handle(page, &data) {
-                // Never quietly stuck: say what couldn't be read.
+                // Never quietly stuck, so say what couldn't be read.
                 web_sys::console::error_1(&format!("{event}: {why}").into());
                 page.problem.set(Some(format!(
                     "Couldn’t read Arko’s update ({event}: {why})."
@@ -816,7 +816,7 @@ fn connect(page: Page) {
     on("ping", |_, _| Ok(()));
     let error = Closure::<dyn FnMut(MessageEvent)>::new(move |_| {
         close_stream();
-        // The stream may have ended with the session: ask before retrying.
+        // The stream may have ended with the session, so ask before retrying.
         offline(page, None);
     });
     source.set_onerror(Some(error.as_ref().unchecked_ref()));
@@ -945,7 +945,7 @@ pub(crate) struct Reset {
     pub bad: usize,
 }
 
-/// The page takes a `reset`, come at `now`: the store, the cells, the
+/// The page takes a `reset`, come at `now`, and updates the store, the cells, the
 /// status, and what the views follow. Returns whether it's of another feed
 /// than the page had (Arko started again), whose items, questions and
 /// places the page let go of. Asking for the new feed's commands is the
@@ -982,7 +982,7 @@ pub(crate) fn take_reset(page: Page, reset: Reset, now: f64) -> bool {
 }
 
 /// The cells of a `reset`'s items. The transcript keys its rows by item, so
-/// a row drawn before the reset keeps the cell it was drawn with: an item
+/// a row drawn before the reset keeps the cell it was drawn with. An item
 /// the page had takes the server's version in that cell, and only a new one
 /// gets a cell. Items of another feed (`switched`) are others whatever their
 /// IDs, so each gets a cell of its own. `new_code` holds the items whose
@@ -1048,7 +1048,7 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
     let mut item: ItemData = parse(data)?;
     let code = std::mem::take(&mut item.code);
     crate::markdown::remember(&code);
-    // This device's clock against Arko's: the smallest gap a new item
+    // This device's clock against Arko's, the smallest gap a new item
     // shows (the rest is the network's delay). Only a smaller gap is news
     // to the views that read the time.
     let sample = js_sys::Date::now() - item.at as f64;
@@ -1127,7 +1127,7 @@ fn on_change(page: Page, data: &str) -> Result<(), String> {
 }
 
 /// The page takes a `change` of `item`, come at `now`, whose code blocks'
-/// spans came new (`code`): the store, its cell, and the rows of the view
+/// spans came new (`code`), and updates the store, its cell, and the rows of the view
 /// when it moves them.
 pub(crate) fn take_change(page: Page, item: ItemData, code: bool, now: f64) {
     let Some(old) = STORE.with(|store| store.borrow_mut().change(item.clone(), now)) else {
@@ -1382,7 +1382,7 @@ pub(crate) mod tests {
         });
     }
 
-    /// Answers for tests: Arko took it, Arko asks first, and Arko refused it.
+    /// Answers for tests, namely Arko took it, Arko asks first, and Arko refused it.
     fn accepted() -> Option<(u16, String)> {
         let verdict = crate::protocol::Verdict::accepted(crate::protocol::Delivery::Turn, Some(3));
         Some((200, serde_json::to_string(&verdict).unwrap()))
@@ -1475,7 +1475,7 @@ pub(crate) mod tests {
             answer.say(None);
             assert_eq!(error(), None);
 
-            // Another view: the message box's send is no longer the page's,
+            // Another view, so the message box's send is no longer the page's,
             // and an answer's still is.
             let message = Sender::from_view();
             page.worker.set(Some("r1".into()));
@@ -1486,7 +1486,7 @@ pub(crate) mod tests {
             assert_eq!(error().as_deref(), Some("Not open."));
             page.worker.set(None);
 
-            // Arko started again: nothing of the page is its own, and the
+            // Arko started again, so nothing of the page is its own, and the
             // error line says what's known.
             let message = Sender::from_view();
             take_reset(page, reset_of(0xb, Vec::new(), Vec::new()), 0.0);

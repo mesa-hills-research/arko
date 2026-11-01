@@ -1,4 +1,4 @@
-//! The prompt cache's timer in the status line: "cache 3:12" while the
+//! The prompt cache's timer in the status line, "cache 3:12" while the
 //! agent waits for the user and the provider says how long the cache keeps
 //! the conversation, in the warning colour for its last minute, then "cache
 //! expired". While keep-warm will refresh the cache before it lapses, it
@@ -37,7 +37,7 @@ impl App {
         )
     }
 
-    /// What the timer says now and whether it warns: the screen draws again
+    /// What the timer says now and whether it warns. The screen draws again
     /// when this changes, once a second at most.
     pub(super) fn cache_label(&self) -> Option<(String, bool)> {
         let timer = self.cache_timer(now_ms())?;
@@ -66,7 +66,7 @@ pub(super) mod tests {
         pub(super) static NOW: Cell<Option<i64>> = const { Cell::new(None) };
     }
 
-    /// The idle session's start: the cache was last used at this time.
+    /// The idle session's start. The cache was last used at this time.
     const AT: i64 = 1_800_000_000_000;
 
     /// Holds the clock a test set until it goes.
@@ -134,7 +134,7 @@ pub(super) mod tests {
         (rows, buffer)
     }
 
-    /// The status line: two rows above the input box.
+    /// The status line, two rows above the input box.
     fn status_row(rows: &[String]) -> &str {
         let at = rows
             .iter()

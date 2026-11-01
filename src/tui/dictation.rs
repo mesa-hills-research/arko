@@ -22,18 +22,18 @@ use crate::remote::Level;
 /// What the view asks of the dictation service and the microphone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dictate {
-    /// Open a dictation (`download`: the user agreed to download the
+    /// Open a dictation (`download` means the user agreed to download the
     /// model). The loop answers with [`App::dictation_opened`] or
     /// [`App::dictation_refused`].
     Open { download: bool },
-    /// The model listens: start the microphone. A failure comes to
+    /// The model listens, so start the microphone. A failure comes to
     /// [`App::dictation_failed`].
     Record,
     /// Stop the microphone, and let the last words settle.
     Finish,
     /// Stop the microphone and end the dictation, with no more words.
     Cancel,
-    /// The dictation ended: let go of it and of the microphone.
+    /// The dictation ended, so let go of it and of the microphone.
     Close,
 }
 
@@ -56,7 +56,7 @@ pub struct Recording {
     pub phase: Phase,
     /// Some of its words went into the box.
     wrote: bool,
-    /// The model was downloaded first, which takes minutes: the microphone
+    /// The model was downloaded first, which takes minutes, so the microphone
     /// doesn't open by surprise once it's done.
     downloaded: bool,
 }
@@ -73,8 +73,8 @@ impl Recording {
 }
 
 impl App {
-    /// `/dictate` and Ctrl+R: starts a recording, stops the one listening,
-    /// or cancels one still getting ready.
+    /// `/dictate` and Ctrl+R start a recording, stop the one listening,
+    /// or cancel one still getting ready.
     pub fn toggle_dictation(&mut self) {
         match self.recording.as_ref().map(|recording| recording.phase) {
             None => self.start_dictation(false),
@@ -121,7 +121,7 @@ impl App {
     }
 
     /// The microphone couldn't start, and the loop let go of the
-    /// dictation: the recording ends, saying why in the transcript.
+    /// dictation, so the recording ends, saying why in the transcript.
     pub fn dictation_failed(&mut self, why: String) {
         self.end_recording();
         self.effects_push(Effect::Notice(Level::Error, why));
@@ -186,14 +186,14 @@ impl App {
         editor.set_tentative(&spaced(editor.before_cursor(), recording.wrote, tentative));
     }
 
-    /// Ctrl+R or Enter while listening: the microphone stops and the last
+    /// Ctrl+R or Enter while listening stop the microphone and the last
     /// words come.
     fn stop_dictation(&mut self) {
         self.set_phase(Phase::Finishing);
         self.effects_push(Effect::Dictate(Dictate::Finish));
     }
 
-    /// Esc: the recording ends, and the words it put in leave the box.
+    /// Esc ends the recording, and the words it put in leave the box.
     fn cancel_dictation(&mut self) {
         if self.recording.take().is_none() {
             return;
@@ -203,14 +203,14 @@ impl App {
         self.effects_push(Effect::Dictate(Dictate::Cancel));
     }
 
-    /// The recording ended: its words stay, as the user's.
+    /// The recording ended, so its words stay, as the user's.
     fn end_recording(&mut self) {
         self.recording = None;
         self.editor.keep_dictated();
         self.editor.set_tentative("");
     }
 
-    /// Enter and Esc while recording; false for any other key, and while a
+    /// Enter and Esc while recording. False for any other key, and while a
     /// download runs beside the box.
     pub(super) fn dictation_key(&mut self, key: KeyEvent) -> bool {
         let Some(recording) = self.recording.as_ref().filter(|r| r.takes_keys()) else {
@@ -218,7 +218,7 @@ impl App {
         };
         match key.code {
             KeyCode::Esc => self.cancel_dictation(),
-            // (Finishing: the words aren't all in yet.)
+            // (Finishing, because the words aren't all in yet.)
             KeyCode::Enter if key.modifiers.is_empty() => {
                 if recording.phase == Phase::Listening {
                     self.stop_dictation();
@@ -243,7 +243,7 @@ impl App {
         })
     }
 
-    /// A key on the download question: Download starts the recording that
+    /// A key on the download question. Download starts the recording that
     /// asked, with the download.
     pub(super) fn download_key(
         &mut self,

@@ -1,4 +1,4 @@
-//! OpenRouter's settings menu (`/openrouter`): the seven choices with their
+//! OpenRouter's settings menu (`/openrouter`), with the seven choices with their
 //! values, and the models OpenRouter lists. Enter changes the one chosen. A
 //! switch toggles and a choice among a few goes to the next. The two lists
 //! of providers open a line to edit. A change is saved at once, and the open
@@ -32,7 +32,7 @@ pub enum Step {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Said {
     pub text: String,
-    /// It failed: shown as an error.
+    /// It failed, so it is shown as an error.
     pub failed: bool,
 }
 
@@ -237,7 +237,7 @@ impl OpenRouterMenu {
         Action::Edit(edit)
     }
 
-    /// What the change asked for did: the settings as they are now with what
+    /// What the change asked for did, giving the settings as they are now with what
     /// it said, or why it wasn't made.
     pub fn done(&mut self, result: Result<(Settings, String), String>) {
         match result {
@@ -260,7 +260,7 @@ impl OpenRouterMenu {
         }
     }
 
-    /// A key, in the step open; `close` is Esc or Ctrl+C.
+    /// A key, in the step open, where `close` is Esc or Ctrl+C.
     pub fn key(&mut self, key: KeyEvent, close: bool) -> Action {
         let ctrl = key
             .modifiers
@@ -275,7 +275,7 @@ impl OpenRouterMenu {
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ') => match self.control() {
                     Some(control) => return self.change(control),
                     None => {
-                        // The models row: fetch them again.
+                        // The models row, which fetches them again.
                         self.said = Some(Said {
                             text: "Fetching OpenRouter's models.".to_string(),
                             failed: false,
@@ -324,7 +324,7 @@ impl OpenRouterMenu {
         self.catalog.summary()
     }
 
-    /// The lines under the row selected: what it does.
+    /// The lines under the row selected, saying what it does.
     fn detail(&self) -> String {
         match self.control() {
             Some(Control::DataCollection) if self.settings.data_collection_implied() => {
@@ -511,7 +511,7 @@ mod tests {
         serde_json::from_str(&text).unwrap()
     }
 
-    /// Enter changes the choice selected and saves it at once: switches
+    /// Enter changes the choice selected and saves it at once. Switches
     /// toggle, the others go to the next, and what is written is the
     /// settings' file.
     #[test]
@@ -724,7 +724,7 @@ mod tests {
     #[test]
     fn the_models_row_says_how_many_and_how_old_or_why_not() {
         let root = tempfile::tempdir().unwrap();
-        // (Settings no other test has: the models in memory go by them.)
+        // (Settings no other test has, since the models in memory go by them.)
         let mut settings = openrouter::Settings::default();
         settings.set_zdr(true);
         settings.save(root.path()).unwrap();
@@ -759,7 +759,7 @@ mod tests {
     }
 
     /// A change made by the menu goes into the settings as the file has them
-    /// when it runs: one made by another session just before stays, and the
+    /// when it runs. One made by another session just before stays, and the
     /// menu's choice goes on from the one then. (The menu once read the file,
     /// changed one choice and saved all of the routing.)
     #[test]
@@ -808,7 +808,7 @@ mod tests {
         );
     }
 
-    /// The keys aren't held by a wait for the settings' lock: Enter returns
+    /// The keys aren't held by a wait for the settings' lock. Enter returns
     /// at once with the change to make, and a thread made for waiting makes
     /// them in the order they were asked, however long the lock is held.
     #[test]

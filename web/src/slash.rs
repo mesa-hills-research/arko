@@ -1,4 +1,4 @@
-//! The command menu above the message box: the commands that start with
+//! The command menu above the message box, with the commands that start with
 //! what's typed, then the words their arguments may be.
 
 use crate::protocol::CommandData;

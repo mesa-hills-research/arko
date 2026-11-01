@@ -1,6 +1,6 @@
-//! The agent's questions: the answer panel above the message box, the chips
+//! The agent's questions, the answer panel above the message box, the chips
 //! that stand for questions not in it, and a question card's line and
-//! record in the transcript. A question shows in one place at a time: in
+//! record in the transcript. A question shows in one place at a time, in
 //! the panel while it's open, then in its card's record. The user never
 //! sees a question's id, only its number in its ask.
 
@@ -92,7 +92,7 @@ impl Asking {
 
 // ----- words -----
 
-/// "Arko asks 2 questions": the panel's title, and the chip of new ones.
+/// "Arko asks 2 questions" is the panel's title, and the chip of new ones.
 pub fn asks_text(questions: &[QuestionData]) -> String {
     match questions.len() {
         1 => "Arko asks a question".to_string(),
@@ -100,7 +100,7 @@ pub fn asks_text(questions: &[QuestionData]) -> String {
     }
 }
 
-/// "2 open questions": the quiet chip of the questions not attached.
+/// "2 open questions" is the quiet chip of the questions not attached.
 pub fn open_text(count: usize) -> String {
     match count {
         1 => "1 open question".to_string(),
@@ -108,7 +108,7 @@ pub fn open_text(count: usize) -> String {
     }
 }
 
-/// "Replying to 2 questions": the questions the next message answers.
+/// "Replying to 2 questions" names the questions the next message answers.
 pub fn replying_text(count: usize) -> String {
     match count {
         1 => "Replying to a question".to_string(),
@@ -116,7 +116,7 @@ pub fn replying_text(count: usize) -> String {
     }
 }
 
-/// What became of a question, as its card's record says it: the answer,
+/// What became of a question, as its card's record says it, the answer,
 /// or a few words. `None` while it's open.
 pub fn outcome(question: &QuestionData) -> Option<String> {
     Some(match question.state.as_str() {
@@ -189,7 +189,7 @@ pub fn answers_body(
     Some((serde_json::json!({ "answers": answers }), ids))
 }
 
-/// Whether the panel opens by itself for the open questions `open`: one
+/// Whether the panel opens by itself for the open questions `open`, when one
 /// isn't `seen` yet, and the user neither types nor replies to questions
 /// `attached` to the message box. (The panel would show those again, and
 /// "Answer in chat" would attach the new one with them.)
@@ -202,7 +202,7 @@ pub fn opens_by_itself(
     open.iter().any(|id| !seen.contains(id)) && !typing && attached.is_empty()
 }
 
-/// The open questions a chip stands for: those not attached.
+/// The open questions a chip stands for, those not attached.
 pub fn waiting(open: &[QuestionData], attached: &[String]) -> Vec<QuestionData> {
     open.iter()
         .filter(|question| !attached.contains(&question.id))
@@ -218,7 +218,7 @@ fn open_questions() -> Vec<QuestionData> {
         .with_untracked(|status| status.questions.clone())
 }
 
-/// Follows the open questions: what's filled in and attached stays only
+/// Follows the open questions. What's filled in and attached stays only
 /// for those still open, the panel closes when none is, and opens by itself
 /// for new ones ([`opens_by_itself`]).
 pub fn follow() {
@@ -247,7 +247,7 @@ pub fn follow() {
                 .update(|attached| attached.retain(|id| open.contains(id)));
         }
         // The question being typed in was settled elsewhere (another
-        // screen, or the agent): the panel closes, rather than move the
+        // screen, or the agent), so the panel closes, rather than move the
         // typing to another question.
         let gone = ask.focused.get_untracked().filter(|id| {
             !open.contains(id)
@@ -411,7 +411,7 @@ fn send() {
     });
 }
 
-/// "Not now": the questions the chip stands for are dismissed, and the
+/// "Not now" dismisses the questions the chip stands for, and the
 /// agent goes on with its defaults.
 fn not_now(ids: Vec<String>) {
     if ids.is_empty() {
@@ -464,7 +464,7 @@ fn update_draft(id: &str, change: impl FnOnce(&mut Draft)) {
 
 // ----- views -----
 
-/// The answer panel above the message box: each open question with its
+/// The answer panel above the message box, with each open question with its
 /// choices, "You decide" and an Other field, "Answer in chat" and Send.
 #[component]
 pub fn AnswerPanel() -> impl IntoView {
@@ -642,7 +642,7 @@ fn QuestionView(question: QuestionData, open: Memo<Vec<QuestionData>>) -> impl I
 }
 
 /// Above the message box, for the open questions neither attached nor in
-/// the panel: "Arko asks 2 questions" when one is new, else a quiet "2 open
+/// the panel, with "Arko asks 2 questions" when one is new, else a quiet "2 open
 /// questions". It opens the panel, and "Not now" dismisses them.
 #[component]
 pub fn QuestionsChip() -> impl IntoView {
@@ -678,7 +678,7 @@ pub fn QuestionsChip() -> impl IntoView {
     }
 }
 
-/// "Replying to 2 questions ×": the questions the next message answers,
+/// "Replying to 2 questions ×" shows the questions the next message answers,
 /// and the way to send it without answering them.
 #[component]
 pub fn Replying() -> impl IntoView {

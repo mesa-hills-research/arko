@@ -1,8 +1,8 @@
-//! Copying: to the system clipboard, and through the terminal (OSC 52,
+//! Copying, to the system clipboard and through the terminal (OSC 52,
 //! crossterm's `CopyToClipboard`, which reaches the user's clipboard over
-//! SSH where the terminal honours it: GNOME Terminal doesn't).
+//! SSH where the terminal honours it, but GNOME Terminal doesn't).
 //!
-//! The system clipboard is arboard's: the X11 clipboard, Wayland's where
+//! The system clipboard is arboard's, which is the X11 clipboard, Wayland's where
 //! the compositor has the data-control protocol (arboard tries it first,
 //! then X11), macOS's and Windows'. On X11 and Wayland the copy lives in
 //! the program that made it, so one clipboard is kept for the whole run,
@@ -32,10 +32,10 @@ use std::sync::Mutex;
 pub enum Copied {
     /// The system clipboard has it.
     System,
-    /// Only the terminal was asked (OSC 52): over SSH, or without a
+    /// Only the terminal was asked (OSC 52). Over SSH, or without a
     /// display, this machine's clipboard isn't the user's.
     Terminal,
-    /// Nothing could take it: what would fix that.
+    /// Nothing could take it, and this is what would fix that.
     Failed(String),
 }
 

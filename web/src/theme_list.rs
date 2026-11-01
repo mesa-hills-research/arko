@@ -1,6 +1,6 @@
 // Written by web/theme-css from themes/. Don't edit.
 
-/// Every theme: its name, its slug (`data-theme`) and whether it's dark.
+/// Every theme, with its name, its slug (`data-theme`) and whether it's dark.
 pub const THEMES: &[(&str, &str, bool)] = &[
     ("Aurora Light", "aurora-light", false),
     ("Ayu Light", "ayu-light", false),

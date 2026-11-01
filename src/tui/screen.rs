@@ -1,9 +1,9 @@
-//! The screen's layout and its quiet parts: from the bottom, the input
+//! The screen's layout and its quiet parts, from the bottom, the input
 //! box, the status line above it, and above that what docks there for a
 //! while (the answer panel or its chip, the command menu, the worker
 //! switcher);
 //! the transcript takes the rest. The transcript is what the reader is
-//! there for: everything else stays small.
+//! there for. Everything else stays small.
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
@@ -24,7 +24,7 @@ const INPUT_LINES: usize = 8;
 /// The command menu shows this many commands at most.
 const MENU_LINES: usize = 8;
 
-/// The agent list shows this many rows at most: the main agent, five
+/// The agent list shows this many rows at most, namely the main agent, five
 /// workers and the count of the others.
 const LIST_LINES: usize = 7;
 
@@ -38,7 +38,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    // From the bottom: the agent list (while there are workers), the
+    // From the bottom, the agent list (while there are workers), the
     // input box between two rules, the status line, and a rule above it.
     let rows = app.list_rows(LIST_LINES.min(area.height as usize / 4));
     let list_rows = rows.len() as u16;
@@ -80,7 +80,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .buffer_mut()
         .set_line(area.x, rule_y, &rule(&theme, area.width), area.width);
 
-    // What docks above the status line's rule for a while: the approval
+    // What docks above the status line's rule for a while, the approval
     // tray, and above it the rest.
     let above = Rect::new(area.x, area.y, area.width, rule_y - area.y);
     let tray = super::approvals::draw_tray(frame, app, above);
@@ -116,8 +116,8 @@ fn rule(theme: &Theme, width: u16) -> Line<'static> {
     ))
 }
 
-/// The input box: the text between two rules the width of the screen (no
-/// box: the screen's edges are its sides).
+/// The input box, the text between two rules the width of the screen (no
+/// box, since the screen's edges are its sides).
 fn draw_input(
     frame: &mut Frame,
     app: &App,
@@ -166,7 +166,7 @@ fn draw_input(
         };
         let used = text_width(&placeholder);
         let mut spans = vec![Span::styled(placeholder, theme.dim())];
-        // How to find the rest, while there is room: on an empty box only.
+        // How to find the rest, while there is room, on an empty box only.
         let hint = "  / for commands";
         if !app.activity.working && used + text_width(hint) < width as usize {
             spans.push(Span::styled(hint.to_string(), theme.dim()));
@@ -180,7 +180,7 @@ fn draw_input(
                 .buffer_mut()
                 .set_line(x, rect.y + row as u16, &Line::from(spans.clone()), width);
         }
-        // A command's argument: what completes it, or what it takes.
+        // A command's argument, what completes it, or what it takes.
         if let Some(ghost) = app.ghost() {
             let column = (cursor.1 as u16).min(width);
             frame.buffer_mut().set_line(
@@ -211,13 +211,13 @@ fn list_time(ms: i64) -> String {
     format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60)
 }
 
-/// How far a worker is indented in the agent list: two columns for each
+/// How far a worker is indented in the agent list, two columns for each
 /// level it is below the main agent's workers.
 fn indent(worker: &WorkerSummary) -> usize {
     2 * worker.depth.saturating_sub(1) as usize
 }
 
-/// The agent list, below the input: `● main` with how many workers run,
+/// The agent list, below the input, `● main` with how many workers run,
 /// and a row for each worker running or waiting and each that ended in the
 /// last five minutes, the one shown marked, up to five workers, with a count
 /// of the workers above them and one of those below when there are. ↓ from the box moves into it,
@@ -351,7 +351,7 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect, rows: Vec<ListRow>) {
                     },
                     theme.dim(),
                 ));
-                // In columns: the state, the time and the tool calls line
+                // In columns, so the state, the time and the tool calls line
                 // up from row to row.
                 let (state, style) = transcript::state(worker, theme);
                 right.push(Span::styled(format!("{state:<state_width$}"), style));
@@ -643,7 +643,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     {
         left.remove(at);
     }
-    // Nothing before the first item: no separator before it either.
+    // Nothing before the first item, so no separator before it either.
     if left
         .get(1)
         .is_some_and(|span| span.content == sep().content)
@@ -672,14 +672,14 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The steps the plans' figures take, one after the other, when the status
-/// line is too wide: the plans the main agent isn't on go, then the credits,
+/// line is too wide. The plans the main agent isn't on go, then the credits,
 /// then the main agent's plan's first window (5 hours).
 const PLAN_CUTS: usize = 3;
 
 /// A plan window from this share of its use on is in the warning colour.
 const PLAN_WARNS_AT: f64 = 80.0;
 
-/// The plans' usage in the status line, each with a separator before it:
+/// The plans' usage in the status line, each with a separator before it,
 /// every plan the session used, named when there are more than one, the
 /// main agent's first (`Claude 5h: 3% · 7d: 23% · ChatGPT 5h: 12% · 7d:
 /// 40% · credits: 12.50`), with `cut` of the [`PLAN_CUTS`] steps taken.
@@ -740,7 +740,7 @@ fn plan_figures(app: &App, cut: usize) -> Vec<Span<'static>> {
     spans
 }
 
-/// `seconds` as a clock: `14s`, `2m14s`, `1h02m`.
+/// `seconds` as a clock, like `14s`, `2m14s`, `1h02m`.
 fn clock(seconds: u64) -> String {
     match seconds {
         0..=59 => format!("{seconds}s"),
@@ -1010,7 +1010,7 @@ mod tests {
     #[test]
     fn the_cursor_after_a_full_row_starts_the_next_one() {
         let mut app = app();
-        // 26 columns: the width of a 30-column screen's box.
+        // 26 columns, the width of a 30-column screen's box.
         for c in "abcdefghijklmnopqrstuvwxyz".chars() {
             app.editor.insert(c);
         }
@@ -1068,7 +1068,7 @@ mod tests {
                 .unwrap_or_default()
                 .to_string()
         };
-        // One more worker than fits: the last is below.
+        // One more worker than fits, so the last is below.
         let shown = list(&mut app);
         assert_eq!(shown[6], "   … 1 more", "{shown:#?}");
         assert_eq!(
@@ -1092,7 +1092,7 @@ mod tests {
             "   … 4 more above, 1 more below",
             "{rows:#?}"
         );
-        // A worker leaves the list: the others fit, and nothing is counted.
+        // A worker leaves the list, so the others fit, and nothing is counted.
         app.update(
             Update::Worker(ended_earlier("r1", Finished)),
             Activity::default,
@@ -1101,7 +1101,7 @@ mod tests {
         assert!(!rows.iter().any(|row| row.ends_with(" more")), "{rows:#?}");
     }
 
-    /// The agent list under the input: the main agent, five of the workers
+    /// The agent list under the input, with the main agent, five of the workers
     /// running and how many more. A worker that ended more than five minutes
     /// ago isn't in it.
     #[test]
@@ -1395,7 +1395,7 @@ mod tests {
         assert!(list[3].contains("r4    Task of r4"), "{list:#?}");
     }
 
-    /// The quit popup over an 80-column screen: the background jobs, each
+    /// The quit popup over an 80-column screen, with the background jobs, each
     /// cut to fit with how long it has run, the workers that stop too, and
     /// the choices. The settings' row that turns it off.
     #[test]
@@ -1954,7 +1954,7 @@ mod tests {
                 && wide.contains("5h: 54% · 7d: 58%"),
             "{wide}"
         );
-        // At 64 columns the usage would be cut: the starter goes instead.
+        // At 64 columns the usage would be cut, so the starter goes instead.
         let narrow = status(&mut app, 64);
         assert!(
             narrow.starts_with(" viewing r4 · ● working ") && narrow.contains("5h: 54% · 7d: 58%"),
@@ -2206,7 +2206,7 @@ mod tests {
         assert!(!panel.contains("Which branch?"), "{panel}");
         assert!(!panel.contains("Anything else"), "{panel}");
         assert!(panel.contains("Enter  next"), "{panel}");
-        // Esc: the questions go with the next message, as the chip says.
+        // After Esc, the questions go with the next message, as the chip says.
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         let rows = screen(&mut app, 60, 24);
         assert!(!rows.iter().any(|row| row.contains("Which branch?")));
@@ -2751,7 +2751,7 @@ mod tests {
 
     /// With the symbols of the classic Windows console's fonts (`basic`) and
     /// with plain ASCII (`ascii`), the whole screen is drawn in characters
-    /// those fonts have: the banner, every kind of item, the separators
+    /// those fonts have, namely the banner, every kind of item, the separators
     /// between their parts, the status line, the agent list, the docked
     /// question, a worker's own view and the overlays.
     #[test]
@@ -2916,7 +2916,7 @@ mod tests {
         }
     }
 
-    /// Not a test: how long a frame of a long transcript takes while
+    /// Not a test. It measures how long a frame of a long transcript takes while
     /// Working… or the thinking that streams moves on it, and how much of a
     /// core the frames take at ten a second. Run it with
     /// `cargo test --lib animation_cost -- --ignored --nocapture`, and
@@ -3005,7 +3005,7 @@ mod tests {
             question: None,
         });
         // A terminal of 120 by 40 that the frames' escape codes go to, as
-        // they would to the screen: what changed since the last frame.
+        // they would to the screen, counting what changed since the last frame.
         struct Count(std::rc::Rc<std::cell::Cell<usize>>);
         impl std::io::Write for Count {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -3040,7 +3040,7 @@ mod tests {
             times.sort();
             let mean = times.iter().sum::<Duration>() / times.len() as u32;
             // Ten frames a second for three seconds, as the screen draws
-            // them: the share of a core they take.
+            // them, to find the share of a core they take.
             let (wall, used) = (Instant::now(), cpu());
             let mut written = 0;
             for tick in 1..=30 {
@@ -3212,7 +3212,7 @@ mod tests {
     }
 
     /// Letting go of a drag copies what it highlighted, and says how much;
-    /// a click copies nothing; a double click copies a word.
+    /// a click copies nothing. A double click copies a word.
     #[test]
     fn a_drag_copies_and_a_click_does_not() {
         use crate::tui::app::Effect;
@@ -3254,7 +3254,7 @@ mod tests {
             screen(&mut app, 40, 8);
         }
         assert_eq!(app.take_effects(), [copy("there,", "6 characters")]);
-        // A triple click (on another cell, so the count starts over): the
+        // A triple click (on another cell, so the count starts over), the
         // second click copies the word, the third the line.
         for _ in 0..3 {
             mouse(&mut app, MouseEventKind::Down(left), 10, 0);
@@ -3271,7 +3271,7 @@ mod tests {
     }
 
     /// The question docked above the status line is text to select, as the
-    /// transcript's is: a drag highlights it and copies it when the button
+    /// transcript's is. A drag highlights it and copies it when the button
     /// is let go, a double click copies a word, and a triple click the
     /// line, joined again where the box wrapped it. A key clears the
     /// highlight.
@@ -3312,7 +3312,7 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         assert_eq!(app.docked.as_ref().unwrap().selection, None);
         app.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-        // A double click: a word.
+        // A double click copies a word.
         for kind in [
             MouseEventKind::Down(left),
             MouseEventKind::Up(left),
@@ -3323,7 +3323,7 @@ mod tests {
             screen(&mut app, 50, 20);
         }
         assert_eq!(app.take_effects(), [copy("spaces", "6 characters")]);
-        // A triple click (on another cell, so the count starts over): the
+        // A triple click (on another cell, so the count starts over), the
         // second click copies the word, the third the line, whole.
         for _ in 0..3 {
             mouse(&mut app, MouseEventKind::Down(left), x + 1, y);
@@ -3422,7 +3422,7 @@ mod tests {
     }
 
     /// A click on a command's "more lines" opens its whole output, and a
-    /// click on the line that ends it closes it: the line clicked stays
+    /// click on the line that ends it closes it. The line clicked stays
     /// under the mouse. A drag, a double click and a triple click select
     /// text as anywhere else, and leave the block as it was.
     #[test]
@@ -3471,7 +3471,7 @@ mod tests {
                 "",
             ]
         );
-        // (Elsewhere on the line: the same cell again would be a double
+        // (Elsewhere on the line, since the same cell again would be a double
         // click.)
         let rows = click(&mut app, 14);
         assert_eq!(rows[0], "  │ line 1");
@@ -3539,7 +3539,7 @@ mod tests {
         assert_eq!(rows[0], "  Hello there.");
     }
 
-    /// The picker's two steps, drawn: a box with the whose-model title,
+    /// The picker's two steps, drawn, namely a box with the whose-model title,
     /// the models in aligned columns with the one now marked, the ways that
     /// can't be used with what they need, the efforts with Back, and the
     /// keys as keycaps.
