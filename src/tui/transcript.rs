@@ -4543,12 +4543,12 @@ mod tests {
         let quiet = Filter::Main(View::Quiet);
         let before = rows(&mut t, &quiet, 50, 4);
         assert_eq!(
-            before[..3],
-            ["▸ Ran rg x", "▸ Running cargo build …", "▸ Read a.rs"]
+            before[..2],
+            ["▸ Ran rg x · running cargo build …", "▸ Read a.rs"]
         );
         rows(&mut t, &Filter::Main(View::Full), 50, 4);
         assert_eq!(rows(&mut t, &quiet, 50, 4), before);
-        // It ends after the read came, so it keeps its own row.
+        // It ends in its row, and no row comes or goes.
         t.apply(Update::Change(call(
             2,
             ActKind::Command,
@@ -4557,10 +4557,9 @@ mod tests {
             Some(5),
         )));
         let after = rows(&mut t, &quiet, 50, 4);
-        assert_eq!(
-            after[..3],
-            ["▸ Ran rg x", "▸ Ran cargo build", "▸ Read a.rs"]
-        );
+        assert_eq!(after[..2], ["▸ Ran 2 commands (rg, cargo)", "▸ Read a.rs"]);
+        let count = |rows: &[String]| rows.iter().filter(|row| !row.is_empty()).count();
+        assert_eq!(count(&before), count(&after));
         rows(&mut t, &Filter::Main(View::Full), 50, 4);
         assert_eq!(rows(&mut t, &quiet, 50, 4), after);
     }

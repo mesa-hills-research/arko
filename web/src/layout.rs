@@ -1133,6 +1133,41 @@ mod tests {
         assert_eq!(says(&hidden, View::Full, None, 1), "2 new");
     }
 
+    /// A long call joins the row above as it comes and shows there while
+    /// it runs, so no row comes or goes when it starts or ends.
+    #[test]
+    fn a_long_call_leaves_the_rows_as_they_are() {
+        use crate::protocol::{Act, ActKind};
+        let call = |id: u64, target: &str, status: CallStatus| ItemData {
+            status: Some(status),
+            act: Some(Act {
+                kind: ActKind::Command,
+                target: target.into(),
+                ..Act::default()
+            }),
+            ..item(id, Kind::Call, MAIN, target)
+        };
+        let mut items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            call(2, "rg x", CallStatus::Ok),
+            call(3, "cargo build", CallStatus::Running),
+        ];
+        let said = |rows: &[Row]| match &rows[1] {
+            Row::Quiet { words, .. } => (words.text.clone(), words.running),
+            other => panic!("{other:?}"),
+        };
+        let running = layout(&items, View::Quiet, None);
+        assert_eq!(ids(&running), ["i1", "q2"]);
+        assert_eq!(
+            said(&running),
+            ("Ran rg x · running cargo build".into(), true)
+        );
+        items[2].status = Some(CallStatus::Ok);
+        let settled = layout(&items, View::Quiet, None);
+        assert_eq!(ids(&settled), ids(&running));
+        assert_eq!(said(&settled), ("Ran 2 commands (rg, cargo)".into(), false));
+    }
+
     /// Quiet says each call in a few words, as the terminal does. Reads of
     /// a file being edited join its edits, a test run that failed stands
     /// alone with its output under it, and the agent's text ends a run.

@@ -4923,7 +4923,9 @@ mod tests {
             }
             quiet_words(&items(&feed))
         };
-        assert_eq!(rows(true), ["Ran rg x", "Ran cargo build", "Read a.rs"]);
+        // The build joins the row as it comes either way, so no row comes
+        // and goes with it.
+        assert_eq!(rows(true), ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
         assert_eq!(rows(false), ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
     }
 
@@ -4960,7 +4962,12 @@ mod tests {
         let call = |id: u64, kind: ActKind, target: &str, ended: u64| {
             let mut call = Item::new(Kind::Call, target);
             call.id = id;
-            call.status = Some(CallStatus::Ok);
+            // (The build fails.)
+            call.status = Some(if id == 2 {
+                CallStatus::Failed
+            } else {
+                CallStatus::Ok
+            });
             call.act = Some(Act {
                 kind,
                 target: target.into(),
@@ -4977,7 +4984,8 @@ mod tests {
             call(3, ActKind::Read, "a.rs", 4),
         ];
         let live = quiet_words(&saved);
-        assert_eq!(live, ["Ran rg x", "Ran cargo build", "Read a.rs"]);
+        // It failed after the read came, so it stays in its row.
+        assert_eq!(live, ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
         let feed = Feed::new("main");
         // (An item first, so the restored ones move on.)
         feed.notice(Level::Info, "Resumed.");

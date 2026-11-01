@@ -708,7 +708,6 @@ pub struct Settled {
     /// What its row says of how it went, replacing what it said (empty, it
     /// says nothing more).
     news: Option<String>,
-    alone: bool,
     ran: bool,
     /// The indexes a search searched, as the search says.
     index: Option<String>,
@@ -803,7 +802,6 @@ impl Settled {
         if let Some(news) = &settled.news {
             act.news.clone_from(news);
         }
-        act.alone |= settled.alone;
         act.ran |= settled.ran;
         if let Some(index) = &settled.index {
             act.target.clone_from(index);
@@ -1124,7 +1122,6 @@ fn command_outcome(output: &str) -> Outcome {
             (None, Some(code)) => format!("exit {code}"),
             (None, None) => how.to_string(),
         }),
-        alone: tests.is_some(),
         ran: true,
         ..Settled::default()
     };
