@@ -1,4 +1,4 @@
-//! What a session starts with: a new session's settings, made from its
+//! What a session starts with, meaning a new session's settings, made from its
 //! [`Options`], and its client, made once its credentials are there.
 
 use std::path::PathBuf;
@@ -30,10 +30,10 @@ pub(crate) fn workspace(options: &Options) -> Result<PathBuf, String> {
 }
 
 /// Whether a new session's main agent ends its turns with a reply in plain
-/// text: as `--text-replies` or `--no-text-replies` says, else when the
+/// text, as `--text-replies` or `--no-text-replies` says, else when the
 /// user takes part in the session as it runs, at the full screen or the
 /// line prompt, on the web page or in an app. Not with -p, nor with lines
-/// piped in (each runs as a turn of its own): with no one there to say "go
+/// piped in (each runs as a turn of its own), because with no one there to say "go
 /// on", a reply that wasn't meant to end the work would end the run.
 pub(crate) fn text_replies_for(options: &Options) -> bool {
     options
@@ -42,7 +42,7 @@ pub(crate) fn text_replies_for(options: &Options) -> bool {
 }
 
 /// After how many seconds this run's shell commands move to the background
-/// (0: never): as the flag says, else never with -p (Arko exits when the
+/// (0 means never), as the flag says, else never with -p (Arko exits when the
 /// agent finishes, jobs or not), else as the session keeps it (`saved`).
 pub(crate) fn background_after_for(options: &Options, saved: u64) -> u64 {
     match options.background_after {
@@ -52,14 +52,14 @@ pub(crate) fn background_after_for(options: &Options, saved: u64) -> u64 {
     }
 }
 
-/// Which agents of a new session get the extra rules for small models: as
+/// Which agents of a new session get the extra rules for small models, as
 /// `--extra-rules` (all) or `--no-extra-rules` (none) says, else those on
 /// small models.
 pub(crate) fn extra_rules_for(options: &Options) -> ExtraRules {
     options.extra_rules.unwrap_or(ExtraRules::Small)
 }
 
-/// The built-in skills a new session gives its agents: as the options say,
+/// The built-in skills a new session gives its agents, as the options say,
 /// else as ARKO_BUILTIN_SKILLS (1 or 0) and ARKO_BUILTIN_SKILLS_OFF (names
 /// separated by commas) do, else all of them. With a warning for each name
 /// that isn't a built-in skill.
@@ -98,7 +98,7 @@ pub(crate) fn builtin_skills_resumed(
 }
 
 /// The project's instructions as the options choose them, over `settings`'
-/// own: a new session's defaults (one file, workers get it), or a resumed
+/// own, meaning a new session's defaults (one file, workers get it), or a resumed
 /// session's. Returns whether they changed.
 pub(crate) fn project_from_options(options: &Options, settings: &mut Settings) -> bool {
     let before = (
@@ -117,7 +117,7 @@ pub(crate) fn project_from_options(options: &Options, settings: &mut Settings) -
     ) != before
 }
 
-/// The session's client, made by `make`: credentials it lacks are asked for
+/// The session's client, made by `make`. Credentials it lacks are asked for
 /// through `prompter`, and it is made again after each answer.
 pub(crate) async fn client_asking(
     prompter: &dyn Prompter,
@@ -162,7 +162,7 @@ pub(crate) fn new_settings(
             .map(name)
             .transpose()?,
     };
-    // OpenAI models are all reached one way: the session keeps it.
+    // OpenAI models are all reached one way, and the session keeps it.
     let uses_openai = std::iter::once(&main_model)
         .chain(&worker_model)
         .any(|id| resolve_model(id).is_ok_and(|model| model.provider == arko_ai::Provider::OpenAI));
@@ -318,7 +318,7 @@ pub(crate) fn new_settings(
         settings.worker_project_instructions = false;
     }
     providers::check_openai_choices(&settings)?;
-    // The model Arko chose: the last session's, else one the credentials
+    // The model Arko chose, meaning the last session's, else one the credentials
     // allow.
     let mut model_note = None;
     if let Some(default) = default {
@@ -332,9 +332,9 @@ pub(crate) fn new_settings(
     Ok((settings, model_note))
 }
 
-/// The shell a new session runs commands in on Windows: --shell, else
+/// The shell a new session runs commands in on Windows, meaning --shell, else
 /// ARKO_SHELL, else PowerShell.
-/// Whether a new session's workers may run on models billed per token: as
+/// Whether a new session's workers may run on models billed per token, as
 /// the options say, else as ARKO_WORKER_BILLING does (`plans`, `ask` or
 /// `api`), else ask first.
 pub(crate) fn worker_billing_for(options: &Options) -> Result<WorkerBilling, String> {
@@ -349,7 +349,7 @@ pub(crate) fn worker_billing_for(options: &Options) -> Result<WorkerBilling, Str
     }
 }
 
-/// A new session's daily API budget: as the options say, else as
+/// A new session's daily API budget, as the options say, else as
 /// ARKO_API_BUDGET does (dollars, or `off`), else none.
 pub(crate) fn api_budget_for(options: &Options) -> Result<Option<f64>, String> {
     match options.api_budget {
@@ -376,7 +376,7 @@ pub(crate) fn windows_shell(options: &Options) -> Result<WindowsShell, String> {
     }
 }
 
-/// The models of a new session without --model; `None` without
+/// The models of a new session without --model, and `None` without
 /// credentials.
 pub(crate) fn default_model(options: &Options) -> Option<providers::DefaultModels> {
     let root = match &options.root {

@@ -95,7 +95,7 @@ pub enum Action {
     /// command.
     Message(String),
     /// A `/message` the user confirmed after the warning that the worker's
-    /// prompt cache expired: it continues the worker without asking.
+    /// prompt cache expired. It continues the worker without asking.
     Continue(String),
     /// `text` answers the open questions of the question card `question`
     /// (its item), as a message that answers them.
@@ -303,7 +303,7 @@ pub struct CacheStatus {
 }
 
 impl CacheStatus {
-    /// Whether the cache can't be timed yet: its lifetime or its last use
+    /// Whether the cache can't be timed yet, meaning its lifetime or its last use
     /// is not known.
     fn is_unknown(&self) -> bool {
         self.lifetime.is_none() || self.refreshed_at.is_none()
@@ -483,7 +483,7 @@ pub struct ConversationEntry {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Models {
     /// The main agent's model as `/model` takes it (`gpt-6.1-sol`), and its
-    /// effort (`high`): the model new conversations start on.
+    /// effort (`high`), which new conversations start on.
     pub main: String,
     pub main_effort: String,
     /// The model of the conversation the next message goes to, as `/model`
@@ -653,7 +653,7 @@ pub fn random_token(bytes: usize) -> String {
 /// them.
 pub const SESSIONS_FILE: &str = "remote-sessions.json";
 
-/// The key's random bytes: 192 bits.
+/// The key's random bytes, 192 bits.
 const KEY_BYTES: usize = 24;
 
 /// Whether `key` looks like a key Arko made.
@@ -924,7 +924,7 @@ fn start_with(
     };
     result.map_err(|error| {
         let addr = SocketAddr::new(bind.ip, bind.port.unwrap_or(DEFAULT_PORT));
-        // A port given that another page or program has: what to change.
+        // A port given that another page or program has, with what to change.
         if error.kind() == std::io::ErrorKind::AddrInUse && bind.port.is_some_and(|port| port != 0)
         {
             format!(

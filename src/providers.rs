@@ -2,7 +2,7 @@
 //!
 //! A model ID from arko's registry (`claude-opus-5-5`, `gpt-6.1-sol`,
 //! `gemini-3.1-pro-preview`) or an alias (`opus`, `sol`, `gemini`) names a
-//! model at its own provider: Claude models with an Anthropic API key,
+//! model at its own provider, meaning Claude models with an Anthropic API key,
 //! OpenAI models with a ChatGPT login or an OpenAI API key, Gemini models
 //! with a Google Gemini API key. Two prefixes name the other routes:
 //! `openrouter:<slug>` any model OpenRouter serves
@@ -10,14 +10,14 @@
 //! `cc:<model>` a Claude model run in the user's Claude Code CLI, on their
 //! Claude plan (`cc:opus`, `cc:fable`).
 //!
-//! Plain names stay as they were: a registry ID names one model at one
+//! Plain names stay as they were. A registry ID names one model at one
 //! provider (IDs are unique across the registry). A prefix appears only
 //! where the same model can be reached another way, and it says which
 //! account pays. A session saves the name in this form
 //! (`ModelSettings::model`), so it reads the same in `session.json`, in
 //! `arko --sessions` and on the command line.
 //!
-//! OpenAI models are the exception: arko's client holds one OpenAI client,
+//! OpenAI models are the exception. arko's client holds one OpenAI client,
 //! so a session reaches them all one way, its [`OpenAiAuth`], saved with
 //! the session.
 
@@ -38,9 +38,9 @@ use crate::credentials::{self, Need};
 use crate::logins;
 use crate::session::Settings;
 
-/// The prefix of a model on OpenRouter: `openrouter:<slug>`.
+/// The prefix of a model on OpenRouter, as `openrouter:<slug>`.
 pub const OPENROUTER: &str = "openrouter:";
-/// The prefix of a Claude model run in Claude Code: `cc:<model>`.
+/// The prefix of a Claude model run in Claude Code, as `cc:<model>`.
 pub const CLAUDE_CODE: &str = "cc:";
 /// The long form of [`CLAUDE_CODE`], also accepted.
 const CLAUDE_CODE_LONG: &str = "claude-code:";
@@ -166,11 +166,11 @@ pub fn openrouter_equivalent(slug: &str) -> Option<&'static str> {
 pub const OPENROUTER_ROUTING_SUFFIXES: [&str; 3] = [":floor", ":nitro", ":free"];
 
 /// The handover size of a model whose input limit Arko can't tell (an
-/// OpenRouter model when its catalog can't be read): 80% of 128k, the
+/// OpenRouter model when its catalog can't be read), which is 80% of 128k, the
 /// smallest context window common among the models OpenRouter serves.
 pub const UNKNOWN_LIMIT_HANDOVER: usize = 100_000;
 
-/// The model `name` names: a registry ID or alias, `openrouter:<slug>`, or
+/// The model `name` names, a registry ID or alias, `openrouter:<slug>`, or
 /// `cc:<model>`.
 pub fn resolve_model(name: &str) -> Result<Model, String> {
     let name = name.trim();
@@ -280,7 +280,7 @@ pub(crate) fn strip_prefix<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
         .then(|| name[prefix.len()..].trim())
 }
 
-/// How a session saves `model`: its registry ID, or with the prefix of its
+/// How a session saves `model`, meaning its registry ID, or with the prefix of its
 /// route.
 pub fn model_name(model: &Model) -> String {
     match model.provider {
@@ -318,7 +318,7 @@ pub fn provider_name(model: &Model) -> &'static str {
     }
 }
 
-/// A Claude model on OpenRouter: `anthropic/…`, or a `~anthropic/…-latest`
+/// A Claude model on OpenRouter, as `anthropic/…`, or a `~anthropic/…-latest`
 /// alias.
 pub fn is_claude_slug(slug: &str) -> bool {
     slug.trim_start_matches('~').starts_with("anthropic/")
@@ -391,7 +391,7 @@ pub fn ask_short_cache(model: &Model, generation: &mut GenerationConfig) {
     }
 }
 
-/// The small models, by registry ID: fast, cheap models that do better with
+/// The small models, by registry ID, meaning fast, cheap models that do better with
 /// plain, explicit rules than the large ones need (`agents::extra_rules`).
 const SMALL_MODELS: [&str; 4] = [
     "claude-haiku-5-5",
@@ -400,7 +400,7 @@ const SMALL_MODELS: [&str; 4] = [
     "gpt-5.6-luna",
 ];
 
-/// Whether `model` is one of [`SMALL_MODELS`], on any route: its registry ID
+/// Whether `model` is one of [`SMALL_MODELS`], on any route, meaning its registry ID
 /// through the API or `cc:`, or its slug in [`OPENROUTER_EQUIVALENTS`]
 /// through OpenRouter, with or without one of
 /// [`OPENROUTER_ROUTING_SUFFIXES`]. The ID or slug must match exactly.
@@ -413,15 +413,15 @@ pub fn is_small(model: &Model) -> bool {
 }
 
 /// What the session says, once, when OpenAI refuses the reasoning summaries
-/// Arko asks for (the organization isn't verified for them): the framework
+/// Arko asks for (the organization isn't verified for them). The framework
 /// sends the request again without them, and no request asks again.
 pub const THINKING_REFUSED: &str = "OpenAI gives reasoning summaries only to verified organizations, and this one isn't verified, so the agents' thinking isn't shown and Arko stops asking for it. Verifying the organization in OpenAI's settings turns it on for new sessions.";
 
-/// The generation settings of an agent on `model`: its reasoning at
+/// The generation settings of an agent on `model`, meaning its reasoning at
 /// `effort`, fast mode where the provider has it, and the long prompt cache
 /// with `long_cache` (which the caller asks for where [`takes_long_cache`]).
 /// With `thinking_text`, the model is asked for the text of its thinking
-/// where it needs asking, for the views to show: Claude by API key for its
+/// where it needs asking, for the views to show, meaning Claude by API key for its
 /// summarized thinking (Claude Code passes it on by itself), OpenAI and
 /// OpenRouter for reasoning summaries, Gemini for its thoughts. An OpenAI
 /// organization that isn't verified for summaries refuses them, and the
@@ -502,7 +502,7 @@ pub fn generation(
 }
 
 /// The model settings an agent's configuration `config` runs, as `/model`
-/// names them: its model, the effort its reasoning was set up with (the
+/// names them, meaning its model, the effort its reasoning was set up with (the
 /// first `generation` gives the same reasoning for, else `fallback`), its
 /// fast mode, long cache and handover size.
 pub fn settings_of(config: &arko_agents::AgentConfig, fallback: Effort) -> ModelSettings {
@@ -538,7 +538,7 @@ fn generation_of(model: &Model, effort: Effort, thinking_text: bool) -> Option<G
     generation(model, effort, false, false, thinking_text).ok()
 }
 
-/// Gemini thinks at low, medium or high: higher efforts are high, and
+/// Gemini thinks at low, medium or high. Higher efforts are high, and
 /// Gemini 3 Pro, which has no medium, thinks high at medium.
 fn gemini_level(model: &Model, effort: Effort) -> GeminiThinkingLevel {
     match effort {
@@ -597,7 +597,7 @@ impl OpenAiAuth {
     }
 }
 
-/// Whether there is a ChatGPT login: a Codex auth.json (`--codex-auth`,
+/// Whether there is a ChatGPT login, meaning a Codex auth.json (`--codex-auth`,
 /// ARKO_CODEX_AUTH or Codex's own) or the OPENAI_OAUTH_* variables.
 pub fn has_chatgpt_login(codex_auth: Option<&Path>) -> bool {
     credentials::codex_auth(codex_auth).is_some()
@@ -605,7 +605,7 @@ pub fn has_chatgpt_login(codex_auth: Option<&Path>) -> bool {
         || CodexAuthFile::default_path().is_some_and(|path| path.is_file())
 }
 
-/// How a new session reaches OpenAI models: `flag`, else ARKO_OPENAI_AUTH,
+/// How a new session reaches OpenAI models, meaning `flag`, else ARKO_OPENAI_AUTH,
 /// else the ChatGPT login when there is one, else an OpenAI API key when
 /// there is one, else the ChatGPT login (which the setup screen asks for).
 /// The second value says whether both were there, so the choice is worth
@@ -639,12 +639,12 @@ pub struct DefaultModels {
     pub main: String,
     /// The workers' model, when it differs from the main one.
     pub worker: Option<String>,
-    /// Why the session doesn't run the last session's models as they were:
+    /// Why the session doesn't run the last session's models as they were, because
     /// a credential one needs is gone.
     pub reason: Option<String>,
 }
 
-/// The models of a new session without `--model`: those of the last
+/// The models of a new session without `--model`, meaning those of the last
 /// session started (its main model, and its workers' when they differed)
 /// while their credentials are still there, else the first model the
 /// credentials allow ([`model_by_credentials`]). When the last model's
@@ -715,13 +715,13 @@ fn choose_default(
     }
 }
 
-/// The first model the credentials there are allow, and why: Claude Opus
+/// The first model the credentials there are allow, and why, meaning Claude Opus
 /// 5.5 in Claude Code when `claude` is installed and signed in (the Claude
 /// plan comes before a key billed per token), else Opus with an Anthropic
 /// API key, else GPT-6.1 Sol with a ChatGPT login, else Opus on OpenRouter,
 /// Sol on an OpenAI API key, or Gemini 3.1 Pro on a Gemini key, else Opus
 /// in a Claude Code that isn't signed in yet (the setup screen helps sign
-/// it in); `None` without any.
+/// it in), and `None` without any.
 pub fn model_by_credentials(codex_auth: Option<&Path>) -> Option<(&'static str, &'static str)> {
     first_by_credentials(Credentials {
         claude_code: claude_code::find_cli().map(|_| claude_code::check_recent().is_ok()),
@@ -789,8 +789,8 @@ pub fn provider_key(provider: &Provider) -> &'static str {
     provider.as_telemetry_str()
 }
 
-/// What the model `name` needs that isn't there, as Arko's notes say it;
-/// `None` when its credential is there.
+/// What the model `name` needs that isn't there, as Arko's notes say it,
+/// and `None` when its credential is there.
 pub fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<String> {
     let Ok(model) = resolve_model(name) else {
         return Some("a model Arko knows (it no longer knows this one)".to_string());
@@ -825,9 +825,9 @@ pub fn missing_credential(name: &str, codex_auth: Option<&Path>) -> Option<Strin
 }
 
 /// How a session reaches OpenAI models when none of its models is one,
-/// read through `var`: the ChatGPT login when there is one (unless
-/// ARKO_OPENAI_AUTH says api-key and there is a key), else the API key;
-/// `None` without either.
+/// read through `var`, meaning the ChatGPT login when there is one (unless
+/// ARKO_OPENAI_AUTH says api-key and there is a key), else the API key,
+/// and `None` without either.
 fn available_openai_auth(
     var: &impl Fn(&str) -> Option<String>,
     auth_files: &[PathBuf],
@@ -849,14 +849,14 @@ fn available_openai_auth(
 }
 
 /// How this process reaches OpenAI models when the session's models
-/// don't say (its client was built so): see [`client`].
+/// don't say (its client was built so), see [`client`].
 pub fn spare_openai_auth(codex_auth: Option<&Path>) -> Option<OpenAiAuth> {
     available_openai_auth(&credentials::var, &credentials::codex_auths(codex_auth))
 }
 
-/// The reasoning efforts `model` takes, from Arko's five, lowest first:
+/// The reasoning efforts `model` takes, from Arko's five, lowest first, meaning
 /// those the provider accepts for it (arko checks OpenAI's per model as it
-/// builds a request; these follow its rules). Empty for a model that
+/// builds a request, and these follow its rules). Empty for a model that
 /// doesn't reason.
 pub fn efforts(model: &Model) -> Vec<Effort> {
     use Effort::{High, Low, Max, Medium, Xhigh};
@@ -903,7 +903,7 @@ pub fn efforts(model: &Model) -> Vec<Effort> {
     }
 }
 
-/// The effort `model` runs at when `wanted` was asked for without a check:
+/// The effort `model` runs at when `wanted` was asked for without a check, which is
 /// `wanted` when it takes it, else the highest it takes below it, else its
 /// lowest. (A model that doesn't reason keeps `wanted`, which it ignores.)
 pub fn fit_effort(model: &Model, wanted: Effort) -> Effort {
@@ -927,7 +927,7 @@ pub fn parse_effort(text: &str) -> Result<Effort, String> {
     })
 }
 
-/// What the user is told when `model` can't be used: it needs `needs`
+/// What the user is told when `model` can't be used. It needs `needs`
 /// (from [`missing_credential`] or [`credential_name`]), and how to get it.
 pub fn needs_text(model: &str, needs: &str) -> String {
     if needs == "Claude Code signed in" {
@@ -941,7 +941,7 @@ pub fn needs_text(model: &str, needs: &str) -> String {
     }
 }
 
-/// The efforts `model` takes, as a sentence's list: `low, medium or high`.
+/// The efforts `model` takes, as a sentence's list, such as `low, medium or high`.
 pub fn efforts_text(model: &Model) -> String {
     let names: Vec<String> = efforts(model).iter().map(Effort::to_string).collect();
     match names.as_slice() {
@@ -982,7 +982,7 @@ pub fn model_note(name: &str) -> Option<&'static str> {
 }
 
 /// A failed request's error `message`, with why the model may be refused
-/// added where the message shows it: Claude Code turned down Claude Mythos
+/// added where the message shows it, as when Claude Code turned down Claude Mythos
 /// 5.1, which needs access through Anthropic's Cyber Verification Program.
 pub fn explain_error(message: &str) -> std::borrow::Cow<'_, str> {
     if message.contains("claude-mythos") && message.contains(CLAUDE_CODE_NO_ACCESS) {
@@ -992,7 +992,7 @@ pub fn explain_error(message: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// The models `/model` offers, by the way they are reached: Claude Code,
+/// The models `/model` offers, by the way they are reached, meaning Claude Code,
 /// the Anthropic API, OpenAI, Gemini and OpenRouter, the ways that can be
 /// used first. `needs` says what a model (a way's first) needs that isn't
 /// there, and `openai_auth` how OpenAI models are reached. `current` (the
@@ -1133,7 +1133,7 @@ impl LastModels {
     }
 
     /// Keeps a new session's models for the next session's default. Only
-    /// sessions with a terminal count: a `-p` run is often a script or a
+    /// sessions with a terminal count, because a `-p` run is often a script or a
     /// one-off, and its model shouldn't change what the next interactive
     /// session starts on.
     pub fn remember(root: &Path, settings: &Settings) -> std::io::Result<()> {
@@ -1186,13 +1186,13 @@ impl LastModels {
     }
 }
 
-/// The Gemini API key: GOOGLE_API_KEY, else GEMINI_API_KEY, as arko reads
+/// The Gemini API key, meaning GOOGLE_API_KEY, else GEMINI_API_KEY, as arko reads
 /// them.
 pub fn gemini_key() -> Option<String> {
     credentials::var(credentials::GOOGLE_KEY).or_else(|| credentials::var(credentials::GEMINI_KEY))
 }
 
-/// Checks a new session's choices that depend on the OpenAI auth: Fast
+/// Checks a new session's choices that depend on the OpenAI auth, meaning Fast
 /// mode with an API key only on the models OpenAI offers it for. (Over the
 /// ChatGPT login arko checks it at the first request.)
 pub fn check_openai_choices(settings: &Settings) -> Result<(), String> {
@@ -1221,9 +1221,9 @@ pub enum Failure {
     Other(String),
 }
 
-/// The model client for the session's models: each provider with the
+/// The model client for the session's models, meaning each provider with the
 /// credentials it needs, OpenAI as the session's [`OpenAiAuth`] says (never
-/// both ways), and Claude Code checked: installed and signed in.
+/// both ways), and Claude Code checked, meaning installed and signed in.
 pub fn client(
     codex_auth: Option<&Path>,
     root: &Path,
@@ -1305,7 +1305,7 @@ fn client_with(
     let mut client = match (from_env(auth), spare) {
         (Ok(client), _) => client,
         // A spare OpenAI login that fails (part of the OPENAI_OAUTH_*
-        // variables) is left out: no model of the session needs it.
+        // variables) is left out, because no model of the session needs it.
         (Err(_), true) => from_env(None).map_err(|error| Failure::Other(error.to_string()))?,
         (Err(error), false) => return Err(Failure::Other(error.to_string())),
     };
@@ -1379,7 +1379,7 @@ fn client_with(
 /// Checks a new session's OpenRouter models against OpenRouter's list of
 /// models that take tool calls and that the OpenRouter settings in Arko's
 /// folder `root` allow (read without the API key, and fetched only when the
-/// list in memory is old): the slug is on it, and, unless `--handover-at` was
+/// list in memory is old). The slug is on it, and, unless `--handover-at` was
 /// given (`explicit_handover`), the handover is sized from its context
 /// window. `local` is a server standing in for OpenRouter (tests). Returns
 /// what to tell the user. Without the list (offline), the session starts
@@ -1506,7 +1506,7 @@ fn window_name(minutes: Option<u64>, unknown: &str) -> String {
     }
 }
 
-/// A plan's usage windows, as the status line and `/cost` say them:
+/// A plan's usage windows, as the status line and `/cost` say them, as
 /// `Claude plan 5 h 12%, 7 d 3%`. `None` when it reports no window.
 pub fn plan_usage_text(usage: &PlanUsage) -> Option<String> {
     let windows = [(&usage.primary, "5 h"), (&usage.secondary, "7 d")]
@@ -1535,7 +1535,7 @@ fn extra_usage_on(extra: &arko_ai::ExtraUsage) -> bool {
     extra.enabled == Some(true) || extra.in_use
 }
 
-/// A Claude account's extra usage, as a plan's usage line says it: "extra
+/// A Claude account's extra usage, as a plan's usage line says it, such as "extra
 /// usage $271.40 of $500.00" with its amounts, "extra usage $271.40 used"
 /// without a limit, and "extra usage in use" or "extra usage on" when the
 /// amounts aren't known. `None` when it isn't on.
@@ -1544,7 +1544,7 @@ fn extra_usage_text(extra: &arko_ai::ExtraUsage) -> Option<String> {
 }
 
 /// A Claude account's extra usage, as the full-screen view's status line
-/// says it: "extra usage: $271.40 of $500.00", "extra usage: $271.40 used",
+/// says it, as "extra usage: $271.40 of $500.00", "extra usage: $271.40 used",
 /// "extra usage in use" or "extra usage on". `None` when it isn't on.
 // Only the full-screen view says it, so a build without it leaves it unused.
 #[cfg_attr(not(feature = "tui"), allow(dead_code))]
@@ -1580,7 +1580,7 @@ fn extra_usage_words(extra: &arko_ai::ExtraUsage, label: &str) -> Option<String>
     })
 }
 
-/// A ChatGPT account's credits, as the status line says them: "credits
+/// A ChatGPT account's credits, as the status line says them, such as "credits
 /// left 12.50", "has credits" when the backend gives no balance, or
 /// "unlimited credits". `None` when it has none.
 fn credits_text(credits: &arko_ai::PlanCredits) -> Option<String> {
@@ -1597,7 +1597,7 @@ fn credits_text(credits: &arko_ai::PlanCredits) -> Option<String> {
 }
 
 /// A ChatGPT account's credits, as the full-screen view's status line says
-/// them: "credits: 12.50" (the balance to two decimals, or as the backend
+/// them, as "credits: 12.50" (the balance to two decimals, or as the backend
 /// wrote it when it isn't a number), "has credits" when the backend gives no
 /// balance, or "unlimited credits". `None` when it has none.
 // Only the full-screen view says it, so a build without it leaves it unused.
@@ -1647,7 +1647,7 @@ pub fn plan_status(usage: &PlanUsage, text: String, set_aside: usize) -> crate::
     }
 }
 
-/// Every plan's latest usage, in one line: a session with agents on both
+/// Every plan's latest usage, in one line, so a session with agents on both
 /// plans shows both.
 pub fn plan_usage_line(plans: &std::collections::BTreeMap<String, String>) -> Option<String> {
     (!plans.is_empty()).then(|| plans.values().cloned().collect::<Vec<_>>().join(" · "))
@@ -1664,7 +1664,7 @@ pub fn plan_name(plan: Option<SubscriptionPlan>) -> &'static str {
 }
 
 /// The plan that pays for `model`'s calls when the session reaches OpenAI
-/// models by `openai_auth`, as `/cost` names it: the Claude plan for `cc:`
+/// models by `openai_auth`, as `/cost` names it, meaning the Claude plan for `cc:`
 /// models, the ChatGPT plan for OpenAI models on the ChatGPT login. `None`
 /// for a model billed per token (an API key, Gemini, OpenRouter).
 pub fn plan_of(model: &Model, openai_auth: Option<OpenAiAuth>) -> Option<&'static str> {
@@ -1677,12 +1677,12 @@ pub fn plan_of(model: &Model, openai_auth: Option<OpenAiAuth>) -> Option<&'stati
     }
 }
 
-/// What a call would have cost at API list prices: its estimate when a
+/// What a call would have cost at API list prices, meaning its estimate when a
 /// plan covered it, else what it was billed.
 pub(crate) fn at_api_prices(usage: &UsageInfo, billed: f64) -> f64 {
     match usage.billing {
         BillingKind::Subscription => usage.total_cost,
-        // Calls billed in different ways: the estimate covers them all,
+        // Calls billed in different ways, so the estimate covers them all,
         // those a plan paid for too.
         BillingKind::Mixed => usage.total_cost.max(billed),
         _ => billed,
@@ -1690,7 +1690,7 @@ pub(crate) fn at_api_prices(usage: &UsageInfo, billed: f64) -> f64 {
 }
 
 /// The plan that paid for calls of `model` whose usage was billed as
-/// `billing`: by the model's provider, whatever the session reaches OpenAI
+/// `billing`, by the model's provider, whatever the session reaches OpenAI
 /// models by now (a run saved on the ChatGPT login stays the ChatGPT plan's
 /// after the session moved to an API key). `None` for calls billed per
 /// token.
@@ -1710,10 +1710,10 @@ fn plan_that_paid(model: &Model, billing: BillingKind) -> Option<&'static str> {
     }
 }
 
-/// What the session's usage would have cost at API list prices: what the
+/// What the session's usage would have cost at API list prices, meaning what the
 /// calls billed per token cost, and the list-price estimate of those a
 /// plan covered (Claude Code, the ChatGPT login). `None` when nothing ran
-/// on a plan: what was billed says it all then.
+/// on a plan, since what was billed says it all then.
 #[cfg(test)]
 pub fn api_price(ledger: &CostLedger) -> Option<f64> {
     let on_a_plan = ledger.entries.iter().any(|entry| {
@@ -1731,7 +1731,7 @@ pub fn api_price(ledger: &CostLedger) -> Option<f64> {
     })
 }
 
-/// One line of `/cost`; a `detail` line is indented and dim.
+/// One line of `/cost`, and a `detail` line is indented and dim.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CostLine {
     pub text: String,
@@ -1794,7 +1794,7 @@ impl CostShare {
 }
 
 /// What one of the main agent's runs used, its calls added up, on the model
-/// it ran: what `/cost` splits the main agent's part by.
+/// it ran, which is what `/cost` splits the main agent's part by.
 #[derive(Debug, Clone)]
 pub struct RunCost {
     pub model: Model,
@@ -1867,7 +1867,7 @@ pub(crate) fn run_usage_line(
     })
 }
 
-/// `/cost`: what the session was billed, and, for what ran on a plan, what
+/// `/cost` says what the session was billed, and, for what ran on a plan, what
 /// it would have cost at API prices and the plan's usage windows. The main
 /// agent and the workers are told apart when they were paid for
 /// differently (one on a plan, the other per token).
@@ -2088,7 +2088,7 @@ impl Setup {
     }
 }
 
-/// What a refresh of the conversation costs on `model` now, in dollars:
+/// What a refresh of the conversation costs on `model` now, in dollars, for
 /// `cached` tokens read from the prompt cache and `written` tokens written to
 /// it, at [`cache_prices`] (the long cache's write rate when `long_cache`),
 /// and `output` tokens of reply, at the long-context rates above their
@@ -2118,7 +2118,7 @@ pub(crate) fn refresh_price(
 }
 
 /// What writing the conversation's `tokens` to the prompt cache, and reading
-/// them from it, cost on `model` now, per million tokens: at the prices in
+/// them from it, cost on `model` now, per million tokens, at the prices in
 /// effect today, the long-context rates above their threshold, the fast
 /// mode's price when `fast`, and the long cache's write price (Claude's
 /// hour, OpenAI's 12 hours) when `long_cache`.
@@ -2161,7 +2161,7 @@ mod tests {
     use super::*;
     use arko_ai::AnthropicCacheTtl;
 
-    /// The cache's prices are those in effect now: the fast mode's at its
+    /// The cache's prices are those in effect now, with the fast mode's at its
     /// price, and the long-context rates above their threshold.
     #[test]
     fn the_cache_is_priced_as_the_request_would_be() {
@@ -2243,7 +2243,7 @@ mod tests {
     }
     use crate::agents::ModelSettings;
 
-    /// An Arko folder that isn't there: no OpenRouter settings.
+    /// An Arko folder that isn't there, so no OpenRouter settings.
     fn no_root() -> &'static Path {
         Path::new("/no/such/arko")
     }
@@ -2335,7 +2335,7 @@ mod tests {
     }
 
     /// The text of the models' thinking is asked for where a provider
-    /// needs asking, for the views to show, unless the session hides it:
+    /// needs asking, for the views to show, unless the session hides it, meaning
     /// Claude by API key for its summarized thinking (Claude Code passes it
     /// on by itself), OpenAI and OpenRouter for reasoning summaries, Gemini
     /// for its thoughts.
@@ -2379,7 +2379,7 @@ mod tests {
         let config = |name: &str, effort: Effort, fast: bool, cache_1h: bool| {
             generation(&resolve_model(name).unwrap(), effort, fast, cache_1h, false)
         };
-        // Claude, by API key or in Claude Code: adaptive thinking at the
+        // Claude, by API key or in Claude Code, with adaptive thinking at the
         // effort, fast mode on Opus, the 1-hour cache by API key only.
         for name in ["opus", "cc:opus"] {
             let opus = config(name, Effort::Xhigh, true, true).unwrap();
@@ -2419,7 +2419,7 @@ mod tests {
                 .claude_cache_ttl(),
             None
         );
-        // OpenAI: its reasoning and Fast tier.
+        // OpenAI, with its reasoning and Fast tier.
         let sol = config("sol", Effort::Max, true, true).unwrap();
         assert!(matches!(
             sol.reasoning,
@@ -2429,7 +2429,7 @@ mod tests {
         // The long cache is OpenAI's 12 hours, which the framework asks for
         // with an API key.
         assert_eq!(sol.long_prompt_cache, Some(true));
-        // Gemini: thinking levels, no fast mode.
+        // Gemini, with thinking levels and no fast mode.
         let level = |name: &str, effort: Effort| match config(name, effort, false, false)
             .unwrap()
             .reasoning
@@ -2458,7 +2458,7 @@ mod tests {
         );
         let error = config("gemini", Effort::High, true, false).unwrap_err();
         assert!(error.contains("no fast mode"), "{error}");
-        // OpenRouter: its own reasoning object; the 1-hour cache on Claude.
+        // OpenRouter, with its own reasoning object and the 1-hour cache on Claude.
         let claude = config(
             "openrouter:anthropic/claude-opus-5.5",
             Effort::Xhigh,
@@ -2577,7 +2577,7 @@ mod tests {
         let error = apply_catalog(&mut session, Ok(&catalog), false, None).unwrap_err();
         assert!(error.contains("doesn't take tool calls"), "{error}");
 
-        // Offline: the session starts, at the fallback, and says so.
+        // Offline, so the session starts, at the fallback, and says so.
         let mut session = settings(model("openrouter:meta/small-model"), model("opus"));
         let offline = "connection refused".to_string();
         let notes = apply_catalog(&mut session, Err(&offline), false, None).unwrap();
@@ -2620,7 +2620,7 @@ mod tests {
         let build = |session: &Settings| client_with(session, root.path(), vars, vec![], ready);
         let opus = settings(model("opus"), model("opus"));
         let on_openrouter = settings(model("openrouter:anthropic/claude-opus-5.5"), model("opus"));
-        // Readable (or missing): OpenRouter is there.
+        // Readable (or missing), so OpenRouter is there.
         assert!(
             build(&opus)
                 .ok()
@@ -2638,7 +2638,7 @@ mod tests {
             _ => panic!("a session on OpenRouter needs the file read"),
         }
         // A file emptied or blanked, as a truncated write leaves it, is no
-        // better: it isn't "no settings".
+        // better, because it isn't "no settings".
         for text in ["", " \n "] {
             std::fs::write(root.path().join(crate::openrouter::FILE), text).unwrap();
             let client = build(&opus).ok().expect("a session on Opus starts");
@@ -2648,7 +2648,7 @@ mod tests {
                 "{text:?}"
             );
         }
-        // Fixed: the client carries what the file says.
+        // Fixed, so the client carries what the file says.
         std::fs::write(
             root.path().join(crate::openrouter::FILE),
             r#"{"provider": {"zdr": true}}"#,
@@ -2662,7 +2662,7 @@ mod tests {
         assert!(build(&on_openrouter).is_ok());
     }
 
-    /// The catalog is read from OpenRouter's public endpoint: a local
+    /// The catalog is read from OpenRouter's public endpoint, where a local
     /// server stands in for it.
     #[tokio::test]
     async fn the_catalog_is_read_from_openrouter_and_offline_is_no_error() {
@@ -3100,12 +3100,12 @@ mod tests {
     }
 
     /// The last session's models come first while their credentials are
-    /// there; else the credentials decide, and the reason says why.
+    /// there, else the credentials decide, and the reason says why.
     #[test]
     fn the_last_session_s_models_are_the_default_while_they_can_run() {
         let have_all = |_: &str| None;
         let by_key = Some(("claude-opus-5-5", "ANTHROPIC_API_KEY is set"));
-        // No last session: the credentials decide.
+        // No last session, so the credentials decide.
         let default = choose_default(None, have_all, by_key).unwrap();
         assert_eq!(default.main, "claude-opus-5-5");
         assert_eq!(default.reason, None);
@@ -3122,7 +3122,7 @@ mod tests {
         assert_eq!(default.worker.as_deref(), Some("gemini-3.8-flash"));
         assert_eq!(default.reason, None);
 
-        // The workers' credential is gone: they run on the main model.
+        // The workers' credential is gone, so they run on the main model.
         let no_gemini = |name: &str| {
             name.starts_with("gemini")
                 .then(|| "GEMINI_API_KEY".to_string())
@@ -3141,7 +3141,7 @@ mod tests {
             )
         );
 
-        // The main model's credential is gone: the credentials decide, and
+        // The main model's credential is gone, so the credentials decide, and
         // the note says why.
         let default = choose_default(last("gemini-3.8-flash", None), no_gemini, by_key).unwrap();
         assert_eq!(default.main, "claude-opus-5-5");
@@ -3156,7 +3156,7 @@ mod tests {
         assert_eq!(default.reason, None);
     }
 
-    /// Claude Code, signed in, comes before an Anthropic API key; one not
+    /// Claude Code, signed in, comes before an Anthropic API key, and one not
     /// signed in comes last, after every key.
     #[test]
     fn the_claude_plan_comes_first_and_a_signed_out_claude_code_last() {
@@ -3292,7 +3292,7 @@ mod tests {
             .then_some(Effort::Max)
     }
 
-    /// A ledger entry of `agent`'s: `api` dollars at API prices, of which
+    /// A ledger entry of `agent`'s, with `api` dollars at API prices, of which
     /// `billed` were billed (0 on a plan).
     fn call(
         agent: &str,
@@ -3407,7 +3407,7 @@ mod tests {
     }
 
     /// `/cost` on a plan shows what was billed, the API price and the
-    /// plan's windows; per token, what was billed; mixed, each part.
+    /// plan's windows, per token what was billed, and mixed each part.
     #[test]
     fn the_cost_shows_api_prices_and_plan_usage_where_a_plan_pays() {
         use crate::agents::{MAIN, WORKER};
@@ -3438,7 +3438,7 @@ mod tests {
         );
         assert!((api_price(&CostLedger { entries }).unwrap() - 3.4).abs() < 1e-9);
 
-        // The ChatGPT login: its plan.
+        // The ChatGPT login, with its plan.
         let sol = settings(model("sol"), model("sol"));
         let lines = report(&sol, vec![call(MAIN, 50_000, 1_000, 0.9, 0.0)]);
         assert_eq!(
@@ -3447,7 +3447,7 @@ mod tests {
         );
         assert_eq!(lines[2].1, "ChatGPT plan 7 d 40%");
 
-        // Per token: the cost, as before, and no API price line.
+        // Per token, the cost, as before, and no API price line.
         let opus = settings(model("opus"), model("opus"));
         let entries = vec![
             call(MAIN, 120_000, 8_000, 1.0, 1.0),
@@ -3472,7 +3472,7 @@ mod tests {
             "nothing on a plan"
         );
 
-        // Mixed: the main agent on the Claude plan, the workers per token.
+        // Mixed, with the main agent on the Claude plan and the workers per token.
         let mixed = settings(model("cc:opus"), model("gemini"));
         assert_eq!(
             report(
@@ -3500,7 +3500,7 @@ mod tests {
     }
 
     /// A main agent whose conversations ran on models paid for in different
-    /// ways has a part for each, by each run's own model: the Claude plan's
+    /// ways has a part for each, by each run's own model. The Claude plan's
     /// part stays the Claude plan's after a switch to the ChatGPT login,
     /// and a part billed per token says so.
     #[test]
@@ -3949,7 +3949,7 @@ mod tests {
         }
     }
 
-    /// A name that only resembles a small model is not one: other versions,
+    /// A name that only resembles a small model is not one, meaning other versions,
     /// publishers, fine-tunes, variants other than the routing suffixes, two
     /// suffixes, other letter cases and registry IDs that OpenRouter doesn't
     /// use as slugs.
@@ -4030,7 +4030,7 @@ mod tests {
     }
 
     /// A tabled slug, also with a routing suffix, is its model, and anything
-    /// that only looks like one is none: other versions and variants,
+    /// that only looks like one is none, meaning other versions and variants,
     /// suffixes other than the routing ones, other publishers, fine-tunes
     /// and other cases.
     #[test]
@@ -4065,7 +4065,7 @@ mod tests {
     }
 
     /// Each slug in the table is one OpenRouter lists now. Run with the
-    /// other live tests (`--ignored`): it reads OpenRouter's model list,
+    /// other live tests (`--ignored`). It reads OpenRouter's model list,
     /// which needs no key.
     #[tokio::test]
     #[ignore = "reads OpenRouter's model list"]

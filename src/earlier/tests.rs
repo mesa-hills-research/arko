@@ -108,7 +108,7 @@ fn ask(n: usize) -> String {
     )
 }
 
-/// A long conversation: `turns` turns, each with the user's message, the
+/// A long conversation of `turns` turns, each with the user's message, the
 /// agent's text, a command with an output of 3,000 characters, an edit
 /// every tenth turn, and a reply.
 fn long_talk(turns: usize) -> Talk {
@@ -355,7 +355,7 @@ fn handover(report: &str, at: &str) -> HandoverRecord {
     }
 }
 
-/// A run that was handed over twice: it begins again with its first prompt
+/// A run that was handed over twice, so it begins again with its first prompt
 /// and the latest report.
 fn handed_over() -> arko_agents::Task {
     let prompt = "# My message\n\nPort the parser to the new API.";

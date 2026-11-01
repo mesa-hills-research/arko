@@ -1,4 +1,4 @@
-// End-to-end tests of the MCP servers behind `mcp`: an add through the
+// End-to-end tests of the MCP servers behind `mcp`, covering an add through the
 // engine with the mock model, the tool list and the prompt staying the same
 // across it, sessions sharing a server, and conversations saved with a tool
 // for each MCP tool. (Included in `engine`'s tests, whose helpers they use.)
@@ -39,7 +39,7 @@ fn offered(body: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The parts of a request the prompt cache keeps: its tools and its
+/// The parts of a request the prompt cache keeps, meaning its tools and its
 /// instructions, as sent.
 fn cached_parts(body: &str) -> (String, String) {
     let body: serde_json::Value = serde_json::from_str(body).unwrap();
@@ -47,7 +47,7 @@ fn cached_parts(body: &str) -> (String, String) {
 }
 
 /// Rewrites the session in `dir` as an Arko from before `mcp` and
-/// `add_skill` saved it: each configuration that offers `mcp` offers
+/// `add_skill` saved it. Each configuration that offers `mcp` offers
 /// `direct` (a tool of a server's own) in its place, and none offers the
 /// tools that save skills.
 fn to_direct_tools(dir: &std::path::Path, direct: &str) {
@@ -201,7 +201,7 @@ async fn the_tool_list_stays_the_same_across_an_add() {
     let tools = offered(&bodies[0]);
     assert!(tools.contains(&"mcp".to_string()), "{tools:?}");
     assert!(!tools.iter().any(|tool| tool.starts_with("mcp__")), "{tools:?}");
-    // The session's facts: added by the agent, running, and the warning.
+    // The session's facts, meaning added by the agent, running, and the warning.
     let mcp = seam.details.mcp();
     assert_eq!(mcp.servers.len(), 1);
     assert_eq!(mcp.servers[0].state, crate::details::McpState::Running);
@@ -549,7 +549,7 @@ async fn workers_offered(
 }
 
 /// A worker is offered `mcp` only when its set holds a server at its
-/// start: one that workers may reach, and that its start doesn't leave out.
+/// start, meaning one that workers may reach, and that its start doesn't leave out.
 #[tokio::test]
 async fn a_worker_gets_mcp_only_with_a_server_to_reach() {
     let has_mcp = |tools: &Vec<String>| tools.iter().any(|tool| tool == "mcp");
@@ -872,12 +872,12 @@ async fn a_server_that_no_longer_starts_keeps_its_tools_definitions() {
     ask(&seam, "First.").await;
     quit(seam, ended).await;
     to_direct_tools(&Session::open(&root, &id).unwrap().dir, ping);
-    // Resumed while the server runs: its tool as the server lists it.
+    // Resumed while the server runs, with its tool as the server lists it.
     let (seam, ended) = open(SessionChoice::Resume(id.clone()), vec![config.clone()]).await;
     let running = cached_parts(&ask(&seam, "Again.").await).0;
     assert!(running.contains("Answers pong."), "{running}");
     quit(seam, ended).await;
-    // Resumed without it: the same tools, byte for byte.
+    // Resumed without it, with the same tools, byte for byte.
     let (seam, ended) = open(SessionChoice::Resume(id), Vec::new()).await;
     assert_eq!(cached_parts(&ask(&seam, "Again.").await).0, running);
     let called = ask(&seam, "Call ping.").await;

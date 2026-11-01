@@ -1,15 +1,15 @@
 //! The session as its clients show it (the web page, and the terminal's
-//! full-screen view): a bounded history of items and the updates that
+//! full-screen view), as a bounded history of items and the updates that
 //! follow it, made from the workflows' events and from what Arko says of
 //! the turns (the user's messages, the agent's questions and replies,
 //! stops and failures).
 //!
-//! Every item says whose it is (`agent`: the main agent, or a worker's ID
+//! Every item says whose it is (`agent`, meaning the main agent or a worker's ID
 //! such as `r1`) and in which of the main agent's turns it came (`turn`).
-//! A worker's own items are its transcript; the main transcript gets a
+//! A worker's own items are its transcript, and the main transcript gets a
 //! placeholder (`worker_line`) where a worker started, and a
 //! [`WorkerSummary`] per worker says how it is doing. The feed doesn't
-//! know about views: each client makes its views from these.
+//! know about views. Each client makes its views from these.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -46,7 +46,7 @@ const MAIN_BUDGET: Budget = Budget {
     bytes: 2 * 1024 * 1024,
     wholes: 4 * 1024 * 1024,
 };
-/// The workers' items, kept apart: a busy worker doesn't push the main
+/// The workers' items, kept apart, so a busy worker doesn't push the main
 /// agent's items out.
 const WORKER_BUDGET: Budget = Budget {
     items: 3000,
@@ -62,7 +62,7 @@ const EARLY_READS: usize = 64;
 /// Updates a client's stream may fall behind by before it starts over.
 const BACKLOG: usize = 2048;
 /// A worker's summary goes out at most this often while it works (four
-/// times a second); a change of its state goes out at once.
+/// times a second), and a change of its state goes out at once.
 pub(crate) const WORKER_EVERY: Duration = Duration::from_millis(250);
 
 // The types the web page reads too, which it compiles from the same file.
@@ -289,7 +289,7 @@ impl Item {
         self.turn = self.turn.map(|turn| turn + turns);
     }
 
-    /// How a call ended, or how the job it started went on: its status,
+    /// How a call ended, or how the job it started went on, meaning its status,
     /// its outcome's words and what its act learns, together, so that what
     /// its row says agrees with its line in every view.
     pub(crate) fn settle(
@@ -315,7 +315,7 @@ impl Item {
         self.whole.as_ref().map_or(0, |whole| whole.len())
     }
 
-    /// The bytes of what only some clients get: its whole output, a call's
+    /// The bytes of what only some clients get, meaning its whole output, a call's
     /// parameters and result.
     fn kept_size(&self) -> usize {
         self.whole_size()
@@ -428,12 +428,12 @@ pub struct WorkerSummary {
     /// What it and the workers under it would cost at API list prices.
     pub family_cost_list: f64,
     /// Once it ended, when its prompt cache expires or expired (Unix
-    /// milliseconds): its last request plus the cache lifetime its run
+    /// milliseconds), meaning its last request plus the cache lifetime its run
     /// used, when that is known. Continuing it after then re-reads its
     /// conversation without the cache (see [`crate::worker_cache`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_expires_at: Option<i64>,
-    /// What continuing it re-reads: its conversation's input at its last
+    /// What continuing it re-reads, meaning its conversation's input at its last
     /// request, in tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reread_tokens: Option<u64>,
@@ -512,14 +512,14 @@ impl WorkerSummary {
         self.ran_ms + current
     }
 
-    /// Its current run, if it runs, ends at `now`: its time joins `ran_ms`.
+    /// Its current run, if it runs, ends at `now`. Its time joins `ran_ms`.
     fn stop_counting(&mut self, now: i64) {
         self.ran_ms = self.run_time_ms(now);
         self.running_since = None;
     }
 }
 
-/// The workers in the order a list shows a family: each worker that no
+/// The workers in the order a list shows a family, meaning each worker that no
 /// worker in `workers` started, then the workers it started, depth first, in
 /// the order they started. The result holds the index of each of `workers`,
 /// which is given in the order they started. A worker whose parent isn't in
@@ -743,7 +743,7 @@ impl JobStart {
     }
 }
 
-/// How many ended background jobs the feed keeps, besides those running:
+/// How many ended background jobs the feed keeps, besides those running, meaning
 /// those that started last. A client that drops the others as each job's
 /// summary comes holds the jobs a [`Snapshot`] does.
 pub const ENDED_JOBS: usize = 100;
@@ -884,7 +884,7 @@ impl Following {
         self.updates.len()
     }
 
-    /// Starts over now: a new snapshot, which the updates after it follow.
+    /// Starts over now, with a new snapshot, which the updates after it follow.
     pub fn restart(&mut self) -> Snapshot {
         let (snapshot, updates) = self.feed.subscribe();
         self.updates = updates;
@@ -892,15 +892,15 @@ impl Following {
     }
 }
 
-/// `updates`, merged into fewer that leave a client where they all would:
-/// text appended to an item goes into the item when it came in the same
+/// `updates`, merged into fewer that leave a client where they all would.
+/// Text appended to an item goes into the item when it came in the same
 /// batch (or into the batch's one append to it), an item's change replaces
 /// what the batch had of it (it is the whole item), a worker's or a job's
 /// summary only its last, in the place of its first (but the one a worker
 /// ended with stays), and the activity is told once.
 pub fn merged(updates: Vec<Update>) -> Vec<Update> {
     let mut out: Vec<Option<Update>> = Vec::with_capacity(updates.len());
-    // Where the batch has each item: created, changed or appended to.
+    // Where the batch has each item, whether created, changed or appended to.
     let mut whole: HashMap<u64, usize> = HashMap::new();
     let mut appended: HashMap<u64, usize> = HashMap::new();
     let mut workers: HashMap<String, usize> = HashMap::new();
@@ -927,7 +927,7 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
                 }
             }
             Update::Change(item) => {
-                // It is the whole item: what the batch appended to it is in it.
+                // It is the whole item, so what the batch appended to it is in it.
                 if let Some(at) = appended.remove(&item.id) {
                     out[at] = None;
                 }
@@ -976,7 +976,7 @@ pub fn merged(updates: Vec<Update>) -> Vec<Update> {
             }
             Update::Truncate { from } => {
                 // What the batch had of the main agent's items cut goes with
-                // them (a worker's stay: their appends too).
+                // them (a worker's stay, and their appends too).
                 let cut: std::collections::HashSet<u64> = out
                     .iter()
                     .flatten()
@@ -1051,7 +1051,7 @@ pub struct Feed {
 }
 
 struct Inner {
-    /// The main agent's name: its events are the conversation; the others'
+    /// The main agent's name. Its events are the conversation, and the others'
     /// are workers'.
     main: String,
     /// Tells this feed from any other ([`Feed::id`]).
@@ -1068,7 +1068,7 @@ struct Inner {
 }
 
 /// The time by which the feed holds a worker's summary back, and the
-/// timer that sends it later: the system's, or one a test moves.
+/// timer that sends it later, either the system's or one a test moves.
 enum Clock {
     System,
     #[cfg(any(test, feature = "testing"))]
@@ -1208,7 +1208,7 @@ impl Lane {
         Some(item)
     }
 
-    /// The call `id`'s whole result came: it is kept with the latest.
+    /// The call `id`'s whole result came, and it is kept with the latest.
     fn call_output(&mut self, id: u64, output: Arc<str>, budget: Budget) {
         let Some(item) = self.find(id) else {
             return;
@@ -1221,7 +1221,7 @@ impl Lane {
     }
 
     /// The items' whole outputs, calls' parameters and results within
-    /// the budget: the oldest go first.
+    /// the budget, and the oldest go first.
     fn keep_wholes(&mut self, budget: Budget) {
         for item in self.items.iter_mut() {
             if self.wholes <= budget.wholes {
@@ -1252,7 +1252,7 @@ impl Lane {
         Some(item)
     }
 
-    /// Adds `text` to the item `id`; false when it isn't kept.
+    /// Adds `text` to the item `id`, and false when it isn't kept.
     fn append(&mut self, id: u64, text: &str) -> bool {
         let Some(item) = self.find(id) else {
             return false;
@@ -1287,7 +1287,7 @@ struct Streamed {
 
 struct Worker {
     summary: WorkerSummary,
-    /// The turn of its latest placeholder in the main transcript; `None`
+    /// The turn of its latest placeholder in the main transcript, and `None`
     /// until it has one.
     placed: Option<Option<u64>>,
     /// When its summary last went out.
@@ -1302,7 +1302,7 @@ struct State {
     workers_lane: Lane,
     next_id: u64,
     /// The item each agent's next chunk continues, if its kind is the
-    /// chunk's: its text, or its thinking.
+    /// chunk's, meaning its text, or its thinking.
     open_text: HashMap<String, (Kind, u64)>,
     /// The agents' thinking isn't kept (`--hide-thinking`).
     hide_thinking: bool,
@@ -1321,9 +1321,9 @@ struct State {
     /// Calls waiting for their results, by call.
     calls: HashMap<Uuid, Call>,
     /// Where each agent's output stood as its latest model request went
-    /// out: what its response streams goes if the response fails.
+    /// out. What its response streams goes if the response fails.
     requests: HashMap<String, Streamed>,
-    /// The latest calls' items, by call: the images their tools return
+    /// The latest calls' items, by call, since the images their tools return
     /// come apart from the events, maybe after the call's result.
     call_items: VecDeque<(Uuid, String, u64)>,
     /// Images that came before their call's item, by call.
@@ -1341,7 +1341,7 @@ struct State {
     /// The background jobs, in the order they started.
     jobs: Vec<JobSummary>,
     /// The latest jobs that ended without the feed having seen them run,
-    /// with how and when: a moved call's result may name one after.
+    /// with how and when, because a moved call's result may name one after.
     unseen_ends: VecDeque<(String, JobState, i64)>,
     /// The text of each agent's latest `ServiceWarning`, which the error that
     /// follows it doesn't repeat.
@@ -1461,7 +1461,7 @@ fn set_cache(
         )
 }
 
-/// A worker's title: its task's first line, in brief.
+/// A worker's title, meaning its task's first line, in brief.
 fn title(task: &str) -> String {
     let line = task
         .lines()
@@ -1548,7 +1548,7 @@ impl Feed {
     /// [`subscribe`](Self::subscribe), it never misses one, however far
     /// behind it falls.
     pub fn subscribe_batched(&self) -> (Snapshot, Batches) {
-        // (Updates are sent with the state locked: none is missed or seen
+        // (Updates are sent with the state locked, so none is missed or seen
         // twice.)
         let state = self.lock();
         let (sender, updates) = mpsc::unbounded_channel();
@@ -1587,7 +1587,7 @@ impl Feed {
             .chain(&state.workers_lane.items)
             .cloned()
             .collect();
-        // (Two runs in order: the sort merges them.)
+        // (Two runs in order, and the sort merges them.)
         items.sort_by_key(|item| item.id);
         Snapshot {
             items,
@@ -1603,7 +1603,7 @@ impl Feed {
         self.lock().activity.clone()
     }
 
-    /// How long each worker has run, by its ID, now: to keep with the
+    /// How long each worker has run, by its ID, now, to keep with the
     /// session, so that the time goes on from there when it opens again.
     pub(crate) fn worker_run_times(&self) -> Vec<(String, u64)> {
         let now = now_ms();
@@ -1683,7 +1683,7 @@ impl Feed {
         self.push(&mut state, item)
     }
 
-    /// An agent's text (or its thinking, `kind`) goes on: in the item it
+    /// An agent's text (or its thinking, `kind`) goes on, in the item it
     /// was in, else in a new one. Thinking and text don't share an item.
     fn append(&self, state: &mut State, agent: &str, kind: Kind, chunk: &str) {
         if chunk.is_empty() {
@@ -1710,7 +1710,7 @@ impl Feed {
         self.lock().hide_thinking = hide;
     }
 
-    /// The call `id` ended with `outcome`: its line says so, and a block
+    /// The call `id` ended with `outcome`. Its line says so, and a block
     /// follows it when there is one.
     fn settle(&self, state: &mut State, id: &Uuid, mut outcome: Outcome) {
         let Some(call) = state.calls.remove(id) else {
@@ -1781,7 +1781,7 @@ impl Feed {
         }
     }
 
-    /// What `agent`'s failed response streamed since `streamed` goes: the
+    /// What `agent`'s failed response streamed since `streamed` goes, meaning the
     /// items it started, and what it added to the one before (the retry
     /// streams it again).
     fn discard(&self, state: &mut State, agent: &str, streamed: Streamed) {
@@ -1821,7 +1821,7 @@ impl Feed {
     }
 
     /// `agent`'s calls still waiting for their results end without them
-    /// (its turn or run ended): their lines stop saying they run.
+    /// (its turn or run ended). Their lines stop saying they run.
     fn interrupt_calls(&self, state: &mut State, agent: &str) {
         let ids: Vec<Uuid> = state
             .calls
@@ -1870,7 +1870,7 @@ impl Feed {
         {
             self.card_recorded(event.agent_run_id, &crate::questions::ids_in_result(output));
         }
-        // The main agent closed questions: their cards say so.
+        // The main agent closed questions, and their cards say so.
         if let AgentEvent::QuestionsClosed { ids, why } = &event.event {
             if label.is_none() && event.agent_name == self.inner.main {
                 {
@@ -1923,7 +1923,7 @@ impl Feed {
                 parameters,
             } => {
                 // The runs the agent has going are what a wait without ids
-                // waits for: the workers it started, which are the main
+                // waits for, meaning the workers it started, which are the main
                 // agent's for the main agent.
                 let running = if tool_name == crate::crew::WAIT_FOR_AGENTS {
                     let starter = (!main).then_some(agent.as_str());
@@ -1943,7 +1943,7 @@ impl Feed {
                 };
                 let Some(mut item) = render::call(tool_name, parameters, &running) else {
                     // A call the feed doesn't draw (`ask_user`,
-                    // `complete_task`) still ends the agent's text: the
+                    // `complete_task`) still ends the agent's text, so the
                     // next response's text doesn't run on into it.
                     state.open_text.remove(&agent);
                     return;
@@ -2044,7 +2044,7 @@ impl Feed {
                     }
                 }
             },
-            // Claude Code's own message about a failed request: one line, in
+            // Claude Code's own message about a failed request, as one line, in
             // the warning colour, which the error after it doesn't repeat.
             AgentEvent::ServiceWarning { text } => {
                 state.warned.insert(agent.clone(), text.clone());
@@ -2117,7 +2117,7 @@ impl Feed {
                     format!("the reply reached the model's output limit ({output_tokens} tokens)");
                 self.push(&mut state, notice(text, Level::Warn));
             }
-            // Once, in the main transcript: it holds for every agent.
+            // Once, in the main transcript, and it holds for every agent.
             AgentEvent::ReasoningSummariesRefused { .. } if !state.thinking_refused => {
                 state.thinking_refused = true;
                 let item = Item::new(Kind::Notice, crate::providers::THINKING_REFUSED);
@@ -2283,7 +2283,7 @@ impl Feed {
     }
 
     /// The jobs the main transcript's calls moved to, whose lines still say
-    /// they are in the background: after a restore, those of calls an
+    /// they are in the background, meaning after a restore, those of calls an
     /// earlier Arko moved.
     pub(crate) fn moved_jobs(&self) -> Vec<Uuid> {
         self.lock()
@@ -2300,7 +2300,7 @@ impl Feed {
             .collect()
     }
 
-    /// The job `id` ended as `ended` some time ago (with an earlier Arko):
+    /// The job `id` ended as `ended` some time ago (with an earlier Arko), meaning
     /// the lines of the calls that moved there, or started it as a
     /// monitor, say how.
     pub(crate) fn job_ended_earlier(&self, id: Uuid, ended: JobState) {
@@ -2356,7 +2356,7 @@ impl Feed {
         lane.find(item).map(|item| item.text.clone())
     }
 
-    /// The call item `item` of a call still running: its call's ID.
+    /// The call item `item` of a call still running, giving its call's ID.
     pub(crate) fn running_call(&self, item: u64) -> Option<Uuid> {
         self.lock()
             .calls
@@ -2440,7 +2440,7 @@ impl Feed {
         let id = id.to_string();
         let now = now_ms();
         let Some(job) = state.jobs.iter_mut().find(|job| job.id == id) else {
-            // One that ended before the feed saw it run: the line of the
+            // One that ended before the feed saw it run, with the line of the
             // call that moved there, now or when its result comes.
             for (agent, item) in state.lines_naming(&id) {
                 self.end_moved_call(&mut state, &agent, item, ended, None, Some(now));
@@ -2538,7 +2538,7 @@ impl Feed {
     }
 
     /// The call `item` of `agent`, if its line says it started the monitor
-    /// `job` and is monitoring, says how the monitor is doing: "monitoring ·
+    /// `job` and is monitoring, says how the monitor is doing, as "monitoring ·
     /// 3 alerts", "ended after 30 min · 4 alerts", "stopped", "command exited
     /// (exit 1)".
     fn follow_monitor(&self, state: &mut State, agent: &str, item: u64, job: &JobSummary) {
@@ -2564,7 +2564,7 @@ impl Feed {
     }
 
     /// The call `item` of `agent`, if its line says it moved to the
-    /// background, says how its job ended: as `ended`, at `now`, having
+    /// background, says how its job ended, as `ended`, at `now`, having
     /// started at `started` (else with the call). With `now` unknown (a
     /// job that ended with an earlier Arko), the line says how only.
     fn end_moved_call(
@@ -2611,7 +2611,7 @@ impl Feed {
         self.publish(state, Update::Change(call));
     }
 
-    /// The call `call`'s tool returned `images`: its item shows them (the
+    /// The call `call`'s tool returned `images`. Its item shows them (the
     /// clients get the change), or will once it comes.
     pub(crate) fn call_images(&self, call: Uuid, images: Vec<crate::images::ImageRef>) {
         let mut state = self.lock();
@@ -2635,7 +2635,7 @@ impl Feed {
         }
     }
 
-    /// The user's message `id` is the main agent's message `index`: it can
+    /// The user's message `id` is the main agent's message `index`. It can
     /// be edited (the clients get the change).
     pub(crate) fn mark_message(&self, id: u64, index: usize) {
         let mut state = self.lock();
@@ -2717,7 +2717,7 @@ impl Feed {
 
     /// The main agent's conversation is no longer the one the user's
     /// messages so far are in (it was handed over or compacted, or the
-    /// session went to another conversation): they can't be edited, and
+    /// session went to another conversation). They can't be edited, and
     /// the clients get the change.
     fn forget_messages(&self, state: &mut State) {
         let forgotten: Vec<Item> = state
@@ -2771,7 +2771,7 @@ impl Feed {
         }
     }
 
-    /// The user stopped the main agent's turn: a warning that says so,
+    /// The user stopped the main agent's turn, with a warning that says so,
     /// which [`turn_stopped`](Self::turn_stopped) changes in its place.
     pub fn turn_stopping(&self, text: &str) {
         let text = text.trim();
@@ -2780,7 +2780,7 @@ impl Feed {
         }
         let mut state = self.lock();
         let item = Item::new(Kind::Notice, text).level(Level::Warn);
-        // The model may still send some of its response: it goes on in the
+        // The model may still send some of its response, and it goes on in the
         // text it was in, above this line, as the turn ends.
         let open = state.open_text.get(&item.agent).copied();
         let agent = item.agent.clone();
@@ -2791,7 +2791,7 @@ impl Feed {
         state.stopping = Some(id);
     }
 
-    /// The turn stopped: the warning that it was stopping says `text` now,
+    /// The turn stopped. The warning that it was stopping says `text` now,
     /// in its place, or a new one does once it's gone.
     pub fn turn_stopped(&self, text: &str) {
         let text = text.trim();
@@ -2850,7 +2850,7 @@ impl Feed {
         self.push(&mut state, Item::new(Kind::Reply, text));
     }
 
-    /// The main agent's text item of its last response when it is `reply`:
+    /// The main agent's text item of its last response when it is `reply`, meaning
     /// the latest of its items but for notices (an output limit reached,
     /// say), the workers' places and what went beside its text.
     fn streamed_reply(state: &mut State, reply: &str) -> Option<u64> {
@@ -2880,7 +2880,7 @@ impl Feed {
     }
 
     /// The main agent works on a report for a new conversation (`true`), or
-    /// it is done: the clients show it working meanwhile, and their stop
+    /// it is done. The clients show it working meanwhile, and their stop
     /// skips it.
     pub(crate) fn reporting(&self, working: bool) {
         self.set_activity(|activity| {
@@ -2920,8 +2920,8 @@ impl Feed {
         self.lock().questions.keep_in(path);
     }
 
-    /// The main agent's conversation is now run `run`'s (`None`: a new one
-    /// that hasn't started): its questions are the ones shown.
+    /// The main agent's conversation is now run `run`'s (`None` means a new one
+    /// that hasn't started), and its questions are the ones shown.
     pub(crate) fn questions_run(&self, run: Option<Uuid>) {
         {
             let mut state = self.lock();
@@ -2933,7 +2933,7 @@ impl Feed {
         self.question_activity();
     }
 
-    /// Run `run` of the main agent asks `asked` (`waits`: it waits for the
+    /// Run `run` of the main agent asks `asked` (`waits` says it waits for the
     /// answer). Their card goes in the transcript, and its item is
     /// returned. Questions that share a card already keep it.
     pub(crate) fn ask(
@@ -2983,8 +2983,8 @@ impl Feed {
         item
     }
 
-    /// The main agent asks `asked` (`waits`: it waits for the answer), in
-    /// the current conversation, as when it calls `ask_user`: their card
+    /// The main agent asks `asked` (`waits` says it waits for the answer), in
+    /// the current conversation, as when it calls `ask_user`. Their card
     /// goes in the transcript, and its item is returned. For an app's
     /// tests.
     #[doc(hidden)]
@@ -2994,7 +2994,7 @@ impl Feed {
     }
 
     /// Sets the current conversation's question `id` to `state`, as an
-    /// answer, a dismissal or the agent's closing does: its card and the
+    /// answer, a dismissal or the agent's closing does. Its card and the
     /// activity follow. For an app's tests.
     #[doc(hidden)]
     pub fn set_question_state(&self, id: &str, state: crate::questions::QuestionState) {
@@ -3078,7 +3078,7 @@ impl Feed {
     }
 
     /// The agent no longer waits on the questions `ids` (the turn that
-    /// waited stopped): they stay open.
+    /// waited stopped). They stay open.
     pub(crate) fn questions_unwaited(&self, ids: &[String]) {
         {
             let mut state = self.lock();
@@ -3092,7 +3092,7 @@ impl Feed {
     }
 
     /// Run `run` asked `asked`, as its task says, though the session didn't
-    /// keep them (its file was lost, or Arko stopped as they were asked):
+    /// keep them (its file was lost, or Arko stopped as they were asked), so
     /// they are open again, without a card.
     pub(crate) fn questions_found(&self, run: Uuid, asked: &[crate::questions::AskedQuestion]) {
         {
@@ -3230,7 +3230,7 @@ impl Feed {
     // ----- approvals -----
 
     /// Puts `approval` in the approval tray for run `run` (its call `call`),
-    /// where it waits with the others: its id, and where its answer comes.
+    /// where it waits with the others, with its id and where its answer comes.
     /// See [`crate::approvals`].
     pub(crate) fn request_approval(
         &self,
@@ -3559,7 +3559,7 @@ impl Feed {
         self.lock().worker(id).map(|worker| worker.summary.clone())
     }
 
-    /// The summary of the worker `handle` as the user may type it: `R3`
+    /// The summary of the worker `handle` as the user may type it, so `R3`
     /// finds `r3`, as `/message` does.
     pub fn worker_summary_named(&self, handle: &str) -> Option<WorkerSummary> {
         let handle = handle.trim();
@@ -3571,7 +3571,7 @@ impl Feed {
             .map(|worker| worker.summary.clone())
     }
 
-    /// Makes sure the worker `id` has a summary; true when it is new.
+    /// Makes sure the worker `id` has a summary, and returns true when it is new.
     fn known_worker(&self, state: &mut State, id: &str) -> bool {
         if state.worker(id).is_some() {
             return false;
@@ -3590,7 +3590,7 @@ impl Feed {
         true
     }
 
-    /// A worker's event came: a worker not heard of yet runs, and has its
+    /// A worker's event came. A worker not heard of yet runs, and has its
     /// place in the main transcript. (The workflow's subagent events and
     /// the workers' own events come by different ways, in no fixed order.)
     fn saw_worker(&self, state: &mut State, id: &str) {
@@ -3627,7 +3627,7 @@ impl Feed {
         self.push(state, item);
     }
 
-    /// The worker's summary changed: it goes out now when `urgent` (its
+    /// The worker's summary changed. It goes out now when `urgent` (its
     /// state changed) or when the last one went out long enough ago, else
     /// a little later.
     fn worker_changed(&self, state: &mut State, id: &str, urgent: bool) {
@@ -3658,7 +3658,7 @@ impl Feed {
             worker.pending = true;
             return;
         }
-        // No timer to send it later with: it goes now.
+        // No timer to send it later with, so it goes now.
         worker.sent = Some(now);
         let summary = worker.summary.clone();
         self.publish(state, Update::Worker(summary));
@@ -3862,7 +3862,7 @@ mod tests {
         }
     }
 
-    /// A batched client misses nothing however far behind it falls: 10,000
+    /// A batched client misses nothing however far behind it falls, so 10,000
     /// pieces of text it didn't read come as one item with all of them,
     /// where a broadcast client lagged. A worker's summaries come as the
     /// last, an item's change as the item, and the activity once.
@@ -3892,7 +3892,7 @@ mod tests {
             Err(broadcast::error::TryRecvError::Lagged(_))
         ));
 
-        // Appended to an item from an earlier batch: one append.
+        // Appended to an item from an earlier batch, as one append.
         for _ in 0..3 {
             let mut state = feed.lock();
             feed.append(&mut state, "main", Kind::Text, "y");
@@ -4101,7 +4101,7 @@ mod tests {
     }
 
     /// A monitor's call says it is monitoring, and its line follows the
-    /// monitor: its alerts, then how it ended. The monitor's summary says
+    /// monitor, meaning its alerts, then how it ended. The monitor's summary says
     /// what it watches, its alerts and its end.
     #[test]
     fn a_monitors_line_follows_its_monitor() {
@@ -4250,7 +4250,7 @@ mod tests {
             started_at: now_ms() - 240_000,
             monitor: None,
         });
-        // Twice: a job the feed has is left alone.
+        // Twice, so a job the feed has is left alone.
         feed.job_started(JobStart {
             id: job,
             agent: MAIN_AGENT.into(),
@@ -4798,7 +4798,7 @@ mod tests {
                 summary.family_cost_list,
             )
         };
-        // Each has its own, and its family's: r1 holds all three.
+        // Each has its own, and its family's, so r1 holds all three.
         assert_eq!(family("r3"), (1.0, 1.0, 1.0));
         assert_eq!(family("r2"), (0.25, 1.25, 1.25));
         assert_eq!(family("r1"), (0.5, 1.75, 1.75));
@@ -4969,7 +4969,7 @@ mod tests {
             });
             call
         };
-        // As a restored session has them: the build's result came after the
+        // As a restored session has them, where the build's result came after the
         // read showed.
         let saved = vec![
             call(1, ActKind::Command, "rg x", 2),
@@ -5029,9 +5029,9 @@ mod tests {
         std::iter::from_fn(|| receiver.try_recv().ok()).collect()
     }
 
-    /// The main agent's text streams into one item, which a call ends; the
+    /// The main agent's text streams into one item, which a call ends, and the
     /// call's outcome comes as a change of it, with a command's output as a
-    /// block; a worker's text and calls are its own items.
+    /// block, and a worker's text and calls are its own items.
     #[test]
     fn events_become_items() {
         let feed = Feed::new("main");
@@ -5205,7 +5205,7 @@ mod tests {
     }
 
     /// An agent's thinking streams into an item of its own, the main
-    /// agent's and a worker's: text after it starts a text item, and
+    /// agent's and a worker's. Text after it starts a text item, and
     /// thinking after text a thinking item, so the two never merge. A
     /// reply in text still takes over the text it streamed, after
     /// thinking. With the thinking hidden, there is none.
@@ -5250,7 +5250,7 @@ mod tests {
     }
 
     /// A call the feed doesn't draw, such as `ask_user`, still ends the
-    /// text before it: the text of the next response is an item of its own.
+    /// text before it, and the text of the next response is an item of its own.
     #[test]
     fn a_call_not_drawn_still_ends_the_text_before_it() {
         let feed = Feed::new("main");
@@ -5396,7 +5396,7 @@ mod tests {
         assert_eq!(items(&feed).last().unwrap().text, "Use tabs.");
     }
 
-    /// A call that fails or is refused says so on its line; one still
+    /// A call that fails or is refused says so on its line, and one still
     /// running when its turn ends is marked as interrupted.
     #[test]
     fn calls_end_failed_refused_or_interrupted() {
@@ -5611,10 +5611,10 @@ mod tests {
         );
     }
 
-    /// `turn` is null before the first turn, and grows with each; the
+    /// `turn` is null before the first turn, and grows with each, and the
     /// user's message that starts a turn counts in it.
     /// A reply the agent's text already streamed becomes that item, as a
-    /// change, so it shows once: past a notice (an output limit reached)
+    /// change, so it shows once, past a notice (an output limit reached)
     /// too. Another reply is an item of its own.
     #[test]
     fn a_reply_in_text_takes_over_its_streamed_text() {
@@ -5756,7 +5756,7 @@ mod tests {
         second.id = 3;
         feed.restore(vec![first.clone(), reply.clone(), second.clone()]);
         feed.user("Again.", Source::Web, Delivery::Turn);
-        // Another conversation's, restored later: after the turns so far.
+        // Another conversation's, restored later, after the turns so far.
         feed.restore(vec![first]);
         let items = items(&feed);
         let turns: Vec<(&str, Option<u64>)> = items
@@ -6172,7 +6172,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(crate::questions::FILE);
         let run = Uuid::new_v4();
-        // As 0.13 wrote it: an approval answered, one open, and a
+        // As 0.13 wrote it, with an approval answered, one open, and a
         // question of the agent's.
         let old = serde_json::json!({
             "questions": [
@@ -6399,7 +6399,7 @@ mod tests {
                 (Kind::Reply, "Fixed: a race in setup.".into())
             ]
         );
-        // Its call never got a result: its run ended.
+        // Its call never got a result, because its run ended.
         let call = kept.iter().find(|item| item.agent == "r1").unwrap();
         assert_eq!(call.outcome.as_deref(), Some("interrupted"));
         // The state changes went out at once.
@@ -6484,7 +6484,7 @@ mod tests {
     }
 
     /// The workers of a resumed session are listed, without a place in the
-    /// transcript; a worker heard of first by its own events runs.
+    /// transcript, and a worker heard of first by its own events runs.
     #[test]
     fn workers_are_known_from_a_saved_session_or_their_events() {
         let feed = Feed::new("main");
@@ -6692,7 +6692,7 @@ mod tests {
         // (A short output has nothing more to show.)
         run("1\n2");
         assert_eq!(items(&feed).pop().unwrap().whole, None);
-        // About a quarter of the budget each: the oldest lose theirs.
+        // About a quarter of the budget each, and the oldest lose theirs.
         let long = "x\n".repeat(MAIN_BUDGET.wholes / 8);
         for _ in 0..6 {
             run(&long);
@@ -6708,8 +6708,8 @@ mod tests {
         assert!(wholes[7] > 0);
     }
 
-    /// A response that fails after it streamed takes back what it streamed:
-    /// the items it started go, and what it added to an item goes from it.
+    /// A response that fails after it streamed takes back what it streamed.
+    /// The items it started go, and what it added to an item goes from it.
     /// The retry streams anew, into the item the text was in.
     #[test]
     fn a_failed_responses_output_is_taken_back() {
@@ -6835,7 +6835,7 @@ mod tests {
         for part in ["tool", "parameters", "output"] {
             assert!(json.get(part).is_none(), "{json}");
         }
-        // A command's output is its block's: the call has none.
+        // A command's output is its block's, and the call has none.
         let command = Uuid::new_v4();
         feed.event(&event("main", shell(command, "true")), None);
         feed.event(
@@ -6857,7 +6857,7 @@ mod tests {
         feed.event(&event("main", rejection), None);
         let call = items(&feed).pop().unwrap();
         assert_eq!(call.output.as_deref(), Some("refused (Not that.)"));
-        // About a quarter of the budget each: the oldest calls lose theirs.
+        // About a quarter of the budget each, and the oldest calls lose theirs.
         let long = "x".repeat(MAIN_BUDGET.wholes / 4);
         for _ in 0..6 {
             edit(Uuid::new_v4(), &long);
@@ -6873,7 +6873,7 @@ mod tests {
         assert!(kept[6] > 0);
     }
 
-    /// Each transcript keeps to its budget: the workers' items don't push
+    /// Each transcript keeps to its budget, so the workers' items don't push
     /// the main agent's out.
     #[test]
     fn the_history_is_bounded() {
@@ -6924,7 +6924,7 @@ mod tests {
         }
     }
 
-    /// The clients of a session in the tests below: those that follow the
+    /// The clients of a session in the tests below, meaning those that follow the
     /// broadcast, each from a snapshot of its own, and a batched one.
     struct Clients {
         updates: broadcast::Receiver<Update>,
@@ -7149,7 +7149,7 @@ mod tests {
             .difference(&FeedMirror::new(snapshot))
     }
 
-    /// The comparison those tests make is no more forgiving than a client:
+    /// The comparison those tests make is no more forgiving than a client, since
     /// a change of an item the client never got, a running job the feed
     /// no longer has, and a change the feed made without an update each
     /// show.

@@ -132,7 +132,7 @@ pub fn safety_margin(lifetime: Duration) -> Duration {
 }
 
 /// When keep-warm refreshes a prompt cache last used at `used` (Unix
-/// milliseconds), a [`refresh_lead`] before its `lifetime` ends: at 4:00 of
+/// milliseconds), a [`refresh_lead`] before its `lifetime` ends, at 4:00 of
 /// five minutes, and at 55:00 of an hour. That is before it [`lapses_at`].
 pub fn refresh_at(used: i64, lifetime: Duration) -> i64 {
     used.saturating_add(lifetime_ms(refresh_after(lifetime)))
@@ -287,7 +287,7 @@ pub fn headline(left: i64) -> String {
     }
 }
 
-/// A token count, short: "820", "8.2k", "142k", "1.02M", "1M".
+/// A token count, short, as "820", "8.2k", "142k", "1.02M", "1M".
 pub(crate) fn token_count(count: usize) -> String {
     /// `value` with at most `decimals` decimals, trailing zeros dropped.
     fn trimmed(value: f64, decimals: usize) -> String {
@@ -314,7 +314,7 @@ pub(crate) fn token_count(count: usize) -> String {
     format!("{}M", trimmed(count / 1_000_000., 2))
 }
 
-/// Dollars, to the cent: "$1.20", and "< $0.01" for less than a cent.
+/// Dollars, to the cent, as "$1.20", and "< $0.01" for less than a cent.
 pub(crate) fn dollars(amount: f64) -> String {
     if amount > 0. && amount < 0.005 {
         "< $0.01".to_string()
@@ -323,7 +323,7 @@ pub(crate) fn dollars(amount: f64) -> String {
     }
 }
 
-/// A length of time on a clock: "0:05", "1:23", "12:00", "1:02:03".
+/// A length of time on a clock, as "0:05", "1:23", "12:00", "1:02:03".
 fn clock(ms: i64) -> String {
     let seconds = ms.max(0) / 1000;
     let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
@@ -352,7 +352,7 @@ where
         .unwrap_or_default()
 }
 
-/// A local time of day for a Unix time in seconds: "14:00" today, "Mon
+/// A local time of day for a Unix time in seconds, as "14:00" today, "Mon
 /// 09:00" within a week, else "Oct 20".
 fn when(unix_seconds: i64, now_ms: i64) -> String {
     let (Some(then), Some(now)) = (
@@ -449,8 +449,8 @@ mod tests {
         assert_eq!(clock(-5), "0:00");
     }
 
-    /// A question waiting for the user's answer stops the turn's requests:
-    /// the cache counts down then.
+    /// A question waiting for the user's answer stops the turn's requests,
+    /// so the cache counts down then.
     #[test]
     fn requests_stop_while_a_question_waits() {
         let mut activity = Activity {

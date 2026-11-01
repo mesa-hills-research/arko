@@ -1,4 +1,4 @@
-//! The service: one thread per process that runs the speech engine, one
+//! The service is one thread per process that runs the speech engine, one
 //! dictation at a time. It loads the model on the first recording, keeps it
 //! while recordings follow, and drops it after the idle time the settings
 //! give.
@@ -144,7 +144,7 @@ impl DictationService {
         SHARED.get_or_init(|| DictationService::new(root))
     }
 
-    /// The model the settings choose: theirs, else the one for the language
+    /// The model the settings choose, meaning theirs, else the one for the language
     /// (the setting's, else the system's), else Granite.
     pub fn model(&self) -> &'static SpeechModel {
         choose(&Settings::load(&self.root))
@@ -214,7 +214,7 @@ pub(super) fn engine_type(family: Family) -> ModelType {
 }
 
 /// An open dictation. Keep it until [`DictationEvent::Done`] or
-/// [`DictationEvent::Failed`] comes: dropping it cancels the dictation, as
+/// [`DictationEvent::Failed`] comes. Dropping it cancels the dictation, as
 /// [`cancel`](Self::cancel) does, and nothing more is sent.
 pub struct Dictation {
     id: u64,
@@ -273,7 +273,7 @@ impl Dictation {
 
 /// Gives a dictation the words to favour, which it takes from the next
 /// utterance on, or from the first when they come before it. It's tied to
-/// its dictation: once that ended or was cancelled, they go nowhere.
+/// its dictation, so once that ended or was cancelled, they go nowhere.
 pub(crate) struct WordsSender {
     sender: mpsc::Sender<Message>,
     intake: Arc<Intake>,
@@ -300,7 +300,7 @@ impl Drop for Dictation {
     }
 }
 
-/// The service's thread: each dictation in turn, the model dropped once
+/// The service's thread, running each dictation in turn, the model dropped once
 /// none came for the idle time.
 fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
     let mut loaded: Option<Loaded> = None;
@@ -342,7 +342,7 @@ fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
     }
 }
 
-/// One dictation: the model made ready, then the audio until it ends.
+/// One dictation, with the model made ready, then the audio until it ends.
 /// Nothing is sent once it's cancelled.
 fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
     let id = job.id;
@@ -423,7 +423,7 @@ fn special_words(words: &[SessionWord]) -> SpecialWords {
     list
 }
 
-/// When to look at the audio next: at the pass that's due, else after
+/// When to look at the audio next, at the pass that's due, else after
 /// [`POLL`], since new audio wakes it anyway.
 fn wait_for(next_pass: Option<Instant>, now: Instant) -> Duration {
     match next_pass {
@@ -549,7 +549,7 @@ fn listen(
 }
 
 /// How far recognition lags behind the audio taken, in seconds of audio. It
-/// follows the engine's utterances: while one started and hasn't had a pass
+/// follows the engine's utterances. While one started and hasn't had a pass
 /// over all its audio, recognition is behind by the audio taken since the
 /// last pass that caught up. A pass catches up when at most the utterance
 /// being spoken is left open, since Telmo's passes cover all of it, and an
@@ -604,7 +604,7 @@ impl Lag {
     }
 }
 
-/// The tentative words shown, by utterance: an utterance's last pass can
+/// The tentative words shown, by utterance, since an utterance's last pass can
 /// come after the next one has started.
 #[derive(Default)]
 struct Shown {

@@ -48,7 +48,7 @@ struct Store {
     /// IDs, oldest first.
     order: VecDeque<u64>,
     bytes: usize,
-    /// The images by their bytes' hash: the same image (one restored again
+    /// The images by their bytes' hash. The same image (one restored again
     /// with its conversation) is kept once.
     by_hash: HashMap<u64, Vec<u64>>,
 }
@@ -71,7 +71,7 @@ impl Images {
     pub(crate) fn add(&self, bytes: Arc<[u8]>, mime: &str, label: &str) -> ImageRef {
         let hash = hash_of(&bytes, mime);
         let mut store = lock(&self.inner);
-        // The same image again: the one kept, as the latest.
+        // The same image again, the one kept, as the latest.
         let same = store.by_hash.get(&hash).and_then(|ids| {
             ids.iter().copied().find(|id| {
                 store
@@ -141,7 +141,7 @@ impl Images {
     }
 }
 
-/// Takes the images the agents' tool calls return to the transcript: each
+/// Takes the images the agents' tool calls return to the transcript. Each
 /// goes to the session's [`Images`], and the call's item shows it.
 pub(crate) struct ToolImages {
     pub(crate) feed: Feed,
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn the_latest_images_are_kept() {
         let images = Images::default();
-        // (Each image its own: the same one is kept once.)
+        // (Each image its own, and the same one is kept once.)
         let quarter = |n: u8| -> Arc<[u8]> { vec![n; BUDGET / 4].into() };
         let first = images.add(quarter(0), "image/png", "a.png");
         assert_eq!(first.bytes, BUDGET / 4);

@@ -1,4 +1,4 @@
-//! For tests only (the `testing` feature): a local model server that
+//! For tests only (the `testing` feature), meaning a local model server that
 //! answers as a test scripts it, and the client for it, which
 //! [`Options::client`](crate::Options::client) gives a session in place of
 //! the one its credentials would make. Not for builds that ship.

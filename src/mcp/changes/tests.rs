@@ -170,7 +170,7 @@ async fn an_add_writes_through_the_arko_folder_and_keeps_the_rest() {
             "env": {"PATH": "${PATH}"},
         })
     );
-    // The card: its words, and no value of the environment.
+    // The card has its words, and no value of the environment.
     let cards = ask.cards();
     assert_eq!(cards.len(), 1);
     let card = &cards[0];
@@ -303,7 +303,7 @@ async fn the_setting_off_skips_the_card_and_records_the_approval() {
     }));
 }
 
-/// What an add can't do is said before anyone is asked: a name with other
+/// What an add can't do is said before anyone is asked, meaning a name with other
 /// characters or too long, a URL, a variable's value, no reason, and a name
 /// another file sets up (or the same file, by the user). With no one to
 /// ask, an add is refused.
@@ -446,7 +446,7 @@ async fn a_card_turned_down_writes_nothing() {
 }
 
 /// An add to a project's `.arko/mcp.json` whose servers the user turned
-/// down doesn't approve them: the next session asks about the file.
+/// down doesn't approve them, so the next session asks about the file.
 #[tokio::test]
 async fn an_add_to_a_file_the_user_turned_down_leaves_it_to_ask() {
     let temp = tempfile::tempdir().unwrap();

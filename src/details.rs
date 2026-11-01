@@ -487,7 +487,7 @@ pub struct SkillFacts {
 /// What `/skills` says.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillsFacts {
-    /// The skills the agents have: those of the folders, then the built-in
+    /// The skills the agents have, meaning those of the folders, then the built-in
     /// ones that no skill of the folders replaces.
     pub skills: Vec<SkillFacts>,
     /// The folders skills are read from.
@@ -524,7 +524,7 @@ impl Details {
         }
     }
 
-    /// The session's facts change (a command, a model, a setting): what
+    /// The session's facts change (a command, a model, a setting), which is what
     /// `/session` and `/cost` go by from now on.
     pub(crate) fn publish_session(&self, facts: SessionFacts, settings: Settings) {
         *lock(&self.session) = Some((facts, settings));
@@ -794,7 +794,7 @@ mod tests {
         );
     }
 
-    /// A switch costs writing the conversation to the cache again: at the
+    /// A switch costs writing the conversation to the cache again, at the
     /// model's write price, or nothing on a plan.
     #[test]
     fn a_switch_costs_writing_the_conversation_again() {

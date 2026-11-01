@@ -32,7 +32,7 @@ use crate::providers;
 use crate::remote::Level;
 use crate::ui::Stats;
 
-/// What both tools read: the crew (the profiles' places and the session's
+/// What both tools read, meaning the crew (the profiles' places and the session's
 /// worker settings), the keys, the plans' usage, and whom to ask.
 struct Context {
     crew: Arc<Crew>,
@@ -151,7 +151,7 @@ enum Show {
     All,
 }
 
-/// The text `worker_options` gives: the profiles in force, those that can't
+/// The text `worker_options` gives, meaning the profiles in force, those that can't
 /// be read, and the models usable now with those that aren't. `needs` says
 /// what a model needs that the session doesn't have, and `plans` is each
 /// plan's latest usage.
@@ -283,7 +283,7 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
     text
 }
 
-/// The efforts a model takes as a range: `low to max`.
+/// The efforts a model takes as a range, such as `low to max`.
 fn efforts_range(model: &Model) -> String {
     const ORDER: [Effort; 5] = [
         Effort::Low,
@@ -480,7 +480,7 @@ impl SaveWorkerProfile {
     }
 }
 
-/// What the credential check says, as a warning for the agent: workers on
+/// What the credential check says, as a warning for the agent, which says workers on
 /// the profile's model can't start until the user has done it.
 fn needs_warning(needs: &str) -> String {
     match needs {
@@ -671,7 +671,7 @@ impl Tool for SaveWorkerProfile {
     }
 }
 
-/// The definitions of the tools, which don't depend on the session: what a
+/// The definitions of the tools, which don't depend on the session, meaning what a
 /// conversation saved with them was offered, for a session without workers.
 pub fn definitions() -> Vec<ToolDefinition> {
     vec![

@@ -461,7 +461,7 @@ fn a_second_install_waits_for_the_first() {
     assert!(dir.join(LOCK_FILE).exists());
 }
 
-/// Two contenders for the lock take turns: the second waits while the
+/// Two contenders for the lock take turns. The second waits while the
 /// first holds it, and a cancelled wait ends.
 #[test]
 fn contenders_for_the_lock_take_turns() {
@@ -532,7 +532,7 @@ fn a_lock_whose_holder_dies_is_free() {
     InstallLock::take(&path, &AtomicBool::new(false), || panic!("waited")).unwrap();
 }
 
-/// A server that takes the connection and never answers: cancelling ends
+/// A server that takes the connection and never answers, and cancelling ends
 /// the wait at once.
 #[test]
 fn cancelling_ends_a_wait_for_the_server() {
@@ -557,7 +557,7 @@ fn cancelling_ends_a_wait_for_the_server() {
 }
 
 /// The whole install of Granite Speech, from a local copy of its files
-/// served as Hugging Face would: downloaded, checked, packed, with its
+/// served as Hugging Face would, meaning downloaded, checked, packed, with its
 /// notices, and the download gone. It reads and writes about 2 GB, so it
 /// runs only with `ARKO_TEST_GRANITE_DIR` naming the folder of the files.
 #[test]

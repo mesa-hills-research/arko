@@ -1,4 +1,4 @@
-//! MCP servers: programs that give the agents more tools over the Model
+//! MCP servers are programs that give the agents more tools over the Model
 //! Context Protocol. Arko starts the servers set up in the files
 //! `--mcp-config` names, in the project's `.arko/mcp.json` and `.mcp.json`
 //! (once the user approves them) and in `mcp.json` in Arko's folder. The
@@ -16,7 +16,7 @@
 //! or in arko's, a list of servers that have a `name`. `${VAR}` and
 //! `${VAR:-default}` in a command, its arguments and its environment are
 //! taken from Arko's environment. Servers talk over standard input and
-//! output: HTTP servers (`url`, or a `type` other than `stdio`) and servers
+//! output. HTTP servers (`url`, or a `type` other than `stdio`) and servers
 //! marked `"disabled": true` are skipped. Arko reads two fields of its own
 //! in any file, `workers` (false keeps a server to the main agent) and
 //! `shared`.
@@ -81,7 +81,7 @@ pub struct Server {
     /// expanded.
     pub written_env: BTreeMap<String, String>,
     /// The command line as the file writes it, before `${VAR}`s are
-    /// expanded: what the user is shown.
+    /// expanded, which is what the user is shown.
     pub shown: String,
     /// The file that sets it up.
     pub file: PathBuf,
@@ -137,7 +137,7 @@ pub struct Parsed {
     /// name), with their command line as the file writes it (empty when it
     /// has none) and why (skipped, or disabled).
     pub left_out: Vec<(String, String, String)>,
-    /// The file's `mcpServers`, as written: what a project's approval is for.
+    /// The file's `mcpServers`, as written, which is what a project's approval is for.
     raw: Value,
 }
 
@@ -270,7 +270,7 @@ fn written_command(entry: &Value) -> String {
         .join(" ")
 }
 
-/// One server's entry; `None` when it is disabled.
+/// One server's entry, and `None` when it is disabled.
 fn server(
     name: &str,
     entry: &Value,
@@ -450,7 +450,7 @@ enum Step {
     Note(String),
 }
 
-/// The servers to start: those in `files` (from `--mcp-config`, or an
+/// The servers to start, meaning those in `files` (from `--mcp-config`, or an
 /// app's), in the project's `.arko/mcp.json` and `.mcp.json` when the user
 /// approves them, and in Arko's own `mcp.json`. A name set up twice is
 /// taken from the first of these. The user's answer about a project file's
@@ -528,7 +528,7 @@ pub fn plan(
 impl Plan {
     /// The servers to start, with `answers` about the project's files in
     /// the order of [`approvals`](Self::approvals) (`None`, or no answer
-    /// at all: no one could answer, so they don't start), and the notes
+    /// at all, meaning no one could answer, so they don't start), and the notes
     /// that say what is left out and why. An answer is remembered until the
     /// file's servers change.
     pub fn decide(self, answers: &[Option<bool>]) -> Result<(Vec<Server>, Vec<String>), String> {
@@ -695,7 +695,7 @@ fn forget_approval(root: &Path, workspace: &Path, asked: Asked) -> Result<bool, 
 }
 
 /// The answer remembered for the project's `.mcp.json` servers, if any (for
-/// these servers: a change to them asks again).
+/// these servers, since a change to them asks again).
 pub(crate) fn remembered(root: &Path, workspace: &Path, parsed: &Parsed) -> Option<bool> {
     remembered_as(root, workspace, Asked::Project, parsed)
 }
@@ -779,7 +779,7 @@ fn save_approvals(root: &Path, approvals: &Approvals) -> Result<(), String> {
         .map_err(|error| format!("could not save {} ({error})", path.display()))
 }
 
-/// A servers file Arko changes: the file `name` in an opened folder, read
+/// A servers file Arko changes, meaning the file `name` in an opened folder, read
 /// and written through it, so that neither a link at the file nor a folder
 /// swapped for a link on the way takes a change elsewhere.
 pub(crate) struct ServersFile<'a> {
@@ -965,7 +965,7 @@ pub(crate) fn remove_entry_in(
 }
 
 /// The tool name of `server`'s tool `tool` as a tool of its own, as
-/// conversations saved before the `mcp` tool name them:
+/// conversations saved before the `mcp` tool name them, as
 /// `mcp__<server>__<tool>`, with the characters the providers don't take
 /// replaced by `_`, and cut to 64 characters (ending in a hash of the full
 /// name, to stay unique).
@@ -979,7 +979,7 @@ pub fn split_tool_name(name: &str) -> Option<(&str, &str)> {
     name.strip_prefix("mcp__")?.split_once("__")
 }
 
-/// A session's MCP servers: the hub its agents reach them through, with
+/// A session's MCP servers, meaning the hub its agents reach them through, with
 /// what Arko read of each from its file. Clones share the servers.
 #[derive(Clone)]
 pub struct Servers {
@@ -1087,7 +1087,7 @@ impl Servers {
         self.hub.servers().iter().any(|facts| facts.workers)
     }
 
-    /// The servers, in a line: `MCP servers github (12 tools), figma
+    /// The servers, in a line, as `MCP servers github (12 tools), figma
     /// (failed)`.
     pub fn summary(&self) -> Option<String> {
         let servers = self.hub.servers();
@@ -1109,7 +1109,7 @@ impl Servers {
         Some(format!("MCP servers {}", servers.join(", ")))
     }
 
-    /// The server an agent added, after its entry was written: added to the
+    /// The server an agent added, after its entry was written, meaning added to the
     /// hub and started. `Err` is a config the hub won't take.
     async fn add(
         &self,
@@ -1140,7 +1140,7 @@ impl Servers {
     }
 }
 
-/// What a session has of MCP: its servers, and how the main agent adds and
+/// What a session has of MCP, meaning its servers, and how the main agent adds and
 /// removes them.
 #[derive(Default)]
 pub struct Session {
@@ -1180,7 +1180,7 @@ pub enum Role {
     Worker,
 }
 
-/// Arko's `mcp` tool: the framework's [`McpBridgeTool`] with Arko's time
+/// Arko's `mcp` tool is the framework's [`McpBridgeTool`] with Arko's time
 /// limit and transcript lines. An `add` waits for the user's answer without
 /// a limit, so the host's limit doesn't apply to the tool, and any other
 /// action gets [`CALL_LIMIT`]. The main agent's starts and stops show in the
@@ -1379,7 +1379,7 @@ impl Tool for Bridge {
     }
 }
 
-/// The servers each run may reach: every one for the main agent's runs, and
+/// The servers each run may reach, meaning every one for the main agent's runs, and
 /// a worker's own set ([`crate::crew::Crew`] records it with the run).
 pub struct Access {
     crew: Option<std::sync::Weak<crate::crew::Crew>>,

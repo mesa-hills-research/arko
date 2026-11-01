@@ -229,7 +229,7 @@ fn an_effort_the_model_doesnt_take_is_refused() {
             "The profile `nano` asks for max effort. {nano} Pass an effort of your own to start it anyway."
         )
     );
-    // The call chose another model: the profile's effort is a hint.
+    // The call chose another model, so the profile's effort is a hint.
     let fitted = pick(&basis, &[("profile", "nano"), ("model", "sol")]).unwrap();
     assert!(effort_of(&fitted).contains("max"));
     let fitted = pick(
@@ -312,7 +312,7 @@ fn fast_mode_is_off_unless_the_profile_asks_or_the_session_s_model_has_it() {
     );
 }
 
-/// The cache: the call, else the profile, else the session, and only for the
+/// The cache is the call, else the profile, else the session, and only for the
 /// models that have a long one.
 #[test]
 fn the_cache_comes_from_the_call_then_the_profile_then_the_session() {
@@ -450,7 +450,7 @@ fn the_profile_and_the_extra_rules_go_into_the_first_message() {
 
     // A small model gets the rules the session's worker, on sol, didn't.
     let small = pick(&basis, &[("model", "haiku")]);
-    // (Haiku is Claude: the credential isn't checked here.)
+    // (Haiku is Claude, so the credential isn't checked here.)
     let small = small.unwrap();
     assert_eq!(
         small.context_added.as_deref(),
@@ -466,7 +466,7 @@ fn the_profile_and_the_extra_rules_go_into_the_first_message() {
             .as_deref(),
         Some("# Your profile (quick)\nAnswer briefly.\n\n# Extra rules\n- Search with rg.")
     );
-    // Not twice: the session's worker is small already, and has them.
+    // Not twice, because the session's worker is small already, and has them.
     let small_session = basis_with_worker(&basis, settings("haiku", Effort::High));
     assert_eq!(
         pick(&small_session, &[("model", "luna")])
@@ -958,7 +958,7 @@ fn nested_must_be_true_or_false() {
 }
 
 /// The credential check may run a command, so it is made where blocking
-/// is allowed: on a multi-threaded runtime, on a single-threaded one and
+/// is allowed, on a multi-threaded runtime, on a single-threaded one and
 /// outside any runtime.
 #[test]
 fn the_credential_check_runs_on_any_kind_of_runtime() {
@@ -1104,7 +1104,7 @@ fn hub_servers(spec: &[(&str, bool)]) -> Vec<ServerFacts> {
     arko_agents::McpHub::new(configs).servers()
 }
 
-/// The session's servers: github and sentry for workers, and one for the
+/// The session's servers, github and sentry for workers, and one for the
 /// main agent alone.
 fn servers() -> Vec<ServerFacts> {
     hub_servers(&[("github", true), ("sentry", true), ("internal", false)])
@@ -1201,7 +1201,7 @@ fn skills_and_servers_take_commas_a_json_array_or_none() {
         choose_in(&basis, &call, None, Family::MAIN, None, &servers()).unwrap_err(),
         "mcp must be text"
     );
-    // Neither given: everything its starter has.
+    // Neither given, so everything its starter has.
     let plain = narrow(&basis, &[]).unwrap();
     assert_eq!(
         (plain.skills, plain.mcp, plain.left_out),
@@ -1307,7 +1307,7 @@ fn a_skill_for_the_main_agent_alone_is_refused() {
     );
 }
 
-/// A set carries through every depth: a worker without names has its
+/// A set carries through every depth. A worker without names has its
 /// starter's, a list is passed on, and each level can only narrow it.
 #[test]
 fn a_set_carries_through_three_levels() {

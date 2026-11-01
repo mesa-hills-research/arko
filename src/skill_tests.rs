@@ -1,4 +1,4 @@
-// End-to-end tests of the skills agents save: the main agent saves one and
+// End-to-end tests of the skills agents save. The main agent saves one and
 // loads it in the same turn while its prompt cache holds, the next
 // conversation lists it, and `/skills` says who saved it, shows it and
 // removes it. Each follows a path a user takes, with the mock model.
@@ -61,7 +61,7 @@ fn tools(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// The parts of a request the prompt cache holds: its tool list and its
+/// The parts of a request the prompt cache holds, meaning its tool list and its
 /// system prompt, as sent.
 fn cached_prefix(body: &str) -> (String, String) {
     let body: serde_json::Value = serde_json::from_str(body).unwrap();

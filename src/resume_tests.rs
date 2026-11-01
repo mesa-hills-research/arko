@@ -1,4 +1,4 @@
-// End-to-end tests of `/resume`: going back to an earlier conversation of
+// End-to-end tests of `/resume`, covering going back to an earlier conversation of
 // the session after `/new`, after a handover, and after the session is
 // resumed. Each follows a path a user takes, with the mock model, and
 // checks what the user sees and what the model is sent. (Included in
@@ -58,11 +58,11 @@ fn fruit_model(bodies: Bodies, hold: Arc<Notify>) -> Arc<crate::mock_model::Resp
     })
 }
 
-/// At the prompt: a conversation, `/new` and another, then `/resume` lists
+/// At the prompt, a conversation, `/new` and another, then `/resume` lists
 /// both and `/resume 1` goes back to the first. Its history shows again,
 /// and the model's next request has that conversation and not the other.
 /// What the user typed during the other's last turn, which the user
-/// stopped before its agent read it, stays with it: it doesn't reach the
+/// stopped before its agent read it, stays with it. It doesn't reach the
 /// first conversation, and goes with the next message once the user goes
 /// back to the other.
 #[tokio::test]
@@ -125,7 +125,7 @@ async fn resume_goes_back_to_the_conversation_new_left() {
         .unwrap();
     let _sender = typing.await.unwrap();
 
-    // The list: newest first, by number, with the current one marked.
+    // The list, newest first, by number, with the current one marked.
     let list = texts(&harness.feed, "output")
         .into_iter()
         .find(|text| text.starts_with("This session's conversations"))
@@ -142,7 +142,7 @@ async fn resume_goes_back_to_the_conversation_new_left() {
         "Go back to one with /resume and its number, such as /resume 1."
     );
 
-    // Back in the first conversation: its history shows again, and the
+    // Back in the first conversation, so its history shows again, and the
     // model has it, without the second's.
     assert!(says(&harness.feed, "Back to conversation 1, last used "));
     assert_eq!(count(&harness.feed, "user", "Apples are red."), 2);
@@ -161,7 +161,7 @@ async fn resume_goes_back_to_the_conversation_new_left() {
         &harness.feed,
         "(what you typed during the turn, which the agent didn't read, goes with your next message)"
     ));
-    // Back in the second: what the user typed during its last turn comes
+    // Back in the second, so what the user typed during its last turn comes
     // with the next message, once.
     assert!(says(
         &harness.feed,
@@ -182,7 +182,7 @@ async fn resume_goes_back_to_the_conversation_new_left() {
 }
 
 /// A line typed during a turn that ends before the agent reads it starts
-/// a turn of its own once the agent replies, and reaches the agent once:
+/// a turn of its own once the agent replies, and reaches the agent once,
 /// not also as a note when the run continues, nor again with the next
 /// message.
 #[tokio::test]
@@ -215,7 +215,7 @@ async fn a_line_the_agent_did_not_read_reaches_it_once() {
         .await
         .unwrap();
     let _sender = typing.await.unwrap();
-    // The turn of its own: the line once, under its heading.
+    // The turn of its own, with the line once, under its heading.
     let unread = bodies
         .lock()
         .unwrap()
@@ -310,7 +310,7 @@ fn says(feed: &remote::Feed, start: &str) -> bool {
 
 /// A conversation that handed over is one conversation in one run, listed
 /// by the user's first message. Gone back to, it goes on from its fresh
-/// context: the report and what followed it, not what the report replaced
+/// context, meaning the report and what followed it, not what the report replaced
 /// and not the other conversation.
 #[tokio::test]
 async fn a_conversation_that_handed_over_goes_on_from_its_report() {
@@ -334,7 +334,7 @@ async fn a_conversation_that_handed_over_goes_on_from_its_report() {
                         serde_json::json!({"report": "REPORT: the work so far."}),
                     )
                 } else if body.contains("call_m1") {
-                    // Over the handover size (200k): the next turn hands over.
+                    // Over the handover size (200k), so the next turn hands over.
                     with_input(complete("m2", "First done."), 210_000)
                 } else {
                     tool_call(
@@ -387,11 +387,11 @@ async fn a_conversation_that_handed_over_goes_on_from_its_report() {
     );
     assert!(!third.contains("call_m1"), "{third}");
     assert!(!third.contains("Other topic."), "{third}");
-    // Still one run: a handover isn't a new one.
+    // Still one run, because a handover isn't a new one.
     assert_eq!(harness.conversations.list[0].runs.len(), 1);
 }
 
-/// The record is kept with the session: resumed (`arko -c`), it lists the
+/// The record is kept with the session. Resumed (`arko -c`), it lists the
 /// same conversations and goes on in the one it was in, which isn't the
 /// one with the latest run, and shows that one's history. A session saved
 /// before the record has one conversation for each run, and goes on with
@@ -470,7 +470,7 @@ async fn a_resumed_session_lists_its_conversations_and_goes_on_in_its_own() {
     // (No note was ever kept, so no list was posted on the way.)
     assert!(lists_held(&bodies).iter().all(|held| *held == 0));
 
-    // Saved before the record: each run is a conversation, the latest
+    // Saved before the record, so each run is a conversation, the latest
     // current.
     std::fs::remove_file(harness.session.dir.join("conversations.json")).unwrap();
     harness.open(true).unwrap();
@@ -509,7 +509,7 @@ fn lists_held(bodies: &Bodies) -> Vec<usize> {
 }
 
 /// A note kept in the second conversation reaches the first, which
-/// `/resume 1` goes back to, once: in its next request, and not again after.
+/// `/resume 1` goes back to, once, in its next request, and not again after.
 #[tokio::test]
 async fn a_conversation_resumed_gets_the_notes_kept_since() {
     let temp = tempfile::tempdir().unwrap();
@@ -578,7 +578,7 @@ async fn a_conversation_resumed_is_told_when_no_notes_are_left() {
 }
 
 /// A conversation's saved task is read when the conversation is opened or
-/// gone back to: one that can't be read fails the session's open, as when
+/// gone back to. One that can't be read fails the session's open, as when
 /// every task was read on open, and `/resume` to it says so.
 #[tokio::test]
 async fn a_conversation_whose_task_cant_be_read_says_so() {
@@ -649,7 +649,7 @@ fn json_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 /// A conversation an older Arko saved, before the main agent kept notes,
 /// goes on without them, and takes the main agent's tools now at its next
-/// handover: its fresh conversation is offered them.
+/// handover, and its fresh conversation is offered them.
 #[tokio::test]
 async fn a_saved_conversation_takes_the_current_tools_at_its_next_handover() {
     let temp = tempfile::tempdir().unwrap();
@@ -668,7 +668,7 @@ async fn a_saved_conversation_takes_the_current_tools_at_its_next_handover() {
                         serde_json::json!({"report": "REPORT: the work so far."}),
                     )
                 } else if body.contains("call_m1") {
-                    // Over the handover size (200k): the next turn hands over.
+                    // Over the handover size (200k), so the next turn hands over.
                     with_input(complete("m2", "First done."), 210_000)
                 } else {
                     tool_call(

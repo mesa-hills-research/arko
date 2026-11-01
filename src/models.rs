@@ -18,7 +18,7 @@ fn openai_auth(models: &Models) -> Option<providers::OpenAiAuth> {
 
 /// The models by the way they are reached, as the picker lists them.
 pub fn menu(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<providers::ModelGroup> {
-    // (The conversation's may be none of the others: one /resume went back
+    // (The conversation's may be none of the others, because one /resume went back
     // to.)
     let current = [
         models.main.as_str(),
@@ -29,7 +29,7 @@ pub fn menu(models: &Models, needs: impl Fn(&str) -> Option<String>) -> Vec<prov
 }
 
 /// How the model `name` (as `/model` takes it) is billed in the session of
-/// `models`, for a picker to show beside it: `API, $5/$25` (per million
+/// `models`, for a picker to show beside it, as `API, $5/$25` (per million
 /// input and output tokens) for a model billed per token, or `API` when its
 /// price isn't known. `None` for a model on one of the user's plans (a
 /// `cc:` model, an OpenAI model on the ChatGPT login), which needs no label

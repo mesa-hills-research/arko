@@ -113,12 +113,12 @@ pub(crate) fn clean(answer: &str) -> Option<String> {
 }
 
 /// How long the thread of a closed session keeps its runtime for a run
-/// that goes on: a stall for each of the four ways, and a little more. A
+/// that goes on, meaning a stall for each of the four ways, and a little more. A
 /// run that makes progress is not cut off sooner by the ways.
 pub(crate) const MAX_RUN: Duration = Duration::from_secs(10 * 60);
 
 /// What the naming of a saved session shares in this process, found by the
-/// session's folder: the number of the run that may write its name. Every
+/// session's folder, meaning the number of the run that may write its name. Every
 /// harness that has the session open, and every run that goes on after one
 /// closed, sees the same number, so a run started before the session was
 /// closed and opened again is told by an edit made after. The run checks it
@@ -159,7 +159,7 @@ impl Drop for Place {
     }
 }
 
-/// Stops every naming that is going on in this process: the requests under
+/// Stops every naming that is going on in this process, meaning the requests under
 /// way, and the Claude Code each of them runs, which ends with its request.
 /// It returns when they have ended, or after two seconds. Quit calls it. A
 /// request under way is otherwise left to finish, while the app runs.
@@ -287,7 +287,7 @@ impl Naming {
     }
 
     /// Ends any run in flight for the session in `dir`, in this harness or
-    /// one that closed (the first message was edited): the runs ask no more
+    /// one that closed (the first message was edited), so the runs ask no more
     /// ways and write no name.
     pub(crate) fn cancel(&self, dir: &Path) {
         *lock(&generation_of(dir)) += 1;
@@ -305,7 +305,7 @@ impl Naming {
     }
 }
 
-/// Where the model's name is waited for: the harness's first message.
+/// Where the model's name is waited for, the harness's first message.
 impl crate::Harness {
     /// Starts naming the session from its first message `text` when the
     /// user turned naming by a model on. It runs in the background, and a
@@ -325,7 +325,7 @@ impl crate::Harness {
     }
 }
 
-/// The asker for a session in Arko's folder `root`: tests put theirs in its
+/// The asker for a session in Arko's folder `root`. Tests put theirs in its
 /// place.
 fn asker(root: &std::path::Path, live: impl FnOnce() -> Live) -> Arc<dyn Ask> {
     #[cfg(any(test, feature = "testing"))]
@@ -497,7 +497,7 @@ mod tests {
             "the key way was never asked"
         );
 
-        // Naming turned off while a way answers: its answer is not taken.
+        // Naming turned off while a way answers, so its answer is not taken.
         let setting = Arc::new(Mutex::new(vec![Way::ClaudePlan]));
         let gate = Arc::new(tokio::sync::Notify::new());
         let fake = Fake::new(&[(Way::ClaudePlan, Step::Gated(gate.clone(), "Late name"))]);
@@ -852,7 +852,7 @@ mod tests {
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
-    /// Naming turned off, or a way turned off, while the model works: what
+    /// Naming turned off, or a way turned off, while the model works. What
     /// it answers is not kept, and no way after it is asked.
     #[tokio::test]
     async fn turning_naming_off_while_a_model_works_keeps_its_answer_out() {
@@ -950,7 +950,7 @@ mod tests {
         }
     }
 
-    /// A session deleted while its model works is asked no more ways: a way
+    /// A session deleted while its model works is asked no more ways. A way
     /// that bills is never asked for a session that is gone, and the run
     /// ends.
     #[tokio::test]
@@ -976,7 +976,7 @@ mod tests {
     }
 
     /// A deleted session whose folder stays for the worktrees it kept is
-    /// gone too: no paid way is asked for it, and no name is written there.
+    /// gone too. No paid way is asked for it, and no name is written there.
     #[tokio::test]
     async fn a_deleted_session_whose_folder_stays_is_asked_no_more_ways() {
         let temp = tempfile::tempdir().unwrap();
@@ -991,7 +991,7 @@ mod tests {
         first_message(&mut harness, &mut inputs).await;
         until(|| fake.ways_asked().len() == 1).await;
         let dir = harness.session.dir.clone();
-        // What deleting leaves when it keeps a worktree: the folder, without
+        // What deleting leaves when it keeps a worktree, meaning the folder, without
         // the session's own files.
         std::fs::remove_file(dir.join(crate::session::SETTINGS_FILE)).unwrap();
         gate.notify_one();
@@ -1000,7 +1000,7 @@ mod tests {
         assert!(!dir.join("generated-title").exists());
     }
 
-    /// A quit stops a run that was listed before its handle was: it aborts
+    /// A quit stops a run that was listed before its handle was. It aborts
     /// it once the handle comes, well before its wait runs out.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_quit_stops_a_run_whose_handle_comes_late() {

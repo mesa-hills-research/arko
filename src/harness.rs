@@ -1,4 +1,4 @@
-//! The session as it runs: the main agent's conversation, its turns, the
+//! The session as it runs, meaning the main agent's conversation, its turns, the
 //! commands typed while it runs, and the session's terminal (`Managers`).
 
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ use crate::{
 };
 use crate::{and_list, lock};
 
-/// The session's terminal: its manager runs the terminal tools' background
+/// The session's terminal. Its manager runs the terminal tools' background
 /// jobs and the `shell` tool's commands (held, with the shell's own
 /// arguments, until one moves to the background) and keeps their logs in
 /// the session's folder.
@@ -50,7 +50,7 @@ pub(crate) struct Managers {
     no_workers: Option<Arc<NoWorkers>>,
 }
 
-/// Workers that never run, which a monitor can't outlast: with it the
+/// Workers that never run, which a monitor can't outlast. With it the
 /// manager defines its monitor tools as a workflow with workers does, so
 /// that the stand-ins of a session continued with -p keep the definitions
 /// its conversations were offered (and their prompt cache).
@@ -68,7 +68,7 @@ impl arko_agents::terminal::WorkerLiveness for NoWorkers {
 
 impl Managers {
     /// Opens it with outside access off ([`outside::Outside`] sets it) and
-    /// the shell's commands kept in the foreground: set
+    /// the shell's commands kept in the foreground. Set
     /// [`background`](Self::background) before making the tools.
     pub(crate) fn open(session: &Session, shell: &Shell) -> Result<Self, String> {
         let mut config = TerminalConfig::new(session.jobs_dir());
@@ -120,7 +120,7 @@ impl Managers {
     }
 }
 
-/// What `/jobs` says of a running monitor: what it watches, its alerts and
+/// What `/jobs` says of a running monitor, meaning what it watches, its alerts and
 /// when it ends ("lines that match error · 3 alerts · ends in 22 min").
 fn monitor_about(info: &arko_agents::terminal::MonitorInfo) -> String {
     let mut parts = vec![crate::jobs::watching(&info.trigger, false)];
@@ -136,7 +136,7 @@ fn monitor_about(info: &arko_agents::terminal::MonitorInfo) -> String {
     parts.join(" · ")
 }
 
-/// How many columns of the terminal a line can use: its width less the
+/// How many columns of the terminal a line can use, meaning its width less the
 /// full-screen view's margin, or 78 where there is no terminal.
 fn terminal_width() -> usize {
     #[cfg(feature = "tui")]
@@ -188,7 +188,7 @@ fn shorten_path(path: &str, columns: usize) -> String {
     shown
 }
 
-/// The minutes from now to `expires_at`, to the nearest: 0 for less than
+/// The minutes from now to `expires_at`, to the nearest, with 0 for less than
 /// one.
 fn minutes_left(expires_at: std::time::SystemTime) -> u64 {
     let left = expires_at
@@ -201,7 +201,7 @@ fn minutes_left(expires_at: std::time::SystemTime) -> u64 {
     }
 }
 
-/// When the main agent's prompt cache expires: its latest request, the
+/// When the main agent's prompt cache expires, meaning its latest request, the
 /// latest refresh that kept it warm, or (resumed) what the session's record
 /// says of them, plus its lifetime less the safety margin
 /// ([`lapses_at`](crate::cache_timer::lapses_at)), as the status line counts
@@ -214,9 +214,9 @@ pub(crate) fn cache_expiry(stats: &crate::ui::Stats) -> Option<std::time::System
 /// The workflow's name in new sessions.
 pub(crate) const WORKFLOW_NAME: &str = "arko";
 
-/// What a session's checkpoint was saved with: the workflow's name and the
+/// What a session's checkpoint was saved with, meaning the workflow's name and the
 /// agents' configurations. A resume needs both unchanged, so a session
-/// keeps them when Arko changes: its agents' instructions, or its name
+/// keeps them when Arko changes its agents' instructions, or its name
 /// (sessions saved before the rename to Arko have `fin`).
 pub(crate) struct SavedSetup {
     pub(crate) name: String,
@@ -229,7 +229,7 @@ pub(crate) struct SavedSetup {
     pub(crate) optional_tools: std::collections::BTreeSet<String>,
 }
 
-/// Whether Arko gives the tool `name` in some sessions only: an MCP server's
+/// Whether Arko gives the tool `name` in some sessions only, meaning an MCP server's
 /// tool of its own, the shell and terminal tools (and the monitors, which
 /// -p leaves out), the search index's, and the worker profile tools (none
 /// without workers).
@@ -292,7 +292,7 @@ pub(crate) fn saved_setup(checkpoint: &Path, run_dir: &Path) -> Result<SavedSetu
         }
     }
     // An agent's latest run holds its configuration, so only that run is
-    // read, however many runs the session has: from the checkpoint, which
+    // read, however many runs the session has, from the checkpoint, which
     // describes the run's task, or else from its task file.
     let latest: std::collections::HashMap<_, _> = state
         .agent_runs
@@ -342,7 +342,7 @@ pub(crate) fn unoffered(
 }
 
 /// What a resumed session's saved runs aren't offered, as they started
-/// without it: the tools Arko has now that their saved tool lists leave out,
+/// without it, meaning the tools Arko has now that their saved tool lists leave out,
 /// and skills. A saved conversation or worker keeps the configuration it was
 /// saved with, also when it hands over, and new ones take the session's now.
 /// `nested_known` is whether the session was made by an Arko whose
@@ -377,7 +377,7 @@ pub(crate) fn unoffered_with(
                 missing.push(name);
             }
         }
-        // (The built-in skills are not the user's: a session saved without
+        // (The built-in skills are not the user's, so a session saved without
         // them is not told so.)
         let folders = |config: &arko_agents::AgentConfig| {
             config.skills_config.as_ref().is_some_and(|skills| {
@@ -493,9 +493,9 @@ pub(crate) fn unoffered_with(
 pub(crate) enum Conversation {
     /// The next message starts a conversation.
     New,
-    /// The last turn ended with a reply: the next message continues it.
+    /// The last turn ended with a reply, so the next message continues it.
     Answered(AgentResult),
-    /// The last turn was stopped: the next message reopens it.
+    /// The last turn was stopped, so the next message reopens it.
     Stopped(StoppedRun),
 }
 
@@ -516,20 +516,20 @@ pub(crate) enum Prompt {
     /// whole.
     News { resent: bool },
     /// A background job of the agent's finished (with those that finished
-    /// by then, by ID), without a message from the user: its terminal
+    /// by then, by ID), without a message from the user. Its terminal
     /// update follows.
     Jobs(Vec<uuid::Uuid>),
     /// What the user typed during the last turn, which the agent finished
     /// before it read, without a new message.
     Unread,
     /// A monitor of the agent's alerted, or ends soon (the opening says
-    /// which), without a message from the user: its news follows. The
+    /// which), without a message from the user. Its news follows. The
     /// monitors it is for come by ID.
     Monitor(Opening, Vec<uuid::Uuid>),
     /// A turn Arko stopped in the middle of goes on, without a message.
     Recover,
     /// The user answered or dismissed the agent's questions, without a
-    /// message: the notes that say so follow.
+    /// message. The notes that say so follow.
     Answers,
 }
 
@@ -552,12 +552,12 @@ impl Prompt {
 pub(crate) enum News {
     /// There is none (left).
     Done,
-    /// The conversation isn't waiting for a message: it goes with the
+    /// The conversation isn't waiting for a message, so it goes with the
     /// user's next one.
     Waiting,
     /// The user stopped the turn it started.
     Stopped,
-    /// The turn it started failed: it waits for the next message, or news.
+    /// The turn it started failed, so it waits for the next message, or news.
     Failed,
     /// The user quit during the turn it started.
     Exit,
@@ -566,19 +566,19 @@ pub(crate) enum News {
 pub(crate) struct Harness {
     pub(crate) settings: Settings,
     /// What the agents' configurations take from the providers (how the
-    /// session reaches OpenAI models, how Claude Code runs): `/model`
+    /// session reaches OpenAI models, how Claude Code runs). `/model`
     /// builds them again with it.
     pub(crate) providers: providers::Setup,
     pub(crate) session: Session,
     pub(crate) client: Arc<LLMClient>,
-    /// The API keys: what the client and the search indexes use, and which
+    /// The API keys, meaning what the client and the search indexes use, and which
     /// providers the session reaches (`/keys`).
     pub(crate) keys: Arc<keys::Keys>,
     pub(crate) main_config: arko_agents::AgentConfig,
     pub(crate) worker_config: arko_agents::AgentConfig,
     pub(crate) tools: Vec<Arc<dyn Tool>>,
     /// Tools Arko has that this session doesn't give (a chat's, the
-    /// monitors with -p): a saved run offered one gets a stand-in with its
+    /// monitors with -p). A saved run offered one gets a stand-in with its
     /// definition.
     pub(crate) withheld: Vec<Arc<dyn Tool>>,
     /// Arko's folder.
@@ -588,9 +588,9 @@ pub(crate) struct Harness {
     pub(crate) mcp: mcp::Session,
     /// The skill folders that exist.
     pub(crate) skill_folders: Vec<PathBuf>,
-    /// The search indexes; `None` when they couldn't be opened.
+    /// The search indexes, `None` when they couldn't be opened.
     pub(crate) indexes: Option<Arc<index::Indexes>>,
-    /// In a resumed session: the tools (and skills) Arko has that the
+    /// In a resumed session, the tools (and skills) Arko has that the
     /// session's agents aren't offered, as they started without them.
     pub(crate) unoffered: Option<String>,
     pub(crate) output: Arc<Output>,
@@ -606,9 +606,9 @@ pub(crate) struct Harness {
     /// The notes the main agent keeps (see `kept_notes`).
     pub(crate) kept: Arc<kept_notes::KeptNotes>,
     /// What the user typed during a turn that the agent didn't read before
-    /// the turn ended: it goes with the next message.
+    /// the turn ended, so it goes with the next message.
     pub(crate) unread: Vec<String>,
-    /// The conversation changed (`/new`, `/resume`): the next message names
+    /// The conversation changed (`/new`, `/resume`). The next message names
     /// the workers still running, whose reports now come to it.
     pub(crate) switched: bool,
     /// Without a terminal, lines read during a turn wait for their own
@@ -616,7 +616,7 @@ pub(crate) struct Harness {
     pub(crate) queue_lines: bool,
     /// The user quit while a turn ran before the prompt opened.
     pub(crate) exiting: bool,
-    /// The session switched between Chat and Agent: it closes, for the
+    /// The session switched between Chat and Agent. It closes, for the
     /// front end to open it again in its new mode.
     pub(crate) reopen: bool,
     /// An edited message (or one sent again) waits to start a turn, cutting
@@ -625,12 +625,12 @@ pub(crate) struct Harness {
     /// The next turn cuts the conversation back to this message first.
     pub(crate) cut_back: Option<usize>,
     /// The handover report the conversation it cuts back to its first
-    /// message began from: the new first message keeps it.
+    /// message began from. The new first message keeps it.
     pub(crate) cut_report: Option<String>,
-    /// The prompt cache is kept warm with a message (`REFRESH_MESSAGE`):
+    /// The prompt cache is kept warm with a message (`REFRESH_MESSAGE`), because
     /// the provider takes no refresh out of band.
     pub(crate) refresh_turn: bool,
-    /// Arko only waits for the workers to finish (no terminal): requests
+    /// Arko only waits for the workers to finish (no terminal). Requests
     /// that would start something are refused.
     pub(crate) only_workers: bool,
     /// The images the transcript shows.
@@ -647,13 +647,13 @@ pub(crate) struct Harness {
     pub(crate) one_shot: bool,
     /// The model naming the session, which closes and stops with it.
     pub(crate) naming: crate::session_names::naming::Naming,
-    /// `/exit` was typed with workers or background jobs running: the next
+    /// `/exit` was typed with workers or background jobs running. The next
     /// one quits.
     pub(crate) exit_warned: bool,
-    /// The background jobs the line prompt's last `/exit` warned of: the
+    /// The background jobs the line prompt's last `/exit` warned of. The
     /// next `/exit` stops those, and asks again about any other.
     pub(crate) jobs_shown: Vec<uuid::Uuid>,
-    /// The jobs the last `/jobs` listed, in its order, with their names:
+    /// The jobs the last `/jobs` listed, in its order, with their names, so
     /// `/jobs stop N` stops the one it showed as N.
     pub(crate) jobs_listed: Vec<(uuid::Uuid, String)>,
     /// Where the full-screen view, while it is up, is told to ask about
@@ -662,25 +662,25 @@ pub(crate) struct Harness {
     /// The front end asks before quitting with workers running too (an
     /// app), not only with background jobs.
     pub(crate) ask_about_workers: bool,
-    /// Where the user's lines come from: the terminal, or an app.
+    /// Where the user's lines come from, the terminal or an app.
     pub(crate) input_source: Source,
     /// The app the session is open in, as people read its name.
     pub(crate) app_name: &'static str,
-    /// The front end shows the web page's links itself: the transcript
+    /// The front end shows the web page's links itself. The transcript
     /// says where it serves without the key.
     pub(crate) shows_page_links: bool,
     /// The user was told that the workers' news waits for their message.
     pub(crate) news_hint_shown: bool,
     /// The user was told that a monitor's alert waits for their message.
     pub(crate) alert_hint_shown: bool,
-    /// What the remote page shows: the workflows' events, and what Arko
+    /// What the remote page shows, meaning the workflows' events, and what Arko
     /// says of the turns.
     pub(crate) feed: remote::Feed,
     /// The remote page's server, while it runs.
     pub(crate) remote: Option<remote::Server>,
-    /// Where the page's actions go; [`Inputs`] reads them.
+    /// Where the page's actions go. [`Inputs`] reads them.
     pub(crate) remote_actions: mpsc::UnboundedSender<Action>,
-    /// Where the page was last asked for, and the port it was served on:
+    /// Where the page was last asked for, and the port it was served on, so
     /// `/remote` serves it there again.
     pub(crate) remote_bind: Option<(remote::Bind, u16)>,
     /// The figures of the page's status.
@@ -696,13 +696,13 @@ pub(crate) struct Harness {
     /// (`/background-after`, Ctrl+B).
     pub(crate) background: Arc<shell::Background>,
     /// The main agent was told which of its background jobs Arko's last
-    /// stop ended (or none were): it is, once per session.
+    /// stop ended (or none were). It is, once per session.
     pub(crate) interrupted_told: bool,
     /// When the user last wrote (a message, a note, an answer, a command),
-    /// or the session opened: monitors' warnings wake the agent only for a
+    /// or the session opened. Monitors' warnings wake the agent only for a
     /// while after it.
     pub(crate) user_active_at: std::time::SystemTime,
-    /// The waits for the user's answers: the main agent's questions it
+    /// The waits for the user's answers, meaning the main agent's questions it
     /// waits for, and the approvals Arko asked for it.
     pub(crate) waiting: Vec<crate::asking::Waiting>,
     /// The user's message starting the next turn as the agent reads it,
@@ -714,7 +714,7 @@ pub(crate) struct Harness {
     /// The conversations `earlier_conversation` reads.
     pub(crate) earlier: Arc<crate::switch::Earlier>,
     /// The `/message` (its worker and words) that continues a worker whose
-    /// prompt cache expired without asking again: the one Arko just asked
+    /// prompt cache expired without asking again, meaning the one Arko just asked
     /// about, or one the user confirmed in a front end.
     pub(crate) continue_asked: Option<(String, String)>,
     /// The workflow's note board refuses what the user's sends post, so a
@@ -748,7 +748,7 @@ impl Harness {
         // session's on its next message (`reconfigure`).
         if let Some(saved) = &saved {
             // (A conversation of the other mode takes the session's on its
-            // next message: nothing to say of it.)
+            // next message, so nothing to say of it.)
             let main_resumes = saved.configs.get(MAIN).is_some_and(|config| {
                 config.tool_config.chat == (self.settings.mode == Mode::Chat)
             });
@@ -760,7 +760,7 @@ impl Harness {
         }
         let name = saved.as_ref().map_or(WORKFLOW_NAME, |saved| &saved.name);
         let main_config = self.main_config.clone();
-        // The configuration of the conversation the session goes on in: the
+        // The configuration of the conversation the session goes on in, meaning the
         // saved one's, unless its next message reconfigures it (one of the
         // other mode), or there is none.
         let going_on = saved
@@ -795,7 +795,7 @@ impl Harness {
         for tool in &self.tools {
             builder = builder.agent_tool(MAIN, tool.clone());
         }
-        // The MCP servers: `mcp`, offered to the conversations whose
+        // The MCP servers are `mcp`, offered to the conversations whose
         // configuration lists it (every new one), and a tool for each tool
         // of a running server, for the conversations saved with those, which
         // keep their tool list and their prompt cache. Neither is offered to
@@ -846,7 +846,7 @@ impl Harness {
         // The main agent saves and removes skills.
         own.extend(skill_install::tools(self.skill_context(&main_config)));
         // A conversation that carries an earlier one over reads it (see
-        // `switch`): its configuration lists the tool.
+        // `switch`). Its configuration lists the tool.
         own.push(Arc::new(crate::earlier::EarlierConversation(
             self.earlier.clone(),
         )));
@@ -965,7 +965,7 @@ impl Harness {
         // search index's or the monitors without them, the worker profile
         // tools without workers) get stand-ins that say so, for those runs.
         // Each is offered with the definition the run had, so its tool list
-        // stays the same: Arko's own tools' as Arko has them, and a server's
+        // stays the same, with Arko's own tools' as Arko has them, and a server's
         // as the session kept it. (A session last opened by an Arko that
         // didn't keep them has none for a server's tools.)
         if let Some(saved) = &saved {
@@ -1005,7 +1005,7 @@ impl Harness {
                 }
             }
         }
-        // After the crew's hook: a call it refuses doesn't act.
+        // After the crew's hook, so a call it refuses doesn't act.
         builder = builder.hook(HookPoint::PreToolExecution, self.outside.hook());
         // The images the tools return, for the transcript.
         builder = builder.tool_image_sink(Arc::new(crate::images::ToolImages {
@@ -1115,7 +1115,7 @@ impl Harness {
 
     /// The status takes what the main agent's model in `config` accepts,
     /// and how long its prompt cache lasts, as the provider says (Claude
-    /// Code's shows in its cache writes): for the conversation the session
+    /// Code's shows in its cache writes), for the conversation the session
     /// opens in, one it goes back to, and a new one.
     pub(crate) fn take_window(&self, config: &arko_agents::AgentConfig) {
         let model = &config.llm_config.model;
@@ -1152,8 +1152,8 @@ impl Harness {
         .count()
     }
 
-    /// What the full-screen view's banner shows: the session's top-level
-    /// facts, and its notes (`notes` first: what Arko said before the
+    /// What the full-screen view's banner shows, meaning the session's top-level
+    /// facts, and its notes (`notes` first, meaning what Arko said before the
     /// session started).
     pub(crate) fn header(&self, model_note: Option<String>) -> ui::Banner {
         let mut tools = Vec::new();
@@ -1197,7 +1197,7 @@ impl Harness {
         }
     }
 
-    /// The session's top-level facts at the line prompt (`boxed`: the
+    /// The session's top-level facts at the line prompt (`boxed` says the
     /// full-screen view draws them as its banner instead), then the start
     /// of a new conversation or a resumed one.
     pub(crate) fn banner(&self, new: bool, boxed: bool) {
@@ -1268,7 +1268,7 @@ impl Harness {
             return;
         }
         // The conversation so far, for the clients (the web page, the
-        // full-screen view): they start with what was said.
+        // full-screen view). They start with what was said.
         self.show_questions_of(self.conversations.current_run());
         if let Some(run) = self
             .conversations
@@ -1356,7 +1356,7 @@ impl Harness {
         }
     }
 
-    /// Tells the session's details what changed: what front ends read and
+    /// Tells the session's details what changed, meaning what front ends read and
     /// the commands say.
     pub(crate) fn publish_details(&self) {
         self.details
@@ -1450,7 +1450,7 @@ impl Harness {
                 }
                 Event::Request(request) => {
                     Box::pin(self.request(request, input.waiting())).await;
-                    // It switched between Chat and Agent: it opens again.
+                    // It switched between Chat and Agent. It opens again.
                     if self.reopen {
                         break;
                     }
@@ -1600,7 +1600,7 @@ impl Harness {
                     (Prompt::Answers, Delivery::Answer, not_posted)
                 }
             };
-            // It went: the turn starts with it.
+            // It went, so the turn starts with it.
             let partial = self.partly(&reply, Vec::new(), not_posted);
             reply.accept_partly(delivery, Some(item), partial);
             if let TurnEnd::Exit = self.turn(prompt, input).await {
@@ -1645,7 +1645,7 @@ impl Harness {
         ));
     }
 
-    /// Why the command can't be run from where it was typed, if it can't:
+    /// Why the command can't be run from where it was typed, if it can't, as when
     /// the page can't quit Arko or turn itself off.
     pub(crate) fn terminal_only(&self, command: &str, source: Source) -> Option<String> {
         (source == Source::Web && commands::find(command).is_some_and(|c| c.terminal_only()))
@@ -1671,7 +1671,7 @@ impl Harness {
             lines: lines.clone(),
         };
         // In colour, so that each line's level (a warning, an error) is
-        // known; Tee prints it plain where the terminal has no colour.
+        // known. Tee prints it plain where the terminal has no colour.
         let mirror = Arc::new(Output::new(Some(Box::new(tee)), false).colored());
         let output = std::mem::replace(&mut self.output, mirror);
         let result = run(self);
@@ -1696,8 +1696,8 @@ impl Harness {
         result
     }
 
-    /// `/remote`: starts the page (on the address given, else where it was
-    /// last, else 127.0.0.1), or shows its links again; `/remote off` stops
+    /// `/remote` starts the page (on the address given, else where it was
+    /// last, else 127.0.0.1), or shows its links again. `/remote off` stops
     /// it, and `/remote new-key` makes a new key, which ends the page's
     /// sessions.
     pub(crate) async fn remote_command(&mut self, command: &str, source: Source) {
@@ -1757,7 +1757,7 @@ impl Harness {
         }
     }
 
-    /// Where the user acted, as a notice says it: "at the terminal", "in
+    /// Where the user acted, as a notice says it, such as "at the terminal", "in
     /// <the app>".
     fn acted_in(&self, source: Source) -> String {
         match source {
@@ -1790,7 +1790,7 @@ impl Harness {
     }
 
     /// Gives the session's web page a new key, so that the old links no
-    /// longer work: a page served goes on with it on its port (its links),
+    /// longer work. A page served goes on with it on its port (its links),
     /// telling its clients where the user did it.
     pub(crate) async fn new_page_key(
         &mut self,
@@ -1798,7 +1798,7 @@ impl Harness {
     ) -> Result<Option<remote::Page>, String> {
         self.remote_key(true)?;
         match self.remote_bind.filter(|_| self.remote.is_some()) {
-            // On the same port: the old links are dead.
+            // On the same port, so the old links are dead.
             Some((bind, _)) => {
                 let text = format!(
                     "The session's key was changed {}, so the old links no longer work.",
@@ -1836,7 +1836,7 @@ impl Harness {
     }
 
     /// Serves the web page where `bind` says, in place of the one running,
-    /// and prints its links: the page, or why it isn't served. A page that
+    /// and prints its links, or why it isn't served. A page that
     /// can't be served where `bind` says leaves the one running as it was.
     /// On another port, the new page starts before the old one stops. On
     /// the old one's port, the old one stops first, and starts again where
@@ -1920,7 +1920,7 @@ impl Harness {
     }
 
     /// The page `server` serves with `key`, in the status (before its links
-    /// are said: a view that waits for the page finds it as they come).
+    /// are said, so a view that waits for the page finds it as they come).
     fn show_page(&self, server: &remote::Server, key: &str) -> remote::Page {
         let (links, note) = remote::links(server.addr(), key);
         let page = remote::Page {
@@ -1946,13 +1946,13 @@ impl Harness {
         }
     }
 
-    /// Prints the links to the page (with the key: never logged), best
+    /// Prints the links to the page (with the key, which is never logged), best
     /// first, and a QR code of the first that other devices can open.
     pub(crate) fn announce_remote(&self, addr: std::net::SocketAddr, key: &str) {
         let out = &self.output;
         let (links, note) = remote::links(addr, key);
         if self.shows_page_links {
-            // The page's clients read the transcript too: where it serves,
+            // The page's clients read the transcript too, with where it serves,
             // without the key.
             let mut lines = vec!["The web page is served at these addresses.".to_string()];
             lines.extend(links.iter().map(|link| {
@@ -2011,7 +2011,7 @@ impl Harness {
         }
     }
 
-    /// `/remote qr [INTERFACE]`: the QR code of the page's first link that
+    /// `/remote qr [INTERFACE]` shows the QR code of the page's first link that
     /// other devices can open, or of the one on `interface` (a name or an
     /// address).
     pub(crate) fn remote_qr(&self, interface: &str) {
@@ -2067,7 +2067,7 @@ impl Harness {
     }
 
     /// Runs `command` when it changes a setting while the session runs
-    /// (`/outside`); returns whether it was one. A change from the web
+    /// (`/outside`) and returns whether it was one. A change from the web
     /// page is announced in the terminal and on the page, so that whoever
     /// is at the terminal knows.
     pub(crate) fn live_command(&mut self, command: &str, source: Source) -> bool {
@@ -2174,7 +2174,7 @@ impl Harness {
             Request::Send { reply, .. } => {
                 let _ = reply.send(crate::Verdict::closed());
             }
-            // (The web page doesn't change the agent: also during a turn.)
+            // (The web page doesn't change the agent, also during a turn.)
             Request::ShareWebPage { bind, reply } => {
                 let served = match bind.as_deref().map(str::trim) {
                     // The network, never where it was served before.
@@ -2247,7 +2247,7 @@ impl Harness {
         self.feed.questions_counted(last);
     }
 
-    /// How the conversation goes on: in the session's mode, when it was in
+    /// How the conversation goes on, in the session's mode, when it was in
     /// the other (the session switched between Chat and Agent), with the
     /// agent's configuration now, in the session's folder.
     fn continue_options(&self, conversation: &Conversation) -> ContinueOptions {
@@ -2256,7 +2256,7 @@ impl Harness {
             Conversation::New => return options,
             Conversation::Answered(result) => result,
             // A run recovered takes no message, and one reopened keeps its
-            // configuration: the message after it changes it.
+            // configuration. The message after it changes it.
             Conversation::Stopped(run) if run.restart != Restart::Continue => return options,
             Conversation::Stopped(run) => &run.result,
         };
@@ -2279,13 +2279,13 @@ impl Harness {
     /// The user's message `item` started the turn just made, at message
     /// `at` of the conversation or after it (or, when the conversation was
     /// handed over during the turn, as the fresh one's latest with its
-    /// words): it can be edited at the index the task gives it.
+    /// words). It can be edited at the index the task gives it.
     fn mark_message(&self, item: u64, at: usize) {
         let (Some(task), Some(item)) = (self.conversation_task(), self.feed.main_item(item)) else {
             return;
         };
         let words = item.text.trim();
-        // A turn of the user's own words: not one that merely holds them (a
+        // A turn of the user's own words, not one that merely holds them (a
         // handover's report that quotes them).
         let turns: Vec<arko_agents::UserTurn> = task
             .user_turns()
@@ -2304,7 +2304,7 @@ impl Harness {
         }
     }
 
-    /// The user's message `item` edited to `text`: the conversation is cut
+    /// The user's message `item` edited to `text`. The conversation is cut
     /// back to just before it, and `text` starts a turn in its place (in
     /// `repl`). Refused, saying why, while a worker runs, and for a message
     /// the conversation no longer has (one before a handover, or of
@@ -2326,7 +2326,7 @@ impl Harness {
         }
         let index = self.message_at(item, "edited")?;
         // The first message of a conversation that was handed over holds the
-        // report the agent goes on from: the edited one keeps it.
+        // report the agent goes on from. The edited one keeps it.
         self.cut_report = (index == 0)
             .then(|| self.conversation_task())
             .flatten()
@@ -2340,7 +2340,7 @@ impl Harness {
     }
 
     /// Where the user's message `item` is in the agent's conversation now
-    /// (else why it isn't, for a message to be `done`: "edited").
+    /// (else why it isn't, for a message to be `done`, as "edited").
     fn message_at(&self, item: u64, done: &str) -> Result<usize, String> {
         let gone = "The agent's conversation no longer has this message (it was handed over or compacted since, or it is another conversation's). Choose a later message, or start a new conversation.";
         let Some(item) = self
@@ -2382,13 +2382,13 @@ impl Harness {
     }
 
     /// A new session holding the conversation up to just before the user's
-    /// message `before`, or all of it: its ID. It takes this session's
+    /// message `before`, or all of it, giving its ID. It takes this session's
     /// settings, and its conversation from its seed when it opens (see
     /// `import_seed`). Before the conversation's first message, it keeps
     /// none of it but the report the conversation began from, if it was
-    /// handed over: the branch's first message goes on from it.
+    /// handed over. The branch's first message goes on from it.
     fn branch(&self, before: Option<u64>) -> Result<String, String> {
-        // (Its workers stay here: the branch's conversation would speak of
+        // (Its workers stay here, because the branch's conversation would speak of
         // workers it doesn't have.)
         if let Some(crew) = &self.crew
             && let Some(worker) = crew.running().first()
@@ -2421,7 +2421,7 @@ impl Harness {
         )
     }
 
-    /// A branch's first opening: its conversation, from its seed, becomes
+    /// A branch's first opening, meaning its conversation, from its seed, becomes
     /// its main agent's run, saved in a checkpoint (then the seed goes).
     pub(crate) async fn import_seed(&mut self) -> Result<(), String> {
         let seed = self.session.dir.join(crate::session::SEED_FILE);
@@ -2429,7 +2429,7 @@ impl Harness {
             return Ok(());
         }
         if self.session.latest_checkpoint().is_some() {
-            // Saved already: the checkpoint has it.
+            // Saved already, because the checkpoint has it.
             let _ = std::fs::remove_file(&seed);
             return Ok(());
         }
@@ -2452,7 +2452,7 @@ impl Harness {
         Ok(())
     }
 
-    /// Keeps the main agent's prompt cache warm: out of band where the
+    /// Keeps the main agent's prompt cache warm, out of band where the
     /// provider allows, else with a short message and its reply (in
     /// `repl`).
     async fn refresh_cache(&mut self) -> Result<crate::engine::Refreshed, String> {
@@ -2488,7 +2488,7 @@ impl Harness {
         let workflow = self.workflow().clone();
         // The cache lasts from the request's start, as a turn's does.
         let started = crate::keep_warm::Moment::now();
-        // (Boxed: the session's loop would hold it on its stack.)
+        // (Boxed, because the session's loop would hold it on its stack.)
         match Box::pin(workflow.refresh_prompt_cache(&result)).await {
             Ok(refresh) => {
                 let usage = refresh.usage;
@@ -2524,7 +2524,7 @@ impl Harness {
         }
     }
 
-    /// The user's latest message sent again: its turn's reply and what
+    /// The user's latest message sent again. Its turn's reply and what
     /// followed are cut, and a new reply comes.
     fn regenerate(&mut self) -> Result<(), String> {
         let Some(item) = self.feed.last_turn_message() else {
@@ -2552,7 +2552,7 @@ impl Harness {
 
     /// Whether a saved conversation of the main agent may be of the other
     /// mode, so that its next message goes on with the session's
-    /// configuration (`continue_options`): in a chat, and in a session that
+    /// configuration (`continue_options`), which holds in a chat and in a session that
     /// switched between Chat and Agent or was branched from one. (Every saved
     /// conversation resumes with its own configuration, and new ones take
     /// the session's now.)
@@ -2562,7 +2562,7 @@ impl Harness {
             || self.settings.branched_from.is_some()
     }
 
-    /// The chat's instructions from the user: from its first message, or
+    /// The chat's instructions from the user, from its first message, or
     /// else from its next new conversation (the one it is in keeps its
     /// own).
     fn set_chat_instructions(&mut self, text: Option<String>) -> Result<(), String> {
@@ -2594,10 +2594,10 @@ impl Harness {
     }
 
     /// The workflow again, from its latest checkpoint, with the agents'
-    /// configurations now (between turns): the conversations go on where
+    /// configurations now (between turns). The conversations go on where
     /// they are.
     fn reopen_workflow(&mut self) -> Result<(), String> {
-        // As it is now: `/new` may have left the conversation it was in.
+        // As it is now, because `/new` may have left the conversation it was in.
         let new = matches!(self.conversation, Conversation::New);
         self.save_conversations();
         self.open(self.session.latest_checkpoint().is_some())?;
@@ -2612,7 +2612,7 @@ impl Harness {
 
     /// The current conversation as the session saved it, for an export
     /// ([`crate::engine::Request::ExportConversation`]). Refused while
-    /// something can still add to it: a turn, or input waiting (`busy`),
+    /// something can still add to it, meaning a turn, or input waiting (`busy`),
     /// what the user typed during the last turn, or the workers' news.
     /// Between turns the run's result is saved before the turn ends, so
     /// what was saved is all of it.
@@ -2639,7 +2639,7 @@ impl Harness {
     }
 
     /// Makes the session a chat or an agent's (`to`), working in
-    /// `workspace`: refused, saying why, while workers run or their news
+    /// `workspace`. Refused, saying why, while workers run or their news
     /// waits, and (to Chat) while jobs run. The session then closes, to be
     /// opened again in its new mode, and its next message reconfigures the
     /// conversation (see `turn`).
@@ -2701,7 +2701,7 @@ impl Harness {
             if !folder.is_dir() {
                 return Err(format!("{} is not a folder.", folder.display()));
             }
-            // (A Claude Code conversation moves too: Claude Code resumes it
+            // (A Claude Code conversation moves too, because Claude Code resumes it
             // in the folder it started in, with this one added.)
             settings.workspace = folder;
             if settings.max_workers == 0 {
@@ -2735,7 +2735,7 @@ impl Harness {
         Ok(())
     }
 
-    /// The session's name, as the status gives it: the one the user gave
+    /// The session's name, as the status gives it, meaning the one the user gave
     /// it, else its current conversation's, else its first message's start.
     pub(crate) fn publish_title(&self) {
         let title = crate::sessions::title(&self.session, &self.conversations, &self.settings);
@@ -2743,7 +2743,7 @@ impl Harness {
         self.gauges.touch();
     }
 
-    /// The images a message sends: checked for the main agent's model,
+    /// The images a message sends, checked for the main agent's model,
     /// kept for the transcript, and pending for the message's turn or note.
     pub(crate) fn attach(&mut self, attachments: Vec<ui::Attachment>) -> Result<(), String> {
         self.pending_images.clear();
@@ -2768,7 +2768,7 @@ impl Harness {
         Ok(())
     }
 
-    /// `/message WORKER TEXT`: the user's message goes to the worker as its
+    /// `/message WORKER TEXT` means the user's message goes to the worker as its
     /// lead's would, and the lead gets a copy with its next news when
     /// `/message-copies` is on. It went once the worker has it, which
     /// `reply` says. `confirmed` says the user agreed, as they sent it, to
@@ -2859,7 +2859,7 @@ impl Harness {
         }
     }
 
-    /// `/handover`: the main agent hands over at its next step, or when
+    /// `/handover` means the main agent hands over at its next step, or when
     /// its next turn starts. In Claude Code, Claude Code compacts its
     /// conversation then instead.
     pub(crate) fn handover_command(&mut self, source: Source) {
@@ -2884,7 +2884,7 @@ impl Harness {
         self.mirrored(|harness| harness.output.line(handover_text(asked, compacts)));
     }
 
-    /// `/handover-at`: the size the main agent and the workers hand over
+    /// `/handover-at` says the size the main agent and the workers hand over
     /// at, and with a size, sets both. `/handover-at main` and
     /// `/handover-at workers` say or set one of them.
     pub(crate) fn handover_at_command(&mut self, argument: &str, source: Source) {
@@ -2987,7 +2987,7 @@ impl Harness {
         parts.join(" ")
     }
 
-    /// The size new workers hand over at, on their model: the workers'
+    /// The size new workers hand over at, on their model, meaning the workers'
     /// size the user set, else their model's own, up to what the model
     /// leaves room for.
     pub(crate) fn new_workers_handover_at(&self) -> Option<usize> {
@@ -3000,7 +3000,7 @@ impl Harness {
         )
     }
 
-    /// What the user is told of the workers' size: `set` just now, or (with
+    /// What the user is told of the workers' size, meaning `set` just now, or (with
     /// `None`) as it is. The models of the workers that go by less (theirs
     /// leave less room) are named.
     pub(crate) fn workers_handover_text(&self, set: Option<usize>) -> String {
@@ -3071,7 +3071,7 @@ impl Harness {
         text
     }
 
-    /// Asks the main agent for a handover: at its next step while it
+    /// Asks the main agent for a handover, at its next step while it
     /// works, else as its next turn starts. `None` when there is no
     /// conversation to hand over.
     pub(crate) fn ask_handover(&self) -> Option<handover::Asked> {
@@ -3086,7 +3086,7 @@ impl Harness {
         Some(self.handover.ask_next(run))
     }
 
-    /// `--handover-at` when resuming: the size the main agent and the
+    /// `--handover-at` when resuming sets the size the main agent and the
     /// workers hand over at from now on.
     pub(crate) fn handover_at_start(&mut self, tokens: usize) {
         let set = self.set_handover_at(tokens);
@@ -3137,8 +3137,8 @@ impl Harness {
         set
     }
 
-    /// What the user is told when `tokens` was asked for and `set` set;
-    /// asks for the handover when the main agent's context is over it.
+    /// What the user is told when `tokens` was asked for and `set` set.
+    /// It asks for the handover when the main agent's context is over it.
     pub(crate) fn handover_set_lines(&self, tokens: usize, set: usize) -> Vec<String> {
         let compacts = self.handover.compacts();
         let shown = handover::shown(set);
@@ -3168,7 +3168,7 @@ impl Harness {
         lines
     }
 
-    /// `/outside`: says whether outside access is on; `/outside on|off`
+    /// `/outside` says whether outside access is on, and `/outside on|off`
     /// turns it on or off.
     pub(crate) fn outside_command(&mut self, argument: &str, source: Source) {
         let on = match outside::parse(argument) {
@@ -3207,7 +3207,7 @@ impl Harness {
     }
 
     /// Outside access as the session starts. The agents' instructions
-    /// leave it to a note: a new session started with it on says so, and
+    /// leave it to a note. A new session started with it on says so, and
     /// `--allow-outside-workspace` (`flag`) turns it on in a resumed one.
     /// (The banner tells the user.)
     pub(crate) fn outside_at_start(&mut self, new: bool, flag: bool) {
@@ -3218,7 +3218,7 @@ impl Harness {
         }
     }
 
-    /// Turns outside access on or off: the command guard, the file tools
+    /// Turns outside access on or off. The command guard, the file tools
     /// and new workers follow at once, the session keeps it, and the agents
     /// get a note. Returns whether it changed.
     pub(crate) fn set_outside(&mut self, on: bool) -> bool {
@@ -3236,7 +3236,7 @@ impl Harness {
         true
     }
 
-    /// A note to the agents from Arko: the running ones read it at their
+    /// A note to the agents from Arko. The running ones read it at their
     /// next step, and later runs (workers, conversations, handovers) in
     /// their first message.
     pub(crate) fn tell_agents(&self, text: &str) {
@@ -3251,7 +3251,7 @@ impl Harness {
         }
     }
 
-    /// `/monitor-wakes`: how long after the user's last message a monitor's
+    /// `/monitor-wakes` says how long after the user's last message a monitor's
     /// warning before it ends still wakes the agent, and with a time (or
     /// `always`, or `off`), sets it.
     pub(crate) fn monitor_wakes_command(&mut self, argument: &str, source: Source) {
@@ -3292,7 +3292,7 @@ impl Harness {
     }
 
     /// Sets how long after the user's last message a monitor's warning still
-    /// wakes the agent: the monitors follow at once, and the session keeps
+    /// wakes the agent. The monitors follow at once, and the session keeps
     /// it.
     pub(crate) fn set_monitor_wakes(&mut self, wakes: crate::monitors::Wakes) {
         self.settings.monitor_wakes = wakes;
@@ -3306,7 +3306,7 @@ impl Harness {
         }
     }
 
-    /// `/background-after`: when shell commands move to the background, and
+    /// `/background-after` says when shell commands move to the background, and
     /// with a time (or `off`), sets it.
     pub(crate) fn background_after_command(&mut self, argument: &str, source: Source) {
         let now = self.background.after().map_or(0, |after| after.as_secs());
@@ -3346,7 +3346,7 @@ impl Harness {
         self.mirrored(|harness| harness.output.line(&text));
     }
 
-    /// Sets when shell commands move to the background: the commands
+    /// Sets when shell commands move to the background. The commands
     /// started from now on follow, the session keeps it, and the agents get
     /// a note (their shell's description says what it was as Arko started).
     pub(crate) fn set_background_after(&mut self, after: u64) {
@@ -3375,18 +3375,18 @@ impl Harness {
     /// Whether `/exit` quits now (Ctrl+D and Ctrl+C twice are `/exit`
     /// too). The first one only warns of the workers running. Background
     /// jobs stop for good when Arko exits, so Arko quits only once every
-    /// one running is among `agreed`, those the user agreed to stop: the
+    /// one running is among `agreed`, those the user agreed to stop (the
     /// full-screen view's popup's, or at the line prompt those its last
-    /// warning named. Else it asks (the popup, or a warning) and stays. The
+    /// warning named). Else it asks (the popup, or a warning) and stays. The
     /// check also readies the jobs for the exit, in one step, so none moves
-    /// to the background after it. `None`: the user turned asking off.
+    /// to the background after it. `None` means the user turned asking off.
     pub(crate) fn may_exit(&mut self, agreed: Option<Vec<uuid::Uuid>>) -> bool {
         let workers = self.crew.as_ref().map_or(0, |crew| crew.running().len());
         let warn_workers = workers > 0 && !self.exit_warned;
         let mut jobs = match agreed {
             None if warn_workers => Vec::new(),
             None => return true,
-            // Arko stays, for now: the jobs only to say so.
+            // Arko stays, for now, with the jobs only to say so.
             Some(_) if warn_workers => self.background.jobs(),
             Some(agreed) => match self.background.close(&agreed) {
                 Ok(()) => return true,
@@ -3630,7 +3630,7 @@ impl Harness {
         }
     }
 
-    /// `/skills`: a line for each skill, with its description and where it
+    /// `/skills` gives a line for each skill, with its description and where it
     /// comes from.
     pub(crate) fn list_skills(&self) {
         self.list_skills_within(terminal_width());
@@ -3709,12 +3709,12 @@ impl Harness {
         }
     }
 
-    /// One turn: the message goes to the main agent, and its reply is
+    /// One turn. The message goes to the main agent, and its reply is
     /// printed.
     pub(crate) async fn turn(&mut self, prompt: Prompt, input: &mut Inputs) -> TurnEnd {
         let answers_turn = matches!(prompt, Prompt::Answers);
         // A turn Arko stopped in the middle of (a crash) goes on where it
-        // was saved, without a message: the message follows it.
+        // was saved, without a message. The message follows it.
         if !matches!(prompt, Prompt::Recover)
             && self.cut_back.is_none()
             && let Conversation::Stopped(run) = &self.conversation
@@ -3765,7 +3765,7 @@ impl Harness {
             Prompt::User(text) => Some(text.clone()),
             _ => None,
         };
-        // A branch made before its conversation's first message has none:
+        // A branch made before its conversation's first message has none, so
         // it starts from this message, as one cut back to its first does,
         // and goes on from the report its conversation began from.
         if self.cut_back.is_none()
@@ -3786,7 +3786,7 @@ impl Harness {
         // one.
         let retitle = words.filter(|_| cut == Some(0));
         // A conversation that began from a handover's report, cut back to
-        // its first message: the new one goes on from the report too.
+        // its first message. The new one goes on from the report too.
         if let Some(report) = self.cut_report.take()
             && cut == Some(0)
         {
@@ -4207,7 +4207,7 @@ impl Harness {
     }
 
     /// While the main agent's conversation waits for a message, a background
-    /// job of its that finished starts a turn of it: the job's terminal
+    /// job of its that finished starts a turn of it. The job's terminal
     /// update reaches the agent as the turn starts. (One that finishes while
     /// the agent works reaches it as a note.)
     pub(crate) async fn deliver_finished(
@@ -4247,7 +4247,7 @@ impl Harness {
     }
 
     /// While the main agent's conversation waits for a message, a monitor of
-    /// its that alerted, or is about to end, starts a turn of it: the
+    /// its that alerted, or is about to end, starts a turn of it. The
     /// monitor's news reaches the agent as the turn starts. (News that comes
     /// while the agent works reaches it as a note.) An alert whose news a
     /// turn that started meanwhile took starts none, even if news that
@@ -4270,7 +4270,7 @@ impl Harness {
             return News::Done;
         }
         if !matches!(self.conversation, Conversation::Answered(_)) {
-            // A monitor alerts again each minute while its news comes: the
+            // A monitor alerts again each minute while its news comes. The
             // user is told once until their next message.
             if alert.ends_soon {
                 self.say(
@@ -4289,7 +4289,7 @@ impl Harness {
         // Other alerts go with it, and the job updates the task holds.
         let drained = input.drain_alerts();
         input.late = None;
-        // The monitors it is for: those whose news came meanwhile too, of
+        // The monitors it is for, meaning those whose news came meanwhile too, of
         // its kind (a warning, or an alert).
         let mut monitors: Vec<uuid::Uuid> = alert.job.into_iter().collect();
         for other in drained {
@@ -4389,7 +4389,7 @@ impl Harness {
         }
     }
 
-    /// How long a monitor's warning wakes the agent for now: the session's
+    /// How long a monitor's warning wakes the agent for now, which is the session's
     /// setting, which `auto` takes from the main agent's prompt cache.
     pub(crate) fn monitor_window(&self) -> Option<Duration> {
         let cache = lock(&self.stats).cache_lifetime;
@@ -4407,7 +4407,7 @@ impl Harness {
         self.gauges.touch();
     }
 
-    /// The user wrote just now: the monitors' warnings go on waking the
+    /// The user wrote just now, so the monitors' warnings go on waking the
     /// agent for a while.
     pub(crate) fn user_present(&mut self) {
         self.user_active_at = std::time::SystemTime::now();
@@ -4416,7 +4416,7 @@ impl Harness {
         }
     }
 
-    /// Whether a monitor's warning wakes the agent now: the user wrote within
+    /// Whether a monitor's warning wakes the agent now, meaning the user wrote within
     /// the time warnings wake it for.
     pub(crate) fn warnings_wake(&self) -> bool {
         let within = self.monitor_window();
@@ -4424,7 +4424,7 @@ impl Harness {
         within.is_none_or(|within| since < within)
     }
 
-    /// Ctrl+B: moves the calls `agent` runs (the main agent, or a worker by
+    /// Ctrl+B moves the calls `agent` runs (the main agent, or a worker by
     /// its ID) to the background at once, a shell command or another long
     /// call (an MCP tool, `index_create`).
     pub(crate) fn move_to_background(&self, agent: &str) {
@@ -4531,8 +4531,8 @@ impl Harness {
             .unwrap_or_default()
     }
 
-    /// The web page's Move to background or Stop: done, and what didn't
-    /// work said.
+    /// The web page's Move to background or Stop is done, and what didn't
+    /// work is said.
     pub(crate) fn page_job_action(&mut self, action: Action) {
         match action {
             Action::Background { item } => {
@@ -4551,7 +4551,7 @@ impl Harness {
         }
     }
 
-    /// `/jobs`: the background jobs running, and `/jobs stop N` or
+    /// `/jobs` lists the background jobs running, and `/jobs stop N` or
     /// `/jobs stop all` stops them. N is the number the last `/jobs`
     /// showed.
     pub(crate) fn jobs_command(&mut self, argument: &str) {
@@ -4648,7 +4648,7 @@ impl Harness {
     }
 
     /// Without a terminal (with -p, or input from a pipe), Arko waits for
-    /// the workers before it ends: their news goes to the agent as it
+    /// the workers before it ends. Their news goes to the agent as it
     /// comes. Returns how the last turn ended.
     pub(crate) async fn finish_workers(&mut self, input: &mut Inputs) -> TurnEnd {
         let mut said = false;
@@ -4783,7 +4783,7 @@ impl Harness {
             parts.push(kept);
         }
         if !self.unread.is_empty() {
-            // They were posted as one-time notes too: the run this message
+            // They were posted as one-time notes too, so the run this message
             // continues would get them a second time. (The notes of the
             // user's answers are for the run alone, and still reach it.)
             let continued = match &self.conversation {
@@ -4850,7 +4850,7 @@ impl Harness {
 
     /// The main agent's background jobs that were running when Arko last
     /// stopped or quit, which don't start again, for the first message of
-    /// their conversation since: once per session. (Another conversation's
+    /// their conversation since, once per session. (Another conversation's
     /// message leaves them for theirs.)
     fn interrupted_jobs(&mut self) -> Option<String> {
         // (A new conversation has no jobs yet.)
@@ -4892,7 +4892,7 @@ impl Harness {
         Some(format!("{STOPPED_JOBS}\n{}", lines.join("\n")))
     }
 
-    /// After a failed turn: the stopped jobs its message named are named
+    /// After a failed turn, the stopped jobs its message named are named
     /// again by the next message, unless the conversation holds that
     /// message (the model may have read it).
     pub(crate) fn tell_stopped_jobs_again(&mut self, told: bool) {
@@ -4962,10 +4962,10 @@ impl Harness {
         let first = self.conversations.current == Some(0);
         if let Some(record) = self.conversations.current_mut() {
             record.title = conversations::title_of(&words);
-            // Saved first: a name kept for the old words is not shown once
+            // Saved first, because a name kept for the old words is not shown once
             // the title says they changed, by any process that reads it.
             self.save_conversations();
-            // A model's name was of the message that is gone: the runs for it
+            // A model's name was of the message that is gone, so the runs for it
             // end (also those of this session in an earlier harness that
             // are still going) and the new message is named in its place.
             if first {
@@ -5001,7 +5001,7 @@ impl Harness {
         }
     }
 
-    /// What the session has cost: the main agent's runs and the workers'.
+    /// What the session has cost, meaning the main agent's runs and the workers'.
     pub(crate) fn spent(&self) -> f64 {
         self.workflow().context().budget.total_spent()
     }
@@ -5037,9 +5037,9 @@ impl Harness {
     }
 }
 
-/// Where the conversation whose latest run is `run` stands: stopped (or
+/// Where the conversation whose latest run is `run` stands, meaning stopped (or
 /// interrupted), answered, or neither (no run yet, or one that can't go
-/// on: the next message starts one).
+/// on, since the next message starts one).
 pub(crate) fn conversation_of(workflow: &Workflow, run: Option<uuid::Uuid>) -> Conversation {
     let Some(latest) = run.and_then(|run| workflow.agent_result(run)) else {
         return Conversation::New;
@@ -5058,7 +5058,7 @@ pub(crate) fn conversation_of(workflow: &Workflow, run: Option<uuid::Uuid>) -> C
     }
 }
 
-/// The command `text` is, if it is one: a command's name, alone or with
+/// The command `text` is, if it is one, meaning a command's name, alone or with
 /// what it takes, as the registry ([`commands::find`]) says. That holds for
 /// the commands that also run while the agent works ([`LIVE_COMMANDS`]), so
 /// a line such as `/handover extra` is refused as an unknown command, with
@@ -5072,7 +5072,7 @@ pub(crate) fn is_remote_command(text: &str) -> bool {
     text == "/remote" || text.starts_with("/remote ")
 }
 
-/// The link `/remote qr` shows: the first other devices can open, or the
+/// The link `/remote qr` shows, meaning the first other devices can open, or the
 /// one on `interface` (a name or an address). `Err` with what to tell the
 /// user when there is none, of a server on `addr`.
 pub(crate) fn qr_link<'a>(
@@ -5100,7 +5100,7 @@ pub(crate) fn qr_link<'a>(
     })
 }
 
-/// Where a link leads, as the terminal says it: ` (ens33, LAN)`.
+/// Where a link leads, as the terminal says it, such as ` (ens33, LAN)`.
 pub(crate) fn place(link: &remote::Link) -> String {
     link.interface
         .as_ref()
@@ -5120,7 +5120,7 @@ pub(crate) fn publish_title_from_disk(session: &Session, gauges: &Gauges) {
 }
 
 /// The commands that change a setting while the session runs, which take
-/// an argument: `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
+/// an argument, meaning `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, `/approve` and `/reject`, which work while the agent
 /// works too.
 pub(crate) const LIVE_COMMANDS: [&str; 30] = [
@@ -5173,7 +5173,7 @@ fn jobs_label(label: &str) -> String {
 }
 
 /// What the user is told of when shell commands move to the background,
-/// after `after` seconds (0: never).
+/// after `after` seconds (0 means never).
 pub(crate) fn background_after_text(after: u64) -> String {
     match after {
         0 => format!(
@@ -5217,7 +5217,7 @@ pub(crate) fn openrouter_words(text: &str) -> Option<&str> {
         .map(|(_, argument)| argument)
 }
 
-/// A live command, alone or with its argument (after a space or a tab):
+/// A live command, alone or with its argument (after a space or a tab), meaning
 /// the command and the argument.
 pub(crate) fn split_live_command(text: &str) -> Option<(&str, &str)> {
     let (name, argument) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
@@ -5226,7 +5226,7 @@ pub(crate) fn split_live_command(text: &str) -> Option<(&str, &str)> {
         .then_some((name, argument.trim()))
 }
 
-/// Prints through `to`, and keeps a copy of the lines: a command's output,
+/// Prints through `to`, and keeps a copy of the lines of a command's output,
 /// for the remote page.
 pub(crate) struct Tee {
     pub(crate) to: Arc<Output>,
@@ -5486,7 +5486,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// The flags become the session's options: which session, each pair of
+    /// The flags become the session's options, meaning which session, each pair of
     /// flags as yes, no or neither, -p's message as a new session's title,
     /// and whether someone takes part at the terminal.
     #[test]
@@ -5536,7 +5536,7 @@ pub(crate) mod tests {
         let one_shot = options(&["-p", "Count the files."], true).unwrap();
         assert!(one_shot.one_shot && !one_shot.interactive);
         assert_eq!(one_shot.title.as_deref(), Some("Count the files."));
-        // The web page: text replies, but no one at the terminal to ask.
+        // The web page has text replies, but no one at the terminal to ask.
         let remote = options(&["--remote", "0.0.0.0:9000"], false).unwrap();
         assert!(!remote.interactive && text_replies_for(&remote));
         assert_eq!(remote.remote.and_then(|bind| bind.port), Some(9000));
@@ -5612,7 +5612,7 @@ pub(crate) mod tests {
             .err()
             .unwrap();
         assert_eq!(error, "cancelled");
-        // No one to ask: what the session needs.
+        // No one to ask, so the error is what the session needs.
         let error = client_asking(&NoPrompter, || Err(Failure::Need(need.clone())))
             .await
             .err()
@@ -5833,7 +5833,7 @@ pub(crate) mod tests {
             );
         }
         // A session made since, saved with every worker on the session's
-        // model and changed to the main agent's choice, lacks nothing: the
+        // model and changed to the main agent's choice, lacks nothing, since the
         // tool had `nested` all along.
         let session = AgentSettings {
             worker_models: agents::ModelChoice::Session,
@@ -5887,7 +5887,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// A session fin (Arko's name before) saved resumes in Arko: its
+    /// A session fin (Arko's name before) saved resumes in Arko. Its
     /// checkpoint names the workflow `fin`, and its agents' saved
     /// configurations say "You are fin", which Arko keeps for it. The main
     /// agent goes on, a worker it started continues, and a new worker
@@ -6115,7 +6115,7 @@ pub(crate) mod tests {
         )
         .unwrap();
 
-        // What the whole checkpoint gives: the last of each name's runs.
+        // What the whole checkpoint gives, meaning the last of each name's runs.
         let state: arko_workflows::persistence::state::WorkflowState =
             serde_json::from_str(&std::fs::read_to_string(&checkpoint).unwrap()).unwrap();
         let mut expected = std::collections::HashMap::new();
@@ -6172,7 +6172,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// The agent's questions reach the prompt, and the answer comes back;
+    /// The agent's questions reach the prompt, and the answer comes back, and
     /// without a terminal, the agent hears that no one can answer. The
     /// asker never fails the turn.
     #[tokio::test]
@@ -6208,7 +6208,7 @@ pub(crate) mod tests {
         answer.send("spaces".into()).unwrap();
         assert_eq!(asking.await.unwrap().unwrap(), "spaces");
 
-        // Asked without waiting: the asker returns at once, and the answers
+        // Asked without waiting. The asker returns at once, and the answers
         // come later. The feed says which are open.
         let mut later = request("");
         later.wait = false;
@@ -6294,7 +6294,7 @@ pub(crate) mod tests {
             fresh(&saved, &with).unwrap(),
             "This session's saved conversations and workers started without the search index tools and skills, so they get them only from their next handover (those started after /model changed the model, or by /new continue, keep theirs). New conversations (/new) and new workers have them from the start."
         );
-        // Saved before `mcp`: with a tool for each MCP tool, nothing is said
+        // Saved before `mcp`, with a tool for each MCP tool, nothing is said
         // of it, and without, it is.
         let direct = saved_with(&|config| {
             let tools = &mut config.tool_config.available_tool_names;
@@ -6319,14 +6319,14 @@ pub(crate) mod tests {
         );
     }
 
-    /// What `harness`'s agents are built from: its settings, without MCP
+    /// What `harness`'s agents are built from, meaning its settings, without MCP
     /// servers, skills or indexes.
     fn agent_settings_of(harness: &Harness) -> AgentSettings<'_> {
         let setup = providers::Setup::new(harness.settings.openai_auth);
         AgentSettings::for_session(&harness.settings, Box::leak(Box::new(setup)))
     }
 
-    /// A harness in `temp` on the model server's client, with workers;
+    /// A harness in `temp` on the model server's client, with workers,
     /// with a terminal when `interactive`. Returns it, its inputs, and
     /// what sends the user's input.
     pub(crate) fn harness(
@@ -6354,7 +6354,7 @@ pub(crate) mod tests {
         let output = Arc::new(Output::new(None, true));
         let stats = Arc::new(Mutex::new(Stats::default()));
         let feed = remote::Feed::new(MAIN);
-        // (A ChatGPT login's client counts as a key's here: no test
+        // (A ChatGPT login's client counts as a key's here, because no test
         // depends on the difference.)
         let keys = keys::Keys::new(
             client.clone(),
@@ -6567,7 +6567,7 @@ pub(crate) mod tests {
     }
 
     /// The status is read without the cost ledger, which grows with every
-    /// call: run with --ignored --nocapture for the times, with 10,000
+    /// call. Run with --ignored --nocapture for the times, with 10,000
     /// entries, of a read and of what each read did before (the list price
     /// from a copy of the ledger).
     #[tokio::test]
@@ -6821,7 +6821,7 @@ pub(crate) mod tests {
             Err("Arko is only waiting for the workers now.".to_string())
         );
         // An export waits for anything that can still add to the
-        // conversation: the workers' news, input waiting to be read, or
+        // conversation, meaning the workers' news, input waiting to be read, or
         // what was typed during the last turn.
         async fn export(harness: &mut Harness, waiting: bool) -> Result<(), String> {
             let (reply, answer) = oneshot::channel();
@@ -6911,7 +6911,7 @@ pub(crate) mod tests {
     }
 
     /// `/new` and `/resume N` mark where the conversation changes in the
-    /// feed: a client showing one conversation at a time starts after the
+    /// feed. A client showing one conversation at a time starts after the
     /// mark, one keeping them all draws it as a separator.
     #[tokio::test]
     async fn new_and_resume_put_a_separator_in_the_feed() {
@@ -6968,7 +6968,7 @@ pub(crate) mod tests {
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
-    /// With -p, the agent starts a worker and replies; Arko waits for the
+    /// With -p, the agent starts a worker and replies. Arko waits for the
     /// worker, and its report starts a turn whose reply is the answer.
     #[tokio::test]
     async fn a_one_shot_turn_waits_for_its_workers_and_hears_their_news() {
@@ -7303,7 +7303,7 @@ pub(crate) mod tests {
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
-    /// Ctrl-C preserves the worker and the workflow; /new transfers its ownership.
+    /// Ctrl-C preserves the worker and the workflow, and /new transfers its ownership.
     #[tokio::test]
     async fn a_lead_stop_and_new_conversation_keep_workers_alive() {
         use crate::mock_model::{ModelServer, complete, tool_call};
@@ -7440,7 +7440,7 @@ pub(crate) mod tests {
         ));
         assert_eq!(summary(&harness), "Worker recovery finished.");
         assert_eq!(workers.load(Ordering::SeqCst), 2);
-        // The lead isn't told that r1 stopped as Arko closed: it goes on.
+        // The lead isn't told that r1 stopped as Arko closed, and it goes on.
         let told = bodies.lock().unwrap().clone();
         assert!(
             told.iter()
@@ -8365,7 +8365,7 @@ pub(crate) mod tests {
     }
 
     /// Requests that come together share the tray, and one answer settles
-    /// them all: those selected are approved and the others rejected, each
+    /// them all. Those selected are approved and the others rejected, each
     /// with the words the message box held, which the transcript shows as
     /// the user's answer. Words too long to send settle nothing, and an
     /// answer to requests no longer waiting is dropped.
@@ -8529,7 +8529,7 @@ pub(crate) mod tests {
 
     /// The agent's closing of a question its ask hadn't brought to the
     /// harness yet closes it once it comes, and an answer to a question
-    /// already closed (or answered) is dropped: the first to settle it
+    /// already closed (or answered) is dropped. The first to settle it
     /// wins, so two front ends answering the same question answer it once.
     #[tokio::test]
     async fn the_first_to_settle_a_question_wins() {
@@ -8606,7 +8606,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// A message sent with questions attached answers only those: when
+    /// A message sent with questions attached answers only those. When
     /// they were dismissed meanwhile, it doesn't answer the question the
     /// agent waits for instead. An answer to an old page's card that has
     /// no question open any more is dropped.
@@ -8630,7 +8630,7 @@ pub(crate) mod tests {
     }
 
     /// The questions shown are the current conversation's, and an answer
-    /// or dismissal names only those: another conversation's question with
+    /// or dismissal names only those. Another conversation's question with
     /// the same id (a session saved before ids were the session's) is
     /// left alone.
     #[tokio::test]
@@ -8660,7 +8660,7 @@ pub(crate) mod tests {
     }
 
     /// The answers kept for a conversation go to its run alone, as notes
-    /// for that run: a new conversation's turn (after /new) doesn't get
+    /// for that run. A new conversation's turn (after /new) doesn't get
     /// them, and the conversation, gone back to (/resume), does, once each.
     #[tokio::test]
     async fn kept_answers_go_to_their_own_conversation() {
@@ -8801,7 +8801,7 @@ pub(crate) mod tests {
     }
 
     /// An answer stays kept until its run is given its note, by the
-    /// workflow's own count, not by what the conversation's text holds: a
+    /// workflow's own count, not by what the conversation's text holds, and a
     /// wait that the turn's stop dropped doesn't count. Each answer reaches
     /// the agent once.
     #[tokio::test]
@@ -8863,7 +8863,7 @@ pub(crate) mod tests {
         harness.settle_answer_notes();
         assert_eq!(harness.feed.queued_notes(run).len(), 1);
         assert!(harness.notes_waiting(run));
-        // Arko restarts: the session keeps it.
+        // Arko restarts, and the session keeps it.
         let restarted = remote::Feed::new(MAIN);
         restarted.keep_questions(kept);
         assert_eq!(restarted.queued_notes(run).len(), 1);
@@ -9053,7 +9053,7 @@ pub(crate) mod tests {
         assert!(harness.feed.queued_notes(run).is_empty());
     }
 
-    /// Answers too long to send as one note settle nothing: the questions
+    /// Answers too long to send as one note settle nothing. The questions
     /// stay open, a wait gets nothing, no note is kept, and the user is
     /// told how short to make them. That holds for one long answer, a batch
     /// that is long together and a long message. A long question with a
@@ -9119,7 +9119,7 @@ pub(crate) mod tests {
         assert_eq!(harness.reply_refused("Tabs.", &["q1".into()]), None);
         // A plain message, answering nothing, isn't held to it.
         assert_eq!(harness.reply_refused(&long, &[]), None);
-        // Asked with a wait: the wait gets nothing, and its question stays.
+        // Asked with a wait, so the wait gets nothing, and its question stays.
         let (answer, mut answered) = tokio::sync::oneshot::channel();
         harness.question_asked(Question {
             run,
@@ -9154,7 +9154,7 @@ pub(crate) mod tests {
     }
 
     /// An answer given after the agent's question was recorded but before
-    /// its wait reached the harness goes once: as the note, which the wait,
+    /// its wait reached the harness goes once, as the note, which the wait,
     /// once up, hears follows.
     #[tokio::test]
     async fn an_answer_before_its_wait_is_up_goes_once() {
@@ -9193,7 +9193,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// A message answers the questions attached to it and no others: one
+    /// A message answers the questions attached to it and no others. One
     /// asked after they were attached stays open, waited for or not.
     /// Without questions attached, it answers only those the agent waits
     /// for, not one asked without waiting.
@@ -9238,7 +9238,7 @@ pub(crate) mod tests {
         assert!(text.starts_with("(This message answers q2.)"), "{text}");
         assert!(answered.try_recv().is_err());
         assert_eq!(open(&harness), ["q3"]);
-        // Nothing attached: the question waited for, not q4.
+        // Nothing attached, so the question waited for, not q4.
         ask_later(&mut harness, run, "q4", "Squash the commits?");
         assert_eq!(harness.reply_text("main", &[]).text(), None);
         assert_eq!(
@@ -9432,8 +9432,8 @@ pub(crate) mod tests {
         drop(typing.await.unwrap());
     }
 
-    /// A submission answers only the current conversation's questions:
-    /// one sent before a /new or a /resume, about another conversation's
+    /// A submission answers only the current conversation's questions.
+    /// One sent before a /new or a /resume, about another conversation's
     /// questions, is dropped, even while the current conversation has a
     /// question open.
     #[tokio::test]
@@ -9516,7 +9516,7 @@ pub(crate) mod tests {
     }
 
     /// A request whose tool stops waiting (its turn stopped) leaves the
-    /// tray, and a session that opens again has none: its tool, run again,
+    /// tray, and a session that opens again has none. Its tool, run again,
     /// asks anew.
     #[tokio::test]
     async fn a_request_leaves_the_tray_when_its_tool_stops_waiting() {
@@ -9541,7 +9541,7 @@ pub(crate) mod tests {
         assert!(harness.feed.questions().is_empty());
     }
 
-    /// Question ids go on across the session's conversations: a new
+    /// Question ids go on across the session's conversations. A new
     /// conversation's questions are numbered after the last one's.
     #[tokio::test]
     async fn question_ids_are_unique_in_the_session() {
@@ -9590,7 +9590,7 @@ pub(crate) mod tests {
     }
 
     /// An OpenAI organization that isn't verified for reasoning summaries
-    /// refuses them: the request goes again without them and the turn goes
+    /// refuses them. The request goes again without them and the turn goes
     /// on. The session says so once, no later request asks for them, and
     /// the main agent's saved configuration asks for none either.
     #[tokio::test]
@@ -9672,7 +9672,7 @@ pub(crate) mod tests {
     }
 
     /// What the user types while the agent makes its last request comes
-    /// too late for the turn: once the agent replies, a new turn takes it
+    /// too late for the turn. Once the agent replies, a new turn takes it
     /// to the agent (once), as the workers' news starts one, and the agent
     /// answers it. No notice says so, since that turn starts at once.
     #[tokio::test]
@@ -9782,7 +9782,7 @@ pub(crate) mod tests {
     }
 
     /// The session's status says where its web page is served, with its
-    /// links, while it is: the full-screen view's QR code and an app read it
+    /// links, while it is. The full-screen view's QR code and an app read it
     /// there.
     #[tokio::test]
     async fn the_status_has_the_web_page_while_it_is_served() {
@@ -9808,7 +9808,7 @@ pub(crate) mod tests {
         assert_eq!(remote::Meter::read(harness.gauges.as_ref()).page, None);
     }
 
-    /// Serves `harness`'s web page on a free port; returns an HTTP client,
+    /// Serves `harness`'s web page on a free port and returns an HTTP client,
     /// the page's address and a session cookie.
     async fn web(harness: &mut Harness) -> (reqwest::Client, String, String) {
         harness
@@ -9864,7 +9864,7 @@ pub(crate) mod tests {
     }
 
     /// The agent's question shows on the page, and the answer sent from
-    /// it reaches the agent; the page's history has the turn.
+    /// it reaches the agent, and the page's history has the turn.
     #[tokio::test]
     async fn the_web_page_answers_the_agents_question() {
         use crate::mock_model::{ModelServer, complete, tool_call};
@@ -9934,7 +9934,7 @@ pub(crate) mod tests {
     }
 
     /// A message sent from the page while the agent works reaches it as a
-    /// note; when the agent is idle, it comes in as typed lines do. The
+    /// note. When the agent is idle, it comes in as typed lines do. The
     /// agent's calls show on the page.
     #[tokio::test]
     async fn a_message_from_the_web_page_is_a_note_while_the_agent_works() {
@@ -10084,7 +10084,7 @@ pub(crate) mod tests {
     }
 
     /// A command's warning (or error) reaches the feed with its level, so
-    /// the clients show it in its colour; its other lines stay plain.
+    /// the clients show it in its colour, and its other lines stay plain.
     #[tokio::test]
     async fn a_commands_warnings_keep_their_level_in_the_feed() {
         let temp = tempfile::tempdir().unwrap();
@@ -10115,7 +10115,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// Commands sent from the page run, and their output shows on it; the
+    /// Commands sent from the page run, and their output shows on it, and the
     /// page can't quit Arko.
     #[tokio::test]
     async fn commands_from_the_web_page_show_their_output_there() {
@@ -10235,7 +10235,7 @@ pub(crate) mod tests {
             .map(|index| argv[index + 1].clone())
     }
 
-    /// A turn on a model on OpenRouter: Arko sends OpenRouter's own
+    /// A turn on a model on OpenRouter. Arko sends OpenRouter's own
     /// reasoning, the 1-hour cache on a Claude slug, and its tools, and the
     /// cost is what OpenRouter reports.
     #[tokio::test]
@@ -10294,7 +10294,7 @@ pub(crate) mod tests {
         managers.shutdown().await;
     }
 
-    /// A turn on a Gemini model: Arko sends its thinking level (xhigh
+    /// A turn on a Gemini model. Arko sends its thinking level (xhigh
     /// effort thinks high) and its tools, and the cost is priced from the
     /// registry.
     #[tokio::test]
@@ -10350,7 +10350,7 @@ pub(crate) mod tests {
     }
 
     /// A turn on a Claude Code model (`cc:opus`), through arko's scripted
-    /// stand-in for the `claude` CLI: the CLI is offered Arko's own tools and
+    /// stand-in for the `claude` CLI. The CLI is offered Arko's own tools and
     /// none of Claude Code's, Arko's shell runs the command and its guard
     /// refuses one outside the working directory, and the turn's spending
     /// shows as plan usage, not dollars.
@@ -10360,7 +10360,7 @@ pub(crate) mod tests {
         let fake = temp.path().join("fake");
         std::fs::create_dir_all(&fake).unwrap();
         // Outside the working directory and the temporary directories,
-        // which the guard lets commands change; it doesn't exist, so a
+        // which the guard lets commands change. It doesn't exist, so a
         // command the guard let through would change nothing.
         let outside = format!("~/arko-guard-test-{}", uuid::Uuid::new_v4().simple());
         let script = serde_json::json!([[
@@ -10477,7 +10477,7 @@ pub(crate) mod tests {
         managers.shutdown().await;
     }
 
-    /// The workers can run on another provider than the main agent: here
+    /// The workers can run on another provider than the main agent. Here
     /// the main agent is on the OpenAI mock and its worker in Claude Code,
     /// with Arko's tools only, and the worker's report reaches the main
     /// agent.
@@ -10544,7 +10544,7 @@ pub(crate) mod tests {
         managers.shutdown().await;
     }
 
-    /// `/cost` on the ChatGPT login: nothing billed, what the calls would
+    /// `/cost` on the ChatGPT login shows nothing billed, what the calls would
     /// cost at API prices, and the plan.
     #[tokio::test]
     async fn a_chatgpt_login_turn_bills_nothing_and_shows_its_api_price() {
@@ -10591,7 +10591,7 @@ pub(crate) mod tests {
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
-    /// `/cost` in a mixed session: the main agent in Claude Code, on the
+    /// `/cost` in a mixed session, with the main agent in Claude Code, on the
     /// plan, and its worker on an API key, each part with its own figure.
     #[tokio::test]
     async fn a_mixed_session_s_cost_shows_each_part() {

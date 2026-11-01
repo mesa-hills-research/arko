@@ -1,4 +1,4 @@
-//! The terminal's side of a session's start: the setup screen for missing
+//! The terminal's side of a session's start, meaning the setup screen for missing
 //! credentials, the question about a project's MCP servers, and the notes on
 //! standard error.
 
@@ -29,7 +29,7 @@ impl TerminalPrompter {
         }
     }
 
-    /// The Ctrl-Cs since the workflow started loading, and those to come:
+    /// The Ctrl-Cs since the workflow started loading, and those to come, meaning
     /// the session's interrupts. `None` when it didn't get there.
     pub(crate) fn take_interrupts(&self) -> Option<tokio::sync::mpsc::UnboundedReceiver<()>> {
         crate::lock(&self.interrupts).take()
@@ -60,8 +60,8 @@ impl Prompter for TerminalPrompter {
         crate::cli::start_log(dir);
     }
 
-    /// From now on a Ctrl-C (when the line editor isn't reading: in raw
-    /// mode it reads Ctrl-C as a key) waits for the session: a turn it
+    /// From now on a Ctrl-C (when the line editor isn't reading, because in raw
+    /// mode it reads Ctrl-C as a key) waits for the session. A turn it
     /// restarts stops, as one the user starts would.
     fn opening(&self) {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();

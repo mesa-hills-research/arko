@@ -1,11 +1,11 @@
-//! What the user sends, read the same way whatever the session is doing: a
+//! What the user sends, read the same way whatever the session is doing, whether a
 //! line typed at the prompt, an app's message or answer, or the web page's.
 //! An idle session, a turn and the old model's report for a switch read it
 //! with [`Harness::read_sent`], check it once with [`Harness::admit`] before
 //! anything happens, and run a command with [`Harness::run_command`].
 //!
 //! A client that sent it with [`Request::Send`](crate::Request::Send) gets
-//! its [`Verdict`] through its [`Reply`]: refused by a check, or accepted
+//! its [`Verdict`] through its [`Reply`], refused by a check, or accepted
 //! once it went. A send without one is told in the transcript, as it always
 //! was.
 
@@ -31,11 +31,11 @@ pub(crate) enum Phase {
     Reporting,
 }
 
-/// Where a send's verdict goes: to the client that sent it, or, for a send
+/// Where a send's verdict goes, to the client that sent it, or, for a send
 /// without a verdict to come, nowhere, and the caller tells the user in the
 /// transcript as it always has. It answers once, and whatever reads a send
 /// answers it, accepted or refused. One dropped unanswered is a mistake in
-/// Arko: its client hears nothing, and says it doesn't know whether the
+/// Arko. Its client hears nothing, and says it doesn't know whether the
 /// send went.
 #[derive(Debug, Default)]
 pub(crate) struct Reply(Option<oneshot::Sender<Verdict>>);
@@ -154,7 +154,7 @@ pub(crate) enum Read {
 }
 
 impl Harness {
-    /// Reads what the user sent in `event`: a line (with the lines pasted
+    /// Reads what the user sent in `event`, meaning a line (with the lines pasted
     /// with it), an app's message, an answer to a question card, or the
     /// web page's message, which the terminal shows. Anything else is the
     /// caller's to see to before it asks.
@@ -232,7 +232,7 @@ impl Harness {
                 sent(text, Source::Web, attached, reply)
             }
             _ => {
-                // (Not a send: a stop or the like, accepted as it was read.)
+                // (Not a send, but a stop or the like, accepted as it was read.)
                 reply.accept(Delivery::Command, None);
                 Read::Other
             }
@@ -249,7 +249,7 @@ impl Harness {
     }
 
     /// Checks what the user sent before anything of it happens, and says
-    /// why when it can't go: an app's images the model can't take, a
+    /// why when it can't go, such as an app's images the model can't take, a
     /// command the web page can't run or one that doesn't exist, images
     /// with a message to a worker, a message while the old model writes its
     /// report, and answers too long to send. An app's images are attached
@@ -361,7 +361,7 @@ impl Harness {
     }
 
     /// Runs the `command` the user sent, as the session runs it in `phase`,
-    /// and accepts it once it ran. Returns whether the session is to end:
+    /// and accepts it once it ran. Returns whether the session is to end, meaning
     /// the user quit, or a switch ended it.
     pub(crate) async fn run_command(
         &mut self,
@@ -382,7 +382,7 @@ impl Harness {
             reply.accept(Delivery::Command, None);
             return false;
         }
-        // A new conversation that carries this one over: it went once the
+        // A new conversation that carries this one over. It went once the
         // switch was made (the old model's report written or skipped).
         if phase == Phase::Idle
             && let Some(switch) = self.switch_of(command)

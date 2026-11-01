@@ -32,7 +32,7 @@ pub const CONFIRM_TOKENS: usize = 30_000;
 pub const CONFIRM_PARAM: &str = "confirm_uncached";
 
 /// How long Claude Code keeps a conversation's cache when its run asked for
-/// no lifetime: an hour on a Claude plan.
+/// no lifetime, which is an hour on a Claude plan.
 const CLAUDE_CODE_DEFAULT: Duration = Duration::from_secs(3_600);
 
 /// A finished worker's prompt cache, and what continuing the worker costs.
@@ -40,11 +40,11 @@ const CLAUDE_CODE_DEFAULT: Duration = Duration::from_secs(3_600);
 pub struct WorkerCache {
     /// The worker, such as `r3`.
     pub worker: String,
-    /// When its cache expires, or expired: its last request, plus the
+    /// When its cache expires, or expired, meaning its last request, plus the
     /// cache lifetime its run used, less the safety margin
     /// ([`lapses_at`](crate::cache_timer::lapses_at)).
     pub expires_at: DateTime<Utc>,
-    /// What continuing it re-reads, and writes to the cache again: its
+    /// What continuing it re-reads, and writes to the cache again, meaning its
     /// conversation's input at its last request, and what that costs at its
     /// model's price, or the plan that pays.
     pub cost: SwitchCost,
@@ -56,13 +56,13 @@ impl WorkerCache {
         now >= self.expires_at
     }
 
-    /// Whether continuing it at `now` asks first: its cache has expired, and
+    /// Whether continuing it at `now` asks first, which holds when its cache has expired, and
     /// its conversation holds at least [`CONFIRM_TOKENS`].
     pub fn asks(&self, now: DateTime<Utc>) -> bool {
         self.expired(now) && self.cost.tokens >= CONFIRM_TOKENS
     }
 
-    /// What continuing it costs, as the warning says it: "r3's cache
+    /// What continuing it costs, as the warning says it, such as "r3's cache
     /// expired 2 hours ago. Continuing re-reads about 340k tokens without it
     /// (≈ $1.70 at API prices)."
     pub fn warning(&self, now: DateTime<Utc>) -> String {
@@ -79,7 +79,7 @@ impl WorkerCache {
         )
     }
 
-    /// Its cache in a few words, for `list_agents`: "cache expired 2 h ago,
+    /// Its cache in a few words, for `list_agents`, as "cache expired 2 h ago,
     /// continuing re-reads about 340k tokens", or "cache lasts 12 more min,
     /// about 340k tokens".
     pub fn line(&self, now: DateTime<Utc>) -> String {
@@ -187,7 +187,7 @@ pub(crate) fn of(
 }
 
 /// What re-reading `tokens` of a conversation on `model` without its cache
-/// costs, writing them to the cache again: at the model's cache write price
+/// costs, writing them to the cache again, at the model's cache write price
 /// (`fast` mode's, and the long cache's with `long_cache`), the same price
 /// `/cost` uses, or the plan that pays when one does (an OpenAI model's
 /// when the session reaches it on the ChatGPT login, `chatgpt`).
@@ -215,7 +215,7 @@ pub(crate) fn reread_cost(
 }
 
 /// The worker and the message of a `/message` line, as the session reads
-/// it: "/message r3 Go on." gives `r3` and "Go on.". A tab separates as a
+/// it, so "/message r3 Go on." gives `r3` and "Go on.". A tab separates as a
 /// space does. `None` for any other line, and for a `/message` without both.
 pub fn message_parts(line: &str) -> Option<(&str, &str)> {
     let (name, argument) = crate::harness::split_live_command(line.trim())?;
@@ -227,7 +227,7 @@ pub fn message_parts(line: &str) -> Option<(&str, &str)> {
     (!to.is_empty() && !text.is_empty()).then_some((to, text))
 }
 
-/// A count of tokens, short: "820", "8.2k", "340k", "1.2M".
+/// A count of tokens, short, as "820", "8.2k", "340k", "1.2M".
 pub fn short_tokens(tokens: usize) -> String {
     let value = tokens as f64;
     let trimmed = |value: f64| {
@@ -245,7 +245,7 @@ pub fn short_tokens(tokens: usize) -> String {
     }
 }
 
-/// How long ago `span` was, as a sentence says it: "just now", "5 minutes
+/// How long ago `span` was, as a sentence says it, such as "just now", "5 minutes
 /// ago", "2 hours ago", "3 days ago".
 fn ago(span: chrono::Duration) -> String {
     let minutes = span.num_minutes().max(0);
@@ -259,7 +259,7 @@ fn ago(span: chrono::Duration) -> String {
     }
 }
 
-/// `span` in a few letters: "1 min", "12 min", "2 h", "3 d".
+/// `span` in a few letters, as "1 min", "12 min", "2 h", "3 d".
 fn short_span(span: chrono::Duration) -> String {
     let minutes = span.num_minutes().max(1);
     match minutes {

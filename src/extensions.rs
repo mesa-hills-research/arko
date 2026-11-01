@@ -297,7 +297,7 @@ pub enum Added {
     Server { file: PathBuf, name: String },
 }
 
-/// Removes what an agent added, without a session: a skill's folder, or a
+/// Removes what an agent added, without a session, meaning a skill's folder, or a
 /// server's entry in its file, and its line in the record of what agents
 /// added. Something an agent didn't add is refused. Sessions open now keep a
 /// removed server running until they close. The text says what happened,
@@ -647,7 +647,7 @@ mod tests {
         assert_eq!(ours[2], ("ok", None));
         assert_eq!(ours[3].0, "unread");
         assert!(ours[3].1.is_some(), "{ours:?}");
-        // As a session loads them: the one that can't be read is skipped.
+        // As a session loads them, so the one that can't be read is skipped.
         let loaded = skills::list(
             &skills::folders(&workspace, &root),
             &Default::default(),

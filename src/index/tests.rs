@@ -1,6 +1,6 @@
-//! Tests of the index module: offline, without a Voyage key. Dense and hybrid
+//! Tests of the index module, offline and without a Voyage key. Dense and hybrid
 //! search run through the same code as Voyage with arko_index's `HashEmbedder`
-//! (`Backend::Hash`); a live Voyage test is `#[ignore]`d.
+//! (`Backend::Hash`), and a live Voyage test is `#[ignore]`d.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -58,7 +58,7 @@ fn write(path: &Path, text: &str) {
 const NET_RS: &str = r#"//! Networking helpers.
 
 /// Retries a request with exponential backoff until it succeeds or the
-/// attempts run out; the delay doubles after each failure.
+/// attempts run out, and the delay doubles after each failure.
 pub fn retry_with_backoff<F: FnMut() -> bool>(mut attempt: F, tries: u32) -> bool {
     let mut delay = 100;
     for _ in 0..tries {
@@ -274,7 +274,7 @@ fn manifests_round_trip_and_bad_ones_are_skipped() {
     assert_eq!(loaded.embed_tokens, 99);
     assert_eq!(loaded.version, store::MANIFEST_VERSION);
 
-    // A newer Arko's manifest: unknown fields, missing ones.
+    // A newer Arko's manifest, with unknown fields and missing ones.
     write(
         &indexes_dir.join("newer/index.json"),
         r#"{"version": 9, "name": "newer", "root": "/w/newer", "future": {"x": 1}}"#,
@@ -312,7 +312,7 @@ fn layout_paths_are_separate() {
     }
 }
 
-/// The indexes the agents' instructions name: where each lies from the
+/// The indexes the agents' instructions name, meaning where each lies from the
 /// working directory, the working directory's first, then by name.
 #[test]
 fn known_indexes_say_where_they_lie_from_the_working_directory() {
@@ -437,7 +437,7 @@ fn census_picks_the_kind() {
     assert_eq!(census_docs.kind(), Kind::Docs);
 
     let census_code = census::census(&code, &rules, census::CENSUS_LIMIT).unwrap();
-    // The ignored folder isn't counted; neither is .gitignore as code or prose.
+    // The ignored folder isn't counted, and neither is .gitignore as code or prose.
     assert_eq!(
         (census_code.prose, census_code.code),
         (1, 3),
@@ -560,7 +560,7 @@ fn the_voyage_key_changes_while_arko_runs() {
     fixture.shutdown(&indexes);
 }
 
-/// An app reads the workspace's indexes as data: the ones the banner
+/// An app reads the workspace's indexes as data, meaning the ones the banner
 /// lists, by name, with how they're kept current and their embeddings.
 #[test]
 fn an_app_reads_the_workspace_indexes_as_data() {
@@ -685,13 +685,13 @@ fn creating_refuses_bad_roots_and_names_uniquely() {
         .unwrap();
     assert_eq!(code.manifest.name, "proj");
     assert!(!code.updated);
-    // The same tree as docs: another index, another name.
+    // The same tree as docs, so another index, another name.
     let docs = indexes
         .create_blocking(&create_args(&root, Some(Kind::Docs)))
         .unwrap();
     assert_eq!(docs.manifest.name, "proj-docs");
     assert_eq!(docs.manifest.model, "voyage-4");
-    // Again: updated in place.
+    // Again, updated in place.
     let again = CreateArgs {
         monitor: false,
         ..create_args(&root, Some(Kind::Code))
@@ -702,7 +702,7 @@ fn creating_refuses_bad_roots_and_names_uniquely() {
     assert!(!again.manifest.monitor);
     assert_eq!(indexes.all().len(), 2);
 
-    // Two indexes cover the directory: a search uses both.
+    // Two indexes cover the directory, so a search uses both.
     let output = indexes
         .search_blocking(&search_args(&root, "parse configuration", None))
         .unwrap();
@@ -766,7 +766,7 @@ fn dense_and_hybrid_search_with_the_test_embedder() {
         .unwrap();
     assert!(indexes.spent().0 > spent, "query tokens count");
 
-    // Filters: a path prefix (relative to the search's directory) and a language.
+    // Filters are a path prefix (relative to the search's directory) and a language.
     let mut args = search_args(&root.join("src"), "retry", Some(ModeArg::Hybrid));
     args.path_prefix = Some("config.rs".into());
     let output = indexes.search_blocking(&args).unwrap();
@@ -807,7 +807,7 @@ fn dense_and_hybrid_search_with_the_test_embedder() {
             .to_string_lossy()
             .into_owned(),
     );
-    // Without an index named, the path picks the indexes: there are none.
+    // Without an index named, the path picks the indexes, and there are none.
     let error = indexes.search_blocking(&args).unwrap_err();
     assert!(error.contains("no index covers"), "{error}");
     args.index = Some("proj".into());
@@ -917,7 +917,7 @@ fn one_shot_mode_reconciles_when_searching() {
     // The changes were embedded too (one-shot mode embeds them synchronously).
     let (done, docs) = embedded(&indexes, &root);
     assert_eq!(done, docs);
-    // Nothing changed: no rebuild.
+    // Nothing changed, so no rebuild.
     let output = indexes
         .search_blocking(&search_args(&root, "evict", None))
         .unwrap();
@@ -1063,7 +1063,7 @@ fn watching_reconciles_changes_made_while_arko_was_not_running() {
 }
 
 /// An index made in fin's data folder (Arko's name before) opens, searches
-/// and keeps current after the folder moves to Arko's: nothing saved in it
+/// and keeps current after the folder moves to Arko's, because nothing saved in it
 /// names the data folder.
 #[test]
 fn an_index_moved_with_fins_data_folder_still_works() {
@@ -1126,7 +1126,7 @@ fn an_index_moved_with_fins_data_folder_still_works() {
 fn an_index_folder_inside_the_tree_is_left_out() {
     let fixture = Fixture::new();
     let root = fixture.code_project();
-    // Arko's data folder inside the indexed tree, not ignored: its manifests
+    // Arko's data folder inside the indexed tree, not ignored. Its manifests
     // change with every build, which must not trigger the next one.
     let data = root.join("state data/arko");
     let indexes = {
@@ -1737,7 +1737,7 @@ fn opening_needs_a_runtime_and_reports_spending() {
 // ----- Voyage (network) -----
 
 /// Counts tokens with voyage-code-4's tokenizer (downloads it from Hugging
-/// Face once); no key needed.
+/// Face once), and no key is needed.
 #[test]
 #[ignore = "downloads the Voyage tokenizer from Hugging Face"]
 fn voyage_counts_tokens_offline_of_the_api() {
@@ -1756,8 +1756,8 @@ fn voyage_counts_tokens_offline_of_the_api() {
     assert!(counts.iter().all(|n| *n > 0));
 }
 
-/// A live index with Voyage: run with `VOYAGE_API_KEY=... cargo test -- --ignored
-/// voyage_live` (embeds a few hundred tokens: well under a cent).
+/// A live index with Voyage. Run with `VOYAGE_API_KEY=... cargo test -- --ignored
+/// voyage_live` (embeds a few hundred tokens, well under a cent).
 #[test]
 #[ignore = "calls the Voyage API: needs VOYAGE_API_KEY"]
 fn voyage_live() {
@@ -1816,7 +1816,7 @@ fn long_function(name: &str, lines: usize, width: usize) -> String {
 fn search_shows_whole_definitions() {
     let temp = tempfile::tempdir().unwrap();
     let file = temp.path().join("work.rs");
-    // `big` is split into several chunks; `small` is one.
+    // `big` is split into several chunks, and `small` is one.
     let text = format!(
         "{}{}{}",
         long_function("big", 120, 80),
@@ -1835,7 +1835,7 @@ fn search_shows_whole_definitions() {
     let big = of("big");
     assert!(big.len() > 1, "{chunks:?}");
     let big_start = big[0].start_line;
-    // Its closing brace: the blank line after it isn't shown.
+    // Its closing brace, with the blank line after it not shown.
     let big_end = 123;
     assert_eq!(big.last().unwrap().end_line, big_end + 1);
     let small = of("small");
@@ -1882,7 +1882,7 @@ fn search_shows_whole_definitions() {
     assert!(text.contains("\nwork.rs:"), "{text}");
     assert!(text.contains(" · fn small\n"), "{text}");
     assert!(text.contains(" | pub fn small() -> u32 {\n"), "{text}");
-    // `huge` is too long to show whole: the part that matched.
+    // `huge` is too long to show whole, so it shows the part that matched.
     let huge_lines = huge.last().unwrap().end_line + 1 - huge[0].start_line;
     assert!(huge_lines > 200);
     assert!(
@@ -1893,7 +1893,7 @@ fn search_shows_whole_definitions() {
         "{text}"
     );
 
-    // Brief: the locations and snippets of before.
+    // Brief, with the locations and snippets of before.
     let brief = tools::format_search_detail("work", &output, tools::Detail::Brief(1));
     assert!(!brief.contains(" | "), "{brief}");
     assert!(
@@ -1926,7 +1926,7 @@ fn search_shows_whole_definitions() {
         "a whole result after a snippet"
     );
 
-    // The file changed since it was indexed: found by its symbol.
+    // The file changed since it was indexed, so it is found by its symbol.
     let mut moved = hit_on(&file, small[0]);
     moved.start_byte += 3;
     let found = tools::whole_definition(&moved, Kind::Code).unwrap();
@@ -1947,7 +1947,7 @@ fn indexes_of_other_directories_are_found_by_any_path_in_them() {
     let outcome = one_shot.create_blocking(&create_args(&root, None)).unwrap();
     fixture.shutdown(&one_shot);
 
-    // An Arko working elsewhere: the index isn't its workspace's.
+    // An Arko working elsewhere, so the index isn't its workspace's.
     let indexes = fixture.open(&work, Backend::Hash, true, fast(false));
     assert_eq!(indexes.watch_state(&outcome.layout), WatchState::Off);
     for name in ["../proj", "../proj/src", "../proj/src/net.rs", "proj"] {
@@ -1963,7 +1963,7 @@ fn indexes_of_other_directories_are_found_by_any_path_in_them() {
     let reports = indexes.status_blocking(Some("../proj/src"), &work).unwrap();
     assert_eq!(reports[0].id, outcome.layout.id());
 
-    // No index covers the working directory: a path_prefix picks one.
+    // No index covers the working directory, so a path_prefix picks one.
     let mut args = search_args(&work, "retry backoff", Some(ModeArg::Lexical));
     let error = indexes.search_blocking(&args).unwrap_err();
     assert!(error.contains("no index covers"), "{error}");

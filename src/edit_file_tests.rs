@@ -1,4 +1,4 @@
-// End-to-end tests of the agents' file editing: new sessions edit files
+// End-to-end tests of the agents' file editing. New sessions edit files
 // with `edit_file`, and sessions saved before it resume with `apply_diff`.
 // Each follows a path a user takes, with the mock model, and checks what
 // the model is offered and what the user sees. (Included in `main`'s tests,
@@ -54,7 +54,7 @@ impl crate::ui::Printer for Lines {
 }
 
 /// A new session offers `edit_file`, not `apply_diff`. The agent's edits
-/// change the file, and each shows as "edit PATH" with what it did: "1
+/// change the file, and each shows as "edit PATH" with what it did, such as "1
 /// edit", or with `replace_all` "(all)" and the replacements.
 #[tokio::test]
 async fn a_new_session_edits_files_with_edit_file() {
@@ -117,7 +117,7 @@ async fn a_new_session_edits_files_with_edit_file() {
 }
 
 /// A session saved before `edit_file` (its agents have `apply_diff`)
-/// resumes with its saved tool list: it isn't told it lacks the file
+/// resumes with its saved tool list. It isn't told it lacks the file
 /// tools, `apply_diff` is still offered and works, and its edits show as
 /// before.
 #[tokio::test]

@@ -1,4 +1,4 @@
-//! The session's background jobs as the feed shows them: the commands and
+//! The session's background jobs as the feed shows them, meaning the commands and
 //! calls that moved to the background, the commands `terminal_start`
 //! started, and the monitors `monitor_start` started. [`follow`] keeps the feed's [`JobSummary`](crate::remote::JobSummary)s
 //! in step with the terminal manager, which runs them.
@@ -14,14 +14,14 @@ use uuid::Uuid;
 use crate::remote::{self, JobStart, Update};
 use crate::status::Gauges;
 
-/// How often the jobs are checked while one runs: a job ends without an
+/// How often the jobs are checked while one runs, because a job ends without an
 /// event when the user or the end of a worker's run stops it.
 const WHILE_RUNNING: Duration = Duration::from_secs(1);
 /// How often they are checked while none runs.
 const WHILE_IDLE: Duration = Duration::from_secs(5);
 
 /// Keeps `feed`'s jobs in step with `jobs`, the session's terminal
-/// manager: a job that started or moved to the background is added, with
+/// manager. A job that started or moved to the background is added, with
 /// the call that made it and its agent as `agent_of` names it, a monitor
 /// says its alerts and its end as they change, and one that ended says
 /// how. Runs until the manager goes or it is aborted.
@@ -87,7 +87,7 @@ async fn calls_changed(updates: &mut broadcast::Receiver<Update>) -> bool {
         match updates.recv().await {
             Ok(Update::Change(item)) if item.kind == remote::Kind::Call => return false,
             Ok(_) => {}
-            // Some went by unseen: one of them may have been a call's.
+            // Some went by unseen, and one of them may have been a call's.
             Err(broadcast::error::RecvError::Lagged(_)) => return false,
             Err(broadcast::error::RecvError::Closed) => return true,
         }
@@ -191,7 +191,7 @@ pub(crate) fn watching(trigger: &terminal::MonitorTrigger, code: bool) -> String
     }
 }
 
-/// A job's label on one line: its first line, at most 80 characters, with
+/// A job's label on one line, meaning its first line, at most 80 characters, with
 /// `…` when more is left out.
 pub(crate) fn label(label: &str) -> String {
     let line = label.lines().next().unwrap_or_default().trim();
@@ -203,7 +203,7 @@ pub(crate) fn label(label: &str) -> String {
     }
 }
 
-/// A job as `/jobs` and the quit popup name it: its command, or a moved
+/// A job as `/jobs` and the quit popup name it, meaning its command, or a moved
 /// call as the transcript shows it, on one line.
 pub(crate) fn job_name(feed: &remote::Feed, job: &JobInfo) -> String {
     let text = match (&job.kind, job.tool_call_id) {
@@ -213,7 +213,7 @@ pub(crate) fn job_name(feed: &remote::Feed, job: &JobInfo) -> String {
     label(text.as_deref().unwrap_or(&job.label))
 }
 
-/// The names the quit popup shows of the jobs `jobs` runs, by job: as
+/// The names the quit popup shows of the jobs `jobs` runs, by job, as
 /// [`job_name`] has them, a monitor's saying it is one ("monitor · npm run
 /// dev").
 pub(crate) fn popup_names(feed: &remote::Feed, jobs: &TerminalManager) -> HashMap<Uuid, String> {
@@ -302,7 +302,7 @@ pub(crate) fn movable_call(
         .map(|running| (running.owner, running.tool_call_id))
 }
 
-/// [`follow`] for the session `gauges` show: its agents are named as the
+/// [`follow`] for the session `gauges` show. Its agents are named as the
 /// status names them.
 pub(crate) fn follower(gauges: &Arc<Gauges>, feed: &remote::Feed) -> tokio::task::JoinHandle<()> {
     let jobs = gauges

@@ -1,4 +1,4 @@
-//! The terminal: a prompt that stays at the bottom while the agents' work
+//! The terminal, meaning a prompt that stays at the bottom while the agents' work
 //! prints above it, and how their events are shown.
 
 use std::collections::HashMap;
@@ -85,7 +85,7 @@ pub enum Input {
     /// dropped.
     DismissQuestions(Vec<String>),
     /// The user's answer to the requests in the approval tray
-    /// ([`Reading::approvals`](crate::remote::Reading::approvals)): each
+    /// ([`Reading::approvals`](crate::remote::Reading::approvals)), each
     /// approved or rejected, with the words the message box held, which go
     /// to the agent with each answer. Requests it doesn't name stay, and
     /// those no longer in the tray are dropped. See [`crate::approvals`].
@@ -131,11 +131,11 @@ pub struct QuitAsk {
     pub workers: Vec<(String, Option<String>)>,
 }
 
-/// Prints a front end's lines where the front end shows them: the line
+/// Prints a front end's lines where the front end shows them, meaning the line
 /// prompt's printer, above the line being edited.
 pub trait Printer: Send {
     /// Prints `text` (whole lines, each ending in a newline). `Err` when it
-    /// can't: the text goes to the terminal instead.
+    /// can't, and the text goes to the terminal instead.
     fn print(&mut self, text: String) -> Result<(), ()>;
 }
 
@@ -150,7 +150,7 @@ impl Printer for LinePrinter {
     }
 }
 
-/// Where everything is printed: above the prompt when there is one, else
+/// Where everything is printed, above the prompt when there is one, else
 /// to standard output (and, in one-shot mode, progress to standard error).
 /// While the full-screen view owns the terminal, lines go to the feed it
 /// shows instead, and echoes (what the feed has already) nowhere.
@@ -159,7 +159,7 @@ pub struct Output {
     /// The full-screen view's feed, while it shows the session.
     feed: Mutex<Option<remote::Feed>>,
     color: bool,
-    /// Progress goes to standard error; only answers go to standard output.
+    /// Progress goes to standard error, and only answers go to standard output.
     progress_to_stderr: bool,
 }
 
@@ -193,8 +193,8 @@ impl Output {
         *self.printer.lock().unwrap() = Some(printer);
     }
 
-    /// Sends lines to `feed` from now on, which the full-screen view shows;
-    /// echoes are left out.
+    /// Sends lines to `feed` from now on, which the full-screen view shows,
+    /// and echoes are left out.
     pub fn to_feed(&self, feed: remote::Feed) {
         *self.feed.lock().unwrap() = Some(feed);
     }
@@ -232,7 +232,7 @@ impl Output {
 
     /// Prints a line the feed has already (the user's text, a notice, the
     /// agent's question or reply, the end of a turn), or one only the line
-    /// prompt needs: as [`line`](Self::line) does, but not while the
+    /// prompt needs, as [`line`](Self::line) does, but not while the
     /// full-screen view shows the feed.
     pub fn echo(&self, text: &str) {
         if self.feed.lock().unwrap().is_none() {
@@ -240,7 +240,7 @@ impl Output {
         }
     }
 
-    /// Prints the agent's reply: to standard output in one-shot mode. (The
+    /// Prints the agent's reply, to standard output in one-shot mode. (The
     /// full-screen view has it from the feed.)
     pub fn answer(&self, text: &str) {
         if self.feed.lock().unwrap().is_some() {
@@ -256,7 +256,7 @@ impl Output {
         }
     }
 
-    /// The same output, but always in colour: a command's lines as the
+    /// The same output, but always in colour, meaning a command's lines as the
     /// feed takes them, which keep their warnings' level that way.
     pub fn colored(mut self) -> Self {
         self.color = true;
@@ -340,13 +340,13 @@ impl Validator for InputHelper {
 #[cfg(feature = "tui")]
 impl Helper for InputHelper {}
 
-/// A line as typed: continuation backslashes removed.
+/// A line as typed, with continuation backslashes removed.
 #[cfg(feature = "tui")]
 fn joined(line: &str) -> String {
     line.replace("\\\r\n", "\n").replace("\\\n", "\n")
 }
 
-/// Set when Arko is closing: the line editor doesn't read again, so it
+/// Set when Arko is closing. The line editor doesn't read again, so it
 /// doesn't put the terminal back in raw mode after it was restored.
 #[cfg(feature = "tui")]
 static CLOSING: AtomicBool = AtomicBool::new(false);
@@ -359,9 +359,9 @@ pub fn stop_reading() {
 
 /// Starts reading the user's input on its own thread. With a terminal, the
 /// prompt is a line editor with history, and the returned printer prints
-/// above it; without one, lines are read from standard input as they come.
+/// above it, and without one, lines are read from standard input as they come.
 /// `/keys add PROVIDER` is read here, with the key's input hidden, and
-/// added to `keys`: neither reaches the session as a line. So is
+/// added to `keys`. Neither reaches the session as a line. So is
 /// `/dictate`, whose words then wait at the prompt, favouring the words of
 /// the session `feed` and `details` describe. While the session's `feed`
 /// says the old model writes its report for a switch, a message stays in
@@ -397,7 +397,7 @@ pub fn spawn_input(
             };
             editor.set_helper(Some(InputHelper));
             let _ = editor.load_history(&history);
-            // Saved as every front end saves it: with the others' entries,
+            // Saved as every front end saves it, with the others' entries,
             // whole.
             let mut shared = crate::history::History::load(Some(history.clone()));
             let printer = editor
@@ -462,7 +462,7 @@ pub fn spawn_input(
     }
 }
 
-/// `/dictate` at the line prompt: records until Enter, printing the words
+/// `/dictate` at the line prompt records until Enter, printing the words
 /// as they settle, and returns them to edit at the prompt. A missing model
 /// is asked about first. The recording favours the words of the `session`
 /// its feed and details describe.
@@ -539,9 +539,9 @@ fn dictate_at_prompt(
                 entered = true;
                 _capture = None;
                 match open_dictation.as_mut() {
-                    // (Kept until Done: dropping it would cancel it.)
+                    // (Kept until Done, because dropping it would cancel it.)
                     Some(dictation) if listening => dictation.finish(),
-                    // (Still getting ready: a download resumes next time.)
+                    // (Still getting ready, so a download resumes next time.)
                     Some(_) => return None,
                     None if ended.is_some() => return None,
                     None => {}
@@ -634,15 +634,15 @@ pub struct Banner {
 pub struct Stats {
     /// The input of the main agent's latest model request, in tokens.
     pub context_tokens: Option<usize>,
-    /// What the main agent's model accepts, in tokens: as its latest request
+    /// What the main agent's model accepts, in tokens, as its latest request
     /// said, else as the session started.
     pub context_window: Option<usize>,
     /// Each plan's usage, by plan, as last reported.
     pub plan_status: std::collections::BTreeMap<String, remote::PlanStatus>,
-    /// Each worker's context, by its handle: the input of its latest
+    /// Each worker's context, by its handle, meaning the input of its latest
     /// request and what its model accepts, in tokens.
     pub workers: std::collections::BTreeMap<String, (usize, Option<usize>)>,
-    /// The subscription plans' usage windows, as last reported: one line
+    /// The subscription plans' usage windows, as last reported, with one line
     /// for every plan the session's agents use (ChatGPT, Claude).
     pub plan_usage: Option<String>,
     /// Each plan's part of `plan_usage`, by plan (`providers::plan_name`).
@@ -652,7 +652,7 @@ pub struct Stats {
     pub(crate) chatgpt: Option<arko_ai::ChatGptAccounts>,
     /// The main agent's latest model request.
     pub last_request: Option<remote::LastRequest>,
-    /// How long the main agent's prompt cache lasts: as its provider says,
+    /// How long the main agent's prompt cache lasts, as its provider says,
     /// or (Claude Code) as its cache writes show.
     pub cache_lifetime: Option<std::time::Duration>,
     /// The cache lifetime is learned from the cache writes (Claude Code).
@@ -661,7 +661,7 @@ pub struct Stats {
     /// to it, in tokens.
     pub cache_use: Option<(usize, usize)>,
     /// When the conversation's prompt cache was last used (Unix
-    /// milliseconds): its latest request's start, a refresh that kept it
+    /// milliseconds), meaning its latest request's start, a refresh that kept it
     /// warm, or what a resumed session's record says of it.
     pub cache_refreshed_at: Option<i64>,
     /// When the session saw `cache_refreshed_at`, on its monotonic clock,
@@ -677,7 +677,7 @@ pub struct Stats {
     /// The main agent's model, as the session runs it (its id in the
     /// configuration). The record of the cache names it.
     pub(crate) main_model: Option<String>,
-    /// Keep-warm in the session: its choice and what its refreshes sent.
+    /// Keep-warm in the session, meaning its choice and what its refreshes sent.
     pub(crate) keep_warm: crate::keep_warm::KeepWarm,
 }
 
@@ -727,7 +727,7 @@ pub async fn print_events(
                     if let AgentEvent::ToolCallFormatted { tool_name, .. } = &event.event
                         && tool_name == crew::WAIT_FOR_AGENTS
                     {
-                        // What a wait without ids waits for: the workers
+                        // What a wait without ids waits for, meaning the workers
                         // the agent started.
                         printer.running_runs = sorted_runs(
                             workflow
@@ -762,7 +762,7 @@ pub async fn print_events(
     printer.flush();
 }
 
-/// Keeps the worker's context for the status: the input of its latest model
+/// Keeps the worker's context for the status, meaning the input of its latest model
 /// request and what its model accepts. The requests Claude Code's subagents
 /// make aren't the worker's conversation, so they leave it as it was.
 fn record_worker_context(stats: &Mutex<Stats>, worker: &str, event: &AgentEvent) {
@@ -784,7 +784,7 @@ struct EventPrinter {
     /// `hold_text` since its last call.
     text: String,
     /// The main agent ends its turns with a reply in plain text, which the
-    /// harness prints as the reply: its text is held, and printed as
+    /// harness prints as the reply. Its text is held, and printed as
     /// progress once a call follows it (or the turn ends otherwise), or
     /// dropped when the turn ends with it as the reply.
     hold_text: bool,
@@ -802,12 +802,12 @@ struct EventPrinter {
     /// The provider's refusal of reasoning summaries was told.
     thinking_refused: bool,
     /// The lengths of `text` and `thinking` as the main agent's latest
-    /// request went out: what its response adds goes if it fails.
+    /// request went out. What its response adds goes if it fails.
     request_start: (usize, usize),
     /// Lines of text, and of thinking, were printed since that request went
-    /// out: they can't be taken back.
+    /// out, and they can't be taken back.
     printed_since_request: (bool, bool),
-    /// The main agent's latest request is one of Claude Code's subagents':
+    /// The main agent's latest request is one of Claude Code's subagents', so
     /// its usage isn't the conversation's.
     subagent_request: bool,
     /// The text of each run's latest `ServiceWarning`, which the error that
@@ -953,7 +953,7 @@ impl EventPrinter {
                 if self.commands.remove(&tool_call_id).is_some() {
                     self.shell_result(&output);
                 } else if output.starts_with(crate::shell::IN_THE_BACKGROUND) {
-                    // Another tool's call that moved: its job.
+                    // Another tool's call that moved, meaning its job.
                     let first = output.lines().next().unwrap_or_default();
                     self.output
                         .echo(&self.output.dim(&format!("  ⎿ {}", cut(first, 160))));
@@ -998,7 +998,7 @@ impl EventPrinter {
                     }
                 }
             }
-            // Claude Code's own message about a failed request: one line, in
+            // Claude Code's own message about a failed request, as one line, in
             // the warning colour, which the error after it doesn't repeat.
             AgentEvent::ServiceWarning { text } => {
                 if main {
@@ -1013,7 +1013,7 @@ impl EventPrinter {
                 self.output.echo(&self.output.warn(&line));
                 self.warned.insert(event.agent_run_id, text);
             }
-            // The response failed after it streamed: what it added goes, and
+            // The response failed after it streamed. What it added goes, and
             // its retry streams it again.
             AgentEvent::StreamedOutputDiscarded { .. } if main => {
                 let (text, thinking) = self.request_start;
@@ -1087,7 +1087,7 @@ impl EventPrinter {
                 )));
             }
             AgentEvent::ConversationHandedOver { .. } if main => {
-                // The conversation is a fresh one: nothing of it is cached.
+                // The conversation is a fresh one, so nothing of it is cached.
                 self.forget_cache(event.agent_run_id);
                 // The report's last line has no newline after it.
                 self.flush();
@@ -1114,7 +1114,7 @@ impl EventPrinter {
                         .warn(&format!("  ! the model refused ({:?})", refusal.category)),
                 );
             }
-            // The reply, held: the harness prints it as the reply.
+            // The reply, held, and the harness prints it as the reply.
             AgentEvent::TaskStateChanged(TaskState::Completed { summary })
                 if main && self.hold_text && self.text.trim() == summary.trim() =>
             {
@@ -1152,7 +1152,7 @@ impl EventPrinter {
             } if main => {
                 self.subagent_request = true;
             }
-            // The conversation's own usage: its size and its cache.
+            // The conversation's own usage, meaning its size and its cache.
             AgentEvent::UsageReported(usage) if main && !self.subagent_request => {
                 let kept = {
                     let mut stats = self.stats.lock().unwrap();
@@ -1167,7 +1167,7 @@ impl EventPrinter {
                             arko_ai::prompt_cache::ANTHROPIC_PROMPT_CACHE_LIFETIME
                         });
                     }
-                    // The request ended: the session keeps when its cache
+                    // The request ended. The session keeps when its cache
                     // lapses, for a resume (outside the lock).
                     stats
                         .cache_memory
@@ -1204,7 +1204,7 @@ impl EventPrinter {
         }
     }
 
-    /// The main agent's conversation was replaced, so no cache holds it:
+    /// The main agent's conversation was replaced, so no cache holds it, so
     /// the status counts none, and the session keeps none of `run`.
     fn forget_cache(&mut self, run: Uuid) {
         let memory = {
@@ -1228,7 +1228,7 @@ impl EventPrinter {
         self.thinking.clear();
     }
 
-    /// How a call of the main agent is shown; `None` for calls not shown.
+    /// How a call of the main agent is shown, and `None` for calls not shown.
     fn call_line(
         &self,
         tool: &str,
@@ -1245,7 +1245,7 @@ impl EventPrinter {
         Some(match tool {
             // The question is shown as it is asked.
             "complete_task" | ASK_USER_TOOL_NAME => return None,
-            // The report is shown whole: the agent continues from it alone.
+            // The report is shown whole, because the agent continues from it alone.
             HANDOVER_REPORT_TOOL_NAME => format!(
                 "{} {}\n  {}",
                 self.output.accent("⟳"),
@@ -1386,13 +1386,13 @@ impl EventPrinter {
         })
     }
 
-    /// A shell command's result: its status and the first lines of output.
+    /// A shell command's result, meaning its status and the first lines of output.
     fn shell_result(&self, output: &str) {
         const SHOWN: usize = 4;
         let mut lines = output.lines();
         let status = lines.next().unwrap_or_default();
         let mut rest: Vec<&str> = lines.collect();
-        // Moved to the background: what the agent can do next is left out.
+        // Moved to the background, and what the agent can do next is left out.
         let moved = status.starts_with(crate::shell::IN_THE_BACKGROUND);
         if moved && !rest.is_empty() {
             rest.remove(0);
@@ -1547,7 +1547,7 @@ pub fn brief_waiting_for(
     }
 }
 
-/// A boolean parameter: `true`, or the text `true`.
+/// A boolean parameter, either `true` or the text `true`.
 fn flag(parameters: &HashMap<String, serde_json::Value>, name: &str) -> bool {
     match parameters.get(name) {
         Some(serde_json::Value::Bool(value)) => *value,
@@ -1556,7 +1556,7 @@ fn flag(parameters: &HashMap<String, serde_json::Value>, name: &str) -> bool {
     }
 }
 
-/// A file tool's call: its verb (`read`, `write`, `edit`, `list`) and what
+/// A file tool's call, meaning its verb (`read`, `write`, `edit`, `list`) and what
 /// it reads or changes (`src/main.rs:10-40`, `src/new.rs (12 lines)`,
 /// `src/lib.rs (all)` for an edit of every occurrence).
 fn file_call(
@@ -1626,7 +1626,7 @@ fn file_call(
     }
 }
 
-/// A search index or MCP tool's call: its name as shown (`index search`,
+/// A search index or MCP tool's call, meaning its name as shown (`index search`,
 /// `create_issue (github)`), and what it is called with, briefly.
 fn labelled(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> (String, String) {
     let text = |name: &str| {
@@ -1675,7 +1675,7 @@ fn labelled(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> (Str
     }
 }
 
-/// `text` as a sentence of its own: its first letter in capitals (an
+/// `text` as a sentence of its own, with its first letter in capitals (an
 /// error such as "could not read …", shown by itself).
 pub fn sentence(text: &str) -> String {
     let mut chars = text.chars();
@@ -1685,7 +1685,7 @@ pub fn sentence(text: &str) -> String {
         .unwrap_or_default()
 }
 
-/// `message` without the text of `warning`, which it repeats: the error that
+/// `message` without the text of `warning`, which it repeats. The error that
 /// follows a [`ServiceWarning`](AgentEvent::ServiceWarning) carries its text,
 /// maybe with a prefix. It is empty when nothing else is left.
 pub fn without_warning(message: &str, warning: &str) -> String {
@@ -2109,7 +2109,7 @@ mod tests {
 
     /// A ChatGPT account's credits show beside its plan windows in the
     /// status line and the figures `/cost`, the page and `worker_options`
-    /// read, when the backend reports them: what is left, "unlimited
+    /// read, when the backend reports them, meaning what is left, "unlimited
     /// credits", or nothing.
     #[tokio::test]
     async fn credits_show_beside_the_plan_windows() {
@@ -2161,7 +2161,7 @@ mod tests {
             report(credits(true, false, None)),
             line("ChatGPT plan 7 d 82%, has credits")
         );
-        // None left: nothing is said.
+        // None left, so nothing is said.
         assert_eq!(
             report(credits(false, false, Some("0"))),
             line("ChatGPT plan 7 d 82%")
@@ -2295,7 +2295,7 @@ mod tests {
         }
     }
 
-    /// The requests Claude Code's subagents make aren't the conversation's:
+    /// The requests Claude Code's subagents make aren't the conversation's, so
     /// their usage leaves the context's size and the cache as they were.
     #[tokio::test]
     async fn a_subagents_usage_isnt_the_conversations() {
@@ -2367,7 +2367,7 @@ mod tests {
     }
 
     /// The session keeps when its prompt cache lapses as each request ends,
-    /// not as it starts: a request that was running when Arko stopped counts
+    /// not as it starts. A request that was running when Arko stopped counts
     /// from the last one that ended. A handover or a compaction starts the
     /// conversation over, so nothing of the cache is kept for it.
     #[tokio::test]
@@ -2407,7 +2407,7 @@ mod tests {
         };
         let kept = || memory.find(&[run]).map(|entry| (entry.at, entry.read));
         assert_eq!(kept(), None);
-        // The request is running: the status counts from its start, and the
+        // The request is running, so the status counts from its start, and the
         // session keeps nothing yet.
         printer.event(event(1_000, started()));
         assert_eq!(stats.lock().unwrap().cache_refreshed_at, Some(1_000));
@@ -2531,7 +2531,7 @@ mod tests {
         printer.event(event(chunk(" Fixed.")));
         printer.flush();
         assert_eq!(*printed.0.lock().unwrap(), ["Before. Fixed."]);
-        // A line of it printed: what is left of it goes, and it is said.
+        // A line of it printed, so what is left of it goes, and it is said.
         printed.0.lock().unwrap().clear();
         printer.event(event(started()));
         printer.event(event(chunk("Half a line,\nand more")));
@@ -2650,7 +2650,7 @@ mod tests {
         assert_eq!(without_warning("build failed:", note), "build failed:");
     }
 
-    /// With text replies, the main agent's text is held: printed as
+    /// With text replies, the main agent's text is held, and printed as
     /// progress once a call follows it, and left to the harness, which
     /// prints the reply, when the turn ends with it.
     #[tokio::test]

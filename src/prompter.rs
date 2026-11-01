@@ -1,4 +1,4 @@
-//! What a session asks its front end as it opens: the credentials it lacks,
+//! What a session asks its front end as it opens, meaning the credentials it lacks,
 //! and whether to start a project's MCP servers. The front end also hears
 //! what Arko has to tell the user before the session's feed exists. The
 //! command line asks at the terminal (`terminal::TerminalPrompter`), and an

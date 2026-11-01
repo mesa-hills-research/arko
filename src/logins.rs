@@ -1,5 +1,5 @@
 //! The ChatGPT logins in a session. The model client signs in with all of
-//! them, in order, as ChatGPT accounts: requests go to the first, and move on
+//! them, in order, as ChatGPT accounts. Requests go to the first, and move on
 //! to the next at once when one reaches its usage limit, then come back when
 //! it is usable again. A login that is changed while Arko runs (`/chatgpt`, an
 //! app, another session of the folder) or whose file `codex login` writes
@@ -23,7 +23,7 @@ pub(crate) struct Built {
     pub(crate) problems: Vec<String>,
 }
 
-/// The names of the logins `paths` in failover notices and usage: the name
+/// The names of the logins `paths` in failover notices and usage, meaning the name
 /// of the folder of each file (`.codex-200` is `codex-200`), or its whole
 /// path where two logins would share a name.
 pub(crate) fn labels(paths: &[PathBuf]) -> Vec<String> {
@@ -99,7 +99,7 @@ pub(crate) fn build(paths: &[PathBuf], url: Option<&str>) -> Built {
     Built { accounts, problems }
 }
 
-/// The model client's ChatGPT accounts for `paths`: the logins that work,
+/// The model client's ChatGPT accounts for `paths`, meaning the logins that work,
 /// following their files, with the sentences about the others. When none
 /// works, the sentence about the first. With `url`, requests go to the
 /// server there (tests).
@@ -125,7 +125,7 @@ pub(crate) fn chatgpt_accounts(
     Ok((accounts.with_file_following(), built.problems))
 }
 
-/// The Codex auth.json files a session signs in with: those set (`paths`),
+/// The Codex auth.json files a session signs in with, meaning those set (`paths`),
 /// else Codex's own.
 pub(crate) fn paths_in_use_of(paths: &[PathBuf]) -> Vec<PathBuf> {
     if paths.is_empty() {
@@ -271,7 +271,7 @@ impl Keys {
             loop {
                 match changes.recv().await {
                     Ok(changed) if changed == root => {}
-                    // (A change may have been missed: the logins are read again.)
+                    // (A change may have been missed, so the logins are read again.)
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Ok(_) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -324,7 +324,7 @@ pub(crate) enum Unused {
 }
 
 impl crate::Harness {
-    /// `/chatgpt`, typed in the terminal or sent from the page: lists the
+    /// `/chatgpt`, typed in the terminal or sent from the page, lists the
     /// ChatGPT logins, and adds, removes and orders them (at the terminal).
     pub(crate) fn chatgpt_command(&mut self, argument: &str, source: Source) {
         let (word, rest) = argument
@@ -383,7 +383,7 @@ impl crate::Harness {
         });
     }
 
-    /// The lines `/chatgpt` lists: each login with its number, its file
+    /// The lines `/chatgpt` lists, meaning each login with its number, its file
     /// (only its name on the page), and what is unusual about it.
     fn login_lines(&self, source: Source) -> Vec<String> {
         let logins = self.keys.logins();
@@ -467,7 +467,7 @@ pub(crate) fn set_aside(accounts: Option<&ChatGptAccounts>) -> usize {
 }
 
 /// What the ChatGPT plan's usage adds when `set_aside` of the logins are set
-/// aside: ", 1 set aside".
+/// aside, as ", 1 set aside".
 pub(crate) fn set_aside_note(set_aside: usize) -> String {
     match set_aside {
         0 => String::new(),
@@ -475,7 +475,7 @@ pub(crate) fn set_aside_note(set_aside: usize) -> String {
     }
 }
 
-/// A local time for a Unix time: "14:30" today, else "Oct 20 14:30".
+/// A local time for a Unix time, as "14:30" today, else "Oct 20 14:30".
 fn until(at: std::time::SystemTime) -> String {
     use chrono::{DateTime, Local};
     let at: DateTime<Local> = at.into();
@@ -576,7 +576,7 @@ mod tests {
             Self { url, asked, script }
         }
 
-        /// `account`'s next answer: a model turn, or a whole HTTP response.
+        /// `account`'s next answer, meaning a model turn or a whole HTTP response.
         fn answer(&self, account: &str, reply: String) {
             self.answer_after(account, reply, None);
         }

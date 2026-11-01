@@ -1,4 +1,4 @@
-//! `/mcp`: the session's MCP servers. `/mcp` lists them with their tools
+//! `/mcp` shows the session's MCP servers. `/mcp` lists them with their tools
 //! or state, where each is set up and who added it, `/mcp NAME` shows one
 //! whole, and `/mcp remove NAME` removes a server an agent added.
 
@@ -25,7 +25,7 @@ fn tilde(path: &Path) -> String {
     }
 }
 
-/// The day an agent added a server: "28 Oct".
+/// The day an agent added a server, as "28 Oct".
 fn day(record: &agent_added::ServerRecord) -> String {
     record
         .added
@@ -34,7 +34,7 @@ fn day(record: &agent_added::ServerRecord) -> String {
         .to_string()
 }
 
-/// A server's first line after its name: its command line, its file, and
+/// A server's first line after its name, meaning its command line, its file, and
 /// what's unusual about it.
 fn about(server: &McpServerFacts) -> String {
     let mut parts = vec![crate::ui::cut(&server.shown, 100), tilde(&server.file)];
@@ -231,7 +231,7 @@ impl Harness {
         });
     }
 
-    /// `/mcp`: each server with its tools, or why it didn't start.
+    /// `/mcp` lists each server with its tools, or why it didn't start.
     pub(crate) fn list_mcp(&self) {
         let facts = self.details.mcp();
         print(
@@ -240,7 +240,7 @@ impl Harness {
         );
     }
 
-    /// `/mcp remove NAME`: removes the server `name` if an agent added it,
+    /// `/mcp remove NAME` removes the server `name` if an agent added it,
     /// and stops it in this session. Returns what to say.
     fn remove_mcp_server(&mut self, name: &str) -> String {
         let facts = self.details.mcp();

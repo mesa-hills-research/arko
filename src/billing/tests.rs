@@ -37,7 +37,7 @@ fn gate_of(
 #[test]
 fn each_setting_refuses_asks_or_starts_by_how_the_model_is_billed() {
     use WorkerBilling::{Api, Ask, Plans};
-    // The plans: cc: models, and OpenAI models on the ChatGPT login.
+    // The plans are cc: models, and OpenAI models on the ChatGPT login.
     for billing in WorkerBilling::ALL {
         for (name, key) in [("cc:opus", false), ("cc:haiku", true), ("sol", false)] {
             assert_eq!(
@@ -47,7 +47,7 @@ fn each_setting_refuses_asks_or_starts_by_how_the_model_is_billed() {
             );
         }
     }
-    // Billed per token: an Anthropic or OpenAI API key, Gemini, OpenRouter.
+    // Billed per token, an Anthropic or OpenAI API key, Gemini, OpenRouter.
     for (name, key) in [
         ("opus", false),
         ("sol", true),
@@ -330,7 +330,7 @@ fn the_setting_and_the_budget_read_and_write_alike() {
     assert!(budget_notice(WorkerBilling::Ask, 21.3, 20.0).contains("ask you first"));
 }
 
-/// The label beside a model in a picker: the price of one billed per token,
+/// The label beside a model in a picker, the price of one billed per token,
 /// and nothing for a plan's.
 #[test]
 fn a_model_billed_per_token_is_labelled_with_its_price() {

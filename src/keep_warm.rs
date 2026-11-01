@@ -1,4 +1,4 @@
-//! Keep-warm: while the session waits for the user's next message, the
+//! Keep-warm. While the session waits for the user's next message, the
 //! main agent's prompt cache is refreshed out of band before it lapses
 //! ([`cache_timer::refresh_at`]), until one of its [`Limits`] ends it.
 //! `/keep-warm` (or an app's [`Request::KeepWarm`](crate::Request::KeepWarm))
@@ -73,7 +73,7 @@ pub struct Limits {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Status {
-    /// When it stops (Unix milliseconds): its end, or its hours after the
+    /// When it stops (Unix milliseconds), meaning its end, or its hours after the
     /// latest request, whichever comes first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ends_at: Option<i64>,
@@ -86,7 +86,7 @@ pub struct Status {
     /// cache doesn't lapse at its `expires_at`, so a reminder of that waits.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_at: Option<i64>,
-    /// It waits for the user's next message before it refreshes: the
+    /// It waits for the user's next message before it refreshes, because the
     /// session can't tell how long ago the cache was used (Arko opened
     /// again, the computer slept or its clock changed).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -94,7 +94,7 @@ pub struct Status {
 }
 
 /// Whether the main agent's prompt cache on `model`, as Arko configures it,
-/// refreshes out of band: Anthropic's models, `cc:` models and OpenAI's.
+/// refreshes out of band, meaning Anthropic's models, `cc:` models and OpenAI's.
 /// OpenRouter's Claude models think with an effort, which a capped refresh
 /// would change, and the others give no cache lifetime.
 // shortcut: mirrors arko_agents' rules for the configurations Arko makes,
@@ -122,7 +122,7 @@ pub(crate) struct Route {
 }
 
 /// The setting, which keeps every session's cache warm while it waits for
-/// the user: its hours and dollars, or `None` (off, the default). A missing
+/// the user, meaning its hours and dollars, or `None` (off, the default). A missing
 /// or unreadable file is off.
 pub fn load(root: &Path) -> Option<Limits> {
     let text = std::fs::read_to_string(root.join(FILE)).ok()?;
@@ -323,7 +323,7 @@ fn minutes_of(word: &str) -> Option<i64> {
 }
 
 /// The next time of day `text` names after `now` (Unix milliseconds), in
-/// `now`'s time zone: `7`, `7:00`, `07:30`, `19:30`, `7am`, `7:30pm`.
+/// `now`'s time zone, such as `7`, `7:00`, `07:30`, `19:30`, `7am`, `7:30pm`.
 fn next_time<Tz: TimeZone>(text: &str, now: &DateTime<Tz>) -> Result<i64, String> {
     let invalid = || format!("`{text}` isn't a time of day, such as 7:00, 7am or 19:30.");
     let (clock, half) = match text.strip_suffix("am") {
@@ -359,7 +359,7 @@ fn next_time<Tz: TimeZone>(text: &str, now: &DateTime<Tz>) -> Result<i64, String
 /// forward is the first moment after the gap.
 fn first_after<Tz: TimeZone>(zone: &Tz, time: NaiveDateTime, after: i64) -> Option<i64> {
     let mut time = time;
-    // (A gap is an hour or two: past it within a day.)
+    // (A gap is an hour or two, past it within a day.)
     for _ in 0..24 * 60 {
         match zone.from_local_datetime(&time) {
             LocalResult::Single(at) => {
@@ -409,7 +409,7 @@ pub(crate) enum Step {
     Stop(Stop),
 }
 
-/// What keep-warm's refreshes sent: how many, what they cost at API prices
+/// What keep-warm's refreshes sent, meaning how many, what they cost at API prices
 /// (what a plan's would cost on a key), what they billed, and the tokens
 /// they read from the cache.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -440,7 +440,7 @@ pub(crate) enum Choice {
     /// It follows the setting.
     #[default]
     Setting,
-    /// Off: `/keep-warm off`, an app's request, or an end.
+    /// Off by `/keep-warm off`, an app's request, or an end.
     Off,
     /// On until these limits end it (`/keep-warm`, an app's request).
     On(Limits),
@@ -449,7 +449,7 @@ pub(crate) enum Choice {
 /// The file in a session's folder that keeps its keep-warm.
 const SESSION_FILE: &str = "keep-warm-session.json";
 
-/// Keep-warm in a session: what it chose and what its refreshes sent. A
+/// Keep-warm in a session, meaning what it chose and what its refreshes sent. A
 /// session keeps it in its folder, so it goes on as it was when the session
 /// opens again (a resume, a switch between Chat and Agent). When to refresh
 /// comes from it, the setting and the cache, each time the session's loop
@@ -511,7 +511,7 @@ impl KeepWarm {
             .map_err(|error| error.to_string())
     }
 
-    /// Its limits now, under the setting `setting`: the session's own, else
+    /// Its limits now, under the setting `setting`, meaning the session's own, else
     /// the setting's. `None` while it is off.
     pub(crate) fn limits(&self, setting: Option<Limits>) -> Option<Limits> {
         match self.choice {
@@ -526,7 +526,7 @@ impl KeepWarm {
         self.choice == Choice::Setting
     }
 
-    /// A request that keep-warm didn't send went at `at`: a turn's, or a
+    /// A request that keep-warm didn't send went at `at`, either a turn's, or a
     /// refresh the user asked for.
     pub(crate) fn requested(&mut self, at: Moment) {
         self.requested_at = Some(at.at);
@@ -577,7 +577,7 @@ impl KeepWarm {
         })
     }
 
-    /// When it stops, under `limits`: its own end, or its hours after the
+    /// When it stops, under `limits`, meaning its own end, or its hours after the
     /// idle stretch's start, whichever comes first.
     fn ends(&self, limits: &Limits) -> Option<Moment> {
         let idle = limits
@@ -636,7 +636,7 @@ impl KeepWarm {
     }
 
     /// When the session's loop wakes for it under `limits`, for `cache` at
-    /// `now`, on the monotonic clock: for the next refresh, or to stop.
+    /// `now`, on the monotonic clock, for the next refresh, or to stop.
     pub(crate) fn wake_at(&self, limits: &Limits, cache: Cache, now: Moment) -> Option<Instant> {
         if self.left(limits) == Some(0) || self.spent_out(limits, cache.quote) {
             return Some(now.seen);
@@ -741,16 +741,16 @@ impl KeepWarm {
 }
 
 /// When the wall time `at` (Unix milliseconds) comes on the monotonic clock,
-/// counted from `now`: now, if it passed.
+/// counted from `now`, or now if it passed.
 fn seen_at(at: i64, now: Moment) -> Instant {
     now.seen + Duration::from_millis(u64::try_from(at - now.at).unwrap_or(0))
 }
 
-/// What keep-warm decides by: the cache it refreshes, and what a refresh
+/// What keep-warm decides by, meaning the cache it refreshes, and what a refresh
 /// costs.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Cache {
-    /// When it was last used, as the session saw it: `None` where it
+    /// When it was last used, as the session saw it, with `None` where it
     /// didn't (none yet, or a time from before the session opened).
     pub(crate) used: Option<Moment>,
     /// How long it lasts, where the provider says.
@@ -760,7 +760,7 @@ pub(crate) struct Cache {
     pub(crate) quote: Option<f64>,
 }
 
-/// A moment as the session saw it: on its monotonic clock, which no one
+/// A moment as the session saw it, meaning on its monotonic clock, which no one
 /// sets, and on the wall clock the page shows (Unix milliseconds). The
 /// refreshes go by the monotonic clock, while the two agree on how long ago
 /// the cache was used ([`agrees`](Self::agrees)). An end has passed once
@@ -849,7 +849,7 @@ impl crate::ui::Stats {
     }
 }
 
-/// What refreshes sent (`said`), in a sentence: "It sent 8 refreshes for
+/// What refreshes sent (`said`), in a sentence, as "It sent 8 refreshes for
 /// $0.32." On a plan (`on_plan`), what they read of it.
 fn tally_sentence(said: Totals, on_plan: Option<&str>) -> String {
     let count = match said.sent {
@@ -928,7 +928,7 @@ fn refreshes_words(count: u32) -> String {
     }
 }
 
-/// Dollars as a command takes them: "5", "2.5".
+/// Dollars as a command takes them, such as "5", "2.5".
 fn plain_dollars(amount: f64) -> String {
     let text = format!("{amount:.2}");
     text.trim_end_matches('0').trim_end_matches('.').to_string()
@@ -940,7 +940,7 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 impl crate::Harness {
-    /// Keep-warm as the session opens: the setting, and what the session
+    /// Keep-warm as the session opens, meaning the setting, and what the session
     /// kept of its own (its choice, what its refreshes sent, its latest
     /// request).
     pub(crate) fn keep_warm_at_start(&mut self) {
@@ -965,7 +965,7 @@ impl crate::Harness {
         lock(&self.stats).keep_warm.limits(setting)
     }
 
-    /// What a refresh of the conversation the next message goes to goes as:
+    /// What a refresh of the conversation the next message goes to goes as, meaning
     /// its model, from its own settings (a resumed one's may not be the
     /// session's), and whether a plan pays. The status has it too.
     pub(crate) fn refresh_route(&self) -> Option<Route> {
@@ -1005,7 +1005,7 @@ impl crate::Harness {
     }
 
     /// When the session's loop, waiting for the user, wakes for keep-warm,
-    /// on the monotonic clock: for its next refresh, or to stop.
+    /// on the monotonic clock, for its next refresh, or to stop.
     pub(crate) fn keep_warm_wake(&self) -> Option<Instant> {
         let limits = self.keep_warm_limits()?;
         let cache = self.keep_warm_cache();
@@ -1014,7 +1014,7 @@ impl crate::Harness {
             .wake_at(&limits, cache, Moment::now())
     }
 
-    /// What keep-warm does at `now`, while the session waits for the user: a
+    /// What keep-warm does at `now`, while the session waits for the user, meaning a
     /// refresh, a stop and its notice, or nothing yet.
     pub(crate) async fn keep_warm_tick(&mut self, now: Moment) {
         let Some(limits) = self.keep_warm_limits() else {
@@ -1026,7 +1026,7 @@ impl crate::Harness {
             Step::Wait => {}
             Step::Stop(stop) => self.stop_keep_warm(stop),
             Step::Refresh => {
-                // Without a price, its dollars can't count: it says so once.
+                // Without a price, its dollars can't count, so it says so once.
                 let unpriced = limits.dollars.filter(|_| {
                     let kept = &mut lock(&self.stats).keep_warm;
                     cache.quote.is_none() && !std::mem::replace(&mut kept.unpriced_told, true)
@@ -1100,7 +1100,7 @@ impl crate::Harness {
         self.setting_reply(result, source, before != after);
     }
 
-    /// An app's [`Request::KeepWarm`](crate::Request::KeepWarm): on with
+    /// An app's [`Request::KeepWarm`](crate::Request::KeepWarm) is on with
     /// `limits`, or off.
     pub(crate) fn keep_warm_request(&mut self, limits: Option<Limits>) -> Result<(), String> {
         let done = match limits {
@@ -1388,7 +1388,7 @@ mod tests {
             Step::Stop(Stop::Ended(end))
         );
         // A refresh due right at the end doesn't go, and the status doesn't
-        // show it: the end at 8:00, when the refresh after 4:00 would be.
+        // show it, only the end at 8:00, when the refresh after 4:00 would be.
         let (kept, limits) = on(ending(Some(8 * MINUTE), None));
         assert_eq!(seen_status(&kept, &limits, cache, false).next_at, None);
         assert_eq!(wake(&kept, &limits, cache, used), Some(8 * MINUTE));
@@ -1451,7 +1451,7 @@ mod tests {
 
     /// While the two clocks disagree on how long ago the cache was used, by
     /// more than a couple of seconds, no one can tell its age, so nothing is
-    /// sent: a wall clock set forward, a computer that slept and a wall clock
+    /// sent, meaning a wall clock set forward, a computer that slept and a wall clock
     /// set back each pause keep-warm. While they agree, the refresh goes by
     /// the monotonic clock, and the loop sleeps by it.
     #[test]
@@ -1462,7 +1462,7 @@ mod tests {
             seen: t(seen).seen,
             at: wall,
         };
-        // The wall clock set forward: 1:00 on the monotonic clock, 4:10 on
+        // The wall clock set forward, with 1:00 on the monotonic clock, 4:10 on
         // the wall. The loop still sleeps until 4:00 by the monotonic clock.
         let forward = at(MINUTE, 250_000);
         assert_eq!(kept.step(forward, &limits, cache), Step::Stop(Stop::Clock));
@@ -1470,14 +1470,14 @@ mod tests {
             kept.wake_at(&limits, cache, forward),
             Some(t(4 * MINUTE).seen)
         );
-        // The computer slept: 4:00 on the monotonic clock, hours on the wall.
+        // The computer slept, with 4:00 on the monotonic clock, hours on the wall.
         let slept = at(4 * MINUTE, 6 * 60 * MINUTE);
         assert_eq!(kept.step(slept, &limits, cache), Step::Stop(Stop::Clock));
-        // The wall clock set back: 4:40 on the monotonic clock, 1:00 on the
+        // The wall clock set back, with 4:40 on the monotonic clock, 1:00 on the
         // wall.
         let back = at(280_000, MINUTE);
         assert_eq!(kept.step(back, &limits, cache), Step::Stop(Stop::Clock));
-        // A second apart is the clocks agreeing: the refresh goes at 4:00.
+        // A second apart is the clocks agreeing, so the refresh goes at 4:00.
         assert_eq!(
             kept.step(at(4 * MINUTE, 4 * MINUTE + 1_000), &limits, cache),
             Step::Refresh
@@ -1515,7 +1515,7 @@ mod tests {
         );
         // Without a price, it goes by its other limits.
         assert_eq!(wake(&kept, &limits, five(None), 0), Some(4 * MINUTE));
-        // A cache that grew after a cheap refresh: $0.01 spent and $0.50
+        // A cache that grew after a cheap refresh, with $0.01 spent and $0.50
         // next passes $0.30.
         let (mut kept, limits) = on(Limits {
             refreshes: Some(10),
@@ -1623,7 +1623,7 @@ mod tests {
             t(13 * MINUTE),
         );
         assert_eq!((restored.next_at, restored.waits), (None, true));
-        // The same setting again, or a lower one, keeps what was spent: $0.12
+        // The same setting again, or a lower one, keeps what was spent, as $0.12
         // passes a limit of $0.10.
         let lower = Limits {
             dollars: Some(0.1),
@@ -1663,7 +1663,7 @@ mod tests {
         );
     }
 
-    /// US Eastern time with 2026's changes of the clocks, for the tests:
+    /// US Eastern time with 2026's changes of the clocks, for the tests, with
     /// daylight time (UTC-4) from March 8 at 2:00 to November 1 at 2:00, and
     /// standard time (UTC-5) otherwise.
     #[derive(Debug, Clone, Copy)]
@@ -1744,15 +1744,15 @@ mod tests {
                 other => panic!("{words}: {other:?}"),
             }
         };
-        // November 1 at 0:45 daylight time: 1:30 comes first in daylight
+        // November 1 at 0:45 daylight time, so 1:30 comes first in daylight
         // time, at 5:30 UTC.
         assert_eq!(until("until 1:30", utc(11, 1, 4, 45)), utc(11, 1, 5, 30));
-        // At 1:40 daylight time, past the first 1:30: the second, in
+        // At 1:40 daylight time, past the first 1:30, then the second, in
         // standard time, at 6:30 UTC.
         assert_eq!(until("until 1:30", utc(11, 1, 5, 40)), utc(11, 1, 6, 30));
-        // March 8 at midnight: 2:30 doesn't come, so 3:00 daylight time.
+        // March 8 at midnight, where 2:30 doesn't come, so 3:00 daylight time.
         assert_eq!(until("until 2:30", utc(3, 8, 5, 0)), utc(3, 8, 7, 0));
-        // October 31 at 23:00 daylight time: 7:00 comes in standard time,
+        // October 31 at 23:00 daylight time, so 7:00 comes in standard time,
         // nine hours on.
         let ends = until("until 7:00", utc(11, 1, 3, 0));
         assert_eq!(ends, utc(11, 1, 12, 0));
@@ -1766,7 +1766,7 @@ mod tests {
             .unwrap()
     }
 
-    /// The command's words: a time from now, a time of day to come, a
+    /// The command's words are a time from now, a time of day to come, a
     /// number of refreshes, dollars, off, and the setting's hours and
     /// dollars.
     #[test]
@@ -2002,7 +2002,7 @@ mod tests {
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
-    /// A refresh goes, and is priced, as the conversation runs: its model and
+    /// A refresh goes, and is priced, as the conversation runs. Its model and
     /// fast mode are the conversation's, whatever the session would start a
     /// new one with.
     #[tokio::test]
@@ -2178,7 +2178,7 @@ mod tests {
             said(&harness.feed).last().unwrap(),
             "Keep-warm is off. It sent no refreshes."
         );
-        // It opens again (a resume, a switch between Chat and Agent): still
+        // It opens again (a resume, a switch between Chat and Agent), still
         // off.
         lock(&harness.stats).keep_warm = KeepWarm::default();
         harness.keep_warm_at_start();

@@ -1,4 +1,4 @@
-//! The main agent's questions in a session: put to the user, answered in
+//! The main agent's questions in a session, put to the user, answered in
 //! an answer panel or in a message, dismissed, and the notes that tell the
 //! agent. See [`crate::questions`].
 //!
@@ -26,7 +26,7 @@ use crate::questions::{AgentQuestion, Pending, QuestionState, WAIT_ANSWERED, is_
 use crate::remote::{Delivery, Level, Partial, RefusalKind, Source};
 use crate::sending::Reply as SendReply;
 
-/// A wait for the user's answer: the agent's `ask_user` with `wait`, or a
+/// A wait for the user's answer, meaning the agent's `ask_user` with `wait`, or a
 /// question of its runtime's without ids.
 pub(crate) struct Waiting {
     /// The conversation that waits.
@@ -36,7 +36,7 @@ pub(crate) struct Waiting {
 }
 
 impl Waiting {
-    /// Arko asked it, not the agent (a question without ids): its answer is
+    /// Arko asked it, not the agent (a question without ids), so its answer is
     /// the user's words alone, not a note.
     fn plain(&self) -> bool {
         !self.ids.iter().any(|id| is_agent_id(id))
@@ -113,7 +113,7 @@ fn shown(questions: &[AgentQuestion], dim: impl Fn(&str) -> String) -> String {
 }
 
 impl Harness {
-    /// The agent asks: the questions go in the transcript and the answer
+    /// The agent asks. The questions go in the transcript and the answer
     /// panel, and a wait for the answer is kept. A wait for questions the
     /// user answered already (as the ask was on its way, or before a
     /// resumed task took its wait up again) gets [`WAIT_ANSWERED`] at once,
@@ -179,7 +179,7 @@ impl Harness {
     }
 
     /// Tells the agent's wait for the questions of `pending` that the user
-    /// replied: their note follows. False when it doesn't wait for them (or
+    /// replied. Their note follows. False when it doesn't wait for them (or
     /// its wait is gone).
     fn answer_agent_wait(&mut self, pending: &Pending) -> bool {
         let Some(at) = self.waiting.iter().position(|waiting| {
@@ -237,7 +237,7 @@ impl Harness {
     }
 
     /// What of a send didn't go, as its verdict says it when a client waits
-    /// for one: the questions `dropped` and why its note `not_posted`. A send
+    /// for one, meaning the questions `dropped` and why its note `not_posted`. A send
     /// without one tells the user why in the transcript instead.
     pub(crate) fn partly(
         &self,
@@ -424,7 +424,7 @@ impl Harness {
         }
     }
 
-    /// The questions a message of the user's answers: those `attached` to
+    /// The questions a message of the user's answers, meaning those `attached` to
     /// it, or, without any, those the agent waits for in the current
     /// conversation.
     fn replied_ids(&self, attached: &[String]) -> Vec<String> {
@@ -462,7 +462,7 @@ impl Harness {
         (!open.is_empty()).then_some(open)
     }
 
-    /// After a turn: the waits that can no longer be answered end. A
+    /// After a turn, the waits that can no longer be answered end. A
     /// question Arko asked (without ids) is closed. The agent's questions
     /// stay open, and a resumed task asks again.
     pub(crate) fn end_lost_wait(&mut self) {
@@ -482,7 +482,7 @@ impl Harness {
         }
     }
 
-    /// A note kept for the agent while no turn runs: an idle conversation
+    /// A note kept for the agent while no turn runs. An idle conversation
     /// starts a turn for it, as a worker's report does. A stopped one gets it
     /// when it goes on.
     pub(crate) async fn deliver_answers(&mut self, input: &mut Inputs) -> News {
@@ -516,7 +516,7 @@ impl Harness {
     }
 
     /// Whether run `run` has a kept note posted that it hasn't been given
-    /// yet (its last turn ended first): a turn for it delivers it.
+    /// yet (its last turn ended first), and a turn for it delivers it.
     pub(crate) fn notes_waiting(&self, run: Uuid) -> bool {
         let Some(workflow) = self.workflow.as_ref() else {
             return false;
@@ -528,7 +528,7 @@ impl Harness {
             .any(|pending| pending.posted.is_some_and(|(_, seq)| seq > given))
     }
 
-    /// The kept notes that reached their runs leave: those the workflow
+    /// The kept notes that reached their runs leave, meaning those the workflow
     /// counts as given (by number, in its own saved state). Those not
     /// posted yet are posted, and so are those whose note the workflow no
     /// longer has (Arko stopped before the workflow saved it).

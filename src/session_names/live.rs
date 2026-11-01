@@ -602,7 +602,7 @@ mod tests {
         assert!(matches!(result, Err(Failure::Unavailable(_))), "{result:?}");
         assert!(!mark.exists(), "Claude Code was not even started");
 
-        // Turned off while Claude Code starts: it starts, gets no message,
+        // Turned off while Claude Code starts. It starts, gets no message,
         // and ends.
         let fake = tempfile::tempdir().unwrap();
         let options = fake_options(fake.path(), r#"[[{"text": "A name"}]]"#);

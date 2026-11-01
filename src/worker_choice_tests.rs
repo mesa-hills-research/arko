@@ -1,5 +1,5 @@
 // End-to-end tests of a worker's model, effort and profile, with the mock
-// model: what the main agent can choose when it starts a worker, what the
+// model, covering what the main agent can choose when it starts a worker, what the
 // worker's first request carries, the refusals the main agent reads, and a
 // worker keeping its setup when its profile changes and the session is
 // resumed. (Included in `main`'s tests, whose helpers they use.) How a
@@ -7,11 +7,11 @@
 
 use crate::mock_model::{ModelServer, complete, tool_call, tool_calls};
 
-/// The requests the model server got: (the agent that sent it, its model,
+/// The requests the model server got, as (the agent that sent it, its model,
 /// its effort, its body).
 type Seen = Arc<Mutex<Vec<(String, String, String, String)>>>;
 
-/// The agent run that sent a request: `r1`, `r2`, or `main`.
+/// The agent run that sent a request, either `r1`, `r2` or `main`.
 fn sender(body: &str) -> String {
     let marker = "You are agent run ";
     match body.find(marker) {
@@ -55,13 +55,13 @@ fn user_texts(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// The main agent's mock: the user's message says which worker to start.
+/// The main agent's mock, where the user's message says which worker to start.
 /// `Start A.` starts a worker whose task is `A` with the parameters in
 /// `starts`, and the call's result ends the turn.
 fn lead(body: &str, step: &str) -> String {
     // The latest "Start ..." message of the user, and whether a call's
     // result came after it. (A worker's report and the host's notes start
-    // turns and come as user messages too: the main agent only notes them.)
+    // turns and come as user messages too, so the main agent only notes them.)
     let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
     let mut start: Option<String> = None;
     for item in parsed["input"].as_array().unwrap() {
@@ -200,7 +200,7 @@ async fn setup_answering(
     (harness, inputs, sender, server, seen)
 }
 
-/// The first request of the worker whose task is `task`: its model, its
+/// The first request of the worker whose task is `task`, meaning its model, its
 /// effort and its first message.
 fn worker_with(seen: &Seen, task: &str) -> Option<(String, String, String)> {
     seen.lock()
@@ -227,7 +227,7 @@ fn last_results(seen: &Seen, count: usize) -> Vec<String> {
 }
 
 /// Sends the approval tray's answer through the session's input, as a front
-/// end does: those of the requests waiting whose place is in `approved` are
+/// end does. Those of the requests waiting whose place is in `approved` are
 /// approved (with their option on when `option`), the others rejected, with
 /// the message box's `words`.
 fn send_tray_answer(
@@ -348,7 +348,7 @@ async fn a_worker_runs_the_model_effort_and_profile_the_main_agent_chose() {
     let (model, effort, _) = worker_with(&seen, "Start with the judge on a model.").unwrap();
     assert_eq!((model.as_str(), effort.as_str()), ("gpt-6-luna", "xhigh"));
 
-    // Nothing chosen: the session's worker model, luna.
+    // Nothing chosen, so the session's worker model, luna.
     start_worker(&mut harness, &mut inputs, "Start plainly.").await;
     let (model, effort, opening) = worker_with(&seen, "Start plainly.").unwrap();
     assert_eq!((model.as_str(), effort.as_str()), ("gpt-6-luna", "high"));
@@ -371,7 +371,7 @@ async fn a_worker_runs_the_model_effort_and_profile_the_main_agent_chose() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
-/// What the main agent reads when a start is refused: the model the
+/// What the main agent reads when a start is refused, meaning the model the
 /// session can't reach, the effort the model doesn't take, and a profile
 /// that isn't there. No worker starts.
 #[tokio::test]
@@ -411,7 +411,7 @@ async fn a_refused_start_tells_the_main_agent_what_to_do_instead() {
     );
     assert_eq!(started(&seen), 0, "no worker started");
 
-    // What the user allows: profiles only, then the session's model only.
+    // What the user allows, meaning profiles only, then the session's model only.
     harness.settings.worker_models = crate::agents::ModelChoice::Profiles;
     harness.start_new_workers();
     start_worker(&mut harness, &mut inputs, "Start on a model.").await;
@@ -435,7 +435,7 @@ async fn a_refused_start_tells_the_main_agent_what_to_do_instead() {
 }
 
 /// A worker keeps the setup it started with when Arko stops and the session
-/// resumes, though its profile was edited and then deleted meanwhile: the
+/// resumes, though its profile was edited and then deleted meanwhile. The
 /// saved session still resumes, the run goes on on its model, and its first
 /// message still carries the profile's instructions as it started.
 #[tokio::test]
@@ -501,7 +501,7 @@ async fn a_worker_resumes_with_its_setup_after_its_profile_is_deleted() {
     )
     .unwrap();
     std::fs::remove_file(&file).unwrap();
-    // The session resumes: it passes the check of its saved runs, and r1
+    // The session resumes, so it passes the check of its saved runs, and r1
     // goes on where it stopped.
     harness.open(true).unwrap();
     harness.start_new_workers();
@@ -583,7 +583,7 @@ async fn a_profile_for_every_session_waits_in_the_approval_tray() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, input, _server, seen) = setup(temp.path()).await;
     let feed = harness.feed.clone();
-    // (The input stays open while the turns end: a closed one quits.)
+    // (The input stays open while the turns end, because a closed one quits.)
     let sender = input.clone();
     let answers = tokio::spawn(async move {
         for (approve, words) in [(false, "no, use medium effort"), (false, ""), (true, "")] {
@@ -629,7 +629,7 @@ async fn a_profile_for_every_session_waits_in_the_approval_tray() {
 }
 
 /// Three saves in one response wait in one tray, and one answer settles
-/// them: the first and the third approved, the second rejected, each call
+/// them, with the first and the third approved, the second rejected, each call
 /// reading its own answer with the words the message box held.
 #[tokio::test]
 async fn three_saves_in_one_response_share_the_tray() {
@@ -700,7 +700,7 @@ async fn a_worker_billed_per_token_starts_once_the_user_allows_it_in_the_tray() 
     harness.settings.worker_billing = crate::billing::WorkerBilling::Ask;
     harness.start_new_workers();
     let feed = harness.feed.clone();
-    // (The input stays open while the turns end: a closed one quits.)
+    // (The input stays open while the turns end, because a closed one quits.)
     let sender = input.clone();
     let answers = tokio::spawn(async move {
         for approve in [false, true] {
@@ -736,7 +736,7 @@ async fn a_worker_billed_per_token_starts_once_the_user_allows_it_in_the_tray() 
         .await
         .expect("the answers were given in time")
         .unwrap();
-    // Allowed for the session: the next one starts without asking.
+    // Allowed for the session, so the next one starts without asking.
     let before = seen
         .lock()
         .unwrap()
@@ -1340,7 +1340,7 @@ async fn a_resumed_session_reads_what_its_workers_cost_from_their_saved_runs() {
     assert!(before.cost_billed > 0.0, "{before:?}");
     assert_eq!(before.model.as_deref(), Some("gpt-6-astra"));
 
-    // As if the page and the cost had been lost: the saved runs say it.
+    // As if the page and the cost had been lost, so the saved runs say it.
     let mut lost = crate::remote::WorkerInfo::new();
     lost.model = before.model.clone();
     lost.costs = Some((0.0, 0.0));
@@ -1359,7 +1359,7 @@ async fn a_resumed_session_reads_what_its_workers_cost_from_their_saved_runs() {
 
 /// The `start_agent` the model is offered names the profile, model and
 /// effort in a session that resumes, also one the main agent's saved
-/// configuration doesn't list the profile tools for: the definitions are
+/// configuration doesn't list the profile tools for, because the definitions are
 /// made when a request is.
 #[tokio::test]
 async fn a_resumed_session_offers_start_agent_with_its_new_parameters() {

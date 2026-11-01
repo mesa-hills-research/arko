@@ -115,7 +115,7 @@ fn mcp_lists_each_server_with_its_provenance_and_state() {
     assert!(list_lines(&none, true).is_empty());
 }
 
-/// `/mcp NAME` shows one server whole: its command, file, environment
+/// `/mcp NAME` shows one server whole, meaning its command, file, environment
 /// names set or not, workers, state, tools, and who added it, when and why.
 #[test]
 fn mcp_name_shows_one_server_whole() {

@@ -1,9 +1,9 @@
-//! The remote's HTTP server: the page, the key exchange, the event stream
+//! The remote's HTTP server, with the page, the key exchange, the event stream
 //! (Server-Sent Events) and the actions (POST).
 //!
-//! The page is open to all; everything under `/api/` but the key exchange
+//! The page is open to all, and everything under `/api/` but the key exchange
 //! needs a session cookie from that exchange, or the key itself as a bearer
-//! token. The key never travels in a URL: the link's fragment, which
+//! token. The key never travels in a URL, because the link's fragment, which
 //! browsers don't send, carries it to the page.
 
 use std::collections::{HashMap, VecDeque};
@@ -50,12 +50,12 @@ const ICON_SMALL: &str = include_str!("page/icon-small.svg");
 /// The mark on a tile, at 180 pixels, for a phone's home screen.
 const APPLE_ICON: &[u8] = include_bytes!("page/apple-touch-icon.png");
 /// The page's monospace font, the same on every device (SIL Open Font
-/// License 1.1; see NOTICE).
+/// License 1.1, see NOTICE).
 const MONO_FONT: &[u8] = include_bytes!("page/fonts/JetBrainsMono-Regular.ttf");
 /// The page may run its own files and WebAssembly, and reach only Arko.
 const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
-/// The largest request body: a long message, pasted.
+/// The largest request body, meaning a long message, pasted.
 const MAX_BODY: usize = 512 * 1024;
 /// Wrong keys an address may send before it must wait...
 const FREE_FAILURES: u32 = 3;
@@ -64,7 +64,7 @@ const MAX_WAIT: Duration = Duration::from_secs(300);
 /// Session cookies kept. The ones opened first end first.
 const MAX_SESSIONS: usize = 64;
 /// How long a session cookie lets the page in after the page last opened or
-/// reconnected, which renews it: a phone whose browser drops the link's key
+/// reconnected, which renews it. A phone whose browser drops the link's key
 /// goes on without a new scan.
 const SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
 /// How long a session lasts at most after the key was traded for it, however
@@ -125,7 +125,7 @@ impl PageSession {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     }
 
-    /// The cookie's age limit from `now`: the lifetime, or less near the cap.
+    /// The cookie's age limit from `now`, meaning the lifetime, or less near the cap.
     fn max_age(&self, now: u64) -> u64 {
         let left = SESSION_CAP
             .as_secs()
@@ -398,7 +398,7 @@ impl Server {
         let app = Arc::new(App {
             addr,
             key,
-            // Cookies don't tell ports apart: each server has its own.
+            // Cookies don't tell ports apart, so each server has its own.
             cookie: format!("arko_remote_{}", addr.port()),
             sessions,
             failures: Mutex::new(HashMap::new()),
@@ -483,7 +483,7 @@ const BUILT: [(&str, &str); 6] = [
     ("all-themes.css", "text/css; charset=utf-8"),
 ];
 
-/// The build's version: a hash of the page's files, so another build's
+/// The build's version, meaning a hash of the page's files, so another build's
 /// files have other addresses, and a browser never mixes the two.
 static VERSION: LazyLock<String> = LazyLock::new(|| {
     version_of(&[
@@ -641,7 +641,7 @@ fn packed(headers: &HeaderMap, bytes: &'static [u8], kind: &'static str) -> Resp
         .into_response()
 }
 
-/// Headers every response gets: no caching, sniffing, framing or
+/// Headers every response gets, meaning no caching, sniffing, framing or
 /// referrers, and a page that loads only its own files.
 async fn harden(mut response: Response) -> Response {
     let headers = response.headers_mut();
@@ -683,7 +683,7 @@ struct App {
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
     info: Info,
-    /// Set when the server stops: the streams end.
+    /// Set when the server stops, and the streams end.
     closed: watch::Receiver<bool>,
     /// Counts the pings (`POST /api/ping`), each of which every stream
     /// sends on.
@@ -702,7 +702,7 @@ struct Failures {
 enum Refusal {
     /// No session cookie and no right key.
     Unauthorized,
-    /// Too many wrong keys from the address: it waits this long.
+    /// Too many wrong keys from the address, so it waits this long.
     Wait(Duration),
     /// Sent from another site's page.
     CrossSite,
@@ -820,7 +820,7 @@ impl App {
         self.let_in(headers, ip).map(|_| ())
     }
 
-    /// Lets in a request as [`Self::authorize`] does, and says by what: the
+    /// Lets in a request as [`Self::authorize`] does, and says by what, meaning the
     /// hash of its session cookie, or `None` for the key as a bearer token.
     /// A stream keeps it, to end with the session.
     fn let_in(&self, headers: &HeaderMap, ip: IpAddr) -> Result<Option<String>, Refusal> {
@@ -854,7 +854,7 @@ impl App {
             info: Info,
         }
         let reading = self.meter.read();
-        // The main agent's model as the session runs it now: `/model`
+        // The main agent's model as the session runs it now. `/model`
         // changes it before the conversation starts, also after the page's
         // server started.
         let mut info = self.info.clone();
@@ -902,7 +902,7 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Whether a browser sent the request from another site's page (another
-/// port of this host counts: cookies don't tell ports apart). Clients that
+/// port of this host counts, because cookies don't tell ports apart). Clients that
 /// aren't browsers send neither header.
 fn cross_site(headers: &HeaderMap) -> bool {
     let fetched_from = headers
@@ -930,7 +930,7 @@ fn cross_site(headers: &HeaderMap) -> bool {
 
 type Peer = ConnectInfo<SocketAddr>;
 
-/// `GET /api/session`: 204 with a session (or the key), else 401. A session
+/// `GET /api/session` gives 204 with a session (or the key), else 401. A session
 /// cookie is renewed.
 async fn session_check(
     State(app): State<Arc<App>>,
@@ -959,7 +959,7 @@ struct KeyBody {
     key: String,
 }
 
-/// `POST /api/session` with `{"key": ...}`: the key for a session cookie.
+/// `POST /api/session` with `{"key": ...}` exchanges the key for a session cookie.
 async fn session_open(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -979,9 +979,9 @@ async fn session_open(
     (StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response()
 }
 
-/// `GET /api/events`: the stream. It starts with `reset` (the history, the
+/// `GET /api/events` is the stream. It starts with `reset` (the history, the
 /// workers, the background jobs and the status), then sends `item` (a new
-/// item), `append` (more text for an item), `change` (an item, changed: a
+/// item), `append` (more text for an item), `change` (an item, changed, such as a
 /// call's outcome), `worker` (a worker's summary), `job` (a background
 /// job's summary), `code` (the code blocks a streaming text finished,
 /// highlighted), `status` and `ping` (an answer to `POST /api/ping`)
@@ -1033,14 +1033,14 @@ struct Stream {
     /// The status last sent.
     status: String,
     tick: tokio::time::Interval,
-    /// The server stopped: the stream ends once `pending` is sent.
+    /// The server stopped, and the stream ends once `pending` is sent.
     ending: bool,
     /// The texts that may still stream, by item, with how many of their code
     /// blocks were sent highlighted.
     streaming: HashMap<u64, (String, usize)>,
 }
 
-/// An item as the page gets it: with its Markdown's finished code blocks
+/// An item as the page gets it, with its Markdown's finished code blocks
 /// highlighted, and the addresses of its images.
 #[derive(Serialize)]
 struct PageItem<'a> {
@@ -1080,7 +1080,7 @@ impl Stream {
         self.start(snapshot);
     }
 
-    /// Starts from `snapshot`: the history and the status.
+    /// Starts from `snapshot`, meaning the history and the status.
     fn start(&mut self, snapshot: Snapshot) {
         self.pending.clear();
         self.status = self.app.status(&snapshot.activity);
@@ -1127,7 +1127,7 @@ impl Stream {
             .push_back(Event::default().event("status").data(self.status.clone()));
     }
 
-    /// Takes what the feed sent: an update, or the history to start over
+    /// Takes what the feed sent, meaning an update, or the history to start over
     /// from where the stream fell behind.
     fn receive(&mut self, received: Received) {
         match received {
@@ -1224,7 +1224,7 @@ impl Stream {
         }
     }
 
-    /// More text for the item `id`: once a code block in it closes, its
+    /// More text for the item `id`. Once a code block in it closes, its
     /// highlighting goes out (`code`).
     fn appended(&mut self, id: u64, text: &str) {
         let Some((whole, sent)) = self.streaming.get_mut(&id) else {
@@ -1302,7 +1302,7 @@ impl Stream {
 #[derive(Deserialize)]
 struct MessageBody {
     text: String,
-    /// The worker whose view it was sent from: what isn't a command goes
+    /// The worker whose view it was sent from. What isn't a command goes
     /// to that worker, as the full-screen view sends it.
     #[serde(default)]
     to: Option<String>,
@@ -1324,7 +1324,7 @@ struct Fence {
     feed: Option<String>,
 }
 
-/// The text as typed: line ends as `\n`, and not blank.
+/// The text as typed, with line ends as `\n`, and not blank.
 fn typed(text: &str) -> Option<String> {
     let text = text.replace("\r\n", "\n");
     (!text.trim().is_empty()).then_some(text)
@@ -1372,7 +1372,7 @@ fn other_feed(app: &App, body: &[u8]) -> bool {
 }
 
 /// The 409 for a stop, a move to the background or a job's stop from a
-/// page of another feed: its call and turn were another session's.
+/// page of another feed, because its call and turn were another session's.
 fn not_this_feed() -> Response {
     (
         StatusCode::CONFLICT,
@@ -1381,7 +1381,7 @@ fn not_this_feed() -> Response {
         .into_response()
 }
 
-/// `POST /api/message` with `{"text": ...}`: as if typed at the prompt,
+/// `POST /api/message` with `{"text": ...}` acts as if typed at the prompt,
 /// answered with what became of it ([`send`]).
 async fn message(
     State(app): State<Arc<App>>,
@@ -1437,7 +1437,7 @@ struct AnswerBody {
     text: String,
 }
 
-/// `POST /api/answer` with `{"question": ID, "text": ...}`: answers the
+/// `POST /api/answer` with `{"question": ID, "text": ...}` answers the
 /// agent's question, if it is still the one asked, answered with what
 /// became of it ([`send`]).
 async fn answer(
@@ -1463,7 +1463,7 @@ async fn answer(
 }
 
 /// `POST /api/questions/answer` with
-/// `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "..."}, {"id": "q6"}]}`:
+/// `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "..."}, {"id": "q6"}]}` is
 /// the answer panel's answers to the main agent's open questions, naming
 /// every question it shows (`{"id": "q6"}` unanswered). Those unanswered
 /// stay open. It's answered with what became of them ([`send`]).
@@ -1495,7 +1495,7 @@ struct DismissBody {
     ids: Vec<String>,
 }
 
-/// `POST /api/questions/dismiss` with `{"ids": ["q5"]}`: "Not now",
+/// `POST /api/questions/dismiss` with `{"ids": ["q5"]}` is "Not now",
 /// answered with what became of it ([`send`]).
 async fn dismiss_questions(
     State(app): State<Arc<App>>,
@@ -1517,7 +1517,7 @@ async fn dismiss_questions(
 }
 
 /// `POST /api/approvals` with `{"choices": [{"id": "a1", "approve": true,
-/// "option": true}, {"id": "a2", "approve": false}], "words": "..."}`: the
+/// "option": true}, {"id": "a2", "approve": false}], "words": "..."}` is the
 /// answer to the approval tray's requests, naming every request the page
 /// shows, with the words its message box held, answered with what became
 /// of it ([`send`]).
@@ -1553,7 +1553,7 @@ struct LinkOut {
     qr_svg: Option<String>,
 }
 
-/// `GET /api/links`: the links to the page, best first, with their QR
+/// `GET /api/links` gives the links to the page, best first, with their QR
 /// codes, for opening it on another device. They hold the key, as the
 /// links Arko prints do.
 async fn links(
@@ -1577,7 +1577,7 @@ async fn links(
     axum::Json(links).into_response()
 }
 
-/// `GET /api/commands`: the commands the page runs, each with its name,
+/// `GET /api/commands` gives the commands the page runs, each with its name,
 /// what may follow it and what it does, for the menu of the input.
 async fn commands(
     State(app): State<Arc<App>>,
@@ -1615,12 +1615,12 @@ struct ChoicesBody {
     typed: String,
 }
 
-/// `POST /api/choices` with `{"command": "/model", "before": ["worker"]}`:
+/// `POST /api/choices` with `{"command": "/model", "before": ["worker"]}` gives
 /// the words that may come next in that command's arguments, as the
 /// full-screen view completes them (fixed ones, or the session's workers,
 /// models and so on). `"typed"` is the start of the word being typed, which
 /// `/model` completes from OpenRouter's models when it starts with
-/// `openrouter:`. `"notes"` has a note for some words, by word: how a model
+/// `openrouter:`. `"notes"` has a note for some words, by word, such as how a model
 /// billed per token is billed (`API, $5/$25`).
 async fn choices(
     State(app): State<Arc<App>>,
@@ -1673,7 +1673,7 @@ async fn choices(
     axum::Json(serde_json::json!({ "choices": words, "notes": notes })).into_response()
 }
 
-/// `POST /api/ping`: every stream sends a `ping`, so a page back from sleep
+/// `POST /api/ping` makes every stream send a `ping`, so a page back from sleep
 /// learns whether its stream still comes through.
 async fn ping(
     State(app): State<Arc<App>>,
@@ -1687,7 +1687,7 @@ async fn ping(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// `POST /api/stop`: stops the turn, as Ctrl-C does. One from a page of
+/// `POST /api/stop` stops the turn, as Ctrl-C does. One from a page of
 /// another feed gets a 409.
 async fn stop(
     State(app): State<Arc<App>>,
@@ -1710,7 +1710,7 @@ struct BackgroundBody {
     item: Option<u64>,
 }
 
-/// `POST /api/background` with `{"item": ID}`: moves that running call to
+/// `POST /api/background` with `{"item": ID}` moves that running call to
 /// the background, or with `{}` the main agent's calls that can move. One
 /// from a page of another feed, whose item IDs were another session's, gets
 /// a 409.
@@ -1743,7 +1743,7 @@ struct StopJobBody {
     job: uuid::Uuid,
 }
 
-/// `POST /api/jobs/stop` with `{"job": ID}`: stops that background job. One
+/// `POST /api/jobs/stop` with `{"job": ID}` stops that background job. One
 /// from a page of another feed gets a 409.
 async fn stop_job(
     State(app): State<Arc<App>>,
@@ -1763,7 +1763,7 @@ async fn stop_job(
     app.act(Action::StopJob { job: body.job })
 }
 
-/// `GET /api/images/{id}`: the bytes of an image an item shows, while Arko
+/// `GET /api/images/{id}` gives the bytes of an image an item shows, while Arko
 /// keeps it, and only of a type the page shows. Asked for with the server's
 /// version, an ID's bytes never change, so a browser may keep them.
 async fn image(
@@ -1813,7 +1813,7 @@ mod tests {
     }
 
     /// The words of the workers' settings on the page are the library's, the
-    /// ones the terminal and an app show: the page holds them as the library
+    /// ones the terminal and an app show. The page holds them as the library
     /// writes them.
     #[test]
     fn the_pages_worker_settings_use_the_librarys_words() {
@@ -2183,7 +2183,7 @@ mod tests {
         }
     }
 
-    /// Reads a stream's events until `done` holds for one; returns them,
+    /// Reads a stream's events until `done` holds for one, and returns them,
     /// as (event, data).
     async fn read_until(
         stream: &mut reqwest::Response,
@@ -2356,7 +2356,7 @@ mod tests {
 
     /// `GET /api/links` answers 401 without a session or the key, and
     /// with one the page's links, best first, each with its kind and QR
-    /// code; from another site's page, 403.
+    /// code, and from another site's page, 403.
     #[tokio::test]
     async fn the_links_with_their_qr_codes_need_a_session() {
         let feed = Feed::new("main");
@@ -2991,7 +2991,7 @@ mod tests {
         );
     }
 
-    /// The page is open to all; the API answers 401 without the key, and
+    /// The page is open to all, and the API answers 401 without the key, and
     /// the key buys an HttpOnly, SameSite=Strict cookie that opens it.
     #[tokio::test]
     async fn the_api_needs_the_key_which_buys_a_session_cookie() {
@@ -3111,7 +3111,7 @@ mod tests {
     }
 
     /// The stream starts with the history and the status, then sends what
-    /// follows: new items, more text, the status as it changes.
+    /// follows, meaning new items, more text, the status as it changes.
     #[tokio::test]
     async fn the_stream_sends_the_history_then_what_follows() {
         use arko_agents::AgentEvent;
@@ -3156,7 +3156,7 @@ mod tests {
         assert_eq!(events[2].1["text"], "ing.");
         assert_eq!(events[2].1["id"], events[1].1["id"]);
 
-        // A call's outcome comes as a change of it; a worker's summary as
+        // A call's outcome comes as a change of it, and a worker's summary as
         // `worker`.
         let call = uuid::Uuid::new_v4();
         let event = |event: AgentEvent| WorkflowEvent {
@@ -3482,7 +3482,7 @@ mod tests {
             miss_cost: Some(0.9),
             ..Default::default()
         };
-        // (The last use isn't known: no timer to count.)
+        // (The last use isn't known, so no timer to count.)
         lock(&meter.0).context_tokens = Some(1);
         let events = read_until(&mut stream, &mut buffer, |name, data| {
             name == "status" && data["context_tokens"] == 1
@@ -3509,7 +3509,7 @@ mod tests {
     }
 
     /// The page's Model row names the model the session runs now, not the
-    /// one it ran as the server started: `/model` before the conversation
+    /// one it ran as the server started. `/model` before the conversation
     /// starts changes it then. A page open gets it with the next status,
     /// and a page that connects later gets it at once.
     #[tokio::test]
@@ -3595,7 +3595,7 @@ mod tests {
             .post("/api/message", cookie, r#"{"text": "  "}"#)
             .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        // From a worker's view: text goes to the worker. A command doesn't,
+        // From a worker's view, so text goes to the worker. A command doesn't,
         // and neither does one that reads as a mistyped command, which the
         // session refuses, though one with a space first does.
         for (text, sent) in [
@@ -3760,7 +3760,7 @@ mod tests {
         assert_eq!(verdict, Verdict::closed());
     }
 
-    /// The approval tray's endpoint: an answer becomes its action, and a
+    /// The approval tray's endpoint. An answer becomes its action, and a
     /// body without choices gets a 400.
     #[tokio::test]
     async fn the_tray_is_answered_through_its_endpoint() {
@@ -3795,7 +3795,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    /// The answer panel's endpoints: answers (per question a choice, text
+    /// The answer panel's endpoints, meaning answers (per question a choice, text
     /// or "you decide"), dismissals and a message that answers questions
     /// become their actions, and a body that says nothing gets a 400. An
     /// older page's "anything_else" is ignored.
@@ -3844,7 +3844,7 @@ mod tests {
                 .await,
             Action::DismissQuestions(vec!["q2".to_string()])
         );
-        // Every question is named: a page can't dismiss questions it
+        // Every question is named, because a page can't dismiss questions it
         // doesn't show (another conversation's).
         for body in ["", "{}", r#"{"ids": []}"#] {
             let response = served.post("/api/questions/dismiss", cookie, body).await;

@@ -53,7 +53,7 @@ struct Pool {
 }
 
 /// The skills and servers of the worker that `call` and `profile` ask for,
-/// started by the agent whose recorded setup is `starter` (none: the main
+/// started by the agent whose recorded setup is `starter` (none for the main
 /// agent, or a worker with no record). `worker` says the starter is a worker.
 pub(super) fn narrow(
     basis: &Basis,
@@ -96,9 +96,9 @@ pub(super) fn narrow(
     })
 }
 
-/// One kind's set for a worker: the call's names, which must all be in the
+/// One kind's set for a worker, meaning the call's names, which must all be in the
 /// starter's `pool`, else the profile's that are, else what the starter has
-/// (`has`: none is everything). Also the profile's names left out. The pool
+/// (`has`, where none is everything). Also the profile's names left out. The pool
 /// is worked out only when names are asked for.
 fn settle(
     noun: &str,
@@ -206,7 +206,7 @@ fn server_pool(servers: &[ServerFacts], has: &Option<Vec<String>>) -> Pool {
     Pool { give, main_only }
 }
 
-/// Whether a worker with the MCP servers `mcp` (none: its starter's) reaches
+/// Whether a worker with the MCP servers `mcp` (none means its starter's) reaches
 /// at least one of `servers`. A worker that reaches none isn't offered the
 /// `mcp` tool.
 pub(super) fn reaches_a_server(mcp: &Option<Vec<String>>, servers: &[ServerFacts]) -> bool {

@@ -42,7 +42,7 @@ impl ProcessLog {
     }
 }
 
-/// The tag of a line this thread writes: its session's ID.
+/// The tag of a line this thread writes, meaning its session's ID.
 pub(crate) fn tag() -> String {
     match crate::context::session_id() {
         None => String::new(),

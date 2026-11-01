@@ -2,7 +2,7 @@
 //! and `remove`).
 //!
 //! An add is checked first, so the user is never asked about a server that
-//! can't be written: its name, a command rather than a URL, and environment
+//! can't be written, meaning its name, a command rather than a URL, and environment
 //! variables by name only. A name another file sets up is refused, unless an
 //! agent added it in the same file, which the add then replaces. Then the
 //! user is asked, unless they turned off Ask before adding MCP servers. The
@@ -37,7 +37,7 @@ use crate::ui::Output;
 /// The longest name an agent may give a server.
 const MAX_NAME: usize = 40;
 
-/// Where a session's lines about servers go: the terminal and the feed.
+/// Where a session's lines about servers go, the terminal and the feed.
 #[derive(Clone)]
 pub struct Notices {
     output: Arc<Output>,
@@ -175,7 +175,7 @@ pub fn take_out(root: &Path, file: &Path, name: &str) -> Result<(), NotRemoved> 
 
 /// The folder of the file `record` names, opened with no link on the way
 /// from the project, or from Arko's folder for its own `mcp.json`, when it is
-/// the folder the agent's add wrote in: at the recorded real path, with the
+/// the folder the agent's add wrote in, at the recorded real path, with the
 /// recorded identity.
 fn added_in(root: &Path, record: &ServerRecord) -> Result<crate::arko_dir::Folder, NotRemoved> {
     let opened = match local_workspace(&record.file) {
@@ -283,7 +283,7 @@ impl Changes {
         files
     }
 
-    /// The checks before anyone is asked: what the add found of the name in
+    /// The checks before anyone is asked, meaning what the add found of the name in
     /// its file (an agent's server it replaces), or why it can't be added.
     fn check(&self, request: &AddServer, target: &Path) -> Result<Found, String> {
         let name = request.name.trim();
@@ -328,7 +328,7 @@ impl Changes {
         })
     }
 
-    /// What the name `name` is in `target` now: free, or an agent's server
+    /// What the name `name` is in `target` now, meaning free, or an agent's server
     /// there that an add replaces. Taken when another file sets it up (or
     /// `target` does, and no agent added it), or the session has a server of
     /// that name from elsewhere.
@@ -494,7 +494,7 @@ impl Changes {
     }
 }
 
-/// Why an add of `name` wrote nothing in `target`: its entry there, or the
+/// Why an add of `name` wrote nothing in `target`, meaning its entry there, or the
 /// agent's server it replaces, changed while the user decided.
 fn changed_in(name: &str, target: &Path) -> String {
     format!(
@@ -504,7 +504,7 @@ fn changed_in(name: &str, target: &Path) -> String {
 }
 
 /// Checks, on the folder an add opened to write in, what it found before the
-/// user was asked (`before`): the folder is the one that holds the agent's
+/// user was asked (`before`). The folder is the one that holds the agent's
 /// server it replaces, by its real path and identity (when the record has
 /// one), and the file read through it (`previous`) has the entry for `name`
 /// that the add found.
@@ -621,7 +621,7 @@ fn entry_of(request: &AddServer) -> Value {
     Value::Object(entry)
 }
 
-/// The server the user approved, as the hub starts it: its `entry` read as
+/// The server the user approved, as the hub starts it, meaning its `entry` read as
 /// a file's entry is, with its variables' values taken now. (The file it
 /// was written to may change before then.)
 fn approved_server(name: &str, entry: &Value, file: &Path) -> Result<Server, String> {
@@ -796,7 +796,7 @@ impl McpChanges for Changes {
 
 impl Changes {
     /// The servers an agent added to a file this session reads that it
-    /// doesn't run, each with why: one whose variable isn't set doesn't
+    /// doesn't run, each with why. One whose variable isn't set doesn't
     /// start, and one added since the session started starts in the next.
     pub(crate) fn not_started(&self) -> Vec<(ServerRecord, String)> {
         let files = self.files();

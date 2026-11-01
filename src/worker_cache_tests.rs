@@ -1,15 +1,15 @@
 // End-to-end tests of continuing a worker whose prompt cache expired, with
-// the mock model: the agents' `message_agent` is refused until it confirms,
+// the mock model. The agents' `message_agent` is refused until it confirms,
 // `list_agents` says each worker's cache, `/message` asks first, and a
 // front end's confirmed message goes straight to the worker.
 // (Included in `main`'s tests, whose helpers they use.)
 
 use crate::mock_model::{ModelServer, complete, tool_call, with_input};
 
-/// The requests the model got: (the agent run that sent it, its body).
+/// The requests the model got, as (the agent run that sent it, its body).
 type Seen = Arc<Mutex<Vec<(String, String)>>>;
 
-/// The agent run that sent a request: `r1`, `r2`, or `main`.
+/// The agent run that sent a request, either `r1`, `r2` or `main`.
 fn sender(body: &str) -> String {
     let marker = "You are agent run ";
     match body.find(marker) {
@@ -60,7 +60,7 @@ fn last_output(body: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The main agent's mock: starts, lists or messages workers as the user's
+/// The main agent's mock, which starts, lists or messages workers as the user's
 /// message says, and ends its turn when a call's result comes back.
 fn lead(body: &str, step: &str) -> String {
     let (user, answers) = last_user(body);
@@ -103,7 +103,7 @@ fn lead(body: &str, step: &str) -> String {
     }
 }
 
-/// A model server for the main agent (see [`lead`]) and its workers: r1's
+/// A model server for the main agent (see [`lead`]) and its workers. r1's
 /// conversation reports 50k tokens of input, r2's 10. r1's turn after
 /// "Go on anyway." waits for `release` the first time, after it notifies
 /// `held`.
@@ -347,7 +347,7 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
     assert!(shown(&harness.feed).iter().any(|(_, text, _)| text
         == "r1's cache expired just now. Continuing re-reads about 50k tokens without it, using your ChatGPT plan. The same /message again continues it."));
     // That warning at the line prompt confirms nothing for a client that
-    // sends the same message unconfirmed: it is refused.
+    // sends the same message unconfirmed, so it is refused.
     let (reply, verdict) = oneshot::channel();
     harness.message_command(
         "r1 Check the docs.",
@@ -386,7 +386,7 @@ async fn message_asks_the_user_before_continuing_a_large_worker_whose_cache_expi
             .asks(chrono::Utc::now())
     );
     // A client's send confirmed but refused for its images leaves no
-    // permission behind: the same message from the line prompt asks.
+    // permission behind, and the same message from the line prompt asks.
     let image = ui::Attachment {
         bytes: Arc::from(&b"pixels"[..]),
         mime: "image/png".into(),
@@ -611,7 +611,7 @@ async fn a_worker_stopped_after_its_handover_has_no_cache_of_the_old_conversatio
 }
 
 /// A session that opens again tells each worker that ended with its cache
-/// from the first: no client sees it ended without one.
+/// from the first, so no client sees it ended without one.
 #[tokio::test]
 async fn a_restored_worker_is_told_with_its_cache_from_the_first() {
     let seen: Seen = Arc::default();
@@ -633,7 +633,7 @@ async fn a_restored_worker_is_told_with_its_cache_from_the_first() {
 }
 
 /// The session's workers as another session over the same folder and
-/// workflow finds them: its feed, the feed's updates from before it found
+/// workflow finds them, meaning its feed, the feed's updates from before it found
 /// them, and its crew.
 fn reopened(
     harness: &Harness,

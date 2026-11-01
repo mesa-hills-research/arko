@@ -44,7 +44,7 @@ fn write(basis: &Basis, place: Place, name: &str, text: &str) {
     std::fs::write(folder.join(format!("{name}.md")), text).unwrap();
 }
 
-/// What `keys` has: OpenAI only.
+/// What `keys` has, OpenAI only.
 fn needs(model: &Model) -> Option<String> {
     match model.provider {
         Provider::OpenAI => None,
@@ -126,7 +126,7 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     );
     assert!(text.contains("\nCan't be read\n- notes (project) · line 2 isn't `key: value`"));
 
-    // The models: what the session reaches, with plan usage for the
+    // The models, meaning what the session reaches, with plan usage for the
     // ChatGPT login, and what it doesn't with how to get it.
     assert!(text.contains(
         "\n\nModels usable now (the plan that pays, or API and the price per million input and output tokens, and the size where a worker hands over to a fresh conversation)\n"
@@ -169,7 +169,7 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
     )]);
     let text = options_text(&basis, Show::Models, &everything, &plans);
     let opus = resolve_model("opus").unwrap();
-    // (The prices of today, as the tool prints them: a model's price can
+    // (The prices of today, as the tool prints them, because a model's price can
     // have a period that starts on a date.)
     let prices = crate::billing::api_label(&opus);
     assert!(prices.starts_with("API, $"), "{prices}");
@@ -297,7 +297,7 @@ fn efforts_and_sizes_read_briefly() {
     assert_eq!(thousands(950_000), "950k");
 }
 
-/// The tools with real parts: a crew in a temporary session folder, keys that
+/// The tools with real parts, meaning a crew in a temporary session folder, keys that
 /// reach OpenAI, and an asker whose answers the test gives.
 struct Fixture {
     options: Arc<dyn Tool>,
@@ -322,7 +322,7 @@ impl Fixture {
         .await
     }
 
-    /// Answers the first request in the tray as the tray's buttons do:
+    /// Answers the first request in the tray as the tray's buttons do, using
     /// `approve`, with the message box's `words`. Returns what it asked.
     async fn decide(&self, approve: bool, words: Option<&str>) -> crate::approvals::Approval {
         let request = self.asked().await;

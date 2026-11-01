@@ -22,7 +22,7 @@ pub(crate) enum Kind {
     Other,
 }
 
-/// An entry of a folder: what it is, and on Unix its device and inode.
+/// An entry of a folder, with what it is and, on Unix, its device and inode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Entry {
     pub kind: Kind,
@@ -40,7 +40,7 @@ pub(crate) struct Folder {
     fd: std::os::fd::OwnedFd,
 }
 
-/// Why `path` can't be written in: it is a link.
+/// Why `path` can't be written in, because it is a link.
 pub(crate) fn link_refused(path: &Path) -> String {
     format!(
         "{} is a link, and Arko doesn't write through links.",

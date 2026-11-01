@@ -1,7 +1,7 @@
 //! What the remote's server and its page say to each other, as JSON.
 //!
 //! The page built in Rust (`web/`) compiles this file as a module of its
-//! own, so it depends on serde alone: no `crate::` or `super::` paths. The
+//! own, so it depends on serde alone, with no `crate::` or `super::` paths. The
 //! server writes these types, and the page reads them. Both ship in the
 //! same binary, so they never differ in version.
 
@@ -323,7 +323,7 @@ fn is_zero(count: &u32) -> bool {
     *count == 0
 }
 
-/// The question card the main agent waits on: its item `id`, and its
+/// The question card the main agent waits on, with its item `id`, and its
 /// text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Question {
@@ -526,7 +526,7 @@ pub struct ImageData {
 }
 
 /// One of the main agent's questions, as a card and the status give it.
-/// The user never sees its `id`: a question shows its `number` in its ask
+/// The user never sees its `id`. A question shows its `number` in its ask
 /// (1, 2, 3), or none when it came alone.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[cfg_attr(test, serde(deny_unknown_fields))]
@@ -571,7 +571,7 @@ pub const CHOOSE_ANY: &str = "Choose any";
 // `approvals`, until the user answers them all at once. The server and the
 // page share these types, and the words every front end shows of them.
 
-/// A request in the approval tray: its id in the session (`a3`), the tray
+/// A request in the approval tray, with its id in the session (`a3`), the tray
 /// it opened in, and what it asks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, serde(deny_unknown_fields))]
@@ -642,7 +642,7 @@ pub struct ProfileApproval {
     /// A worker started with it can start workers of its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nested: bool,
-    /// Where it is kept: "this project" or "every project".
+    /// Where it is kept, as "this project" or "every project".
     pub scope: String,
     /// What it is for, in one line.
     pub description: String,
@@ -712,7 +712,7 @@ pub struct SkillUpdate {
 }
 
 impl SkillUpdate {
-    /// What changes, as a sentence: "It changes SKILL.md, adds
+    /// What changes, as a sentence, such as "It changes SKILL.md, adds
     /// scripts/run.sh and removes notes.md."
     pub fn sentence(&self) -> String {
         let mut changed = Vec::new();
@@ -735,7 +735,7 @@ impl SkillUpdate {
         format!("It {}.", and_list(&parts))
     }
 
-    /// What changes, in a few words for a row: "SKILL.md and 2 more files".
+    /// What changes, in a few words for a row, as "SKILL.md and 2 more files".
     pub fn short(&self) -> String {
         let others = self.added.len() + self.removed.len() + self.changed.len();
         let files = |n: usize| if n == 1 { "file" } else { "files" };
@@ -933,7 +933,7 @@ pub fn approval_words_refusal(words: &str) -> Option<String> {
     })
 }
 
-/// The tray's heading: "1 approval", "3 approvals".
+/// The tray's heading, as "1 approval", "3 approvals".
 pub fn approvals_heading(count: usize) -> String {
     if count == 1 {
         "1 approval".to_string()
@@ -943,7 +943,7 @@ pub fn approvals_heading(count: usize) -> String {
 }
 
 /// What the button that sends the selection does, with `selected` of
-/// `count` requests selected: "Approve", "Approve all", "Approve 2, reject
+/// `count` requests selected, as "Approve", "Approve all", "Approve 2, reject
 /// 1", or "Reject all" with none selected.
 pub fn approve_label(selected: usize, count: usize) -> String {
     match (selected, count) {
@@ -980,7 +980,7 @@ pub fn reject_label(count: usize) -> &'static str {
 }
 
 impl Approval {
-    /// What it is, in a word: Profile, Skill, Update (of a skill an agent
+    /// What it is, in a word, which is Profile, Skill, Update (of a skill an agent
     /// saved), Server or Worker.
     pub fn kind_word(&self) -> &'static str {
         match self {
@@ -992,7 +992,7 @@ impl Approval {
         }
     }
 
-    /// Its name: the profile's, the skill's, the server's, or the worker's
+    /// Its name, meaning the profile's, the skill's, the server's, or the worker's
     /// model.
     pub fn name(&self) -> &str {
         match self {
@@ -1003,7 +1003,7 @@ impl Approval {
         }
     }
 
-    /// Where it applies: "every project", "this project", or "billed per
+    /// Where it applies, as "every project", "this project", or "billed per
     /// token" for a worker.
     pub fn scope(&self) -> &str {
         match self {
@@ -1025,7 +1025,7 @@ impl Approval {
         }
     }
 
-    /// What its row says after its scope: a profile's model and effort, a
+    /// What its row says after its scope, meaning a profile's model and effort, a
     /// skill's description (or what an update changes, "changes SKILL.md
     /// and 2 more files"), a server's command, a worker's prices and the
     /// day's spend.
@@ -1057,7 +1057,7 @@ impl Approval {
         }
     }
 
-    /// What it asks, as a question: "Save the skill release-notes for every
+    /// What it asks, as a question, such as "Save the skill release-notes for every
     /// project?"
     pub fn title(&self) -> String {
         match self {
@@ -1348,7 +1348,7 @@ fn and_list(items: &[String]) -> String {
     }
 }
 
-/// A count with its thousands marked: `3,210`.
+/// A count with its thousands marked, as `3,210`.
 fn thousands(count: u64) -> String {
     let digits = count.to_string();
     let mut out = String::new();
@@ -1361,7 +1361,7 @@ fn thousands(count: u64) -> String {
     out
 }
 
-/// A file's size as people say it: `512 bytes`, `14 KB`, `1.2 MB`.
+/// A file's size as people say it, such as `512 bytes`, `14 KB`, `1.2 MB`.
 fn size(bytes: u64) -> String {
     match bytes {
         0..1024 => format!("{bytes} bytes"),
@@ -1382,7 +1382,7 @@ pub fn duration(ms: i64) -> String {
     }
 }
 
-/// Dollars as people write them: `$12`, `$3.20`.
+/// Dollars as people write them, such as `$12`, `$3.20`.
 pub fn money(amount: f64) -> String {
     let cents = (amount * 100.0).round();
     if cents % 100.0 == 0.0 {
@@ -1392,7 +1392,7 @@ pub fn money(amount: f64) -> String {
     }
 }
 
-/// A price per million tokens in dollars, as people write it: `5`,
+/// A price per million tokens in dollars, as people write it, such as `5`,
 /// `1.25`, `0.10`, `0.075`.
 pub fn per_million(amount: f64) -> String {
     if amount.fract() == 0.0 {
@@ -1711,7 +1711,7 @@ where
 
 // ----- code highlighting -----
 
-/// The highlight names of a code block's spans, by their index: GPUI Kit's,
+/// The highlight names of a code block's spans, by their index, meaning GPUI Kit's,
 /// whose styles the themes give (`highlight.syntax`). A capture that isn't
 /// one of them takes the name its first word is (`function.method` is a
 /// `function`), as the kit's themes do.
@@ -1759,7 +1759,7 @@ pub const HIGHLIGHT_NAMES: [&str; 41] = [
     "variant",
 ];
 
-/// The highlighting of a code block in an item's Markdown: the code it's
+/// The highlighting of a code block in an item's Markdown, meaning the code it's
 /// for (its [`code_hash`]) and its spans, each `[start, end, name]` in bytes
 /// of the code, with the name's index in [`HIGHLIGHT_NAMES`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1777,7 +1777,7 @@ pub struct CodeData {
     pub code: Vec<CodeSpans>,
 }
 
-/// A code block's hash, as [`CodeSpans`] names its code: FNV-1a over its
+/// A code block's hash, as [`CodeSpans`] names its code, which is FNV-1a over its
 /// bytes, in hex.
 pub fn code_hash(code: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;

@@ -29,7 +29,7 @@ pub(crate) enum Opening {
     /// to keep it.
     EndsSoon(Option<u64>),
     /// The user answered or dismissed the agent's questions, or wrote a
-    /// message that answers them: the note that says so follows.
+    /// message that answers them. The note that says so follows.
     Answers,
 }
 
@@ -118,7 +118,7 @@ impl Opening {
     }
 }
 
-/// When a monitor ends, `left` minutes from now: "in 25 min", "in less
+/// When a monitor ends, `left` minutes from now, as "in 25 min", "in less
 /// than a minute", or "soon" when that isn't known.
 fn ends(left: Option<u64>) -> String {
     match left {
@@ -180,7 +180,7 @@ impl Subjects {
     }
 
     /// `who` sent `heard`. A worker is listed once, as what it did last
-    /// besides sending messages (it reported, then a message came: it
+    /// besides sending messages (it reported, then a message came, so it
     /// reported).
     fn heard(&mut self, who: &str, heard: Heard) {
         match self.workers.iter_mut().find(|(known, _)| known == who) {
@@ -295,7 +295,7 @@ fn monitor_in(text: &str, closing: &str) -> Option<(uuid::Uuid, String)> {
     Some((job, rest[..end].to_string()))
 }
 
-/// The line for news from workers: "r1 reported", "r1, r2 and r3
+/// The line for news from workers, as "r1 reported", "r1, r2 and r3
 /// reported", "Message from r2", "r1 reported · r2 sent a message".
 fn workers_line(workers: &[(String, Heard)]) -> String {
     let only_messages = workers.iter().all(|(_, heard)| *heard == Heard::Message);
@@ -338,7 +338,7 @@ fn workers_line(workers: &[(String, Heard)]) -> String {
     }
 }
 
-/// The line for jobs or monitors: "Job finished · cargo build", "2 jobs
+/// The line for jobs or monitors, as "Job finished · cargo build", "2 jobs
 /// finished · cargo build and npm test". `noun` is the singular and plural,
 /// and `did` what happened, for one and for several.
 fn counted(commands: &[Option<String>], noun: (&str, &str), did: (&str, &str)) -> String {
@@ -359,8 +359,8 @@ fn counted(commands: &[Option<String>], noun: (&str, &str), did: (&str, &str)) -
     }
 }
 
-/// `names` in words: "a", "a and b", "a, b and c". More than `whole` of
-/// them show the first two and how many are left (`rest`): "a, b and 4
+/// `names` in words, as "a", "a and b", "a, b and c". More than `whole` of
+/// them show the first two and how many are left (`rest`), as "a, b and 4
 /// others".
 fn list(names: &[&str], whole: usize, rest: &str) -> String {
     match names {

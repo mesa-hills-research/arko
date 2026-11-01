@@ -125,7 +125,7 @@ pub(crate) fn title(
 }
 
 /// The name a model gave `session`, if it is of the first message the
-/// session has: one kept for a first message that was edited since (the
+/// session has. One kept for a first message that was edited since (the
 /// conversation's title is its first line) is not its name.
 fn generated_name(session: &Session, conversations: &Conversations) -> Option<String> {
     let name = session.generated_name()?;
@@ -184,7 +184,7 @@ pub fn branch(root: &Path, id: &str) -> Result<String, BranchError> {
         session::LockError::Held(holder) => BranchError::Locked { holder },
         session::LockError::Io(error) => BranchError::Io(error.to_string()),
     };
-    // As `delete` holds it: the terminal's lock first (an Arko from before
+    // As `delete` holds it, with the terminal's lock first (an Arko from before
     // session locks holds only that one), then the session's.
     let _terminal = session.lock_terminal().map_err(|error| match error {
         session::LockError::Held(_) => BranchError::Locked {
@@ -418,7 +418,7 @@ pub(crate) fn conversation_of(
 }
 
 /// Whether the main agent's saved run `result` goes on when its session
-/// opens (see `conversation_of`): it answered, or it was interrupted or
+/// opens (see `conversation_of`), meaning it answered, or it was interrupted or
 /// stopped (not for good).
 fn goes_on(result: &arko_workflows::prelude::AgentResult) -> bool {
     use arko_workflows::prelude::AgentRunStatus;
@@ -437,11 +437,11 @@ fn goes_on(result: &arko_workflows::prelude::AgentResult) -> bool {
 
 /// Writes a branch of the session `from` (with its `settings` and named
 /// `title`) holding the conversation of `task` up to just before message
-/// `index`: all of it with the conversation's length, and none with 0 (it
+/// `index`, meaning all of it with the conversation's length, and none with 0 (it
 /// keeps the reports of the handovers the conversation had, the latest of
 /// which its first message goes on from). The branch is a new session
 /// with the settings copied, named "Branch of <title>", that knows where
-/// it came from (`branched_from`): a chat's own folder is its workspace.
+/// it came from (`branched_from`). A chat's own folder is its workspace.
 /// It takes in the conversation from its seed when it opens (see
 /// `Harness::import_seed`). Its ID.
 pub(crate) fn write_branch(
@@ -558,7 +558,7 @@ pub fn delete_plan(root: &Path, id: &str) -> Result<DeletePlan, DeleteError> {
 /// workspace is left alone. A session open anywhere isn't deleted.
 pub fn delete(root: &Path, id: &str) -> Result<Deleted, DeleteError> {
     let session = Session::open(root, id).map_err(DeleteError::Io)?;
-    // A link to a folder elsewhere isn't the session's own folder: what is
+    // A link to a folder elsewhere isn't the session's own folder, so what is
     // there stays.
     let linked = std::fs::symlink_metadata(&session.dir)
         .map_err(|error| DeleteError::Io(error.to_string()))?
@@ -574,7 +574,7 @@ pub fn delete(root: &Path, id: &str) -> Result<Deleted, DeleteError> {
         session::LockError::Held(holder) => DeleteError::Locked { holder },
         session::LockError::Io(error) => DeleteError::Io(error.to_string()),
     };
-    // Held while its files go: no Arko opens it meanwhile. An Arko from
+    // Held while its files go, so no Arko opens it meanwhile. An Arko from
     // before session locks holds only its terminal's, which is tried first
     // (its session gets no lock file of Arko's then).
     let terminal = session.lock_terminal().map_err(|error| match error {
@@ -683,7 +683,7 @@ pub(crate) fn git(dir: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// Whether the worktree at `dir` has nothing that isn't committed (git
-/// can't tell: it has).
+/// can't tell, so it has).
 fn is_clean(dir: &Path) -> bool {
     git(dir, &["status", "--porcelain"]).is_some_and(|status| status.is_empty())
 }
@@ -1034,7 +1034,7 @@ mod tests {
         assert_eq!(name(), "Apple count");
     }
 
-    /// An Arko from before session locks holds only its terminal's: the
+    /// An Arko from before session locks holds only its terminal's. The
     /// session is listed as open, by someone who didn't say, and isn't
     /// deleted until it lets go.
     #[test]
@@ -1119,7 +1119,7 @@ mod tests {
         assert!(root.join("sessions").join("linked").exists());
     }
 
-    /// A session's ID is a folder's name in `sessions/`, never a path: a
+    /// A session's ID is a folder's name in `sessions/`, never a path. A
     /// path given for one names no session, and nothing there is deleted.
     #[test]
     fn a_session_id_is_never_a_path() {

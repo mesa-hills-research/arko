@@ -1,4 +1,4 @@
-//! Approvals: what an agent's tool asks the user to allow before it acts,
+//! Approvals are what an agent's tool asks the user to allow before it acts,
 //! such as saving a worker profile or a skill for every project, adding an
 //! MCP server, or starting a worker on a model billed per token.
 //!
@@ -6,8 +6,8 @@
 //! request waits in the session's approval tray, which every front end shows
 //! above its message box ([`Reading::approvals`](crate::remote::Reading::approvals)).
 //! Requests that come while others wait join them, and the user answers
-//! them all at once ([`Input::AnswerApprovals`](crate::Input::AnswerApprovals)):
-//! each is approved or rejected, and any words the user includes go to
+//! them all at once ([`Input::AnswerApprovals`](crate::Input::AnswerApprovals)).
+//! Each is approved or rejected, and any words the user includes go to
 //! the agent with each answer. A request whose tool stops waiting (its turn
 //! stopped) leaves the tray. Nothing of the tray is kept with the session,
 //! since a tool that runs again after a resume asks again.
@@ -39,7 +39,7 @@ pub enum Answer {
     Approved { words: Option<String>, option: bool },
     /// Rejected, with what the message box held.
     Rejected { words: Option<String> },
-    /// No answer came: the turn stopped, or no one can answer in this
+    /// No answer came. The turn stopped, or no one can answer in this
     /// session.
     Unanswered,
 }
@@ -48,7 +48,7 @@ pub enum Answer {
 #[derive(Clone)]
 pub struct Approvals {
     feed: Option<Feed>,
-    /// Someone can answer: a terminal or an app.
+    /// Someone can answer, a terminal or an app.
     answerable: bool,
     /// The web page is served, where the user answers too (shared by the
     /// clones).
@@ -89,7 +89,7 @@ impl Approvals {
         Self::new(None, false, None)
     }
 
-    /// Whether anyone can answer a request: at a terminal, in an app, or on
+    /// Whether anyone can answer a request, at a terminal, in an app, or on
     /// the web page while it is served. A tool that can't go on without an
     /// answer refuses when no one can, in words the agent can act on.
     pub fn can_answer(&self) -> bool {
@@ -186,7 +186,7 @@ struct Waiting {
 }
 
 impl Queue {
-    /// Adds a request for `approval`: its id, and where its answer comes.
+    /// Adds a request for `approval`, with its id and where its answer comes.
     /// It joins the requests waiting, or starts a batch of its own.
     pub(crate) fn add(&mut self, approval: Approval) -> (String, oneshot::Receiver<Answer>) {
         self.drop_lost();
@@ -269,7 +269,7 @@ impl Queue {
 }
 
 /// What the line prompt shows of a request that came, the `count`th in the
-/// tray: its question, its details and how to answer.
+/// tray, meaning its question, its details and how to answer.
 fn line_prompt_lines(approval: &Approval, count: usize) -> Vec<String> {
     let mut lines = vec!["  ? Arko asks for your approval".to_string()];
     let title = approval.title();
@@ -302,7 +302,7 @@ fn line_prompt_lines(approval: &Approval, count: usize) -> Vec<String> {
 }
 
 /// The answer that `/approve` or `/reject` (`approve`) with `argument` gives
-/// the `requests` waiting: `/approve` approves all of them, `/approve 1 3`
+/// the `requests` waiting. `/approve` approves all of them, `/approve 1 3`
 /// those and rejects the rest, and a number followed by `+` turns its option
 /// on. The words after the numbers go with it. `Err` says what is wrong.
 pub(crate) fn command_answers(

@@ -1,4 +1,4 @@
-//! A chat session's agent: Arko as a conversation partner, with no tools
+//! A chat session's agent, Arko as a conversation partner, with no tools
 //! (no shell, files, workers, MCP servers or skills). Each message is a
 //! turn its reply answers. At the handover size it writes a summary of the
 //! conversation in text and goes on from it, answering the latest message.
@@ -8,7 +8,7 @@ use arko_agents::{BuiltInEnvironmentDetail, EnvironmentDetailPlacement, Environm
 
 use crate::agents::{self, AgentSettings, MAIN};
 
-/// The chat's main agent, as the session's `settings` say: its model, its
+/// The chat's main agent, as the session's `settings` say, meaning its model, its
 /// handover size, and the user's instructions for it.
 pub fn config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     let mut builder = AgentConfig::builder(
@@ -33,7 +33,7 @@ pub fn config(settings: &AgentSettings) -> Result<AgentConfig, String> {
     builder.build().map_err(|error| error.to_string())
 }
 
-/// What the chat's agent is told: how the chat works, then the user's
+/// What the chat's agent is told, meaning how the chat works, then the user's
 /// instructions, when there are any.
 fn instructions(user: Option<&str>) -> String {
     let mut text = String::from(
@@ -49,7 +49,7 @@ fn instructions(user: Option<&str>) -> String {
     text
 }
 
-/// What a chat's agent knows of its surroundings: the date and the
+/// What a chat's agent knows of its surroundings, meaning the date and the
 /// operating system, no folder.
 fn environment() -> EnvironmentDetailsConfig {
     let detail = BuiltInEnvironmentDetail {
@@ -70,7 +70,7 @@ mod tests {
     use crate::agents::{Effort, ModelSettings};
 
     /// A chat in Claude Code writes its summary in text at the handover
-    /// size, as every chat does: it isn't compacted.
+    /// size, as every chat does, so it isn't compacted.
     #[test]
     fn a_chat_in_claude_code_hands_over_with_a_summary() {
         let opus = ModelSettings {

@@ -90,7 +90,7 @@ pub enum Audience {
 }
 
 impl Audience {
-    /// The audience a tool call names: `lead`, `workers` for all of them, or
+    /// The audience a tool call names, either `lead`, `workers` for all of them, or
     /// worker IDs such as `r1, r2`, also mixed (`lead, r1`). Nothing means
     /// the lead. The lead's own list holds every note, so `lead` beside
     /// workers adds nothing and is dropped.
@@ -140,7 +140,7 @@ impl Audience {
     }
 }
 
-/// A worker's ID: `r` and a number.
+/// A worker's ID is `r` and a number.
 fn is_worker_id(word: &str) -> bool {
     word.strip_prefix('r')
         .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
@@ -165,7 +165,7 @@ impl Note {
         item(&self.head(with_audience), &self.text)
     }
 
-    /// The first line of its list item: "- Kept note 3, for you, 2026-10-30
+    /// The first line of its list item, as "- Kept note 3, for you, 2026-10-30
     /// 18:00 UTC".
     fn head(&self, with_audience: bool) -> String {
         let for_whom = match (&self.audience, with_audience) {
@@ -181,7 +181,7 @@ impl Note {
     }
 }
 
-/// A list item: `head`, then `text` with each line indented.
+/// A list item, with `head`, then `text` with each line indented.
 fn item(head: &str, text: &str) -> String {
     format!("{head}\n  {}", text.replace('\n', "\n  "))
 }
@@ -198,7 +198,7 @@ fn lead_text(notes: &[Note]) -> Option<String> {
     })
 }
 
-/// A note's text as the framework reads a note: every kind of line break is
+/// A note's text as the framework reads a note. Every kind of line break is
 /// one, so every line is indented when the note is shown. An error when it
 /// is empty.
 fn note_text(text: &str) -> Result<String, String> {
@@ -516,7 +516,7 @@ impl KeptNotes {
         Ok(note)
     }
 
-    /// What the main agent gets: every note, with who it is for. `None`
+    /// What the main agent gets, meaning every note, with who it is for. `None`
     /// without notes.
     pub(crate) fn for_lead(&self) -> Option<String> {
         lead_text(&self.notes())
@@ -542,7 +542,7 @@ impl KeptNotes {
     }
 
     /// What worker `handle` is sent of its notes while it runs, a message
-    /// under [`WORKER_HEADING`]: its list, or that none are left when notes
+    /// under [`WORKER_HEADING`], meaning its list, or that none are left when notes
     /// were kept and its are gone (its restated first message may still hold
     /// them).
     fn worker_message(&self, handle: &str) -> Option<String> {
@@ -647,7 +647,7 @@ impl KeptNotes {
         if let Some(pause) = crate::lock(&self.before_sending).take() {
             pause();
         }
-        // No copy of it goes to the worker's lead: the main agent wrote it.
+        // No copy of it goes to the worker's lead, because the main agent wrote it.
         if let Err(error) = workflow.message_subagent(handle, &text, WORKER_HEADING, "") {
             log::warn!("could not send {handle} its kept notes ({error})");
             return None;
@@ -696,7 +696,7 @@ impl KeptNotes {
         }
     }
 
-    /// Follows `workflow` (in place of the one followed before): after an
+    /// Follows `workflow` (in place of the one followed before). After an
     /// agent's handover or Claude Code's compaction of its conversation, the
     /// agent gets its notes again.
     pub(crate) fn follow(self: &Arc<Self>, workflow: &Arc<Workflow>) {
@@ -771,7 +771,7 @@ pub(crate) fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
 const USAGE: &str = "/notes lists the kept notes, and /notes remove N removes one.";
 
 impl crate::Harness {
-    /// `/notes`: lists the session's kept notes, and with `remove N` removes
+    /// `/notes` lists the session's kept notes, and with `remove N` removes
     /// one.
     pub(crate) fn notes_command(&mut self, argument: &str) {
         let words: Vec<&str> = argument.split_whitespace().collect();
@@ -822,7 +822,7 @@ impl crate::Harness {
     }
 }
 
-/// What `keep_note` answers: the note's number, whether it replaced that
+/// What `keep_note` answers, meaning the note's number, whether it replaced that
 /// note, and the workers that have it now.
 fn kept_result(id: u32, replaced: bool, told: &[String]) -> String {
     let done = if replaced { "Replaced" } else { "Kept" };
@@ -1096,7 +1096,7 @@ mod tests {
     }
 
     /// A list kept under the earlier limit, which counted the notes' text
-    /// alone: 8 KiB of blank lines between two letters is about 24 KiB as the
+    /// alone, so 8 KiB of blank lines between two letters is about 24 KiB as the
     /// main agent reads it. Its first read keeps the newer notes beside a
     /// note that says where the old one went, and writes the old one's exact
     /// text there. The list then fits, so the next read changes nothing.

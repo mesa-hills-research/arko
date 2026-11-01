@@ -45,7 +45,7 @@ use crate::crew::{
 use crate::profiles::{self, Cache, Found};
 use crate::providers;
 
-/// What a worker's setup is chosen from: the session's settings as they
+/// What a worker's setup is chosen from, meaning the session's settings as they
 /// are now. The harness gives the crew a new one whenever they change.
 #[derive(Debug, Clone)]
 pub struct Basis {
@@ -107,7 +107,7 @@ struct Call {
     effort: Option<String>,
     cache: Option<String>,
     nested: Option<bool>,
-    /// The names of the skills and MCP servers asked for (none: left out).
+    /// The names of the skills and MCP servers asked for (none means left out).
     skills: Option<Vec<String>>,
     mcp: Option<Vec<String>>,
 }
@@ -269,14 +269,14 @@ fn choose_at(
     let profile = found.as_ref().map(|found| &found.profile);
     let profile_name = profile.map(|profile| profile.name.as_str());
 
-    // The model: the call's, else the profile's, else the session's.
+    // The model is the call's, else the profile's, else the session's.
     let (model_text, from_profile) = match (&call.model, profile.and_then(|p| p.model.as_ref())) {
         (Some(text), _) => (text.clone(), false),
         (None, Some(text)) => (text.clone(), true),
         (None, None) => (basis.worker.model.clone(), false),
     };
     let model = providers::resolve_model(&model_text).map_err(|why| {
-        // (Without the aliases: worker_options lists the models to use.)
+        // (Without the aliases, since worker_options lists the models to use.)
         let why = providers::briefly(&why);
         match profile_name {
             Some(name) if from_profile => format!(
@@ -289,7 +289,7 @@ fn choose_at(
     let same_model = providers::resolve_model(&basis.worker.model)
         .is_ok_and(|session| providers::model_name(&session) == model_name);
 
-    // Credentials come first: a model that can't start needs no more said
+    // Credentials come first, because a model that can't start needs no more said
     // about its effort.
     if let Some(why) = refuse.and_then(|refuse| blocking(|| refuse(&model))) {
         return Err(why);
@@ -313,7 +313,7 @@ fn choose_at(
             ))
         },
     };
-    // Fast mode is checked as the settings are built: a model without it
+    // Fast mode is checked as the settings are built, so a model without it
     // says so.
     let mut setup = agents::worker_setup(
         &worker,
@@ -333,7 +333,7 @@ fn choose_at(
         providers::ask_short_cache(&model, &mut setup.llm_config.generation_config);
     }
 
-    // What goes into the run's first message: the profile's instructions,
+    // What goes into the run's first message, meaning the profile's instructions,
     // what it needs to know to start workers of its own, and the extra
     // rules for a small model when the registered worker (the session's)
     // didn't get them.
@@ -386,7 +386,7 @@ fn levels(count: u32) -> String {
     format!("{count} level{}", if count == 1 { "" } else { "s" })
 }
 
-/// The profiles in force as the main agent's instructions name them: each
+/// The profiles in force as the main agent's instructions name them, meaning each
 /// name (a valid one, nothing a file could make up) with the model it names
 /// when Arko knows that model.
 pub fn named_profiles(roots: &profiles::Roots) -> Vec<agents::ProfileName> {
@@ -494,7 +494,7 @@ fn takes_none(model: &Model) -> bool {
     providers::efforts(model).is_empty()
 }
 
-/// The effort: the call's, else the profile's, else the session's. The
+/// The effort is the call's, else the profile's, else the session's. The
 /// call's and the profile's own are held to what the model takes. The
 /// session's stays as it is on the session's own worker model, whatever the
 /// model takes, as the registered worker runs it.
@@ -535,7 +535,7 @@ fn effort_for(
             Ok(providers::fit_effort(model, effort))
         };
     }
-    // The session's own: as it is on its own model (the registered worker
+    // The session's own, as it is on its own model (the registered worker
     // runs it so), else the nearest one the model takes.
     Ok(if session_model {
         basis.worker.effort

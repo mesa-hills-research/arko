@@ -1,5 +1,5 @@
 // End-to-end tests of switching the main agent's model once the
-// conversation has started, and of `/new continue`: a new conversation that
+// conversation has started, and of `/new continue`, a new conversation that
 // opens with a brief of the old one and the old model's report, reads the
 // old one with `earlier_conversation`, and keeps the workers. Each follows a
 // path a user takes, with the mock model (and the fake Claude Code CLI), and
@@ -137,7 +137,7 @@ async fn say(harness: &mut Harness, inputs: &mut Inputs, text: &str) {
     assert!(matches!(end, TurnEnd::Answered), "{text}");
 }
 
-/// Runs `command` as the prompt does between turns: a switch, or `/new`.
+/// Runs `command` as the prompt does between turns, a switch or `/new`.
 async fn switch(harness: &mut Harness, inputs: &mut Inputs, command: &str) {
     match harness.switch_of(command) {
         Some(switch) => {
@@ -296,7 +296,7 @@ async fn a_switch_starts_a_new_conversation_from_the_old_models_report_and_a_bri
             .any(|tool| tool == crate::earlier::TOOL_NAME)
     );
 
-    // The session reopens: each conversation goes on on its own model.
+    // The session reopens, and each conversation goes on on its own model.
     harness.crew.as_ref().unwrap().shutdown().await;
     harness.open(true).unwrap();
     harness.start_new_workers();
@@ -367,7 +367,7 @@ async fn new_continue_carries_the_conversation_over_and_a_plain_new_starts_clean
     assert!(last_user_of(&third).0.contains(REPORT));
     assert!(offers_tool(&third));
 
-    // `/new` then `/model sol`: a clean start on sol.
+    // `/new` then `/model sol` gives a clean start on sol.
     switch(&mut harness, &mut inputs, "/new").await;
     switch(&mut harness, &mut inputs, "/model sol").await;
     assert!(
@@ -996,7 +996,7 @@ async fn the_brief_waits_for_the_new_conversations_first_run() {
 }
 
 /// A session that opens again goes on with the handover size and the
-/// window of the conversation it was in: the next one's model after a
+/// window of the conversation it was in, meaning the next one's model after a
 /// switch whose first message hasn't come, and the model of an older
 /// conversation `/resume` went back to.
 #[tokio::test]
@@ -1124,7 +1124,7 @@ fn effort_in(body: &str) -> String {
 }
 
 /// A conversation `/resume` went back to says its own model and effort,
-/// where they differ from those new conversations start on: in the
+/// where they differ from those new conversations start on, in the
 /// banner, `/model` and the models published, and `/new continue` and a
 /// switch go on from its effort.
 #[tokio::test]
@@ -1175,7 +1175,7 @@ async fn a_resumed_conversation_says_its_own_model_and_effort() {
 
 /// A handover size the user set for a conversation on a large window
 /// stays when the session opens again in it, and when the session goes to
-/// a conversation on a smaller window and back: each goes by at most what
+/// a conversation on a smaller window and back, and each goes by at most what
 /// its model leaves room for.
 #[tokio::test]
 async fn a_handover_size_set_stays_across_models_and_a_reopen() {
@@ -1230,7 +1230,7 @@ async fn a_handover_size_set_stays_across_models_and_a_reopen() {
 }
 
 /// What awaits a switch dropped while the old model writes its report
-/// (the session closing) ends the report: the session no longer says one
+/// (the session closing) ends the report. The session no longer says one
 /// is being written, and the old conversation goes on as it was.
 #[tokio::test]
 async fn a_switch_dropped_during_the_report_ends_it() {

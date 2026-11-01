@@ -1,4 +1,4 @@
-//! Credentials: the API keys of the model providers (Anthropic, OpenAI,
+//! Credentials covers the API keys of the model providers (Anthropic, OpenAI,
 //! Google Gemini, OpenRouter) and the ChatGPT login (a Codex auth.json),
 //! from the environment or `.env` files, and the setup screen that asks for
 //! them when the chosen model has none or its file fails. The screen also
@@ -55,18 +55,18 @@ pub const GOOGLE_KEY: &str = "GOOGLE_API_KEY";
 pub const OPENROUTER_KEY: &str = "OPENROUTER_API_KEY";
 /// The Codex auth.json that holds the ChatGPT login.
 pub const CODEX_AUTH: &str = "ARKO_CODEX_AUTH";
-/// How new sessions reach OpenAI models: `chatgpt` or `api-key`.
+/// How new sessions reach OpenAI models, either `chatgpt` or `api-key`.
 pub const OPENAI_AUTH: &str = "ARKO_OPENAI_AUTH";
 /// The long prompt cache for new sessions (Claude's hour, OpenAI's 12
 /// hours on an API key), `1` or `0`.
 pub const CACHE_1H: &str = "ARKO_CACHE_1H";
-/// Whether new sessions have Arko's built-in skills: `1` or `0`.
+/// Whether new sessions have Arko's built-in skills, either `1` or `0`.
 pub const BUILTIN_SKILLS: &str = "ARKO_BUILTIN_SKILLS";
 /// The built-in skills new sessions leave out, by name, separated by commas.
 pub const BUILTIN_SKILLS_OFF: &str = "ARKO_BUILTIN_SKILLS_OFF";
-/// The shell new sessions run commands in on Windows: `cmd` or `powershell`.
+/// The shell new sessions run commands in on Windows, either `cmd` or `powershell`.
 pub const SHELL: &str = "ARKO_SHELL";
-/// Whether new sessions' workers may run on models billed per token:
+/// Whether new sessions' workers may run on models billed per token, either
 /// `plans`, `ask` or `api`.
 pub const WORKER_BILLING: &str = "ARKO_WORKER_BILLING";
 /// New sessions' daily API budget in dollars, or `off`.
@@ -75,7 +75,7 @@ pub const API_BUDGET: &str = "ARKO_API_BUDGET";
 pub const VOYAGE_KEY: &str = "VOYAGE_API_KEY";
 /// The full-screen view's theme, by name.
 pub const THEME: &str = "ARKO_THEME";
-/// The settings a `.env` file can hold; it may set others, which are left
+/// The settings a `.env` file can hold. It may set others, which are left
 /// alone.
 const DOTENV_KEYS: [&str; 17] = [
     ANTHROPIC_KEY,
@@ -98,11 +98,11 @@ const DOTENV_KEYS: [&str; 17] = [
 ];
 
 /// What was entered on the setup screen, in the keys menu or in an app's
-/// accounts in this run, by the Arko `.env` it was saved in: it comes
+/// accounts in this run, by the Arko `.env` it was saved in. It comes
 /// before every other source for the sessions of that Arko folder.
 static ENTERED: Mutex<Vec<(PathBuf, &str, String)>> = Mutex::new(Vec::new());
 
-/// The settings removed from an Arko `.env` in this run (with that file):
+/// The settings removed from an Arko `.env` in this run (with that file), so
 /// what it held as Arko started is no longer read.
 static FORGOTTEN: Mutex<Vec<(PathBuf, &str)>> = Mutex::new(Vec::new());
 
@@ -114,7 +114,7 @@ pub enum Source {
     DotEnv(PathBuf),
 }
 
-/// A setting, if it is set: entered on the setup screen or in the keys
+/// A setting, if it is set, meaning entered on the setup screen or in the keys
 /// menu, else from the environment, else (the settings Arko reads there) from
 /// a `.env` file, as the session's [`Env`] finds them.
 pub fn var(name: &str) -> Option<String> {
@@ -140,7 +140,7 @@ fn lookup(name: &str) -> Option<(String, Source)> {
 pub struct Env {
     /// The settings in the files, each with the first file that sets it.
     files: Arc<HashMap<&'static str, (String, PathBuf)>>,
-    /// The `.env` in Arko's folder: where keys are saved, and what was
+    /// The `.env` in Arko's folder, where keys are saved, and what was
     /// entered and removed in this run goes by. `None` when Arko's folder
     /// isn't known.
     arko: Option<PathBuf>,
@@ -174,7 +174,7 @@ impl Env {
         Env::read(&dotenv_paths(folder, beside, arko.clone()), arko)
     }
 
-    /// The settings in the files at `paths`, in order: the first that sets
+    /// The settings in the files at `paths`, in order. The first that sets
     /// one is read. `arko` is Arko's own `.env`.
     fn read(paths: &[PathBuf], arko: Option<PathBuf>) -> Env {
         let mut values = HashMap::new();
@@ -207,7 +207,7 @@ impl Env {
             .map(|(_, _, value)| value.clone())
     }
 
-    /// `value` was entered as `name` (and saved in Arko's `.env`): it comes
+    /// `value` was entered as `name` (and saved in Arko's `.env`). It comes
     /// first for this Arko folder's sessions from now on.
     fn enter(&self, name: &'static str, value: String) {
         let Some(arko) = &self.arko else {
@@ -222,7 +222,7 @@ impl Env {
             .retain(|(file, key)| !(file == arko && *key == name));
     }
 
-    /// `name` was removed from Arko's `.env`: what it held, and what was
+    /// `name` was removed from Arko's `.env`. What it held, and what was
     /// entered as it, are no longer read.
     fn forget(&self, name: &'static str) {
         let Some(arko) = &self.arko else {
@@ -282,7 +282,7 @@ impl Env {
     }
 }
 
-/// The `.env` files a session in `folder` reads, in order: the nearest in
+/// The `.env` files a session in `folder` reads, in order, meaning the nearest in
 /// `folder` or a parent, `beside` (the program's), then `arko` (Arko's
 /// folder's), each once.
 fn dotenv_paths(
@@ -305,11 +305,11 @@ fn dotenv_paths(
     paths
 }
 
-/// The `Env` the process reads, until a session sets its own: the current
+/// The `Env` the process reads, until a session sets its own. It is the current
 /// directory's.
 static CURRENT: Mutex<Option<Env>> = Mutex::new(None);
 
-/// The `Env` settings and keys are read from now: the session's (each
+/// The `Env` settings and keys are read from now, meaning the session's (each
 /// session's own, where several run in one process).
 pub fn current() -> Env {
     if let Some(env) = crate::context::env() {
@@ -322,7 +322,7 @@ pub fn current() -> Env {
         .clone()
 }
 
-/// The process's `Env` until a session sets one: the current directory's.
+/// The process's `Env` until a session sets one. It is the current directory's.
 /// Tests read no file, so the settings of the computer they run on (its
 /// Arko folder's `.env`) don't change what they see, whichever test sets
 /// one first.
@@ -348,7 +348,7 @@ pub struct KeyChange {
     /// Arko's folder, whose sessions it is for.
     pub root: PathBuf,
     pub key: &'static Key,
-    /// The key added. `None`: removed, and each session goes by the next
+    /// The key added. `None` means removed, and each session goes by the next
     /// one it reads, if any.
     pub value: Option<String>,
     /// Who changed it (one session's keys), which has it already.
@@ -386,13 +386,13 @@ fn entered(name: &str) -> Option<String> {
     current().entered(name)
 }
 
-/// (The setup screen's: it enters what the user typed.)
+/// (The setup screen's, because it enters what the user typed.)
 #[cfg(feature = "tui")]
 fn enter(name: &'static str, value: String) {
     current().enter(name, value);
 }
 
-/// Arko's own `.env`, in the session's Arko folder: where the setup screen
+/// Arko's own `.env`, in the session's Arko folder, where the setup screen
 /// and the keys menu save.
 pub fn arko_dotenv() -> Result<PathBuf, String> {
     current().arko_dotenv()
@@ -458,7 +458,7 @@ fn login_paths(value: &str, folder: Option<&Path>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// `paths` as ARKO_CODEX_AUTH holds them: one path as it is, several as
+/// `paths` as ARKO_CODEX_AUTH holds them, with one path as it is, several as
 /// [`login_paths`] reads them.
 /// Fails, naming the path, when one of several holds the separator.
 fn join_logins(paths: &[PathBuf]) -> Result<String, String> {
@@ -479,8 +479,8 @@ fn join_logins(paths: &[PathBuf]) -> Result<String, String> {
         })
 }
 
-/// A yes-or-no setting: `1`, `true`, `yes` or `on`, or `0`, `false`, `no`
-/// or `off`; `None` when it isn't set. Another value is an error.
+/// A yes-or-no setting, either `1`, `true`, `yes` or `on`, or `0`, `false`, `no`
+/// or `off`. `None` when it isn't set. Another value is an error.
 pub fn switch(name: &str) -> Result<Option<bool>, String> {
     let Some((value, source)) = lookup(name) else {
         return Ok(None);
@@ -495,7 +495,7 @@ pub fn switch(name: &str) -> Result<Option<bool>, String> {
     }
 }
 
-/// The Codex auth.json files to use, in order of preference: those entered
+/// The Codex auth.json files to use, in order of preference, meaning those entered
 /// on the setup screen or in this process, else `--codex-auth`, else
 /// ARKO_CODEX_AUTH (one path, or several as [`login_paths`] says). None
 /// leaves it to Codex's default (`$CODEX_HOME/auth.json`, else
@@ -563,7 +563,7 @@ pub struct ChatGptLogin {
     pub state: LoginState,
 }
 
-/// The first of [`chatgpt_logins`]: the ChatGPT login Arko uses first.
+/// The first of [`chatgpt_logins`], the ChatGPT login Arko uses first.
 pub fn chatgpt_login(flag: Option<&Path>) -> ChatGptLogin {
     chatgpt_logins(flag)
         .into_iter()
@@ -701,7 +701,7 @@ pub(crate) fn add_login_to(paths: &mut Vec<PathBuf>, path: &Path) -> Result<(), 
 }
 
 /// Removes `path` from `paths`, as [`remove_chatgpt_login`] says.
-/// `codex_own`: `paths` is Codex's own login, which no setting holds.
+/// `codex_own` says `paths` is Codex's own login, which no setting holds.
 pub(crate) fn remove_login_from(
     paths: &mut Vec<PathBuf>,
     path: &Path,
@@ -736,7 +736,7 @@ pub(crate) fn first_login_of(paths: &mut Vec<PathBuf>, path: &Path) -> Result<()
 
 /// Changes the ChatGPT logins in `env` with `change`, which gets the list
 /// in use (Codex's own login while none is set, when its file holds a login,
-/// with whether that is so; `flag` is a session's `--codex-auth`). It saves
+/// with whether that is so. `flag` is a session's `--codex-auth`). It saves
 /// the new list in Arko's folder, and replies the logins now. The open
 /// sessions are told ([`announce_logins`]) by the caller, once it has done
 /// what it does of its own.
@@ -888,7 +888,7 @@ impl Need {
     }
 }
 
-/// Whether the setup screen can be shown: standard input and output are a
+/// Whether the setup screen can be shown, meaning standard input and output are a
 /// terminal.
 #[cfg(feature = "tui")]
 pub fn can_ask() -> bool {
@@ -961,7 +961,7 @@ pub const VOYAGE: Key = Key {
 /// The API keys, in the keys menu's order.
 pub const KEYS: [&Key; 5] = [&ANTHROPIC, &OPENAI, &GEMINI, &OPENROUTER, &VOYAGE];
 
-/// The key `/keys add` and `/keys remove` name: `anthropic`, `openai`,
+/// The key `/keys add` and `/keys remove` name, one of `anthropic`, `openai`,
 /// `gemini` (or `google`), `openrouter` or `voyage`.
 pub fn key_named(word: &str) -> Option<&'static Key> {
     let word = word.trim().to_ascii_lowercase();
@@ -1045,7 +1045,7 @@ pub fn key_value(key: &Key) -> Option<String> {
     in_use(key).map(|(_, value, _)| value)
 }
 
-/// The key in use for `key`: the variable it is read as, its value and
+/// The key in use for `key`, meaning the variable it is read as, its value and
 /// where it comes from. A Gemini key is read as GOOGLE_API_KEY first, as
 /// arko reads it (unless one was entered in this run).
 fn in_use(key: &Key) -> Option<(&'static str, String, Source)> {
@@ -1057,7 +1057,7 @@ fn in_use(key: &Key) -> Option<(&'static str, String, Source)> {
     lookup(key.name).map(|(value, source)| (key.name, value, source))
 }
 
-/// `value` as Arko shows a key: its provider's `prefix` (when it starts with
+/// `value` as Arko shows a key, meaning its provider's `prefix` (when it starts with
 /// it) and its last 4 characters, `sk-ant-…a1b2`. A short key shows no end.
 pub fn masked(value: &str, prefix: &str) -> String {
     let start = if value.starts_with(prefix) {
@@ -1074,7 +1074,7 @@ pub fn masked(value: &str, prefix: &str) -> String {
     }
 }
 
-/// Why `value` (pasted as `key`) can't be it: it has spaces, or it is
+/// Why `value` (pasted as `key`) can't be it, because it has spaces, or it is
 /// another provider's key.
 pub fn check_pasted(value: &str, key: &Key) -> Result<(), String> {
     if value.chars().any(char::is_whitespace) {
@@ -1092,7 +1092,7 @@ pub fn check_pasted(value: &str, key: &Key) -> Result<(), String> {
     Ok(())
 }
 
-/// What saving a key or removing one says: what was done, and a note on
+/// What saving a key or removing one says, meaning what was done, and a note on
 /// what comes before it in later runs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Saved {
@@ -1111,7 +1111,7 @@ pub fn save_key(key: &'static Key, value: &str) -> Result<Saved, String> {
 }
 
 /// Removes `key` from Arko's `.env` and from this run, when Arko saved the
-/// key in use ([`KeyState::removable`]). Returns its state after: the key
+/// key in use ([`KeyState::removable`]). Returns its state after, meaning the key
 /// another source sets, if one does.
 pub fn remove_key(key: &'static Key) -> Result<KeyState, String> {
     let state = key_state(key);
@@ -1129,7 +1129,7 @@ pub fn remove_key(key: &'static Key) -> Result<KeyState, String> {
     Ok(key_state(key))
 }
 
-/// Where a key comes from, as a sentence names it: "ANTHROPIC_API_KEY in
+/// Where a key comes from, as a sentence names it, such as "ANTHROPIC_API_KEY in
 /// Arko's environment".
 pub fn source_text(source: &KeySource, variable: &str) -> String {
     match source {
@@ -1148,7 +1148,7 @@ enum Choice {
     ClaudeCode,
 }
 
-/// The menu: what each choice is for.
+/// The menu, with what each choice is for.
 #[cfg(feature = "tui")]
 const MENU: [(Choice, &str); 7] = [
     (
@@ -1181,7 +1181,7 @@ const MENU: [(Choice, &str); 7] = [
     ),
 ];
 
-/// The setup screen: asks for what `need` names (anything with `None` or
+/// The setup screen asks for what `need` names (anything with `None` or
 /// `Need::Any`), saves it in Arko's `.env` and uses it in this run. An error
 /// when the user quits.
 #[cfg(feature = "tui")]
@@ -1276,7 +1276,7 @@ pub fn setup(need: Option<&Need>) -> Result<(), String> {
             return ask_claude_code(&out, &mut editor, Some(problem.clone()));
         }
         None | Some(Need::Any) => {
-            // The Voyage key is no model's credential: offered on its own.
+            // The Voyage key is no model's credential, so it is offered on its own.
             let offered = if need.is_none() {
                 MENU.len()
             } else {
@@ -1342,7 +1342,7 @@ fn ask_key(out: &Output, editor: &mut Editor, dotenv: &Path, key: &Key) -> Resul
     Ok(())
 }
 
-/// Reads `key` with the input hidden until it looks like one: an error when
+/// Reads `key` with the input hidden until it looks like one, with an error when
 /// the line is empty or the user presses Ctrl-C.
 #[cfg(feature = "tui")]
 fn ask_value(out: &Output, editor: &mut Editor, key: &Key) -> Result<String, String> {
@@ -1371,7 +1371,7 @@ pub fn prefix_note(value: &str, key: &Key) -> Option<String> {
     })
 }
 
-/// The line prompt's `/keys add`: reads `key` with the input hidden, as the
+/// The line prompt's `/keys add` reads `key` with the input hidden, as the
 /// setup screen does. `None` when the user leaves it empty or presses
 /// Ctrl-C.
 #[cfg(feature = "tui")]
@@ -1389,7 +1389,7 @@ pub fn read_key(out: &Output, key: &Key) -> Result<Option<String>, String> {
 }
 
 /// The other provider's key `value` looks like, when it has that key's
-/// longer prefix: an Anthropic key pasted where an OpenAI one goes.
+/// longer prefix, such as an Anthropic key pasted where an OpenAI one goes.
 fn mistaken_for(value: &str, key: &Key) -> Option<&'static Key> {
     KEYS.into_iter()
         .filter(|other| other.name != key.name && value.starts_with(other.prefix))
@@ -1397,12 +1397,12 @@ fn mistaken_for(value: &str, key: &Key) -> Option<&'static Key> {
         .max_by_key(|other| other.prefix.len())
 }
 
-/// "an OpenAI API key" without its article: "OpenAI API key".
+/// "an OpenAI API key" without its article, as "OpenAI API key".
 fn without_article(what: &str) -> &str {
     what.split_once(' ').map_or(what, |(_, rest)| rest)
 }
 
-/// "OpenAI API key" as a prompt starts it: with a capital, without its
+/// "OpenAI API key" as a prompt starts it, with a capital and without its
 /// article.
 fn capitalized(what: &str) -> String {
     let what = without_article(what);
@@ -1542,7 +1542,7 @@ fn saved(out: &Output, dotenv: &Path, name: &str) {
 }
 
 /// Where the setting `name` was saved, and what comes before it in later
-/// runs: the environment or another `.env` (for a Gemini key, under its
+/// runs, meaning the environment or another `.env` (for a Gemini key, under its
 /// older name too).
 fn saved_text(dotenv: &Path, name: &str) -> Saved {
     let names: &[&str] = if name == GEMINI_KEY {
@@ -1578,7 +1578,7 @@ fn dotenv_get(name: &str) -> Option<PathBuf> {
 }
 
 /// Sets `name` to `value` in the `.env` file at `path`, keeping its other
-/// lines; the file is created readable only by the user.
+/// lines. The file is created readable only by the user.
 fn save(path: &Path, name: &str, value: &str) -> Result<(), String> {
     let line = format!("{name}={}", quote(value));
     change_dotenv(path, |text| {
@@ -1628,7 +1628,7 @@ fn unset(path: &Path, name: &str) -> Result<(), String> {
     .map_err(|error| format!("could not change {} ({error})", path.display()))
 }
 
-/// Changes the `.env` file at `path`: `change` gets its text (`None`
+/// Changes the `.env` file at `path`. `change` gets its text (`None`
 /// when there is no file) and gives the new one, or `None` to leave it
 /// alone. It runs under a lock on the file `.env.lock` beside it, held
 /// from the reading to the writing, so programs that change the file at
@@ -1708,7 +1708,7 @@ fn sets(line: &str, name: &str) -> bool {
         .is_some_and(|rest| rest.trim_start().starts_with('='))
 }
 
-/// A value as a `.env` file writes it: bare when it can be, else quoted.
+/// A value as a `.env` file writes it, bare when it can be, else quoted.
 fn quote(value: &str) -> String {
     let bare = |c: char| c.is_ascii_alphanumeric() || "-_./:@+,%".contains(c);
     if !value.is_empty() && value.chars().all(bare) {
@@ -1728,7 +1728,7 @@ fn quote(value: &str) -> String {
 #[cfg(feature = "tui")]
 type Editor = rustyline::Editor<Prompt, rustyline::history::DefaultHistory>;
 
-/// The setup screen's prompts: file names complete, and a key is hidden.
+/// The setup screen's prompts, where file names complete and a key is hidden.
 #[cfg(feature = "tui")]
 struct Prompt {
     files: FilenameCompleter,
@@ -1748,7 +1748,7 @@ impl Prompt {
     }
 }
 
-/// Reads a line; an error when the user presses Ctrl-C or Ctrl-D.
+/// Reads a line, with an error when the user presses Ctrl-C or Ctrl-D.
 #[cfg(feature = "tui")]
 fn read(editor: &mut Editor, prompt: &str, initial: &str, hidden: bool) -> Result<String, String> {
     if let Some(helper) = editor.helper_mut() {
@@ -1970,7 +1970,7 @@ mod tests {
     #[test]
     fn a_env_beside_the_program_is_read() {
         if std::env::var_os(crate::remote::HOST_VARIABLE).is_some() {
-            return; // (Set in this process: it comes first.)
+            return; // (Set in this process, so it comes first.)
         }
         let temp = tempfile::tempdir().unwrap();
         let program = temp.path().join("bin").join("arko");
@@ -2004,7 +2004,7 @@ mod tests {
     }
 
     /// A session reads the nearest `.env` in its folder or a parent first,
-    /// then the one beside Arko's program, then Arko's own, each once: a
+    /// then the one beside Arko's program, then Arko's own, each once, so a
     /// setting comes from the first that sets it. Another folder reads its
     /// own.
     #[test]
@@ -2123,7 +2123,7 @@ mod tests {
     }
 
     /// Writers at once, each saving and removing its own settings, lose
-    /// none of the others': each reads the file under the lock, and each
+    /// none of the others'. Each reads the file under the lock, and each
     /// writes through a temporary file of its own.
     #[test]
     fn writers_at_once_keep_each_others_settings() {

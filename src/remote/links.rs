@@ -1,5 +1,5 @@
 //! The links to the page, ranked for the device that opens one (a phone,
-//! say) and for the QR code, which shows the first: real network
+//! say) and for the QR code, which shows the first. Real network
 //! interfaces on a private network first, Tailscale next, VPN tunnels last.
 //! A VPN's address is one the other devices on the network can't reach,
 //! and it can be a private address like the network's own (Mullvad gives
@@ -103,7 +103,7 @@ pub fn kind(interface: &Interface) -> Kind {
     }
 }
 
-/// Tailscale's addresses: 100.64.0.0/10 and fd7a:115c:a1e0::/48.
+/// Tailscale's addresses, 100.64.0.0/10 and fd7a:115c:a1e0::/48.
 fn is_tailscale(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 64,
@@ -111,7 +111,7 @@ fn is_tailscale(ip: IpAddr) -> bool {
     }
 }
 
-/// A VPN tunnel's name: WireGuard (`wg0`, `wg0-mullvad`), TUN and TAP
+/// A VPN tunnel's name, such as WireGuard (`wg0`, `wg0-mullvad`), TUN and TAP
 /// devices (`tun0`, macOS's `utun3`), PPP, or a VPN's own name, as on
 /// Windows.
 fn is_tunnel(name: &str) -> bool {
@@ -121,7 +121,7 @@ fn is_tunnel(name: &str) -> bool {
         || NAMES.iter().any(|word| name.contains(word))
 }
 
-/// A private address: 10/8, 172.16/12, 192.168/16, or an IPv6 unique local
+/// A private address, meaning 10/8, 172.16/12, 192.168/16, or an IPv6 unique local
 /// one (fc00::/7).
 fn is_private(ip: IpAddr) -> bool {
     match ip {
@@ -198,7 +198,7 @@ pub fn links(addr: SocketAddr, key: &str, interfaces: Vec<Interface>) -> Vec<Lin
         })
         .collect();
     links.dedup_by(|a, b| a.url == b.url);
-    // Stable: interfaces of a kind keep the system's order.
+    // Stable, so interfaces of a kind keep the system's order.
     links.sort_by_key(|link| link.kind);
     let local = if v6 {
         IpAddr::V6(Ipv6Addr::LOCALHOST)
@@ -263,7 +263,7 @@ mod tests {
     }
 
     /// Mullvad's WireGuard tunnel has a private address like the network's,
-    /// and comes first in the system's list: the network's interface wins,
+    /// and comes first in the system's list, so the network's interface wins,
     /// whether Linux says which device is physical or the system doesn't.
     #[test]
     fn the_network_wins_over_a_mullvad_tunnel() {
@@ -332,7 +332,7 @@ mod tests {
     }
 
     /// `ARKO_REMOTE_HOST` puts the link it names first, by interface or
-    /// address; one that names none says so and changes nothing.
+    /// address, and one that names none says so and changes nothing.
     #[test]
     fn the_host_named_comes_first() {
         let mut ranked = links(

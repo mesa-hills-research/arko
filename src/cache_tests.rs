@@ -1,12 +1,12 @@
 // End-to-end tests of the prompt cache's time across closing a session and
-// resuming it, as `arko -c` and an app do: through the engine, with the
+// resuming it, as `arko -c` and an app do, through the engine, with the
 // mock model. (Included in `engine`'s tests, whose helpers they use.)
 
 const RECORD: &str = "prompt-cache.json";
 
 /// A model that answers "Noted." and says its request read `cached` of its
 /// 1000 input tokens from the prompt cache. `cached` changes as the test
-/// goes: a cache that lapsed reads nothing.
+/// goes, and a cache that lapsed reads nothing.
 async fn caching_model(cached: Arc<std::sync::atomic::AtomicUsize>) -> ModelServer {
     ModelServer::start(Arc::new(move |_, body: String| {
         let cached = cached.load(std::sync::atomic::Ordering::SeqCst);
@@ -70,7 +70,7 @@ async fn say_and_wait(
 }
 
 /// A session closed after a reply and resumed has its cache's time from the
-/// wall clock: what is left of it, or that it expired, whatever the
+/// wall clock, meaning what is left of it, or that it expired, whatever the
 /// record's request's age. A request after it expired misses the cache,
 /// and starts a new time.
 #[tokio::test]
@@ -97,7 +97,7 @@ async fn a_resumed_session_counts_its_cache_from_the_wall_clock() {
         resolve_model("luna").unwrap().id
     );
 
-    // Resumed at once: the request's time and what it read, and the time
+    // Resumed at once, with the request's time and what it read, and the time
     // the cache has left for two clocks.
     let (seam, ended) = open_app(&root, &project, &server, SessionChoice::Resume(id.clone())).await;
     let restored = seam.meter.read().cache;
@@ -120,7 +120,7 @@ async fn a_resumed_session_counts_its_cache_from_the_wall_clock() {
     );
     quit(seam, ended).await;
 
-    // Closed for forty minutes: the record's request is that old now, so
+    // Closed for forty minutes. The record's request is that old now, so
     // the cache expired meanwhile.
     change_record(&root, &id, |entry| {
         entry["at"] = (at - 2_400_000).into();
@@ -150,7 +150,7 @@ async fn a_resumed_session_counts_its_cache_from_the_wall_clock() {
 }
 
 /// A record from a clock that was ahead (its request dated after now) counts
-/// from now: never more than the lifetime left. One of another model, an
+/// from now, never more than the lifetime left. One of another model, an
 /// unreadable one and a session saved before it existed show no time.
 #[tokio::test]
 async fn a_record_that_cannot_be_trusted_shows_no_time() {
@@ -176,7 +176,7 @@ async fn a_record_that_cannot_be_trusted_shows_no_time() {
     assert!(cache.refreshed_at.unwrap() <= now_ms());
     let timer = crate::cache_timer::CacheTimer::of(&cache, false, now_ms()).unwrap();
     assert!(matches!(timer, crate::cache_timer::CacheTimer::Counting { left } if left <= 1_800_000));
-    // (The resume kept the record as it was: it saves at the next request.)
+    // (The resume kept the record as it was, and it saves at the next request.)
 
     change_record(&root, &id, |entry| {
         entry["model"] = "claude-opus-5-5".into()
@@ -381,7 +381,7 @@ async fn a_resumed_session_knows_its_workers_caches_as_it_opens() {
     assert_eq!(cache.cost.tokens, 50_000);
     assert!(cache.cost.dollars.is_some(), "billed per token");
     quit(seam, ended).await;
-    // Kept in r1's run record: when its latest request was sent, and its
+    // Kept in r1's run record, meaning when its latest request was sent, and its
     // input.
     let record = worker_record(&root, &id, None);
     let request = &record["info"]["latest_request"];
@@ -394,7 +394,7 @@ async fn a_resumed_session_knows_its_workers_caches_as_it_opens() {
         at + lasts.as_millis() as i64
     );
 
-    // Closed for two hours: resumed, r1's cache expired, and the summary
+    // Closed for two hours and resumed, so r1's cache expired and the summary
     // and the session's own say so as it opens.
     let two_hours_ago = at - 7_200_000;
     worker_record(

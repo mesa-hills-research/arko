@@ -3,7 +3,7 @@
 //! expired) from the clock on the wall, not from when Arko started.
 //!
 //! The cache belongs to a conversation, so the record is kept for each main
-//! agent run (`prompt-cache.json` in the session's folder): which model made
+//! agent run (`prompt-cache.json` in the session's folder). It holds which model made
 //! the request, when it went out (Unix milliseconds, since Arko was gone
 //! meanwhile), how long the provider keeps the cache from then, and what it
 //! read and wrote. It is written as each of the main agent's requests ends
@@ -14,7 +14,7 @@
 //! and an older Arko that resumes a session with one ignores it.
 //!
 //! What a record may not claim is checked as the session opens (see
-//! [`restore`]): the model must be the one that made the request, and the
+//! [`restore`]). The model must be the one that made the request, and the
 //! cache lifetime the one it was made with. A request in the conversation
 //! the session is in now is also needed, since a handover, a compaction
 //! and a cut-back start a conversation the cache doesn't hold.
@@ -35,7 +35,7 @@ const FILE: &str = "prompt-cache.json";
 /// The format of the record. A file of another one is left unread.
 const VERSION: u32 = 1;
 
-/// The most conversations the record keeps: the ones used last.
+/// The most conversations the record keeps, the ones used last.
 const MOST: usize = 64;
 
 /// The prompt cache one main agent run's latest request left.
@@ -74,7 +74,7 @@ pub(crate) struct Memory {
 
 impl Memory {
     /// The record in the session's folder `dir`. One that is missing, damaged
-    /// or of another format is an empty one: the session starts without a
+    /// or of another format is an empty one, so the session starts without a
     /// cache status, as before the record existed.
     pub(crate) fn open(dir: &Path) -> Self {
         let path = dir.join(FILE);
@@ -102,7 +102,7 @@ impl Memory {
         }
     }
 
-    /// What the record keeps of the conversation whose runs are `runs`: the
+    /// What the record keeps of the conversation whose runs are `runs`, meaning the
     /// latest of their entries.
     pub(crate) fn find(&self, runs: &[Uuid]) -> Option<Entry> {
         lock(&self.entries)
@@ -179,7 +179,7 @@ pub(crate) struct Basis<'a> {
 }
 
 /// The cache `entry` left, as the session can show it now, or `None` where
-/// it can't be trusted: another model made the request, or the lifetime it
+/// it can't be trusted, meaning another model made the request, or the lifetime it
 /// was made with isn't the one the session counts. A cache whose time is
 /// out restores too, which then says it expired. A request dated in the
 /// future (the clock went back) counts from now.
@@ -257,7 +257,7 @@ impl Stats {
         match restored {
             Some(restored) => {
                 self.cache_refreshed_at = Some(restored.at);
-                // (Its time is the record's: keep-warm waits for a request.)
+                // (Its time is the record's, and keep-warm waits for a request.)
                 self.cache_seen = None;
                 self.cache_use = Some((restored.read, restored.written));
                 if self.learns_cache_lifetime {
@@ -413,7 +413,7 @@ mod tests {
         assert_eq!(expired.at, at);
     }
 
-    /// A clock that went back dates the request in the future: it counts
+    /// A clock that went back dates the request in the future. It counts
     /// from now, so the time left is never more than the lifetime.
     #[test]
     fn a_request_from_the_future_counts_from_now() {
@@ -450,7 +450,7 @@ mod tests {
     }
 
     /// Claude Code's lifetime is learned from its cache writes, which the
-    /// record kept: it restores where the session hasn't learned it yet.
+    /// record kept. It restores where the session hasn't learned it yet.
     #[test]
     fn a_learned_lifetime_restores() {
         let learns = Basis {
@@ -472,13 +472,13 @@ mod tests {
         assert_eq!(stats.cache_use, Some((170_000, 10_000)));
         stats.set_cache(None);
         assert_eq!((stats.cache_refreshed_at, stats.cache_use), (None, None));
-        // (The lifetime stays: the next request writes a cache of that
+        // (The lifetime stays, because the next request writes a cache of that
         // length.)
         assert_eq!(stats.cache_lifetime, Some(HOUR));
     }
 
     /// What the monitors plan from, the cache's expiry, is the restored time
-    /// plus the lifetime, less the 30-second safety margin: in the past for
+    /// plus the lifetime, less the 30-second safety margin. It is in the past for
     /// a cache that lapsed (the monitors take a time that passed as now), and
     /// never more than the lifetime from now.
     #[test]

@@ -1,4 +1,4 @@
-//! The session's conversations with the main agent: `/new` starts one, and
+//! The session's conversations with the main agent. `/new` starts one, and
 //! `/resume` goes back to an earlier one.
 //!
 //! A conversation is the main agent's runs from one `/new` (or the
@@ -9,14 +9,14 @@
 //!
 //! The record of them is kept in the session's folder (`conversations.json`),
 //! so a resumed session lists them too, and goes on in the one it was in.
-//! Sessions saved before it have none: theirs is worked out from the main
+//! Sessions saved before it have none, so theirs is worked out from the main
 //! agent's runs (see [`Conversations::derive`]).
 //!
-//! What belongs to a conversation goes with it: the lines the user typed
+//! What belongs to a conversation goes with it. The lines the user typed
 //! during its last turn that the agent didn't read wait in its record
 //! while another one is current, and a handover asked for its next turn
 //! stays asked (it is asked of its run). The workers belong to the
-//! session: their news goes to the conversation current when it comes.
+//! session, so their news goes to the conversation current when it comes.
 
 use std::path::Path;
 
@@ -38,12 +38,12 @@ const TITLE_CHARS: usize = 120;
 /// The session's conversations.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Conversations {
-    /// In the order they started: the first is conversation 1.
+    /// In the order they started, so the first is conversation 1.
     pub list: Vec<Record>,
     /// The one the next message goes to, by its place in `list`. `None`
     /// when the next message starts a new one.
     pub current: Option<usize>,
-    /// What the next new conversation carries over from an earlier one: a
+    /// What the next new conversation carries over from an earlier one. A
     /// switch made it (see `switch`), and its first run isn't recorded yet.
     /// It stays until that run is, so a first message that fails to start
     /// one, or a session closed before, goes on with it.
@@ -58,12 +58,12 @@ pub struct Record {
     pub runs: Vec<Uuid>,
     /// The first line of the user's first message.
     pub title: String,
-    /// While another conversation is current: what the user typed during
+    /// While another conversation is current, meaning what the user typed during
     /// this one's last turn that the agent didn't read. It goes with the
     /// next message in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unread: Vec<String>,
-    /// The conversation it continues, by its place in `list`: a switch
+    /// The conversation it continues, by its place in `list`. A switch
     /// started it with a brief of that one, which `earlier_conversation`
     /// reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -117,7 +117,7 @@ fn run_model(workflow: &Workflow, run: Uuid) -> Option<String> {
         .map(|result| crate::providers::model_name(&result.info().agent_config.llm_config.model))
 }
 
-/// When the main agent's run `run` was last used: when its last turn
+/// When the main agent's run `run` was last used, meaning when its last turn
 /// ended, else when it started.
 fn last_used(workflow: &Workflow, run: Uuid) -> Option<DateTime<Utc>> {
     workflow
@@ -161,7 +161,7 @@ impl Conversations {
     }
 
     /// The record of a session saved without one, from its main agent's
-    /// `runs`: each run started a conversation (with `/new`), except a run
+    /// `runs`. Each run started a conversation (with `/new`), except a run
     /// after one that failed, which went on with its conversation. The
     /// latest is current, as such a session went on with its latest run.
     pub fn derive(runs: &[Run]) -> Self {
@@ -191,7 +191,7 @@ impl Conversations {
         }
     }
 
-    /// Takes in the runs of `runs` the record doesn't have: each goes on
+    /// Takes in the runs of `runs` the record doesn't have. Each goes on
     /// with the current conversation, or starts one when the next message
     /// was to start one. Returns whether the record changed.
     pub fn take_in(&mut self, runs: &[Run]) -> bool {
@@ -232,7 +232,7 @@ impl Conversations {
         changed
     }
 
-    /// The current conversation's latest run: the one the next message
+    /// The current conversation's latest run, the one the next message
     /// continues. `None` when the next message starts a conversation.
     pub fn current_run(&self) -> Option<Uuid> {
         self.list.get(self.current?)?.runs.last().copied()
@@ -242,7 +242,7 @@ impl Conversations {
         self.list.get_mut(self.current?)
     }
 
-    /// Whether there is a conversation to go back to: one that isn't
+    /// Whether there is a conversation to go back to, one that isn't
     /// current.
     pub fn has_earlier(&self) -> bool {
         (0..self.list.len()).any(|index| Some(index) != self.current)
@@ -275,7 +275,7 @@ impl Conversations {
     }
 }
 
-/// The title of a conversation whose first message was `prompt`: the first
+/// The title of a conversation whose first message was `prompt`, meaning the first
 /// line of the user's words in it (Arko's message keeps them under "# My
 /// message" when it adds sections of its own, see `Harness::compose`).
 pub fn title_of(prompt: &str) -> String {
@@ -290,7 +290,7 @@ pub fn title_of(prompt: &str) -> String {
     crate::ui::cut(line, TITLE_CHARS)
 }
 
-/// When `at` was, as the user reads it at `now`: "just now", "5 minutes
+/// When `at` was, as the user reads it at `now`, such as "just now", "5 minutes
 /// ago", "2 hours ago" (the same day), "yesterday 14:05", "Oct 10", or
 /// "Oct 10 2025" in another year.
 pub fn when(at: DateTime<Utc>, now: DateTime<Local>) -> String {
@@ -313,15 +313,15 @@ pub fn when(at: DateTime<Utc>, now: DateTime<Local>) -> String {
     }
 }
 
-/// The widest [`when`] text: "yesterday 14:05".
+/// The widest [`when`] text, as "yesterday 14:05".
 #[cfg(feature = "tui")]
 pub const WHEN_WIDTH: usize = 15;
 
 /// How long the titles in `/resume`'s list at the line prompt (and on the
-/// page) may be, in characters: a row fits in 80 columns.
+/// page) may be, in characters, so a row fits in 80 columns.
 const LIST_TITLE: usize = 46;
 
-/// `/resume`'s list at the line prompt and on the page: one row each,
+/// `/resume`'s list at the line prompt and on the page, with one row each,
 /// newest first, then how to go back to one. A row's time follows its
 /// title, without columns, so it reads well where it wraps (on a phone).
 fn list_lines(entries: &[ConversationEntry], now: DateTime<Local>) -> Vec<String> {
@@ -372,7 +372,7 @@ pub fn resume_argument(text: &str) -> Option<&str> {
 }
 
 impl Harness {
-    /// The record as the session opens: a new session's is empty, and a
+    /// The record as the session opens. A new session's is empty, and a
     /// resumed one's is read from its folder (or worked out from its runs)
     /// and takes in the runs it lacks (a turn Arko stopped in the middle of
     /// started one).
@@ -391,7 +391,7 @@ impl Harness {
         }
     }
 
-    /// After a turn: the record takes in the run it started, if it started
+    /// After a turn, the record takes in the run it started, if it started
     /// one, and the clients get the list again.
     pub(crate) fn track_conversations(&mut self) {
         let runs = main_runs(self.workflow());
@@ -428,7 +428,7 @@ impl Harness {
         self.update_earlier();
     }
 
-    /// The current conversation is left: what the user typed during its
+    /// The current conversation is left, and what the user typed during its
     /// last turn that the agent didn't read waits in its record.
     fn leave_conversation(&mut self) {
         let unread = std::mem::take(&mut self.unread);
@@ -437,7 +437,7 @@ impl Harness {
         }
     }
 
-    /// `/new`: the next message starts a new conversation, a clean one.
+    /// `/new` means the next message starts a new conversation, a clean one.
     pub(crate) fn new_conversation(&mut self) {
         self.conversations.carry = None;
         self.start_new_conversation();
@@ -450,7 +450,7 @@ impl Harness {
     }
 
     /// The current conversation is left, and the next message starts a new
-    /// one on the main agent's configuration: its handover size, compaction
+    /// one on the main agent's configuration, meaning its handover size, compaction
     /// and window from now on. (A switch then adds what it carries over.)
     pub(crate) fn start_new_conversation(&mut self) {
         self.leave_conversation();
@@ -496,7 +496,7 @@ impl Harness {
                 let out = &harness.output;
                 let lines = list_lines(&entries, Local::now());
                 for (n, line) in lines.iter().enumerate() {
-                    // The rows follow the heading: the current one stands out.
+                    // The rows follow the heading, and the current one stands out.
                     let current = n
                         .checked_sub(1)
                         .and_then(|row| entries.get(row))
@@ -534,7 +534,7 @@ impl Harness {
         self.switch_to(index).await;
     }
 
-    /// Goes back to the conversation at `index` in the record: the next
+    /// Goes back to the conversation at `index` in the record. The next
     /// message continues its latest run. What waited for it comes back, and
     /// the workers' news goes to it from now on. Its history shows, for
     /// the clients, and its last reply at the line prompt.
@@ -699,7 +699,7 @@ mod tests {
         }
     }
 
-    /// A session saved before the record: each run started a conversation,
+    /// A session saved before the record. Each run started a conversation,
     /// but a run after a failed one went on with its conversation. The
     /// latest is current.
     #[test]

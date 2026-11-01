@@ -181,7 +181,7 @@ pub(crate) fn plain_id() -> String {
 pub(crate) const FILE: &str = "questions.json";
 
 /// The longest note that can carry the user's answers to the agent, in
-/// bytes: what a workflow note takes.
+/// bytes, meaning what a workflow note takes.
 pub const MAX_ANSWER_NOTE_BYTES: usize = arko_workflows::notes::MAX_NOTE_BYTES;
 
 fn agent_ids_of(questions: &[AgentQuestion]) -> Vec<String> {
@@ -193,7 +193,7 @@ fn agent_ids_of(questions: &[AgentQuestion]) -> Vec<String> {
 }
 
 /// The note that gives the agent the user's answers `given` to those of its
-/// questions among `settled` (the agent's of `open` stay open): the ids it
+/// questions among `settled` (the agent's of `open` stay open), meaning the ids it
 /// is about and the note. `None` when it answers none of the agent's
 /// questions (only Arko's own).
 pub(crate) fn answers_note(
@@ -218,7 +218,7 @@ pub(crate) fn answers_note(
 
 /// The note that gives the agent the user's message `text` as the answer to
 /// those of its questions among `settled` (the agent's of `open` stay
-/// open): the ids it is about and the note. `None` when it answers none of
+/// open), meaning the ids it is about and the note. `None` when it answers none of
 /// the agent's questions.
 pub(crate) fn message_note(
     settled: &[AgentQuestion],
@@ -245,11 +245,11 @@ fn room_for(note: &str, words: usize) -> Option<usize> {
 }
 
 /// Why the answers `answers` to the open questions `open` can't be sent, as
-/// the user reads it, or `None` when they can: the note that would carry
+/// the user reads it, or `None` when they can, namely that the note that would carry
 /// them is too long. Checked before anything is settled, so the questions
 /// stay open and the answers can be shortened.
 pub fn answers_refusal(open: &[AgentQuestion], answers: &Answers) -> Option<String> {
-    // As they are taken: the first filled in for each question.
+    // As they are taken, the first filled in for each question.
     let mut given: Vec<QuestionAnswer> = Vec::new();
     for answer in &answers.answers {
         if !answer.answer.is_empty() && !given.iter().any(|known| known.id == answer.id) {
@@ -316,7 +316,7 @@ pub(crate) struct Pending {
     #[serde(default)]
     pub(crate) ids: Vec<String>,
     pub(crate) note: String,
-    /// The workflow note that carries it, once posted: its id and number.
+    /// The workflow note that carries it, once posted, meaning its id and number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) posted: Option<(Uuid, u64)>,
 }
@@ -360,7 +360,7 @@ pub(crate) struct Book {
     /// The current conversation's run.
     run: Option<Uuid>,
     path: Option<PathBuf>,
-    /// The highest question number seen: a conversation's next questions
+    /// The highest question number seen, so a conversation's next questions
     /// are numbered after it.
     last: u32,
     pending: Vec<Pending>,
@@ -403,7 +403,7 @@ impl Book {
         }
         // A question Arko asked open in the file (an approval of an earlier
         // version's, a question without ids) waited in a process that is
-        // gone: its tool, run again, asks anew.
+        // gone, so its tool, run again, asks anew.
         for entry in &mut self.entries {
             if !is_agent_id(&entry.question.id) && entry.question.state.is_open() {
                 entry.question.state = QuestionState::Closed { why: None };
@@ -413,7 +413,7 @@ impl Book {
         self.path = Some(path);
     }
 
-    /// Whether the numbers given out are to be counted from the tasks: the
+    /// Whether the numbers given out are to be counted from the tasks, meaning the
     /// file is missing, or older than the count it keeps.
     pub(crate) fn needs_count(&self) -> bool {
         !self.counted
@@ -472,7 +472,7 @@ impl Book {
         self.run
     }
 
-    /// The number of the first of `count` questions asked now: the next
+    /// The number of the first of `count` questions asked now, and the next
     /// ones are numbered after them. (Saved by the caller before it is
     /// used.)
     pub(crate) fn reserve(&mut self, count: u32) -> u32 {
@@ -643,7 +643,7 @@ impl Book {
         (settled, items)
     }
 
-    /// Run `run`'s agent closed the questions `ids`, why it says: those open
+    /// Run `run`'s agent closed the questions `ids`, why it says. Those open
     /// are closed, and those not here yet are once they come. Returns the
     /// cards that changed.
     pub(crate) fn close(&mut self, run: Uuid, ids: &[String], why: Option<String>) -> Vec<u64> {
@@ -730,7 +730,7 @@ impl Book {
     }
 
     /// The kept note `id` travels as the workflow note `note`, numbered
-    /// `seq` (or, with `None`, no longer: it is posted again).
+    /// `seq` (or, with `None`, no longer, because it is posted again).
     pub(crate) fn posted(&mut self, id: Uuid, posted: Option<(Uuid, u64)>) {
         if let Some(pending) = self.pending.iter_mut().find(|pending| pending.id == id) {
             pending.posted = posted;
@@ -753,7 +753,7 @@ fn number_of(id: &str) -> u32 {
         .unwrap_or(0)
 }
 
-/// The ids an `ask_user` call's result names: "Asked q3 and q4. ..." when
+/// The ids an `ask_user` call's result names, as "Asked q3 and q4. ..." when
 /// it returned at once (or, in Claude Code, when the agent waits), or the
 /// questions' lines ("q3 Tabs or spaces?") when the agent waited.
 pub(crate) fn ids_in_result(result: &str) -> Vec<String> {
@@ -900,7 +900,7 @@ mod tests {
     }
 
     /// A question Arko asked open in the file waited in a process that is
-    /// gone: it is closed as the session opens. An approval an earlier
+    /// gone, and it is closed as the session opens. An approval an earlier
     /// version kept in the book is read as such a question.
     #[test]
     fn a_question_arko_asked_is_closed_on_reading() {
@@ -991,7 +991,7 @@ mod tests {
     }
 
     /// How long a save of a large book takes, which runs under the feed's
-    /// lock: run with --ignored --nocapture for the times, with 500
+    /// lock. Run with --ignored --nocapture for the times, with 500
     /// questions in the current conversation, 500 in others, and 20 kept
     /// notes, written to the disk the build uses.
     #[test]
@@ -1109,7 +1109,7 @@ mod tests {
             answers_note(&open[..1], &open[1..], &given).unwrap().1
         };
         let overhead = note_of("x").len() - 1;
-        // "é" is two bytes: the limit counts bytes, not characters.
+        // "é" is two bytes, and the limit counts bytes, not characters.
         let mut text = "é".repeat((MAX_ANSWER_NOTE_BYTES - overhead) / 2);
         if note_of(&text).len() < MAX_ANSWER_NOTE_BYTES {
             text.push('x');

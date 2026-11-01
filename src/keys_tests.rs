@@ -1,4 +1,4 @@
-// End-to-end tests of `/keys`: a key added while Arko runs reaches the
+// End-to-end tests of `/keys`. A key added while Arko runs reaches the
 // session at once (its models can be chosen, and new workers run on them),
 // and a key removed stops new work starting on it. Each follows a path a
 // user takes, with the mock model, and checks the requests it gets.
@@ -27,7 +27,7 @@ fn last_said(feed: &remote::Feed) -> String {
         .unwrap_or_default()
 }
 
-/// The main agent's mock: each "Start a worker." starts one, and a call's
+/// The main agent's mock, where each "Start a worker." starts one, and a call's
 /// result or a worker's news ends the turn.
 fn lead(body: &serde_json::Value) -> String {
     let items = body["input"].as_array().cloned().unwrap_or_default();
@@ -53,7 +53,7 @@ fn lead(body: &serde_json::Value) -> String {
     }
 }
 
-/// An OpenRouter key added after the conversation started: OpenRouter's
+/// An OpenRouter key added after the conversation started. OpenRouter's
 /// models can be chosen for new workers at once, and a new worker runs on
 /// one. Removed, they can't be chosen again, and a new worker isn't started
 /// on them, while the main agent goes on.
@@ -108,7 +108,7 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
     let _ = tokio::time::timeout(Duration::from_secs(20), harness.finish_workers(&mut inputs)).await;
     assert!(harness.conversation_started());
 
-    // The key, added: OpenRouter is reached, and new workers can run there.
+    // The key is added, so OpenRouter is reached, and new workers can run there.
     harness.keys.use_local(server.url());
     assert_eq!(
         harness.keys.apply(&credentials::OPENROUTER, Some("sk-or-test")),
@@ -138,7 +138,7 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
         .unwrap();
     assert_eq!(worker["model"], "anthropic/claude-opus-5.5");
 
-    // Removed: OpenRouter's models can't be chosen, and no new worker
+    // Removed, so OpenRouter's models can't be chosen, and no new worker
     // starts on them. The main agent goes on.
     assert_eq!(
         harness.keys.apply(&credentials::OPENROUTER, None),
@@ -165,7 +165,7 @@ async fn a_key_added_while_arko_runs_reaches_new_workers_at_once() {
 }
 
 /// `/keys` lists the keys at the terminal, and from the web page says only
-/// which are set; neither adds one.
+/// which are set, and neither adds one.
 #[tokio::test]
 async fn keys_are_listed_and_added_only_at_the_terminal() {
     let server = ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m", "Done.") }))).await;

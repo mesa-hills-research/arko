@@ -45,7 +45,7 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The settings in Arko's folder `root`; the defaults where the file is
+    /// The settings in Arko's folder `root`, with the defaults where the file is
     /// missing or can't be read.
     pub fn load(root: &Path) -> Self {
         std::fs::read_to_string(root.join(FILE))
@@ -62,7 +62,7 @@ impl Settings {
         self.download == "automatic"
     }
 
-    /// The language to choose the model by: the setting's, else the
+    /// The language to choose the model by, meaning the setting's, else the
     /// system's, from `LC_ALL`, `LC_MESSAGES` or `LANG` (`fr_FR.UTF-8`).
     pub fn language(&self) -> Option<String> {
         self.language

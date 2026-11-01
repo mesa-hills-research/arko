@@ -1,4 +1,4 @@
-// End-to-end tests of the built-in skills: the agents are offered them and
+// End-to-end tests of the built-in skills. The agents are offered them and
 // load them by name, a skill of the same name in a skill folder replaces one,
 // a session leaves out those it is told to, and `/skills` and the facts say
 // which they are. Each follows a path a user takes, with the mock model.
@@ -110,7 +110,7 @@ async fn the_built_in_skills_are_offered_and_load_by_name() {
     // (A description on folded lines reaches the agents whole.)
     assert!(bodies[0].contains("complains about over-engineering."));
     assert!(bodies[0].contains("load_skill"));
-    // On demand: the text comes with the call.
+    // On demand, the text comes with the call.
     assert!(!bodies[0].contains("# User-facing prose"));
     assert!(bodies[1].contains("--- BEGIN SKILL: user-facing-prose ---"));
     assert!(bodies[1].contains("# User-facing prose"));
@@ -174,7 +174,7 @@ async fn left_out_built_in_skills_are_not_offered() {
     assert!(!bodies[0].contains("built into Arko"));
 }
 
-/// What a front end reads of the skills: which are built in, which a skill
+/// What a front end reads of the skills, meaning which are built in, which a skill
 /// of the user's replaces and from where, and which are left out.
 #[tokio::test]
 async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {

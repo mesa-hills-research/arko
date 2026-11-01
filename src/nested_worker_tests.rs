@@ -1,15 +1,15 @@
-// End-to-end tests of workers that start workers, with the mock model: the
+// End-to-end tests of workers that start workers, with the mock model. The
 // main agent starts r1 with `nested`, r1 starts r2, and r2's report reaches
 // r1. Also what a stop, a message, a resume and a cut-back do to the tree.
 // (Included in `main`'s tests, whose helpers they use.)
 
 use crate::mock_model::{ModelServer, complete, tool_call, tool_calls};
 
-/// The requests the model server got: (the agent run that sent it, its
+/// The requests the model server got, as (the agent run that sent it, its
 /// body).
 type Seen = Arc<Mutex<Vec<(String, String)>>>;
 
-/// The agent run that sent a request: `r1`, `r2`, or `main`.
+/// The agent run that sent a request, either `r1`, `r2` or `main`.
 fn sender(body: &str) -> String {
     let marker = "You are agent run ";
     match body.find(marker) {
@@ -113,7 +113,7 @@ struct Script {
     r2_may_go: Arc<tokio::sync::Notify>,
     /// Opened by r1's second request, so the test knows the refusal came.
     refused: Arc<tokio::sync::Notify>,
-    /// r2 never reports: it stays on its request. (A test lets it go.)
+    /// r2 never reports, and it stays on its request. (A test lets it go.)
     r2_stays: Arc<std::sync::atomic::AtomicBool>,
     /// What r1's start call carries besides the agent and the task.
     r1_start: serde_json::Value,
@@ -426,7 +426,7 @@ async fn a_worker_started_to_nest_starts_a_worker_whose_report_reaches_it() {
 }
 
 /// The news of a worker that finished ends with a line on what its run used,
-/// whoever reads it: r2's tokens and cost reach r1 after its report, and r1's
+/// whoever reads it, so r2's tokens and cost reach r1 after its report, and r1's
 /// reach the main agent.
 #[tokio::test]
 async fn a_finished_workers_news_ends_with_what_its_run_used() {
@@ -600,7 +600,7 @@ async fn nested_is_refused_when_the_session_does_not_let_workers_nest() {
     assert!(session.requests("r1").is_empty());
     harness.crew.as_ref().unwrap().shutdown().await;
 
-    // One level: the main agent's `nested` is refused with the reason.
+    // One level, so the main agent's `nested` is refused with the reason.
     let one = Script::new(false);
     let server = one.serve().await;
     let temp = tempfile::tempdir().unwrap();
@@ -796,7 +796,7 @@ async fn stopping_a_worker_stops_its_workers_and_a_message_to_one_is_copied_to_i
     crew.shutdown().await;
 }
 
-/// A session saved while a tree runs resumes: the workflow's check of the
+/// A session saved while a tree runs resumes. The workflow's check of the
 /// saved runs passes though the profile that made r1 a worker that nests
 /// was edited and then deleted, both workers go on where they were with
 /// the setup they started with, and r2's report reaches r1 and r1's the
@@ -976,7 +976,7 @@ async fn an_edit_is_refused_while_a_nested_worker_runs() {
         .expect("r1 asked to report early");
     let crew = harness.crew.clone().unwrap();
     until(|| crew.running() == ["r1", "r2"]).await;
-    // (A message of the conversation; the refusal comes before it is looked up.)
+    // (A message of the conversation, and the refusal comes before it is looked up.)
     let item = 1;
     assert_eq!(
         harness
@@ -1102,7 +1102,7 @@ async fn stopping_the_main_agents_turn_leaves_the_tree_going() {
     crew.shutdown().await;
 }
 
-/// What the tree cost is counted once: the workers' figure is r1's plus
+/// What the tree cost is counted once. The workers' figure is r1's plus
 /// r2's, and the family total of r1 is the same.
 #[tokio::test]
 async fn a_nested_workers_cost_counts_once() {
@@ -1177,8 +1177,8 @@ async fn a_nested_workers_monitor_stops_with_it() {
     managers.shutdown().await;
 }
 
-/// `/worker-depth` and `/worker-models` apply to the next start at once:
-/// the same start is refused and then goes through as the user changes
+/// `/worker-depth` and `/worker-models` apply to the next start at once.
+/// The same start is refused and then goes through as the user changes
 /// them.
 #[tokio::test]
 async fn the_depth_and_the_models_setting_apply_to_the_next_start() {
@@ -1335,7 +1335,7 @@ async fn the_main_agent_hears_of_nested_workers_only_when_the_depth_allows_them(
         body["instructions"].as_str().unwrap().to_string()
     };
 
-    // One level, from before the conversation: no sentence, and `nested`
+    // One level, from before the conversation, with no sentence, and `nested`
     // is refused.
     let script = Script::new(true);
     let server = script.serve().await;
@@ -1346,7 +1346,7 @@ async fn the_main_agent_hears_of_nested_workers_only_when_the_depth_allows_them(
     let first = script.requests("main")[0].clone();
     assert!(!instructions(&first).contains(sentence));
     assert!(results(&script.requests("main")[1])[0].contains("(/worker-depth)"));
-    // The conversation has started: the depth changes now come as a note
+    // The conversation has started, so the depth changes now come as a note
     // and the hook, and the instructions stay as they were.
     assert!(harness.live_command("/worker-depth 3", Source::Terminal));
     assert!(!harness.main_config.instructions.contains(sentence));

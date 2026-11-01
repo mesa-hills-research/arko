@@ -1,4 +1,4 @@
-//! The command line: its flags (`Args`), and `run`, which opens the session
+//! The command line, with its flags (`Args`), and `run`, which opens the session
 //! they ask for and runs it at the full screen, at the line prompt or with -p.
 
 use std::path::{Path, PathBuf};
@@ -96,7 +96,7 @@ pub(crate) struct Args {
     pub(crate) worker_retry_cap: Option<u32>,
 
     /// Whether workers may run on models billed per token (API keys,
-    /// Gemini, OpenRouter): plans keeps them on your Claude and ChatGPT
+    /// Gemini, OpenRouter), where plans keeps them on your Claude and ChatGPT
     /// plans, ask (the default) asks you before each, and api allows them.
     /// It applies to a new session and to one you resume, and
     /// /worker-billing changes it at any time. ARKO_WORKER_BILLING sets the
@@ -364,7 +364,7 @@ pub(crate) enum Command {
     },
 }
 
-/// `--api-budget`'s value: dollars, or none for `off`.
+/// `--api-budget`'s value is dollars, or none for `off`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ApiBudget(Option<f64>);
 
@@ -447,7 +447,7 @@ impl Args {
     }
 }
 
-/// What a flag and its `--no-` form say: `None` when neither is given.
+/// What a flag and its `--no-` form say, `None` when neither is given.
 fn flag(on: bool, off: bool) -> Option<bool> {
     if on {
         Some(true)
@@ -493,7 +493,7 @@ pub fn cli_main() -> ExitCode {
     // group of its own, which would outlive Arko.
     arko_agents::kill_stop_aware_commands();
     arko_agents::kill_mcp_servers();
-    // Again, last: the line editor's thread may have gone back into raw
+    // Again, last, since the line editor's thread may have gone back into raw
     // mode while the runtime shut down.
     term::restore();
     code
@@ -515,7 +515,7 @@ async fn end_on_signals() {
         _ = terminate.recv() => libc::SIGTERM,
         _ = hangup.recv() => libc::SIGHUP,
     };
-    // As the usual end does: the line editor stops first, so that it can't
+    // As the usual end does. The line editor stops first, so that it can't
     // take the terminal back, and the terminal's modes come back last.
     ui::stop_reading();
     // The full-screen view's modes too (the alternate screen, the mouse,
@@ -557,7 +557,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
         .map_err(|error| error.to_string())?;
     let output = engine.output();
     // A Ctrl-C since the workflow started loading (when the line editor
-    // isn't reading: in raw mode it reads Ctrl-C as a key) is the session's.
+    // isn't reading, because in raw mode it reads Ctrl-C as a key) is the session's.
     if let Some(mut interrupts) = prompter.take_interrupts() {
         let sender = seam.input.clone();
         tokio::spawn(async move {
@@ -632,7 +632,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
     };
     ui::stop_reading();
     engine.shutdown().await;
-    // The prompt is still drawn, and its thread still reading: what is
+    // The prompt is still drawn, and its thread still reading. What is
     // printed from here goes straight to the terminal, below the prompt
     // line cleared and with the terminal's modes restored.
     output.detach();
@@ -648,7 +648,7 @@ pub(crate) async fn run(args: Args) -> Result<ExitCode, String> {
 }
 
 /// Logs go to the `arko.log` of the session in `dir`, not the terminal.
-/// `RUST_LOG` sets the level (default: info).
+/// `RUST_LOG` sets the level (info by default).
 pub(crate) fn start_log(dir: &Path) {
     let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
@@ -673,7 +673,7 @@ pub(crate) fn list_sessions(root: &Path) {
     }
 }
 
-/// The sessions in Arko's folder `root`, a line each: its ID, model and
+/// The sessions in Arko's folder `root`, a line each, with its ID, model and
 /// folder, and its name (the one the user gave it, a model's, or its first
 /// words, as everything else shows it).
 fn session_lines(root: &Path) -> Vec<String> {
