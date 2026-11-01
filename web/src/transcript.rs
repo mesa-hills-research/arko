@@ -198,7 +198,8 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
     }
 }
 
-/// A turn's tool calls as one line (Messages). A click shows them in Full.
+/// A turn's tool calls as one line (Messages), its triangle in the column
+/// of every fold's. A click shows them in Full.
 fn count_row(id: u64, count: Count) -> AnyView {
     let page = page();
     let Count {
@@ -208,14 +209,17 @@ fn count_row(id: u64, count: Count) -> AnyView {
     } = count;
     view! {
         <div class="row count" data-id=id>
-            <button type="button" title="Show them (Full view)"
+            <button type="button" class="call-line" title="Show them (Full view)"
                 on:click=move |_| {
                     scroll::keep_place(id);
                     page.set_view(View::Full);
                 }>
-                "▸ "{words::plural(calls, "tool call", "tool calls")}
-                {(failed > 0).then(|| view! { " · " <span class="failed">{format!("{failed} failed")}</span> })}
-                {(running > 0).then_some(" · running")}
+                <span class="mark">"▸"</span>
+                <span>{words::plural(calls, "tool call", "tool calls")}</span>
+                {(failed > 0).then(|| view! {
+                    <span class="outcome"><span class="failed">{format!("{failed} failed")}</span></span>
+                })}
+                {(running > 0).then(|| view! { <span class="outcome">"running"</span> })}
             </button>
         </div>
     }

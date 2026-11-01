@@ -510,6 +510,8 @@ pre.block {
 }
 
 .row.count button { padding: 2px 0; border: 0; background: none; color: var(--muted); font: inherit; text-align: left; }
+/* Its triangle stands in the column of every fold's (`.call-line .mark`). */
+.row.count button.call-line { display: inline-flex; }
 @media (hover: hover) {
   .row.count button:hover { color: var(--text); }
 }
