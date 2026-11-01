@@ -4983,14 +4983,21 @@ mod tests {
         assert_eq!(quiet_words(&restored), live);
     }
 
-    /// A conversation's calls say the same live and once restored from its
-    /// saved messages through `all_items`, a wait that names no runs after
-    /// its worker finished included, and they make the same Quiet rows
-    /// (r127). The comparison covers the calls, their results and their
-    /// rows. It leaves out thinking, which history doesn't rebuild, and the
-    /// workers' lines, which `all_items` leaves out by design.
+    /// A conversation says the same live and once restored from its saved
+    /// messages through `all_items` (r127). Live, the feed gets the calls'
+    /// events, the agent's text and the worker's start and end, and restored,
+    /// the same calls, text and the worker's report as mail. A wait that names
+    /// no runs after its worker finished is among them. The comparison covers
+    /// the main transcript's calls (their acts and bodies), their result
+    /// blocks, the user's and the agent's text, and the Quiet rows they make as
+    /// the clients place them (each row's calls, words, projection and whether
+    /// it opens, and where text ends a run). It leaves out thinking, which
+    /// history doesn't rebuild, the workers' lines, which `all_items` leaves
+    /// out by design, and Arko's notices, which the session adds live, not the
+    /// feed's events.
     #[test]
     fn live_and_restored_calls_agree() {
+        use super::super::quiet;
         use crate::crew;
         use arko_ai::{Content, Message, ToolCall, ToolResult};
         let steps = [
@@ -5021,7 +5028,7 @@ mod tests {
             ),
             (
                 "keep_note",
-                serde_json::json!({"note": "Use tabs in the tests."}),
+                serde_json::json!({"text": "Use tabs in the tests.", "audience": "r1"}),
                 "Kept note 1.",
             ),
             (
@@ -5035,12 +5042,20 @@ mod tests {
                 "Sent.",
             ),
         ];
+        // The agent's text before the command, which ends the run of calls
+        // before it.
+        let text_before = 3;
         let feed = Feed::new("main");
+        feed.add(Item::new(Kind::User, "Go.").agent("main"));
         let mut messages = vec![Message::new_user("Go.")];
         for (index, (tool, arguments, output)) in steps.iter().enumerate() {
             let id = Uuid::new_v4();
             let parameters: HashMap<String, serde_json::Value> =
                 serde_json::from_value(arguments.clone()).unwrap();
+            let said = (index == text_before).then_some("Now the build.");
+            if let Some(said) = said {
+                feed.event(&event("main", chunk(said)), None);
+            }
             feed.event(
                 &event(
                     "main",
@@ -5064,7 +5079,7 @@ mod tests {
                 None,
             );
             let call_id = format!("call_{index}");
-            let mut ask = Message::new_assistant("");
+            let mut ask = Message::new_assistant(said.unwrap_or_default());
             ask.tool_calls = vec![
                 serde_json::from_value::<ToolCall>(
                     serde_json::json!({"id": call_id, "name": tool, "arguments": arguments}),
@@ -5075,8 +5090,10 @@ mod tests {
             messages.push(Message::new_user_with_contents(vec![Content::ToolResult(
                 ToolResult::new(Some(call_id), tool, output),
             )]));
-            // r1 finishes after it starts, and its report comes as mail.
+            // r1 starts, finishes, and its report comes as mail.
             if index == 0 {
+                feed.worker("r1", "Count the files.", WorkerChange::Started);
+                feed.worker("r1", "", WorkerChange::Finished { report: "Counted." });
                 messages.push(Message::new_user(
                     "# Workflow context update\n\nNew mail from the agent runs you work with.\n- [mail 1] r1 (agent `worker`) finished. Its report:\n  Counted.\n  [end of mail 1]",
                 ));
@@ -5084,30 +5101,102 @@ mod tests {
         }
         let restored =
             super::super::history::all_items(&messages, false, &crate::images::Images::default());
-        let calls = |items: &[Item]| -> Vec<_> {
+        let live = items(&feed);
+        // The main transcript's items both keep.
+        let kept = |items: &[Item]| -> Vec<Item> {
             items
                 .iter()
-                .filter(|item| item.kind == Kind::Call)
-                .map(|item| {
-                    (
-                        item.text.clone(),
-                        item.act.clone(),
-                        item.status,
-                        item.outcome.clone(),
-                    )
+                .filter(|item| item.is_main())
+                .filter(|item| {
+                    !matches!(item.kind, Kind::Thinking | Kind::WorkerLine | Kind::Notice)
+                })
+                .cloned()
+                .collect()
+        };
+        let (live, restored) = (kept(&live), kept(&restored));
+        let described = |items: &[Item]| -> Vec<String> {
+            items
+                .iter()
+                .map(|item| match item.kind {
+                    Kind::Call => format!(
+                        "call {:?} {:?} {:?} {:?} {:?}",
+                        item.text, item.act, item.status, item.outcome, item.started
+                    ),
+                    Kind::Result => {
+                        format!("result {:?} {:?} {:?}", item.text, item.detail, item.level)
+                    }
+                    kind => format!("{kind:?} {:?}", item.text),
                 })
                 .collect()
         };
-        let live = items(&feed);
-        assert_eq!(calls(&live), calls(&restored));
-        assert_eq!(calls(&live).len(), steps.len());
-        assert_eq!(quiet_words(&live), quiet_words(&restored));
-        assert!(
-            quiet_words(&live)
+        assert_eq!(described(&live), described(&restored));
+        assert_eq!(
+            live.iter().filter(|item| item.kind == Kind::Call).count(),
+            steps.len()
+        );
+        assert!(live.iter().any(|item| item.kind == Kind::Result));
+        assert!(live.iter().any(|item| item.kind == Kind::Text));
+        // The Quiet rows, as the clients place them: each call with its
+        // results, and anything else ending a run. Items go by their place,
+        // since their IDs differ.
+        let rows = |items: &[Item]| -> Vec<String> {
+            let mut shown: Vec<(usize, Vec<usize>)> = Vec::new();
+            for (at, item) in items.iter().enumerate() {
+                if item.kind == Kind::Result
+                    && let Some((call, results)) = shown.last_mut()
+                    && item.call == Some(items[*call].id)
+                {
+                    results.push(at);
+                    continue;
+                }
+                shown.push((at, Vec::new()));
+            }
+            let steps: Vec<quiet::Step> = shown
                 .iter()
-                .any(|words| words == "Waited for workers · nothing new"),
+                .map(|(at, results)| {
+                    let item = &items[*at];
+                    match item.kind {
+                        Kind::Call => quiet::Step::Call(quiet::Call {
+                            id: item.id,
+                            act: item.act.as_ref(),
+                            status: item.status,
+                            outcome: item.outcome.as_deref(),
+                            job: item.job.is_some(),
+                            turn: item.turn,
+                            output: !results.is_empty(),
+                        }),
+                        _ => quiet::Step::Other(item.id),
+                    }
+                })
+                .collect();
+            let place = |id: u64| items.iter().position(|item| item.id == id);
+            quiet::rows(&steps)
+                .into_iter()
+                .map(|piece| match piece {
+                    quiet::Piece::Step(at) => format!("step {}", shown[at].0),
+                    quiet::Piece::Row(row) => {
+                        let members: Vec<usize> =
+                            row.members.iter().map(|member| shown[*member].0).collect();
+                        let calls: Vec<_> = row
+                            .calls
+                            .iter()
+                            .map(|call| (place(call.id), &call.line, call.outcome))
+                            .collect();
+                        format!(
+                            "row {members:?} {:?} opens {} calls {calls:?}",
+                            row.words, row.opens
+                        )
+                    }
+                })
+                .collect()
+        };
+        assert_eq!(rows(&live), rows(&restored));
+        assert!(
+            rows(&live)
+                .iter()
+                .any(|row| row.contains("Waited for workers · nothing new")),
             "{:?}",
-            quiet_words(&live)
+            rows(&live)
         );
     }
 
