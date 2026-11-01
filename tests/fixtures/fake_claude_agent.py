@@ -99,9 +99,11 @@ that plays a turn, as a CLI without the command would pass it to the model.
 A turn's result is its last text. FAKE_CLAUDE_LOG receives one JSON line per
 event: argv, tools, user messages (each with the conversation before it, as
 "history"), user messages sent during a turn ("midturn", with their "origin"
-and "uuid"), hook and permission answers, tool results. A message sent during a
-turn is not delivered. It only gets a command_lifecycle message when the turn
-ends.
+and "uuid"), hook and permission answers, tool results. Like Claude Code, the
+fake takes a message sent during a turn into it at the next tool boundary,
+after the call's result, unless the turn was interrupted, and reports it
+"started" in a command_lifecycle message. The turn's end reports each message
+sent during it "completed", or "cancelled" when the turn was interrupted.
 """
 import json
 import time
@@ -398,6 +400,20 @@ def call_tool(step, index):
           "message": {"role": "user", "content": [
               {"type": "tool_result", "tool_use_id": tool_use_id, "content": output,
                "is_error": is_error}]}})
+    take_in_notes()
+
+
+def take_in_notes():
+    """The tool boundary takes the messages sent during the turn into it,
+    unless the turn was interrupted, as Claude Code does."""
+    if state["interrupted"]:
+        return
+    started = state.setdefault("started", [])
+    for note in state.get("notes", []):
+        if note not in started:
+            started.append(note)
+            send({"type": "command_lifecycle", "command_uuid": note, "session_id": SESSION,
+                  "state": "started", "uuid": str(uuid.uuid4())})
 
 
 def turn(text, message_uuid=None):
@@ -590,6 +606,7 @@ def handle(message):
             state["working"] = False
             # What became of the messages sent during the turn, as the CLI
             # reports it, either completed or cancelled when the turn was interrupted.
+            state.pop("started", None)
             for note in state.pop("notes", []):
                 send({"type": "command_lifecycle", "command_uuid": note, "session_id": SESSION,
                       "state": "cancelled" if state["interrupted"] else "completed",

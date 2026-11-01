@@ -1476,6 +1476,68 @@ fn call_outcomes(feed: &remote::Feed) -> Vec<(String, String)> {
         .collect()
 }
 
+/// A note the user types while the main agent works in Claude Code goes to
+/// the CLI with the next call's hook, as the user's message. Claude Code
+/// takes it into the turn at the tool boundary after that call, and the
+/// feed shows it as read from then on, while the turn goes on.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_note_typed_during_a_turn_in_claude_code_is_read_once_the_agent_has_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let gate = |name: &str| temp.path().join(name);
+    let wait_for = |name: &str| {
+        let gate = gate(name).display().to_string();
+        format!("for i in $(seq 400); do [ -e {gate} ] && break; sleep 0.05; done")
+    };
+    let script = serde_json::json!([[
+        {"tool": "mcp__arko__shell", "input": {"command": wait_for("typed")}},
+        {"tool": "mcp__arko__shell", "input": {"command": wait_for("read")}},
+        {"tool": "mcp__arko__complete_task", "input": {"summary": "Done."}},
+    ]]);
+    let (mut harness, mut inputs, sender, managers, fake) = in_claude_code(temp.path(), script);
+    let feed = harness.feed.clone();
+    let note = |feed: &remote::Feed| {
+        feed.subscribe()
+            .0
+            .items
+            .into_iter()
+            .find(|item| item.text == "Use tabs.")
+    };
+    let typing = tokio::spawn({
+        let (typed, read) = (gate("typed"), gate("read"));
+        async move {
+            until(|| !call_outcomes(&feed).is_empty()).await;
+            sender.send(Input::Line("Use tabs.".into())).unwrap();
+            until(|| note(&feed).is_some_and(|item| item.pending)).await;
+            std::fs::write(typed, "").unwrap();
+            // The second call still runs, so the turn goes on.
+            until(|| note(&feed).is_some_and(|item| !item.pending)).await;
+            std::fs::write(read, "").unwrap();
+            sender
+        }
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(60),
+        harness.turn(Prompt::User("Work on it.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    let _sender = typing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    let (log, _) = fake_log(&fake);
+    let typed: Vec<&serde_json::Value> = log
+        .iter()
+        .filter(|entry| entry["event"] == "midturn")
+        .collect();
+    assert_eq!(typed.len(), 1, "{typed:?}");
+    assert!(
+        typed[0]["text"].as_str().unwrap().contains("Use tabs."),
+        "{typed:?}"
+    );
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
+
 /// A main agent in Claude Code compacts at the handover size instead of
 /// handing over. The call it makes there is held, Claude Code's `/compact`
 /// runs in the same conversation, and the agent makes the call again from
