@@ -271,7 +271,10 @@ impl Screen {
         self.output.detach();
         // (What Arko prints next goes straight to the terminal, after this.)
         if let Some((writer, ticket)) = given {
-            let _ = tokio::task::spawn_blocking(move || writer.wait(ticket, CLOSE_WAIT)).await;
+            let _ = tokio::task::spawn_blocking(move || {
+                settle(&writer, ticket, CLOSE_WAIT, writer::standard_output)
+            })
+            .await;
         }
     }
 }
@@ -417,8 +420,24 @@ fn close() {
 /// end of the process).
 fn close_and_wait() {
     if let Some((writer, ticket)) = give_back(&[]) {
-        writer.wait(ticket, CLOSE_WAIT);
+        settle(&writer, ticket, CLOSE_WAIT, writer::standard_output);
     }
+}
+
+/// Waits at most `wait` for the writer to write what `ticket` was given
+/// for, and when the writer failed on it, gives the terminal back itself
+/// ([`restore_directly`], to `out`).
+fn settle(
+    writer: &Writer,
+    ticket: writer::Ticket,
+    wait: Duration,
+    out: impl FnOnce() -> Box<dyn Write + Send>,
+) -> writer::Finish {
+    let finish = writer.wait(ticket, wait);
+    if finish == writer::Finish::Failed {
+        restore_directly(Some(writer), wait, out());
+    }
+    finish
 }
 
 /// A handle on the view's writer, once it has one.
@@ -459,51 +478,61 @@ pub(crate) fn give_back_terminal() {
 }
 
 /// Cancel, which ends an escape sequence that a frame cut short left open.
-#[cfg(unix)]
 const CAN: u8 = 0x18;
 
-/// How long an end that can't wait tries for a lock.
-#[cfg(unix)]
+/// How long an end that can't count on the writer tries for a lock.
 const LOCK_WAIT: Duration = Duration::from_millis(50);
 
+/// Gives the terminal back without the writer, for an end that can't count
+/// on it (it failed, or the runtime is stuck). Unless the writer wrote the
+/// reset, or this was done before, it ends the writer's output
+/// ([`Writer::take_over`]) and writes the reset itself to `out`, after a
+/// [`CAN`], on a thread of its own that it waits for `wait` at most. Then
+/// the terminal's modes are as they were when Arko started. Without
+/// `writer` (its lock couldn't be had), it writes a reset of its own.
+fn restore_directly(writer: Option<&Writer>, wait: Duration, mut out: Box<dyn Write + Send>) {
+    let reset = match writer.map(|writer| writer.take_over(LOCK_WAIT)) {
+        Some(writer::Reset::Done) => None,
+        Some(writer::Reset::Needed(reset)) => Some(reset),
+        // (Popping the keyboard protocol that wasn't pushed is harmless.)
+        Some(writer::Reset::Unknown) | None => {
+            let mut reset = Vec::new();
+            write_close(&mut reset, true);
+            Some(reset)
+        }
+    };
+    if let Some(reset) = reset {
+        let mut bytes = vec![CAN];
+        bytes.extend_from_slice(&reset);
+        let (written, done) = std::sync::mpsc::channel();
+        let writing = std::thread::Builder::new()
+            .name("arko-reset".into())
+            .spawn(move || {
+                let _ = out.write_all(&bytes);
+                let _ = out.flush();
+                let _ = written.send(());
+            });
+        if writing.is_ok() {
+            let _ = done.recv_timeout(wait);
+        }
+    }
+    crate::term::restore();
+}
+
 /// Gives the terminal back now, for a process that ends at once because its
-/// runtime is stuck, or whose writer died, where [`give_back_terminal`] may
-/// wait for what doesn't come. Unless the writer wrote the reset, it ends
-/// the view's output ([`Writer::take_over`]) and writes the reset itself,
-/// after a [`CAN`], straight to standard output's descriptor, on a thread
-/// of its own that it waits for `wait` at most. It does nothing when no
-/// view had the terminal.
+/// runtime is stuck, where [`give_back_terminal`] may wait for what doesn't
+/// come ([`restore_directly`]). It does nothing when no view had the
+/// terminal.
 #[cfg(unix)]
 pub(crate) fn give_back_terminal_at_once(wait: Duration) {
     let found =
         writer::try_lock_for(&WRITER, LOCK_WAIT).map(|writer| writer.as_ref().map(Writer::handle));
-    let reset = match found {
+    let writer = match found {
         Some(None) => return,
-        Some(Some(writer)) => writer.take_over(LOCK_WAIT),
-        None => writer::Reset::Unknown,
+        Some(Some(writer)) => Some(writer),
+        None => None,
     };
-    let reset = match reset {
-        writer::Reset::Done => return,
-        writer::Reset::Needed(reset) => reset,
-        // (Popping the keyboard protocol that wasn't pushed is harmless.)
-        writer::Reset::Unknown => {
-            let mut reset = Vec::new();
-            write_close(&mut reset, true);
-            reset
-        }
-    };
-    let mut bytes = vec![CAN];
-    bytes.extend_from_slice(&reset);
-    let (written, done) = std::sync::mpsc::channel();
-    let writing = std::thread::Builder::new()
-        .name("arko-reset".into())
-        .spawn(move || {
-            let _ = writer::standard_output().write_all(&bytes);
-            let _ = written.send(());
-        });
-    if writing.is_ok() {
-        let _ = done.recv_timeout(wait);
-    }
+    restore_directly(writer.as_ref(), wait, writer::standard_output());
 }
 
 /// Takes the terminal as the view does, for a test of how it's given back.
@@ -626,9 +655,9 @@ async fn run(
         if let Some(failure) = screen.failure() {
             if failure == writer::Failure::Died {
                 log::error!("The full screen's writer stopped, so Arko ends");
-                #[cfg(unix)]
-                give_back_terminal_at_once(CLOSE_WAIT);
             }
+            // (Where the terminal closed, the reset just fails.)
+            restore_directly(Some(&screen), CLOSE_WAIT, writer::standard_output());
             if events_open {
                 give(&setup.requests, &verdict_done, control(Input::Eof));
             }
@@ -1843,5 +1872,29 @@ mod tests {
             .draw(|frame| screen::draw(frame, &mut app))
             .unwrap();
         assert_eq!(grid.lines(), buffer_lines(reference.backend().buffer()));
+    }
+
+    /// When the writer dies on the reset, whoever gave the terminal back
+    /// and waits writes the reset itself, after a CAN, also once the view
+    /// has ended. Giving it back again writes no second one.
+    #[cfg(unix)]
+    #[test]
+    fn a_reset_the_writer_died_on_is_written_by_whoever_waits() {
+        let direct = writer::tests::Gate::default();
+        let out = || -> Box<dyn Write + Send> { Box::new(direct.clone()) };
+        let writer =
+            Writer::start(writer::tests::Breaks, PathBuf::new(), b"[reset]".to_vec()).unwrap();
+        let (ticket, _) = writer.finish(&[]);
+        assert_eq!(
+            settle(&writer, ticket, Duration::from_secs(5), out),
+            writer::Finish::Failed
+        );
+        assert_eq!(direct.taken(), b"\x18[reset]");
+        let (again, _) = writer.finish(b"the reply");
+        assert_eq!(
+            settle(&writer, again, Duration::from_secs(5), out),
+            writer::Finish::Failed
+        );
+        assert_eq!(direct.taken(), b"\x18[reset]");
     }
 }

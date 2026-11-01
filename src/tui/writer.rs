@@ -10,11 +10,15 @@
 //!
 //! Giving the terminal back is one step, [`Writer::finish`]. It ends the
 //! view's output, so nothing the view writes after it reaches the terminal
-//! (a frame, the flush of a backend dropped by a panic), queues the reset
-//! as the last of it, and returns a [`Ticket`] that [`Writer::wait`] says
-//! was written only once the writer wrote it. An end that can't wait takes
-//! the reset over ([`Writer::take_over`]). A writer whose thread didn't
-//! start fails to start, and one whose thread ended says so
+//! (a frame, the flush of a backend dropped by a panic), and queues the
+//! reset once, as a packet whose end in the output is recorded then and
+//! never moves. Only the writer's thread marks it written, once its bytes
+//! were. What follows the view (the reply) goes after it, and each
+//! [`Ticket`] that [`Writer::wait`] waits on is written only when the reset
+//! was and its own bytes were. A failure never counts as written. An end
+//! that can't count on the writer takes the reset over
+//! ([`Writer::take_over`]) and writes it itself. A writer whose thread
+//! didn't start fails to start, and one whose thread ended says so
 //! ([`Writer::failure`]) and wakes those waiting.
 //!
 //! Its state is behind one lock, held for no write, no wait but its own
@@ -55,16 +59,36 @@ struct State {
     writing: usize,
     /// When the write going on started.
     started: Option<Instant>,
-    /// How many bytes were written so far.
-    written: u64,
+    /// How many bytes were queued so far, written or not. It only grows.
+    queued: u64,
+    /// How many of those were written, or dropped as the view's when it
+    /// finished. The rest are being written or wait.
+    settled: u64,
     /// What gives the terminal back.
     reset: Vec<u8>,
-    /// The view finished, and everything up to this many bytes written (the
-    /// reset, and what follows the view) is the last of its output.
-    finished: Option<u64>,
-    /// An end that can't wait wrote the reset itself, so nothing more is.
+    phase: Phase,
+    /// An end that can't count on the writer writes the reset itself, so
+    /// the writer writes nothing more.
     taken_over: bool,
     failed: Option<Failure>,
+}
+
+/// Where giving the terminal back is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Phase {
+    /// The view writes.
+    Open,
+    /// The view finished, and the reset ends at this many bytes queued.
+    Finishing(u64),
+    /// The writer wrote the reset.
+    Reset,
+}
+
+impl State {
+    fn queue(&mut self, bytes: &[u8]) {
+        self.pending.extend_from_slice(bytes);
+        self.queued += bytes.len() as u64;
+    }
 }
 
 /// Why the writer writes no more.
@@ -91,16 +115,20 @@ pub(super) enum Finish {
     TimedOut,
 }
 
-/// What an end that can't wait does about the terminal ([`Writer::take_over`]).
+/// What an end that can't count on the writer does about the terminal
+/// ([`Writer::take_over`]).
 #[derive(Debug, PartialEq)]
 pub(super) enum Reset {
-    /// Nothing, as the reset was written or the terminal is gone.
+    /// Nothing, as the writer wrote the reset, or an earlier end took it over.
     Done,
     /// Writes these bytes.
     Needed(Vec<u8>),
     /// It couldn't tell, so it writes a reset of its own.
     Unknown,
 }
+
+/// The name of the writer's thread.
+pub(super) const THREAD: &str = "arko-screen";
 
 /// How long the thread waits for output before it checks whether any handle
 /// is left.
@@ -117,7 +145,7 @@ impl Writer {
     ) -> io::Result<Self> {
         Self::start_with(out, log, reset, |run| {
             std::thread::Builder::new()
-                .name("arko-screen".into())
+                .name(THREAD.into())
                 .spawn(run)
                 .map(drop)
         })
@@ -135,9 +163,10 @@ impl Writer {
                 pending: Vec::new(),
                 writing: 0,
                 started: None,
-                written: 0,
+                queued: 0,
+                settled: 0,
                 reset,
-                finished: None,
+                phase: Phase::Open,
                 taken_over: false,
                 failed: None,
             }),
@@ -205,35 +234,37 @@ impl Writer {
     }
 
     /// Ends the view's output and gives the terminal back. What the view's
-    /// handles wrote and no write has started on is dropped, the reset is
-    /// queued, and `tail` after it (what follows the view). Its handles
-    /// write nothing from now on. Once more, it queues only `tail`. Returns
-    /// the ticket to wait on, and whether this call ended the view.
+    /// handles wrote and no write has started on is dropped, and the reset
+    /// is queued, with where it ends recorded for good. Then `tail` (what
+    /// follows the view). Its handles write nothing from now on. Once more,
+    /// it queues only `tail`. Returns the ticket for this call's bytes, and
+    /// whether this call ended the view.
     pub(super) fn finish(&self, tail: &[u8]) -> (Ticket, bool) {
         let (ticket, ended) = {
             let mut state = crate::lock(&self.shared.state);
-            let ended = state.finished.is_none();
+            let ended = state.phase == Phase::Open;
             if ended {
+                // (The view's bytes no write started on count as settled.)
+                state.settled += state.pending.len() as u64;
                 state.pending.clear();
                 let reset = state.reset.clone();
-                state.pending.extend_from_slice(&reset);
+                state.queue(&reset);
+                state.phase = Phase::Finishing(state.queued);
             }
-            state.pending.extend_from_slice(tail);
-            let end = state.written + state.writing as u64 + state.pending.len() as u64;
-            state.finished = Some(end);
-            (Ticket(end), ended)
+            state.queue(tail);
+            (Ticket(state.queued), ended)
         };
         self.shared.changed.notify_all();
         (ticket, ended)
     }
 
-    /// Waits at most `timeout` for the writer to write what `ticket` was
-    /// given for.
+    /// Waits at most `timeout` for the writer to write the reset and what
+    /// `ticket` was given for.
     pub(super) fn wait(&self, ticket: Ticket, timeout: Duration) -> Finish {
         let until = Instant::now() + timeout;
         let mut state = crate::lock(&self.shared.state);
         loop {
-            if state.written >= ticket.0 {
+            if state.phase == Phase::Reset && state.settled >= ticket.0 {
                 return Finish::Written;
             }
             if state.failed.is_some() || state.taken_over {
@@ -247,18 +278,16 @@ impl Writer {
         }
     }
 
-    /// For an end that can't wait (a stuck runtime, a dead writer): what it
-    /// does about the terminal. Unless the reset was written, or the terminal
-    /// is gone, it ends the view's output and the writer's, and returns the
-    /// reset to write. It takes the lock only if it gets it within `within`.
+    /// For an end that can't count on the writer (a stuck runtime, a failed
+    /// writer): what it does about the terminal. Unless the writer wrote the
+    /// reset, or an earlier end took it over, it ends the view's output and
+    /// the writer's, and returns the reset to write. It takes the lock only
+    /// if it gets it within `within`.
     pub(super) fn take_over(&self, within: Duration) -> Reset {
         let Some(mut state) = try_lock_for(&self.shared.state, within) else {
             return Reset::Unknown;
         };
-        let written = state
-            .finished
-            .is_some_and(|finished| state.written >= finished);
-        if written || state.failed == Some(Failure::Gone) {
+        if state.phase == Phase::Reset || state.taken_over {
             return Reset::Done;
         }
         state.taken_over = true;
@@ -291,9 +320,10 @@ impl Write for Writer {
         }
         let taken = {
             let mut state = crate::lock(&self.shared.state);
-            let taken = state.failed.is_none() && state.finished.is_none() && !state.taken_over;
+            let taken = state.failed.is_none() && state.phase == Phase::Open && !state.taken_over;
             if taken {
-                state.pending.append(&mut self.buffer);
+                let bytes = std::mem::take(&mut self.buffer);
+                state.queue(&bytes);
             }
             taken
         };
@@ -363,7 +393,15 @@ fn write_all(shared: &Weak<Shared>, mut out: impl Write, watchdog: &Watchdog) {
             state.writing = 0;
             state.started = None;
             match wrote {
-                Ok(()) => state.written += bytes.len() as u64,
+                Ok(()) => {
+                    state.settled += bytes.len() as u64;
+                    // (Only here does the reset count as written.)
+                    if let Phase::Finishing(end) = state.phase
+                        && state.settled >= end
+                    {
+                        state.phase = Phase::Reset;
+                    }
+                }
                 Err(_) => {
                     state.failed.get_or_insert(Failure::Gone);
                     state.pending.clear();
@@ -492,6 +530,19 @@ pub(super) mod tests {
             drop(held);
             crate::lock(&self.taken).extend_from_slice(bytes);
             Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A terminal whose writer breaks on the first write.
+    pub(in crate::tui) struct Breaks;
+
+    impl Write for Breaks {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            panic!("the terminal's writer breaks")
         }
 
         fn flush(&mut self) -> io::Result<()> {
@@ -670,15 +721,6 @@ pub(super) mod tests {
     /// whose thread doesn't start fails to start.
     #[test]
     fn a_writer_that_breaks_or_never_starts_says_so() {
-        struct Breaks;
-        impl Write for Breaks {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                panic!("the terminal's writer breaks")
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         let mut writer = Writer::start(Breaks, PathBuf::new(), b"[reset]".to_vec()).unwrap();
         writer.write_all(b"[frame]").unwrap();
         writer.flush().unwrap();
@@ -693,5 +735,46 @@ pub(super) mod tests {
             Err(io::Error::other("no thread"))
         });
         assert!(refused.is_err());
+    }
+
+    /// A writer that dies on the reset never counts it as written, also
+    /// when the terminal is given back again with nothing after it, and the
+    /// reset is left for an end that writes it itself.
+    #[test]
+    fn a_second_finish_after_the_writer_died_on_the_reset_isnt_written() {
+        let writer = Writer::start(Breaks, PathBuf::new(), b"[reset]".to_vec()).unwrap();
+        let (first, ended) = writer.finish(b"");
+        assert!(ended);
+        assert_eq!(writer.wait(first, LONG), Finish::Failed);
+        let (second, ended) = writer.finish(b"");
+        assert!(!ended);
+        assert_eq!(
+            writer.wait(second, Duration::from_millis(200)),
+            Finish::Failed
+        );
+        assert_eq!(writer.take_over(LONG), Reset::Needed(b"[reset]".to_vec()));
+    }
+
+    /// A reset the writer wrote stays written while what follows the view
+    /// waits for the terminal, so an end that can't wait doesn't write
+    /// another.
+    #[test]
+    fn a_written_reset_stays_so_while_a_reply_waits() {
+        let gate = Gate::default();
+        let writer = Writer::start(gate.clone(), PathBuf::new(), b"[reset]".to_vec()).unwrap();
+        let (reset, _) = writer.finish(b"");
+        assert_eq!(writer.wait(reset, LONG), Finish::Written);
+        gate.hold(true);
+        let (reply, ended) = writer.finish(b"[reply]");
+        assert!(!ended);
+        while writer.waiting().is_none() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            writer.wait(reply, Duration::from_millis(100)),
+            Finish::TimedOut
+        );
+        assert_eq!(writer.take_over(LONG), Reset::Done);
+        gate.hold(false);
     }
 }
