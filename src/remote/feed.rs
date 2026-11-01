@@ -278,14 +278,11 @@ impl Item {
     }
 
     /// Moves the item `ids` IDs and `turns` turns on, with everything in it
-    /// that names an item by its ID (the call a result is of, the point a
-    /// call's result came at), for items made apart and added after others.
+    /// that names an item by its ID (the call a result is of), for items
+    /// made apart and added after others.
     pub(crate) fn relocate(&mut self, ids: u64, turns: u64) {
         self.id += ids;
         self.call = self.call.map(|call| call + ids);
-        if let Some(act) = self.act.as_mut() {
-            act.ended = act.ended.map(|ended| ended + ids);
-        }
         self.turn = self.turn.map(|turn| turn + turns);
     }
 
@@ -1712,12 +1709,10 @@ impl Feed {
 
     /// The call `id` ended with `outcome`. Its line says so, and a block
     /// follows it when there is one.
-    fn settle(&self, state: &mut State, id: &Uuid, mut outcome: Outcome) {
+    fn settle(&self, state: &mut State, id: &Uuid, outcome: Outcome) {
         let Some(call) = state.calls.remove(id) else {
             return;
         };
-        // What came before this point came while the call ran.
-        outcome.settled.ended(state.next_id + 1);
         let (lane, budget) = state.lane(&call.agent);
         if let Some(output) = outcome.output {
             lane.call_output(call.item, output, budget);
@@ -4889,11 +4884,11 @@ mod tests {
         );
     }
 
-    /// A command that ends after the next call showed keeps its own Quiet
-    /// row, while one that ends first joins the row above. The feed records
-    /// where each result came, so the rows follow from the items alone.
+    /// A command joins the Quiet row above as it comes, whether it ends
+    /// before or after the next call shows, so the rows follow from the
+    /// items alone.
     #[test]
-    fn a_command_that_ends_after_the_next_call_keeps_its_quiet_row() {
+    fn a_command_keeps_its_quiet_row_whenever_it_ends() {
         let rows = |late: bool| {
             let feed = Feed::new("main");
             let (rg, build, read) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
@@ -4962,12 +4957,11 @@ mod tests {
             .collect()
     }
 
-    /// Items restored after others show the Quiet rows they showed live.
-    /// Everything that names an item by its ID moves with them, the point a
-    /// call's result came at included.
+    /// Items restored after others show the Quiet rows they showed live,
+    /// a call that failed in the row it joined included.
     #[test]
     fn restored_items_keep_their_quiet_rows() {
-        let call = |id: u64, kind: ActKind, target: &str, ended: u64| {
+        let call = |id: u64, kind: ActKind, target: &str| {
             let mut call = Item::new(Kind::Call, target);
             call.id = id;
             // (The build fails.)
@@ -4979,20 +4973,16 @@ mod tests {
             call.act = Some(Act {
                 kind,
                 target: target.into(),
-                ended: Some(ended),
                 ..Act::default()
             });
             call
         };
-        // As a restored session has them, where the build's result came after the
-        // read showed.
         let saved = vec![
-            call(1, ActKind::Command, "rg x", 2),
-            call(2, ActKind::Command, "cargo build", 4),
-            call(3, ActKind::Read, "a.rs", 4),
+            call(1, ActKind::Command, "rg x"),
+            call(2, ActKind::Command, "cargo build"),
+            call(3, ActKind::Read, "a.rs"),
         ];
         let live = quiet_words(&saved);
-        // It failed after the read came, so it stays in its row.
         assert_eq!(live, ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
         let feed = Feed::new("main");
         // (An item first, so the restored ones move on.)

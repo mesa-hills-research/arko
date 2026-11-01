@@ -727,8 +727,6 @@ pub struct Settled {
     came: Option<Came>,
     /// The call's words once it ended, when the result decides them.
     done: Option<String>,
-    /// When its result came ([`Act::ended`]).
-    ended: Option<u64>,
 }
 
 impl Outcome {
@@ -781,11 +779,6 @@ impl Outcome {
 }
 
 impl Settled {
-    /// The result came when the transcript's next item had the ID `next`.
-    pub fn ended(&mut self, next: u64) {
-        self.ended = Some(next);
-    }
-
     /// How a job a call started (a command that went on in the background,
     /// a monitor) went on, so what its result first said no longer stands.
     pub fn job() -> Self {
@@ -824,9 +817,6 @@ impl Settled {
         }
         if let Some(done) = &settled.done {
             act.done.clone_from(done);
-        }
-        if settled.ended.is_some() {
-            act.ended = settled.ended;
         }
     }
 }

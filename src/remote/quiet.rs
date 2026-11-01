@@ -6,14 +6,16 @@
 //! things the view shows. Within a run a call joins the row before it when
 //! it is of the same kind, or reads a file the row edits or writes. A row
 //! holds calls that follow each other, so rows never reorder, and the
-//! thinking between two calls of one row goes inside it. A call joins as it
-//! comes, so a long call (a command, a wait, an MCP call) shows on the row
-//! while it runs ("Ran 4 commands · running cargo build") and no row comes
-//! and goes with it. A call that failed, a test run and a call of another
-//! kind have rows of their own. The images a call's tool returned and the
-//! buttons of its job show under its row's line, in whatever row it is. A
-//! row keeps its calls once anything shows after it ([`rows`]), so only the
-//! last row changes as calls join it.
+//! thinking between two calls of one row goes inside it. A call's row is
+//! decided when the call comes, from what is known then, and nothing that
+//! comes later moves it. So a long call (a command, a wait, an MCP call)
+//! shows on its row while it runs ("Ran 4 commands · running cargo build"),
+//! and a call that fails or goes on in the background stays in its row,
+//! which says so ("1 failed"). A test run and a call of another kind have
+//! rows of their own. The images a call's tool returned and the buttons of
+//! its job show under its row's line, in whatever row it is. Rows only grow
+//! at the end, and a row keeps its calls once anything shows after it
+//! ([`rows`]).
 //!
 //! The web page compiles this file beside `protocol.rs` as a module of its
 //! own, so it depends on the standard library and that module alone.
@@ -93,24 +95,13 @@ pub struct Words {
 }
 
 /// The rows of `steps`, with the steps that show as they are. They follow
-/// from the items alone, each call's place and the point its result came
-/// at ([`Act::ended`]), so every client, a reload and a restored session
-/// show the same rows. A row keeps its calls once another row or anything
-/// else shows after it. A call that fails, or goes on in the background,
-/// while its row is the last has a row of its own, and one that does later
-/// stays in its row, which says so.
+/// from the items alone, each call's place and what is known of it when it
+/// comes (its kind, its target, whether it runs tests), so every client, a
+/// reload and a restored session show the same rows, and a row once shown
+/// never splits, goes, or takes another row's calls. A call joins the last
+/// row or starts a new one. A row keeps its calls once anything else shows
+/// after it.
 pub fn rows(steps: &[Step]) -> Vec<Piece> {
-    // The ID of what shows after each step, among calls and other items.
-    let mut next: Vec<Option<u64>> = vec![None; steps.len()];
-    let mut after: Option<u64> = None;
-    for (index, step) in steps.iter().enumerate().rev() {
-        next[index] = after;
-        match step {
-            Step::Call(call) => after = Some(call.id),
-            Step::Other(id) => after = Some(*id),
-            Step::Thinking | Step::Aside => {}
-        }
-    }
     let mut out = Vec::new();
     let mut names = Names::default();
     let mut start = 0;
@@ -119,8 +110,7 @@ pub fn rows(steps: &[Step]) -> Vec<Piece> {
             .iter()
             .position(|step| matches!(step, Step::Other(_)))
             .map_or(steps.len(), |at| start + at);
-        let slots = slots(steps, start, end, &next, &mut names);
-        let groups = plan(slots);
+        let groups = build(slots(steps, start, end, &mut names));
         place(steps, start, end, &groups, &mut out);
         if end < steps.len() {
             out.push(Piece::Step(end));
@@ -141,7 +131,6 @@ pub fn doing(act: &Act) -> String {
         },
         act,
         name: Names::default().of(None, act),
-        next: None,
     };
     phrases(&member).doing
 }
@@ -157,7 +146,6 @@ pub fn own_words(row: &Words, call: &Call) -> Option<Words> {
         call: *call,
         act,
         name: Names::default().of(call.turn, act),
-        next: None,
     };
     let mut words = one(&member);
     words.running = member.running();
@@ -188,8 +176,6 @@ struct Member<'a> {
     act: &'a Act,
     /// Its target as the row names it (a file by its name).
     name: String,
-    /// The ID of the call or item that shows after it.
-    next: Option<u64>,
 }
 
 impl Member<'_> {
@@ -210,26 +196,10 @@ impl Member<'_> {
         )
     }
 
-    /// Whether it has a row of its own as it comes (a call of another kind,
-    /// a test run). With `settled`, also for what its result decided, a
-    /// failure or a job that went on in the background.
-    fn alone(&self, settled: bool) -> bool {
-        self.act.kind == ActKind::Other || self.act.alone || (settled && self.settled_alone())
-    }
-
-    /// Whether its result made it stand alone.
-    fn settled_alone(&self) -> bool {
-        self.failed() || self.call.job
-    }
-
-    /// Whether its result made it stand alone while its row was the last,
-    /// which `freeze` (what shows after the row) ended.
-    fn alone_early(&self, freeze: Option<u64>) -> bool {
-        self.settled_alone()
-            && match (self.act.ended, freeze) {
-                (Some(ended), Some(freeze)) => ended <= freeze,
-                _ => true,
-            }
+    /// Whether it has a row of its own, which is known as it comes (a call
+    /// of another kind, a test run).
+    fn alone(&self) -> bool {
+        self.act.kind == ActKind::Other || self.act.alone
     }
 }
 
@@ -239,7 +209,6 @@ fn slots<'a>(
     steps: &[Step<'a>],
     start: usize,
     end: usize,
-    next: &[Option<u64>],
     names: &mut Names,
 ) -> Vec<Option<Member<'a>>> {
     let mut slots = Vec::new();
@@ -252,7 +221,6 @@ fn slots<'a>(
             call,
             act,
             name: names.of(call.turn, act),
-            next: next[index],
         }));
     }
     slots
@@ -270,22 +238,13 @@ struct Group<'a> {
 }
 
 impl<'a> Group<'a> {
-    fn new(member: Member<'a>, settled: bool) -> Self {
+    fn new(member: Member<'a>) -> Self {
         Self {
             kind: member.act.kind,
-            alone: member.alone(settled),
+            alone: member.alone(),
             calls: vec![member],
             absorbed: Vec::new(),
         }
-    }
-
-    /// What shows after it.
-    fn freeze(&self) -> Option<u64> {
-        self.calls
-            .iter()
-            .chain(&self.absorbed)
-            .max_by_key(|member| member.index)
-            .and_then(|member| member.next)
     }
 
     /// Its calls by step index, in order.
@@ -307,8 +266,8 @@ impl<'a> Group<'a> {
 
     /// Takes `member` if it belongs in this row. A call joins as it comes,
     /// a long one too, so no row shows only while a call runs.
-    fn take(&mut self, member: Member<'a>, settled: bool) -> Result<(), Member<'a>> {
-        if self.alone || member.alone(settled) {
+    fn take(&mut self, member: Member<'a>) -> Result<(), Member<'a>> {
+        if self.alone || member.alone() {
             return Err(member);
         }
         let kind = member.act.kind;
@@ -328,7 +287,8 @@ impl<'a> Group<'a> {
             self.absorbed.push(member);
             return Ok(());
         }
-        // A row that only read one file becomes a row that changes it.
+        // A row that only read one file becomes a row that changes it, in
+        // its place.
         let changing = matches!(kind, ActKind::Edit | ActKind::Write);
         if self.kind == ActKind::Read && changing && self.files().all(|file| file == target) {
             self.kind = kind;
@@ -338,41 +298,12 @@ impl<'a> Group<'a> {
         }
         Err(member)
     }
-
-    /// Takes the calls of `next`, a row of the same kind after it.
-    fn absorb(&mut self, mut next: Group<'a>) {
-        self.calls.append(&mut next.calls);
-        self.absorbed.append(&mut next.absorbed);
-    }
 }
 
-/// The rows of a run's calls `slots`. A row whose call failed, or went on
-/// in the background, while the row was the last is worked out again with
-/// that call on its own.
-fn plan(slots: Vec<Option<Member<'_>>>) -> Vec<Group<'_>> {
-    let mut groups = Vec::new();
-    for group in build(slots, false) {
-        let freeze = group.freeze();
-        let early = group
-            .calls
-            .iter()
-            .chain(&group.absorbed)
-            .any(|member| member.alone_early(freeze));
-        if early && group.calls.len() + group.absorbed.len() > 1 {
-            let mut members: Vec<Member> = group.calls.into_iter().chain(group.absorbed).collect();
-            members.sort_by_key(|member| member.index);
-            groups.extend(build(members.into_iter().map(Some).collect(), true));
-        } else {
-            groups.push(group);
-        }
-    }
-    groups
-}
-
-/// The rows of a run's calls `slots`, each call joining the row before it
-/// when it belongs there. `settled` keeps a call that failed or went on in
-/// the background on its own.
-fn build(slots: Vec<Option<Member<'_>>>, settled: bool) -> Vec<Group<'_>> {
+/// The rows of a run's calls `slots`, each call joining the last row when
+/// it belongs there, else starting a row. A row never takes the calls of
+/// a row after it.
+fn build(slots: Vec<Option<Member<'_>>>) -> Vec<Group<'_>> {
     let mut groups: Vec<Group> = Vec::new();
     for slot in slots {
         let Some(member) = slot else {
@@ -383,25 +314,13 @@ fn build(slots: Vec<Option<Member<'_>>>, settled: bool) -> Vec<Group<'_>> {
             continue;
         };
         let member = match groups.last_mut() {
-            Some(last) => match last.take(member, settled) {
-                Ok(()) => {
-                    // A read that became an edit may follow an edit row.
-                    let at = groups.len() - 1;
-                    if at > 0
-                        && !groups[at - 1].alone
-                        && groups[at - 1].kind == groups[at].kind
-                        && matches!(groups[at].kind, ActKind::Edit | ActKind::Write)
-                    {
-                        let last = groups.pop().expect("a row");
-                        groups[at - 1].absorb(last);
-                    }
-                    continue;
-                }
+            Some(last) => match last.take(member) {
+                Ok(()) => continue,
                 Err(member) => member,
             },
             None => member,
         };
-        groups.push(Group::new(member, settled));
+        groups.push(Group::new(member));
     }
     groups
 }
@@ -620,8 +539,7 @@ fn words(group: &Group) -> Words {
     let calls = &group.calls;
     let every = || calls.iter().chain(&group.absorbed);
     let running = every().any(Member::running);
-    // (A sealed row keeps a call that failed after it was sealed, and says
-    // so.)
+    // (A call that failed stays in its row, which says so.)
     let failed = every().filter(|member| member.failed()).count();
     let failures = |words: &mut Words| {
         if failed > 0 && words.failed.is_none() {
@@ -761,6 +679,18 @@ fn words(group: &Group) -> Words {
         ..Words::default()
     };
     failures(&mut words);
+    // How the jobs of its calls go, which stay in the row.
+    let jobs: Vec<&Member> = every().filter(|member| member.call.job).collect();
+    words.note = match jobs.as_slice() {
+        [] => None,
+        [one] => one
+            .call
+            .outcome
+            .map(str::trim)
+            .filter(|outcome| !outcome.is_empty())
+            .map(str::to_string),
+        many => Some(plural(many.len(), "job", "jobs")),
+    };
     words
 }
 
@@ -1176,8 +1106,8 @@ mod tests {
     }
 
     /// Reads of a file being edited join its edits, interleaved edits of
-    /// two files are one row that names both, and a different kind or a
-    /// failure between them splits the run.
+    /// two files are one row that names both, and a different kind between
+    /// them splits the run. A row never takes the calls of a row after it.
     #[test]
     fn mixed_runs_merge_by_what_they_change() {
         assert_eq!(
@@ -1214,7 +1144,7 @@ mod tests {
                 ok(Read, "b.rs"),
                 ok(Edit, "b.rs"),
             ]),
-            ["Made 2 edits to a.rs and b.rs"]
+            ["Made 1 edit to a.rs", "Made 1 edit to b.rs"]
         );
         assert_eq!(
             shown(&[ok(Write, "new.rs"), ok(Edit, "new.rs"), ok(Edit, "new.rs")]),
@@ -1232,17 +1162,14 @@ mod tests {
                 "Made 1 edit to a.rs"
             ]
         );
+        // A failure stays in its row, which says so.
         assert_eq!(
             shown(&[
                 ok(Edit, "a.rs"),
                 Some((act(Edit, "a.rs"), Failed)),
                 ok(Edit, "a.rs")
             ]),
-            [
-                "Made 1 edit to a.rs",
-                "Couldn’t edit a.rs · ✗ failed",
-                "Made 1 edit to a.rs"
-            ]
+            ["Made 3 edits to a.rs · ✗ 1 failed"]
         );
         // Thinking between calls of one row goes inside it.
         let calls = [ok(Read, "a.rs"), None, ok(Read, "b.rs")];
@@ -1332,7 +1259,9 @@ mod tests {
         );
     }
 
-    /// Failures, stops, test runs and calls with jobs have rows of their own.
+    /// Test runs and calls of another kind have rows of their own. A call
+    /// that failed, stopped or went on in the background says so, in the
+    /// row it joined.
     #[test]
     fn what_stands_alone() {
         let mut test = act(Command, "cargo test -p arko");
@@ -1385,28 +1314,19 @@ mod tests {
             }),
         ];
         assert_eq!(
+            said(&moved[..1]),
+            ["Ran cargo build · in the background · job 4d2c1a9b"]
+        );
+        assert_eq!(
             said(&moved),
-            [
-                "Ran cargo build · in the background · job 4d2c1a9b",
-                "Ran cargo build"
-            ]
+            ["Ran 2 commands (cargo) · in the background · job 4d2c1a9b"]
         );
     }
 
-    /// A row keeps its calls once anything shows after it. A long call
-    /// that ends while its row is the last joins the row above, and one that
-    /// ends after something else showed keeps its own row. A call that
-    /// fails while its row is the last stands alone, and one that fails
-    /// later stays in its row, which says so. All of it follows from where
-    /// each result came (`ended`), so it's the same in every layout.
+    /// A call keeps the row it joined, whatever its result, and a row keeps
+    /// its calls once anything shows after it.
     #[test]
-    fn a_row_keeps_its_calls_once_anything_shows_after_it() {
-        fn ended(kind: ActKind, target: &str, ended: Option<u64>) -> Act {
-            Act {
-                ended,
-                ..act(kind, target)
-            }
-        }
+    fn a_call_keeps_the_row_it_joined() {
         fn call(id: u64, act: &Act, status: CallStatus) -> Step<'_> {
             Step::Call(Call {
                 id,
@@ -1415,85 +1335,141 @@ mod tests {
                 ..Call::default()
             })
         }
-        // rg ended at once, the build ended after the read showed.
-        let rg = ended(Command, "rg x", Some(2));
-        let late = ended(Command, "cargo build", Some(9));
-        let read = ended(Read, "a.rs", Some(4));
+        let (rg, build, read) = (
+            act(Command, "rg x"),
+            act(Command, "cargo build"),
+            act(Read, "a.rs"),
+        );
         let running = [
             call(1, &rg, Ok),
-            call(2, &late, Running),
+            call(2, &build, Running),
             call(3, &read, Ok),
         ];
-        // The build joins the row as it comes and shows there while it runs,
-        // so no row comes and goes with it.
         assert_eq!(
             said(&running),
             ["Ran rg x · running cargo build", "Read a.rs"]
         );
-        let settled = [call(1, &rg, Ok), call(2, &late, Ok), call(3, &read, Ok)];
+        let settled = [call(1, &rg, Ok), call(2, &build, Ok), call(3, &read, Ok)];
         assert_eq!(said(&settled), ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
-        // As the last row, the same.
-        let alone = [call(1, &rg, Ok), call(2, &late, Running)];
-        assert_eq!(said(&alone), ["Ran rg x · running cargo build"]);
-        assert_eq!(said(&settled[..2]), ["Ran 2 commands (rg, cargo)"]);
-        // A build that fails after the read came stays in the row, and one
-        // that fails while its row is the last stands alone.
-        let failed = [call(1, &rg, Ok), call(2, &late, Failed), call(3, &read, Ok)];
-        assert_eq!(
-            said(&failed),
-            ["Ran 2 commands (rg, cargo) · ✗ 1 failed", "Read a.rs"]
-        );
-        let early = ended(Command, "cargo build", Some(3));
         let failed = [
             call(1, &rg, Ok),
-            call(2, &early, Failed),
+            call(2, &build, Failed),
             call(3, &read, Ok),
         ];
         assert_eq!(
             said(&failed),
-            [
-                "Ran rg x",
-                "Couldn’t run cargo build · ✗ failed",
-                "Read a.rs"
-            ]
+            ["Ran 2 commands (rg, cargo) · ✗ 1 failed", "Read a.rs"]
+        );
+        // As the last row, the same.
+        assert_eq!(
+            said(&failed[..2]),
+            ["Ran 2 commands (rg, cargo) · ✗ 1 failed"]
         );
         // A test run has a row of its own from the start.
         let tests = Act {
             alone: true,
-            ..ended(Command, "cargo test", Some(9))
+            ..act(Command, "cargo test")
         };
         let run = [call(1, &rg, Ok), call(2, &tests, Running)];
         assert_eq!(said(&run), ["Ran rg x", "Running cargo test"]);
-        // A read that fails after the edit came stays in its row.
-        let (a, b) = (ended(Read, "a.rs", Some(9)), ended(Read, "b.rs", Some(9)));
-        let edit = act(Edit, "c.rs");
-        let failed = [call(1, &a, Ok), call(2, &b, Failed), call(3, &edit, Ok)];
-        assert_eq!(
-            said(&failed),
-            ["Read a.rs and b.rs · ✗ 1 failed", "Made 1 edit to c.rs"]
-        );
-        // One that failed while its row was the last stands alone.
-        let early = ended(Read, "b.rs", Some(3));
-        let failed = [call(1, &a, Ok), call(2, &early, Failed), call(3, &edit, Ok)];
-        assert_eq!(
-            said(&failed),
-            [
-                "Read a.rs",
-                "Couldn’t read b.rs · ✗ failed",
-                "Made 1 edit to c.rs"
-            ]
-        );
         // A note waiting at the end seals nothing.
-        let build = early_build();
         let waiting = [call(1, &rg, Ok), call(2, &build, Ok), Step::Aside];
         assert_eq!(said(&waiting), ["Ran 2 commands (rg, cargo)", "step 2"]);
     }
 
-    fn early_build() -> Act {
-        Act {
-            ended: Some(3),
-            ..act(Command, "cargo build")
+    /// The keys of the rows of `steps`, each by its first call's ID, and
+    /// the steps that show as they are.
+    fn keys(steps: &[Step]) -> Vec<String> {
+        let id = |at: usize| match steps[at] {
+            Step::Call(call) => call.id,
+            _ => 0,
+        };
+        rows(steps)
+            .into_iter()
+            .map(|piece| match piece {
+                Piece::Row(row) => format!("q{}", id(row.members[0])),
+                Piece::Step(at) => format!("s{at}"),
+            })
+            .collect()
+    }
+
+    /// Each of `snapshots` is how the steps stand at a moment, the later
+    /// ones with more steps or later results. A row once shown keeps its
+    /// key, and rows only come at the end.
+    fn assert_rows_only_grow(snapshots: &[Vec<Step>]) {
+        for pair in snapshots.windows(2) {
+            let (before, after) = (keys(&pair[0]), keys(&pair[1]));
+            assert!(
+                after.starts_with(&before),
+                "{before:?} then {after:?}\n{:#?}",
+                said(&pair[1])
+            );
         }
+    }
+
+    /// No row splits, goes or takes another's calls as calls start, run,
+    /// end, fail, go on in the background or end out of order (r127).
+    #[test]
+    fn rows_only_grow_at_the_end() {
+        fn call(id: u64, act: &Act, status: CallStatus) -> Step<'_> {
+            Step::Call(Call {
+                id,
+                act: Some(act),
+                status: Some(status),
+                turn: Some(1),
+                ..Call::default()
+            })
+        }
+        fn moved(id: u64, act: &Act) -> Step<'_> {
+            Step::Call(Call {
+                id,
+                act: Some(act),
+                status: Some(Ok),
+                outcome: Some("in the background · job 4d2c1a9b"),
+                job: true,
+                turn: Some(1),
+            })
+        }
+        let (rg, build) = (act(Command, "rg x"), act(Command, "cargo build"));
+        let start = vec![call(1, &rg, Ok)];
+        let running = vec![call(1, &rg, Ok), call(2, &build, Running)];
+        for end in [
+            call(2, &build, Ok),
+            call(2, &build, Failed),
+            moved(2, &build),
+        ] {
+            let ended = vec![call(1, &rg, Ok), end];
+            let next = vec![call(1, &rg, Ok), end, call(3, &rg, Running)];
+            assert_rows_only_grow(&[start.clone(), running.clone(), ended, next]);
+        }
+        // An edit of a file read after an edit row.
+        let (a, b, edit_b) = (act(Edit, "a.rs"), act(Read, "b.rs"), act(Edit, "b.rs"));
+        assert_rows_only_grow(&[
+            vec![call(1, &a, Ok)],
+            vec![call(1, &a, Ok), call(2, &b, Ok)],
+            vec![call(1, &a, Ok), call(2, &b, Ok), call(3, &edit_b, Running)],
+            vec![call(1, &a, Ok), call(2, &b, Ok), call(3, &edit_b, Ok)],
+        ]);
+        // Parallel calls of a kind that end in the other order, one failing.
+        let (x, y) = (act(Read, "src/x.rs"), act(Read, "src/y.rs"));
+        assert_rows_only_grow(&[
+            vec![call(1, &x, Running)],
+            vec![call(1, &x, Running), call(2, &y, Running)],
+            vec![call(1, &x, Running), call(2, &y, Failed)],
+            vec![call(1, &x, Ok), call(2, &y, Failed)],
+            vec![call(1, &x, Ok), call(2, &y, Failed), call(3, &rg, Ok)],
+        ]);
+        // A failure after something showed, then more calls.
+        assert_rows_only_grow(&[
+            vec![call(1, &rg, Ok), call(2, &build, Running), Step::Other(3)],
+            vec![call(1, &rg, Ok), call(2, &build, Failed), Step::Other(3)],
+            vec![
+                call(1, &rg, Ok),
+                call(2, &build, Failed),
+                Step::Other(3),
+                call(4, &rg, Ok),
+            ],
+        ]);
     }
 
     /// A call that runs says what it does as its row would.

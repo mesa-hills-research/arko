@@ -101,14 +101,11 @@ fn items_from(
                                 card_ids(&mut items[index], &result.output);
                                 continue;
                             }
-                            let mut outcome = if result.is_error {
+                            let outcome = if result.is_error {
                                 render::Outcome::failed(&result.output)
                             } else {
                                 render::outcome(&tool, &result.output)
                             };
-                            // What came before this point came while the
-                            // call ran.
-                            outcome.settled.ended(items.len() as u64 + 1);
                             if !result.is_error {
                                 track_runs(&mut running, &tool, &result.output);
                             }

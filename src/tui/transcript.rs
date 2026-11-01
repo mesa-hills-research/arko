@@ -4680,14 +4680,13 @@ mod tests {
     fn quiet_rows_survive_a_view_switch() {
         use crate::remote::{Act, ActKind};
         let mut t = Transcript::new();
-        let call = |id: u64, kind: ActKind, target: &str, status, ended| {
+        let call = |id: u64, kind: ActKind, target: &str, status| {
             let mut call = item(id, Kind::Call, target);
             call.turn = Some(1);
             call.status = Some(status);
             call.act = Some(Act {
                 kind,
                 target: target.into(),
-                ended,
                 ..Act::default()
             });
             call
@@ -4697,22 +4696,14 @@ mod tests {
             ActKind::Command,
             "rg x",
             CallStatus::Ok,
-            Some(2),
         )));
         t.apply(Update::Item(call(
             2,
             ActKind::Command,
             "cargo build",
             CallStatus::Running,
-            None,
         )));
-        t.apply(Update::Item(call(
-            3,
-            ActKind::Read,
-            "a.rs",
-            CallStatus::Ok,
-            Some(4),
-        )));
+        t.apply(Update::Item(call(3, ActKind::Read, "a.rs", CallStatus::Ok)));
         let quiet = Filter::Main(View::Quiet);
         let before = rows(&mut t, &quiet, 50, 4);
         assert_eq!(
@@ -4727,7 +4718,6 @@ mod tests {
             ActKind::Command,
             "cargo build",
             CallStatus::Ok,
-            Some(5),
         )));
         let after = rows(&mut t, &quiet, 50, 4);
         assert_eq!(
@@ -4859,7 +4849,6 @@ mod tests {
             call.act = Some(Act {
                 kind,
                 target: target.into(),
-                ended: Some(id + 2),
                 ..Act::default()
             });
             call
