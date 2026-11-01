@@ -2359,11 +2359,15 @@ fn fact_lines(fact: &Fact, theme: &Theme, width: usize) -> Vec<Wrapped> {
         } else {
             Span::raw(" ".repeat(hang))
         };
-        let wrapped = wrap::wrap_lines(
+        let mut wrapped = wrap::wrap_lines(
             &[Span::styled(line.to_string(), theme.dim())],
             width.saturating_sub(hang).max(1),
             0,
         );
+        // (A blank line of it keeps its row.)
+        if wrapped.is_empty() {
+            wrapped.push(Wrapped::line(Vec::new()));
+        }
         lines.extend(wrap::prefixed(wrapped, lead, Span::raw(" ".repeat(hang))));
     }
     lines
@@ -5110,12 +5114,13 @@ mod tests {
             // under its first.
             let mut body: Vec<String> = Vec::new();
             for fact in &fixture.act.body {
-                for (n, line) in fact.text.lines().enumerate() {
-                    body.push(match (fact.label.is_empty(), n) {
+                for (n, line) in fact.text.split('\n').enumerate() {
+                    let row = match (fact.label.is_empty(), n) {
                         (true, _) => format!("  │ {line}"),
                         (false, 0) => format!("  │ {}  {line}", fact.label),
                         (false, _) => format!("  │ {}{line}", " ".repeat(fact.label.len() + 2)),
-                    });
+                    };
+                    body.push(row.trim_end().to_string());
                 }
             }
             if fixture.outcome_shown {

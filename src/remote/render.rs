@@ -165,11 +165,12 @@ fn main_parameter(tool: &str) -> Option<&'static str> {
     })
 }
 
-/// A parameter's value as a body shows it: text as it is, a number or a
-/// flag as written, and a list or an object as JSON.
+/// A parameter's value as a body shows it: text exactly as it is (a file's
+/// trailing spaces and blank lines too), a number or a flag as written, and
+/// a list or an object as JSON.
 fn value_text(value: &Value) -> String {
     match value {
-        Value::String(text) => text.trim_end().to_string(),
+        Value::String(text) => text.clone(),
         Value::Array(_) | Value::Object(_) => {
             serde_json::to_string_pretty(value).unwrap_or_default()
         }

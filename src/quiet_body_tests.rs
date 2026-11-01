@@ -47,6 +47,10 @@ fn samples(name: &str, schema: &serde_json::Value) -> Vec<serde_json::Value> {
                 "with a long tail ".repeat(12)
             )),
             serde_json::json!(format!("{name}7")),
+            // Trailing spaces, blank lines and only spaces are a value's too.
+            serde_json::json!(format!("{name} ends in spaces  ")),
+            serde_json::json!(format!("{name} ends in blank lines\n\n")),
+            serde_json::json!("   "),
         ],
     }
 }
@@ -54,7 +58,7 @@ fn samples(name: &str, schema: &serde_json::Value) -> Vec<serde_json::Value> {
 /// The text in `value` that a body or a row's words hold.
 fn leaves(value: &serde_json::Value) -> Vec<String> {
     match value {
-        serde_json::Value::String(text) => vec![text.trim_end().to_string()],
+        serde_json::Value::String(text) => vec![text.clone()],
         serde_json::Value::Array(items) => items.iter().flat_map(leaves).collect(),
         serde_json::Value::Object(map) => map
             .iter()

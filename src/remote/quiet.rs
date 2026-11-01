@@ -1176,6 +1176,18 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
             r#"{"path": "new.rs", "content": "a\nb"}"#,
             act(ActKind::Write, "new.rs", &[("content", "a\nb")]),
         ),
+        fixture(
+            "a write that ends in spaces and blank lines",
+            "write_file",
+            r#"{"path": "new.txt", "content": "line  \n\n"}"#,
+            act(ActKind::Write, "new.txt", &[("content", "line  \n\n")]),
+        ),
+        fixture(
+            "a write of only spaces",
+            "write_file",
+            r#"{"path": "blank.txt", "content": "   "}"#,
+            act(ActKind::Write, "blank.txt", &[("content", "   ")]),
+        ),
         Fixture {
             outcome: "3 replacements",
             outcome_shown: true,
