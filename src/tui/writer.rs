@@ -184,6 +184,7 @@ impl Writer {
 
     /// Waits until everything handed over is written, or the writer failed,
     /// for at most `timeout`. Whether it was.
+    #[cfg(test)]
     pub(super) fn wait_written(&self, timeout: Duration) -> bool {
         let until = Instant::now() + timeout;
         let mut state = crate::lock(&self.shared.state);
@@ -397,6 +398,7 @@ pub(super) fn try_lock_for<T>(mutex: &Mutex<T>, within: Duration) -> Option<Mute
 /// Where the writer writes, standard output. On Unix, through a descriptor
 /// of its own, so a write that waits for the terminal holds no lock that a
 /// print elsewhere would wait for.
+#[allow(clippy::disallowed_methods, reason = "the writer's own output")]
 pub(super) fn standard_output() -> Box<dyn Write + Send> {
     #[cfg(unix)]
     {

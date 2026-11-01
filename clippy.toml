@@ -1,0 +1,20 @@
+# While the full screen has the terminal, only its writer writes to it
+# (src/tui/writer.rs). These are denied in src/tui outside its tests, and
+# allowed elsewhere. A few are needed before the writer starts, where they
+# say why.
+disallowed-methods = [
+    { path = "std::io::stdout", reason = "the full screen writes through its writer" },
+    { path = "std::io::stderr", reason = "the full screen writes through its writer" },
+    { path = "crossterm::terminal::supports_keyboard_enhancement", reason = "it asks the terminal, so only before the writer starts" },
+    { path = "crossterm::cursor::position", reason = "it asks the terminal past the writer" },
+    { path = "ratatui::Terminal::clear", reason = "it can ask the terminal for its cursor, past the writer" },
+    { path = "ratatui::Terminal::get_cursor_position", reason = "it asks the terminal past the writer" },
+    { path = "ratatui::backend::Backend::get_cursor_position", reason = "it asks the terminal past the writer" },
+]
+disallowed-macros = [
+    { path = "std::print", reason = "the full screen writes through its writer" },
+    { path = "std::println", reason = "the full screen writes through its writer" },
+    { path = "std::eprint", reason = "the full screen writes through its writer" },
+    { path = "std::eprintln", reason = "the full screen writes through its writer" },
+    { path = "std::dbg", reason = "the full screen writes through its writer" },
+]

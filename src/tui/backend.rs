@@ -94,8 +94,12 @@ impl<W: Write> Backend for CursorBackend<W> {
         Ok(())
     }
 
+    /// Not asked, as the question would go to the terminal past its writer,
+    /// and the full screen places the cursor itself.
     fn get_cursor_position(&mut self) -> io::Result<Position> {
-        self.inner.get_cursor_position()
+        Err(io::Error::other(
+            "the full screen doesn't ask the terminal where its cursor is",
+        ))
     }
 
     fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {

@@ -11,6 +11,9 @@
 //! What is unusual shows, not what is normal. The keys are those of
 //! chat apps, pagers and readline.
 
+// While it has the terminal, only its writer writes to it (clippy.toml).
+#![cfg_attr(not(test), deny(clippy::disallowed_methods, clippy::disallowed_macros))]
+
 mod app;
 mod approvals;
 mod backend;
@@ -107,9 +110,9 @@ pub struct Screen {
 
 /// Whether the full-screen view can run, which it does when standard input and output are a
 /// terminal that can draw (not TERM=dumb).
+#[allow(clippy::disallowed_methods, reason = "before the writer starts")]
 pub fn available() -> bool {
     std::io::stdin().is_terminal()
-        // (before the writer)
         && std::io::stdout().is_terminal()
         && std::env::var("TERM").map_or(true, |term| term != "dumb")
 }
@@ -126,10 +129,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     let terminal = match open(setup.session_dir.join(crate::session::LOG_FILE)) {
         Ok(terminal) => terminal,
         Err(error) => {
-            // (before the writer)
-            eprintln!(
-                "arko: the full-screen view couldn't start ({error}), so Arko uses the line prompt"
-            );
+            say_it_didnt_start(&error);
             if let Some(printer) = ui::spawn_input(
                 setup.root.clone(),
                 setup.input.clone(),
@@ -206,6 +206,13 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
         reply,
         output: output.clone(),
     })
+}
+
+/// Says why the full screen didn't start, on standard error, once the
+/// terminal is as it was.
+#[allow(clippy::disallowed_macros, reason = "the terminal is as it was")]
+fn say_it_didnt_start(error: &std::io::Error) {
+    eprintln!("arko: the full-screen view couldn't start ({error}), so Arko uses the line prompt");
 }
 
 /// The name of the view's thread.
@@ -313,9 +320,8 @@ fn open(log: PathBuf) -> std::io::Result<(Terminal<CursorBackend<Writer>>, Write
     // an event (crossterm/src/terminal/sys/unix.rs:183-267). Windows
     // answers no (crossterm/src/terminal/sys/windows.rs:75), but its
     // console's key records carry Shift with Enter anyway.
-    let asked =
-        // (before the writer)
-        crossterm::terminal::supports_keyboard_enhancement();
+    #[allow(clippy::disallowed_methods, reason = "before the writer starts")]
+    let asked = crossterm::terminal::supports_keyboard_enhancement();
     let enhanced = matches!(asked, Ok(true));
     let mut reset = Vec::new();
     write_close(&mut reset, enhanced);
@@ -1442,75 +1448,6 @@ mod tests {
             }
         }
         assert_eq!(closed, Some(crate::Verdict::closed()));
-    }
-
-    /// The source of the view's module, outside its tests, by file.
-    fn sources() -> Vec<(String, String)> {
-        fn walk(dir: &std::path::Path, found: &mut Vec<(String, String)>) {
-            for entry in std::fs::read_dir(dir).unwrap().flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    walk(&path, found);
-                    continue;
-                }
-                let name = path.display().to_string();
-                if !name.ends_with(".rs") || name.ends_with("tests.rs") {
-                    continue;
-                }
-                let text = std::fs::read_to_string(&path).unwrap();
-                // (Up to its tests, a module inside it under a `cfg` with `test`.)
-                let lines: Vec<&str> = text.lines().collect();
-                let end = lines.windows(2).position(|pair| {
-                    pair[0].starts_with("#[cfg(")
-                        && pair[0].contains("test")
-                        && pair[1].contains("mod ")
-                        && pair[1].trim_end().ends_with('{')
-                });
-                let code = lines[..end.unwrap_or(lines.len())].join("\n");
-                found.push((name, code));
-            }
-        }
-        let mut found = Vec::new();
-        walk(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tui"),
-            &mut found,
-        );
-        found
-    }
-
-    /// The view reaches the terminal only through its writer, so a terminal
-    /// that stops reading holds up no runtime thread. Outside the writer,
-    /// only what runs before it starts, marked "(before the writer)" on the
-    /// line above, names standard output or error, prints, or asks the
-    /// terminal itself.
-    #[test]
-    fn only_the_writer_writes_to_the_terminal() {
-        let touches = [
-            "stdout()",
-            "stderr()",
-            "Stdout",
-            "print!(",
-            "println!(",
-            "eprintln!(",
-            "supports_keyboard_enhancement",
-            "cursor::position",
-        ];
-        let sources = sources();
-        assert!(sources.len() > 20, "{} files", sources.len());
-        let mut found = Vec::new();
-        for (name, code) in &sources {
-            if name.ends_with("/writer.rs") {
-                continue;
-            }
-            let lines: Vec<&str> = code.lines().collect();
-            for (at, line) in lines.iter().enumerate() {
-                let marked = at > 0 && lines[at - 1].trim() == "// (before the writer)";
-                if touches.iter().any(|touch| line.contains(touch)) && !marked {
-                    found.push(format!("{name}:{}: {}", at + 1, line.trim()));
-                }
-            }
-        }
-        assert!(found.is_empty(), "{found:#?}");
     }
 
     /// A terminal's screen as the bytes sent to it draw it. Characters go at

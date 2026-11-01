@@ -27,6 +27,9 @@
 //! and `remote` the web page's server. Both are on by default. An app builds
 //! Arko with `default-features = false` and adds `remote` for the web page.
 
+// What clippy.toml disallows is denied only in the full screen (src/tui).
+#![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
+
 pub mod agent_added;
 mod agents;
 pub mod approvals;
