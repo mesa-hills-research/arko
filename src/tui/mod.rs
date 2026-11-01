@@ -129,6 +129,7 @@ pub fn available() -> bool {
 /// lines go to the feed. When the terminal can't be set up, the line
 /// prompt reads the input instead, and `None` is returned.
 pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
+    let _opening = Opening::new();
     let history = setup.root.join("history.txt");
     // Settled first, so its warning, if any, prints before the screen is taken.
     glyphs::symbols();
@@ -319,11 +320,19 @@ fn open(log: PathBuf) -> std::io::Result<(Terminal<CursorBackend<Writer>>, Write
     // and leaves the screen.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if !ends_the_view(std::thread::current().name()) {
-            log::error!("{info}");
-            return;
+        let opening = OPENING.with(std::cell::Cell::get);
+        match panic_ends(std::thread::current().name(), opening) {
+            Ends::Nothing => {
+                log::error!("{info}");
+                return;
+            }
+            // (Without waiting for the writer, whose thread this is.)
+            Ends::Writer => {
+                let writer = writer_handle();
+                restore_directly(writer.as_ref(), CLOSE_WAIT, writer::standard_output());
+            }
+            Ends::View => close_and_wait(),
         }
-        close_and_wait();
         previous(info);
     }));
     // Asked once, before events are read, and before the writer starts,
@@ -382,11 +391,49 @@ fn clear_new_screen(writer: &mut impl Write) -> std::io::Result<()> {
     )
 }
 
-/// Whether a panic on the thread named `thread` ends the view, the view's
-/// own, the main thread's, or the session's runtime's (tokio's default
-/// name, which the command's runtime keeps).
-fn ends_the_view(thread: Option<&str>) -> bool {
-    matches!(thread, Some("main" | "tokio-runtime-worker" | THREAD))
+/// What a panic ends, and so whether it gives the terminal back.
+#[derive(Debug, PartialEq)]
+enum Ends {
+    /// The view, a panic on its thread, on the thread opening it while it
+    /// does, or on the main thread, whose panic ends the process.
+    View,
+    /// The writer, which can't give the terminal back itself.
+    Writer,
+    /// Nothing the view needs, such as a session's task, whose panic tokio
+    /// catches, or dictation's thread, which recovers from its own.
+    Nothing,
+}
+
+/// What a panic on the thread named `thread` ends, `opening` when that
+/// thread is opening the view.
+fn panic_ends(thread: Option<&str>, opening: bool) -> Ends {
+    match thread {
+        Some(writer::THREAD) => Ends::Writer,
+        Some(THREAD | "main") => Ends::View,
+        _ if opening => Ends::View,
+        _ => Ends::Nothing,
+    }
+}
+
+thread_local! {
+    /// This thread is opening the view ([`start`]).
+    static OPENING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This thread opens the view while it's kept ([`OPENING`]).
+struct Opening;
+
+impl Opening {
+    fn new() -> Self {
+        OPENING.with(|opening| opening.set(true));
+        Self
+    }
+}
+
+impl Drop for Opening {
+    fn drop(&mut self) {
+        OPENING.with(|opening| opening.set(false));
+    }
 }
 
 /// The writer of the view that has or last had the terminal, the one owner
@@ -1256,36 +1303,47 @@ mod tests {
         assert!(app.take_effects().is_empty());
     }
 
-    /// Only panics on the threads that run the view give the terminal back.
-    /// Dictation's thread recovers from its own, and the speech engine's
-    /// workers' come back to it.
+    /// Only panics that end the view or the process give the terminal
+    /// back, the view's thread's, the main thread's, and the opening
+    /// thread's while it opens the view. The writer's thread's gives it back
+    /// without the writer. A panic in a session's task, which tokio catches,
+    /// leaves the view as it is, and so do dictation's and the speech
+    /// engine's, which recover.
     #[test]
-    fn only_the_views_threads_panics_give_the_terminal_back() {
-        assert!(ends_the_view(Some("main")));
-        assert!(ends_the_view(Some("tokio-runtime-worker")));
-        assert!(ends_the_view(Some(THREAD)));
+    fn only_panics_that_end_the_view_give_the_terminal_back() {
+        assert_eq!(panic_ends(Some(THREAD), false), Ends::View);
+        assert_eq!(panic_ends(Some("main"), false), Ends::View);
+        assert_eq!(panic_ends(Some(writer::THREAD), false), Ends::Writer);
+        assert_eq!(panic_ends(Some("tokio-runtime-worker"), true), Ends::View);
         for other in [
+            Some("tokio-runtime-worker"),
             Some("arko-dictation"),
             Some("speech-worker-3"),
             Some("arko-microphone"),
             None,
         ] {
-            assert!(!ends_the_view(other), "{other:?}");
+            assert_eq!(panic_ends(other, false), Ends::Nothing, "{other:?}");
         }
-        // The names the threads have.
+        // The names the threads have, and what opening says.
         let dictation = std::thread::Builder::new()
             .name("arko-dictation".into())
-            .spawn(|| ends_the_view(std::thread::current().name()))
+            .spawn(|| std::thread::current().name().map(str::to_string))
             .unwrap();
-        assert!(!dictation.join().unwrap());
+        assert_eq!(dictation.join().unwrap().as_deref(), Some("arko-dictation"));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .build()
             .unwrap();
-        let ended = runtime
-            .block_on(runtime.spawn(async { ends_the_view(std::thread::current().name()) }))
+        let worker = runtime
+            .block_on(runtime.spawn(async { std::thread::current().name().map(str::to_string) }))
             .unwrap();
-        assert!(ended, "the view's runtime");
+        assert_eq!(worker.as_deref(), Some("tokio-runtime-worker"));
+        assert!(!OPENING.with(std::cell::Cell::get));
+        {
+            let _opening = Opening::new();
+            assert!(OPENING.with(std::cell::Cell::get));
+        }
+        assert!(!OPENING.with(std::cell::Cell::get));
     }
 
     /// When the feed's subscription lags and the view starts over from the
