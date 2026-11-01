@@ -62,11 +62,11 @@ pub use links::{HOST_VARIABLE, Interface, Link};
 #[cfg(not(feature = "remote"))]
 pub use no_server::Server;
 pub use protocol::{Confirm, Partial, Refusal, RefusalKind, Verdict};
-/// A call's item as the feed makes it, for tests of every tool's.
-#[cfg(test)]
-pub(crate) use render::call_said;
 pub(crate) use render::duration_words;
 pub(crate) use render::outcome as call_outcome;
+/// A call's item as the feed makes it, for tests of every tool's.
+#[cfg(test)]
+pub(crate) use render::{Shown, call_said};
 #[cfg(feature = "remote")]
 pub use server::Server;
 

@@ -233,11 +233,24 @@ fn grouped(count: usize) -> String {
 }
 
 /// The parameters a call's row's words state whole, as the branch that
-/// made the words reports them, each with what the words show for it: the
-/// value as it is, or the words a choice or a number made ("Listed jobs",
-/// "7"). A call's body leaves them out ([`body`]).
+/// made the words reports them, in every form the row takes (while it runs,
+/// once it ended, when it failed or was refused, held or stopped). A call's
+/// body leaves them out ([`body`]).
 #[derive(Debug, Default)]
-pub(crate) struct Said(Vec<(&'static str, Vec<String>)>);
+pub(crate) struct Said(Vec<(&'static str, Shown)>);
+
+/// How a call's row's words state one of its parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Shown {
+    /// As this text, in every form: the value as it is, or a defined form
+    /// of it (a number written out, each run of a list, "lead" by the lead's
+    /// name).
+    Text(Vec<String>),
+    /// By the words its value chose, which are another phrase in each form
+    /// ("Listing jobs", "Listed jobs", "Couldn’t list jobs"), for one of
+    /// the values the branch knows.
+    Choice,
+}
 
 impl Said {
     /// Whether the words state the parameter `name`.
@@ -245,15 +258,21 @@ impl Said {
         self.0.iter().any(|(said, _)| *said == name)
     }
 
-    /// The parameters said, each with what the words show for it.
+    /// The parameters said, each with how the words show it.
     #[cfg(test)]
-    pub(crate) fn all(&self) -> &[(&'static str, Vec<String>)] {
+    pub(crate) fn all(&self) -> &[(&'static str, Shown)] {
         &self.0
     }
 
-    /// The words show `name` as `shown`.
+    /// The words show `name` as `shown` in every form.
     fn shown(&mut self, name: &'static str, shown: impl Into<String>) {
-        self.0.push((name, vec![shown.into()]));
+        self.0.push((name, Shown::Text(vec![shown.into()])));
+    }
+
+    /// The words of every form are made from the value of `name`, one the
+    /// branch knows.
+    fn choice(&mut self, name: &'static str) {
+        self.0.push((name, Shown::Choice));
     }
 
     /// The words show the text `name` as it is, which is so when it is at
@@ -399,18 +418,18 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         crew::WAIT_FOR_AGENTS => {
             let runs = ui::waited_runs(parameters, &[]);
             if (1..=3).contains(&runs.len()) && runs.iter().all(|run| cut(run, 160) == *run) {
-                said.0.push(("runs", runs.clone()));
+                said.0.push(("runs", Shown::Text(runs.clone())));
             }
             on(ActKind::Wait, runs.join(", "))
         }
         "terminal_status" => on(ActKind::Check, job()),
         "terminal_control" => match text("action").as_str() {
             "wait" => {
-                said.shown("action", "Checked");
+                said.choice("action");
                 on(ActKind::Check, job())
             }
             "list" => {
-                said.shown("action", "Listed jobs");
+                said.choice("action");
                 other(
                     "Listing jobs".into(),
                     "Listed jobs".into(),
@@ -418,7 +437,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
                 )
             }
             "cancel" => {
-                said.shown("action", "Stopped");
+                said.choice("action");
                 other(
                     format!("Stopping {}", job()),
                     format!("Stopped {}", job()),
@@ -426,7 +445,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
                 )
             }
             "forget" => {
-                said.shown("action", "Forgot");
+                said.choice("action");
                 other(
                     format!("Forgetting {}", job()),
                     format!("Forgot {}", job()),
@@ -473,7 +492,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         }
         "monitor_control" => match text("action").as_str() {
             "list" => {
-                said.shown("action", "Listed monitors");
+                said.choice("action");
                 other(
                     "Listing monitors".into(),
                     "Listed monitors".into(),
@@ -481,7 +500,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
                 )
             }
             "rearm" => {
-                said.shown("action", "Kept a monitor going");
+                said.choice("action");
                 other(
                     "Keeping a monitor going".into(),
                     "Kept a monitor going".into(),
@@ -490,7 +509,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
             }
             action => {
                 if action == "stop" {
-                    said.shown("action", "Stopped a monitor");
+                    said.choice("action");
                 }
                 other(
                     "Stopping a monitor".into(),
@@ -541,20 +560,12 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         crate::mcp::MCP_TOOL_NAME => {
             let server = text("server");
             let action = text("action");
-            // The words of each action, and its server's name in them.
-            let verb = match action.as_str() {
-                "call" => Some("Called"),
-                "servers" => Some("Listed the MCP servers"),
-                "tools" => Some("Listed"),
-                "start" => Some("Started"),
-                "stop" => Some("Stopped"),
-                "add" => Some("Added"),
-                "remove" => Some("Removed"),
-                _ => None,
-            };
-            match verb {
-                Some(verb) => said.shown("action", verb),
-                None => said.whole(parameters, "action", 160),
+            // An action it knows chooses its words, and another shows in them.
+            let known = ["call", "servers", "tools", "start", "stop", "add", "remove"];
+            if known.contains(&action.as_str()) {
+                said.choice("action");
+            } else {
+                said.whole(parameters, "action", 160);
             }
             if action != "servers" {
                 said.whole(parameters, "server", 160);
@@ -609,16 +620,21 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         crew::STOP_AGENT => {
             let run = text("run");
             said.whole(parameters, "run", 160);
-            let worktree = if flag(parameters, "remove_workspace") {
-                said.shown("remove_workspace", "removed its worktree");
-                " and removed its worktree"
+            // A worktree it removes, in every form of its words.
+            let (removing, removed, remove) = if flag(parameters, "remove_workspace") {
+                said.choice("remove_workspace");
+                (
+                    " and removing its worktree",
+                    " and removed its worktree",
+                    " and remove its worktree",
+                )
             } else {
-                ""
+                ("", "", "")
             };
             other(
-                format!("Stopping {run}"),
-                format!("Stopped {run}{worktree}"),
-                format!("stop {run}"),
+                format!("Stopping {run}{removing}"),
+                format!("Stopped {run}{removed}"),
+                format!("stop {run}{remove}"),
             )
         }
         crew::LIST_AGENTS => other(
@@ -736,7 +752,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
                 _ => ("Changing", "Changed", "change"),
             };
             if done != "Changed" {
-                said.shown("action", done);
+                said.choice("action");
             }
             // (Watching and estimating name the index, not "the … index".)
             let the = if matches!(

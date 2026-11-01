@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::worker_choice::{setup, start_worker};
-use crate::remote::quiet;
+use crate::remote::{Shown, quiet};
 
 /// The tools a request offers, by name, with their parameters' schemas.
 fn offered(body: &str) -> Vec<(String, serde_json::Map<String, serde_json::Value>)> {
@@ -73,9 +73,82 @@ fn leaves(value: &serde_json::Value) -> Vec<String> {
 /// the user), which have no row.
 const NOT_CALLS: [&str; 3] = ["complete_task", "ask_user", "message_user"];
 
+/// The choices a call's words may state by the words they make, which the
+/// test knows apart from the code that makes them: the tool, the parameter,
+/// the value, and a phrase of the words in each form (while it runs, once
+/// it ended, after "Couldn’t" when it failed). A branch that says a choice
+/// not listed here fails.
+const CHOICES: &[(&str, &str, &str, [&str; 3])] = &[
+    ("terminal_control", "action", "wait", ["Checking job", "Checked job", "check job"]),
+    ("terminal_control", "action", "list", ["Listing jobs", "Listed jobs", "list jobs"]),
+    ("terminal_control", "action", "cancel", ["Stopping job", "Stopped job", "stop job"]),
+    ("terminal_control", "action", "forget", ["Forgetting job", "Forgot job", "forget job"]),
+    ("monitor_control", "action", "list", ["Listing monitors", "Listed monitors", "list monitors"]),
+    (
+        "monitor_control",
+        "action",
+        "rearm",
+        ["Keeping a monitor going", "Kept a monitor going", "keep a monitor going"],
+    ),
+    ("monitor_control", "action", "stop", ["Stopping a monitor", "Stopped a monitor", "stop a monitor"]),
+    ("mcp", "action", "call", ["Calling", "Called", "call"]),
+    (
+        "mcp",
+        "action",
+        "servers",
+        ["Listing the MCP servers", "Listed the MCP servers", "list the MCP servers"],
+    ),
+    ("mcp", "action", "tools", ["’s tools", "’s tools", "’s tools"]),
+    ("mcp", "action", "start", ["Starting", "Started", "start"]),
+    ("mcp", "action", "stop", ["Stopping", "Stopped", "stop"]),
+    ("mcp", "action", "add", ["Adding the", "Added the", "add the"]),
+    ("mcp", "action", "remove", ["Removing the", "Removed the", "remove the"]),
+    ("index_manage", "action", "rebuild", ["Rebuilding", "Rebuilt", "rebuild"]),
+    ("index_manage", "action", "embed", ["Embedding", "Embedded", "embed"]),
+    (
+        "index_manage",
+        "action",
+        "estimate",
+        ["Estimating embedding", "Estimated embedding", "estimate embedding"],
+    ),
+    (
+        "index_manage",
+        "action",
+        "monitor_on",
+        ["Turning on watching", "Turned on watching", "turn on watching"],
+    ),
+    (
+        "index_manage",
+        "action",
+        "monitor_off",
+        ["Turning off watching", "Turned off watching", "turn off watching"],
+    ),
+    ("index_manage", "action", "remove", ["Removing", "Removed", "remove"]),
+    (
+        "stop_agent",
+        "remove_workspace",
+        "true",
+        ["removing its worktree", "removed its worktree", "remove its worktree"],
+    ),
+];
+
+/// The forms a row's words take: while the call runs, once it ended, when
+/// it failed or was refused (after "Couldn’t"), held for a compaction, and
+/// stopped. Each with its status, its outcome, and which phrase of a
+/// choice it holds (0 while it runs, 1 once it ended, 2 when it failed).
+const FORMS: [(remote::CallStatus, Option<&str>, usize); 6] = [
+    (remote::CallStatus::Running, None, 0),
+    (remote::CallStatus::Ok, Some("done"), 1),
+    (remote::CallStatus::Failed, Some("it broke"), 2),
+    (remote::CallStatus::Failed, Some("refused"), 2),
+    (remote::CallStatus::Failed, Some(quiet::HELD), 0),
+    (remote::CallStatus::Failed, Some(quiet::STOPPED), 0),
+];
+
 /// Checks that each of `parameters` of a call of `tool` shows whole in the
-/// call's body, or in its row's words, as the branch that made them says
-/// they show it. Returns how many values it checked.
+/// call's body, or in its row's words in every form the row takes. A choice
+/// must be one [`CHOICES`] lists, with its phrase in each form. Returns how
+/// many values it checked.
 fn check(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> usize {
     let made = crate::remote::call_said(tool, parameters, "main");
     let Some((act, said)) = made.and_then(|(item, said)| Some((item.act?, said))) else {
@@ -83,41 +156,76 @@ fn check(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> usize {
         return 0;
     };
     assert!(!NOT_CALLS.contains(&tool), "{tool} made a call");
-    let steps = [quiet::Step::Call(quiet::Call {
-        id: 1,
-        act: Some(&act),
-        status: Some(remote::CallStatus::Ok),
-        turn: Some(1),
-        ..quiet::Call::default()
-    })];
-    let words = match quiet::rows(&steps).as_slice() {
-        [quiet::Piece::Row(row)] => row.words.text.clone(),
-        other => panic!("{tool}: {other:?}"),
-    };
+    // The row's words in each form.
+    let words: Vec<(usize, String)> = FORMS
+        .iter()
+        .map(|(status, outcome, phrase)| {
+            let steps = [quiet::Step::Call(quiet::Call {
+                id: 1,
+                act: Some(&act),
+                status: Some(*status),
+                outcome: *outcome,
+                turn: Some(1),
+                ..quiet::Call::default()
+            })];
+            match quiet::rows(&steps).as_slice() {
+                [quiet::Piece::Row(row)] => (*phrase, row.words.text.clone()),
+                other => panic!("{tool}: {other:?}"),
+            }
+        })
+        .collect();
     let body: Vec<&str> = act.body.iter().map(|fact| fact.text.as_str()).collect();
     let body = body.join("\n");
     let mut checked = 0;
     for (name, value) in parameters {
-        // What the branch says its words show for it, each part of which
-        // they must hold.
         let claimed = said.all().iter().find(|(said, _)| said == name);
-        if let Some((_, shown)) = claimed {
-            for part in shown {
-                assert!(
-                    words.contains(part.as_str()),
-                    "{tool}.{name}: the words {words:?} don't show {part:?}, as their branch says ({parameters:?})"
-                );
+        match claimed.map(|(_, shown)| shown) {
+            Some(Shown::Text(parts)) => {
+                for part in parts {
+                    for (_, words) in &words {
+                        assert!(
+                            words.contains(part.as_str()),
+                            "{tool}.{name}: {words:?} doesn't show {part:?} ({parameters:?})"
+                        );
+                    }
+                }
+                // (Every run of a list, not some.)
+                if tool == "wait_for_agents" && name == "runs" {
+                    let runs = crate::ui::waited_runs(parameters, &[]);
+                    assert!(runs.iter().all(|run| parts.contains(run)), "{parts:?}");
+                }
             }
+            Some(Shown::Choice) => {
+                let value = match value {
+                    serde_json::Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                };
+                let Some((.., phrases)) = CHOICES
+                    .iter()
+                    .find(|(t, n, v, _)| *t == tool && n == name && *v == value)
+                else {
+                    panic!("{tool}.{name} = {value:?} is said as a choice the test doesn't know");
+                };
+                for (phrase, words) in &words {
+                    assert!(
+                        words.to_lowercase().contains(&phrases[*phrase].to_lowercase()),
+                        "{tool}.{name} = {value:?}: {words:?} doesn't say {:?}",
+                        phrases[*phrase]
+                    );
+                }
+            }
+            None => {}
+        }
+        if claimed.is_some() {
             assert!(
                 act.body.iter().all(|fact| fact.label != *name),
                 "{tool}.{name} is both said and in the body"
             );
         }
         for leaf in leaves(value) {
-            let shown = body.contains(&leaf) || claimed.is_some();
             assert!(
-                shown,
-                "{tool}.{name} = {leaf:?} is in neither its body {:?} nor what its words {words:?} say ({parameters:?})",
+                body.contains(&leaf) || claimed.is_some(),
+                "{tool}.{name} = {leaf:?} is in neither its body {:?} nor its row's words {words:?} ({parameters:?})",
                 act.body
             );
             checked += 1;
@@ -128,12 +236,15 @@ fn check(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> usize {
 
 /// Every parameter of every tool the main agent and a worker are offered,
 /// and an MCP server's own tool, shows whole in the body of the call's
-/// Quiet row, or in the row's words, which the branch that made them says
-/// (and the words then hold what it says they show). Each tool's calls come
-/// with all its parameters at once, each varied in turn, so parameters that
-/// change each other's words are covered (a `cd` in the command and a
-/// `cwd`, a note that replaces another and its audience). A body too long
-/// for what a body keeps says how much it left out.
+/// Quiet row, or in the row's words in every form the row takes (while it
+/// runs, once it ended, failed, refused, held or stopped). What the branch
+/// that made the words says they show is checked against the words, and a
+/// choice against the test's own list of the words each value makes
+/// ([`CHOICES`]). Each tool's calls come with all its parameters at once,
+/// each varied in turn, so parameters that change each other's words are
+/// covered (a `cd` in the command and a `cwd`, a note that replaces another
+/// and its audience). A body too long for what a body keeps says how much
+/// it left out.
 #[tokio::test]
 async fn every_parameter_shows_in_its_body_or_its_words() {
     let temp = tempfile::tempdir().unwrap();
@@ -221,7 +332,15 @@ async fn every_parameter_shows_in_its_body_or_its_words() {
             .collect();
         checked += check(tool, &first);
         for (name, schema) in &properties {
-            for value in samples(name, schema) {
+            // (And each choice the test knows, which a text's samples miss.)
+            let mut values = samples(name, schema);
+            values.extend(
+                CHOICES
+                    .iter()
+                    .filter(|(t, n, v, _)| t == tool && n == name && *v != "true")
+                    .map(|(.., value, _)| serde_json::json!(value)),
+            );
+            for value in values {
                 let mut parameters = first.clone();
                 parameters.insert(name.clone(), value.clone());
                 checked += check(tool, &parameters);

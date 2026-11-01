@@ -1030,7 +1030,8 @@ pub(crate) struct Fixture {
 /// Calls of the kinds r127 found that opened to too little or to nothing:
 /// commands cut short or run in a folder (also one that goes from its folder
 /// to another, and a note that replaces another for a worker, whose
-/// parameters change each other's words), reads of some lines or a long
+/// parameters change each other's words), a worker stop that removes its
+/// worktree (which every form of its words says), reads of some lines or a long
 /// path, a write, an edit of every match, a refused or failed command,
 /// messages, searches past the row's and Full's lengths, a wait for many
 /// runs, a check of a job, MCP calls, a note, worker starts, a moved call,
@@ -1350,6 +1351,21 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                     "Changed note 7",
                     "change note 7",
                     &[("", "Replacement note text"), ("audience", "r3")],
+                ),
+            )
+        },
+        Fixture {
+            outcome: "Stopped r1.",
+            outcome_shown: true,
+            ..fixture(
+                "a worker stop that removes its worktree",
+                "stop_agent",
+                r#"{"run": "r1", "remove_workspace": true}"#,
+                other(
+                    "Stopping r1 and removing its worktree",
+                    "Stopped r1 and removed its worktree",
+                    "stop r1 and remove its worktree",
+                    &[],
                 ),
             )
         },
