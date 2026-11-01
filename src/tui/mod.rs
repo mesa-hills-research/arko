@@ -109,9 +109,17 @@ pub struct Screen {
 }
 
 /// Whether the full-screen view can run, which it does when standard input and output are a
-/// terminal that can draw (not TERM=dumb).
+/// terminal that takes escape codes (not TERM=dumb, nor the classic Windows console without
+/// them).
 #[allow(clippy::disallowed_methods, reason = "before the writer starts")]
 pub fn available() -> bool {
+    // The classic Windows console without escape codes would carry out some
+    // of the view's commands at once, ahead of the text its writer still
+    // holds, so the line prompt runs there.
+    #[cfg(windows)]
+    if !crossterm::ansi_support::supports_ansi() {
+        return false;
+    }
     std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && std::env::var("TERM").map_or(true, |term| term != "dumb")
