@@ -574,22 +574,9 @@ async fn run(
     // What each way of naming sessions by a model lacks, checked off this
     // loop's thread (the check runs Claude Code).
     let (names_found, mut names_checks) = mpsc::unbounded_channel();
-    app.set_reading(setup.meter.read());
-    // The changes to OpenRouter's settings are made on a thread of their own,
-    // one after another, and their results come back here.
-    let settings_worker = openrouter_menu::Worker::start();
-    let (settings_done, mut settings_results) = mpsc::unbounded_channel();
-    // What became of what the user sent, as the session says.
-    let (verdict_done, mut verdicts) = mpsc::unbounded_channel();
-    // The view's dictation and its microphone, while it records, and where
-    // its events come.
-    let mut recording: (
-        Option<crate::dictation::Dictation>,
-        Option<crate::dictation::Capture>,
-    ) = (None, None);
-    let (recording_events, mut recording_received) = mpsc::unbounded_channel();
     // Its clock turns the loop twice a second, so a loop that doesn't turn
-    // for long is stuck, and the log says where.
+    // for long is stuck, and the log says where. It watches the first read
+    // of the status too.
     let watchdog = {
         let feed = setup.feed.clone();
         let terminal = screen.handle();
@@ -608,6 +595,21 @@ async fn run(
             }
         })
     };
+    watchdog.stage("reading the status");
+    app.set_reading(setup.meter.read());
+    // The changes to OpenRouter's settings are made on a thread of their own,
+    // one after another, and their results come back here.
+    let settings_worker = openrouter_menu::Worker::start();
+    let (settings_done, mut settings_results) = mpsc::unbounded_channel();
+    // What became of what the user sent, as the session says.
+    let (verdict_done, mut verdicts) = mpsc::unbounded_channel();
+    // The view's dictation and its microphone, while it records, and where
+    // its events come.
+    let mut recording: (
+        Option<crate::dictation::Dictation>,
+        Option<crate::dictation::Capture>,
+    ) = (None, None);
+    let (recording_events, mut recording_received) = mpsc::unbounded_channel();
     loop {
         watchdog.turned();
         // The writer writes no more, because the terminal closed or the
