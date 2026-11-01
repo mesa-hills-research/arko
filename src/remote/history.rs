@@ -11,7 +11,6 @@ use arko_ai::{Content, Message, Role};
 
 use super::feed::{Delivery, Item, Kind, Source};
 use super::render;
-use crate::crew;
 use crate::images::Images;
 use crate::openings::{Opening, Subjects};
 
@@ -74,10 +73,6 @@ fn items_from(
         items.len() - 1
     };
     let turns = message_turns(messages, text_replies);
-    // The runs the agent started and hasn't been told are over, which a
-    // wait without ids waits for. (A run that reported in a note, between
-    // two waits, stays in until a wait's result lists what still runs.)
-    let mut running: Vec<String> = Vec::new();
     // The user's answers to questions the agent waited for.
     let answers = waited_answers(messages);
     for (index, message) in messages.iter().enumerate() {
@@ -106,9 +101,6 @@ fn items_from(
                             } else {
                                 render::outcome(&tool, &result.output)
                             };
-                            if !result.is_error {
-                                track_runs(&mut running, &tool, &result.output);
-                            }
                             let call = &mut items[index];
                             call.settle(outcome.status, outcome.text, &outcome.settled);
                             call.started = outcome.started.clone();
@@ -195,12 +187,8 @@ fn items_from(
                         "complete_task" => Some(Item::new(Kind::Reply, text("summary"))),
                         ASK_USER_TOOL_NAME => Some(question_card(parameters.get("questions"))),
                         // (The main agent's conversation, which has no lead.)
-                        name => render::call(name, &parameters, &running, "main"),
+                        name => render::call(name, &parameters, "main"),
                     };
-                    if call.name == crew::STOP_AGENT {
-                        let stopped = text("run");
-                        running.retain(|run| !run.eq_ignore_ascii_case(&stopped));
-                    }
                     let Some(mut item) = item else {
                         continue;
                     };
@@ -302,36 +290,6 @@ fn card_ids(card: &mut Item, result: &str) {
     }
     for (question, id) in questions.iter_mut().zip(ids) {
         question.id = id;
-    }
-}
-
-/// Follows the runs the agent has going through the results of its calls.
-/// `start_agent` names the run it started, and `wait_for_agents` ends with
-/// the runs that still go.
-fn track_runs(running: &mut Vec<String>, tool: &str, output: &str) {
-    if tool == crew::START_AGENT {
-        // "Started r2 (agent `worker`)." or "Queued r2 ...".
-        let mut words = output.split_whitespace();
-        if let (Some("Started" | "Queued"), Some(run)) = (words.next(), words.next())
-            && !running.iter().any(|known| known == run)
-        {
-            running.push(run.to_string());
-        }
-    } else if tool == crew::WAIT_FOR_AGENTS {
-        for line in output.lines() {
-            if let Some(rest) = line.trim().strip_prefix("Still running: ") {
-                *running = rest
-                    .trim_end_matches('.')
-                    .split(", ")
-                    .map(str::to_string)
-                    .collect();
-            } else if line
-                .trim()
-                .starts_with("None of your agent runs is running")
-            {
-                running.clear();
-            }
-        }
     }
 }
 
@@ -758,6 +716,7 @@ fn user_item(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Option<Item> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crew;
     use arko_ai::{ToolCall, ToolResult};
 
     fn call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
@@ -928,14 +887,16 @@ mod tests {
         );
     }
 
+    /// A wait says the runs it names, and one that names none waits for
+    /// the agent's workers, as it did live.
     #[test]
-    fn a_reopened_wait_names_the_runs_the_agent_had_going() {
+    fn a_reopened_wait_names_the_runs_it_names() {
         let steps = [
             (
                 crew::WAIT_FOR_AGENTS,
                 serde_json::json!({}),
                 "Nothing to wait for: none of your agent runs is running. Reports that came earlier reached you already.",
-                "waiting for a message",
+                "waiting for workers",
             ),
             (
                 crew::START_AGENT,
@@ -953,13 +914,13 @@ mod tests {
                 crew::WAIT_FOR_AGENTS,
                 serde_json::json!({}),
                 "[mail 1] r1 (agent `worker`) finished. Its report:\n\nA.\n\nStill running: r2.",
-                "waiting for r1, r2",
+                "waiting for workers",
             ),
             (
                 crew::WAIT_FOR_AGENTS,
                 serde_json::json!({"timeout_seconds": 5}),
                 "Still running: r2.",
-                "waiting for r2",
+                "waiting for workers",
             ),
             (
                 crew::STOP_AGENT,
@@ -971,7 +932,7 @@ mod tests {
                 crew::WAIT_FOR_AGENTS,
                 serde_json::json!({}),
                 "None of your agent runs is running now.",
-                "waiting for a message",
+                "waiting for workers",
             ),
             (
                 crew::WAIT_FOR_AGENTS,

@@ -722,9 +722,10 @@ fn words(group: &Group) -> Words {
                     }
                 }
             }
+            // (A wait that names no runs waits for any of the workers.)
+            let implicit = calls.iter().any(|call| call.act.target.trim().is_empty());
             let who = match runs.len() {
-                0 => "a message".to_string(),
-                1..=3 => listed(&runs, 3),
+                1..=3 if !implicit => listed(&runs, 3),
                 _ => "workers".to_string(),
             };
             let mut came = Came::default();
@@ -893,8 +894,8 @@ fn phrases(member: &Member) -> Phrases {
                 .filter(|run| !run.is_empty())
                 .map(str::to_string)
                 .collect();
+            // (One that names no runs waits for the agent's workers.)
             let who = match runs.len() {
-                0 => "a message".to_string(),
                 1..=3 => listed(&runs, 3),
                 _ => "workers".to_string(),
             };
@@ -1873,12 +1874,21 @@ mod tests {
             ["Waited for workers · r91 finished, 3 updates"]
         );
         assert_eq!(
-            shown(&[Some((wait("r3", finished), Ok))]),
+            shown(&[Some((wait("r3", finished.clone()), Ok))]),
             ["Waited for r3 · r91 finished"]
         );
+        // One that names no runs waits for the agent's workers, also beside
+        // one that names some.
         assert_eq!(
             shown(&[Some((wait("", Came::default()), Ok))]),
-            ["Waited for a message · nothing new"]
+            ["Waited for workers · nothing new"]
+        );
+        assert_eq!(
+            shown(&[
+                Some((wait("", Came::default()), Ok)),
+                Some((wait("r1", finished.clone()), Ok))
+            ]),
+            ["Waited for workers · r91 finished"]
         );
         // One that waits shows on the row while it waits.
         assert_eq!(

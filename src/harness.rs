@@ -7206,9 +7206,8 @@ pub(crate) mod tests {
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
-    /// A wait says what it waits for. With no runs going, the main agent
-    /// waits for a message. With runs, it names them, and counts them when
-    /// there are many. A worker has no runs and waits for a message.
+    /// A wait that names no runs says it waits for the agent's workers,
+    /// whatever runs are going, so it says the same once restored.
     #[tokio::test]
     async fn a_wait_says_what_it_waits_for() {
         use crate::mock_model::{ModelServer, complete, tool_call};
@@ -7283,23 +7282,17 @@ pub(crate) mod tests {
                 .map(|item| item.text.clone())
                 .collect()
         };
-        assert_eq!(
-            waits(MAIN),
-            [
-                "waiting for a message",
-                "waiting for r1",
-                "waiting for r1, r2, r3",
-                "waiting for r1, r2 and 3 more",
-            ]
-        );
-        // The worker has no runs, and the agent list shows what it does.
-        assert_eq!(waits("r1"), ["waiting for a message"]);
+        // A wait that names no runs waits for the agent's workers, the same
+        // live and once restored.
+        assert_eq!(waits(MAIN), ["waiting for workers"; 4]);
+        // The agent list shows what the worker does.
+        assert_eq!(waits("r1"), ["waiting for workers"]);
         let r1 = snapshot
             .workers
             .iter()
             .find(|worker| worker.id == "r1")
             .unwrap();
-        assert_eq!(r1.last.as_deref(), Some("waiting for a message"));
+        assert_eq!(r1.last.as_deref(), Some("waiting for workers"));
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 

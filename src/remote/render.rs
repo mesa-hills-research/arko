@@ -51,19 +51,17 @@ fn flag(parameters: &Parameters, name: &str) -> bool {
 /// worker's report as it ends). A call's item names its tool and keeps its
 /// parameters, for an app's view of it.
 ///
-/// `running` are the runs the calling agent has going, which a
-/// `wait_for_agents` call that names none waits for.
-///
 /// `lead` is who the calling agent's lead is ("main", or the worker that
-/// started it), which a message to its lead names.
-pub fn call(tool: &str, parameters: &Parameters, running: &[String], lead: &str) -> Option<Item> {
-    let mut item = line(tool, parameters, running, lead)?;
+/// started it), which a message to its lead names. What a call says comes
+/// from the call and `lead` alone, so a restored session says the same.
+pub fn call(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
+    let mut item = line(tool, parameters, lead)?;
     if item.kind == Kind::Call {
         item.tool = Some(tool.to_string());
         // (In the order of their names, because a `HashMap` has none.)
         let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
         item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
-        let mut act = act(tool, parameters, running, lead);
+        let mut act = act(tool, parameters, lead);
         if item.detail.is_none() {
             act.whole = whole(tool, parameters, &act);
         }
@@ -132,7 +130,7 @@ fn whole(tool: &str, parameters: &Parameters, act: &Act) -> String {
 const ROW_QUERY_CHARS: usize = 60;
 
 /// What a call of `tool` does, for the Quiet view's row ([`quiet`]).
-fn act(tool: &str, parameters: &Parameters, running: &[String], lead: &str) -> Act {
+fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
     // A parameter as a row names it, at most as long as Full shows a path.
     let raw = |name: &str| text(parameters, name).trim().to_string();
     let text = |name: &str| cut(&raw(name), 160);
@@ -187,10 +185,9 @@ fn act(tool: &str, parameters: &Parameters, running: &[String], lead: &str) -> A
         },
         LOAD_SKILL_TOOL_NAME => on(ActKind::Skill, text("name")),
         crew::MESSAGE_AGENT => on(ActKind::Message, addressee(&text("to"), lead)),
-        crew::WAIT_FOR_AGENTS => on(
-            ActKind::Wait,
-            ui::waited_runs(parameters, running).join(", "),
-        ),
+        // The runs it names. One that names none waits for the agent's
+        // workers, which its row calls so ([`quiet`]).
+        crew::WAIT_FOR_AGENTS => on(ActKind::Wait, ui::waited_runs(parameters, &[]).join(", ")),
         "terminal_status" => on(ActKind::Check, job()),
         "terminal_control" => match text("action").as_str() {
             "wait" => on(ActKind::Check, job()),
@@ -572,7 +569,7 @@ fn index_name(index: &str) -> String {
 }
 
 /// A call's item, as the terminal shows it.
-fn line(tool: &str, parameters: &Parameters, running: &[String], lead: &str) -> Option<Item> {
+fn line(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
     let call = |line: String| Item::new(Kind::Call, line);
     Some(match tool {
         "complete_task" | ASK_USER_TOOL_NAME => return None,
@@ -620,7 +617,10 @@ fn line(tool: &str, parameters: &Parameters, running: &[String], lead: &str) -> 
             ))
             .detail(long(message, 160))
         }
-        crew::WAIT_FOR_AGENTS => call(ui::waiting_for(parameters, running)),
+        crew::WAIT_FOR_AGENTS if ui::waited_runs(parameters, &[]).is_empty() => {
+            call("waiting for workers".into())
+        }
+        crew::WAIT_FOR_AGENTS => call(ui::waiting_for(parameters, &[])),
         crew::LIST_AGENTS => call("list workers".into()),
         crew::WORKER_OPTIONS => call("list worker options".into()),
         crew::SAVE_WORKER_PROFILE => {
@@ -1280,7 +1280,7 @@ mod tests {
 
     /// A call of an agent with no runs going.
     fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
-        super::call(tool, parameters, &[], "main")
+        super::call(tool, parameters, "main")
     }
 
     /// A call's act holds what its Quiet row's words leave out of it, from
@@ -1289,40 +1289,39 @@ mod tests {
     fn a_calls_act_holds_what_its_row_leaves_out() {
         for fixture in quiet::fixtures() {
             let parameters: Parameters = serde_json::from_str(fixture.parameters).unwrap();
-            let item = super::call(fixture.tool, &parameters, &[], "main").unwrap();
+            let item = super::call(fixture.tool, &parameters, "main").unwrap();
             assert_eq!(item.act.as_ref(), Some(&fixture.act), "{}", fixture.name);
             assert_eq!(item.detail.as_deref(), fixture.detail, "{}", fixture.name);
         }
     }
 
-    /// A wait says what it waits for, with the runs its agent has going
-    /// when it names none (for no runs, a message).
+    /// A wait says the runs it names, also when they ended. One that names
+    /// none waits for the agent's workers, and says so the same live and
+    /// on restore, since what a call says comes from the call alone.
     #[test]
     fn a_wait_names_the_runs_it_waits_for() {
-        let wait = |pairs: &[(&str, Value)], running: &[&str]| {
-            let running: Vec<String> = running.iter().map(|run| run.to_string()).collect();
-            let item =
-                super::call(crew::WAIT_FOR_AGENTS, &params(pairs), &running, "main").unwrap();
+        let wait = |pairs: &[(&str, Value)]| {
+            let item = super::call(crew::WAIT_FOR_AGENTS, &params(pairs), "main").unwrap();
             assert_eq!(item.kind, Kind::Call);
             assert_eq!(item.tool.as_deref(), Some(crew::WAIT_FOR_AGENTS));
-            item.text
+            (item.text, item.act.unwrap().target)
         };
-        assert_eq!(wait(&[], &[]), "waiting for a message");
-        assert_eq!(wait(&[("all", true.into())], &[]), "waiting for a message");
-        assert_eq!(wait(&[], &["r1"]), "waiting for r1");
-        assert_eq!(wait(&[], &["r1", "r2"]), "waiting for r1, r2");
+        assert_eq!(wait(&[]), ("waiting for workers".into(), String::new()));
         assert_eq!(
-            wait(&[], &["r1", "r2", "r3", "r4", "r5"]),
-            "waiting for r1, r2 and 3 more"
-        );
-        // The ids a call names are what it waits for, also when they ended.
-        assert_eq!(
-            wait(&[("runs", "r3, r4".into())], &["r1", "r2"]),
-            "waiting for r3, r4"
+            wait(&[("all", true.into())]),
+            ("waiting for workers".into(), String::new())
         );
         assert_eq!(
-            wait(&[("runs", serde_json::json!(["r1", "r2"]))], &[]),
-            "waiting for r1, r2"
+            wait(&[("runs", "r3, r4".into())]),
+            ("waiting for r3, r4".into(), "r3, r4".into())
+        );
+        assert_eq!(
+            wait(&[("runs", serde_json::json!(["r1", "r2"]))]),
+            ("waiting for r1, r2".into(), "r1, r2".into())
+        );
+        assert_eq!(
+            quiet::doing(&super::act(crew::WAIT_FOR_AGENTS, &params(&[]), "main")),
+            "Waiting for workers"
         );
         // A wait's line says what came, as the user reads it, not as its
         // result tells the agent that waited.
@@ -1599,7 +1598,6 @@ mod tests {
         let nested = super::call(
             crew::MESSAGE_AGENT,
             &params(&[("to", "lead".into()), ("message", "Done.".into())]),
-            &[],
             "r5",
         )
         .unwrap();
@@ -1607,8 +1605,7 @@ mod tests {
         assert_eq!(nested.act.map(|act| act.target).as_deref(), Some("r5"));
         let wait = super::call(
             crew::WAIT_FOR_AGENTS,
-            &params(&[]),
-            &["r3".into(), "r4".into()],
+            &params(&[("runs", "r3, r4".into())]),
             "main",
         )
         .and_then(|item| item.act)
