@@ -69,8 +69,9 @@ pub struct Limits {
 }
 
 /// Keep-warm in the status, while it is on and the model can refresh its
-/// cache out of band.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+/// cache out of band. An app's tests build one from `Status::default()` and
+/// set its fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Status {
     /// When it stops (Unix milliseconds), meaning its end, or its hours after the
@@ -91,6 +92,12 @@ pub struct Status {
     /// again, the computer slept or its clock changed).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub waits: bool,
+    /// The setting for every session turned it on ([`load`]). `false` where
+    /// the session set its own (`/keep-warm`,
+    /// [`Request::KeepWarm`](crate::Request::KeepWarm)), which a change of
+    /// the setting leaves as it is.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub follows_setting: bool,
 }
 
 /// Whether the main agent's prompt cache on `model`, as Arko configures it,
@@ -736,6 +743,7 @@ impl KeepWarm {
                 .flatten()
                 .map(|due| due.at),
             waits: !turn && shown && !told,
+            follows_setting: self.follows_setting(),
         }
     }
 }
@@ -1582,6 +1590,11 @@ mod tests {
             seen_status(&kept, &limits, cache, false).ends_at,
             Some(150 * MINUTE)
         );
+        // The status says the setting turned it on, until the session sets
+        // its own.
+        assert!(seen_status(&kept, &limits, cache, false).follows_setting);
+        kept.start(limits, t(turn));
+        assert!(!seen_status(&kept, &limits, cache, false).follows_setting);
     }
 
     /// What the session chose and what its refreshes sent are kept in its
