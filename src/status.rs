@@ -197,8 +197,8 @@ impl Gauges {
     /// The agent whose run `run` is, as the clients name it, either
     /// [`remote::MAIN_AGENT`], or a worker's ID.
     pub(crate) fn agent_of(&self, run: uuid::Uuid) -> String {
-        lock(&self.workflow)
-            .as_ref()
+        let workflow = lock(&self.workflow).clone();
+        workflow
             .and_then(|workflow| {
                 workflow
                     .subagents()
@@ -217,8 +217,8 @@ impl Gauges {
         if running.is_empty() {
             return Vec::new();
         }
-        let workers = lock(&self.workflow)
-            .as_ref()
+        let workflow = lock(&self.workflow).clone();
+        let workers = workflow
             .map(|workflow| workflow.subagents())
             .unwrap_or_default();
         // The runs that aren't workers' are the main agent's.
@@ -273,6 +273,12 @@ fn costs(workflow: Option<&Workflow>) -> (f64, Option<f64>, remote::CostSplit) {
 }
 
 impl remote::Meter for Gauges {
+    /// The status now. Each lock is taken in a statement of its own, and
+    /// nothing else is called while it's held. A guard made inside a larger
+    /// expression (an argument, a field of the `Reading` built at the end)
+    /// would stay held until that whole expression ends, so two reads at
+    /// once (the full screen's, the publisher's, the page's) could each hold
+    /// a lock the other waits for.
     fn read(&self) -> remote::Reading {
         let workflow = lock(&self.workflow).clone();
         let crew = lock(&self.crew).clone();
@@ -281,6 +287,15 @@ impl remote::Meter for Gauges {
         let builtin_skills = lock(&self.builtin_skills).clone();
         let extensions = *lock(&self.extensions);
         let (worker_billing, api_budget) = *lock(&self.billing);
+        let models = lock(&self.models).clone();
+        let keep_warm = *lock(&self.keep_warm);
+        let route = lock(&self.keep_warm_route).clone();
+        let extra_rules = *lock(&self.extra_rules);
+        let worker_models = *lock(&self.worker_models);
+        let monitor_wakes = *lock(&self.monitor_wakes);
+        let conversations = lock(&self.conversations).clone();
+        let page = lock(&self.page).clone();
+        let title = lock(&self.title).clone();
         // What new workers hand over at, on their model (as the workflow
         // has them until the crew is told).
         let worker_at = |model: &arko_ai::Model, handover: Option<&arko_agents::HandoverConfig>| {
@@ -330,21 +345,12 @@ impl remote::Meter for Gauges {
             .feed
             .as_ref()
             .is_some_and(|feed| feed.activity().working);
-        let route = lock(&self.keep_warm_route).clone();
-        let cache = cache_status(
-            &stats,
-            &lock(&self.models),
-            route.as_ref(),
-            *lock(&self.keep_warm),
-            turn,
-        );
+        let cache = cache_status(&stats, &models, route.as_ref(), keep_warm, turn);
         let main_plan = {
-            let models = lock(&self.models);
             let model = providers::resolve_model(&models.main).ok();
             main_plan(model.as_ref(), &models).map(|plan| providers::plan_name(Some(plan)))
         };
         let last_request = stats.last_request.clone();
-        let monitor_wakes = *lock(&self.monitor_wakes);
         remote::Reading {
             cost,
             api_price,
@@ -364,8 +370,8 @@ impl remote::Meter for Gauges {
                 workers_handover_at,
                 text_replies: self.text_replies.load(std::sync::atomic::Ordering::Relaxed),
                 cc_compact: self.cc_compact.load(std::sync::atomic::Ordering::Relaxed),
-                extra_rules: *lock(&self.extra_rules),
-                worker_models: *lock(&self.worker_models),
+                extra_rules,
+                worker_models,
                 worker_billing,
                 api_budget,
                 worker_depth: self.worker_depth.load(std::sync::atomic::Ordering::Relaxed),
@@ -387,7 +393,7 @@ impl remote::Meter for Gauges {
                 ask_before_adding_mcp: extensions.ask_before_adding_mcp,
                 review_project_skills: extensions.review_project_skills,
                 keep_agents_files_out_of_git: extensions.keep_out_of_git,
-                keep_warm: *lock(&self.keep_warm),
+                keep_warm,
                 project_instructions,
                 worker_project_instructions,
                 background_after: self.background.after().map_or(0, |after| after.as_secs()),
@@ -408,7 +414,7 @@ impl remote::Meter for Gauges {
                 self.background.jobs(),
             ),
             models: {
-                let mut models = lock(&self.models).clone();
+                let mut models = models;
                 models.reachable = self.keys.reachable();
                 if models.openai_auth.is_none() {
                     models.openai_auth = self
@@ -418,7 +424,7 @@ impl remote::Meter for Gauges {
                 }
                 models
             },
-            conversations: lock(&self.conversations).clone(),
+            conversations,
             questions: self
                 .feed
                 .as_ref()
@@ -429,8 +435,8 @@ impl remote::Meter for Gauges {
                 .as_ref()
                 .map(remote::Feed::approvals)
                 .unwrap_or_default(),
-            page: lock(&self.page).clone(),
-            title: lock(&self.title).clone(),
+            page,
+            title,
             context_window: stats.context_window,
             plans,
             main_plan,
@@ -576,6 +582,78 @@ pub(crate) fn refresh_quote(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Gauges with nothing set, reading `feed`.
+    fn gauges(feed: &remote::Feed) -> Arc<Gauges> {
+        let output = Arc::new(crate::ui::Output::new(None, false));
+        Arc::new(Gauges {
+            models: Mutex::default(),
+            conversations: Mutex::default(),
+            workflow: Mutex::new(None),
+            crew: Mutex::new(None),
+            stats: Arc::default(),
+            outside: Arc::new(outside::Outside::new(false, Vec::new(), ".".into())),
+            handover: Arc::new(handover::Handover::new(
+                Arc::default(),
+                None,
+                None,
+                output,
+                feed.clone(),
+            )),
+            keys: keys::Keys::new(Arc::new(arko_ai::LLMClient::new()), None, None, None),
+            text_replies: Default::default(),
+            cc_compact: Default::default(),
+            extra_rules: Default::default(),
+            worker_models: Default::default(),
+            billing: Default::default(),
+            monitor_wakes: Default::default(),
+            keep_warm: Default::default(),
+            keep_warm_route: Default::default(),
+            worker_depth: Default::default(),
+            worker_retry_cap: Default::default(),
+            message_copies: Default::default(),
+            builtin_skills: Default::default(),
+            extensions: Default::default(),
+            project: Default::default(),
+            background: Arc::default(),
+            feed: Some(feed.clone()),
+            page: Mutex::default(),
+            changed: Default::default(),
+            title: Default::default(),
+            published: Default::default(),
+        })
+    }
+
+    /// Reads of the status from several threads at once, as the full
+    /// screen's clock, the status's publisher and the web page make them,
+    /// all end. A read takes one of the gauges' locks at a time, so no two
+    /// reads can each hold a lock the other waits for.
+    #[test]
+    fn reads_of_the_status_at_once_all_end() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        const THREADS: usize = 4;
+        const READS: usize = 5_000;
+        let feed = remote::Feed::new("main");
+        let gauges = gauges(&feed);
+        let read = Arc::new(AtomicUsize::new(0));
+        for _ in 0..THREADS {
+            let (gauges, read) = (gauges.clone(), read.clone());
+            std::thread::spawn(move || {
+                for _ in 0..READS {
+                    let _ = remote::Meter::read(gauges.as_ref());
+                    read.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+        // Slow reads go on, and stuck ones don't.
+        let mut last = 0;
+        while last < THREADS * READS {
+            std::thread::sleep(Duration::from_secs(3));
+            let now = read.load(Ordering::Relaxed);
+            assert!(now > last, "the reads stopped after {now} of them");
+            last = now;
+        }
+    }
 
     /// The status is read once for all the feed's updates that came while it
     /// gathered them, also more than it keeps. After a long streamed reply,
