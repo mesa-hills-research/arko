@@ -12,6 +12,7 @@
 //! know about views. Each client makes its views from these.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
@@ -1065,6 +1066,44 @@ struct Inner {
     #[cfg(test)]
     pause: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     clock: Clock,
+    /// Where the state was locked and when, while it is, for a watchdog
+    /// that finds a loop stuck ([`Feed::holder`]).
+    held: Held,
+}
+
+/// Where a feed's state was locked, and when (milliseconds since `since`),
+/// while it is locked.
+struct Held {
+    at: AtomicPtr<std::panic::Location<'static>>,
+    when: AtomicU64,
+    since: Instant,
+}
+
+/// A feed's state, locked, which says so in its [`Held`] until it's
+/// dropped.
+struct Locked<'a> {
+    state: MutexGuard<'a, State>,
+    held: &'a Held,
+}
+
+impl std::ops::Deref for Locked<'_> {
+    type Target = State;
+
+    fn deref(&self) -> &State {
+        &self.state
+    }
+}
+
+impl std::ops::DerefMut for Locked<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        &mut self.state
+    }
+}
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        self.held.at.store(std::ptr::null_mut(), Ordering::Relaxed);
+    }
 }
 
 /// The time by which the feed holds a worker's summary back, and the
@@ -1495,6 +1534,11 @@ impl Feed {
                 #[cfg(test)]
                 pause: Mutex::default(),
                 clock,
+                held: Held {
+                    at: AtomicPtr::default(),
+                    when: AtomicU64::default(),
+                    since: Instant::now(),
+                },
             }),
         }
     }
@@ -1513,11 +1557,41 @@ impl Feed {
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, State> {
-        self.inner
+    #[track_caller]
+    fn lock(&self) -> Locked<'_> {
+        let state = self
+            .inner
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let held = &self.inner.held;
+        let when = u64::try_from(held.since.elapsed().as_millis()).unwrap_or(u64::MAX);
+        held.when.store(when, Ordering::Relaxed);
+        let at: &'static std::panic::Location<'static> = std::panic::Location::caller();
+        held.at
+            .store(std::ptr::from_ref(at).cast_mut(), Ordering::Relaxed);
+        Locked { state, held }
+    }
+
+    /// Where the feed's state is locked now and for how long, or that it's
+    /// free, for a watchdog's log.
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    pub(crate) fn holder(&self) -> String {
+        let held = &self.inner.held;
+        let at = held.at.load(Ordering::Relaxed);
+        // SAFETY: it is null or points to a `Location` of the program's,
+        // which lives as long as the program.
+        let Some(at) = (unsafe { at.as_ref() }) else {
+            return "The feed's state is free.".to_string();
+        };
+        let when = Duration::from_millis(held.when.load(Ordering::Relaxed));
+        let locked = held.since.elapsed().saturating_sub(when);
+        format!(
+            "The feed's state has been locked for {:.1} s, from {}:{}.",
+            locked.as_secs_f64(),
+            at.file(),
+            at.line()
+        )
     }
 
     /// The history, the workers and the activity now, and the updates
@@ -3818,6 +3892,24 @@ mod tests {
         assert_eq!(updates(&mut first).len(), 3);
         assert_eq!(updates(&mut second).len(), 1);
         assert_eq!(feed.subscribe().0.seq, 3);
+    }
+
+    /// While the state is locked, the feed says where it was locked, for a
+    /// watchdog's log, and that it's free once it isn't.
+    #[test]
+    fn the_feed_says_where_its_state_is_locked() {
+        let feed = Feed::new("main");
+        assert_eq!(feed.holder(), "The feed's state is free.");
+        let state = feed.lock();
+        let line = line!() - 1;
+        let held = feed.holder();
+        assert!(
+            held.starts_with("The feed's state has been locked for ")
+                && held.ends_with(&format!("src/remote/feed.rs:{line}.")),
+            "{held}"
+        );
+        drop(state);
+        assert_eq!(feed.holder(), "The feed's state is free.");
     }
 
     /// A client that falls behind the broadcast gets a snapshot to start

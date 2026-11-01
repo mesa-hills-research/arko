@@ -107,6 +107,8 @@ pub mod testing;
 #[cfg(feature = "tui")]
 mod tui;
 mod ui;
+#[cfg(feature = "tui")]
+mod watchdog;
 pub mod worker_cache;
 mod worker_commands;
 mod worker_tools;
