@@ -409,7 +409,8 @@ async fn run(
     // for long is stuck, and the log says where.
     let watchdog = {
         let feed = setup.feed.clone();
-        crate::watchdog::Watchdog::start("The full screen's loop", move || feed.holder())
+        let log = setup.session_dir.join(crate::session::LOG_FILE);
+        crate::watchdog::Watchdog::start("The full screen's loop", log, move || feed.holder())
     };
     loop {
         watchdog.turned();

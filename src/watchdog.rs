@@ -4,8 +4,11 @@
 //! hasn't turned for [`STALL`], it logs once what the loop was doing (its
 //! stage), what its owner adds (who holds the feed's lock), and what each of
 //! the process's threads waits on. It logs again when the loop turns. A
-//! turn costs an atomic store, and a stage an uncontended lock.
+//! turn costs an atomic store, and a stage an uncontended lock. It writes
+//! to the log file with a handle of its own, so a logger stuck with the
+//! rest of the process doesn't keep its lines out.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -32,10 +35,12 @@ struct Shared {
 }
 
 impl Watchdog {
-    /// Starts watching the loop `name`, which turns from now on. `more` says
-    /// what else a stall's line should tell.
+    /// Starts watching the loop `name`, which turns from now on, with lines
+    /// added to the log at `log`. `more` says what else a stall's line
+    /// should tell.
     pub(crate) fn start(
         name: &'static str,
+        log: PathBuf,
         more: impl Fn() -> String + Send + Sync + 'static,
     ) -> Self {
         let shared = Arc::new(Shared {
@@ -49,7 +54,7 @@ impl Watchdog {
         // (Without a thread, the loop runs unwatched.)
         let _ = std::thread::Builder::new()
             .name("arko-watchdog".into())
-            .spawn(move || watch(&watched));
+            .spawn(move || watch(&watched, &log));
         Self { shared }
     }
 
@@ -67,7 +72,7 @@ impl Watchdog {
     }
 }
 
-fn watch(watched: &Weak<Shared>) {
+fn watch(watched: &Weak<Shared>, log: &Path) {
     let mut stalled = None;
     let mut woke = Instant::now();
     loop {
@@ -84,24 +89,45 @@ fn watch(watched: &Weak<Shared>) {
             .saturating_sub(Duration::from_millis(turned));
         let name = shared.name;
         match check(&mut stalled, turned, since, slept) {
-            Some(Check::Slept) => log::warn!(
-                "Arko didn't run for {} s (its process was stopped, or the computer slept)",
-                slept.as_secs()
+            Some(Check::Slept) => write(
+                log,
+                &format!(
+                    "Arko didn't run for {} s (its process was stopped, or the computer slept)",
+                    slept.as_secs()
+                ),
             ),
             Some(Check::Stalled) => {
                 let stage = *crate::lock(&shared.stage);
-                log::warn!(
-                    "{name} hasn't turned for {} s, while {stage}. {} {}",
+                let more = (shared.more)();
+                let line = format!(
+                    "{name} hasn't turned for {} s, while {stage}. {more} {}",
                     since.as_secs(),
-                    (shared.more)(),
                     threads()
                 );
+                write(log, &line);
             }
-            Some(Check::Turned(after)) => {
-                log::warn!("{name} turned again, after {} s", after.as_secs());
-            }
+            Some(Check::Turned(after)) => write(
+                log,
+                &format!("{name} turned again, after {} s", after.as_secs()),
+            ),
             None => {}
         }
+    }
+}
+
+/// Adds `text` to the log at `path` as a warning, in the logger's format.
+fn write(path: &Path, text: &str) {
+    use std::io::Write;
+    let line = format!(
+        "[{} WARN  arko::watchdog] {text}\n",
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
+    );
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path);
+    if let Ok(mut file) = file {
+        let _ = file.write_all(line.as_bytes());
     }
 }
 
@@ -220,6 +246,23 @@ mod tests {
             Some(Check::Slept)
         );
         assert_eq!(stalled, None);
+    }
+
+    /// A line goes to the end of the log, as the logger writes its own.
+    #[test]
+    fn a_line_is_added_to_the_log() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("arko.log");
+        std::fs::write(&path, "[earlier line]\n").unwrap();
+        write(&path, "The loop turned again, after 12 s");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let last = text.lines().last().unwrap();
+        assert!(text.starts_with("[earlier line]\n"), "{text}");
+        assert!(
+            last.starts_with('[')
+                && last.ends_with(" WARN  arko::watchdog] The loop turned again, after 12 s"),
+            "{last}"
+        );
     }
 
     /// The threads are listed with what they wait on, this one among them.
