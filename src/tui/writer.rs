@@ -16,8 +16,9 @@
 //! were. What follows the view (the reply) goes after it, and each
 //! [`Ticket`] that [`Writer::wait`] waits on is written only when the reset
 //! was and its own bytes were. A failure never counts as written. An end
-//! that can't count on the writer takes the reset over
-//! ([`Writer::take_over`]) and writes it itself. A writer whose thread
+//! that can't count on the writer writes the reset itself
+//! ([`Writer::reset_directly`]), once, from a thread of its own, and those
+//! that come meanwhile wait for what became of it. A writer whose thread
 //! didn't start fails to start, and one whose thread ended says so
 //! ([`Writer::failure`]) and wakes those waiting.
 //!
@@ -70,7 +71,22 @@ struct State {
     /// An end that can't count on the writer writes the reset itself, so
     /// the writer writes nothing more.
     taken_over: bool,
+    /// Where the reset written without the writer is.
+    direct: DirectReset,
     failed: Option<Failure>,
+}
+
+/// Where the reset written without the writer is ([`Writer::reset_directly`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DirectReset {
+    /// No one writes it, or the thread to write it didn't start.
+    NotStarted,
+    /// A thread of its own writes it.
+    InFlight,
+    /// That thread wrote it.
+    Written,
+    /// That thread couldn't write it (the terminal is gone).
+    Failed,
 }
 
 /// Where giving the terminal back is.
@@ -115,17 +131,28 @@ pub(super) enum Finish {
     TimedOut,
 }
 
-/// What an end that can't count on the writer does about the terminal
-/// ([`Writer::take_over`]).
-#[derive(Debug, PartialEq)]
-pub(super) enum Reset {
-    /// Nothing, as the writer wrote the reset, or an earlier end took it over.
-    Done,
-    /// Writes these bytes.
-    Needed(Vec<u8>),
-    /// It couldn't tell, so it writes a reset of its own.
+/// What became of a reset written without the writer
+/// ([`Writer::reset_directly`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Direct {
+    /// None was needed, as the writer wrote the reset.
+    Unneeded,
+    /// It was written.
+    Written,
+    /// It wasn't, because the terminal is gone, or the thread to write it
+    /// didn't start (and a later call tries again).
+    Failed,
+    /// It's being written, and wasn't by the deadline.
+    TimedOut,
+    /// The writer's lock couldn't be had, so nothing is known.
     Unknown,
 }
+
+/// Cancel, which ends an escape sequence that a frame cut short left open.
+pub(super) const CAN: u8 = 0x18;
+
+/// How long an end that can't count on the writer tries for its lock.
+pub(super) const LOCK_WAIT: Duration = Duration::from_millis(50);
 
 /// The name of the writer's thread.
 pub(super) const THREAD: &str = "arko-screen";
@@ -168,6 +195,7 @@ impl Writer {
                 reset,
                 phase: Phase::Open,
                 taken_over: false,
+                direct: DirectReset::NotStarted,
                 failed: None,
             }),
             changed: Condvar::new(),
@@ -279,20 +307,73 @@ impl Writer {
     }
 
     /// For an end that can't count on the writer (a stuck runtime, a failed
-    /// writer): what it does about the terminal. Unless the writer wrote the
-    /// reset, or an earlier end took it over, it ends the view's output and
-    /// the writer's, and returns the reset to write. It takes the lock only
-    /// if it gets it within `within`.
-    pub(super) fn take_over(&self, within: Duration) -> Reset {
-        let Some(mut state) = try_lock_for(&self.shared.state, within) else {
-            return Reset::Unknown;
+    /// writer): writes the reset without it, unless the writer wrote it, and
+    /// waits at most `wait` for what became of it. The first call (or the
+    /// first after a thread that didn't start) ends the writer's output and
+    /// starts a thread with `spawn` that writes [`CAN`] and the reset to
+    /// what `out` opens. Calls meanwhile wait for that thread, and later ones
+    /// get what it found. The lock is let go for the start, the write and
+    /// the wake-up.
+    pub(super) fn reset_directly(
+        &self,
+        wait: Duration,
+        out: impl FnOnce() -> Box<dyn Write + Send> + Send + 'static,
+        spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<()>,
+    ) -> Direct {
+        let until = Instant::now() + wait;
+        let Some(mut state) = try_lock_for(&self.shared.state, wait.min(LOCK_WAIT)) else {
+            return Direct::Unknown;
         };
-        if state.phase == Phase::Reset || state.taken_over {
-            return Reset::Done;
+        let mut start = Some((out, spawn));
+        loop {
+            if state.phase == Phase::Reset {
+                return Direct::Unneeded;
+            }
+            match state.direct {
+                DirectReset::Written => return Direct::Written,
+                DirectReset::Failed => return Direct::Failed,
+                DirectReset::InFlight => {
+                    let left = until.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Direct::TimedOut;
+                    }
+                    state = self.wait_for_change(state, left);
+                }
+                DirectReset::NotStarted => {
+                    // (This call's own thread didn't start.)
+                    let Some((out, spawn)) = start.take() else {
+                        return Direct::Failed;
+                    };
+                    state.direct = DirectReset::InFlight;
+                    state.taken_over = true;
+                    state.pending.clear();
+                    let mut bytes = vec![CAN];
+                    bytes.extend_from_slice(&state.reset);
+                    drop(state);
+                    let shared = self.shared.clone();
+                    let started = spawn(Box::new(move || {
+                        let mut out = out();
+                        let wrote = out.write_all(&bytes).and_then(|()| out.flush());
+                        crate::lock(&shared.state).direct = match wrote {
+                            Ok(()) => DirectReset::Written,
+                            Err(_) => DirectReset::Failed,
+                        };
+                        shared.changed.notify_all();
+                    }));
+                    let left = until.saturating_duration_since(Instant::now());
+                    let Some(again) = try_lock_for(&self.shared.state, left.max(LOCK_WAIT)) else {
+                        return Direct::TimedOut;
+                    };
+                    state = again;
+                    if started.is_err() {
+                        state.direct = DirectReset::NotStarted;
+                        drop(state);
+                        self.shared.changed.notify_all();
+                        return Direct::Failed;
+                    }
+                }
+            }
         }
-        state.taken_over = true;
-        state.pending.clear();
-        Reset::Needed(state.reset.clone())
     }
 
     fn wait_for_change<'a>(
@@ -502,6 +583,7 @@ pub(super) mod tests {
     pub(in crate::tui) struct Gate {
         taken: Arc<Mutex<Vec<u8>>>,
         held: Arc<(Mutex<bool>, Condvar)>,
+        waiting: Arc<Mutex<usize>>,
     }
 
     impl Gate {
@@ -515,10 +597,16 @@ pub(super) mod tests {
         pub(in crate::tui) fn taken(&self) -> Vec<u8> {
             crate::lock(&self.taken).clone()
         }
+
+        /// How many writes wait for it to take them.
+        pub(in crate::tui) fn waiting(&self) -> usize {
+            crate::lock(&self.waiting).to_owned()
+        }
     }
 
     impl Write for Gate {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            *crate::lock(&self.waiting) += 1;
             let mut held = crate::lock(&self.held.0);
             while *held {
                 held = self
@@ -529,12 +617,24 @@ pub(super) mod tests {
             }
             drop(held);
             crate::lock(&self.taken).extend_from_slice(bytes);
+            *crate::lock(&self.waiting) -= 1;
             Ok(bytes.len())
         }
 
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    /// Starts a thread for a reset written without the writer, as Arko does.
+    pub(in crate::tui) fn spawn(run: Box<dyn FnOnce() + Send>) -> io::Result<()> {
+        std::thread::Builder::new().spawn(run).map(drop)
+    }
+
+    /// Writes a reset without the writer to `gate`, waiting `wait` at most.
+    fn reset_to(writer: &Writer, gate: &Gate, wait: Duration) -> Direct {
+        let gate = gate.clone();
+        writer.reset_directly(wait, move || Box::new(gate), spawn)
     }
 
     /// A terminal whose writer breaks on the first write.
@@ -699,7 +799,7 @@ pub(super) mod tests {
         let (ticket, ended) = writer.finish(b"");
         assert!(!ended);
         assert_eq!(writer.wait(ticket, LONG), Finish::Written);
-        assert_eq!(writer.take_over(LONG), Reset::Done);
+        assert_eq!(reset_to(&writer, &gate, LONG), Direct::Unneeded);
         assert_eq!(String::from_utf8(gate.taken()).unwrap(), "[frame][reset]");
 
         // One that the terminal doesn't take is the forced end's to write.
@@ -711,7 +811,9 @@ pub(super) mod tests {
             writer.wait(ticket, Duration::from_millis(100)),
             Finish::TimedOut
         );
-        assert_eq!(writer.take_over(LONG), Reset::Needed(b"[reset]".to_vec()));
+        let direct = Gate::default();
+        assert_eq!(reset_to(&writer, &direct, LONG), Direct::Written);
+        assert_eq!(direct.taken(), b"\x18[reset]");
         assert_eq!(writer.wait(ticket, LONG), Finish::Failed);
         stuck.hold(false);
     }
@@ -729,7 +831,9 @@ pub(super) mod tests {
         assert!(!writer.busy());
         let (ticket, _) = writer.finish(b"");
         assert_eq!(writer.wait(ticket, LONG), Finish::Failed);
-        assert_eq!(writer.take_over(LONG), Reset::Needed(b"[reset]".to_vec()));
+        let direct = Gate::default();
+        assert_eq!(reset_to(&writer, &direct, LONG), Direct::Written);
+        assert_eq!(direct.taken(), b"\x18[reset]");
 
         let refused = Writer::start_with(Vec::new(), PathBuf::new(), Vec::new(), |_| {
             Err(io::Error::other("no thread"))
@@ -752,7 +856,9 @@ pub(super) mod tests {
             writer.wait(second, Duration::from_millis(200)),
             Finish::Failed
         );
-        assert_eq!(writer.take_over(LONG), Reset::Needed(b"[reset]".to_vec()));
+        let direct = Gate::default();
+        assert_eq!(reset_to(&writer, &direct, LONG), Direct::Written);
+        assert_eq!(direct.taken(), b"\x18[reset]");
     }
 
     /// A reset the writer wrote stays written while what follows the view
@@ -774,7 +880,103 @@ pub(super) mod tests {
             writer.wait(reply, Duration::from_millis(100)),
             Finish::TimedOut
         );
-        assert_eq!(writer.take_over(LONG), Reset::Done);
+        let direct = Gate::default();
+        assert_eq!(reset_to(&writer, &direct, LONG), Direct::Unneeded);
+        assert!(direct.taken().is_empty());
         gate.hold(false);
+    }
+
+    /// The writer's reset and the one written without it go through each of
+    /// their states. The writer's goes Open, Finishing, then Reset when the
+    /// writer wrote it, or Failed when the writer dies, which never turns
+    /// into written. The direct one goes NotStarted, InFlight, then Written,
+    /// or Failed when the terminal refuses it, or back to NotStarted when its
+    /// thread doesn't start, so a later call tries again. While it's in
+    /// flight, others wait for it, and then all get what it came to.
+    #[test]
+    fn the_resets_go_through_each_of_their_states() {
+        const SHORT: Duration = Duration::from_millis(100);
+        // Open, Finishing, Reset.
+        let gate = Gate::default();
+        let writer = Writer::start(gate.clone(), PathBuf::new(), b"[reset]".to_vec()).unwrap();
+        let mut view = writer.handle();
+        write!(view, "[open]").unwrap();
+        view.flush().unwrap();
+        assert!(writer.wait_written(LONG));
+        gate.hold(true);
+        let (ticket, ended) = writer.finish(b"");
+        assert!(ended);
+        write!(view, "[sealed]").unwrap();
+        view.flush().unwrap();
+        assert_eq!(writer.wait(ticket, SHORT), Finish::TimedOut);
+        gate.hold(false);
+        assert_eq!(writer.wait(ticket, LONG), Finish::Written);
+        assert_eq!(reset_to(&writer, &Gate::default(), LONG), Direct::Unneeded);
+        assert_eq!(String::from_utf8(gate.taken()).unwrap(), "[open][reset]");
+
+        // Finishing, Failed, also when given back again.
+        let dies = Writer::start(Breaks, PathBuf::new(), b"[reset]".to_vec()).unwrap();
+        let (ticket, _) = dies.finish(b"");
+        assert_eq!(dies.wait(ticket, LONG), Finish::Failed);
+        let (again, _) = dies.finish(b"[reply]");
+        assert_eq!(dies.wait(again, SHORT), Finish::Failed);
+
+        // NotStarted, InFlight, NotStarted again when its thread doesn't start.
+        let direct = Gate::default();
+        let refused = {
+            let direct = direct.clone();
+            dies.reset_directly(
+                LONG,
+                move || Box::new(direct),
+                |_| Err(io::Error::other("no thread")),
+            )
+        };
+        assert_eq!(refused, Direct::Failed);
+        assert!(direct.taken().is_empty());
+
+        // NotStarted, InFlight, Written, with two at once and one more that
+        // gives up waiting.
+        direct.hold(true);
+        let closers: Vec<_> = (0..2)
+            .map(|_| {
+                let (writer, direct) = (dies.handle(), direct.clone());
+                std::thread::spawn(move || reset_to(&writer, &direct, LONG))
+            })
+            .collect();
+        let started = Instant::now();
+        while direct.waiting() == 0 {
+            assert!(started.elapsed() < LONG);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(reset_to(&dies, &direct, SHORT), Direct::TimedOut);
+        direct.hold(false);
+        for closer in closers {
+            assert_eq!(closer.join().unwrap(), Direct::Written);
+        }
+        assert_eq!(direct.taken(), b"\x18[reset]");
+        // Written stays so, with nothing more written.
+        assert_eq!(reset_to(&dies, &direct, LONG), Direct::Written);
+        assert_eq!(direct.taken(), b"\x18[reset]");
+
+        // InFlight, Failed, when the terminal refuses it, and no other try.
+        struct Refuses;
+        impl Write for Refuses {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("the terminal is gone"))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let refusing = Writer::start(Breaks, PathBuf::new(), b"[reset]".to_vec()).unwrap();
+        let (ticket, _) = refusing.finish(b"");
+        assert_eq!(refusing.wait(ticket, LONG), Finish::Failed);
+        assert_eq!(
+            refusing.reset_directly(LONG, || Box::new(Refuses), spawn),
+            Direct::Failed
+        );
+        let unused = Gate::default();
+        assert_eq!(reset_to(&refusing, &unused, LONG), Direct::Failed);
+        assert!(unused.taken().is_empty());
     }
 }

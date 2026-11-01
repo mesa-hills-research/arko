@@ -329,7 +329,7 @@ fn open(log: PathBuf) -> std::io::Result<(Terminal<CursorBackend<Writer>>, Write
             // (Without waiting for the writer, whose thread this is.)
             Ends::Writer => {
                 let writer = writer_handle();
-                restore_directly(writer.as_ref(), CLOSE_WAIT, writer::standard_output());
+                restore_directly(writer.as_ref(), CLOSE_WAIT, writer::standard_output);
             }
             Ends::View => close_and_wait(),
         }
@@ -478,11 +478,11 @@ fn settle(
     writer: &Writer,
     ticket: writer::Ticket,
     wait: Duration,
-    out: impl FnOnce() -> Box<dyn Write + Send>,
+    out: impl FnOnce() -> Box<dyn Write + Send> + Send + Clone + 'static,
 ) -> writer::Finish {
     let finish = writer.wait(ticket, wait);
     if finish == writer::Finish::Failed {
-        restore_directly(Some(writer), wait, out());
+        restore_directly(Some(writer), wait, out);
     }
     finish
 }
@@ -524,46 +524,53 @@ pub(crate) fn give_back_terminal() {
     close_and_wait();
 }
 
-/// Cancel, which ends an escape sequence that a frame cut short left open.
-const CAN: u8 = 0x18;
-
-/// How long an end that can't count on the writer tries for a lock.
-const LOCK_WAIT: Duration = Duration::from_millis(50);
-
 /// Gives the terminal back without the writer, for an end that can't count
-/// on it (it failed, or the runtime is stuck). Unless the writer wrote the
-/// reset, or this was done before, it ends the writer's output
-/// ([`Writer::take_over`]) and writes the reset itself to `out`, after a
-/// [`CAN`], on a thread of its own that it waits for `wait` at most. Then
-/// the terminal's modes are as they were when Arko started. Without
-/// `writer` (its lock couldn't be had), it writes a reset of its own.
-fn restore_directly(writer: Option<&Writer>, wait: Duration, mut out: Box<dyn Write + Send>) {
-    let reset = match writer.map(|writer| writer.take_over(LOCK_WAIT)) {
-        Some(writer::Reset::Done) => None,
-        Some(writer::Reset::Needed(reset)) => Some(reset),
-        // (Popping the keyboard protocol that wasn't pushed is harmless.)
-        Some(writer::Reset::Unknown) | None => {
-            let mut reset = Vec::new();
-            write_close(&mut reset, true);
-            Some(reset)
-        }
+/// on it (it failed, or the runtime is stuck), through its record of the
+/// reset written that way ([`Writer::reset_directly`]). Waits `wait` at most
+/// for that reset, written to what `out` opens, then puts the terminal's
+/// modes as they were when Arko started. Without `writer`, or without its
+/// lock, nothing records the reset, so it writes one of its own at its own
+/// risk of a second (harmless as Arko ends).
+fn restore_directly(
+    writer: Option<&Writer>,
+    wait: Duration,
+    out: impl FnOnce() -> Box<dyn Write + Send> + Send + Clone + 'static,
+) -> writer::Direct {
+    let direct = match writer {
+        Some(writer) => writer.reset_directly(wait, out.clone(), spawn_reset),
+        None => writer::Direct::Unknown,
     };
-    if let Some(reset) = reset {
-        let mut bytes = vec![CAN];
-        bytes.extend_from_slice(&reset);
-        let (written, done) = std::sync::mpsc::channel();
-        let writing = std::thread::Builder::new()
-            .name("arko-reset".into())
-            .spawn(move || {
-                let _ = out.write_all(&bytes);
-                let _ = out.flush();
-                let _ = written.send(());
-            });
-        if writing.is_ok() {
-            let _ = done.recv_timeout(wait);
-        }
+    if direct == writer::Direct::Unknown {
+        reset_unrecorded(wait, out);
     }
     crate::term::restore();
+    direct
+}
+
+/// Starts the thread that writes a reset without the writer.
+fn spawn_reset(run: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("arko-reset".into())
+        .spawn(run)
+        .map(drop)
+}
+
+/// Writes [`writer::CAN`] and a reset to what `out` opens, on a thread of its
+/// own that it waits `wait` at most for, with no record of it.
+fn reset_unrecorded(wait: Duration, out: impl FnOnce() -> Box<dyn Write + Send> + Send + 'static) {
+    let mut bytes = vec![writer::CAN];
+    // (Popping the keyboard protocol that wasn't pushed is harmless.)
+    write_close(&mut bytes, true);
+    let (written, done) = std::sync::mpsc::channel();
+    let writing = spawn_reset(Box::new(move || {
+        let mut out = out();
+        let _ = out.write_all(&bytes);
+        let _ = out.flush();
+        let _ = written.send(());
+    }));
+    if writing.is_ok() {
+        let _ = done.recv_timeout(wait);
+    }
 }
 
 /// Gives the terminal back now, for a process that ends at once because its
@@ -572,14 +579,14 @@ fn restore_directly(writer: Option<&Writer>, wait: Duration, mut out: Box<dyn Wr
 /// terminal.
 #[cfg(unix)]
 pub(crate) fn give_back_terminal_at_once(wait: Duration) {
-    let found =
-        writer::try_lock_for(&WRITER, LOCK_WAIT).map(|writer| writer.as_ref().map(Writer::handle));
+    let found = writer::try_lock_for(&WRITER, writer::LOCK_WAIT)
+        .map(|writer| writer.as_ref().map(Writer::handle));
     let writer = match found {
         Some(None) => return,
         Some(Some(writer)) => Some(writer),
         None => None,
     };
-    restore_directly(writer.as_ref(), wait, writer::standard_output());
+    restore_directly(writer.as_ref(), wait, writer::standard_output);
 }
 
 /// Takes the terminal as the view does, for a test of how it's given back.
@@ -704,7 +711,7 @@ async fn run(
                 log::error!("The full screen's writer stopped, so Arko ends");
             }
             // (Where the terminal closed, the reset just fails.)
-            restore_directly(Some(&screen), CLOSE_WAIT, writer::standard_output());
+            restore_directly(Some(&screen), CLOSE_WAIT, writer::standard_output);
             if events_open {
                 give(&setup.requests, &verdict_done, control(Input::Eof));
             }
@@ -1939,12 +1946,15 @@ mod tests {
     #[test]
     fn a_reset_the_writer_died_on_is_written_by_whoever_waits() {
         let direct = writer::tests::Gate::default();
-        let out = || -> Box<dyn Write + Send> { Box::new(direct.clone()) };
+        let out = {
+            let direct = direct.clone();
+            move || -> Box<dyn Write + Send> { Box::new(direct) }
+        };
         let writer =
             Writer::start(writer::tests::Breaks, PathBuf::new(), b"[reset]".to_vec()).unwrap();
         let (ticket, _) = writer.finish(&[]);
         assert_eq!(
-            settle(&writer, ticket, Duration::from_secs(5), out),
+            settle(&writer, ticket, Duration::from_secs(5), out.clone()),
             writer::Finish::Failed
         );
         assert_eq!(direct.taken(), b"\x18[reset]");
@@ -1954,5 +1964,106 @@ mod tests {
             writer::Finish::Failed
         );
         assert_eq!(direct.taken(), b"\x18[reset]");
+    }
+
+    /// A second end that gives the terminal back without the writer, while
+    /// the first one's reset waits for the terminal, waits for that reset
+    /// too, up to its own deadline, rather than taking it as done.
+    #[cfg(unix)]
+    #[test]
+    fn a_second_direct_reset_waits_for_the_first() {
+        let held = writer::tests::Gate::default();
+        held.hold(true);
+        let writer =
+            Writer::start(writer::tests::Breaks, PathBuf::new(), b"[reset]".to_vec()).unwrap();
+        let (ticket, _) = writer.finish(&[]);
+        assert_eq!(
+            writer.wait(ticket, Duration::from_secs(5)),
+            writer::Finish::Failed
+        );
+        let first = {
+            let (writer, held) = (writer.handle(), held.clone());
+            std::thread::spawn(move || {
+                settle(&writer, ticket, Duration::from_secs(5), || Box::new(held))
+            })
+        };
+        // (The first one's reset waits for the terminal.)
+        let started = Instant::now();
+        while held.waiting() == 0 {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let second = Instant::now();
+        let out = held.clone();
+        settle(&writer, ticket, Duration::from_millis(200), || {
+            Box::new(out)
+        });
+        let waited = second.elapsed();
+        let written = held.taken();
+        held.hold(false);
+        first.join().unwrap();
+        assert!(
+            waited >= Duration::from_millis(200) || !written.is_empty(),
+            "the second returned after {waited:?} with nothing written"
+        );
+        assert_eq!(held.taken(), b"\x18[reset]");
+    }
+
+    /// A reset whose thread to write it couldn't start is written by the
+    /// next end that gives the terminal back, once threads start again.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_direct_reset_whose_thread_didnt_start_is_tried_again() {
+        const CHILD: &str = "ARKO_TEST_NO_RESET_THREAD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tui::tests::a_direct_reset_whose_thread_didnt_start_is_tried_again",
+                    "--nocapture",
+                    "--test-threads",
+                    "1",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let taken = writer::tests::Gate::default();
+        let out = {
+            let taken = taken.clone();
+            move || -> Box<dyn Write + Send> { Box::new(taken) }
+        };
+        let writer =
+            Writer::start(writer::tests::Breaks, PathBuf::new(), b"[reset]".to_vec()).unwrap();
+        let (ticket, _) = writer.finish(&[]);
+        assert_eq!(
+            writer.wait(ticket, Duration::from_secs(5)),
+            writer::Finish::Failed
+        );
+        // No thread starts for a while.
+        let mut before = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: reads and sets this process's limit on threads.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NPROC, &mut before), 0);
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: before.rlim_max,
+            };
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NPROC, &none), 0);
+        }
+        assert!(std::thread::Builder::new().spawn(|| {}).is_err());
+        settle(&writer, ticket, Duration::from_millis(200), out.clone());
+        // SAFETY: puts the limit back.
+        unsafe {
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NPROC, &before), 0);
+        }
+        assert!(taken.taken().is_empty());
+        settle(&writer, ticket, Duration::from_secs(5), out);
+        assert_eq!(taken.taken(), b"\x18[reset]");
     }
 }
