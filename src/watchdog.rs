@@ -80,10 +80,8 @@ impl Watchdog {
 
     /// The loop turned once more.
     pub(crate) fn turned(&self) {
-        let now = self.shared.started.elapsed().as_millis();
-        self.shared
-            .turned
-            .store(u64::try_from(now).unwrap_or(u64::MAX), Ordering::Relaxed);
+        let now = millis(self.shared.started.elapsed());
+        self.shared.turned.store(now, Ordering::Relaxed);
     }
 
     /// A write to the terminal starts.
@@ -122,27 +120,34 @@ pub(crate) fn stage(stage: &'static str) {
 
 fn watch(watched: &Weak<Shared>, log: &Path) {
     let mut stalled = None;
+    let mut resumed = 0;
     let mut woke = Instant::now();
+    let mut asleep = computer_asleep();
     loop {
         std::thread::sleep(EVERY);
         let slept = woke.elapsed();
         woke = Instant::now();
+        let before = std::mem::replace(&mut asleep, computer_asleep());
         let Some(shared) = watched.upgrade() else {
             return;
         };
+        // (The loop's watchdog says what the process went through, once.)
+        let says = matches!(shared.watched, Watched::Loop(_));
+        let computer_slept = asleep.saturating_sub(before);
+        if says && computer_slept >= STALL {
+            write(
+                log,
+                &format!("The computer slept for {} s", computer_slept.as_secs()),
+            );
+        }
+        let now = millis(shared.started.elapsed());
         let turned = shared.turned.load(Ordering::Relaxed);
-        let since = shared
-            .started
-            .elapsed()
-            .saturating_sub(Duration::from_millis(turned));
         let resting = shared.resting.load(Ordering::Relaxed);
-        let line = match (
-            check(&mut stalled, turned, since, slept, resting),
-            shared.watched,
-        ) {
-            // (The loop's watchdog says it, once.)
-            (Some(Check::Slept), Watched::Loop(_)) => format!(
-                "Arko didn't run for {} s (its process was stopped, or the computer slept)",
+        let found = check(&mut stalled, &mut resumed, now, turned, slept, resting);
+        let since = Duration::from_millis(now.saturating_sub(turned.max(resumed)));
+        let line = match (found, shared.watched) {
+            (Some(Check::Stopped), Watched::Loop(_)) => format!(
+                "Arko didn't run for {} s (its process was stopped)",
                 slept.as_secs()
             ),
             (Some(Check::Stalled), watched) => {
@@ -179,6 +184,35 @@ fn watch(watched: &Weak<Shared>, log: &Path) {
     }
 }
 
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// How long the computer has slept since it started. Linux's boot clock
+/// counts the time asleep, and its monotonic clock (`Instant`'s) doesn't.
+#[cfg(target_os = "linux")]
+fn computer_asleep() -> Duration {
+    let read = |clock| {
+        let mut time = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: fills in `time`, which lives through the call.
+        unsafe { libc::clock_gettime(clock, &mut time) };
+        Duration::new(
+            u64::try_from(time.tv_sec).unwrap_or(0),
+            u32::try_from(time.tv_nsec).unwrap_or(0),
+        )
+    };
+    read(libc::CLOCK_BOOTTIME).saturating_sub(read(libc::CLOCK_MONOTONIC))
+}
+
+/// Elsewhere it isn't measured.
+#[cfg(not(target_os = "linux"))]
+fn computer_asleep() -> Duration {
+    Duration::ZERO
+}
+
 /// Adds `text` to the log at `path` as a warning, in the logger's format.
 pub(crate) fn write(path: &Path, text: &str) {
     use std::io::Write;
@@ -199,28 +233,33 @@ pub(crate) fn write(path: &Path, text: &str) {
 #[derive(Debug, PartialEq)]
 enum Check {
     /// The watchdog itself didn't run, so neither did the process.
-    Slept,
+    Stopped,
     /// The loop hasn't turned for [`STALL`].
     Stalled,
     /// The loop that stalled turned again, after this long.
     Turned(Duration),
 }
 
-/// A check of a loop that last turned at `turned` (milliseconds), `since`
-/// ago, by a watchdog that slept `slept` since its last check. `stalled` is
-/// the turn a stall was logged at, until the loop turns again. A loop that
-/// is `resting` (the terminal between writes) doesn't stall.
+/// A check at `now` of a loop that last turned at `turned` (milliseconds
+/// since the watchdog started), by a watchdog that slept `slept` since its
+/// last check. `stalled` is the turn a stall was logged at, until the loop
+/// turns again. `resumed` is when the process ran again after it was
+/// stopped, which a stall counts from, as the loop couldn't turn before. A
+/// loop that is `resting` (the terminal between writes) doesn't stall.
 fn check(
     stalled: &mut Option<u64>,
+    resumed: &mut u64,
+    now: u64,
     turned: u64,
-    since: Duration,
     slept: Duration,
     resting: bool,
 ) -> Option<Check> {
     if slept >= STALL {
         *stalled = None;
-        return Some(Check::Slept);
+        *resumed = now;
+        return Some(Check::Stopped);
     }
+    let since = Duration::from_millis(now.saturating_sub(turned.max(*resumed)));
     match *stalled {
         None if since >= STALL && !resting => {
             *stalled = Some(turned);
@@ -295,35 +334,59 @@ mod tests {
     /// and a pause of the whole process isn't taken for a stall.
     #[test]
     fn a_stall_is_logged_once_and_its_end_too() {
-        let mut stalled = None;
-        let mut check = |turned, since, slept| check(&mut stalled, turned, since, slept, false);
-        assert_eq!(check(1_000, 9 * SECOND, SECOND), None);
-        assert_eq!(check(1_000, 10 * SECOND, SECOND), Some(Check::Stalled));
-        assert_eq!(check(1_000, 30 * SECOND, SECOND), None);
+        let (mut stalled, mut resumed) = (None, 0);
+        let mut check =
+            |now, turned, slept| check(&mut stalled, &mut resumed, now, turned, slept, false);
+        assert_eq!(check(10_000, 1_000, SECOND), None);
+        assert_eq!(check(11_000, 1_000, SECOND), Some(Check::Stalled));
+        assert_eq!(check(31_000, 1_000, SECOND), None);
         assert_eq!(
-            check(31_000, SECOND, SECOND),
+            check(32_000, 31_000, SECOND),
             Some(Check::Turned(30 * SECOND))
         );
-        assert_eq!(check(31_000, 5 * SECOND, SECOND), None);
-        assert_eq!(check(31_000, 40 * SECOND, 40 * SECOND), Some(Check::Slept));
+        assert_eq!(check(36_000, 31_000, SECOND), None);
+        assert_eq!(check(76_000, 31_000, 40 * SECOND), Some(Check::Stopped));
         assert_eq!(stalled, None);
+    }
+
+    /// After the process was stopped, a loop that hasn't turned yet stalls
+    /// only once it hasn't turned for the stall's time since the process
+    /// ran again.
+    #[test]
+    fn a_stop_isnt_taken_for_a_stall() {
+        let (mut stalled, mut resumed) = (None, 0);
+        let mut check =
+            |now, turned, slept| check(&mut stalled, &mut resumed, now, turned, slept, false);
+        assert_eq!(check(60_000, 39_500, 20 * SECOND), Some(Check::Stopped));
+        assert_eq!(check(61_000, 39_500, SECOND), None);
+        assert_eq!(check(61_500, 61_200, SECOND / 2), None);
+        // One that stays stuck after it is a stall.
+        assert_eq!(check(71_000, 61_200, SECOND), None);
+        assert_eq!(check(72_000, 61_200, SECOND), Some(Check::Stalled));
     }
 
     /// The terminal may rest between writes for as long as it likes, and a
     /// write that hasn't ended for the stall's time is logged, and its end.
     #[test]
     fn a_write_that_doesnt_end_is_a_stall_and_rest_isnt() {
-        let mut stalled = None;
-        assert_eq!(check(&mut stalled, 0, 60 * SECOND, SECOND, true), None);
+        let (mut stalled, mut resumed) = (None, 0);
+        let mut check =
+            |now, turned, resting| check(&mut stalled, &mut resumed, now, turned, SECOND, resting);
+        assert_eq!(check(60_000, 0, true), None);
+        assert_eq!(check(70_000, 60_000, false), Some(Check::Stalled));
         assert_eq!(
-            check(&mut stalled, 60_000, 10 * SECOND, SECOND, false),
-            Some(Check::Stalled)
-        );
-        assert_eq!(
-            check(&mut stalled, 75_000, SECOND, SECOND, true),
+            check(76_000, 75_000, true),
             Some(Check::Turned(15 * SECOND))
         );
-        assert_eq!(check(&mut stalled, 75_000, 30 * SECOND, SECOND, true), None);
+        assert_eq!(check(105_000, 75_000, true), None);
+    }
+
+    /// The computer's sleep is measured where the clocks tell it, and is
+    /// never negative.
+    #[test]
+    fn the_computers_sleep_is_measured() {
+        let first = computer_asleep();
+        assert!(computer_asleep() >= first);
     }
 
     /// A line goes to the end of the log, as the logger writes its own.
