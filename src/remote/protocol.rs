@@ -712,7 +712,7 @@ pub struct SkillUpdate {
 }
 
 impl SkillUpdate {
-    /// What changes, as a sentence, as "It changes SKILL.md, adds
+    /// What changes, as a sentence, such as "It changes SKILL.md, adds
     /// scripts/run.sh and removes notes.md."
     pub fn sentence(&self) -> String {
         let mut changed = Vec::new();
@@ -1057,7 +1057,7 @@ impl Approval {
         }
     }
 
-    /// What it asks, as a question, as "Save the skill release-notes for every
+    /// What it asks, as a question, such as "Save the skill release-notes for every
     /// project?"
     pub fn title(&self) -> String {
         match self {
@@ -1361,7 +1361,7 @@ fn thousands(count: u64) -> String {
     out
 }
 
-/// A file's size as people say it, as `512 bytes`, `14 KB`, `1.2 MB`.
+/// A file's size as people say it, such as `512 bytes`, `14 KB`, `1.2 MB`.
 fn size(bytes: u64) -> String {
     match bytes {
         0..1024 => format!("{bytes} bytes"),
@@ -1382,7 +1382,7 @@ pub fn duration(ms: i64) -> String {
     }
 }
 
-/// Dollars as people write them, as `$12`, `$3.20`.
+/// Dollars as people write them, such as `$12`, `$3.20`.
 pub fn money(amount: f64) -> String {
     let cents = (amount * 100.0).round();
     if cents % 100.0 == 0.0 {

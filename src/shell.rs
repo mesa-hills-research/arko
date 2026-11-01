@@ -318,7 +318,7 @@ pub fn parse_background_after(text: &str) -> Result<u64, String> {
     Ok(seconds)
 }
 
-/// A time in seconds as `/background-after` takes it, as `90s`, `10m`, `1h`,
+/// A time in seconds as `/background-after` takes it, such as `90s`, `10m`, `1h`,
 /// or `off` for 0.
 pub fn shown_background_after(seconds: u64) -> String {
     match seconds {

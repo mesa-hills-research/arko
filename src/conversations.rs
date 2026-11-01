@@ -290,7 +290,7 @@ pub fn title_of(prompt: &str) -> String {
     crate::ui::cut(line, TITLE_CHARS)
 }
 
-/// When `at` was, as the user reads it at `now`, as "just now", "5 minutes
+/// When `at` was, as the user reads it at `now`, such as "just now", "5 minutes
 /// ago", "2 hours ago" (the same day), "yesterday 14:05", "Oct 10", or
 /// "Oct 10 2025" in another year.
 pub fn when(at: DateTime<Utc>, now: DateTime<Local>) -> String {

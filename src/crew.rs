@@ -818,7 +818,7 @@ pub(crate) fn started_by(
         .map(|parent| parent.handle.clone())
 }
 
-/// The worker `handle` (run `run`) as a notice names it among `runs`, as `r2`,
+/// The worker `handle` (run `run`) as a notice names it among `runs`, such as `r2`,
 /// or `r2 (under r1)` when a worker started it.
 pub(crate) fn named_in(runs: &[SubagentRecord], handle: &str, run: Uuid) -> String {
     match started_by(runs, run) {
@@ -1125,7 +1125,7 @@ fn start_parameters() -> Vec<ToolParameterDefinition> {
     ]
 }
 
-/// What a worker runs, as a sentence, as "runs sol at high effort, profile judge".
+/// What a worker runs, as a sentence, such as "runs sol at high effort, profile judge".
 fn runs_words(model: &str, effort: Option<&str>, profile: Option<&str>) -> String {
     let mut text = format!("runs {model}");
     if let Some(effort) = effort {
@@ -1607,7 +1607,7 @@ impl Crew {
         true
     }
 
-    /// The worker `handle` (run `run`) as a notice names it, as `r2`, or `r2
+    /// The worker `handle` (run `run`) as a notice names it, such as `r2`, or `r2
     /// (under r1)` when a worker started it.
     fn named(&self, handle: &str, run: Uuid) -> String {
         let Some(workflow) = self.workflow() else {

@@ -1646,7 +1646,7 @@ fn around(line: &str, at: usize, width: usize) -> String {
     text
 }
 
-/// `terms` as the output names them, as “parse_args” and “config”.
+/// `terms` as the output names them, such as “parse_args” and “config”.
 fn quoted(terms: &[String]) -> String {
     let quoted: Vec<String> = terms.iter().map(|term| format!("“{term}”")).collect();
     let text = match quoted.split_last() {
@@ -1765,7 +1765,7 @@ fn thousands(number: usize) -> String {
     text
 }
 
-/// When, as the outputs say it, as "2026-10-29 14:02 UTC".
+/// When, as the outputs say it, such as "2026-10-29 14:02 UTC".
 fn time(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%d %H:%M UTC").to_string()
 }

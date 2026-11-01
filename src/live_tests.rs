@@ -2126,7 +2126,7 @@ async fn a_message_to_a_finished_worker_continues_it_and_its_lead_hears_of_it() 
 }
 
 /// The user's message to r1, while r1 and r2 both run, sent each way a
-/// front end sends it, as the terminal's view of r1 does (a line), as an
+/// front end sends it, as the terminal's view of r1 does (a line), such as an
 /// app does (a message) and as the web page does. Only r1's conversation
 /// gets it, as the user's, and the feed has it as r1's item alone. r2 never
 /// sees it. The lead gets a copy marked as one, with its next news.

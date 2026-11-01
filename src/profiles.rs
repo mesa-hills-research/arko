@@ -1476,7 +1476,7 @@ pub fn approval(profile: &Profile, place: Place) -> crate::approvals::ProfileApp
     }
 }
 
-/// Where a save in `place` writes, as a phrase that follows "in", as "this
+/// Where a save in `place` writes, as a phrase that follows "in", such as "this
 /// project's .arko/profiles folder".
 fn saved_in(place: Place) -> String {
     let [dir, folder] = PROJECT_FOLDER;

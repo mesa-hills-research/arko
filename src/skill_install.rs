@@ -2110,7 +2110,7 @@ fn thousands(number: usize) -> String {
     groups.into_iter().rev().collect::<Vec<_>>().join(",")
 }
 
-/// A size in bytes as people read it, as "300 bytes", "14 KB", "1 MB".
+/// A size in bytes as people read it, such as "300 bytes", "14 KB", "1 MB".
 fn size_words(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} bytes")

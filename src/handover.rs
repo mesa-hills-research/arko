@@ -572,7 +572,7 @@ pub fn parse_tokens(text: &str) -> Result<usize, String> {
     Ok(tokens)
 }
 
-/// A handover size as the user reads it, as `250k` for whole thousands, else
+/// A handover size as the user reads it, such as `250k` for whole thousands, else
 /// all of it (`250,500`), never rounded.
 pub fn shown(tokens: usize) -> String {
     if tokens.is_multiple_of(1000) {

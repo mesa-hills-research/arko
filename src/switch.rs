@@ -133,7 +133,7 @@ pub(crate) fn report_request(with_tool: bool, to: Option<&str>) -> String {
 }
 
 /// Why the old model couldn't write its report, from the error its request
-/// ended in, as the switch's line says it, as "plan limit reached".
+/// ended in, as the switch's line says it, such as "plan limit reached".
 pub(crate) fn report_failure(error: &WorkflowError) -> String {
     use arko_agents::ErrorRecoveryCause;
     match error {

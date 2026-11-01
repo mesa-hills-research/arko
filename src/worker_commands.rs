@@ -45,7 +45,7 @@ const PLACEHOLDER: &str = "Describe what this profile is for";
 /// How `/profiles` is used.
 const PROFILES_USAGE: &str = "/profiles lists the worker profiles, /profiles NAME shows one, /profiles add NAME MODEL [EFFORT] [DESCRIPTION] makes one for every project, and /profiles remove NAME deletes one.";
 
-/// The retry cap as the commands say it, as a number, or `off`.
+/// The retry cap as the commands say it, either a number or `off`.
 fn cap_word(cap: Option<u32>) -> String {
     cap.map_or_else(|| "off".to_string(), |cap| cap.to_string())
 }

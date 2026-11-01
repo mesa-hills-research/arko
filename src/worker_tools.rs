@@ -283,7 +283,7 @@ fn profiles_text(basis: &Basis, needs: &dyn Fn(&Model) -> Option<String>) -> Str
     text
 }
 
-/// The efforts a model takes as a range, as `low to max`.
+/// The efforts a model takes as a range, such as `low to max`.
 fn efforts_range(model: &Model) -> String {
     const ORDER: [Effort; 5] = [
         Effort::Low,

@@ -170,7 +170,7 @@ fn cut(name: &str, text: &str, room: usize) -> String {
     format!("{}\n[... the rest of {name} is left out ...]", &text[..end])
 }
 
-/// `names` as a list in words, as `AGENTS.md and CLAUDE.md`.
+/// `names` as a list in words, such as `AGENTS.md and CLAUDE.md`.
 fn listed(names: &[&str]) -> String {
     match names {
         [] => String::new(),

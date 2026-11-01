@@ -83,7 +83,7 @@ pub fn usage(target: Target) -> &'static str {
     }
 }
 
-/// `model`'s settings as Arko says them, as `gpt-6.1-sol (high effort)`.
+/// `model`'s settings as Arko says them, such as `gpt-6.1-sol (high effort)`.
 fn shown(model: &ModelSettings) -> String {
     format!("{} ({} effort)", model.model, model.effort)
 }

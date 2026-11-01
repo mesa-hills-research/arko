@@ -1757,7 +1757,7 @@ impl Harness {
         }
     }
 
-    /// Where the user acted, as a notice says it, as "at the terminal", "in
+    /// Where the user acted, as a notice says it, such as "at the terminal", "in
     /// <the app>".
     fn acted_in(&self, source: Source) -> String {
         match source {
@@ -5100,7 +5100,7 @@ pub(crate) fn qr_link<'a>(
     })
 }
 
-/// Where a link leads, as the terminal says it, as ` (ens33, LAN)`.
+/// Where a link leads, as the terminal says it, such as ` (ens33, LAN)`.
 pub(crate) fn place(link: &remote::Link) -> String {
     link.interface
         .as_ref()

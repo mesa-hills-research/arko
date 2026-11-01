@@ -928,7 +928,7 @@ fn refreshes_words(count: u32) -> String {
     }
 }
 
-/// Dollars as a command takes them, as "5", "2.5".
+/// Dollars as a command takes them, such as "5", "2.5".
 fn plain_dollars(amount: f64) -> String {
     let text = format!("{amount:.2}");
     text.trim_end_matches('0').trim_end_matches('.').to_string()

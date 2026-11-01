@@ -261,7 +261,7 @@ pub struct SearchArgs {
 pub struct Hit {
     /// The index's name.
     pub index: String,
-    /// The file as shown, as relative to the search's directory when under it.
+    /// The file as shown, relative to the search's directory when under it.
     pub display: String,
     pub file: PathBuf,
     pub start_line: usize,

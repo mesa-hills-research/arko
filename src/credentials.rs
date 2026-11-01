@@ -1129,7 +1129,7 @@ pub fn remove_key(key: &'static Key) -> Result<KeyState, String> {
     Ok(key_state(key))
 }
 
-/// Where a key comes from, as a sentence names it, as "ANTHROPIC_API_KEY in
+/// Where a key comes from, as a sentence names it, such as "ANTHROPIC_API_KEY in
 /// Arko's environment".
 pub fn source_text(source: &KeySource, variable: &str) -> String {
     match source {

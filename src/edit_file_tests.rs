@@ -54,7 +54,7 @@ impl crate::ui::Printer for Lines {
 }
 
 /// A new session offers `edit_file`, not `apply_diff`. The agent's edits
-/// change the file, and each shows as "edit PATH" with what it did, as "1
+/// change the file, and each shows as "edit PATH" with what it did, such as "1
 /// edit", or with `replace_all` "(all)" and the replacements.
 #[tokio::test]
 async fn a_new_session_edits_files_with_edit_file() {

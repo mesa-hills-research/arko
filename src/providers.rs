@@ -941,7 +941,7 @@ pub fn needs_text(model: &str, needs: &str) -> String {
     }
 }
 
-/// The efforts `model` takes, as a sentence's list, as `low, medium or high`.
+/// The efforts `model` takes, as a sentence's list, such as `low, medium or high`.
 pub fn efforts_text(model: &Model) -> String {
     let names: Vec<String> = efforts(model).iter().map(Effort::to_string).collect();
     match names.as_slice() {
@@ -1535,7 +1535,7 @@ fn extra_usage_on(extra: &arko_ai::ExtraUsage) -> bool {
     extra.enabled == Some(true) || extra.in_use
 }
 
-/// A Claude account's extra usage, as a plan's usage line says it, as "extra
+/// A Claude account's extra usage, as a plan's usage line says it, such as "extra
 /// usage $271.40 of $500.00" with its amounts, "extra usage $271.40 used"
 /// without a limit, and "extra usage in use" or "extra usage on" when the
 /// amounts aren't known. `None` when it isn't on.
@@ -1580,7 +1580,7 @@ fn extra_usage_words(extra: &arko_ai::ExtraUsage, label: &str) -> Option<String>
     })
 }
 
-/// A ChatGPT account's credits, as the status line says them, as "credits
+/// A ChatGPT account's credits, as the status line says them, such as "credits
 /// left 12.50", "has credits" when the backend gives no balance, or
 /// "unlimited credits". `None` when it has none.
 fn credits_text(credits: &arko_ai::PlanCredits) -> Option<String> {

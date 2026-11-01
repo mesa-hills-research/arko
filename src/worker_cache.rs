@@ -62,7 +62,7 @@ impl WorkerCache {
         self.expired(now) && self.cost.tokens >= CONFIRM_TOKENS
     }
 
-    /// What continuing it costs, as the warning says it, as "r3's cache
+    /// What continuing it costs, as the warning says it, such as "r3's cache
     /// expired 2 hours ago. Continuing re-reads about 340k tokens without it
     /// (≈ $1.70 at API prices)."
     pub fn warning(&self, now: DateTime<Utc>) -> String {
@@ -245,7 +245,7 @@ pub fn short_tokens(tokens: usize) -> String {
     }
 }
 
-/// How long ago `span` was, as a sentence says it, as "just now", "5 minutes
+/// How long ago `span` was, as a sentence says it, such as "just now", "5 minutes
 /// ago", "2 hours ago", "3 days ago".
 fn ago(span: chrono::Duration) -> String {
     let minutes = span.num_minutes().max(0);
