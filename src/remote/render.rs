@@ -61,11 +61,20 @@ pub fn call(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
         // (In the order of their names, because a `HashMap` has none.)
         let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
         item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
-        let mut act = act(tool, parameters, lead);
-        act.body = body(tool, parameters, &act);
+        let (mut act, said) = act(tool, parameters, lead);
+        act.body = body(tool, parameters, &said);
         item.act = Some(act);
     }
     Some(item)
+}
+
+/// [`call`], with what its row's words state whole, as the branch that made
+/// them reports it.
+#[cfg(test)]
+pub(crate) fn call_said(tool: &str, parameters: &Parameters, lead: &str) -> Option<(Item, Said)> {
+    let item = call(tool, parameters, lead)?;
+    let (_, said) = act(tool, parameters, lead);
+    Some((item, said))
 }
 
 /// The most lines a fact of a call's body keeps.
@@ -74,15 +83,14 @@ const BODY_LINES: usize = 400;
 const BODY_CHARS: usize = 40_000;
 
 /// The body of a call of `tool` ([`Act::body`]), from its parameters. It
-/// holds every parameter the row's words don't state whole ([`said`]),
-/// the call's main one first without a label, then the others by name,
-/// each value whole up to what a body keeps, which says how much more there
-/// was.
-fn body(tool: &str, parameters: &Parameters, act: &Act) -> Vec<Fact> {
-    let said = said(tool, parameters, act);
+/// holds every parameter the row's words don't state whole, which is all
+/// but those the branch that made the words reports (`said`), the call's
+/// main one first without a label, then the others by name, each value
+/// whole up to what a body keeps, which says how much more there was.
+fn body(tool: &str, parameters: &Parameters, said: &Said) -> Vec<Fact> {
     let mut left: std::collections::BTreeMap<&str, &Value> = parameters
         .iter()
-        .filter(|(name, value)| !value.is_null() && !said.contains(&name.as_str()))
+        .filter(|(name, value)| !value.is_null() && !said.says(name))
         .map(|(name, value)| (name.as_str(), value))
         .collect();
     let mut facts = Vec::new();
@@ -223,102 +231,71 @@ fn grouped(count: usize) -> String {
     out
 }
 
-/// The parameters of a call of `tool` its row's words state whole, which
-/// its body leaves out. Each is what the code that makes the words reports
-/// it kept whole: a command it didn't shorten, a path without a folder, a
-/// query the row doesn't cut, up to three runs, a number the words say, and
-/// a choice (`action`, a flag) the words are made from.
-fn said(tool: &str, parameters: &Parameters, act: &Act) -> Vec<&'static str> {
-    let raw = |name: &str| text(parameters, name).trim().to_string();
-    // A string the words show as it is.
-    let whole = |name: &str, limit: usize| {
-        let value = raw(name);
-        !value.is_empty()
-            && parameters.get(name).is_some_and(Value::is_string)
-            && cut(&value, limit) == value
-    };
-    // A path the words name by its name, which is all of it.
-    let bare = |name: &str| whole(name, 160) && !raw(name).contains(['/', '\\']);
-    let number = |name: &str| parameters.get(name).is_some_and(Value::is_number);
-    let mut said = Vec::new();
-    let mut say = |name: &'static str, kept: bool| {
-        if kept {
-            said.push(name);
-        }
-    };
-    match tool {
-        SHELL_TOOL_NAME | "Bash" => {
-            let (command, cwd) = (raw("command"), raw("cwd"));
-            say("command", command_words_kept(&command, &cwd).1);
-            say("cwd", !cwd.is_empty() && bare("cwd"));
-        }
-        "terminal_start" | "monitor_start" => {
-            say("command", command_words_kept(&raw("command"), "").1);
-        }
-        READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => {
-            say("path", bare("path"));
-        }
-        "Read" | "Write" | "Edit" | "MultiEdit" => say("file_path", bare("file_path")),
-        LIST_FILES_TOOL_NAME => say("directory", bare("directory")),
-        "index_search" => {
-            say("query", whole("query", ROW_QUERY_CHARS));
-            say(
-                "index",
-                whole("index", 160) && index_name(&raw("index")) == raw("index"),
-            );
-        }
-        "Grep" | "Glob" => say("pattern", whole("pattern", ROW_QUERY_CHARS)),
-        LOAD_SKILL_TOOL_NAME => say("name", whole("name", 160)),
-        // "lead" is said by the lead's name.
-        crew::MESSAGE_AGENT => say("to", whole("to", 160)),
-        crew::WAIT_FOR_AGENTS => {
-            let runs = ui::waited_runs(parameters, &[]);
-            say(
-                "runs",
-                (1..=3).contains(&runs.len()) && !act.target.contains('…'),
-            );
-        }
-        crew::STOP_AGENT => {
-            say("run", whole("run", 160));
-            say("remove_workspace", true);
-        }
-        // An action the words are made from, or one they show as it is.
-        "terminal_control" => say(
-            "action",
-            matches!(
-                raw("action").as_str(),
-                "wait" | "list" | "cancel" | "forget"
-            ) || whole("action", 160),
-        ),
-        "monitor_control" => say(
-            "action",
-            matches!(raw("action").as_str(), "list" | "rearm" | "stop"),
-        ),
-        "keep_note" => {
-            let audience = raw("audience");
-            say("audience", audience != "lead" && whole("audience", 160));
-            say("replaces", number("replaces"));
-        }
-        "forget_note" => say("id", number("id")),
-        crate::mcp::MCP_TOOL_NAME => {
-            let known = ["call", "servers", "tools", "start", "stop", "add", "remove"];
-            say(
-                "action",
-                known.contains(&raw("action").as_str()) || whole("action", 160),
-            );
-            say("server", raw("action") != "servers" && whole("server", 160));
-            say("tool", raw("action") == "call" && whole("tool", 160));
-        }
-        _ => {}
+/// The parameters a call's row's words state whole, as the branch that
+/// made the words reports them, each with what the words show for it: the
+/// value as it is, or the words a choice or a number made ("Listed jobs",
+/// "7"). A call's body leaves them out ([`body`]).
+#[derive(Debug, Default)]
+pub(crate) struct Said(Vec<(&'static str, Vec<String>)>);
+
+impl Said {
+    /// Whether the words state the parameter `name`.
+    fn says(&self, name: &str) -> bool {
+        self.0.iter().any(|(said, _)| *said == name)
     }
-    said
+
+    /// The parameters said, each with what the words show for it.
+    #[cfg(test)]
+    pub(crate) fn all(&self) -> &[(&'static str, Vec<String>)] {
+        &self.0
+    }
+
+    /// The words show `name` as `shown`.
+    fn shown(&mut self, name: &'static str, shown: impl Into<String>) {
+        self.0.push((name, vec![shown.into()]));
+    }
+
+    /// The words show the text `name` as it is, which is so when it is at
+    /// most `limit` characters and nothing in it is changed for the row.
+    fn whole(&mut self, parameters: &Parameters, name: &'static str, limit: usize) {
+        if let Some(Value::String(value)) = parameters.get(name)
+            && !value.is_empty()
+            && cut(value, limit) == *value
+        {
+            self.shown(name, value.clone());
+        }
+    }
+
+    /// The words name the path `name` by its file name, which is all of it
+    /// when it has no folder.
+    fn path(&mut self, parameters: &Parameters, name: &'static str) {
+        if parameters
+            .get(name)
+            .and_then(Value::as_str)
+            .is_some_and(|path| !path.contains(['/', '\\']))
+        {
+            self.whole(parameters, name, 160);
+        }
+    }
+
+    /// The words show the number (or the text of one) `name`.
+    fn number(&mut self, parameters: &Parameters, name: &'static str) {
+        match parameters.get(name) {
+            Some(Value::Number(number)) => self.shown(name, number.to_string()),
+            Some(Value::String(_)) => self.whole(parameters, name, 160),
+            _ => {}
+        }
+    }
 }
 
 /// The longest search query a Quiet row names, in characters.
 const ROW_QUERY_CHARS: usize = 60;
 
-/// What a call of `tool` does, for the Quiet view's row ([`quiet`]).
-fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
+/// What a call of `tool` does, for the Quiet view's row ([`quiet`]), and
+/// the parameters the row's words state whole, as the branch that makes the
+/// words reports them.
+fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
+    let mut said = Said::default();
     // A parameter as a row names it, at most as long as Full shows a path.
     let raw = |name: &str| text(parameters, name).trim().to_string();
     let text = |name: &str| cut(&raw(name), 160);
@@ -346,59 +323,123 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         let id = text("job_id");
         format!("job {}", id.get(..8).unwrap_or(&id))
     };
-    match tool {
-        READ_FILE_TOOL_NAME | "Read" => on(
-            ActKind::Read,
-            path(if tool == "Read" { "file_path" } else { "path" }),
-        ),
-        LIST_FILES_TOOL_NAME => on(ActKind::List, path("directory")),
-        WRITE_FILE_TOOL_NAME => on(ActKind::Write, path("path")),
-        "Write" => on(ActKind::Write, path("file_path")),
-        EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => on(ActKind::Edit, path("path")),
-        "Edit" | "MultiEdit" => on(ActKind::Edit, path("file_path")),
-        SHELL_TOOL_NAME | "Bash" => Act {
-            alone: runs_tests(&raw("command")),
-            ..on(
-                ActKind::Command,
-                command_words(&raw("command"), &text("cwd")),
-            )
-        },
-        "index_search" => Act {
-            query: cut(&text("query"), ROW_QUERY_CHARS),
-            ..on(ActKind::Search, index_name(&text("index")))
-        },
-        "Grep" | "Glob" => Act {
-            query: cut(&text("pattern"), ROW_QUERY_CHARS),
-            ..on(ActKind::Search, String::new())
-        },
-        LOAD_SKILL_TOOL_NAME => on(ActKind::Skill, text("name")),
-        crew::MESSAGE_AGENT => on(ActKind::Message, addressee(&text("to"), lead)),
+    let act = match tool {
+        READ_FILE_TOOL_NAME | "Read" => {
+            let name = if tool == "Read" { "file_path" } else { "path" };
+            said.path(parameters, name);
+            on(ActKind::Read, path(name))
+        }
+        LIST_FILES_TOOL_NAME => {
+            said.path(parameters, "directory");
+            on(ActKind::List, path("directory"))
+        }
+        WRITE_FILE_TOOL_NAME => {
+            said.path(parameters, "path");
+            on(ActKind::Write, path("path"))
+        }
+        "Write" => {
+            said.path(parameters, "file_path");
+            on(ActKind::Write, path("file_path"))
+        }
+        EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => {
+            said.path(parameters, "path");
+            on(ActKind::Edit, path("path"))
+        }
+        "Edit" | "MultiEdit" => {
+            said.path(parameters, "file_path");
+            on(ActKind::Edit, path("file_path"))
+        }
+        SHELL_TOOL_NAME | "Bash" => {
+            let command = text_of(parameters, "command");
+            let words = command_words_kept(command, &text("cwd"));
+            if words.kept {
+                said.shown("command", command);
+            }
+            // (A folder the command goes to with `cd` names that folder.)
+            if words.folder == Some(Folder::Cwd) {
+                said.path(parameters, "cwd");
+            }
+            Act {
+                alone: runs_tests(&raw("command")),
+                ..on(ActKind::Command, words.words)
+            }
+        }
+        "index_search" => {
+            said.whole(parameters, "query", ROW_QUERY_CHARS);
+            Act {
+                query: cut(&text("query"), ROW_QUERY_CHARS),
+                ..on(ActKind::Search, index_name(&text("index")))
+            }
+        }
+        "Grep" | "Glob" => {
+            said.whole(parameters, "pattern", ROW_QUERY_CHARS);
+            Act {
+                query: cut(&text("pattern"), ROW_QUERY_CHARS),
+                ..on(ActKind::Search, String::new())
+            }
+        }
+        LOAD_SKILL_TOOL_NAME => {
+            said.whole(parameters, "name", 160);
+            on(ActKind::Skill, text("name"))
+        }
+        crew::MESSAGE_AGENT => {
+            let to = addressee(&text("to"), lead);
+            if parameters
+                .get("to")
+                .and_then(Value::as_str)
+                .is_some_and(|given| !given.is_empty() && cut(given, 160) == given)
+            {
+                said.shown("to", to.clone());
+            }
+            on(ActKind::Message, to)
+        }
         // The runs it names. One that names none waits for the agent's
         // workers, which its row calls so ([`quiet`]).
-        crew::WAIT_FOR_AGENTS => on(ActKind::Wait, ui::waited_runs(parameters, &[]).join(", ")),
+        crew::WAIT_FOR_AGENTS => {
+            let runs = ui::waited_runs(parameters, &[]);
+            if (1..=3).contains(&runs.len()) && runs.iter().all(|run| cut(run, 160) == *run) {
+                said.0.push(("runs", runs.clone()));
+            }
+            on(ActKind::Wait, runs.join(", "))
+        }
         "terminal_status" => on(ActKind::Check, job()),
         "terminal_control" => match text("action").as_str() {
-            "wait" => on(ActKind::Check, job()),
-            "list" => other(
-                "Listing jobs".into(),
-                "Listed jobs".into(),
-                "list jobs".into(),
-            ),
-            "cancel" => other(
-                format!("Stopping {}", job()),
-                format!("Stopped {}", job()),
-                format!("stop {}", job()),
-            ),
-            "forget" => other(
-                format!("Forgetting {}", job()),
-                format!("Forgot {}", job()),
-                format!("forget {}", job()),
-            ),
-            action => other(
-                format!("Using {action} on {}", job()),
-                format!("Used {action} on {}", job()),
-                format!("use {action} on {}", job()),
-            ),
+            "wait" => {
+                said.shown("action", "Checked");
+                on(ActKind::Check, job())
+            }
+            "list" => {
+                said.shown("action", "Listed jobs");
+                other(
+                    "Listing jobs".into(),
+                    "Listed jobs".into(),
+                    "list jobs".into(),
+                )
+            }
+            "cancel" => {
+                said.shown("action", "Stopped");
+                other(
+                    format!("Stopping {}", job()),
+                    format!("Stopped {}", job()),
+                    format!("stop {}", job()),
+                )
+            }
+            "forget" => {
+                said.shown("action", "Forgot");
+                other(
+                    format!("Forgetting {}", job()),
+                    format!("Forgot {}", job()),
+                    format!("forget {}", job()),
+                )
+            }
+            action => {
+                said.whole(parameters, "action", 160);
+                other(
+                    format!("Using {action} on {}", job()),
+                    format!("Used {action} on {}", job()),
+                    format!("use {action} on {}", job()),
+                )
+            }
         },
         "terminal_input" => other(
             format!("Typing into {}", job()),
@@ -406,7 +447,11 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
             format!("type into {}", job()),
         ),
         "terminal_start" => {
-            let command = command_words(&raw("command"), "");
+            let words = command_words_kept(text_of(parameters, "command"), "");
+            if words.kept {
+                said.whole(parameters, "command", 160);
+            }
+            let command = words.words;
             other(
                 format!("Starting {command} in a terminal"),
                 format!("Started {command} in a terminal"),
@@ -414,7 +459,11 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
             )
         }
         "monitor_start" => {
-            let command = command_words(&raw("command"), "");
+            let words = command_words_kept(text_of(parameters, "command"), "");
+            if words.kept {
+                said.whole(parameters, "command", 160);
+            }
+            let command = words.words;
             other(
                 format!("Starting to watch {command}"),
                 format!("Started watching {command}"),
@@ -422,21 +471,32 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
             )
         }
         "monitor_control" => match text("action").as_str() {
-            "list" => other(
-                "Listing monitors".into(),
-                "Listed monitors".into(),
-                "list monitors".into(),
-            ),
-            "rearm" => other(
-                "Keeping a monitor going".into(),
-                "Kept a monitor going".into(),
-                "keep a monitor going".into(),
-            ),
-            _ => other(
-                "Stopping a monitor".into(),
-                "Stopped a monitor".into(),
-                "stop a monitor".into(),
-            ),
+            "list" => {
+                said.shown("action", "Listed monitors");
+                other(
+                    "Listing monitors".into(),
+                    "Listed monitors".into(),
+                    "list monitors".into(),
+                )
+            }
+            "rearm" => {
+                said.shown("action", "Kept a monitor going");
+                other(
+                    "Keeping a monitor going".into(),
+                    "Kept a monitor going".into(),
+                    "keep a monitor going".into(),
+                )
+            }
+            action => {
+                if action == "stop" {
+                    said.shown("action", "Stopped a monitor");
+                }
+                other(
+                    "Stopping a monitor".into(),
+                    "Stopped a monitor".into(),
+                    "stop a monitor".into(),
+                )
+            }
         },
         "keep_note"
             if parameters
@@ -447,24 +507,30 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
                 Some(Value::Number(number)) => number.to_string(),
                 _ => text("replaces"),
             };
+            // (Its words name the note, not its text or audience.)
+            said.number(parameters, "replaces");
             other(
                 format!("Changing note {number}"),
                 format!("Changed note {number}"),
                 format!("change note {number}"),
             )
         }
-        "keep_note" => on(
-            ActKind::Note,
-            match text("audience").as_str() {
+        "keep_note" => {
+            let audience = match text("audience").as_str() {
                 "" | "lead" => String::new(),
                 audience => audience.to_string(),
-            },
-        ),
+            };
+            if !audience.is_empty() {
+                said.whole(parameters, "audience", 160);
+            }
+            on(ActKind::Note, audience)
+        }
         "forget_note" => {
             let number = match parameters.get("id") {
                 Some(Value::Number(number)) => number.to_string(),
                 _ => text("id"),
             };
+            said.number(parameters, "id");
             other(
                 format!("Forgetting note {number}"),
                 format!("Forgot note {number}"),
@@ -473,7 +539,29 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         }
         crate::mcp::MCP_TOOL_NAME => {
             let server = text("server");
-            match text("action").as_str() {
+            let action = text("action");
+            // The words of each action, and its server's name in them.
+            let verb = match action.as_str() {
+                "call" => Some("Called"),
+                "servers" => Some("Listed the MCP servers"),
+                "tools" => Some("Listed"),
+                "start" => Some("Started"),
+                "stop" => Some("Stopped"),
+                "add" => Some("Added"),
+                "remove" => Some("Removed"),
+                _ => None,
+            };
+            match verb {
+                Some(verb) => said.shown("action", verb),
+                None => said.whole(parameters, "action", 160),
+            }
+            if action != "servers" {
+                said.whole(parameters, "server", 160);
+            }
+            if action == "call" {
+                said.whole(parameters, "tool", 160);
+            }
+            match action.as_str() {
                 "call" => on(ActKind::Mcp, format!("{} on {server}", text("tool"))),
                 "servers" => other(
                     "Listing the MCP servers".into(),
@@ -519,7 +607,9 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         ),
         crew::STOP_AGENT => {
             let run = text("run");
+            said.whole(parameters, "run", 160);
             let worktree = if flag(parameters, "remove_workspace") {
+                said.shown("remove_workspace", "removed its worktree");
                 " and removed its worktree"
             } else {
                 ""
@@ -547,6 +637,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         ),
         crew::SAVE_WORKER_PROFILE => {
             let name = text("name");
+            said.whole(parameters, "name", 160);
             other(
                 format!("Saving the {name} profile"),
                 format!("Saved the {name} profile"),
@@ -557,6 +648,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         | crate::skill_install::EDIT_SKILL
         | crate::skill_install::REMOVE_SKILL => {
             let name = text("name");
+            said.whole(parameters, "name", 160);
             let (doing, done, verb) = match tool {
                 crate::skill_install::ADD_SKILL => ("Saving", "Saved", "save"),
                 crate::skill_install::EDIT_SKILL => ("Changing", "Changed", "change"),
@@ -590,6 +682,9 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         ),
         "index_status" => {
             let index = index_name(&text("index"));
+            if index == raw("index") {
+                said.whole(parameters, "index", 160);
+            }
             let which = if index.is_empty() {
                 "the indexes".to_string()
             } else {
@@ -603,6 +698,9 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         }
         "index_create" => {
             let name = index_name(&path("path"));
+            if name == raw("path") {
+                said.whole(parameters, "path", 160);
+            }
             other(
                 format!("Indexing {name}"),
                 format!("Indexed {name}"),
@@ -611,33 +709,42 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         }
         "index_manage" => {
             let index = index_name(&text("index"));
+            if index == raw("index") {
+                said.whole(parameters, "index", 160);
+            }
             let the = format!("the {index} index");
             let (doing, done, verb) = match text("action").as_str() {
                 "rebuild" => ("Rebuilding", "Rebuilt", "rebuild"),
                 "embed" => ("Embedding", "Embedded", "embed"),
-                "estimate" => {
-                    return other(
-                        format!("Estimating embedding {index}"),
-                        format!("Estimated embedding {index}"),
-                        format!("estimate embedding {index}"),
-                    );
-                }
-                "monitor_on" => {
-                    return other(
-                        format!("Turning on watching for {index}"),
-                        format!("Turned on watching for {index}"),
-                        format!("turn on watching for {index}"),
-                    );
-                }
-                "monitor_off" => {
-                    return other(
-                        format!("Turning off watching for {index}"),
-                        format!("Turned off watching for {index}"),
-                        format!("turn off watching for {index}"),
-                    );
-                }
+                "estimate" => (
+                    "Estimating embedding",
+                    "Estimated embedding",
+                    "estimate embedding",
+                ),
+                "monitor_on" => (
+                    "Turning on watching for",
+                    "Turned on watching for",
+                    "turn on watching for",
+                ),
+                "monitor_off" => (
+                    "Turning off watching for",
+                    "Turned off watching for",
+                    "turn off watching for",
+                ),
                 "remove" => ("Removing", "Removed", "remove"),
                 _ => ("Changing", "Changed", "change"),
+            };
+            if done != "Changed" {
+                said.shown("action", done);
+            }
+            // (Watching and estimating name the index, not "the … index".)
+            let the = if matches!(
+                text("action").as_str(),
+                "estimate" | "monitor_on" | "monitor_off"
+            ) {
+                index.clone()
+            } else {
+                the
             };
             other(
                 format!("{doing} {the}"),
@@ -662,6 +769,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
             )
         }
         "WebSearch" => {
+            said.whole(parameters, "query", 60);
             let query = format!("“{}”", cut(&text("query"), 60));
             other(
                 format!("Searching the web for {query}"),
@@ -682,25 +790,47 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
                 format!("use {other_tool}"),
             ),
         },
-    }
+    };
+    (act, said)
+}
+
+/// The text of the parameter `name`, as given (empty when it isn't text).
+fn text_of<'a>(parameters: &'a Parameters, name: &str) -> &'a str {
+    parameters
+        .get(name)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+/// A command's words, with what they keep of it ([`command_words_kept`]).
+struct CommandWords {
+    words: String,
+    /// They state the command as it is: one line, no variables, no `cd`, no
+    /// program by its path, and it fit.
+    kept: bool,
+    /// The folder they name, the `cwd`'s or the one a `cd` goes to.
+    folder: Option<Folder>,
+}
+
+/// Where the folder a command's words name comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Folder {
+    Cwd,
+    Cd,
 }
 
 /// A command as its row names it, by its first line, at most
 /// [`quiet::COMMAND_CHARS`] characters, with a program run by its path named
 /// by its file name, and after a `cd dir &&` that becomes "in dir", as the
-/// folder `cwd` does.
-fn command_words(command: &str, cwd: &str) -> String {
-    command_words_kept(command, cwd).0
-}
-
-/// [`command_words`], and whether they state the command whole (it had one
-/// line, no variables, no `cd`, no program by its path, and it fit).
-fn command_words_kept(command: &str, cwd: &str) -> (String, bool) {
+/// folder `cwd` does, with what the words keep of the command and which
+/// folder they name.
+fn command_words_kept(command: &str, cwd: &str) -> CommandWords {
     let mut line = command.trim().lines().next().unwrap_or_default().trim();
     let mut folder = match cwd.trim() {
         "" | "." => String::new(),
         cwd => last_part(cwd),
     };
+    let mut from = (!folder.is_empty()).then_some(Folder::Cwd);
     // (After `&&` or `;`, whichever comes first.)
     if let Some(rest) = line.strip_prefix("cd ")
         && let Some((at, length)) = ["&&", ";"]
@@ -709,6 +839,7 @@ fn command_words_kept(command: &str, cwd: &str) -> (String, bool) {
             .min()
     {
         folder = last_part(rest[..at].trim().trim_matches(['"', '\'']));
+        from = (!folder.is_empty()).then_some(Folder::Cd);
         line = rest[at + length..].trim();
     }
     // From its program, past the variables set for it and the shell's own
@@ -737,11 +868,16 @@ fn command_words_kept(command: &str, cwd: &str) -> (String, bool) {
         _ => line.to_string(),
     };
     let words = cut(&line, quiet::COMMAND_CHARS);
-    let kept = !command.trim().is_empty() && words == command.trim();
-    if folder.is_empty() {
-        (words, kept)
+    let kept = !command.is_empty() && words == command;
+    let words = if folder.is_empty() {
+        words
     } else {
-        (format!("{words} in {folder}"), kept)
+        format!("{words} in {folder}")
+    };
+    CommandWords {
+        words,
+        kept,
+        folder: from,
     }
 }
 
@@ -1515,7 +1651,7 @@ mod tests {
             ("waiting for r1, r2".into(), "r1, r2".into())
         );
         assert_eq!(
-            quiet::doing(&super::act(crew::WAIT_FOR_AGENTS, &params(&[]), "main")),
+            quiet::doing(&super::act(crew::WAIT_FOR_AGENTS, &params(&[]), "main").0),
             "Waiting for workers"
         );
         // A wait's line says what came, as the user reads it, not as its

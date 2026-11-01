@@ -64,7 +64,7 @@ pub use no_server::Server;
 pub use protocol::{Confirm, Partial, Refusal, RefusalKind, Verdict};
 /// A call's item as the feed makes it, for tests of every tool's.
 #[cfg(test)]
-pub(crate) use render::call as call_item;
+pub(crate) use render::call_said;
 pub(crate) use render::duration_words;
 pub(crate) use render::outcome as call_outcome;
 #[cfg(feature = "remote")]

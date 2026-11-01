@@ -1028,7 +1028,9 @@ pub(crate) struct Fixture {
 }
 
 /// Calls of the kinds r127 found that opened to too little or to nothing:
-/// commands cut short or run in a folder, reads of some lines or a long
+/// commands cut short or run in a folder (also one that goes from its folder
+/// to another, and a note that replaces another for a worker, whose
+/// parameters change each other's words), reads of some lines or a long
 /// path, a write, an edit of every match, a refused or failed command,
 /// messages, searches past the row's and Full's lengths, a wait for many
 /// runs, a check of a job, MCP calls, a note, worker starts, a moved call,
@@ -1100,6 +1102,20 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                     ActKind::Command,
                     "printf one in work",
                     &[("", "printf one\nprintf two"), ("cwd", "src/specific/work")],
+                ),
+            )
+        },
+        Fixture {
+            outcome: "0.0 s",
+            outcome_shown: true,
+            ..fixture(
+                "a command that goes from its folder to another",
+                "shell",
+                r#"{"command": "cd child && pwd", "cwd": "parent"}"#,
+                act(
+                    ActKind::Command,
+                    "pwd in child",
+                    &[("", "cd child && pwd"), ("cwd", "parent")],
                 ),
             )
         },
@@ -1230,7 +1246,9 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                 r#"{"index": "arko", "query": "how does the feed decide where a long call goes when its row is the last one"}"#,
                 Act {
                     query: "how does the feed decide where a long call goes when its row…".into(),
-                    ..act(ActKind::Search, "arko", &[("", SEARCH)])
+                    // (The index as given, since a search's row can name
+                    // the indexes its result names instead.)
+                    ..act(ActKind::Search, "arko", &[("", SEARCH), ("index", "arko")])
                 },
             )
         },
@@ -1306,6 +1324,21 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                 "keep_note",
                 r#"{"text": "Use tabs in the tests."}"#,
                 act(ActKind::Note, "", &[("", "Use tabs in the tests.")]),
+            )
+        },
+        Fixture {
+            outcome: "Kept note 7.",
+            outcome_shown: true,
+            ..fixture(
+                "a note that replaces another for a worker",
+                "keep_note",
+                r#"{"text": "Replacement note text", "replaces": 7, "audience": "r3"}"#,
+                other(
+                    "Changing note 7",
+                    "Changed note 7",
+                    "change note 7",
+                    &[("", "Replacement note text"), ("audience", "r3")],
+                ),
             )
         },
         fixture(

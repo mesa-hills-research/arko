@@ -2,7 +2,7 @@
 // body or in its row's words, end to end with the mock model (r127). (Included
 // in `main`'s tests, beside the worker choice tests, whose setup it uses.)
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::worker_choice::{setup, start_worker};
 use crate::remote::quiet;
@@ -65,13 +65,71 @@ fn leaves(value: &serde_json::Value) -> Vec<String> {
     }
 }
 
+/// The calls whose items aren't a call's (a reply, a question, a message to
+/// the user), which have no row.
+const NOT_CALLS: [&str; 3] = ["complete_task", "ask_user", "message_user"];
+
+/// Checks that each of `parameters` of a call of `tool` shows whole in the
+/// call's body, or in its row's words, as the branch that made them says
+/// they show it. Returns how many values it checked.
+fn check(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> usize {
+    let made = crate::remote::call_said(tool, parameters, "main");
+    let Some((act, said)) = made.and_then(|(item, said)| Some((item.act?, said))) else {
+        assert!(NOT_CALLS.contains(&tool), "{tool} made no call: {parameters:?}");
+        return 0;
+    };
+    assert!(!NOT_CALLS.contains(&tool), "{tool} made a call");
+    let steps = [quiet::Step::Call(quiet::Call {
+        id: 1,
+        act: Some(&act),
+        status: Some(remote::CallStatus::Ok),
+        turn: Some(1),
+        ..quiet::Call::default()
+    })];
+    let words = match quiet::rows(&steps).as_slice() {
+        [quiet::Piece::Row(row)] => row.words.text.clone(),
+        other => panic!("{tool}: {other:?}"),
+    };
+    let body: Vec<&str> = act.body.iter().map(|fact| fact.text.as_str()).collect();
+    let body = body.join("\n");
+    let mut checked = 0;
+    for (name, value) in parameters {
+        // What the branch says its words show for it, each part of which
+        // they must hold.
+        let claimed = said.all().iter().find(|(said, _)| said == name);
+        if let Some((_, shown)) = claimed {
+            for part in shown {
+                assert!(
+                    words.contains(part.as_str()),
+                    "{tool}.{name}: the words {words:?} don't show {part:?}, as their branch says ({parameters:?})"
+                );
+            }
+            assert!(
+                act.body.iter().all(|fact| fact.label != *name),
+                "{tool}.{name} is both said and in the body"
+            );
+        }
+        for leaf in leaves(value) {
+            let shown = body.contains(&leaf) || claimed.is_some();
+            assert!(
+                shown,
+                "{tool}.{name} = {leaf:?} is in neither its body {:?} nor what its words {words:?} say ({parameters:?})",
+                act.body
+            );
+            checked += 1;
+        }
+    }
+    checked
+}
+
 /// Every parameter of every tool the main agent and a worker are offered,
-/// an MCP server's own tool too, shows whole in the body of the call's
-/// Quiet row, or in the row's words when they state it whole. A choice (an
-/// `action`, a flag) may be said by the words it makes. So a new tool or
-/// parameter is covered the day it comes, and words that claim more than
-/// they say fail. A body too long for what a body keeps says how much it
-/// left out.
+/// and an MCP server's own tool, shows whole in the body of the call's
+/// Quiet row, or in the row's words, which the branch that made them says
+/// (and the words then hold what it says they show). Each tool's calls come
+/// with all its parameters at once, each varied in turn, so parameters that
+/// change each other's words are covered (a `cd` in the command and a
+/// `cwd`, a note that replaces another and its audience). A body too long
+/// for what a body keeps says how much it left out.
 #[tokio::test]
 async fn every_parameter_shows_in_its_body_or_its_words() {
     let temp = tempfile::tempdir().unwrap();
@@ -108,26 +166,28 @@ async fn every_parameter_shows_in_its_body_or_its_words() {
     start_worker(&mut harness, &mut inputs, "Start plainly.").await;
     harness.crew.as_ref().unwrap().shutdown().await;
     managers.shutdown().await;
-    let mut tools: BTreeMap<String, serde_json::Map<String, serde_json::Value>> = BTreeMap::new();
-    let mut agents = std::collections::BTreeSet::new();
+    // Every definition offered, the main agent's and a worker's both when
+    // they differ.
+    let mut tools: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut agents = BTreeSet::new();
     for (who, _, _, body) in seen.lock().unwrap().iter() {
         agents.insert(who.clone());
         for (name, properties) in offered(body) {
-            tools.entry(name).or_insert(properties);
+            tools.insert((name, serde_json::Value::Object(properties).to_string()));
         }
     }
     assert!(agents.contains("main") && agents.len() > 1, "{agents:?}");
-    // An MCP server's own tool, named `mcp__<server>__<tool>`.
+    // An MCP server's own tool, named `mcp__<server>__<tool>`, as a session
+    // saved with one offers it. (Arko offers servers' tools through `mcp`,
+    // which is among the tools above.)
     let mcp = serde_json::json!({
         "title": {"type": "string"},
         "labels": {"type": "array"},
         "draft": {"type": "boolean"},
         "number": {"type": "integer"},
     });
-    tools.insert(
-        "mcp__github__create_issue".into(),
-        mcp.as_object().unwrap().clone(),
-    );
+    tools.insert(("mcp__github__create_issue".into(), mcp.to_string()));
+    let names: BTreeSet<&str> = tools.iter().map(|(name, _)| name.as_str()).collect();
     for tool in [
         "shell",
         "read_file",
@@ -137,53 +197,66 @@ async fn every_parameter_shows_in_its_body_or_its_words() {
         "wait_for_agents",
         "message_agent",
         "keep_note",
+        "mcp",
         "terminal_start",
         "terminal_status",
         "monitor_start",
         "index_search",
     ] {
-        assert!(tools.contains_key(tool), "{tool} isn't offered: {:?}", tools.keys());
+        assert!(names.contains(tool), "{tool} isn't offered: {names:?}");
     }
     let mut checked = 0;
     for (tool, properties) in &tools {
-        for (name, schema) in properties {
-            let choice = schema.get("enum").is_some() || schema["type"] == "boolean";
+        let properties: BTreeMap<String, serde_json::Value> =
+            serde_json::from_str(properties).unwrap();
+        // All its parameters at once, then each in turn through its values,
+        // the others held.
+        let first: HashMap<String, serde_json::Value> = properties
+            .iter()
+            .map(|(name, schema)| (name.clone(), samples(name, schema).remove(0)))
+            .collect();
+        checked += check(tool, &first);
+        for (name, schema) in &properties {
             for value in samples(name, schema) {
-                let parameters: HashMap<String, serde_json::Value> =
-                    [(name.clone(), value.clone())].into_iter().collect();
-                // (Calls drawn as something else, a reply or a message, have
-                // no row.)
-                let Some(act) = crate::remote::call_item(tool, &parameters, "main")
-                    .and_then(|item| item.act)
-                else {
-                    continue;
-                };
-                let steps = [quiet::Step::Call(quiet::Call {
-                    id: 1,
-                    act: Some(&act),
-                    status: Some(remote::CallStatus::Ok),
-                    turn: Some(1),
-                    ..quiet::Call::default()
-                })];
-                let words = match quiet::rows(&steps).as_slice() {
-                    [quiet::Piece::Row(row)] => row.words.text.clone(),
-                    other => panic!("{tool}: {other:?}"),
-                };
-                let body: Vec<&str> = act.body.iter().map(|fact| fact.text.as_str()).collect();
-                let body = body.join("\n");
-                for leaf in leaves(&value) {
-                    let shown = body.contains(&leaf) || words.contains(&leaf) || choice;
-                    assert!(
-                        shown,
-                        "{tool}.{name} = {leaf:?} is in neither its body {:?} nor its row's words {words:?}",
-                        act.body
-                    );
-                    checked += 1;
-                }
+                let mut parameters = first.clone();
+                parameters.insert(name.clone(), value.clone());
+                checked += check(tool, &parameters);
+                // And alone.
+                checked += check(tool, &[(name.clone(), value)].into_iter().collect());
             }
         }
     }
-    assert!(checked > 100, "{checked}");
+    assert!(checked > 1000, "{checked}");
+    // Parameters that change each other's words.
+    let calls = [
+        (
+            "shell",
+            serde_json::json!({"command": "cd child && pwd", "cwd": "parent"}),
+        ),
+        (
+            "shell",
+            serde_json::json!({"command": "pwd", "cwd": "parent"}),
+        ),
+        (
+            "keep_note",
+            serde_json::json!({"text": "Replacement note text", "replaces": 7, "audience": "r3"}),
+        ),
+        (
+            "keep_note",
+            serde_json::json!({"text": "Use tabs.", "audience": "lead"}),
+        ),
+        (
+            "mcp",
+            serde_json::json!({"action": "servers", "server": "github", "tool": "create_issue"}),
+        ),
+        (
+            "message_agent",
+            serde_json::json!({"to": "lead", "message": "Done."}),
+        ),
+    ];
+    for (tool, parameters) in calls {
+        check(tool, &serde_json::from_value(parameters).unwrap());
+    }
 
     // A body too long for what a body keeps says how much it left out.
     let lines: Vec<String> = (1..=1000).map(|n| format!("line {n}")).collect();
@@ -194,10 +267,10 @@ async fn every_parameter_shows_in_its_body_or_its_words() {
         ]
         .into_iter()
         .collect();
-        let act = crate::remote::call_item("write_file", &parameters, "main")
-            .and_then(|item| item.act)
-            .unwrap();
-        act.body
+        let (item, _) = crate::remote::call_said("write_file", &parameters, "main").unwrap();
+        item.act
+            .unwrap()
+            .body
             .into_iter()
             .find(|fact| fact.label == "content")
             .unwrap()
