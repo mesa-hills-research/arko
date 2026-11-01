@@ -1368,9 +1368,8 @@ fn size(bytes: u64) -> String {
     }
 }
 
-/// How long `ms` milliseconds read, such as `45s`, `2m` or `1h 5m`. The
-/// terminal and the page say how long a thinking took in these words.
-#[allow(dead_code)]
+/// How long `ms` milliseconds read, such as `45s`, `2m` or `1h 5m`, as the
+/// terminal and the page say how long a thinking took or a call has run.
 pub fn duration(ms: i64) -> String {
     let seconds = (ms / 1000).max(0);
     match seconds {
