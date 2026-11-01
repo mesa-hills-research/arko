@@ -1056,7 +1056,7 @@ fn handle(
             }
             Event::FocusGained => app.focused = true,
             Event::FocusLost => app.focused = false,
-            Event::Resize(..) => {}
+            Event::Resize(..) => app.resized = true,
         }
     }
     if pasting && let Some(burst) = burst {
@@ -1068,7 +1068,8 @@ fn handle(
 /// Draws a frame of `app`, with the window's title when it changed from
 /// `title`, unless the terminal hasn't taken the last frame from `screen`,
 /// the terminal's writer, yet. Then the frame waits, and the changes go in
-/// the next one the terminal gets. Whether it was drawn.
+/// the next one the terminal gets. After a resize, the frame is drawn
+/// whole. Whether it was drawn.
 fn draw_when_written(
     terminal: &mut Terminal<CursorBackend<Writer>>,
     screen: &Writer,
@@ -1077,6 +1078,10 @@ fn draw_when_written(
 ) -> bool {
     if screen.busy() {
         return false;
+    }
+    // (Cleared only by a whole frame, which a skipped one isn't.)
+    if app.resized && clear_for_redraw(terminal).is_ok() {
+        app.resized = false;
     }
     draw(terminal, app);
     let now = app.title();
@@ -1808,5 +1813,88 @@ mod tests {
         drop(terminal);
         assert!(hook.wait_written(Duration::from_secs(5)));
         assert_eq!(gate.taken(), reset);
+    }
+
+    /// The window shrinks and comes back to its size while a frame waits
+    /// for the terminal, which cuts the cells outside the smaller size. The
+    /// next frame is drawn whole, so the screen is right again, although the
+    /// size is the one the last frame had.
+    #[cfg(unix)]
+    #[test]
+    fn a_resize_while_a_frame_waits_draws_the_next_whole() {
+        use crate::remote::{Activity, Item, Kind, Update};
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Size;
+        let gate = writer::tests::Gate::default();
+        let writer = Writer::start(gate.clone(), PathBuf::new(), Vec::new()).unwrap();
+        let screen = writer.handle();
+        let mut backend = CursorBackend::new(writer);
+        backend.size = Some(Size::new(40, 8));
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = app::tests::app();
+        let mut title = String::new();
+        let (mut enter, mut burst) = (None, None);
+        let item = |id: u64| {
+            let mut item = Item::new(
+                Kind::Text,
+                format!("Line {id} of what the agent said, long enough to reach the edge"),
+            );
+            item.id = id;
+            Update::Item(item)
+        };
+        for id in 1..=3 {
+            app.update(item(id), Activity::default);
+        }
+        assert!(draw_when_written(
+            &mut terminal,
+            &screen,
+            &mut app,
+            &mut title
+        ));
+        assert!(screen.wait_written(Duration::from_secs(5)));
+        let mut grid = Grid::new(40, 8);
+        let first = gate.taken().len();
+        grid.feed(&gate.taken());
+        // The terminal stops taking output, and a frame waits.
+        gate.hold(true);
+        app.update(item(4), Activity::default);
+        assert!(draw_when_written(
+            &mut terminal,
+            &screen,
+            &mut app,
+            &mut title
+        ));
+        for (width, height) in [(25, 4), (40, 8)] {
+            terminal.backend_mut().size = Some(Size::new(width, height));
+            handle(
+                &mut app,
+                vec![Event::Resize(width, height)],
+                &mut enter,
+                &mut burst,
+            );
+            assert!(!draw_when_written(
+                &mut terminal,
+                &screen,
+                &mut app,
+                &mut title
+            ));
+            grid.resize(usize::from(width), usize::from(height));
+        }
+        // It takes output again, the waiting frame first.
+        gate.hold(false);
+        assert!(screen.wait_written(Duration::from_secs(5)));
+        assert!(draw_when_written(
+            &mut terminal,
+            &screen,
+            &mut app,
+            &mut title
+        ));
+        assert!(screen.wait_written(Duration::from_secs(5)));
+        grid.feed(&gate.taken()[first..]);
+        let mut reference = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        reference
+            .draw(|frame| screen::draw(frame, &mut app))
+            .unwrap();
+        assert_eq!(grid.lines(), buffer_lines(reference.backend().buffer()));
     }
 }

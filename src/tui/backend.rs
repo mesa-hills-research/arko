@@ -25,6 +25,9 @@ pub struct CursorBackend<W: Write> {
     inner: CrosstermBackend<W>,
     /// The frame shows the cursor, once it moves it.
     show: bool,
+    /// The terminal's size as a test sets it, in place of the real one.
+    #[cfg(test)]
+    pub(super) size: Option<Size>,
 }
 
 impl<W: Write> CursorBackend<W> {
@@ -32,6 +35,8 @@ impl<W: Write> CursorBackend<W> {
         Self {
             inner: CrosstermBackend::new(writer),
             show: false,
+            #[cfg(test)]
+            size: None,
         }
     }
 
@@ -112,6 +117,10 @@ impl<W: Write> Backend for CursorBackend<W> {
     }
 
     fn size(&self) -> io::Result<Size> {
+        #[cfg(test)]
+        if let Some(size) = self.size {
+            return Ok(size);
+        }
         self.inner.size()
     }
 

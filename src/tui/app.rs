@@ -372,6 +372,10 @@ pub struct App {
     last_interrupt: Option<Instant>,
     /// The terminal window has the focus (as far as it says).
     pub focused: bool,
+    /// The terminal was resized since the last frame, which may have cut or
+    /// moved its cells, so the next frame is drawn whole, even when the size
+    /// came back to what it was.
+    pub resized: bool,
     /// The terminal reports Shift+Enter apart from Enter.
     pub shift_enter: bool,
     pub mouse: bool,
@@ -496,6 +500,7 @@ impl App {
             continue_asked: None,
             last_interrupt: None,
             focused: true,
+            resized: false,
             shift_enter: false,
             mouse,
             effects: Vec::new(),
