@@ -103,7 +103,8 @@ its id (`a1`, `a2`, ...), its `batch` and its `approval`, tagged by `kind` (`pro
 `mcp_server` or `worker_billing`). The types are in `arko::approvals`. `Approval::title`,
 `kind_word`, `name`, `scope`, `summary`, `details` and `option` give the words every front end
 shows, and `every_project` says when a row's scope stands out, and `approvals_heading`, `approve_label` and `reject_label` those of the tray's heading and
-buttons.
+buttons. `ShownApprovals` keeps the half-second rule and `MessageSwitch` the Include message switch,
+as the terminal and the page do.
 
 `POST /api/approvals` answers the requests named in `choices`. Omit `words` to answer without a message.
 

@@ -2,6 +2,19 @@
 
 use std::collections::HashSet;
 
+/// Whether an answer to the approval tray's requests takes the message
+/// box's words, as the switch beside Approve and Reject shows it while the
+/// box has text. A message started after the newest request arrived goes
+/// with the answer, and a draft from before it stays out, until the user
+/// flips the switch. The terminal and the web page keep one per message box,
+/// and so can an app.
+///
+/// Call [`requests`](Self::requests) whenever the tray's requests change,
+/// [`edited`](Self::edited) whenever the box's text does, and
+/// [`flip`](Self::flip) when the user flips the switch.
+/// [`includes`](Self::includes) says whether the answer takes the words.
+/// When a refused send gives its draft back, [`restored`](Self::restored)
+/// gives back the switch as it was at the send.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MessageSwitch {
     seen: HashSet<String>,
@@ -12,7 +25,8 @@ pub struct MessageSwitch {
 }
 
 impl MessageSwitch {
-    /// New requests reset intent to whether the box was empty at arrival.
+    /// The tray's requests are now `ids`, with text in the box or not. New
+    /// requests reset the switch to whether the box was empty as they came.
     pub fn requests(&mut self, ids: HashSet<String>, has_text: bool) {
         self.edited(has_text);
         if ids.iter().any(|id| !self.seen.contains(id)) {
@@ -23,7 +37,8 @@ impl MessageSwitch {
         self.seen = ids;
     }
 
-    /// Emptying the box starts a fresh message and clears a manual choice.
+    /// The box's text changed. Emptying the box starts a fresh message and
+    /// clears a manual choice.
     pub fn edited(&mut self, has_text: bool) {
         self.has_text = has_text;
         if !has_text {
@@ -37,6 +52,12 @@ impl MessageSwitch {
         self.has_text && self.manual.unwrap_or(self.for_answer)
     }
 
+    /// Whether the box has text, as last told. The switch shows only while
+    /// it does.
+    pub fn has_text(&self) -> bool {
+        self.has_text
+    }
+
     /// A manual choice lasts until a new request or an empty box.
     pub fn flip(&mut self) {
         if self.has_text {
@@ -45,6 +66,7 @@ impl MessageSwitch {
     }
 
     /// A refused send returns its draft's intent, not the send's emptying.
+    /// `previous` is the switch as it was when the draft was sent.
     pub fn restored(&mut self, previous: &Self, has_text: bool) {
         self.has_text = has_text;
         if self.arrivals == previous.arrivals {

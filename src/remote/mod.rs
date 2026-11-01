@@ -61,7 +61,7 @@ pub use links::Kind as LinkKind;
 pub use links::{HOST_VARIABLE, Interface, Link};
 #[cfg(not(feature = "remote"))]
 pub use no_server::Server;
-pub use protocol::{Confirm, Partial, Refusal, RefusalKind, Verdict};
+pub use protocol::{Confirm, Partial, Refusal, RefusalKind, Verdict, duration};
 pub(crate) use render::duration_words;
 #[cfg(feature = "remote")]
 pub use server::Server;
@@ -597,8 +597,9 @@ pub struct LiveSettings {
     /// git (`/extensions keep-out-of-git`).
     pub keep_agents_files_out_of_git: bool,
     /// The keep-warm setting for every session, its hours and dollars, or
-    /// `None` for off ([`keep_warm::setting_command`](crate::keep_warm::setting_command)
-    /// sets it).
+    /// `None` for off, as the session last read it
+    /// ([`Request::ReloadKeepWarmSetting`](crate::Request::ReloadKeepWarmSetting)
+    /// reads it again).
     pub keep_warm: Option<crate::keep_warm::Limits>,
 }
 

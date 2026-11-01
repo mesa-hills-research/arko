@@ -212,9 +212,8 @@ pub(super) mod tests {
         let ends = AT + 8 * 3_600_000;
         let kept = crate::keep_warm::Status {
             ends_at: Some(ends),
-            left: None,
             next_at: Some(AT + 240_000),
-            waits: false,
+            ..Default::default()
         };
         app.reading.cache.keep_warm = Some(kept);
         let (rows, buffer) = drawn(&mut app, 80, 8);
@@ -224,10 +223,9 @@ pub(super) mod tests {
         assert_eq!(timer_style(&rows, &buffer).fg, theme.dim().fg);
         assert_eq!(app.cache_label(), Some((warm, false)));
         app.reading.cache.keep_warm = Some(crate::keep_warm::Status {
-            ends_at: None,
             left: Some(3),
             next_at: Some(AT + 240_000),
-            waits: false,
+            ..Default::default()
         });
         assert_eq!(
             app.cache_label(),

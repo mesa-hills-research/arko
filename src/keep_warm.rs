@@ -4,7 +4,9 @@
 //! `/keep-warm` (or an app's [`Request::KeepWarm`](crate::Request::KeepWarm))
 //! turns it on for the session, and the setting, kept in Arko's folder
 //! ([`load`], [`save`]), for every session as it opens. It is off unless the
-//! user turns it on.
+//! user turns it on. An app that saves the setting itself has the open
+//! sessions take it with
+//! [`Request::ReloadKeepWarmSetting`](crate::Request::ReloadKeepWarmSetting).
 //!
 //! Each request moves its next refresh (a turn's, a refresh the user asked
 //! for), and only the refreshes it sends count toward its limits. A refresh
@@ -69,8 +71,9 @@ pub struct Limits {
 }
 
 /// Keep-warm in the status, while it is on and the model can refresh its
-/// cache out of band.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+/// cache out of band. An app's tests build one from `Status::default()` and
+/// set its fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct Status {
     /// When it stops (Unix milliseconds), meaning its end, or its hours after the
@@ -91,6 +94,12 @@ pub struct Status {
     /// again, the computer slept or its clock changed).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub waits: bool,
+    /// The setting for every session turned it on ([`load`]). `false` where
+    /// the session set its own (`/keep-warm`,
+    /// [`Request::KeepWarm`](crate::Request::KeepWarm)), which a change of
+    /// the setting leaves as it is.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub follows_setting: bool,
 }
 
 /// Whether the main agent's prompt cache on `model`, as Arko configures it,
@@ -163,8 +172,11 @@ pub fn save(root: &Path, setting: Option<Limits>) -> Result<(), String> {
 }
 
 /// The command that sets `setting` for every session, such as
-/// `/keep-warm default 15h $5` or `/keep-warm default off`. An app sends it
-/// to the session as the user's input.
+/// `/keep-warm default 15h $5` or `/keep-warm default off`. The session that
+/// runs it saves the setting. An app with several sessions open saves it
+/// once with [`save`] instead, then sends each one
+/// [`Request::ReloadKeepWarmSetting`](crate::Request::ReloadKeepWarmSetting),
+/// so no two sessions race to write it.
 pub fn setting_command(setting: Option<Limits>) -> String {
     match setting.and_then(|limits| Some((limits.idle_hours?, limits.dollars))) {
         Some((hours, Some(dollars))) => {
@@ -736,6 +748,7 @@ impl KeepWarm {
                 .flatten()
                 .map(|due| due.at),
             waits: !turn && shown && !told,
+            follows_setting: self.follows_setting(),
         }
     }
 }
@@ -1112,6 +1125,13 @@ impl crate::Harness {
         };
         self.save_keep_warm();
         done
+    }
+
+    /// Takes the setting from Arko's folder again, for an app's
+    /// [`Request::ReloadKeepWarmSetting`](crate::Request::ReloadKeepWarmSetting).
+    pub(crate) fn reload_keep_warm_setting(&self) {
+        *lock(&self.gauges.keep_warm) = load(&self.root);
+        self.gauges.touch();
     }
 
     /// Turns keep-warm on for the session, until `limits` end it, in place
@@ -1582,6 +1602,11 @@ mod tests {
             seen_status(&kept, &limits, cache, false).ends_at,
             Some(150 * MINUTE)
         );
+        // The status says the setting turned it on, until the session sets
+        // its own.
+        assert!(seen_status(&kept, &limits, cache, false).follows_setting);
+        kept.start(limits, t(turn));
+        assert!(!seen_status(&kept, &limits, cache, false).follows_setting);
     }
 
     /// What the session chose and what its refreshes sent are kept in its
