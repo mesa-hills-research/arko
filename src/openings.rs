@@ -295,10 +295,10 @@ fn monitor_in(text: &str, closing: &str) -> Option<(uuid::Uuid, String)> {
     Some((job, rest[..end].to_string()))
 }
 
-/// The line for news from workers, as "r1 reported", "r1, r2 and r3
-/// reported", "Message from r2", "r1 reported · r2 sent a message".
+/// The line for news from workers to the main agent, as the user reads it:
+/// "r1 reported", "r1, r2 and r3 reported", "r2 to main", "r1 reported · r2
+/// to main".
 fn workers_line(workers: &[(String, Heard)]) -> String {
-    let only_messages = workers.iter().all(|(_, heard)| *heard == Heard::Message);
     let parts: Vec<String> = [
         Heard::Report,
         Heard::Failed,
@@ -322,12 +322,9 @@ fn workers_line(workers: &[(String, Heard)]) -> String {
             Heard::Report => format!("{who} reported"),
             Heard::Failed => format!("{who} failed"),
             Heard::Stopped => format!("{who} stopped"),
-            Heard::Asked if many => format!("{who} asked questions"),
-            Heard::Asked => format!("{who} asked a question"),
-            Heard::Message if only_messages && many => format!("Messages from {who}"),
-            Heard::Message if only_messages => format!("Message from {who}"),
-            Heard::Message if many => format!("{who} sent messages"),
-            Heard::Message => format!("{who} sent a message"),
+            Heard::Asked if many => format!("{who} asked main questions"),
+            Heard::Asked => format!("{who} asked main a question"),
+            Heard::Message => crate::remote::quiet::mail_label(&who, "main"),
         })
     })
     .collect();
@@ -462,14 +459,14 @@ mod tests {
             news(&[("r1", Report), ("r2", Report), ("r3", Report)]),
             "r1, r2 and r3 reported"
         );
-        assert_eq!(news(&[("r2", Message)]), "Message from r2");
+        assert_eq!(news(&[("r2", Message)]), "r2 to main");
         assert_eq!(
             news(&[("r2", Message), ("r5", Message)]),
-            "Messages from r2 and r5"
+            "r2 and r5 to main"
         );
         assert_eq!(
             news(&[("r1", Report), ("r2", Message)]),
-            "r1 reported · r2 sent a message"
+            "r1 reported · r2 to main"
         );
         assert_eq!(
             news(&[
@@ -478,17 +475,17 @@ mod tests {
                 ("r3", Message),
                 ("r4", Report)
             ]),
-            "r1 and r4 reported · r2 and r3 sent messages"
+            "r1 and r4 reported · r2 and r3 to main"
         );
         assert_eq!(news(&[("r1", Failed)]), "r1 failed");
         assert_eq!(
             news(&[("r1", Stopped), ("r2", Stopped)]),
             "r1 and r2 stopped"
         );
-        assert_eq!(news(&[("r1", Asked)]), "r1 asked a question");
+        assert_eq!(news(&[("r1", Asked)]), "r1 asked main a question");
         assert_eq!(
             news(&[("r1", Asked), ("r2", Asked)]),
-            "r1 and r2 asked questions"
+            "r1 and r2 asked main questions"
         );
         // Nothing is known of who sent it.
         assert_eq!(
@@ -510,14 +507,14 @@ mod tests {
         assert_eq!(line(3, Heard::Report), "r1, r2 and r3 reported");
         assert_eq!(line(4, Heard::Report), "r1, r2 and 2 others reported");
         assert_eq!(line(6, Heard::Report), "r1, r2 and 4 others reported");
-        assert_eq!(line(6, Heard::Message), "Messages from r1, r2 and 4 others");
+        assert_eq!(line(6, Heard::Message), "r1, r2 and 4 others to main");
         let mut about = workers(&[("r9", Heard::Report)]);
         for n in 1..=5 {
             about.heard(&format!("r{n}"), Heard::Message);
         }
         assert_eq!(
             Opening::News.notice(&about).unwrap(),
-            "r9 reported · r1, r2 and 3 others sent messages"
+            "r9 reported · r1, r2 and 3 others to main"
         );
     }
 
@@ -532,7 +529,7 @@ mod tests {
         assert_eq!(news(&[("r1", Report), ("r1", Failed)]), "r1 failed");
         assert_eq!(
             news(&[("r1", Message), ("r2", Message), ("r1", Message)]),
-            "Messages from r1 and r2"
+            "r1 and r2 to main"
         );
     }
 
@@ -586,14 +583,14 @@ mod tests {
         );
         assert_eq!(
             Opening::News.notice(&about).unwrap(),
-            "r4 reported · r1 sent a message"
+            "r4 reported · r1 to main"
         );
         let kinds = [
             (MailKind::Report, "r1 reported"),
             (MailKind::Failed, "r1 failed"),
             (MailKind::Stopped, "r1 stopped"),
-            (MailKind::Question, "r1 asked a question"),
-            (MailKind::Message, "Message from r1"),
+            (MailKind::Question, "r1 asked main a question"),
+            (MailKind::Message, "r1 to main"),
         ];
         for (kind, line) in kinds {
             let about = Subjects::of_mail(&[mail(from(one), kind)], handle);

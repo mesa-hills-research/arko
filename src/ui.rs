@@ -1525,7 +1525,11 @@ pub fn brief_waiting_for(
             let (verb, detail) = file_call(tool, parameters);
             format!("{verb} {detail}")
         }
-        crew::MESSAGE_AGENT => format!("message to {}", text("to")),
+        // (This view doesn't know which agent a worker's lead is.)
+        crew::MESSAGE_AGENT => match text("to") {
+            "lead" => "message to its lead".to_string(),
+            to => format!("message to {to}"),
+        },
         // A worker that starts workers makes these calls, which read as the
         // main agent's own do.
         crew::START_AGENT => format!("start worker “{}”", cut(text("task"), 80)),
@@ -1834,7 +1838,7 @@ mod tests {
                 crew::MESSAGE_AGENT,
                 &params(&[("to", "lead".into()), ("message", "hi".into())])
             ),
-            "message to lead"
+            "message to its lead"
         );
         // A worker has no runs, so its wait is for a message.
         assert_eq!(

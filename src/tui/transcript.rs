@@ -2336,9 +2336,8 @@ fn entry_lines(
             // A message a worker got says whose it is, and outside its own
             // view a worker's message to the user says whose it is too.
             let header = match &item.from {
-                Some(from) if from == MAIN_AGENT => Some("Message from the lead".to_string()),
-                Some(from) => Some(format!("Message from {from}")),
-                None if !item.is_main() && !own => Some(format!("{} to you", item.agent)),
+                Some(from) => Some(quiet::mail_label(from, &item.agent)),
+                None if !item.is_main() && !own => Some(quiet::mail_label(&item.agent, "you")),
                 None => None,
             };
             if let Some(header) = header {
@@ -3156,7 +3155,7 @@ mod tests {
         );
         assert_eq!(
             rows(&mut t, &Filter::Worker("r1".into(), View::Full), 40, 2),
-            ["✉ Message from the lead", "  Also the docs."]
+            ["✉ main to r1", "  Also the docs."]
         );
     }
 

@@ -453,12 +453,16 @@ fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
             .into_any()
         }
         Kind::Message => {
-            let from = item.from.clone().map(|from| if from == MAIN { "the lead".into() } else { from });
+            let from = item.from.clone();
             let agent = item.agent.clone();
-            // A worker's message to the user names the worker outside its own view.
+            // Who it's from and for, as the user reads it ("main to r12"). A
+            // worker's message to the user names the worker outside its own
+            // view.
             let label = move || match &from {
-                Some(from) => format!("Message from {from}"),
-                None if agent != MAIN && page.worker.get().is_none() => format!("{agent} to you"),
+                Some(from) => crate::quiet::mail_label(from, &agent),
+                None if agent != MAIN && page.worker.get().is_none() => {
+                    crate::quiet::mail_label(&agent, "you")
+                }
                 None => "Message".into(),
             };
             view! {

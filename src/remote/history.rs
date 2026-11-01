@@ -197,7 +197,8 @@ fn items_from(
                     let item = match call.name.as_str() {
                         "complete_task" => Some(Item::new(Kind::Reply, text("summary"))),
                         ASK_USER_TOOL_NAME => Some(question_card(parameters.get("questions"))),
-                        name => render::call(name, &parameters, &running),
+                        // (The main agent's conversation, which has no lead.)
+                        name => render::call(name, &parameters, &running, "main"),
                     };
                     if call.name == crew::STOP_AGENT {
                         let stopped = text("run");
@@ -1297,7 +1298,7 @@ mod tests {
             shown,
             [
                 "2 jobs finished · cargo build --release and npm run dev",
-                "r1 reported · r2 sent a message",
+                "r1 reported · r2 to main",
                 "Monitor ends in 2 min · npm run dev",
             ]
         );

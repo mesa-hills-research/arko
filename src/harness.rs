@@ -7106,7 +7106,7 @@ pub(crate) mod tests {
                 .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         assert_eq!(summary(&harness), "The blue branch is checked.");
-        let lines = ["Message from r1", "r1 reported"];
+        let lines = ["r1 to main", "r1 reported"];
         for line in lines {
             assert!(has(&harness.feed, "notice", line, ""), "{line}");
         }
@@ -7162,7 +7162,7 @@ pub(crate) mod tests {
         assert!(has(
             &harness.feed,
             "call",
-            "message lead “Which branch should I check?”",
+            "message main “Which branch should I check?”",
             ""
         ));
         // The worker's own transcript, its place in the lead's, and its

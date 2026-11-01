@@ -1941,7 +1941,15 @@ impl Feed {
                 } else {
                     Vec::new()
                 };
-                let Some(mut item) = render::call(tool_name, parameters, &running) else {
+                // Who the agent's lead is, by name, which a message to its
+                // lead says.
+                let lead = state
+                    .workers
+                    .iter()
+                    .find(|worker| worker.summary.id == agent)
+                    .and_then(|worker| worker.summary.parent.clone())
+                    .unwrap_or_else(|| MAIN_AGENT.to_string());
+                let Some(mut item) = render::call(tool_name, parameters, &running, &lead) else {
                     // A call the feed doesn't draw (`ask_user`,
                     // `complete_task`) still ends the agent's text, so the
                     // next response's text doesn't run on into it.
@@ -6629,7 +6637,7 @@ mod tests {
                 (Kind::Message, Some("main"), "Also the docs."),
                 (Kind::Text, None, "On it."),
                 (Kind::Call, None, "message r2 “a.rs is done.”"),
-                (Kind::Call, None, "message lead “Halfway.”"),
+                (Kind::Call, None, "message main “Halfway.”"),
             ]
         );
         assert_eq!(of("r2"), [(Kind::Message, Some("r1"), "a.rs is done.")]);
@@ -6656,6 +6664,7 @@ mod tests {
             .into_iter()
             .collect(),
             &[],
+            "main",
         )
         .unwrap();
         call.id = 1;

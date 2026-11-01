@@ -53,20 +53,23 @@ fn flag(parameters: &Parameters, name: &str) -> bool {
 ///
 /// `running` are the runs the calling agent has going, which a
 /// `wait_for_agents` call that names none waits for.
-pub fn call(tool: &str, parameters: &Parameters, running: &[String]) -> Option<Item> {
-    let mut item = line(tool, parameters, running)?;
+///
+/// `lead` is who the calling agent's lead is ("main", or the worker that
+/// started it), which a message to its lead names.
+pub fn call(tool: &str, parameters: &Parameters, running: &[String], lead: &str) -> Option<Item> {
+    let mut item = line(tool, parameters, running, lead)?;
     if item.kind == Kind::Call {
         item.tool = Some(tool.to_string());
         // (In the order of their names, because a `HashMap` has none.)
         let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
         item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
-        item.act = Some(act(tool, parameters, running));
+        item.act = Some(act(tool, parameters, running, lead));
     }
     Some(item)
 }
 
 /// What a call of `tool` does, for the Quiet view's row ([`quiet`]).
-fn act(tool: &str, parameters: &Parameters, running: &[String]) -> Act {
+fn act(tool: &str, parameters: &Parameters, running: &[String], lead: &str) -> Act {
     // A parameter as a row names it, at most as long as Full shows a path.
     let raw = |name: &str| text(parameters, name).trim().to_string();
     let text = |name: &str| cut(&raw(name), 160);
@@ -120,7 +123,7 @@ fn act(tool: &str, parameters: &Parameters, running: &[String]) -> Act {
             ..on(ActKind::Search, String::new())
         },
         LOAD_SKILL_TOOL_NAME => on(ActKind::Skill, text("name")),
-        crew::MESSAGE_AGENT => on(ActKind::Message, text("to")),
+        crew::MESSAGE_AGENT => on(ActKind::Message, addressee(&text("to"), lead)),
         crew::WAIT_FOR_AGENTS => on(
             ActKind::Wait,
             ui::waited_runs(parameters, running).join(", "),
@@ -506,7 +509,7 @@ fn index_name(index: &str) -> String {
 }
 
 /// A call's item, as the terminal shows it.
-fn line(tool: &str, parameters: &Parameters, running: &[String]) -> Option<Item> {
+fn line(tool: &str, parameters: &Parameters, running: &[String], lead: &str) -> Option<Item> {
     let call = |line: String| Item::new(Kind::Call, line);
     Some(match tool {
         "complete_task" | ASK_USER_TOOL_NAME => return None,
@@ -549,7 +552,7 @@ fn line(tool: &str, parameters: &Parameters, running: &[String]) -> Option<Item>
             let message = text(parameters, "message").trim();
             call(format!(
                 "message {} “{}”",
-                text(parameters, "to").trim(),
+                addressee(text(parameters, "to").trim(), lead),
                 cut(message, 160)
             ))
             .detail(long(message, 160))
@@ -605,6 +608,16 @@ fn line(tool: &str, parameters: &Parameters, running: &[String]) -> Option<Item>
         }
         other => call(ui::brief(other, parameters)),
     })
+}
+
+/// Who a `message_agent` call's `to` is, as the user reads it: the agent's
+/// lead by its name ("main", "r5"), else as it is.
+fn addressee(to: &str, lead: &str) -> String {
+    if to.eq_ignore_ascii_case("lead") {
+        lead.to_string()
+    } else {
+        to.to_string()
+    }
 }
 
 /// The message of a `message_agent` call. The worker that gets it shows it
@@ -947,21 +960,13 @@ fn brief(tool: &str, output: &str) -> Outcome {
             outcome
         }
         crew::MESSAGE_AGENT if output.starts_with("Sent") => Outcome::ok("sent"),
-        // Its result is the mail that came, as "[mail 2] r1 ... finished ...".
+        // Its result is the mail that came ("[mail 2] r1 ... finished ..."),
+        // worded for the agent that waited ("An update for you arrived"), so
+        // its line says what came as the user reads it.
         crew::WAIT_FOR_AGENTS => {
-            let mail = output
-                .lines()
-                .filter(|line| line.starts_with("[mail "))
-                .count();
-            let mut outcome = if mail > 0 {
-                Outcome::ok(plural(mail, "message", "messages"))
-            } else {
-                Outcome::ok(cut(
-                    output.lines().next().unwrap_or_default(),
-                    OUTCOME_CHARS,
-                ))
-            };
-            outcome.settled.came = Some(came(output));
+            let came = came(output);
+            let mut outcome = Outcome::ok(quiet::came_words(&came));
+            outcome.settled.came = Some(came);
             outcome
         }
         RUN_WORKFLOW_AGENT_TOOL_NAME => {
@@ -1222,7 +1227,7 @@ mod tests {
 
     /// A call of an agent with no runs going.
     fn call(tool: &str, parameters: &Parameters) -> Option<Item> {
-        super::call(tool, parameters, &[])
+        super::call(tool, parameters, &[], "main")
     }
 
     /// A wait says what it waits for, with the runs its agent has going
@@ -1231,7 +1236,8 @@ mod tests {
     fn a_wait_names_the_runs_it_waits_for() {
         let wait = |pairs: &[(&str, Value)], running: &[&str]| {
             let running: Vec<String> = running.iter().map(|run| run.to_string()).collect();
-            let item = super::call(crew::WAIT_FOR_AGENTS, &params(pairs), &running).unwrap();
+            let item =
+                super::call(crew::WAIT_FOR_AGENTS, &params(pairs), &running, "main").unwrap();
             assert_eq!(item.kind, Kind::Call);
             assert_eq!(item.tool.as_deref(), Some(crew::WAIT_FOR_AGENTS));
             item.text
@@ -1253,16 +1259,18 @@ mod tests {
             wait(&[("runs", serde_json::json!(["r1", "r2"]))], &[]),
             "waiting for r1, r2"
         );
-        // The result of such a wait says the run is over.
-        let outcome = outcome(
-            crew::WAIT_FOR_AGENTS,
-            "Nothing to wait for: r1 is finished. Reports that came earlier reached you already.",
+        // A wait's line says what came, as the user reads it, not as its
+        // result tells the agent that waited.
+        let told = |output: &str| outcome(crew::WAIT_FOR_AGENTS, output).text;
+        assert_eq!(
+            told("Nothing to wait for: r1 is finished. Reports that came earlier reached you already.")
+                .as_deref(),
+            Some("nothing new")
         );
-        assert_eq!(outcome.status, CallStatus::Ok);
-        assert!(
-            outcome
-                .text
-                .is_some_and(|text| text.starts_with("Nothing to wait for: r1 is finished."))
+        assert_eq!(
+            told("An update for you arrived while you waited. It follows. Wait again if you still need to. Still running: r3.")
+                .as_deref(),
+            Some("1 update")
         );
     }
 
@@ -1333,7 +1341,7 @@ mod tests {
             &params(&[("to", "lead".into()), ("message", "Done?".into())]),
         )
         .unwrap();
-        assert_eq!(item.text, "message lead “Done?”");
+        assert_eq!(item.text, "message main “Done?”");
     }
 
     /// Only a start that began the worker at once names it as started. One
@@ -1380,9 +1388,9 @@ mod tests {
         assert_eq!(
             told(
                 crew::WAIT_FOR_AGENTS,
-                "[mail 2] r1 (agent `worker`) finished. Its report:\n\nDone.\n[mail 3] r2 (agent `worker`) finished."
+                "[mail 2] r1 (agent `worker`) finished. Its report:\n\nDone.\n\n[end of mail 2]\n\n[mail 3] r2 (agent `worker`) finished. Its report:\n\nDone.\n\n[end of mail 3]"
             ),
-            (CallStatus::Ok, "2 messages".into())
+            (CallStatus::Ok, "r1 and r2 finished".into())
         );
         assert_eq!(
             told(
@@ -1520,12 +1528,23 @@ mod tests {
         );
         assert_eq!(
             (message.kind, message.target.as_str()),
-            (ActKind::Message, "lead")
+            (ActKind::Message, "main")
         );
+        // A worker's message to its lead names the worker that started it.
+        let nested = super::call(
+            crew::MESSAGE_AGENT,
+            &params(&[("to", "lead".into()), ("message", "Done.".into())]),
+            &[],
+            "r5",
+        )
+        .unwrap();
+        assert_eq!(nested.text, "message r5 “Done.”");
+        assert_eq!(nested.act.map(|act| act.target).as_deref(), Some("r5"));
         let wait = super::call(
             crew::WAIT_FOR_AGENTS,
             &params(&[]),
             &["r3".into(), "r4".into()],
+            "main",
         )
         .and_then(|item| item.act)
         .unwrap();

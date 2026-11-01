@@ -730,8 +730,14 @@ fn words(group: &Group) -> Words {
     words
 }
 
+/// Who a message is from and who it's for, as the user reads it: "r12 to
+/// main", "main to r12", "r3 to r12", and "r1 to you" for one to the user.
+pub fn mail_label(from: &str, to: &str) -> String {
+    format!("{from} to {to}")
+}
+
 /// What came while waits waited, in a few words ("r91 finished, 3 updates").
-fn came_words(came: &Came) -> String {
+pub fn came_words(came: &Came) -> String {
     let mut parts = Vec::new();
     let finished = distinct(came.finished.iter().map(String::as_str));
     if !finished.is_empty() {
