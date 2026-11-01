@@ -448,8 +448,13 @@ details.quiet > summary { display: block; }
 .row.quiet.still summary { cursor: default; }
 /* An open Quiet row shows what its calls hold behind one line at its left,
    under the row's triangle, starting where the row's text does. What a
-   call with a line of its own holds goes under that line. */
-.quiet-calls { margin: 2px 0 6px 4px; padding-left: 10px; border-left: 2px solid var(--line); }
+   call with a line of its own holds goes under that line. A thinking in it
+   has no line beside it, so its triangle stands in the line's column, as
+   every fold's does. */
+.quiet-calls { margin: 2px 0 6px; }
+/* (Its own box, so the margins inside it don't break the line between
+   two calls.) */
+.quiet-calls > .quiet-member { display: flow-root; margin-left: 4px; padding-left: 10px; border-left: 2px solid var(--line); }
 .quiet-member .call-line { margin: 2px 0; }
 .quiet-member.own > .holds { padding-left: 16px; }
 .quiet-calls .row.result { margin: 0; }

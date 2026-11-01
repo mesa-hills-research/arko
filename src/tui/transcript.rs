@@ -1138,8 +1138,9 @@ impl Transcript {
     /// The lines of a Quiet row, which are its words, and when it's open what
     /// its calls hold behind a bar under them ([`quiet::Opened`]). Each call
     /// has its own line there, except the one the row's line names, and under
-    /// it the text the call holds, its outcome and its output. The thinking
-    /// after them shows as the Quiet view shows it.
+    /// it the text the call holds, its outcome and its output. A thinking
+    /// after them has its triangle in the bar's place, in the column every
+    /// fold's triangle stands in, and its text behind the bar.
     fn quiet_lines(
         &self,
         row: &QuietRow,
@@ -1214,9 +1215,16 @@ impl Transcript {
                         quiet: true,
                         clock: took.as_deref(),
                     };
-                    // (Its lines come with a row's margin, where the bar goes.)
-                    let thought = entry_lines(item, theme, inner + SPINNER, true, None, look);
-                    rows.extend(thought.into_iter().map(|line| outdented(line, SPINNER)));
+                    // Its line as a row's, the triangle where the bar goes, and
+                    // its text behind the bar, under the label.
+                    let mut thought =
+                        entry_lines(item, theme, width.saturating_sub(MARGIN), true, None, look)
+                            .into_iter();
+                    let start = lines.len();
+                    lines.extend(thought.next());
+                    lines.extend(thought.map(|line| outdented(line, MARGIN).decorated(bar())));
+                    spans.push((item.id, start..lines.len()));
+                    continue;
                 }
                 _ => {}
             }
@@ -3584,6 +3592,58 @@ mod tests {
         }
     }
 
+    /// A thinking in an open Quiet row has its triangle in the bar's place,
+    /// in the column of every fold's triangle, under the "Working…" spinner,
+    /// and its label where every row's text starts. Open, its text is behind
+    /// the bar, under its label (r127).
+    #[test]
+    fn a_thinking_in_an_open_quiet_row_keeps_the_markers_column() {
+        use crate::remote::{Act, ActKind};
+        let quiet = Filter::Main(View::Quiet);
+        let theme = Theme::terminal();
+        let mut t = Transcript::new();
+        let read = |id: u64, path: &str| {
+            let mut call = item(id, Kind::Call, path);
+            call.turn = Some(1);
+            call.status = Some(CallStatus::Ok);
+            call.outcome = Some("3 lines".into());
+            call.act = Some(Act {
+                kind: ActKind::Read,
+                target: path.into(),
+                ..Act::default()
+            });
+            call
+        };
+        let mut thinking = item(2, Kind::Thinking, "Which one?");
+        thinking.turn = Some(1);
+        for item in [read(1, "a.rs"), thinking, read(3, "b.rs")] {
+            t.apply(Update::Item(item));
+        }
+        rows(&mut t, &quiet, 40, 8);
+        t.toggle(1, 0, &quiet, &theme);
+        t.toggle(2, 2, &quiet, &theme);
+        let shown = rows(&mut t, &quiet, 40, 8);
+        assert_eq!(
+            shown[..6],
+            [
+                "  ▾ Read a.rs and b.rs",
+                "  │ Read a.rs · 3 lines",
+                "  ▾ Thought",
+                "  │   Which one?",
+                "  │   ↑ show the first line only",
+                "  │ Read b.rs · 3 lines",
+            ]
+        );
+        let at = |row: &str, column: usize| row.chars().nth(column);
+        for row in &shown[..6] {
+            assert!(matches!(at(row, SPINNER), Some('▾' | '│')), "{row:?}");
+        }
+        for row in [&shown[0], &shown[2]] {
+            assert_eq!(at(row, LABEL - 1), Some(' '), "{row:?}");
+            assert_ne!(at(row, LABEL), Some(' '), "{row:?}");
+        }
+    }
+
     /// The thinking that streams has its spinner in the "Working…" line's
     /// column, and its word in that line's column. Once it stops, the fold's
     /// triangle takes the spinner's cell and the word stays, and a click on
@@ -4975,7 +5035,7 @@ mod tests {
             [
                 "  ▾ Read a.rs and b.rs",
                 "  │ Read a.rs · 3 lines",
-                "  │ ▸ Thought",
+                "  ▸ Thought",
                 "  │ Read b.rs · 4 lines",
                 ""
             ]
