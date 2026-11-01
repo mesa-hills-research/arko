@@ -12,6 +12,10 @@
 //! stopped) leaves the tray. Nothing of the tray is kept with the session,
 //! since a tool that runs again after a resume asks again.
 //!
+//! The terminal and the web page answer by the same rules, which an app's
+//! tray can share. [`ShownApprovals`] says which requests an answer takes,
+//! and [`MessageSwitch`] whether it takes the message box's words.
+//!
 //! When no one can answer (`-p`, no terminal), [`Approvals::can_answer`] is
 //! false, and a tool refuses with words of its own before it asks.
 
@@ -24,9 +28,9 @@ use uuid::Uuid;
 use crate::remote::Feed;
 pub use crate::remote::protocol::{
     Approval, ApprovalAnswers, ApprovalChoice, ApprovalRequest, BillingApproval, Detail, EnvName,
-    Look, MAX_APPROVAL_WORDS, ProfileApproval, Scope, ServerApproval, SkillApproval, SkillFile,
-    SkillSource, SkillUpdate, answer_labels, approval_words_refusal, approvals_heading,
-    approve_label, reject_label,
+    Look, MAX_APPROVAL_WORDS, MessageSwitch, ProfileApproval, Scope, ServerApproval,
+    ShownApprovals, SkillApproval, SkillFile, SkillSource, SkillUpdate, answer_labels,
+    approval_words_refusal, approvals_heading, approve_label, reject_label,
 };
 use crate::ui::Output;
 
