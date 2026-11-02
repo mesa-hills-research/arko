@@ -74,13 +74,13 @@ turn's Quiet rows in place. The three views share one model of a row.
   new calls.
 - Every marker (a fold's ▸ or ▾, ✉, ·) stands in one column, the column of the Working spinner, in
   every view and on every surface, a thinking inside an open row included.
-- Working… keeps a blank row above and below, whatever starts the turn, and it is the one loading
-  indicator of a turn, with the status bar's Working. A thinking row and Working… have the same space
-  above and below.
+- Working… keeps a blank row above it, whatever comes before, and it is the one loading indicator of
+  a turn, with the status bar's Working. A thinking row has the same space above it.
 - A tag never sits between a message's rows. A message that fits on one row has its tag ("pending",
   "queued", "from the web page") at the right of that row. One that wraps has the tag on a row of
   its own under the last.
-- The line after a turn (its time and cost) is left-aligned with the text.
+- On the page and in Studio, the line after a turn (its time and cost) is left-aligned with the text.
+  The terminal shows a turn's time and cost in its status bar instead.
 - Content ends where it ends. A final table or code block has no gap below it, and a reply's actions
   sit at the same distance from any last block.
 
