@@ -218,7 +218,7 @@ fn lines_view(kind: ContentKind, text: &str) -> AnyView {
                         let sign = diff.then(|| view! { <span class="sign">{mark.symbol().to_string()}</span> });
                         view! {
                             <div class=class>
-                                <span class="ln" style=format!("min-width:{width}ch")>{number.to_string()}</span>
+                                <span class="ln" style:min-width=format!("{width}ch")>{number.to_string()}</span>
                                 {sign}
                                 <span class="text" inner_html=html></span>
                             </div>
