@@ -5387,6 +5387,7 @@ pub(crate) mod tests {
     }
 
     /// What the model is sent, measured (an ignored test), in its own file.
+    #[cfg(unix)]
     mod request_sizes {
         use super::*;
         include!("request_size_tests.rs");

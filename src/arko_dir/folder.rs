@@ -199,6 +199,7 @@ impl Folder {
     }
 
     /// The names of the entries in the folder, sorted.
+    #[cfg(unix)]
     pub(crate) fn names(&self) -> io::Result<Vec<OsString>> {
         self.names_up_to(usize::MAX)
     }

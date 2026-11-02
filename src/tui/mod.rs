@@ -519,7 +519,8 @@ fn write_close(out: &mut impl Write, pop: bool) {
 
 /// Gives the terminal back now, as the view does when it closes, for a
 /// process about to end without closing it (a signal). It does nothing
-/// when the view doesn't have the terminal.
+/// when the view doesn't have the terminal. Only Unix ends on signals.
+#[cfg(unix)]
 pub(crate) fn give_back_terminal() {
     close_and_wait();
 }
@@ -591,7 +592,7 @@ pub(crate) fn give_back_terminal_at_once(wait: Duration) {
 }
 
 /// Takes the terminal as the view does, for a test of how it's given back.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn take_terminal() -> std::io::Result<impl Sized> {
     // (With no log for its writer's watchdog.)
     open(PathBuf::new())

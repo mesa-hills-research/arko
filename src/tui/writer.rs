@@ -261,7 +261,7 @@ impl Writer {
 
     /// Waits until everything handed over is written, or the writer failed,
     /// for at most `timeout`. Whether it was.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn wait_written(&self, timeout: Duration) -> bool {
         let until = Instant::now() + timeout;
         let mut state = crate::lock(&self.shared.state);
