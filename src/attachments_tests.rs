@@ -940,8 +940,9 @@ fn an_image_only_note_at_the_end_keeps_its_image() {
 /// A message is read from its start and its files' block whole, so framing
 /// a file holds is the file's own: in a plain message, after Arko's label,
 /// in a message Arko composed with unread notes, and before a handover's
-/// report. The notes' images are those their lines say, and an older note
-/// without a line owns as many as its block says went as images.
+/// report. The notes' images are those their lines say. In a section an
+/// older Arko composed, which said no counts, a note owns as many as its
+/// block says went as images, and a line like a count is the user's.
 #[test]
 fn a_message_reads_the_same_whatever_its_files_hold() {
     use crate::remote::{as_sent, notes_images, own_words, shown_words};
@@ -952,20 +953,27 @@ fn a_message_reads_the_same_whatever_its_files_hold() {
     );
     let labelled = format!("(This message answers q3.)\n{plain}\n\n(Still open: q5.)");
     let report = format!("{plain}\n\n# Handover report\n\nThe report.");
+    let note = |words: &str| (image_block("old.png") + words).replace('\n', "\n  ");
     let composed = format!(
-        "# What I typed during your last turn, which you didn't get to read\n\n- Earlier.\n  (With an image, shown after this message.)\n- {}\n\n# My message\n\n{labelled}",
-        image_block("old.png").replace('\n', "\n  ") + "Older."
+        "# What I typed during your last turn, which you didn't get to read\n\nEach note ends with how many of the images after this message are its own.\n\n- Earlier.\n  (With an image, shown after this message.)\n- {}\n  (With an image, shown after this message.)\n- Later.\n  (With no images.)\n\n# My message\n\n{labelled}",
+        note("Shown.")
     );
-    for text in [&plain, &labelled, &report, &composed] {
+    // As an older Arko composed it, which said no count, so a line of the
+    // user's own stays theirs, and a note's block guesses its images.
+    let older = format!(
+        "# What I typed during your last turn, which you didn't get to read\n\n- Earlier.\n  (With an image, shown after this message.)\n- {}\n\n# My message\n\n{labelled}",
+        note("Older.")
+    );
+    for text in [&plain, &labelled, &report, &composed, &older] {
         assert_eq!(shown_words(text), "Look.", "{text}");
         assert!(as_sent(text).starts_with("<attachments>\n"), "{text}");
         assert!(as_sent(text).contains(inline), "{text}");
     }
     assert_eq!(own_words(&report), plain);
     assert_eq!(notes_images(&plain, 1), 0);
-    // One stated, and one guessed from an older note's block.
     assert_eq!(notes_images(&composed, 3), 2);
     assert_eq!(notes_images(&composed, 1), 1);
+    assert_eq!(notes_images(&older, 3), 1);
 }
 
 /// A message of files alone keeps a handover's report after it out of its
@@ -977,4 +985,89 @@ fn a_files_only_message_keeps_its_report_out_of_its_words() {
     assert_eq!(crate::remote::shown_words(&text), "");
     assert_eq!(crate::remote::as_sent(&text), plain);
     assert_eq!(crate::remote::shown_words(&format!("{plain}\n\nLook.\n\n# Handover report\n\nThe report.")), "Look.");
+}
+
+/// A count of images no message could have, in a note's line, owns no more
+/// than the images there are, and reading it can't overflow.
+#[test]
+fn a_huge_image_count_owns_no_more_than_the_images() {
+    let section = |first: &str| {
+        format!(
+            "# What I typed during your last turn, which you didn't get to read\n\nEach note ends with how many of the images after this message are its own.\n\n- First.\n  {first}\n- Second.\n  (With an image, shown after this message.)\n\n# My message\n\nMine."
+        )
+    };
+    for count in [u64::MAX.to_string(), u32::MAX.to_string()] {
+        let text = section(&format!("(With {count} images, shown after this message.)"));
+        assert!(crate::remote::notes_images(&text, 2) <= 2, "{count}");
+        let images = crate::images::Images::default();
+        let restored = crate::remote::history(&[with_images(&text, 2)], false, &images);
+        let owned: usize = restored.iter().map(|item| item.images.len()).sum();
+        assert!(owned <= 2, "{count}");
+    }
+    let update = format!(
+        "# Workflow context update\n\nNew notes on your task, oldest first.\n- Note 1 from the operator (the person running this workflow), 2026-11-02 08:00 UTC:\n  First.\n  (With {} images, shown after this update.)\n- Note 2 from the operator (the person running this workflow), 2026-11-02 08:00 UTC:\n  Second.\n  (With {} images, shown after this update.)\n",
+        u32::MAX,
+        u32::MAX
+    );
+    let images = crate::images::Images::default();
+    let restored = crate::remote::history(&[with_images(&update, 2)], false, &images);
+    assert_eq!(restored.iter().map(|item| item.images.len()).sum::<usize>(), 2);
+}
+
+/// A note the user typed that ends with a line like Arko's count of its
+/// images keeps that line as its words, and takes no image of another's.
+#[tokio::test]
+async fn a_notes_own_line_like_a_count_stays_its_words() {
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let held = Arc::new(Notify::new());
+    let server = keeping(&bodies, Some(held.clone())).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let feed = harness.feed.clone();
+    let actions = harness.remote_actions.clone();
+    let dir = temp.path().join("work").join(".arko").join("attachments");
+    let kept = bodies.clone();
+    let words = "This line is documentation.\n(With an image, shown after this message.)";
+    let client = async move {
+        sender.send(Input::Line("Start.".into())).unwrap();
+        until(|| feed.activity().working).await;
+        let message = Action::Message {
+            text: words.into(),
+            files: Vec::new(),
+        };
+        page_send(&actions, message).await;
+        let files = vec![attached(&dir, "file.png", Kind::Image, "image/png", &one_pixel())];
+        let message = Action::Message {
+            text: "A file photo.".into(),
+            files,
+        };
+        page_send(&actions, message).await;
+        held.notify_one();
+        until(|| !feed.activity().working && lock(&kept).len() >= 2).await;
+        sender.send(Input::Eof).unwrap();
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    let Conversation::Answered(result) = &harness.conversation else {
+        panic!("answered");
+    };
+    let task = result.task().unwrap();
+    let restored = crate::remote::history(
+        &task.conversation.messages,
+        task.agent_config.tool_config.ends_task_with_text(),
+        &harness.images,
+    );
+    let counts = |items: &[crate::remote::Item]| {
+        items
+            .iter()
+            .filter(|item| item.kind == crate::remote::Kind::User)
+            .map(|item| (item.text.clone(), item.images.len()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(counts(&restored), counts(&harness.feed.subscribe().0.items));
+    assert!(restored.iter().any(|item| item.text == words));
 }

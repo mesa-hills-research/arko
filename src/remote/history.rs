@@ -464,15 +464,15 @@ pub(crate) fn own_words(text: &str) -> &str {
 /// notes it carried own, which come before the message's own
 /// ([`crate::attachments::Share`]).
 pub(crate) fn notes_images(text: &str, images: usize) -> usize {
-    let notes: usize = unread_notes(parse(text).sections)
+    unread_notes(parse(text).sections)
         .into_iter()
         .map(|(note, share)| {
             share
                 .wanted(crate::attachments::shown_in(&note))
                 .unwrap_or(0)
         })
-        .sum();
-    notes.min(images)
+        .fold(0, usize::saturating_add)
+        .min(images)
 }
 
 /// The user's message `text` as they sent it, meaning their own words
@@ -683,6 +683,11 @@ fn unread_notes(text: &str) -> Vec<(String, crate::attachments::Share)> {
         return Vec::new();
     };
     let list = list.split("\n\n# ").next().unwrap_or(list);
+    // Arko says each note's images after it, and says so first. Before it
+    // did, a line of the user's own isn't taken for one.
+    let counted = list
+        .trim_start()
+        .starts_with(crate::attachments::NOTES_COUNTED);
     let mut notes: Vec<String> = Vec::new();
     for line in list.lines() {
         if let Some(first) = line.strip_prefix("- ") {
@@ -696,7 +701,10 @@ fn unread_notes(text: &str) -> Vec<(String, crate::attachments::Share)> {
         .into_iter()
         .map(|note| {
             let mut lines: Vec<&str> = note.trim().lines().collect();
-            let said = lines.last().and_then(|last| images_said(last));
+            let said = lines
+                .last()
+                .filter(|_| counted)
+                .and_then(|last| images_said(last));
             if said.is_some() {
                 lines.pop();
             }
@@ -747,6 +755,9 @@ fn operator_notes(update: &str) -> Vec<(String, crate::attachments::Share)> {
 /// message for it ("(With an image, shown after this update.)", "(With 3
 /// images, …)", "(With 2 of its 3 images, …)"), or `None` for another line.
 fn images_said(line: &str) -> Option<usize> {
+    if line == crate::attachments::NO_IMAGES {
+        return Some(0);
+    }
     let said = line.strip_prefix("(With ")?;
     let follow = [", shown after this update.", ", shown after this message."];
     if !follow.iter().any(|follow| line.contains(follow)) || !line.ends_with(')') {
@@ -755,8 +766,10 @@ fn images_said(line: &str) -> Option<usize> {
     if said.starts_with("an image,") {
         return Some(1);
     }
+    // (Bounded, so counts add up without overflowing. Those that own more
+    // than there are own what there is.)
     let digits = said.find(|c: char| !c.is_ascii_digit())?;
-    said[..digits].parse().ok()
+    (digits > 0).then(|| usize::from(said[..digits].parse::<u16>().unwrap_or(u16::MAX)))
 }
 
 /// A note the user typed during a turn, as the live transcript shows it, meaning

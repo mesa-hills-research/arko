@@ -4935,25 +4935,23 @@ impl Harness {
                 crate::unread::sweep(&self.session.dir, waiting);
                 loaded
             });
-            // Each note says how many of the images are its own, as the
+            // Each note ends with how many of the images are its own, as the
             // workflow's notes the agent reads do, so the agent, and the
-            // transcript once restored, can tell whose they are.
+            // transcript once restored, can tell whose they are. The section
+            // says so first, where no note's words can.
             let mut images = Vec::new();
             let notes: Vec<String> = loaded
                 .into_iter()
                 .map(|(text, own)| {
                     let line = crate::attachments::images_line(own.len());
                     images.extend(own);
-                    let text = match line {
-                        Some(line) => format!("{text}\n{line}"),
-                        None => text,
-                    };
-                    format!("- {}", text.replace('\n', "\n  "))
+                    format!("- {}", format!("{text}\n{line}").replace('\n', "\n  "))
                 })
                 .collect();
             self.pending_images.splice(0..0, images);
             parts.push(format!(
-                "# What I typed during your last turn, which you didn't get to read\n\n{}",
+                "# What I typed during your last turn, which you didn't get to read\n\n{}\n\n{}",
+                crate::attachments::NOTES_COUNTED,
                 notes.join("\n")
             ));
         }

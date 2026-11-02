@@ -150,14 +150,23 @@ impl Share {
     }
 }
 
-/// The line after a note of the user's that says how many images that went
-/// with the message are its own, as the workflow's notes say it of their
-/// update's, or `None` without any.
-pub(crate) fn images_line(images: usize) -> Option<String> {
+/// What a section of the user's unread notes says first, before the notes,
+/// where their words can't say it: each note ends with the line of its
+/// images ([`images_line`]).
+pub(crate) const NOTES_COUNTED: &str =
+    "Each note ends with how many of the images after this message are its own.";
+
+/// The line of a note with no images ([`images_line`]).
+pub(crate) const NO_IMAGES: &str = "(With no images.)";
+
+/// The line after each of the user's unread notes that says how many of the
+/// images that went with the message are its own, as the workflow's notes
+/// say it of their update's.
+pub(crate) fn images_line(images: usize) -> String {
     match images {
-        0 => None,
-        1 => Some("(With an image, shown after this message.)".into()),
-        _ => Some(format!("(With {images} images, shown after this message.)")),
+        0 => NO_IMAGES.into(),
+        1 => "(With an image, shown after this message.)".into(),
+        _ => format!("(With {images} images, shown after this message.)"),
     }
 }
 
@@ -220,9 +229,12 @@ impl Owners {
             .iter()
             .map(|(at, share)| share.wanted(shown(*at)))
             .collect();
-        let rest = images
-            .len()
-            .saturating_sub(wanted.iter().flatten().sum::<usize>());
+        let rest = images.len().saturating_sub(
+            wanted
+                .iter()
+                .flatten()
+                .fold(0, |sum, n| sum.saturating_add(*n)),
+        );
         let mut images = images.into_iter();
         let owned: Vec<Vec<_>> = wanted
             .iter()
