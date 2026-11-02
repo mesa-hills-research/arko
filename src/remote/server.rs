@@ -612,6 +612,7 @@ fn router(app: Arc<App>) -> Router {
             get(upload_state).put(upload_put).delete(upload_remove),
         )
         .route("/api/attachments/{name}", get(attachment))
+        .route("/api/result/{id}", get(result))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(axum::middleware::map_response(harden))
         .with_state(app)
@@ -1865,6 +1866,47 @@ async fn stop_job(
     app.act(Action::StopJob { job: body.job })
 }
 
+/// `GET /api/result/{id}` gives the whole content of a call's result (a
+/// `result` item whose preview leaves some out), with its code highlighted,
+/// while Arko keeps it. It waits for the feed and highlights off the
+/// server's threads, which go on meanwhile.
+async fn result(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let Ok(id) = id.parse::<u64>() else {
+        return (StatusCode::NOT_FOUND, error_body("no longer kept")).into_response();
+    };
+    let feed = app.feed.clone();
+    let made = tokio::task::spawn_blocking(move || {
+        let (whole, kind, language) = feed.content(id)?;
+        let result = super::protocol::ResultData {
+            code: highlight::content_code(kind, &whole, language.as_deref()),
+            text: whole.to_string(),
+        };
+        serde_json::to_vec(&result).ok()
+    })
+    .await;
+    match made {
+        Ok(Some(body)) => (
+            [(header::CONTENT_TYPE, "application/json")],
+            Bytes::from(body),
+        )
+            .into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, error_body("no longer kept")).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error_body("the content couldn't be made"),
+        )
+            .into_response(),
+    }
+}
+
 /// `GET /api/images/{id}` gives the bytes of an image an item shows, while Arko
 /// keeps it, and only of a type the page shows. Asked for with the server's
 /// version, an ID's bytes never change, so a browser may keep them.
@@ -2134,6 +2176,44 @@ fn download_disposition(name: &str) -> String {
 mod tests {
     use super::super::{Confirm, Refusal};
     use super::*;
+
+    /// The items of the session `ARKO_SCENARIO` names as the page gets
+    /// them, its workers, and the whole contents it asks for, in the folder
+    /// `ARKO_RENDERINGS` names (`items.json`, `workers.json`,
+    /// `results.json`), for the page's renderings (`remote::scenario`).
+    #[test]
+    #[ignore]
+    fn renderings() {
+        let (Ok(script), Ok(out)) = (
+            std::env::var("ARKO_SCENARIO"),
+            std::env::var("ARKO_RENDERINGS"),
+        ) else {
+            return;
+        };
+        let feed = super::super::scenario::play(&script);
+        let snapshot = feed.subscribe().0;
+        let workers = serde_json::to_value(&snapshot.workers).unwrap();
+        let items = snapshot.items;
+        let page: Vec<serde_json::Value> = items
+            .iter()
+            .map(|item| serde_json::to_value(PageItem::of(item, "1")).unwrap())
+            .collect();
+        let mut results = serde_json::Map::new();
+        for item in items.iter().filter(|item| item.more.is_some()) {
+            let (whole, kind, language) = feed.content(item.id).unwrap();
+            let data = super::super::protocol::ResultData {
+                code: highlight::content_code(kind, &whole, language.as_deref()),
+                text: whole.to_string(),
+            };
+            results.insert(item.id.to_string(), serde_json::to_value(data).unwrap());
+        }
+        let write = |name: &str, value: serde_json::Value| {
+            std::fs::write(format!("{out}/{name}"), value.to_string()).unwrap();
+        };
+        write("items.json", page.into());
+        write("workers.json", workers);
+        write("results.json", results.into());
+    }
 
     /// Whether the built page holds `text`, as its code writes it.
     fn page_has(text: &str) -> bool {
@@ -3456,6 +3536,76 @@ mod tests {
         served.login().await;
     }
 
+    /// A request for a call's whole content waits for the feed and does its
+    /// highlighting off the server's own threads, so the server goes on
+    /// meanwhile, even on one thread with the feed held.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_whole_content_is_made_off_the_servers_threads() {
+        use arko_agents::AgentEvent;
+        use arko_workflows::WorkflowEvent;
+        let feed = Feed::new("main");
+        let event = |event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: "main".into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event,
+        };
+        let call = uuid::Uuid::new_v4();
+        let read = AgentEvent::ToolCallFormatted {
+            tool_call_id: call,
+            tool_name: "read_file".into(),
+            parameters: [("path".to_string(), "a.rs".into())].into(),
+        };
+        feed.event(&event(read), None);
+        let lines: Vec<String> = (1..=40).map(|n| format!("{n} | let x{n} = {n};")).collect();
+        let result = AgentEvent::ToolResult {
+            tool_call_id: call,
+            tool_name: "read_file".into(),
+            output: lines.join("\n"),
+        };
+        feed.event(&event(result), None);
+        let id = feed
+            .subscribe()
+            .0
+            .items
+            .iter()
+            .find(|item| item.more.is_some())
+            .unwrap()
+            .id;
+        let served = serve(&feed);
+        let cookie = served.login().await;
+        // The longest the server's thread went without a turn.
+        let gap = Arc::new(Mutex::new(Duration::ZERO));
+        let ticker = tokio::spawn({
+            let gap = gap.clone();
+            async move {
+                let mut last = std::time::Instant::now();
+                loop {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    let now = std::time::Instant::now();
+                    let mut gap = gap.lock().unwrap();
+                    *gap = (*gap).max(now - last);
+                    last = now;
+                }
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let held = feed.clone();
+        let holder = std::thread::spawn(move || held.hold(Duration::from_millis(400)));
+        std::thread::sleep(Duration::from_millis(20));
+        let response = served
+            .get(&format!("/api/result/{id}"), Some(&cookie))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let whole: super::super::protocol::ResultData = response.json().await.unwrap();
+        assert_eq!(whole.text.lines().count(), 40);
+        holder.join().unwrap();
+        ticker.abort();
+        let gap = *gap.lock().unwrap();
+        assert!(gap < Duration::from_millis(200), "{gap:?}");
+    }
+
     /// The stream starts with the history and the status, then sends what
     /// follows, meaning new items, more text, the status as it changes.
     #[tokio::test]
@@ -3535,15 +3685,19 @@ mod tests {
         );
         let events = read_until(&mut stream, &mut buffer, |name, _| name == "worker").await;
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, ["item", "change", "item", "worker"]);
+        assert_eq!(names, ["item", "change", "item", "item", "worker"]);
         assert_eq!(events[0].1["status"], "running");
         assert_eq!(events[1].1["id"], events[0].1["id"]);
         assert_eq!(events[1].1["status"], "ok");
         assert_eq!(events[1].1["outcome"], "2 lines");
-        assert_eq!(events[2].1["kind"], "worker_line");
-        assert_eq!(events[2].1["worker"], "r1");
-        assert_eq!(events[3].1["title"], "Count the files.");
-        assert_eq!(events[3].1["state"], "running");
+        // The read's content, its lines numbered.
+        assert_eq!(events[2].1["kind"], "result");
+        assert_eq!(events[2].1["content"], "lines");
+        assert_eq!(events[2].1["text"], "1\ta\n2\tb");
+        assert_eq!(events[3].1["kind"], "worker_line");
+        assert_eq!(events[3].1["worker"], "r1");
+        assert_eq!(events[4].1["title"], "Count the files.");
+        assert_eq!(events[4].1["state"], "running");
 
         // A note waits, pending, and moves once the agent reads it. The
         // page drops it and gets it again, with no new history.

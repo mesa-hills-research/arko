@@ -411,6 +411,9 @@ button.cache { padding: 0; border: 0; background: none; }
 .row.call, .row.count { margin: 3px 0; color: var(--muted); font: 13px/1.45 var(--mono); }
 .call-line { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .call-line .mark { display: inline-block; flex: none; color: var(--muted); transition: transform 0.12s; }
+/* A fold's triangle has a column of its own, as wide in every row whatever
+   the row's font, so the text after it starts at one place, 16px in. */
+.call-line .mark, details.thinking > summary .mark { width: 10px; text-align: center; }
 .call-line .who {
   display: inline-block;
   flex: none;
@@ -448,23 +451,70 @@ details.call > summary::-webkit-details-marker,
 details.thinking > summary::-webkit-details-marker,
 details.more > summary::-webkit-details-marker { display: none; }
 details.quiet > summary { display: block; }
-.row.quiet.muted .what { opacity: 0.6; }
-.quiet-calls { padding-left: 16px; }
+.row:is(.quiet, .status).muted .what { opacity: 0.6; }
+/* A row with nothing more to show than its words has no fold. */
+.row:is(.quiet, .status).still summary { cursor: default; }
+/* A failed Quiet row's one ✗ stands at its right. */
+.call-line .outcome.right { margin-left: auto; }
+.call-line .outcome.right::before { content: none; }
+/* An open Quiet row shows what its calls hold behind one line at its left,
+   under the row's triangle, starting where the row's text does. In a row
+   of several, each call's Full line opens to what it holds, under it. A
+   thinking in it has no line beside it, so its triangle stands in the
+   line's column, as every fold's does. */
+.quiet-calls { margin: 2px 0 6px; }
+/* (Its own box, so the margins inside it don't break the line between
+   two calls.) */
+.quiet-calls > .quiet-member { display: flow-root; margin-left: 4px; padding-left: 10px; border-left: 2px solid var(--line); }
+.quiet-member .call-line { margin: 2px 0; }
+.quiet-member.own > .holds { padding-left: 16px; }
+.quiet-member .member-line { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.quiet-member .member-line:disabled { cursor: default; }
+.quiet-calls .row.thinking { margin: 4px 0; }
 details.call[open] > summary .mark,
 details.thinking[open] > summary .mark { transform: rotate(90deg); }
 
-details.call pre, .row.result pre {
-  margin: 4px 0 6px 14px;
-  padding: 4px 0 4px 10px;
+/* A call's content under it in Full, behind a line at its left. */
+details.call > .holds, .row.result > .holds {
+  margin: 0 0 0 4px;
+  padding: 2px 0 2px 10px;
   border-left: 2px solid var(--line);
+}
+.row.result { margin: 0 0 6px; }
+/* What a call holds, its detail and its content, muted but for a command's
+   output, a message, a file's lines and a diff. */
+.holds pre.held, .holds .held.code {
+  margin: 2px 0;
+  padding: 0;
+  border: 0;
   color: var(--muted);
   font: 12.5px/1.45 var(--mono);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
-.row.result { margin: 0 0 6px; }
-/* A failed command's output is marked, not shouted. */
-.row.result.level-warn pre { border-left-color: var(--warn-mark); }
-.row.result.level-error pre { border-left-color: var(--error); color: var(--error); }
+.holds pre.held.plain, .holds .held.code { color: var(--text); }
+.holds .held.code .line { display: flex; gap: 1ch; }
+.holds .held.code .line.note { color: var(--muted); }
+.holds .held.code .ln { flex: none; color: var(--muted); text-align: right; user-select: none; }
+.holds .held.code .sign { flex: none; width: 1ch; user-select: none; }
+.holds .held.code .text { min-width: 0; }
+.holds .held.diff .add { background: color-mix(in srgb, var(--success) 14%, transparent); }
+.holds .held.diff .del { background: color-mix(in srgb, var(--error) 12%, transparent); }
+/* The door to the rest of a content, muted text. */
+.holds .door {
+  display: block;
+  margin: 2px 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: 12.5px/1.45 var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+.holds .door:disabled { cursor: default; }
+/* A worker's report, under its row in the main transcript, reads as text. */
+.row.status .holds .md { color: var(--text); }
 
 .row.output pre {
   margin: 0;
@@ -493,6 +543,9 @@ pre.block {
 }
 
 .row.count button { padding: 2px 0; border: 0; background: none; color: var(--muted); font: inherit; text-align: left; }
+/* Its triangle stands in the column of every fold's (`.call-line .mark`). */
+.row.count button.call-line { display: inline-flex; }
+.row.count button[aria-expanded="true"] .mark { transform: rotate(90deg); }
 @media (hover: hover) {
   .row.count button:hover { color: var(--text); }
 }
@@ -508,12 +561,14 @@ details.thinking > summary .mark { flex: none; transition: transform 0.12s; }
 details.thinking > summary .what { flex: none; font-weight: 600; }
 details.thinking > summary .first { min-width: 0; overflow: hidden; font-style: italic; text-overflow: ellipsis; white-space: nowrap; }
 details.thinking[open] > summary .first { display: none; }
-details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
+details.thinking .thinking-text { margin: 4px 0 0 16px; font-style: italic; }
 
 /* The agent waits on its model, or thinks, and the word shimmers. "Working…"
    starts at the left edge of the reply text. */
 .row.working { margin: 12px 0; color: var(--muted); font-size: 13.5px; }
 .row.working .what { font-weight: 600; }
+/* Its room, while something else shows that the agent works. */
+.row.working.room { visibility: hidden; }
 /* A Thinking row and "Working…" have the same space above and below,
    whatever stands beside them. A neighbour's margin collapses with theirs,
    so theirs is as large as a reply's, and a turn's mark next to them gives

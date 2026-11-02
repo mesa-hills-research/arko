@@ -154,7 +154,7 @@ impl Outside {
 
     /// The working directory of run `run`, meaning a worker's own, else the
     /// session's.
-    fn directory_of(&self, run: Option<Uuid>) -> PathBuf {
+    pub(crate) fn directory_of(&self, run: Option<Uuid>) -> PathBuf {
         let workflow = crate::lock(&self.workflow).upgrade();
         run.zip(workflow)
             .and_then(|(run, workflow)| {

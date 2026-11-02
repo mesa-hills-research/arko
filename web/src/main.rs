@@ -9,6 +9,7 @@ mod approvals;
 mod attach;
 mod chrome;
 mod composer;
+mod contents;
 mod copy;
 mod images;
 mod layout;
@@ -31,6 +32,11 @@ mod words;
 #[allow(dead_code)]
 #[path = "../../src/remote/protocol.rs"]
 mod protocol;
+
+// A call's content, as the terminal reads it.
+#[allow(dead_code)]
+#[path = "../../src/remote/content.rs"]
+mod content;
 
 // The Quiet view's rows, as the terminal makes them.
 #[allow(dead_code)]

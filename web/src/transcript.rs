@@ -10,11 +10,11 @@ use crate::copy::CopyButton;
 use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
-use crate::protocol::{CallStatus, ItemData, Kind, Level, Source, WorkerState, duration};
+use crate::protocol::{ActKind, CallStatus, ItemData, Kind, Level, Source, WorkerState, duration};
 use crate::shimmer::Shimmer;
 use crate::spinner::Spinner;
 use crate::store::{Entry, MAIN, call_actions};
-use crate::{scroll, words};
+use crate::{contents, scroll, words};
 
 #[component]
 pub fn Transcript() -> impl IntoView {
@@ -31,28 +31,41 @@ pub fn Transcript() -> impl IntoView {
         let worker = page.worker.get();
         let live = page.connection.get() == words::Connection::Live;
         if !live {
-            return (None, false);
+            return (None, false, false);
         }
         page.status.with(|status| {
             STORE.with(|store| {
-                layout::motion(
-                    &store.borrow(),
-                    status,
-                    view,
-                    worker.as_deref(),
-                    js_sys::Date::now(),
-                )
+                let store = store.borrow();
+                let now = js_sys::Date::now();
+                let (thinking, working) =
+                    layout::motion(&store, status, view, worker.as_deref(), now);
+                let room = layout::room(&store, status, view, worker.as_deref(), now);
+                (thinking, working, room)
             })
         })
     });
+    // The rows, and whether the Working row is only its room, unseen.
     let rows = Memo::new(move |_| {
-        let working = motion.get().1;
+        let (thinking, working, room) = motion.get();
         let (feed, rows) = laid_out.get();
-        STORE.with(|store| (feed, layout::with_working(rows, working, &store.borrow())))
+        // A thinking in a Quiet row has no row of its own, so the Working
+        // row says it thinks while it streams. A call that runs with a row of
+        // its own shows that there.
+        let hidden = thinking.is_some_and(|id| layout::in_quiet_row(&rows, id));
+        let worker = page.worker.get();
+        STORE.with(|store| {
+            let store = store.borrow();
+            let elsewhere = working && layout::running_shown(&rows, &store, worker.as_deref());
+            let working = (working && !elsewhere) || hidden;
+            let room = !working && (room || elsewhere);
+            let rows = layout::with_working(rows, working || room, &store);
+            (feed, rows, room)
+        })
     });
+    let room = Memo::new(move |_| rows.with(|(_, _, room)| *room));
     let thinking = Memo::new(move |_| motion.get().0);
     // Quiet rows that stay follow their words and calls.
-    Effect::new(move |_| rows.with(|(_, rows)| sync_quiet(rows)));
+    Effect::new(move |_| rows.with(|(_, rows, _)| sync_quiet(rows)));
     // The newest item the reader saw, while at the bottom.
     Effect::new(move |_| {
         rows.track();
@@ -62,7 +75,7 @@ pub fn Transcript() -> impl IntoView {
         }
     });
     let jump_label = move || {
-        rows.with(|(_, rows)| {
+        rows.with(|(_, rows, _)| {
             page.grown.with(|grown| {
                 STORE
                     .with(|store| layout::jump_label(rows, &store.borrow(), page.seen.get(), grown))
@@ -70,7 +83,7 @@ pub fn Transcript() -> impl IntoView {
         })
     };
     let empty = move || {
-        if !rows.with(|(_, rows)| rows.is_empty())
+        if !rows.with(|(_, rows, _)| rows.is_empty())
             || page.connection.get() != words::Connection::Live
         {
             return None;
@@ -100,11 +113,11 @@ pub fn Transcript() -> impl IntoView {
                 <div id="rows" class="column rows">
                     <For
                         each=move || {
-                            let (feed, rows) = rows.get();
+                            let (feed, rows, _) = rows.get();
                             rows.into_iter().map(move |row| (feed, row))
                         }
                         key=|(feed, row)| row_key(*feed, row)
-                        children=move |(_, row)| row_view(row, thinking)
+                        children=move |(_, row)| row_view(row, thinking, room)
                     />
                 </div>
                 <p class="empty">{empty}</p>
@@ -131,14 +144,32 @@ fn laid_out(
     view: RwSignal<View>,
     worker: RwSignal<Option<String>>,
 ) -> Memo<(Option<u64>, Vec<Row>)> {
+    let page = page();
     Memo::new(move |_| {
         version.track();
+        page.workers.track();
         let view = view.get();
         let worker = worker.get();
-        STORE.with(|store| {
-            let store = store.borrow();
-            let rows = layout::layout(&store.items, view, worker.as_deref());
-            (store.feed, rows)
+        let counts_open = page.counts_open.get();
+        page.quiet_sealed.with(|sealed| {
+            STORE.with(|store| {
+                let store = store.borrow();
+                // The workers that workers started, by their leads.
+                let leads: HashMap<String, String> = store
+                    .workers
+                    .values()
+                    .filter_map(|worker| Some((worker.id.clone(), worker.parent.clone()?)))
+                    .collect();
+                let rows = layout::layout_sealed(
+                    &store.items,
+                    view,
+                    worker.as_deref(),
+                    sealed,
+                    &leads,
+                    &counts_open,
+                );
+                (store.feed, rows)
+            })
         })
     })
 }
@@ -162,25 +193,37 @@ fn row_key(feed: Option<u64>, row: &Row) -> (Option<u64>, String) {
     (feed, key)
 }
 
-fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
+/// A row of the transcript. `room` says the Working row is only its room,
+/// unseen ([`layout::room`]).
+fn row_view(row: Row, thinking: Memo<Option<u64>>, room: Memo<bool>) -> AnyView {
     match row {
         Row::Working => {
             let page = page();
-            // What the agent's call does while it runs, else "Working…".
+            // What the agent's call does while it runs, else "Working…". It
+            // shows beside a thinking that streams only when that thinking is
+            // in a Quiet row, and then says "Thinking".
             let label = Memo::new(move |_| {
                 page.version.track();
+                if thinking.get().is_some() {
+                    return "Thinking".to_string();
+                }
                 let worker = page.worker.get();
                 STORE.with(|store| layout::working_label(&store.borrow(), worker.as_deref()))
             });
             view! {
-                <div class="row working">
-                    <Shimmer class="what" text=move || label.get() active=|| true />
+                <div class="row working" class:room=move || room.get()
+                    aria-hidden=move || room.get().then_some("true")>
+                    <Shimmer class="what" text=move || label.get() active=move || !room.get() />
                 </div>
             }
             .into_any()
         }
         Row::Count { id, count, .. } => count_row(id, count),
-        Row::Quiet { id, words, calls } => quiet_row(id, words, calls, thinking),
+        Row::Quiet { id, row } => quiet_row(id, row, thinking),
+        Row::Status(id) => match cell(id) {
+            Some(cell) => status_row(id, cell.for_row()),
+            None => ().into_any(),
+        },
         Row::Item(id, _) => match cell(id) {
             Some(cell) => item_row(id, cell.for_row(), thinking),
             None => ().into_any(),
@@ -188,7 +231,9 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
     }
 }
 
-/// A turn's tool calls as one line (Messages). A click shows them in Full.
+/// A turn's tool calls as one line (Messages), its triangle in the column
+/// of every fold's. A click opens it to the turn's Quiet rows, each where
+/// it came, and closes it again, its line staying where it is.
 fn count_row(id: u64, count: Count) -> AnyView {
     let page = page();
     let Count {
@@ -196,16 +241,24 @@ fn count_row(id: u64, count: Count) -> AnyView {
         failed,
         running,
     } = count;
+    let open = move || page.counts_open.with(|open| open.contains(&id));
     view! {
         <div class="row count" data-id=id>
-            <button type="button" title="Show them (Full view)"
+            <button type="button" class="call-line" aria-expanded=move || open().to_string()
                 on:click=move |_| {
                     scroll::keep_place(id);
-                    page.set_view(View::Full);
+                    page.counts_open.update(|open| {
+                        if !open.remove(&id) {
+                            open.insert(id);
+                        }
+                    });
                 }>
-                "▸ "{words::plural(calls, "tool call", "tool calls")}
-                {(failed > 0).then(|| view! { " · " <span class="failed">{format!("{failed} failed")}</span> })}
-                {(running > 0).then_some(" · running")}
+                <span class="mark">"▸"</span>
+                <span>{words::plural(calls, "tool call", "tool calls")}</span>
+                {(failed > 0).then(|| view! {
+                    <span class="outcome"><span class="failed">{format!("{failed} failed")}</span></span>
+                })}
+                {(running > 0).then(|| view! { <span class="outcome">"running"</span> })}
             </button>
         </div>
     }
@@ -215,31 +268,28 @@ fn count_row(id: u64, count: Count) -> AnyView {
 /// Calls in a few words (Quiet), by the first one's ID. The row keeps its
 /// place in the page while calls join it and its words change, so focus and
 /// what's open inside it stay ([`QUIET`]). A click on its line (or Enter on
-/// it) opens it to the rows of its calls as Full shows them, which are made
-/// only then. Each of its calls keeps what its own row offers (Move to
+/// it) opens it to what its calls hold, behind a bar ([`quiet_member`]),
+/// which is made only then. A row with nothing more to show than its words
+/// has no fold. Each of its calls keeps what its own row offers (Move to
 /// background, Stop) and the images its tool returned under the line, as
 /// Full does, whatever row it's in.
-fn quiet_row(
-    id: u64,
-    words: crate::quiet::Words,
-    calls: Vec<Row>,
-    thinking: Memo<Option<u64>>,
-) -> AnyView {
+fn quiet_row(id: u64, row: layout::QuietRow, thinking: Memo<Option<u64>>) -> AnyView {
     let page = page();
     let shared = QUIET.with(|quiet| {
         quiet
             .borrow_mut()
             .entry(id)
-            .or_insert_with(|| ArcRwSignal::new((words.clone(), calls.clone())))
+            .or_insert_with(|| ArcRwSignal::new(row.clone()))
             .clone()
     });
     let data = RwSignal::from(&shared);
-    let open = move || page.quiet_open.with(|open| open.contains(&id));
-    let words = move || data.with(|(words, _)| words.clone());
+    let opens = move || data.with(|row| row.opens);
+    let open = move || opens() && page.quiet_open.with(|open| open.contains(&id));
+    let words = move || data.with(|row| row.words.clone());
     // The row's calls, by ID.
     let members = move || {
-        data.with(|(_, calls)| {
-            calls
+        data.with(|row| {
+            row.calls
                 .iter()
                 .filter_map(|row| match row {
                     Row::Item(id, Kind::Call) => Some(*id),
@@ -251,11 +301,14 @@ fn quiet_row(
     let class = move || {
         let words = words();
         let mut class = "row call quiet".to_string();
-        if words.failed.is_some() {
+        if words.failed {
             class.push_str(" has-failure");
         }
         if words.muted {
             class.push_str(" muted");
+        }
+        if !opens() {
+            class.push_str(" still");
         }
         class
     };
@@ -285,8 +338,7 @@ fn quiet_row(
             .collect_view()
     };
     // The images the calls' tools returned, also those that come later,
-    // under the line as Full shows them. (Open, the calls' own rows show
-    // them.)
+    // under the line as Full shows them. (Open, each call shows its own.)
     let images = move || {
         (!open()).then(|| {
             members()
@@ -300,9 +352,11 @@ fn quiet_row(
         open().then(|| {
             view! {
                 <For
-                    each=move || data.with(|(_, calls)| calls.clone())
-                    key=|row| row_key(None, row)
-                    children=move |row| row_view(row, thinking)
+                    each=move || data.with(|row| layout::quiet_members(&row.calls))
+                    key=|(row, results)| {
+                        (row_key(None, row), results.iter().map(Row::key).collect::<Vec<_>>())
+                    }
+                    children=move |(row, results)| quiet_member(row, results, data, thinking)
                 />
             }
         })
@@ -310,25 +364,38 @@ fn quiet_row(
     view! {
         <div class=class data-id=id>
             <details class="call quiet" prop:open=open>
-                <summary on:click=move |event| {
-                    event.prevent_default();
-                    page.quiet_open.update(|open| {
-                        if !open.remove(&id) {
-                            open.insert(id);
+                <summary
+                    tabindex=move || if opens() { "0" } else { "-1" }
+                    on:click=move |event| {
+                        event.prevent_default();
+                        if !opens() {
+                            return;
                         }
-                    });
-                }>
+                        let opening = page.quiet_open.with_untracked(|open| !open.contains(&id));
+                        page.quiet_open.update(|open| {
+                            if !open.remove(&id) {
+                                open.insert(id);
+                            }
+                        });
+                        // A row of one call the reader opened keeps its form.
+                        if opening && !data.with_untracked(|row| row.merged) {
+                            page.quiet_sealed.update(|sealed| {
+                                sealed.insert(id);
+                            });
+                        }
+                    }
+                >
                     <span class="call-line">
-                        <span class="mark">"▸"</span>
+                        <span class="mark">{move || if opens() { "▸" } else { "" }}</span>
                         <span class="what" title=move || words().text>{move || words().text}</span>
-                        {move || words().failed.map(|why| view! {
-                            <span class="outcome" title=why.clone()><span class="failed">"✗"</span>" "{why.clone()}</span>
-                        })}
                         {move || words().note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
                         {move || words().running.then(|| view! {
                             <span class="outcome"><Spinner /></span>
                         })}
                         {actions}
+                        {move || words().failed.then(|| view! {
+                            <span class="outcome right"><span class="failed">"✗"</span></span>
+                        })}
                     </span>
                 </summary>
                 <div class="quiet-calls">{inside}</div>
@@ -339,26 +406,110 @@ fn quiet_row(
     .into_any()
 }
 
+/// What an open Quiet row shows of one of its calls, behind the row's bar.
+/// In a row of one call that's the call's detail and content. In a row of
+/// several it's the call's Full line, which opens to its detail and
+/// content. The thinking after a call shows as Quiet shows it.
+fn quiet_member(
+    row: Row,
+    results: Vec<Row>,
+    quiet: RwSignal<layout::QuietRow>,
+    thinking: Memo<Option<u64>>,
+) -> AnyView {
+    let page = page();
+    let Row::Item(id, Kind::Call) = row else {
+        return row_view(row, thinking, Memo::new(|_| false));
+    };
+    let Some(cell) = cell(id) else {
+        return ().into_any();
+    };
+    let data = cell.for_row().data;
+    let merged = move || quiet.with(|row| row.merged);
+    let has_content = !results.is_empty();
+    let folds = move || has_content || data.with(|item| item.detail.is_some());
+    let open = move || !merged() || page.calls_open.with(|open| open.contains(&id));
+    // What it holds, its detail and its content.
+    let contents: Vec<RwSignal<ItemData>> = results
+        .iter()
+        .filter_map(|row| match row {
+            Row::Item(result, Kind::Result) => {
+                crate::app::cell(*result).map(|cell| cell.for_row().data)
+            }
+            _ => None,
+        })
+        .collect();
+    let detail = move || {
+        data.with(|item| {
+            if merged() {
+                item.detail.clone()
+            } else {
+                item.act
+                    .as_ref()
+                    .map(|act| act.detail.clone())
+                    .filter(|detail| !detail.is_empty())
+            }
+        })
+        .map(|detail| view! { <pre class="held">{detail}</pre> })
+    };
+    let holds = move || {
+        open().then(|| {
+            view! {
+                {detail}
+                {contents.iter().map(|data| contents::content_view(*data)).collect_view()}
+            }
+        })
+    };
+    let line = move || {
+        merged().then(|| {
+            let mark = move || match (folds(), open()) {
+                (false, _) => "",
+                (true, false) => "▸",
+                (true, true) => "▾",
+            };
+            view! {
+                <button type="button" class="member-line" disabled=move || !folds()
+                    on:click=move |_| page.calls_open.update(|open| {
+                        if !open.remove(&id) {
+                            open.insert(id);
+                        }
+                    })>
+                    {call_line(data, mark, true)}
+                </button>
+            }
+        })
+    };
+    view! {
+        <div class="quiet-member" class:own=merged>
+            {line}
+            <div class="holds">
+                {holds}
+                <Thumbnails data=data />
+            </div>
+        </div>
+    }
+    .into_any()
+}
+
 thread_local! {
     /// What each Quiet row shows, by its first call, which the row reads
     /// and a new layout updates ([`sync_quiet`]).
-    static QUIET: std::cell::RefCell<HashMap<u64, ArcRwSignal<(crate::quiet::Words, Vec<Row>)>>> =
+    static QUIET: std::cell::RefCell<HashMap<u64, ArcRwSignal<layout::QuietRow>>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
-/// Gives each Quiet row of `rows` its words and calls as laid out now, and
-/// lets go of those of rows no longer shown.
+/// Gives each Quiet row of `rows` what it shows as laid out now, and lets
+/// go of those of rows no longer shown.
 fn sync_quiet(rows: &[Row]) {
     QUIET.with(|quiet| {
         let mut quiet = quiet.borrow_mut();
         let mut shown = HashSet::new();
         for row in rows {
-            if let Row::Quiet { id, words, calls } = row {
+            if let Row::Quiet { id, row } = row {
                 shown.insert(*id);
                 if let Some(signal) = quiet.get(id)
-                    && signal.with_untracked(|(old, old_calls)| old != words || old_calls != calls)
+                    && signal.with_untracked(|old| old != row)
                 {
-                    signal.set((words.clone(), calls.clone()));
+                    signal.set(row.clone());
                 }
             }
         }
@@ -454,12 +605,16 @@ fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
             .into_any()
         }
         Kind::Message => {
-            let from = item.from.clone().map(|from| if from == MAIN { "the lead".into() } else { from });
+            let from = item.from.clone();
             let agent = item.agent.clone();
-            // A worker's message to the user names the worker outside its own view.
+            // Who it's from and for, as the user reads it ("main to r12"). A
+            // worker's message to the user names the worker outside its own
+            // view.
             let label = move || match &from {
-                Some(from) => format!("Message from {from}"),
-                None if agent != MAIN && page.worker.get().is_none() => format!("{agent} to you"),
+                Some(from) => crate::quiet::mail_label(from, &agent),
+                None if agent != MAIN && page.worker.get().is_none() => {
+                    crate::quiet::mail_label(&agent, "you")
+                }
                 None => "Message".into(),
             };
             view! {
@@ -480,10 +635,7 @@ fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
         }
         Kind::Question => crate::questions::card_view(id, cell),
         Kind::Call => call_row(cell),
-        Kind::Result => view! {
-            <pre>{move || data.with(|item| item.detail.clone().unwrap_or_else(|| text.get()))}</pre>
-        }
-        .into_any(),
+        Kind::Result => return result_row(id, data),
         Kind::Output => view! { <pre>{move || text.get()}</pre> }.into_any(),
         Kind::Turn => view! {
             <div class="turn-line"><span>{move || text.get()}</span></div>
@@ -548,21 +700,138 @@ fn kind_class(kind: Kind) -> &'static str {
     }
 }
 
-/// A call's line, with its status, whose it is (a worker's in the main view),
-/// what it does and its outcome, and Move to background or Stop while
-/// those apply. A long one opens to show itself whole. The line follows
-/// its own item, and its actions follow the status only while the call
-/// runs and the jobs only while it has one, so the many settled calls of a
-/// long session follow neither.
-fn call_row(cell: RowCell) -> AnyView {
+/// A worker's report or message to its lead in its lead's view, as the
+/// terminal's row says it ("r1 reported", "r1 messaged the lead"), with how
+/// a message's call stands (the spinner while it runs, ✗ when it failed,
+/// the stop that cut it short). It opens to its words, the report's
+/// Markdown and the message as its call's content has it, once there are
+/// any.
+fn status_row(id: u64, cell: RowCell) -> AnyView {
     let page = page();
     let data = cell.data;
-    let (id, long) = data.with_untracked(|item| {
-        (
-            item.id,
-            item.detail.is_some() || item.text.chars().count() > 44,
-        )
+    let agent = data.with_untracked(|item| item.agent.clone());
+    // The worker's lead, whose view it shows in.
+    let lead = {
+        let agent = agent.clone();
+        move || {
+            page.workers.track();
+            STORE.with(|store| {
+                store
+                    .borrow()
+                    .workers
+                    .get(&agent)
+                    .and_then(|worker| worker.parent.clone())
+                    .unwrap_or_else(|| MAIN.to_string())
+            })
+        }
+    };
+    let row = Memo::new(move |_| {
+        let lead = lead();
+        data.with(|item| {
+            crate::quiet::WorkerRow::of(
+                item.kind,
+                item.act.as_ref(),
+                item.status,
+                item.outcome.as_deref(),
+                &lead,
+            )
+            .map(|row| (row, row.words(item.outcome.as_deref())))
+        })
     });
+    // The message's content, once its result came.
+    let content = move || {
+        page.version.track();
+        let result = STORE.with(|store| store.borrow().content_of(id))?;
+        Some(crate::app::cell(result)?.for_row().data)
+    };
+    let report = move || matches!(row.get(), Some((crate::quiet::WorkerRow::Reported, _)));
+    let opens = move || {
+        if report() {
+            cell.text.with(|text| !text.trim().is_empty())
+        } else {
+            content().is_some()
+        }
+    };
+    let words = move || {
+        if report() {
+            view! { <Md id=id text=cell.text code=cell.code /> }.into_any()
+        } else {
+            content().map(contents::content_view).into_any()
+        }
+    };
+    let said = move || row.get().map(|(_, words)| words).unwrap_or_default();
+    let class = move || {
+        let said = said();
+        let mut class = "row call status".to_string();
+        if said.failed {
+            class.push_str(" has-failure");
+        }
+        if said.muted {
+            class.push_str(" muted");
+        }
+        if !opens() {
+            class.push_str(" still");
+        }
+        class
+    };
+    view! {
+        <div class=class data-id=id>
+            <details class="call">
+                <summary
+                    tabindex=move || if opens() { "0" } else { "-1" }
+                    on:click=move |event| {
+                        if !opens() {
+                            event.prevent_default();
+                        }
+                    }
+                >
+                    <span class="call-line">
+                        <span class="mark">{move || if opens() { "▸" } else { "" }}</span>
+                        <span class="who">{agent}</span>
+                        <span class="what">{move || said().text}</span>
+                        {move || said().note.map(|note| view! { <span class="outcome">{note}</span> })}
+                        {move || said().running.then(|| view! {
+                            <span class="outcome"><Spinner /></span>
+                        })}
+                        {move || said().failed.then(|| view! {
+                            <span class="outcome right"><span class="failed">"✗"</span></span>
+                        })}
+                    </span>
+                </summary>
+                <div class="holds">{words}</div>
+            </details>
+        </div>
+    }
+    .into_any()
+}
+
+/// Whether a call shows its content in Full, which a command does from the
+/// start, as the reader left it.
+fn full_open(page: Page, id: u64, command: bool) -> bool {
+    command != page.flipped.with(|flipped| flipped.contains(&id))
+}
+
+/// Whether `item` is a command's call, whose content shows in Full from the
+/// start.
+fn is_command(item: &ItemData) -> bool {
+    item.act
+        .as_ref()
+        .is_some_and(|act| act.kind == ActKind::Command)
+}
+
+/// A call's line, as the terminal's Full line: its fold's triangle (`mark`),
+/// whose it is (a worker's in the main view), what it does, ✓ or ✗ and its
+/// outcome, and the spinner, Move to background or Stop while those apply,
+/// except in a Quiet row (`in_row`), whose own line has them. Its actions
+/// follow the status only while the call runs and the jobs only while it
+/// has one, so the many settled calls of a long session follow neither.
+fn call_line(
+    data: RwSignal<ItemData>,
+    mark: impl Fn() -> &'static str + Send + Sync + 'static,
+    in_row: bool,
+) -> impl IntoView {
+    let page = page();
+    let id = data.with_untracked(|item| item.id);
     let actions = Memo::new(move |_| {
         data.with(|item| {
             call_actions(
@@ -575,11 +844,11 @@ fn call_row(cell: RowCell) -> AnyView {
             )
         })
     });
-    let line = move || {
+    move || {
         data.with(|item| {
             let who = (item.agent != MAIN && page.worker.get().is_none()).then(|| item.agent.clone());
-            // As on the earlier page, the status and the outcome after the call.
             let outcome = match item.status {
+                Some(CallStatus::Running) if in_row => None,
                 Some(CallStatus::Running) => Some(
                     view! { <span class="outcome"><Spinner /></span> }
                         .into_any(),
@@ -602,12 +871,12 @@ fn call_row(cell: RowCell) -> AnyView {
             };
             view! {
                 <span class="call-line">
-                    <span class="mark">"▸"</span>
+                    <span class="mark">{mark()}</span>
                     {who.map(|who| view! { <span class="who">{who}</span> })}
-                    <span class="what">{item.text.clone()}</span>
+                    <span class="what" title=item.text.clone()>{item.text.clone()}</span>
                     {outcome}
                     {move || {
-                        let (moves, stop) = actions.get();
+                        let (moves, stop) = if in_row { (false, None) } else { actions.get() };
                         view! {
                             {moves.then(|| view! { <MoveButton id=id /> })}
                             {stop.map(|job| view! { <StopJobButton job=job /> })}
@@ -616,20 +885,74 @@ fn call_row(cell: RowCell) -> AnyView {
                 </span>
             }
         })
-    };
-    // The images its tool returned show under it, open or not.
-    if long {
-        view! {
-            <details class="call">
-                <summary>{line}</summary>
-                <pre>{move || data.with(|item| item.detail.clone().unwrap_or_else(|| item.text.clone()))}</pre>
-            </details>
-            <Thumbnails data=data />
-        }
-        .into_any()
-    } else {
-        view! { {line}<Thumbnails data=data /> }.into_any()
     }
+}
+
+/// A call's row in Full, its line, which opens to its detail and its
+/// content (its result's row, under it) when it has them. A command's is
+/// open from the start. The images its tool returned show under it, open
+/// or not.
+fn call_row(cell: RowCell) -> AnyView {
+    let page = page();
+    let data = cell.data;
+    let (id, command) = data.with_untracked(|item| (item.id, is_command(item)));
+    // (A worker's call in the main view shows without its content.)
+    let folds = move || {
+        page.version.track();
+        let own = data.with(|item| item.agent == MAIN) || page.worker.get().is_some();
+        data.with(|item| item.detail.is_some())
+            || (own && STORE.with(|store| store.borrow().content_of(id).is_some()))
+    };
+    let open = move || folds() && full_open(page, id, command);
+    // (Its triangle turns as it opens.)
+    let mark = move || if folds() { "▸" } else { "" };
+    let detail = move || {
+        open()
+            .then(|| data.with(|item| item.detail.clone()))
+            .flatten()
+            .map(|detail| view! { <div class="holds"><pre class="held">{detail}</pre></div> })
+    };
+    view! {
+        <details class="call" prop:open=open>
+            <summary
+                tabindex=move || if folds() { "0" } else { "-1" }
+                on:click=move |event| {
+                    event.prevent_default();
+                    if folds() {
+                        page.flipped.update(|flipped| {
+                            if !flipped.remove(&id) {
+                                flipped.insert(id);
+                            }
+                        });
+                    }
+                }
+            >
+                {call_line(data, mark, false)}
+            </summary>
+            {detail}
+        </details>
+        <Thumbnails data=data />
+    }
+    .into_any()
+}
+
+/// A call's content in Full, under the call, while the call is open. One
+/// whose call is gone shows as it is.
+fn result_row(id: u64, data: RwSignal<ItemData>) -> AnyView {
+    let page = page();
+    let call = data.with_untracked(|item| item.call);
+    let command =
+        call.and_then(|call| STORE.with(|store| store.borrow().get(call).map(is_command)));
+    let shown = move || match (call, command) {
+        (Some(call), Some(command)) => full_open(page, call, command),
+        _ => true,
+    };
+    view! {
+        <div class="row result" data-id=id style:display=move || if shown() { "" } else { "none" }>
+            <div class="holds">{move || shown().then(|| contents::content_view(data))}</div>
+        </div>
+    }
+    .into_any()
 }
 
 #[component]
@@ -1057,11 +1380,15 @@ mod tests {
     fn a_quiet_rows_key_is_its_first_call() {
         let row = |text: &str, calls: Vec<Row>| Row::Quiet {
             id: 2,
-            words: crate::quiet::Words {
-                text: text.into(),
-                ..Default::default()
+            row: layout::QuietRow {
+                words: crate::quiet::Words {
+                    text: text.into(),
+                    ..Default::default()
+                },
+                calls,
+                merged: false,
+                opens: true,
             },
-            calls,
         };
         assert_eq!(
             row_key(
@@ -1094,7 +1421,8 @@ mod tests {
                         .map(|row| match row {
                             Row::Item(_, kind) => format!("{kind:?}"),
                             Row::Count { count, .. } => format!("{} calls", count.calls),
-                            Row::Quiet { words, .. } => words.text.clone(),
+                            Row::Quiet { row, .. } => row.words.text.clone(),
+                            Row::Status(id) => format!("status {id}"),
                             Row::Working => "working".into(),
                         })
                         .collect::<Vec<_>>()

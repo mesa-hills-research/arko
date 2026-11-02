@@ -1007,6 +1007,23 @@ impl Harness {
         }
         // After the crew's hook, so a call it refuses doesn't act.
         builder = builder.hook(HookPoint::PreToolExecution, self.outside.hook());
+        // The text an edit's file has as the edit starts, which the
+        // transcript shows the edit's diff from.
+        let (feed, outside) = (self.feed.clone(), Arc::downgrade(&self.outside));
+        builder = builder.hook(
+            HookPoint::PreToolExecution,
+            Arc::new(move |hook| {
+                if hook.tool_name.as_deref() == Some(EDIT_FILE_TOOL_NAME)
+                    && let (Some(call), Some(params)) = (hook.tool_call_id, &hook.tool_params)
+                    && let Some(path) = params.get("path").and_then(serde_json::Value::as_str)
+                    && let Some(outside) = outside.upgrade()
+                {
+                    let file = outside.directory_of(hook.agent_run_id).join(path.trim());
+                    feed.edit_starts(call, &file);
+                }
+                HookResult::Continue
+            }),
+        );
         // The images the tools return, for the transcript.
         builder = builder.tool_image_sink(Arc::new(crate::images::ToolImages {
             feed: self.feed.clone(),
@@ -7164,7 +7181,7 @@ pub(crate) mod tests {
                 .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         assert_eq!(summary(&harness), "The blue branch is checked.");
-        let lines = ["Message from r1", "r1 reported"];
+        let lines = ["r1 to main", "r1 reported"];
         for line in lines {
             assert!(has(&harness.feed, "notice", line, ""), "{line}");
         }
@@ -7220,7 +7237,7 @@ pub(crate) mod tests {
         assert!(has(
             &harness.feed,
             "call",
-            "message lead “Which branch should I check?”",
+            "message main “Which branch should I check?”",
             ""
         ));
         // The worker's own transcript, its place in the lead's, and its
@@ -7264,9 +7281,8 @@ pub(crate) mod tests {
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
-    /// A wait says what it waits for. With no runs going, the main agent
-    /// waits for a message. With runs, it names them, and counts them when
-    /// there are many. A worker has no runs and waits for a message.
+    /// A wait that names no runs says it waits for the agent's workers,
+    /// whatever runs are going, so it says the same once restored.
     #[tokio::test]
     async fn a_wait_says_what_it_waits_for() {
         use crate::mock_model::{ModelServer, complete, tool_call};
@@ -7341,23 +7357,17 @@ pub(crate) mod tests {
                 .map(|item| item.text.clone())
                 .collect()
         };
-        assert_eq!(
-            waits(MAIN),
-            [
-                "waiting for a message",
-                "waiting for r1",
-                "waiting for r1, r2, r3",
-                "waiting for r1, r2 and 3 more",
-            ]
-        );
-        // The worker has no runs, and the agent list shows what it does.
-        assert_eq!(waits("r1"), ["waiting for a message"]);
+        // A wait that names no runs waits for the agent's workers, the same
+        // live and once restored.
+        assert_eq!(waits(MAIN), ["waiting for workers"; 4]);
+        // The agent list shows what the worker does.
+        assert_eq!(waits("r1"), ["waiting for workers"]);
         let r1 = snapshot
             .workers
             .iter()
             .find(|worker| worker.id == "r1")
             .unwrap();
-        assert_eq!(r1.last.as_deref(), Some("waiting for a message"));
+        assert_eq!(r1.last.as_deref(), Some("waiting for workers"));
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 

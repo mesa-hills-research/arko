@@ -58,6 +58,12 @@ syntax style, which shows in the code's own color. A gradient gives its first co
 are macOS Classic Light and Dark, which follow the system's setting. The web page keeps a chosen
 theme in the browser's localStorage and loads the other themes' variables only once one is chosen.
 
+The terminal colors code with the same `highlight.syntax` styles, chosen the same way, in 24-bit
+color or the nearest of xterm's 256, as it paints its other colors. A diff's removed and added lines
+take the error and success colors faintly over the background, and the code's colors are shaded
+until they read there. The `terminal` theme, which keeps the terminal's own colors, shows code in
+the text's color, and so does a terminal with 16 colors or `NO_COLOR` set.
+
 Every color on the page is one of these tokens. Something brought over from another interface or
 an earlier page keeps its shape but not its colors. It takes the token that means the same thing
 there, so it follows the chosen theme. The one fixed color is the white behind a QR code, which

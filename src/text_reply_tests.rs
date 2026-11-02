@@ -345,7 +345,7 @@ async fn message_user_answers_mid_turn_and_the_turn_ends_with_a_reply() {
             item("text", "Looking at it."),
             item("message", "Halfway: two files to go."),
             item("text", "Waiting for the check."),
-            item("call", "waiting for a message"),
+            item("call", "waiting for workers"),
             item("reply", "Done: nothing left to do."),
         ]
     );

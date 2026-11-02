@@ -58,6 +58,20 @@ pub struct Count {
     pub running: u32,
 }
 
+/// What a Quiet row shows ([`quiet::rows`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuietRow {
+    pub words: Words,
+    /// The rows of its calls and their results, and the thinking after
+    /// them, whose content shows when it's open ([`quiet_members`]).
+    pub calls: Vec<Row>,
+    /// It holds several calls, each of which shows as its Full line when
+    /// it's open.
+    pub merged: bool,
+    /// It has more to show than its words. One that hasn't has no fold.
+    pub opens: bool,
+}
+
 /// A row of a view.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Row {
@@ -69,14 +83,12 @@ pub enum Row {
         id: u64,
         count: Count,
     },
-    /// Calls in a few words (Quiet), by the ID of the first, with what the row
-    /// says, and the rows of its calls as Full shows them, which show when
-    /// it's open.
-    Quiet {
-        id: u64,
-        words: Words,
-        calls: Vec<Row>,
-    },
+    /// Calls in a few words (Quiet), by the ID of the first, and what the
+    /// row shows.
+    Quiet { id: u64, row: QuietRow },
+    /// A worker's report or message to its lead in the main transcript, as
+    /// a row that opens to its words ([`quiet::WorkerRow`]).
+    Status(u64),
     /// The agent waits on its model.
     Working,
 }
@@ -93,6 +105,7 @@ impl Row {
                 turn.map_or("none".to_string(), |turn| turn.to_string())
             ),
             Row::Quiet { id, .. } => format!("q{id}"),
+            Row::Status(id) => format!("s{id}"),
             Row::Working => "working".into(),
         }
     }
@@ -101,12 +114,6 @@ impl Row {
 /// Whether a notice (or a failed call) is a warning or an error.
 pub fn serious(item: &ItemData) -> bool {
     matches!(item.level, Some(Level::Warn | Level::Error))
-}
-
-/// Whether `item` is an agent's message to the user, which the main
-/// transcript shows for a worker too. (A message a worker got has a sender.)
-pub fn is_to_user(item: &ItemData) -> bool {
-    item.kind == Kind::Message && item.from.is_none()
 }
 
 /// Whether an item that changed from `old` to `new` moves the rows of
@@ -122,10 +129,9 @@ pub fn moves_rows(old: &ItemData, new: &ItemData, view: View) -> bool {
         || old.started.is_some() != new.started.is_some()
         || old.from.is_some() != new.from.is_some()
         || serious(old) != serious(new)
-        // A call's status moves a Messages count.
-        || (view == View::Messages && old.status != new.status)
-        // What a call did and how it went words its Quiet row.
-        || (view == View::Quiet
+        // A call's status moves a Messages count, and what a call did and
+        // how it went words its Quiet row, which a count that's open shows.
+        || (view != View::Full
             && (old.status != new.status
                 || old.act != new.act
                 || old.outcome != new.outcome
@@ -195,7 +201,37 @@ fn place(view: View, item: &ItemData) -> Place {
 
 /// The rows `view` shows, in order. `worker` picks a worker's own
 /// transcript instead of the main one.
+#[cfg(test)]
 pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
+    layout_sealed(
+        all,
+        view,
+        worker,
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashSet::new(),
+    )
+}
+
+/// [`layout`], where `sealed` are the calls whose Quiet rows of one call
+/// the reader opened, which keep their form ([`quiet::Call::sealed`]),
+/// `leads` the workers that a worker started, by the worker that started
+/// each, whose reports and messages go to that lead's view, and
+/// `counts_open` the turns whose count of
+/// calls the reader opened in Messages, by their first call. From that call
+/// on, such a turn's items show as Quiet shows them, each where it came.
+pub fn layout_sealed(
+    all: &[ItemData],
+    view: View,
+    worker: Option<&str>,
+    sealed: &HashSet<u64>,
+    leads: &HashMap<String, String>,
+    counts_open: &HashSet<u64>,
+) -> Vec<Row> {
+    // The agent whose view it is, and the lead of each worker, the main
+    // agent unless a worker started it.
+    let viewed = worker.unwrap_or(MAIN);
+    let lead_of = |agent: &str| leads.get(agent).map_or(MAIN, String::as_str);
     let items = pending_last(all);
     // A result shows under its call, which other items may have followed
     // by the time it came.
@@ -213,58 +249,69 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
     // A result whose call is gone shows where it came.
     let orphan = |item: &ItemData| item.call.is_some_and(|call| !ids.contains(&call));
     let mut counts: HashMap<Option<u64>, usize> = HashMap::new();
+    let mut opened: HashSet<Option<u64>> = HashSet::new();
     for item in &items {
         if placed.contains(&item.id) && !orphan(item) {
             continue;
         }
-        // The agent's own items follow the view. In the main transcript a
-        // worker's message to the user is the main agent's own, and the
-        // calls and troubles of the workers show inline in Full. Their
-        // text, their reports and what the user wrote to them are in their
-        // own views.
-        let (place, with_results) = match worker {
-            Some(worker) if item.agent == worker => (place(view, item), true),
-            Some(_) => (Place::Hidden, false),
-            None if item.agent == MAIN || is_to_user(item) => (place(view, item), true),
-            None if view == View::Full
-                && (item.kind == Kind::Call || (item.kind == Kind::Notice && serious(item))) =>
-            {
-                (Place::Row, false)
-            }
-            None => (Place::Hidden, false),
+        // The agent's own items follow the view. In every view, a worker of
+        // the agent shows as its reports and its messages to it, its lead,
+        // each a row that opens to its words. Its text, its calls, its
+        // conversation with the user and its workers are its own view's.
+        let (place, with_results) = if item.agent == viewed {
+            (place(view, item), true)
+        } else if lead_of(&item.agent) == viewed
+            && quiet::WorkerRow::of(
+                item.kind,
+                item.act.as_ref(),
+                item.status,
+                item.outcome.as_deref(),
+                viewed,
+            )
+            .is_some()
+        {
+            rows.push(Row::Status(item.id));
+            continue;
+        } else {
+            (Place::Hidden, false)
         };
-        match place {
-            Place::Hidden => {}
-            Place::Row => {
-                rows.push(Row::Item(item.id, item.kind));
-                if with_results {
-                    for &result in results.get(&item.id).into_iter().flatten() {
-                        rows.push(Row::Item(result, Kind::Result));
-                    }
+        if let Place::Count = place {
+            let at = *counts.entry(item.turn).or_insert_with(|| {
+                rows.push(Row::Count {
+                    turn: item.turn,
+                    id: item.id,
+                    count: Count::default(),
+                });
+                if counts_open.contains(&item.id) {
+                    opened.insert(item.turn);
+                }
+                rows.len() - 1
+            });
+            if let Row::Count { count, .. } = &mut rows[at] {
+                count.calls += 1;
+                match item.status {
+                    Some(CallStatus::Failed) => count.failed += 1,
+                    Some(CallStatus::Running) => count.running += 1,
+                    _ => {}
                 }
             }
-            Place::Count => {
-                let at = *counts.entry(item.turn).or_insert_with(|| {
-                    rows.push(Row::Count {
-                        turn: item.turn,
-                        id: item.id,
-                        count: Count::default(),
-                    });
-                    rows.len() - 1
-                });
-                if let Row::Count { count, .. } = &mut rows[at] {
-                    count.calls += 1;
-                    match item.status {
-                        Some(CallStatus::Failed) => count.failed += 1,
-                        Some(CallStatus::Running) => count.running += 1,
-                        _ => {}
-                    }
+        }
+        let place = if with_results && opened.contains(&item.turn) {
+            self::place(View::Quiet, item)
+        } else {
+            place
+        };
+        if let Place::Row = place {
+            rows.push(Row::Item(item.id, item.kind));
+            if with_results {
+                for &result in results.get(&item.id).into_iter().flatten() {
+                    rows.push(Row::Item(result, Kind::Result));
                 }
             }
         }
     }
-    if view == View::Quiet {
-        rows = quiet_rows(rows, &items);
+    if view == View::Quiet || !opened.is_empty() {
+        rows = quiet_rows(rows, &items, sealed);
     }
     rows
 }
@@ -273,7 +320,7 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
 /// words ([`quiet::rows`], as the terminal makes them), and the rest as it
 /// is. A call's results go in its row, and show under the row only when
 /// the call failed alone.
-fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
+fn quiet_rows(rows: Vec<Row>, items: &[&ItemData], sealed: &HashSet<u64>) -> Vec<Row> {
     let by_id: HashMap<u64, &ItemData> = items.iter().map(|item| (item.id, *item)).collect();
     // The rows, each with the results of its own.
     let mut shown: Vec<(Row, Vec<Row>)> = Vec::new();
@@ -289,7 +336,7 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
     }
     let steps: Vec<quiet::Step> = shown
         .iter()
-        .map(|(row, _)| match row {
+        .map(|(row, results)| match row {
             // (A note the agent hasn't read waits at the end.)
             Row::Item(id, _) if by_id.get(id).is_some_and(|item| item.pending) => {
                 quiet::Step::Aside
@@ -302,11 +349,14 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
                     outcome: item.outcome.as_deref(),
                     job: item.job.is_some(),
                     turn: item.turn,
+                    content: !results.is_empty(),
+                    ended: item.ended,
+                    sealed: sealed.contains(&item.id),
                 }),
                 None => quiet::Step::Other(*id),
             },
             Row::Item(_, Kind::Thinking) => quiet::Step::Thinking,
-            Row::Item(id, _) => quiet::Step::Other(*id),
+            Row::Item(id, _) | Row::Status(id) => quiet::Step::Other(*id),
             _ => quiet::Step::Other(0),
         })
         .collect();
@@ -319,18 +369,11 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
                 out.extend(results.iter().cloned());
             }
             quiet::Piece::Row(row) => {
-                // A call that failed alone keeps its output under it.
-                let alone = row.members.len() == 1 && row.words.failed.is_some();
                 let mut calls = Vec::new();
-                let mut under = Vec::new();
                 for at in &row.members {
                     let (member, results) = &shown[*at];
                     calls.push(member.clone());
-                    if alone {
-                        under.extend(results.iter().cloned());
-                    } else {
-                        calls.extend(results.iter().cloned());
-                    }
+                    calls.extend(results.iter().cloned());
                 }
                 let id = match calls.first() {
                     Some(Row::Item(id, _)) => *id,
@@ -338,14 +381,34 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
                 };
                 out.push(Row::Quiet {
                     id,
-                    words: row.words,
-                    calls,
+                    row: QuietRow {
+                        words: row.words,
+                        calls,
+                        merged: row.merged,
+                        opens: row.opens,
+                    },
                 });
-                out.extend(under);
             }
         }
     }
     out
+}
+
+/// The calls of a Quiet row ([`QuietRow`]'s `calls`) as the open row
+/// shows them, each with the rows of its results, which follow it there,
+/// and the thinking between them by itself.
+pub fn quiet_members(calls: &[Row]) -> Vec<(Row, Vec<Row>)> {
+    let mut members: Vec<(Row, Vec<Row>)> = Vec::new();
+    for row in calls {
+        if let Row::Item(_, Kind::Result) = row
+            && let Some((Row::Item(_, Kind::Call), results)) = members.last_mut()
+        {
+            results.push(row.clone());
+            continue;
+        }
+        members.push((row.clone(), Vec::new()));
+    }
+    members
 }
 
 /// The first line of an agent's thinking, for its folded row, the first
@@ -433,24 +496,9 @@ pub fn motion(
     now: f64,
 ) -> (Option<u64>, bool) {
     let still = (None, false);
-    let mut since = i64::MIN;
-    if let Some(worker) = worker {
-        if store
-            .workers
-            .get(worker)
-            .is_none_or(|summary| summary.state != WorkerState::Running)
-        {
-            return still;
-        }
-    } else {
-        // While the agent asks, it waits on the user, not on its model.
-        if !status.working || status.question.is_some() {
-            return still;
-        }
-        if let Some(at) = status.since {
-            since = at;
-        }
-    }
+    let Some(since) = under_way(store, status, worker) else {
+        return still;
+    };
     match busy(&store.items, worker.unwrap_or(MAIN), since) {
         Busy::Model => (None, true),
         Busy::Text(id) => {
@@ -467,26 +515,81 @@ pub fn motion(
     }
 }
 
+/// When the turn of the agent of a view began, while it works (the
+/// earliest time for a worker's), else `None`.
+fn under_way(store: &Store, status: &StatusData, worker: Option<&str>) -> Option<i64> {
+    match worker {
+        Some(worker) => store
+            .workers
+            .get(worker)
+            .is_some_and(|summary| summary.state == WorkerState::Running)
+            .then_some(i64::MIN),
+        // While the agent asks, it waits on the user, not on its model.
+        None if !status.working || status.question.is_some() => None,
+        None => Some(status.since.unwrap_or(i64::MIN)),
+    }
+}
+
+/// Whether the room the "Working…" row takes stays at the end, unseen,
+/// because something else shows that the agent of a view works (a call
+/// of its own that runs, its thinking or its text as they stream), so
+/// nothing above moves as they come and go.
+pub fn room(
+    store: &Store,
+    status: &StatusData,
+    view: View,
+    worker: Option<&str>,
+    now: f64,
+) -> bool {
+    !motion(store, status, view, worker, now).1
+        && under_way(store, status, worker).is_some_and(|since| {
+            !matches!(
+                busy(&store.items, worker.unwrap_or(MAIN), since),
+                Busy::Done
+            )
+        })
+}
+
 /// What the "Working…" line says. While a call of the agent runs (which
 /// the Messages view alone shows the line for) it says what the call does,
 /// as its Quiet row would ("Waiting for r91…").
 pub fn working_label(store: &Store, worker: Option<&str>) -> String {
-    let agent = worker.unwrap_or(MAIN);
-    store
-        .items
-        .iter()
-        .rev()
-        .find(|item| {
-            item.agent == agent
-                && !item.pending
-                && item.kind == Kind::Call
-                && item.status == Some(CallStatus::Running)
-        })
+    running(store, worker)
         .and_then(|item| item.act.as_ref())
         .map_or_else(
             || "Working…".to_string(),
             |act| format!("{}…", quiet::doing(act)),
         )
+}
+
+/// The latest call of the agent of a view (`worker`, or the main agent)
+/// that runs.
+fn running<'a>(store: &'a Store, worker: Option<&str>) -> Option<&'a ItemData> {
+    let agent = worker.unwrap_or(MAIN);
+    store.items.iter().rev().find(|item| {
+        item.agent == agent
+            && !item.pending
+            && item.kind == Kind::Call
+            && item.status == Some(CallStatus::Running)
+    })
+}
+
+/// Whether the agent's call that runs has a row of its own among `rows`,
+/// which shows that it runs, as it does in Messages where its turn's count
+/// is open.
+pub fn running_shown(rows: &[Row], store: &Store, worker: Option<&str>) -> bool {
+    running(store, worker).is_some_and(|call| {
+        in_quiet_row(rows, call.id) || rows.contains(&Row::Item(call.id, Kind::Call))
+    })
+}
+
+/// Whether the item `id` is in a Quiet row of `rows` (a thinking after a
+/// call is, from the start).
+pub fn in_quiet_row(rows: &[Row], id: u64) -> bool {
+    rows.iter().rev().any(|row| {
+        matches!(row, Row::Quiet { row, .. }
+            if row.calls.iter().any(|call| matches!(call, Row::Item(inner, _) if *inner == id)))
+    })
 }
 
 /// `rows` with the "Working…" row, when `working`, where the agent's
@@ -531,9 +634,10 @@ pub fn unseen(rows: &[Row], store: &Store, seen: u64) -> usize {
     rows.iter()
         .filter(|row| match row {
             Row::Item(id, _) => *id > seen && store.get(*id).is_some_and(is_read),
-            Row::Count { id, .. } => *id > seen,
+            Row::Count { id, .. } | Row::Status(id) => *id > seen,
             // As one thing, new when a call of it is.
-            Row::Quiet { calls, .. } => calls
+            Row::Quiet { row, .. } => row
+                .calls
                 .iter()
                 .any(|row| matches!(row, Row::Item(id, Kind::Call) if *id > seen)),
             Row::Working => false,
@@ -585,9 +689,10 @@ mod tests {
             worker_call,
             item(6, Kind::Reply, MAIN, "done"),
         ];
+        // (A worker's calls are its own view's.)
         assert_eq!(
             ids(&layout(&items, View::Full, None)),
-            ["i1", "i2", "i3", "i5", "i6"]
+            ["i1", "i2", "i3", "i6"]
         );
         assert_eq!(
             ids(&layout(&items, View::Quiet, None)),
@@ -639,9 +744,10 @@ mod tests {
             ids(&layout(&items, View::Quiet, None)),
             ["i1", "i3", "i4", "i5", "i6", "i9"]
         );
+        // (The call r1 made is r1's view's.)
         assert_eq!(
             ids(&layout(&items, View::Full, None)),
-            ["i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9"]
+            ["i1", "i2", "i3", "i4", "i5", "i6", "i7", "i9"]
         );
         let messages = layout(&items, View::Messages, None);
         assert_eq!(ids(&messages), ["i1", "c1:2", "i3", "i9"]);
@@ -773,6 +879,10 @@ mod tests {
         );
     }
 
+    /// The Working row shows while the agent waits on its model, and its
+    /// room stays, unseen, while something else shows that the agent works
+    /// (its thinking or text as they stream, a call that runs), so nothing
+    /// above moves as they come and go.
     #[test]
     fn working_shows_while_the_agent_waits_on_its_model_and_its_thinking_moves_as_it_streams() {
         let mut store = Store::default();
@@ -781,13 +891,17 @@ mod tests {
             since: Some(0),
             ..StatusData::default()
         };
+        let room = |store: &Store, view, now| room(store, &status, view, None, now);
         store.add(item(1, Kind::User, MAIN, "go"), 0.0);
         assert_eq!(motion(&store, &status, View::Full, None, 0.0), (None, true));
+        assert!(!room(&store, View::Full, 0.0));
         store.add(item(2, Kind::Thinking, MAIN, "hmm"), 0.0);
         assert_eq!(
             motion(&store, &status, View::Full, None, 0.0),
             (Some(2), false)
         );
+        assert!(room(&store, View::Full, 0.0));
+        assert!(!room(&store, View::Messages, 0.0));
         assert_eq!(
             motion(&store, &status, View::Messages, None, 0.0),
             (None, true)
@@ -797,10 +911,12 @@ mod tests {
             motion(&store, &status, View::Full, None, 500.0),
             (None, false)
         );
+        assert!(room(&store, View::Full, 500.0));
         assert_eq!(
             motion(&store, &status, View::Full, None, 100.0 + QUIET_MS),
             (None, true)
         );
+        assert!(!room(&store, View::Full, 100.0 + QUIET_MS));
         let mut call = item(4, Kind::Call, MAIN, "ls");
         call.status = Some(CallStatus::Running);
         call.act = Some(crate::protocol::Act {
@@ -813,6 +929,8 @@ mod tests {
             motion(&store, &status, View::Full, None, 0.0),
             (None, false)
         );
+        assert!(room(&store, View::Full, 0.0));
+        assert!(room(&store, View::Quiet, 0.0));
         // The Messages view counts calls, so its line at the end says what
         // the call that runs does.
         assert_eq!(
@@ -829,6 +947,7 @@ mod tests {
             motion(&store, &status, View::Full, None, 0.0),
             (None, false)
         );
+        assert!(!room(&store, View::Full, 0.0), "its reply ended it");
         // While it asks, it waits on the user.
         let asking = StatusData {
             question: Some(crate::protocol::Question {
@@ -947,13 +1066,103 @@ mod tests {
         let grown: HashSet<u64> = [4].into();
         let rows = layout(&items, View::Full, None);
         let store = store_of(&items);
-        assert_eq!(jump_label(&rows, &store, 4, &grown), "1 new");
-        assert_eq!(jump_label(&rows, &store, 5, &grown), "New text");
+        assert_eq!(jump_label(&rows, &store, 3, &grown), "1 new");
+        assert_eq!(jump_label(&rows, &store, 4, &grown), "New text");
         // A worker's text that came since isn't new in the main view.
         items.push(item(6, Kind::Text, "r1", "more"));
         let rows = layout(&items, View::Full, None);
         let store = store_of(&items);
         assert_eq!(jump_label(&rows, &store, 5, &HashSet::new()), "Latest");
+    }
+
+    /// A turn's count of calls that's open shows the turn's Quiet rows, each
+    /// where it came among what the agent said, with the thinking and the
+    /// results Quiet puts in them. Each turn keeps one count.
+    #[test]
+    fn a_turns_count_opens_to_its_quiet_rows_in_place() {
+        use crate::protocol::{Act, ActKind};
+        let read = |id: u64, path: &str, turn: u64| ItemData {
+            status: Some(CallStatus::Ok),
+            act: Some(Act {
+                kind: ActKind::Read,
+                target: path.into(),
+                ..Act::default()
+            }),
+            turn: Some(turn),
+            ..item(id, Kind::Call, MAIN, path)
+        };
+        let of_turn = |item: ItemData, turn: u64| ItemData {
+            turn: Some(turn),
+            ..item
+        };
+        let mut result = item(4, Kind::Result, MAIN, "fn main() {}");
+        result.call = Some(3);
+        let items = [
+            of_turn(item(1, Kind::User, MAIN, "Fix the parser"), 1),
+            read(2, "a.rs", 1),
+            read(3, "b.rs", 1),
+            of_turn(result, 1),
+            of_turn(item(5, Kind::Thinking, MAIN, "There."), 1),
+            of_turn(item(6, Kind::Text, MAIN, "Found it."), 1),
+            read(7, "c.rs", 1),
+            of_turn(item(8, Kind::Reply, MAIN, "Fixed."), 1),
+            of_turn(item(9, Kind::User, MAIN, "Thanks"), 2),
+            read(10, "d.rs", 2),
+        ];
+        let laid = |open: &[u64]| {
+            let open: HashSet<u64> = open.iter().copied().collect();
+            layout_sealed(
+                &items,
+                View::Messages,
+                None,
+                &HashSet::new(),
+                &HashMap::new(),
+                &open,
+            )
+        };
+        let closed = ["i1", "c1:2", "i6", "i8", "i9", "c2:10"];
+        assert_eq!(ids(&laid(&[])), closed);
+        let open = laid(&[2]);
+        assert_eq!(
+            ids(&open),
+            ["i1", "c1:2", "q2", "i6", "q7", "i8", "i9", "c2:10"]
+        );
+        let Row::Quiet { row, .. } = &open[2] else {
+            panic!("{open:?}");
+        };
+        assert_eq!(row.words.text, "Read a.rs and b.rs");
+        assert_eq!(
+            ids(&row.calls),
+            ["i2", "i3", "i4", "i5"],
+            "its calls, a result and the thinking after them"
+        );
+        assert!(
+            matches!(
+                open[1],
+                Row::Count {
+                    count: Count { calls: 3, .. },
+                    ..
+                }
+            ),
+            "{open:?}"
+        );
+        assert_eq!(
+            ids(&laid(&[10])),
+            ["i1", "c1:2", "i6", "i8", "i9", "c2:10", "q10"]
+        );
+        // A call that runs shows it in its row, where the count is open.
+        let mut running = read(11, "e.rs", 2);
+        running.status = Some(CallStatus::Running);
+        let mut all = items.to_vec();
+        all.push(running);
+        let store = store_of(&all);
+        let laid = |open: &[u64]| {
+            let open: HashSet<u64> = open.iter().copied().collect();
+            let (sealed, leads) = (HashSet::new(), HashMap::new());
+            layout_sealed(&store.items, View::Messages, None, &sealed, &leads, &open)
+        };
+        assert!(running_shown(&laid(&[10]), &store, None));
+        assert!(!running_shown(&laid(&[]), &store, None));
     }
 
     #[test]
@@ -1052,8 +1261,10 @@ mod tests {
         assert_eq!(says(&items, View::Full, None, 1), "1 new");
     }
 
+    /// A worker's report is a row of every main view, and counts there.
+    /// Its text, its calls and the messages it got count in its own view.
     #[test]
-    fn a_workers_reply_and_messages_count_in_its_own_view_only() {
+    fn a_workers_report_counts_in_the_main_views() {
         let items = vec![
             item(1, Kind::User, MAIN, "go"),
             ItemData {
@@ -1064,24 +1275,39 @@ mod tests {
             item(4, Kind::Reply, "r1", "Fixed."),
         ];
         assert_eq!(says(&items, View::Full, Some("r1"), 0), "3 new");
-        // The main views show it as a card, which changes in place.
         for view in View::ALL {
-            assert_eq!(says(&items, view, None, 1), "Latest", "{view:?}");
+            assert_eq!(says(&items, view, None, 1), "1 new", "{view:?}");
         }
-        // A worker's calls are rows of the main Full view.
         let mut call = item(5, Kind::Call, "r1", "cat");
         call.status = Some(CallStatus::Ok);
         let mut items = items;
         items.push(call);
-        assert_eq!(says(&items, View::Full, None, 1), "1 new");
-        assert_eq!(says(&items, View::Quiet, None, 1), "Latest");
+        assert_eq!(says(&items, View::Full, None, 4), "Latest");
     }
 
-    /// A worker's message to the user (one without a sender) is a row of
-    /// its own view and of every main view, and counts in each. A message
-    /// the worker got stays in its own view.
+    /// A worker's message to the user is a row of its own view only. The
+    /// main views show the worker as its reports and its messages to its
+    /// lead, each a row that opens to its words, and leave out a worker's
+    /// worker's, which go to its lead's view.
     #[test]
-    fn a_workers_message_to_the_user_shows_in_its_view_and_the_main_one() {
+    fn a_worker_shows_in_the_main_views_as_its_reports_and_messages() {
+        use crate::protocol::{Act, ActKind};
+        let mut to_lead = item(5, Kind::Call, "r1", "message main “Halfway.”");
+        to_lead.status = Some(CallStatus::Ok);
+        to_lead.act = Some(Act {
+            kind: ActKind::Message,
+            target: MAIN.into(),
+            ..Act::default()
+        });
+        let mut said = item(6, Kind::Result, "r1", "Halfway.");
+        said.call = Some(5);
+        let mut read = item(7, Kind::Call, "r1", "read a.rs");
+        read.status = Some(CallStatus::Ok);
+        read.act = Some(Act {
+            kind: ActKind::Read,
+            target: "a.rs".into(),
+            ..Act::default()
+        });
         let items = vec![
             item(1, Kind::User, MAIN, "go"),
             ItemData {
@@ -1090,24 +1316,39 @@ mod tests {
             },
             item(3, Kind::Text, "r1", "On it."),
             item(4, Kind::Message, "r1", "Found it."),
+            to_lead,
+            said,
+            read,
+            ItemData {
+                level: Some(Level::Error),
+                ..item(8, Kind::Notice, "r1", "failed (boom)")
+            },
+            item(9, Kind::Reply, "r1", "Fixed."),
+            item(10, Kind::Reply, "r2", "Counted."),
         ];
+        let leads: HashMap<String, String> = [("r2".to_string(), "r1".to_string())].into();
+        let laid = |view, worker| {
+            layout_sealed(
+                &items,
+                view,
+                worker,
+                &HashSet::new(),
+                &leads,
+                &HashSet::new(),
+            )
+        };
         for view in View::ALL {
             assert_eq!(
-                layout(&items, view, None),
-                [Row::Item(1, Kind::User), Row::Item(4, Kind::Message)],
+                laid(view, None),
+                [Row::Item(1, Kind::User), Row::Status(5), Row::Status(9)],
                 "{view:?}"
             );
-            assert_eq!(says(&items, view, None, 1), "1 new", "{view:?}");
         }
+        // r2's report goes to r1, its lead, in r1's view.
         assert_eq!(
-            layout(&items, View::Full, Some("r1")),
-            [
-                Row::Item(2, Kind::Message),
-                Row::Item(3, Kind::Text),
-                Row::Item(4, Kind::Message)
-            ]
+            ids(&laid(View::Full, Some("r1"))),
+            ["i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9", "s10"]
         );
-        assert!(is_to_user(&items[3]) && !is_to_user(&items[1]));
     }
 
     #[test]
@@ -1133,9 +1374,230 @@ mod tests {
         assert_eq!(says(&hidden, View::Full, None, 1), "2 new");
     }
 
+    /// A long call joins the row above as it comes and shows there while
+    /// it runs, so no row comes or goes when it starts or ends.
+    #[test]
+    fn a_long_call_leaves_the_rows_as_they_are() {
+        use crate::protocol::{Act, ActKind};
+        let call = |id: u64, target: &str, status: CallStatus| ItemData {
+            status: Some(status),
+            act: Some(Act {
+                kind: ActKind::Command,
+                target: target.into(),
+                ..Act::default()
+            }),
+            ..item(id, Kind::Call, MAIN, target)
+        };
+        let mut items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            call(2, "rg x", CallStatus::Ok),
+            call(3, "cargo build", CallStatus::Running),
+        ];
+        let said = |rows: &[Row]| match &rows[1] {
+            Row::Quiet { row, .. } => (row.words.text.clone(), row.words.running),
+            other => panic!("{other:?}"),
+        };
+        let running = layout(&items, View::Quiet, None);
+        assert_eq!(ids(&running), ["i1", "q2"]);
+        assert_eq!(
+            said(&running),
+            ("Ran rg x · running cargo build".into(), true)
+        );
+        items[2].status = Some(CallStatus::Ok);
+        let settled = layout(&items, View::Quiet, None);
+        assert_eq!(ids(&settled), ids(&running));
+        assert_eq!(said(&settled), ("Ran 2 commands (rg, cargo)".into(), false));
+    }
+
+    /// Each of the shared fixtures, alone in its Quiet row, says and opens
+    /// to what the terminal's row does, from the same projection, its
+    /// content inside it, and a row with nothing to show has no fold.
+    #[test]
+    fn quiet_rows_open_to_the_fixtures_contents() {
+        for fixture in quiet::fixtures() {
+            let name = fixture.name;
+            let call = ItemData {
+                status: Some(fixture.status),
+                outcome: Some(fixture.outcome.to_string()).filter(|outcome| !outcome.is_empty()),
+                act: Some(fixture.act.clone()),
+                detail: fixture.full_detail.map(str::to_string),
+                job: fixture.job.then(|| "4d2c1a9b".to_string()),
+                ended: fixture.ended,
+                ..item(2, Kind::Call, MAIN, fixture.full)
+            };
+            let mut items = vec![item(1, Kind::User, MAIN, "go"), call];
+            if let Some((kind, preview)) = fixture.content {
+                let mut result = item(3, Kind::Result, MAIN, preview);
+                result.content = Some(kind);
+                result.more = fixture.more.map(str::to_string);
+                result.call = Some(2);
+                items.push(result);
+            }
+            let rows = layout(&items, View::Quiet, None);
+            let Some(Row::Quiet { row, .. }) = rows.get(1) else {
+                panic!("{name}: {rows:?}");
+            };
+            assert_eq!(row.words.text, fixture.words, "{name}");
+            assert_eq!(row.words.failed, fixture.failed, "{name}");
+            assert_eq!(row.opens, fixture.opens, "{name}");
+            assert!(!row.merged, "{name}");
+            let content = row
+                .calls
+                .iter()
+                .any(|row| matches!(row, Row::Item(3, Kind::Result)));
+            assert_eq!(content, fixture.content.is_some(), "{name}");
+        }
+    }
+
+    /// A failure ends its Quiet row, as the terminal's: the command after
+    /// it starts a row of its own, and one called with it stays in its row.
+    #[test]
+    fn a_failure_ends_its_quiet_row() {
+        use crate::protocol::{Act, ActKind};
+        let call = |id: u64, target: &str, status: CallStatus, ended: Option<u64>| ItemData {
+            status: Some(status),
+            ended,
+            act: Some(Act {
+                kind: ActKind::Command,
+                target: target.into(),
+                ..Act::default()
+            }),
+            ..item(id, Kind::Call, MAIN, target)
+        };
+        let words = |items: &[ItemData]| -> Vec<(String, bool)> {
+            layout(items, View::Quiet, None)
+                .into_iter()
+                .filter_map(|row| match row {
+                    Row::Quiet { row, .. } => Some((row.words.text, row.words.failed)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let after = [
+            call(1, "rg x", CallStatus::Ok, None),
+            call(2, "cargo clippy", CallStatus::Failed, Some(3)),
+            call(3, "sed -i x", CallStatus::Ok, None),
+        ];
+        assert_eq!(
+            words(&after),
+            [
+                ("Ran 2 commands (rg, cargo)".to_string(), true),
+                ("Ran sed -i x".to_string(), false)
+            ]
+        );
+        let together = [
+            call(1, "cargo clippy", CallStatus::Failed, Some(3)),
+            call(2, "sed -i x", CallStatus::Ok, None),
+        ];
+        assert_eq!(
+            words(&together),
+            [("Ran 2 commands (cargo, sed)".to_string(), true)]
+        );
+    }
+
+    /// A Quiet row of one call that the reader opened keeps its form, as
+    /// the terminal's: the next read starts a row of its own.
+    #[test]
+    fn an_opened_quiet_row_of_one_call_keeps_its_form() {
+        use crate::protocol::{Act, ActKind};
+        let read = |id: u64, path: &str| ItemData {
+            status: Some(CallStatus::Ok),
+            act: Some(Act {
+                kind: ActKind::Read,
+                target: path.into(),
+                ..Act::default()
+            }),
+            ..item(id, Kind::Call, MAIN, path)
+        };
+        let items = [read(1, "a.rs"), read(2, "b.rs")];
+        let words = |sealed: &[u64]| -> Vec<String> {
+            let sealed: HashSet<u64> = sealed.iter().copied().collect();
+            layout_sealed(
+                &items,
+                View::Quiet,
+                None,
+                &sealed,
+                &HashMap::new(),
+                &HashSet::new(),
+            )
+            .into_iter()
+            .filter_map(|row| match row {
+                Row::Quiet { row, .. } => Some(row.words.text),
+                _ => None,
+            })
+            .collect()
+        };
+        assert_eq!(words(&[]), ["Read a.rs and b.rs"]);
+        assert_eq!(words(&[1]), ["Read a.rs", "Read b.rs"]);
+    }
+
+    /// A thinking after a call is in that call's Quiet row from the start,
+    /// so no row goes when the next call joins, and the Working row stands
+    /// for it while it streams.
+    #[test]
+    fn a_thinking_after_a_call_is_in_its_row() {
+        use crate::protocol::{Act, ActKind};
+        let read = |id: u64, path: &str| ItemData {
+            status: Some(CallStatus::Ok),
+            act: Some(Act {
+                kind: ActKind::Read,
+                target: path.into(),
+                ..Act::default()
+            }),
+            ..item(id, Kind::Call, MAIN, path)
+        };
+        let mut items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            read(2, "a.rs"),
+            item(3, Kind::Thinking, MAIN, "Which next?"),
+        ];
+        let thinking = layout(&items, View::Quiet, None);
+        assert_eq!(ids(&thinking), ["i1", "q2"]);
+        assert!(in_quiet_row(&thinking, 3));
+        assert!(!in_quiet_row(&thinking, 1));
+        items.push(read(4, "b.rs"));
+        assert_eq!(ids(&layout(&items, View::Quiet, None)), ["i1", "q2"]);
+    }
+
+    /// An open Quiet row shows each of its calls with the output under it,
+    /// and the thinking between them by itself.
+    #[test]
+    fn an_open_quiet_row_keeps_each_calls_output_with_it() {
+        let calls = [
+            Row::Item(2, Kind::Call),
+            Row::Item(3, Kind::Result),
+            Row::Item(4, Kind::Thinking),
+            Row::Item(5, Kind::Call),
+            Row::Item(6, Kind::Call),
+            Row::Item(7, Kind::Result),
+            Row::Item(8, Kind::Result),
+        ];
+        let keys = |rows: &[Row]| rows.iter().map(Row::key).collect::<Vec<_>>();
+        let members: Vec<(String, Vec<String>)> = quiet_members(&calls)
+            .iter()
+            .map(|(row, results)| (row.key(), keys(results)))
+            .collect();
+        let member = |key: &str, results: &[&str]| {
+            (
+                key.to_string(),
+                results.iter().map(|key| key.to_string()).collect(),
+            )
+        };
+        assert_eq!(
+            members,
+            [
+                member("i2", &["i3"]),
+                member("i4", &[]),
+                member("i5", &[]),
+                member("i6", &["i7", "i8"]),
+            ]
+        );
+    }
+
     /// Quiet says each call in a few words, as the terminal does. Reads of
     /// a file being edited join its edits, a test run that failed stands
-    /// alone with its output under it, and the agent's text ends a run.
+    /// alone with one ✗ and its output inside it, and the agent's text ends
+    /// a run.
     #[test]
     fn quiet_merges_calls_into_rows_of_a_few_words() {
         use crate::protocol::{Act, ActKind};
@@ -1173,18 +1635,18 @@ mod tests {
             },
         ];
         let rows = layout(&items, View::Quiet, None);
-        assert_eq!(ids(&rows), ["i1", "q2", "q5", "i6", "i7", "q8", "i9"]);
+        assert_eq!(ids(&rows), ["i1", "q2", "q5", "i7", "q8", "i9"]);
         let said = |row: &Row| match row {
-            Row::Quiet { words, calls, .. } => (words.clone(), ids(calls)),
+            Row::Quiet { row, .. } => (row.words.clone(), ids(&row.calls)),
             other => panic!("{other:?}"),
         };
         let (words, calls) = said(&rows[1]);
         assert_eq!(words.text, "Made 1 edit to app.rs");
         assert_eq!(calls, ["i2", "i3", "i4"]);
         let (words, calls) = said(&rows[2]);
-        assert_eq!(words.text, "Ran cargo test");
-        assert_eq!(words.failed.as_deref(), Some("1 failed, 3 passed"));
-        assert_eq!(calls, ["i5"]);
+        assert_eq!(words.text, "Ran cargo test (1 failed, 3 passed)");
+        assert!(words.failed);
+        assert_eq!(calls, ["i5", "i6"]);
         // Images that a call's result brings later leave the rows as they
         // were, since they show under the row's line whatever row it is.
         let mut with_images = items.clone();
@@ -1222,10 +1684,11 @@ mod tests {
             assert!(moves(&|item| item.from = Some(MAIN.into()), view));
             assert!(!moves(&|item| item.text.push_str(" Mostly."), view));
             assert!(!moves(&|item| item.level = Some(Level::Info), view));
-            // How a call went words its Quiet row.
+            // How a call went words its Quiet row, which a count that's
+            // open shows in Messages.
             assert_eq!(
                 moves(&|item| item.outcome = Some("ok".into()), view),
-                view == View::Quiet
+                view != View::Full
             );
         }
         // A call's status counts in Messages and words a Quiet row.

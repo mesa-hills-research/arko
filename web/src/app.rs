@@ -123,6 +123,19 @@ pub struct Page {
     pub quiet_open: RwSignal<HashSet<u64>>,
     /// The files attached to the message box.
     pub attached: RwSignal<Vec<crate::attach::Chip>>,
+    /// The Quiet view's rows of one call the reader opened, by that call,
+    /// which keep their form ([`crate::quiet::Call::sealed`]).
+    pub quiet_sealed: RwSignal<HashSet<u64>>,
+    /// The turns whose count of calls the reader opened in Messages, by
+    /// their first call.
+    pub counts_open: RwSignal<HashSet<u64>>,
+    /// The calls whose content the reader opened or closed in Full, where
+    /// a command's shows from the start ([`full_open`](crate::transcript)).
+    pub flipped: RwSignal<HashSet<u64>>,
+    /// The calls the reader opened inside a Quiet row of several.
+    pub calls_open: RwSignal<HashSet<u64>>,
+    /// The contents the reader opened whole, by their result.
+    pub doors_open: RwSignal<HashSet<u64>>,
 }
 
 thread_local! {
@@ -255,6 +268,11 @@ impl Page {
             ask: crate::questions::Asking::new(),
             quiet_open: RwSignal::new(HashSet::new()),
             attached: RwSignal::new(Vec::new()),
+            quiet_sealed: RwSignal::new(HashSet::new()),
+            counts_open: RwSignal::new(HashSet::new()),
+            flipped: RwSignal::new(HashSet::new()),
+            calls_open: RwSignal::new(HashSet::new()),
+            doors_open: RwSignal::new(HashSet::new()),
         };
         PAGE.with(|cell| cell.set(Some(page)));
         page
@@ -1035,6 +1053,7 @@ fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>, switched: bool) {
     if switched {
         for (id, _) in kept.drain() {
             streaming_forget(id);
+            crate::contents::let_go(id);
         }
     }
     let cells = items
@@ -1053,6 +1072,7 @@ fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>, switched: bool) {
     // The items the history let go of.
     for id in kept.into_keys() {
         streaming_forget(id);
+        crate::contents::let_go(id);
     }
     CELLS.with(|all| *all.borrow_mut() = cells);
 }
@@ -1071,6 +1091,12 @@ fn start_feed(page: Page) {
     page.feeds.update(|feeds| *feeds += 1);
     // Another feed's items have other ids.
     page.quiet_open.update(HashSet::clear);
+    page.quiet_sealed.update(HashSet::clear);
+    page.counts_open.update(HashSet::clear);
+    page.flipped.update(HashSet::clear);
+    page.calls_open.update(HashSet::clear);
+    page.doors_open.update(HashSet::clear);
+    crate::contents::forget();
 }
 
 /// Gives a cell the item as Arko has it now, setting only what changed, and
@@ -1116,6 +1142,7 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
                 for id in trimmed {
                     cells.remove(&id);
                     streaming_forget(id);
+                    crate::contents::let_go(id);
                 }
             });
         }
@@ -1200,6 +1227,7 @@ fn on_remove(page: Page, data: &str) -> Result<(), String> {
     if STORE.with(|store| store.borrow_mut().remove(removed.id)) {
         CELLS.with(|cells| cells.borrow_mut().remove(&removed.id));
         streaming_forget(removed.id);
+        crate::contents::let_go(removed.id);
         page.version.update(|version| *version += 1);
     }
     Ok(())

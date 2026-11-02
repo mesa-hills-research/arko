@@ -30,6 +30,8 @@ pub struct Store {
     /// When each item came, in this device's time (ms).
     born: HashMap<u64, f64>,
     counts: [usize; 2],
+    /// Each call's content, its result, by the call.
+    contents: HashMap<u64, u64>,
 }
 
 impl Store {
@@ -81,6 +83,11 @@ impl Store {
             return Vec::new();
         }
         let lane = usize::from(item.agent != MAIN);
+        if item.kind == Kind::Result
+            && let Some(call) = item.call
+        {
+            self.contents.insert(call, item.id);
+        }
         self.grown.insert(item.id, now);
         self.born.insert(item.id, now);
         self.index.insert(item.id, self.items.len());
@@ -98,6 +105,7 @@ impl Store {
             let old = self.items.remove(at);
             self.grown.remove(&old.id);
             self.born.remove(&old.id);
+            self.let_go_content(old.id);
             self.counts[lane] -= 1;
             trimmed.push(old.id);
         }
@@ -105,6 +113,20 @@ impl Store {
             self.reindex();
         }
         trimmed
+    }
+
+    /// The item `id` goes, a call or its result, and so does what links them.
+    fn let_go_content(&mut self, id: u64) {
+        self.contents.remove(&id);
+        self.contents.retain(|_, result| *result != id);
+    }
+
+    /// The content of the call `id`, its result, while it's kept.
+    pub fn content_of(&self, id: u64) -> Option<u64> {
+        self.contents
+            .get(&id)
+            .copied()
+            .filter(|result| self.index.contains_key(result))
     }
 
     /// More text for the item `id`, come at `now`. False if it isn't kept.
@@ -133,6 +155,7 @@ impl Store {
         let item = self.items.remove(at);
         self.grown.remove(&id);
         self.born.remove(&id);
+        self.let_go_content(id);
         self.counts[usize::from(item.agent != MAIN)] -= 1;
         self.reindex();
         true
@@ -249,6 +272,24 @@ pub mod tests {
     use super::*;
     use crate::protocol::{CallStatus, JobKind, JobState};
 
+    /// A call and its content stay linked while both are kept, and the
+    /// link goes with either.
+    #[test]
+    fn a_calls_content_goes_with_the_call_or_its_result() {
+        let mut store = Store::default();
+        let mut result = item(2, Kind::Result, MAIN, "a");
+        result.call = Some(1);
+        store.add(item(1, Kind::Call, MAIN, "read a.rs"), 0.0);
+        store.add(result.clone(), 0.0);
+        assert_eq!(store.content_of(1), Some(2));
+        store.remove(2);
+        assert_eq!(store.content_of(1), None);
+        assert!(store.contents.is_empty());
+        store.add(result, 0.0);
+        store.remove(1);
+        assert!(store.contents.is_empty());
+    }
+
     /// An item for tests.
     pub fn item(id: u64, kind: Kind, agent: &str, text: &str) -> ItemData {
         ItemData {
@@ -262,6 +303,10 @@ pub mod tests {
             level: None,
             source: None,
             delivery: None,
+            content: None,
+            more: None,
+            language: None,
+            ended: None,
             status: None,
             outcome: None,
             act: None,

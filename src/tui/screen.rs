@@ -817,6 +817,133 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    /// The transcript's views of the session `ARKO_SCENARIO` names, at 100
+    /// columns, in the folder `ARKO_RENDERINGS` names (`remote::scenario`):
+    /// Full, Quiet closed, Quiet with every row open, Messages, Messages with
+    /// each turn's count open, and the own view (Full) of the worker r3 when
+    /// the session has it.
+    #[test]
+    #[ignore]
+    fn renderings() {
+        use crate::tui::transcript::View;
+        let (Ok(script), Ok(out)) = (
+            std::env::var("ARKO_SCENARIO"),
+            std::env::var("ARKO_RENDERINGS"),
+        ) else {
+            return;
+        };
+        let feed = crate::remote::scenario::play(&script);
+        for (view, name, open, worker) in [
+            (View::Full, "full", true, None),
+            (View::Quiet, "quiet-closed", false, None),
+            (View::Quiet, "quiet-open", true, None),
+            (View::Messages, "messages", false, None),
+            (View::Messages, "messages-open", true, None),
+            (View::Full, "worker-r3", false, Some("r3")),
+        ] {
+            let mut app = app();
+            app.reset(feed.subscribe().0);
+            app.set_view(view);
+            if let Some(worker) = worker {
+                if app.transcript.worker(worker).is_none() {
+                    continue;
+                }
+                app.watching = Some(worker.to_string());
+            }
+            if open {
+                app.transcript.open_for_renderings(view);
+            }
+            // As tall as it takes, from its first line, without the empty
+            // rows between its last and the status line, as text and in its
+            // colours as HTML.
+            let (rows, html) = screen_html(&mut app, 100, 400);
+            let first = rows.iter().position(|row| !row.is_empty()).unwrap_or(0);
+            let bar = rows
+                .iter()
+                .position(|row| row.starts_with('─'))
+                .unwrap_or(rows.len());
+            let last = rows[..bar]
+                .iter()
+                .rposition(|row| !row.is_empty())
+                .unwrap_or(first);
+            let shown: Vec<usize> = (first..=last).chain(bar..rows.len()).collect();
+            let pick = |lines: &[String]| -> Vec<String> {
+                shown.iter().map(|at| lines[*at].clone()).collect()
+            };
+            let text = pick(&rows).join("\n") + "\n";
+            std::fs::write(format!("{out}/terminal-{name}.txt"), text).unwrap();
+            let (background, foreground) = (css(app.theme.background), css(app.theme.text));
+            let html = format!(
+                "<!doctype html><meta charset=utf-8><body style=\"margin:0;background:{}\"><pre style=\"margin:0;padding:12px;font:13px/1.3 'JetBrains Mono',monospace;color:{}\">{}</pre>",
+                background.unwrap_or_default(),
+                foreground.unwrap_or_default(),
+                pick(&html).join("\n")
+            );
+            std::fs::write(format!("{out}/terminal-{name}.html"), html).unwrap();
+        }
+    }
+
+    /// A colour as CSS writes it, where it's one of red, green and blue.
+    fn css(color: ratatui::style::Color) -> Option<String> {
+        match color {
+            ratatui::style::Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
+            _ => None,
+        }
+    }
+
+    /// The screen at `width` by `height`, its rows as text and as HTML in
+    /// their cells' colours.
+    fn screen_html(app: &mut App, width: u16, height: u16) -> (Vec<String>, Vec<String>) {
+        use ratatui::style::Modifier;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut text = Vec::new();
+        let mut html = Vec::new();
+        for y in 0..height {
+            let mut row = String::new();
+            let mut painted = String::new();
+            let mut x = 0;
+            while x < width {
+                let look = |x: u16| {
+                    let cell = &buffer[(x, y)];
+                    (cell.fg, cell.bg, cell.modifier)
+                };
+                let (fg, bg, modifier) = look(x);
+                let mut run = String::new();
+                while x < width && look(x) == (fg, bg, modifier) {
+                    run.push_str(buffer[(x, y)].symbol());
+                    x += 1;
+                }
+                row.push_str(&run);
+                let mut rule = String::new();
+                if let Some(fg) = css(fg) {
+                    rule.push_str(&format!("color:{fg};"));
+                }
+                if let Some(bg) = css(bg) {
+                    rule.push_str(&format!("background:{bg};"));
+                }
+                if modifier.contains(Modifier::BOLD) {
+                    rule.push_str("font-weight:bold;");
+                }
+                if modifier.contains(Modifier::ITALIC) {
+                    rule.push_str("font-style:italic;");
+                }
+                if modifier.contains(Modifier::DIM) {
+                    rule.push_str("opacity:0.6;");
+                }
+                let run = run
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                painted.push_str(&format!("<span style=\"{rule}\">{run}</span>"));
+            }
+            text.push(row.trim_end().to_string());
+            html.push(painted);
+        }
+        (text, html)
+    }
+
     fn app() -> App {
         use crate::tui::app::Info;
         use crate::tui::input::{Editor, History};
@@ -2453,7 +2580,7 @@ mod tests {
     /// The Quiet view's calls as the feed sends them, which are two edits of a file,
     /// a test run that failed with its output, and a message to a worker.
     fn quiet_calls(app: &mut App) {
-        use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Level, Update};
+        use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Update};
         let call = |id: u64, text: &str, act: Act, status: CallStatus| {
             let mut call = Item::new(Kind::Call, text);
             call.id = id;
@@ -2488,26 +2615,28 @@ mod tests {
         let mut failed = call(5, "$ cargo test", test, CallStatus::Failed);
         failed.outcome = Some("exit 101 · 1 failed, 3 passed".into());
         app.transcript.apply(Update::Item(failed));
-        let mut result = Item::new(Kind::Result, "exit code 101, 2.0 s")
-            .detail("test a ... FAILED")
-            .level(Level::Warn);
+        let mut result = Item::new(Kind::Result, "test a ... FAILED");
+        result.content = Some(crate::remote::ContentKind::Plain);
         result.id = 6;
         result.call = Some(5);
         app.transcript.apply(Update::Item(result));
-        let mut message = call(
-            7,
-            "message r3 “Use the UTC time…”",
-            on(ActKind::Message, "r3"),
-            CallStatus::Ok,
-        )
-        .detail("Use the UTC time from the stats, not the local clock.");
+        // (Its content is its message, as the feed makes it.)
+        let text = "Use the UTC time from the stats, not the local clock.";
+        let to_r3 = on(ActKind::Message, "r3");
+        let mut message = call(7, "message r3 “Use the UTC time…”", to_r3, CallStatus::Ok);
         message.outcome = Some("sent".into());
         app.transcript.apply(Update::Item(message));
+        let mut sent = Item::new(Kind::Result, text);
+        sent.content = Some(crate::remote::ContentKind::Plain);
+        sent.id = 8;
+        sent.call = Some(7);
+        app.transcript.apply(Update::Item(sent));
     }
 
     /// In the Quiet view each call says what it did in a few words,
     /// neighbours of a kind merge, a failure keeps its output under it, and
-    /// a click on a row's line opens it to the calls as Full shows them.
+    /// a click on a row's line opens it to what its calls hold, each call
+    /// on a line of its own words.
     #[test]
     fn quiet_rows_merge_calls_and_a_click_opens_one() {
         use crossterm::event::{MouseButton, MouseEventKind};
@@ -2521,15 +2650,15 @@ mod tests {
                 .unwrap_or_else(|| panic!("{text}: {rows:#?}"))
         };
         let edits = at(&rows, "▸ Made 2 edits to app.rs");
-        assert_eq!(
-            rows[edits + 1..edits + 4],
-            [
-                "▸ Ran cargo test · ✗ 1 failed, 3 passed",
-                "  │ test a ... FAILED",
-                "▸ Messaged r3",
-            ],
+        // (A failed row shows one ✗ at its right.)
+        let test = &rows[edits + 1];
+        assert!(
+            test.starts_with("  ▸ Ran cargo test (1 failed, 3 passed) ")
+                && test.ends_with('✗')
+                && test.chars().count() == 70,
             "{rows:#?}"
         );
+        assert_eq!(rows[edits + 2], "  ▸ Messaged r3", "{rows:#?}");
         assert!(!rows.iter().any(|row| row.contains("read src/app.rs")));
         // Its line opens it, and the same line closes it.
         let left = MouseButton::Left;
@@ -2540,9 +2669,9 @@ mod tests {
         assert_eq!(
             open[edits + 1..edits + 4],
             [
-                "  ▸ read src/app.rs · ✓",
-                "  ▸ edit src/app.rs · ✓",
-                "  ▸ edit src/app.rs · ✓",
+                "  │   read src/app.rs · ✓",
+                "  │   edit src/app.rs · ✓",
+                "  │   edit src/app.rs · ✓",
             ],
             "{open:#?}"
         );
@@ -2615,10 +2744,11 @@ mod tests {
             ..Act::default()
         });
         app.transcript.apply(Update::Item(call));
-        let mut result =
-            Item::new(Kind::Result, "exit code 0, 0.1 s").detail("1\n2\n3\n4\n… 3 more lines");
+        let mut result = Item::new(Kind::Result, "1\n2\n3\n4");
         result.id = 3;
         result.call = Some(2);
+        result.content = Some(crate::remote::ContentKind::Plain);
+        result.more = Some("… 3 more lines".into());
         result.whole = Some("1\n2\n3\n4\n5\n6\n7".into());
         app.transcript.apply(Update::Item(result));
         let at = |rows: &[String], text: &str| {
@@ -2641,12 +2771,15 @@ mod tests {
         assert!(rows.iter().any(|row| row.contains("│ 7")), "{rows:#?}");
         // The keyboard reaches it too, and closes it again.
         app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
-        assert_eq!(app.transcript.focus, Some(3));
+        assert_eq!(
+            app.transcript.focus,
+            Some(transcript::Target::Inner { row: 2, item: 3 })
+        );
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let rows = screen(&mut app, 60, 20);
         assert!(!rows.iter().any(|row| row.contains("│ 7")), "{rows:#?}");
         app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.transcript.focus, Some(2));
+        assert_eq!(app.transcript.focus, Some(transcript::Target::Block(2)));
         // A double click on that line selects a word of it, as it does on
         // the output's own line.
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -2686,7 +2819,7 @@ mod tests {
         quiet_calls(&mut app);
         screen(&mut app, 70, 24);
         app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
-        assert_eq!(app.transcript.focus, Some(7));
+        assert_eq!(app.transcript.focus, Some(transcript::Target::Block(7)));
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let rows = screen(&mut app, 70, 24);
         let message = rows
@@ -2701,7 +2834,11 @@ mod tests {
         );
         app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.transcript.focus, Some(2), "the edits' row, by its read");
+        assert_eq!(
+            app.transcript.focus,
+            Some(transcript::Target::Block(2)),
+            "the edits' row, by its read"
+        );
         app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         let rows = screen(&mut app, 70, 24);
         assert!(
@@ -3433,10 +3570,15 @@ mod tests {
         let mut app = app();
         let mut call = Item::new(Kind::Call, "$ seq 10");
         call.status = Some(CallStatus::Ok);
-        // (As the feed makes a command's block.)
+        call.act = Some(crate::remote::Act {
+            kind: crate::remote::ActKind::Command,
+            ..Default::default()
+        });
+        // (As the feed makes a command's content, with a shorter preview.)
         let output: Vec<String> = (1..=10).map(|n| format!("line {n}")).collect();
-        let mut block = Item::new(Kind::Result, "exit code 0, 0.1 s")
-            .detail(format!("{}\n… 6 more lines", output[..4].join("\n")));
+        let mut block = Item::new(Kind::Result, output[..4].join("\n"));
+        block.content = Some(crate::remote::ContentKind::Plain);
+        block.more = Some("… 6 more lines".into());
         block.whole = Some(output.join("\n").into());
         block.call = Some(2);
         let after = Item::new(Kind::Output, "a\nb\nc\nd\ne\nf");

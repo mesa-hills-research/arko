@@ -203,6 +203,17 @@ pub struct Variant {
     pub radius: f64,
     /// Its colours by key (`background`, `muted.foreground`, ...).
     colors: HashMap<String, String>,
+    /// Its code's styles by highlight name (`keyword`, `string.escape`),
+    /// as its `highlight.syntax` has them.
+    syntax: HashMap<String, SyntaxStyle>,
+}
+
+/// A theme's style of a highlight name, as its file has it.
+#[derive(Debug, Clone, PartialEq)]
+struct SyntaxStyle {
+    color: Option<String>,
+    italic: bool,
+    bold: bool,
 }
 
 /// A theme file's variants.
@@ -231,6 +242,8 @@ struct FileVariant {
     name: String,
     #[serde(default)]
     colors: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    highlight: serde_json::Value,
     radius: Option<f64>,
 }
 
@@ -253,10 +266,26 @@ fn family(text: &str) -> Result<Family, String> {
                 return Err(format!("{} has no {key} colour", variant.name));
             }
         }
+        let syntax = variant.highlight["syntax"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(name, style)| {
+                let style = SyntaxStyle {
+                    color: style["color"].as_str().map(str::to_string),
+                    italic: matches!(style["font_style"].as_str(), Some("italic" | "oblique")),
+                    bold: style["font_weight"]
+                        .as_f64()
+                        .is_some_and(|weight| weight >= 600.0),
+                };
+                (name.clone(), style)
+            })
+            .collect();
         variants.push(Variant {
             name: variant.name,
             radius: variant.radius.unwrap_or(6.0),
             colors,
+            syntax,
         });
     }
     if variants.is_empty() {
@@ -395,6 +424,47 @@ pub struct Theme {
     pub corners: Corners,
     /// Dim text is the terminal's faint style, not a colour.
     faint: bool,
+    /// The style of each highlight name of code (by its place in
+    /// `HIGHLIGHT_NAMES`), the theme's own, else its first word's
+    /// (`string.escape` takes `string`'s). A name with neither shows in the
+    /// text's colour, and the `terminal` theme has none at all.
+    syntax: Vec<Option<(Rgb, Modifier)>>,
+    /// A diff's removed and added lines' backgrounds, the error and success
+    /// colours faint over the background, which the `terminal` theme hasn't.
+    tints: Option<(Rgb, Rgb)>,
+    /// The colours the terminal shows, which a colour is painted for.
+    depth: Depth,
+}
+
+/// A diff's line that a tint marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tint {
+    Removed,
+    Added,
+}
+
+/// `color`, darker on a light `on` (lighter on a dark one) until it reads
+/// there. Its hue stays, so red still says red.
+fn readable(color: Rgb, on: Rgb) -> Rgb {
+    readable_as(color, on, |color| color)
+}
+
+/// [`readable`], where the pair that has to read is the two colours as
+/// `shown` turns them into what the terminal shows.
+fn readable_as(color: Rgb, on: Rgb, shown: impl Fn(Rgb) -> Rgb) -> Rgb {
+    let under = shown(on);
+    let toward = if under.luminance() > 0.18 {
+        Rgb(0, 0, 0)
+    } else {
+        Rgb(255, 255, 255)
+    };
+    let mut shade = color;
+    let mut step = 0.0;
+    while shown(shade).contrast(under) < READABLE && step < 1.0 {
+        step += 0.05;
+        shade = color.mix(toward, step);
+    }
+    shade
 }
 
 impl Theme {
@@ -420,6 +490,9 @@ impl Theme {
             success: Color::Green,
             corners: Corners::chosen(),
             faint,
+            syntax: Vec::new(),
+            tints: None,
+            depth: Depth::Ansi16,
         }
     }
 
@@ -431,6 +504,30 @@ impl Theme {
             Depth::Rgb => Color::Rgb(color.0, color.1, color.2),
             _ => Color::Indexed(color.xterm256()),
         };
+        // The theme's style of each highlight name, its own (a name with a
+        // dot may be written with an underscore), else its first word's.
+        let syntax = crate::remote::protocol::HIGHLIGHT_NAMES
+            .iter()
+            .map(|name| {
+                let style = [name.to_string(), name.replace('.', "_")]
+                    .iter()
+                    .find_map(|key| variant.syntax.get(key))
+                    .or_else(|| variant.syntax.get(name.split('.').next()?))?;
+                let color = Rgb::parse(style.color.as_deref()?, Some(roles.background))?;
+                let mut modifier = Modifier::empty();
+                if style.italic {
+                    modifier |= Modifier::ITALIC;
+                }
+                if style.bold {
+                    modifier |= Modifier::BOLD;
+                }
+                Some((color, modifier))
+            })
+            .collect();
+        let tints = Some((
+            roles.background.mix(roles.error, 0.14),
+            roles.background.mix(roles.success, 0.16),
+        ));
         Self {
             name: variant.name.clone(),
             background: paint(roles.background),
@@ -449,7 +546,76 @@ impl Theme {
             success: paint(roles.success),
             corners: Corners::chosen(),
             faint: false,
+            syntax,
+            tints,
+            depth,
         }
+    }
+
+    /// `color` as this terminal shows it, itself or the nearest of xterm's
+    /// 256.
+    fn paint(&self, color: Rgb) -> Color {
+        match self.depth {
+            Depth::Rgb => Color::Rgb(color.0, color.1, color.2),
+            _ => Color::Indexed(color.xterm256()),
+        }
+    }
+
+    /// Whether code shows in the theme's colours, which the `terminal`
+    /// theme's doesn't.
+    pub fn colours_code(&self) -> bool {
+        self.syntax.iter().any(Option::is_some)
+    }
+
+    /// The colour of a diff's line that `tint` marks, where the theme has
+    /// one.
+    fn tint_color(&self, tint: Tint) -> Option<Rgb> {
+        let (removed, added) = self.tints?;
+        Some(match tint {
+            Tint::Removed => removed,
+            Tint::Added => added,
+        })
+    }
+
+    /// The background of a diff's line that `tint` marks, where the theme
+    /// has one.
+    pub fn tint(&self, tint: Tint) -> Option<Style> {
+        Some(Style::new().bg(self.paint(self.tint_color(tint)?)))
+    }
+
+    /// `color` on `on` as this terminal shows them, shaded until the two
+    /// colours it shows read ([`READABLE`]).
+    fn paint_on(&self, color: Rgb, on: Rgb) -> Color {
+        self.paint(readable_as(color, on, |color| {
+            rgb(self.paint(color)).unwrap_or(color)
+        }))
+    }
+
+    /// The style of code that its highlighting names `name` (its place in
+    /// `HIGHLIGHT_NAMES`), on a diff's line that `tint` marks, where its
+    /// colour is shaded until it reads, or `None` for the text's colour.
+    pub fn syntax(&self, name: usize, tint: Option<Tint>) -> Option<Style> {
+        let (color, modifier) = (*self.syntax.get(name)?)?;
+        let color = match tint.and_then(|tint| self.tint_color(tint)) {
+            Some(on) => self.paint_on(color, on),
+            None => self.paint(color),
+        };
+        Some(Style::new().fg(color).add_modifier(modifier))
+    }
+
+    /// `style` (one of the theme's, as [`text`](Self::text) or
+    /// [`error`](Self::error) give it) on a diff's line that `tint` marks,
+    /// on the tint, its colour shaded until it reads there. Where the theme
+    /// has no tints, `style` as it is.
+    pub fn on_tint(&self, style: Style, tint: Tint) -> Style {
+        let Some(on) = self.tint_color(tint) else {
+            return style;
+        };
+        let fg = style
+            .fg
+            .and_then(|fg| rgb(fg).map(|fg| self.paint_on(fg, on)))
+            .or(style.fg);
+        Style { fg, ..style }.bg(self.paint(on))
     }
 
     /// Whether this is the terminal's own colours.
@@ -591,22 +757,6 @@ impl Roles {
             .unwrap_or(Rgb(0, 0, 0));
         let color = |key: &str| raw(key).and_then(|value| Rgb::parse(value, Some(background)));
         let text = color("foreground").unwrap_or(Rgb(255, 255, 255));
-        // `color`, darker on a light background (lighter on a dark one)
-        // until it reads there. Its hue stays, so red still says red.
-        let readable = |color: Rgb, on: Rgb| {
-            let toward = if on.luminance() > 0.18 {
-                Rgb(0, 0, 0)
-            } else {
-                Rgb(255, 255, 255)
-            };
-            let mut shade = color;
-            let mut step = 0.0;
-            while shade.contrast(on) < READABLE && step < 1.0 {
-                step += 0.05;
-                shade = color.mix(toward, step);
-            }
-            shade
-        };
         let first = |keys: &[&str]| keys.iter().find_map(|key| color(key));
         let accent = ["link", "base.blue", "ring", "primary.background"]
             .iter()
@@ -742,6 +892,86 @@ mod tests {
     }
 
     /// Every bundled variant reads, with its text, dim text, accent and
+    /// A theme colours code with its `highlight.syntax` styles, a name's
+    /// own, else its first word's, else none (the text's colour), at the
+    /// terminal's depth, and readable over a diff's tints. The `terminal`
+    /// theme colours none.
+    #[test]
+    fn a_themes_code_colours_follow_its_syntax_styles() {
+        let catalog = Catalog::load(None);
+        let name = |name: &str| {
+            crate::remote::protocol::HIGHLIGHT_NAMES
+                .iter()
+                .position(|known| *known == name)
+                .unwrap()
+        };
+        let dark = catalog.theme("macOS Classic Dark", Depth::Rgb);
+        assert!(dark.colours_code());
+        let fg = |theme: &Theme, highlight: &str| theme.syntax(name(highlight), None);
+        assert_eq!(
+            fg(&dark, "keyword"),
+            Some(Style::new().fg(Color::Rgb(0x87, 0xB1, 0xF6)))
+        );
+        // (`tag.doctype` takes `tag`'s, and `punctuation` has none.)
+        assert_eq!(fg(&dark, "tag.doctype"), fg(&dark, "tag"));
+        assert!(fg(&dark, "tag").is_some());
+        assert_eq!(fg(&dark, "punctuation"), None);
+        let comment = fg(&catalog.theme("macOS Classic Light", Depth::Rgb), "comment").unwrap();
+        assert!(comment.add_modifier.is_empty() || comment.add_modifier == Modifier::ITALIC);
+        // 256 colours paint the nearest of xterm's.
+        let indexed = catalog.theme("macOS Classic Dark", Depth::Ansi256);
+        assert_eq!(
+            fg(&indexed, "keyword"),
+            Some(Style::new().fg(Color::Indexed(Rgb(0x87, 0xB1, 0xF6).xterm256())))
+        );
+        // Over a diff's tint every name reads, and the text and the marks
+        // that have no name's, as the terminal shows both in 24-bit colour
+        // and in xterm's 256.
+        let mut low = Vec::new();
+        for depth in [Depth::Rgb, Depth::Ansi256] {
+            for variant in catalog.families.iter().flat_map(|family| &family.variants) {
+                let theme = Theme::of(variant, depth);
+                for tint in [Tint::Removed, Tint::Added] {
+                    let under = theme.tint(tint).and_then(|style| style.bg).and_then(rgb);
+                    let under = under.expect("a tint the terminal shows");
+                    // Every name's colour, and the text's and the colours of
+                    // the numbers' marks where code has no colour of its own.
+                    let names = 0..crate::remote::protocol::HIGHLIGHT_NAMES.len();
+                    let roles = [
+                        ("text", theme.text()),
+                        ("error", theme.error()),
+                        ("success", theme.success()),
+                    ];
+                    let styles = names
+                        .filter_map(|at| Some((at.to_string(), theme.syntax(at, Some(tint))?)))
+                        .chain(
+                            roles.map(|(role, style)| (role.into(), theme.on_tint(style, tint))),
+                        );
+                    for (at, style) in styles {
+                        let shown = style.fg.and_then(rgb).expect("a colour the terminal shows");
+                        let ratio = shown.contrast(under);
+                        if ratio < READABLE - 0.01 {
+                            low.push(format!(
+                                "{} {depth:?} {tint:?} {at} {ratio:.2}",
+                                variant.name
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            low.is_empty(),
+            "{} pairs read poorly, as {:?}",
+            low.len(),
+            &low[..low.len().min(5)]
+        );
+        let terminal = Theme::terminal();
+        assert!(!terminal.colours_code());
+        assert_eq!(terminal.syntax(name("keyword"), None), None);
+        assert_eq!(terminal.tint(Tint::Added), None);
+    }
+
     /// warnings on its background, and the text on its filled accent.
     #[test]
     fn every_bundled_theme_gets_readable_roles() {

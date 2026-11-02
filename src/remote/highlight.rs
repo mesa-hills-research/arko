@@ -15,7 +15,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use tree_sitter::{Language, Query, QueryCursor};
 
-use super::feed::{Item, Kind};
+use super::content;
+use super::feed::{ContentKind, Item, Kind};
 use super::protocol::{CodeSpans, HIGHLIGHT_NAMES, code_hash};
 
 /// A language, meaning the names a fence gives it, its grammar and its highlight
@@ -167,6 +168,15 @@ const GRAMMARS: &[Grammar] = &[
 /// A code block larger than this shows plain, to keep a stream's work small.
 const LARGEST: usize = 64 * 1024;
 
+/// A call's content larger than this shows plain, since the terminal
+/// highlights it as it draws.
+const CONTENT_LARGEST: usize = 32 * 1024;
+
+/// The longest parsing or matching a block may take, in microseconds, after
+/// which it shows plain. Some text takes a grammar far longer than its size
+/// says.
+const HIGHLIGHT_MICROS: u64 = 100_000;
+
 /// The spans worked out, by the code's hash, kept until there are this many.
 const KEPT: usize = 4096;
 
@@ -258,12 +268,20 @@ fn spans(at: usize, code: &str) -> Vec<[u32; 3]> {
     if parser.set_language(&compiled.language).is_err() {
         return Vec::new();
     }
+    // (None when it ran out of time.)
+    parser.set_timeout_micros(HIGHLIGHT_MICROS);
     let Some(tree) = parser.parse(code, None) else {
         return Vec::new();
     };
+    let started = std::time::Instant::now();
+    let over = || started.elapsed().as_micros() >= u128::from(HIGHLIGHT_MICROS);
+    // (It stops matching once it ran out of time.)
+    let mut stop = |_: &tree_sitter::QueryCursorState| over();
     let mut captures = Vec::new();
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&compiled.query, tree.root_node(), code.as_bytes());
+    let options = tree_sitter::QueryCursorOptions::new().progress_callback(&mut stop);
+    let mut matches =
+        cursor.matches_with_options(&compiled.query, tree.root_node(), code.as_bytes(), options);
     while let Some(found) = matches.next() {
         for capture in &found.captures {
             if let Some(name) = compiled
@@ -275,6 +293,10 @@ fn spans(at: usize, code: &str) -> Vec<[u32; 3]> {
                 captures.push((capture.node.byte_range(), found.pattern_index, name));
             }
         }
+    }
+    // (Matching that ran out of time found only some of the spans.)
+    if over() {
+        return Vec::new();
     }
     // Painted from the outside in, and for one node the first pattern last.
     captures.sort_by_key(|(range, pattern, _)| (Reverse(range.len()), Reverse(*pattern)));
@@ -370,14 +392,64 @@ fn closes(block: &str) -> bool {
     })
 }
 
-/// The code blocks of an item's Markdown highlighted, for the page. A text
-/// or thinking may still stream, so only the blocks it finished count.
+/// The code blocks of an item's Markdown highlighted, for the page, and a
+/// call's content of a file's lines. A text or thinking may still stream,
+/// so only the blocks it finished count.
 pub fn item_code(item: &Item) -> Vec<CodeSpans> {
     match item.kind {
         Kind::Text | Kind::Thinking => code_blocks(&item.text, true),
         Kind::Reply | Kind::Message | Kind::Question => code_blocks(&item.text, false),
+        Kind::Result => match item.content {
+            Some(kind) => content_code(kind, &item.text, item.language.as_deref()),
+            None => Vec::new(),
+        },
         _ => Vec::new(),
     }
+}
+
+/// The highlighting of each numbered line of a content `text` of `kind`,
+/// whose lines are of a file in `language`, for the terminal. Each line's
+/// spans are `[start, end, name]` in bytes of its text. None for a content
+/// without code in a language with a grammar here.
+pub fn content_line_spans(
+    kind: ContentKind,
+    text: &str,
+    language: Option<&str>,
+) -> Option<Vec<Vec<[u32; 3]>>> {
+    let code = content::code(kind, text)?;
+    let spans = content_code(kind, text, language).pop()?.spans;
+    // Where each line starts in the code.
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(code.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    let mut lines = vec![Vec::new(); starts.len()];
+    for [start, end, name] in spans {
+        let (mut at, end) = (start as usize, end as usize);
+        // (A span over a line break goes on in the next line.)
+        while at < end {
+            let line = starts.partition_point(|&start| start <= at) - 1;
+            let line_end = starts.get(line + 1).map_or(code.len(), |next| next - 1);
+            let stop = end.min(line_end);
+            if stop > at {
+                let base = starts[line];
+                lines[line].push([(at - base) as u32, (stop - base) as u32, name]);
+            }
+            at = line_end + 1;
+        }
+    }
+    Some(lines)
+}
+
+/// The highlighting of a content `text` of `kind`, whose lines are of a
+/// file in `language` ([`content::code`]).
+pub fn content_code(kind: ContentKind, text: &str, language: Option<&str>) -> Vec<CodeSpans> {
+    let (Some(language), Some(code)) = (language, content::code(kind, text)) else {
+        return Vec::new();
+    };
+    if code.len() > CONTENT_LARGEST {
+        return Vec::new();
+    }
+    block(language, &code).into_iter().collect()
 }
 
 /// Whether one of the whole lines that the last `added` bytes of `text`
@@ -398,6 +470,23 @@ pub fn fence_line_ended(text: &str, added: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A call's content past the size the terminal highlights as it draws
+    /// shows plain, and so does code that takes its grammar too long.
+    #[test]
+    fn large_or_slow_code_shows_plain() {
+        let line = |n: usize| content::numbered(n, "let x = 1;");
+        let small: Vec<String> = (1..=10).map(line).collect();
+        assert!(!content_code(ContentKind::Lines, &small.join("\n"), Some("rs")).is_empty());
+        let large: Vec<String> = (1..=4000).map(line).collect();
+        assert!(content_code(ContentKind::Lines, &large.join("\n"), Some("rs")).is_empty());
+        // Deeply nested brackets, which take the Rust grammar long.
+        let nested = format!("fn a() {{ {} }}", "(".repeat(30_000));
+        let started = std::time::Instant::now();
+        let spans = spans(grammar("rs").unwrap(), &nested);
+        assert!(started.elapsed() < std::time::Duration::from_millis(1500));
+        assert!(spans.is_empty() || started.elapsed().as_micros() < u128::from(HIGHLIGHT_MICROS));
+    }
 
     /// Every language's query compiles with its grammar.
     #[test]

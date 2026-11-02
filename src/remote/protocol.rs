@@ -275,10 +275,31 @@ pub struct Act {
     /// What came while a wait waited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub came: Option<Came>,
-    /// When its result came, as the ID the transcript's next item had then.
-    /// What showed before that point showed while the call ran.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ended: Option<u64>,
+    /// What the row's words cut that the reader may need, whole, as one
+    /// muted line over the call's content: a command's whole text with its
+    /// folder, a long search's query, a monitor's settings. Empty when the
+    /// words say it all.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
+/// What a call's content is ([`content`](super::content)), which says how
+/// a client draws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ContentKind {
+    /// Text as it came, such as a command's output, a message, a search's
+    /// hits.
+    Plain,
+    /// Text that tells less than the row does, muted, such as a tool's
+    /// result, a worker's task, why a call failed.
+    Muted,
+    /// A file's lines, each its number, a tab and its text.
+    Lines,
+    /// An edit's diff, each line its mark (`-` removed, `+` added, a space
+    /// kept), its number, a tab and its text.
+    Diff,
 }
 
 /// The kinds of call the Quiet view words and merges.
@@ -473,9 +494,22 @@ pub struct ItemData {
     pub status: Option<CallStatus>,
     #[serde(default)]
     pub outcome: Option<String>,
+    /// For a call that failed, the ID the next item had when it failed.
+    #[serde(default)]
+    pub ended: Option<u64>,
     /// What a call did, for the Quiet view's rows.
     #[serde(default)]
     pub act: Option<Act>,
+    /// A call's content (a `result`), which its `text` previews.
+    #[serde(default)]
+    pub content: Option<ContentKind>,
+    /// What the preview leaves out ("… 97 more lines"), which
+    /// `/api/result/{id}` gives whole.
+    #[serde(default)]
+    pub more: Option<String>,
+    /// The language of a content's lines, by its file's extension.
+    #[serde(default)]
+    pub language: Option<String>,
     /// The worker a `start_agent` call started at once. The Quiet view
     /// leaves out such a call, because the worker's own line stands for it.
     #[serde(default)]
@@ -1807,6 +1841,16 @@ pub struct CodeSpans {
 #[allow(dead_code)]
 pub struct CodeData {
     pub id: u64,
+    pub code: Vec<CodeSpans>,
+}
+
+/// A call's whole content, as `/api/result/{id}` gives it, with its code
+/// highlighted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub struct ResultData {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub code: Vec<CodeSpans>,
 }
 
