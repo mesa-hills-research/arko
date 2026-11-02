@@ -662,9 +662,11 @@ impl Harness {
             {
                 "Your next message starts it."
             }
-            Conversation::Answered(result) => {
-                out.echo(&out.dim("Its last reply is below."));
-                out.echo(result.summary.trim());
+            Conversation::Answered(_) => {
+                if let Some(reply) = self.feed.last_reply() {
+                    out.echo(&out.dim("Its last reply is below."));
+                    out.echo(&reply);
+                }
                 "Your next message continues it."
             }
             Conversation::Stopped(_) => {

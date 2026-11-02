@@ -31,7 +31,11 @@ const EARLIER_REFRESH_MESSAGE: &str = "(Arko: this message only keeps the prompt
 /// turn's number here. With
 /// `text_replies` (the agent ends its turns with a reply in plain text), a
 /// response of text alone is a reply, unless the user's answer to a
-/// question follows it (Claude Code ends its turn after `ask_user`).
+/// question follows it (Claude Code ends its turn after `ask_user`). A
+/// turn Arko started for news may end without a reply, with an empty
+/// response, one Claude Code doesn't save, or `complete_task` with an empty
+/// summary. It shows no reply, and the next prompt begins a turn all the
+/// same.
 ///
 /// The images of the user's messages and of tool results go to `images`,
 /// and their items show them.
@@ -195,7 +199,10 @@ fn items_from(
                             .to_string()
                     };
                     let item = match call.name.as_str() {
-                        "complete_task" => Some(Item::new(Kind::Reply, text("summary"))),
+                        // An empty summary ended the turn without a reply.
+                        "complete_task" => Some(text("summary"))
+                            .filter(|summary| !summary.is_empty())
+                            .map(|summary| Item::new(Kind::Reply, summary)),
                         ASK_USER_TOOL_NAME => Some(question_card(parameters.get("questions"))),
                         name => render::call(name, &parameters, &running),
                     };
@@ -1450,6 +1457,82 @@ mod tests {
                 (Kind::Reply, Some(2)),
             ]
         );
+    }
+
+    /// A turn Arko started for news may end without a reply, with an empty
+    /// response (an API model's, which the conversation keeps), or with
+    /// nothing saved after its last call (Claude Code doesn't save a
+    /// response of thinking alone). Neither shows a reply, and the turns
+    /// after them keep their numbers, as in the live transcript. Without
+    /// text replies, `complete_task` with an empty summary is such an end.
+    #[test]
+    fn a_news_turn_without_a_reply_keeps_the_turns_after_it() {
+        let mut check = Message::new_assistant("Checking the report.");
+        check.tool_calls = vec![call(
+            "call_1",
+            crate::shell::SHELL_TOOL_NAME,
+            serde_json::json!({"command": "cat report.md"}),
+        )];
+        let result = Message::new_user_with_contents(vec![Content::ToolResult(ToolResult::new(
+            Some("call_1".into()),
+            crate::shell::SHELL_TOOL_NAME,
+            "exit code 0, 0.1 s",
+        ))]);
+        let messages = vec![
+            Message::new_user("Start a worker."),
+            Message::new_assistant("Started r1."),
+            Message::new_user(&Opening::News.text()),
+            Message::new_assistant(""),
+            Message::new_user(&Opening::News.text()),
+            check,
+            result,
+            Message::new_user("Anything new?"),
+            Message::new_assistant("r1 is done."),
+        ];
+        assert_eq!(
+            message_turns(&messages, true),
+            [1, 1, 2, 2, 3, 3, 3, 4, 4].map(Some)
+        );
+        let replies: Vec<(String, Option<u64>)> = items(&messages, true, &Images::default())
+            .into_iter()
+            .filter(|item| item.kind == Kind::Reply)
+            .map(|item| (item.text, item.turn))
+            .collect();
+        assert_eq!(
+            replies,
+            [
+                ("Started r1.".to_string(), Some(1)),
+                ("r1 is done.".to_string(), Some(4)),
+            ]
+        );
+
+        let complete = |id: &str, summary: &str| {
+            let mut message = Message::new_assistant("");
+            message.tool_calls = vec![call(
+                id,
+                "complete_task",
+                serde_json::json!({"summary": summary}),
+            )];
+            message
+        };
+        let messages = vec![
+            Message::new_user("Start a worker."),
+            complete("call_1", "Started r1."),
+            Message::new_user(&Opening::News.text()),
+            complete("call_2", ""),
+            Message::new_user("Anything new?"),
+            complete("call_3", "r1 is done."),
+        ];
+        assert_eq!(
+            message_turns(&messages, false),
+            [1, 1, 2, 2, 3, 3].map(Some)
+        );
+        let replies: Vec<String> = items(&messages, false, &Images::default())
+            .into_iter()
+            .filter(|item| item.kind == Kind::Reply)
+            .map(|item| item.text)
+            .collect();
+        assert_eq!(replies, ["Started r1.", "r1 is done."]);
     }
 
     /// An ask's card holds its questions with the ids its result names, in

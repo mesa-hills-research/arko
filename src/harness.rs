@@ -546,6 +546,16 @@ impl Prompt {
             Prompt::User(_) | Prompt::Unread | Prompt::Recover => None,
         }
     }
+
+    /// Whether the turn may end without a reply. A turn Arko started for the
+    /// workers' news, a job or a monitor may, since the user hasn't written.
+    /// A turn that recovers keeps what its run was saved with.
+    fn reply_optional(&self) -> bool {
+        matches!(
+            self,
+            Prompt::News { .. } | Prompt::Jobs(_) | Prompt::Monitor(..)
+        )
+    }
 }
 
 /// What became of the workers' news.
@@ -1290,9 +1300,11 @@ impl Harness {
             {
                 // A branch before its conversation's first message.
                 out.echo(&out.dim("Resumed. Your next message starts this branch's conversation."));
-            } else {
+            } else if let Some(reply) = self.feed.last_reply() {
                 out.echo(&out.dim("Resumed. The last reply is below."));
-                out.echo(&result.summary);
+                out.echo(&reply);
+            } else {
+                out.echo(&out.dim("Resumed."));
             }
             self.feed.notice(Level::Info, "Resumed.");
         } else if self.conversations.current.is_none() && self.conversations.has_earlier() {
@@ -3761,6 +3773,9 @@ impl Harness {
         let resumes = !matches!(prompt, Prompt::Recover)
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
         let opening = prompt.opening();
+        // With -p, the last news turn's reply is the answer standard output
+        // gets.
+        let reply_optional = prompt.reply_optional() && !self.one_shot;
         let about = self.subjects(&prompt);
         if matches!(prompt, Prompt::User(_)) {
             self.user_present();
@@ -3829,7 +3844,9 @@ impl Harness {
                 .task()
                 .map_or(0, |task| task.conversation.messages.len()),
         });
-        let mut options = self.continue_options(&conversation);
+        let mut options = self
+            .continue_options(&conversation)
+            .reply_optional(reply_optional);
         if let Some(index) = cut {
             options = options.cut_back_to(index);
         }
@@ -3849,7 +3866,9 @@ impl Harness {
             tokio::spawn(async move {
                 match conversation {
                     Conversation::New => {
-                        let mut options = RunOptions::new().images(images);
+                        let mut options = RunOptions::new()
+                            .images(images)
+                            .reply_optional(reply_optional);
                         if let Some(config) = new_config {
                             options = options.config(config);
                         }
@@ -4078,16 +4097,20 @@ impl Harness {
         self.end_lost_wait();
         let end = match outcome {
             Ok(result) => {
-                self.output.echo("");
                 let unread = unread_notes(&notes, &workflow);
-                // With -p, a reply the workers' news or a turn for what the
-                // user typed will follow isn't the answer.
-                if self.one_shot && (self.news_coming() || !unread.is_empty()) {
-                    self.output.line(result.summary.trim());
-                } else {
-                    self.output.answer(result.summary.trim());
+                // A turn Arko started for news may end without a reply.
+                let reply = result.summary.trim();
+                if !reply.is_empty() {
+                    self.output.echo("");
+                    // With -p, a reply the workers' news or a turn for what
+                    // the user typed will follow isn't the answer.
+                    if self.one_shot && (self.news_coming() || !unread.is_empty()) {
+                        self.output.line(reply);
+                    } else {
+                        self.output.answer(reply);
+                    }
+                    self.feed.reply(reply);
                 }
-                self.feed.reply(&result.summary);
                 self.keep_unread(unread, true);
                 // Its task keeps that update for the next turn, which the
                 // job starts as if it finished now.

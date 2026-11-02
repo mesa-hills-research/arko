@@ -407,6 +407,128 @@ async fn workers_report_with_complete_task_and_the_lead_replies_in_text() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// A turn Arko starts for the workers' news may end without a reply when
+/// nothing in it is for the user. The line prompt shows the turn's line and
+/// the line that ends it, the feed has no reply, and the turn's run is told
+/// a reply is optional. Resumed, the
+/// session shows the turns with the same numbers, and its last reply is the
+/// one before. A turn the user starts still gets a reply, so a response with
+/// neither text nor a call there gets the note asking for one.
+#[tokio::test]
+async fn a_news_turn_with_nothing_for_the_user_ends_without_a_reply() {
+    const NUDGE: &str = "Your response had no text and no tool call";
+    let server = ModelServer::start(Arc::new(|_, body: String| {
+        Box::pin(async move {
+            if body.contains("You are agent run r1") {
+                complete("w1", "Code done.")
+            } else if body.contains("Anything new?") {
+                if body.contains(NUDGE) {
+                    reply("m5", "r1 is done.")
+                } else {
+                    reply("m4", "")
+                }
+            } else if body.contains("Code done.") {
+                reply("m3", "")
+            } else if body.contains("call_m1") {
+                reply("m2", "Started r1.")
+            } else {
+                tool_call(
+                    "m1",
+                    crew::START_AGENT,
+                    serde_json::json!({"agent": WORKER, "task": "Write the code."}),
+                )
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    replying(&mut harness);
+    let lines = recording(&mut harness, false);
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Start a worker.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Started r1.");
+    let workflow = harness.workflow().clone();
+    until(|| {
+        workflow
+            .subagents()
+            .first()
+            .is_some_and(|run| run.report.as_deref() == Some("Code done."))
+    })
+    .await;
+    harness.flush_printer().await;
+    let printed = lines.0.lock().unwrap().len();
+
+    let news = tokio::time::timeout(Duration::from_secs(30), harness.deliver_news(&mut inputs))
+        .await
+        .unwrap();
+    assert!(matches!(news, News::Done));
+    assert_eq!(summary(&harness), "");
+    let Conversation::Answered(result) = &harness.conversation else {
+        panic!("the news turn wasn't answered");
+    };
+    assert!(result.task().unwrap().reply_optional);
+    // (r1's report is a reply of r1's.)
+    assert_eq!(
+        texts(&harness.feed, "reply"),
+        ["Started r1.", "Code done."]
+    );
+    harness.flush_printer().await;
+    // The turn's line, then the line that ends it, with no reply between.
+    let news_lines = lines.0.lock().unwrap()[printed..].to_vec();
+    assert_eq!(news_lines.len(), 2, "{news_lines:#?}");
+    assert_eq!(news_lines[0], "  r1 reported");
+    assert!(news_lines[1].starts_with("── "), "{news_lines:#?}");
+    // The reply and the line that opened the news turn, each with its turn.
+    let marks = |feed: &remote::Feed| -> Vec<(remote::Kind, u64)> {
+        feed.subscribe()
+            .0
+            .items
+            .into_iter()
+            .filter(|item| {
+                item.is_main() && (item.kind == remote::Kind::Reply || item.opens_turn)
+            })
+            .map(|item| (item.kind, item.turn.unwrap()))
+            .collect()
+    };
+    let live = marks(&harness.feed);
+    assert_eq!(
+        live,
+        [(remote::Kind::Reply, 1), (remote::Kind::Notice, 2)]
+    );
+
+    // Arko closes, and the session is resumed.
+    harness.open(true).unwrap();
+    harness.banner_end(false);
+    let restored: Vec<(remote::Kind, u64)> = marks(&harness.feed)[live.len()..]
+        .iter()
+        .map(|(kind, turn)| (*kind, turn - 2))
+        .collect();
+    assert_eq!(restored, live);
+    harness.flush_printer().await;
+    assert_eq!(lines.count("Resumed. The last reply is below."), 1);
+    assert_eq!(lines.count("Started r1."), 2);
+
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Anything new?".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "r1 is done.");
+    let Conversation::Answered(result) = &harness.conversation else {
+        panic!("the user's turn wasn't answered");
+    };
+    assert!(!result.task().unwrap().reply_optional);
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// `/text-replies` says how the main agent ends its turns, and before the
 /// conversation starts turns text replies on or off, and the agents are built
 /// again, and the session and the settings (the full screen's, the web
