@@ -63,6 +63,11 @@ const HEAD_BYTES: usize = 64 * 1024;
 /// The bytes a request gathers before it writes them.
 const WRITE_BYTES: usize = 256 * 1024;
 
+/// Why the page's files aren't taken on a system other than Linux and
+/// macOS. Its file operations check a path, then open or replace what's
+/// there, which a link swapped in between could lead elsewhere.
+pub(super) const UNSUPPORTED: &str = "This Arko takes files from the page on Linux and macOS.";
+
 /// Why an upload's request didn't do what it asked.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Refused {
@@ -197,6 +202,9 @@ impl Uploads {
     /// `name`, and gives its ID. Its slot among those waiting and its bytes
     /// are held from now on.
     pub(super) async fn create(&self, name: &str, size_bytes: u64) -> Result<String, Refused> {
+        if cfg!(not(unix)) {
+            return Err(Refused::Unwritable(UNSUPPORTED.into()));
+        }
         let name = attachments::sanitize_name(name);
         if size_bytes > attachments::MAX_FILE_BYTES {
             return Err(Refused::TooLarge(format!(

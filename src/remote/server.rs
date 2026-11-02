@@ -2031,7 +2031,8 @@ fn upload_refused(refused: UploadRefused) -> Response {
 /// from the project's `.arko/attachments`. The name is one the page could
 /// have saved a file under, so it leads nowhere else, and the file is
 /// opened without following a link and only if it's a regular file. Its
-/// type comes from its first bytes.
+/// type comes from its first bytes. Refused off Linux and macOS
+/// ([`super::uploads::UNSUPPORTED`]).
 async fn attachment(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -2043,6 +2044,13 @@ async fn attachment(
         return refusal.into_response();
     }
     let not_found = || (StatusCode::NOT_FOUND, error_body("no such file")).into_response();
+    if cfg!(not(unix)) {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            error_body(super::uploads::UNSUPPORTED),
+        )
+            .into_response();
+    }
     if crate::attachments::sanitize_name(&name) != name {
         return not_found();
     }
