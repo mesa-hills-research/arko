@@ -10,7 +10,7 @@ example, are answered at once.
 | Request | When it asks |
 |---|---|
 | Adding an [MCP server](mcp.md#servers-the-agent-adds) | Always, unless you turn off `ask-mcp` |
-| Saving a [skill](skills.md#skills-the-agent-saves) | For every project and from a download, always. For the project, only with `review-skills` on |
+| Saving a [skill](skills.md#skills-the-agent-saves) | For every project, from a download, and with `auto_load: true`, always. Otherwise, for the project, only with `review-skills` on |
 | Saving a [worker profile](worker-profiles.md#what-the-main-agent-can-do) | For every project, or in a project folder that git doesn't ignore |
 | Starting a worker on a model billed per token | Under [worker billing](worker-profiles.md#worker-billing) `ask`, the default |
 
@@ -30,7 +30,8 @@ add.
 
 Each request is a row with its kind (profile, skill, update, server or worker), its name, where it
 applies and a short summary. A request for every project shows "every project" in the warning
-colour. A row opens to its details.
+colour. A skill that would load into every new conversation says so in its summary and its
+question. A row opens to its details.
 
 | Kind | Details |
 |---|---|

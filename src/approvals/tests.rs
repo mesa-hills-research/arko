@@ -10,6 +10,7 @@ fn skill() -> SkillApproval {
             bytes: 14 * 1024,
         },
         workers: true,
+        auto_load: false,
         models: vec!["haiku".into(), "cc:haiku".into()],
         scripts: vec!["scripts/release.sh".into()],
         update: None,
@@ -368,6 +369,10 @@ fn requests_and_answers_cross_the_wire() {
             nested: true,
         }),
         Approval::Skill(skill()),
+        Approval::Skill(SkillApproval {
+            auto_load: true,
+            ..skill()
+        }),
         Approval::McpServer(server()),
         Approval::WorkerBilling(BillingApproval {
             model: "Opus 5.5".into(),
@@ -381,7 +386,7 @@ fn requests_and_answers_cross_the_wire() {
     for (approval, kind) in
         kinds
             .into_iter()
-            .zip(["profile", "skill", "mcp_server", "worker_billing"])
+            .zip(["profile", "skill", "skill", "mcp_server", "worker_billing"])
     {
         let request = ApprovalRequest {
             id: "a1".into(),

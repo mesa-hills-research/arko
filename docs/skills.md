@@ -45,14 +45,19 @@ It updates a skill an agent saved with `edit_skill`, from a whole new version, i
 |---|---|
 | For every project | Always |
 | From a URL | Always |
+| With `auto_load: true` | Always |
 | For the project | Only with `review-skills` on (see [Approvals](approvals.md#what-asks-first)) |
+
+A skill with `auto_load: true` loads into every new conversation, so its request says so, and Arko
+refuses it when no one can answer. An update that turns `auto_load` off asks as any other update
+does.
 
 `review-skills` covers the saves made with `add_skill` and `edit_skill`, while a skill folder an agent writes into the
 project with its file tools or the shell loads like any other project file, as before.
 
 The [approval tray](approvals.md) shows the skill's text and files, where it came from and who gets
 it. An update shows as one, with the files it adds, removes and changes and the changed lines of
-`SKILL.md`. Arko checks the skill before it asks and refuses one with `auto_load`, a link, more than
+`SKILL.md`. Arko checks the skill before it asks and refuses one with a link, more than
 200 files or more than 1 MB, or the name of a skill you made. A skill an agent saved counts as
 yours once a folder was put in its place. Nothing is written before you approve, and what's saved is
 the copy the tray showed, even if the source changes meanwhile. If a skill of that name appears

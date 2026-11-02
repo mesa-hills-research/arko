@@ -14,10 +14,11 @@
 //! matter, its name (one no other skill has), its size, links and files.
 //! That copy is what the card shows and what is saved, so a change to the
 //! source after it was read isn't saved, and nothing reaches a skill folder
-//! before the user approves. A skill for every project, and a downloaded
-//! skill, always ask. A project skill asks when the user turned on Review
-//! project skills. Files are written without the executable bit, and nothing
-//! in a skill runs when it is saved.
+//! before the user approves. A skill for every project, a downloaded
+//! skill, and one with `auto_load: true` (which loads into every new
+//! conversation) always ask. Any other project skill asks when the user
+//! turned on Review project skills. Files are written without the
+//! executable bit, and nothing in a skill runs when it is saved.
 //!
 //! The user approves a save in the session's approval tray, whose card
 //! shows the skill's text and files, and for an update what changes, meaning
@@ -89,9 +90,9 @@ const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 const LOCK_FILE: &str = "skills.lock";
 
 /// What `add_skill` tells the agent of itself.
-const ADD_DESCRIPTION: &str = "Saves a skill that you and later conversations load with load_skill. Use it when instructions would help later conversations or workers, such as this project's release steps or a workaround for a tool. A SKILL.md opens with front matter that gives name, description (what it is for and when to load it, in one or two sentences) and, if needed, models. models lists the models whose agents see the skill in their skill list. An exact id such as claude-haiku-5-5 pins it to that release, which suits a workaround for one version's quirk. A short name or pattern such as haiku or gpt-6* follows the family across releases, which suits advice about a kind of model. Other agents can still load it by name. load_skill finds the skill at once, and the skill list shows it from the next conversation. Project skills go in the project's .arko/skills, which git ignores until the user turns off Keep agents' project files out of git in Arko's settings. To change a skill an agent saved, use edit_skill.";
+const ADD_DESCRIPTION: &str = "Saves a skill that you and later conversations load with load_skill. Use it when instructions would help later conversations or workers, such as this project's release steps or a workaround for a tool. A SKILL.md opens with front matter that gives name, description (what it is for and when to load it, in one or two sentences) and, if needed, models. models lists the models whose agents see the skill in their skill list. An exact id such as claude-haiku-5-5 pins it to that release, which suits a workaround for one version's quirk. A short name or pattern such as haiku or gpt-6* follows the family across releases, which suits advice about a kind of model. Other agents can still load it by name. auto_load: true puts the whole skill in every new conversation, so give it only to instructions every conversation needs. The user always approves it. load_skill finds the skill at once, and the skill list shows it from the next conversation. Project skills go in the project's .arko/skills, which git ignores until the user turns off Keep agents' project files out of git in Arko's settings. To change a skill an agent saved, use edit_skill.";
 
-const EDIT_DESCRIPTION: &str = "Updates a skill that you or another agent saved with add_skill, from a new version of it, in the scope it was saved in. Write the whole new version outside the skill folders, as for add_skill, and give it as the source. The user approves the update as they would the save, and sees what changes. A name no agent saved a skill under is refused, and add_skill saves a new one. load_skill loads the new version at once.";
+const EDIT_DESCRIPTION: &str = "Updates a skill that you or another agent saved with add_skill, from a new version of it, in the scope it was saved in. Write the whole new version outside the skill folders, as for add_skill, and give it as the source. The user approves the update as they would the save, and sees what changes. An update with auto_load: true always asks. A name no agent saved a skill under is refused, and add_skill saves a new one. load_skill loads the new version at once.";
 
 /// Whom a save asks, the session's approval tray.
 #[async_trait]
@@ -1131,9 +1132,9 @@ impl AddSkill {
                 thousands(MAX_DESCRIPTION)
             )));
         }
-        if parsed.auto_load {
+        if parsed.auto_load && !context.approver.can_answer() {
             return Err(refused(
-                "An agent's skill can't have auto_load: true, which would put it in every later system prompt. Take it out. The user can set it by hand.",
+                "The user approves a skill with auto_load: true, since it loads into every new conversation, and no one can answer in this session. Take auto_load out, or tell the user what the skill would hold.",
             ));
         }
         if let Some(entry) = parsed.models.iter().find(|entry| pattern_problem(entry)) {
@@ -1231,6 +1232,7 @@ impl AddSkill {
                 },
             },
             workers: plan.parsed.workers,
+            auto_load: plan.parsed.auto_load,
             models: plan.parsed.models.clone(),
             scripts,
             update: plan.update.clone(),
@@ -1419,19 +1421,31 @@ impl AddSkill {
             notice.push_str(kept);
         }
         (context.notice)(Level::Info, &notice);
-        let mut result = match &plan.replaces {
-            None => format!(
+        let listed = arko_agents::skill::models_match(&plan.parsed.models, &context.model_names);
+        // (load_skill leaves out a skill whose text is in the system prompt.)
+        let mut result = match (&plan.replaces, plan.parsed.auto_load && listed) {
+            (None, false) => format!(
                 "Saved the skill {} for {}. load_skill loads it now, and your skill list shows it from the next conversation.",
                 plan.name,
                 reach(plan.scope)
             ),
-            Some(_) => format!(
+            (Some(_), false) => format!(
                 "Updated the skill {} for {}. load_skill loads the new version now.",
                 plan.name,
                 reach(plan.scope)
             ),
+            (None, true) => format!(
+                "Saved the skill {} for {}. It loads into every conversation from the next one on, and load_skill doesn't load it in this one.",
+                plan.name,
+                reach(plan.scope)
+            ),
+            (Some(_), true) => format!(
+                "Updated the skill {} for {}. Every conversation from the next one on loads the new version, and load_skill doesn't load it in this one.",
+                plan.name,
+                reach(plan.scope)
+            ),
         };
-        if !arko_agents::skill::models_match(&plan.parsed.models, &context.model_names) {
+        if !listed {
             result.push_str(" Your skill list won't show it, since its models don't include yours, but load_skill loads it by name.");
         }
         result.push_str(if plan.parsed.workers {
@@ -1477,6 +1491,10 @@ impl AddSkill {
                     words.trim()
                 )
             }
+            Answer::Rejected { .. } if plan.parsed.auto_load => format!(
+                "The user chose not to {verb} the skill {} for {reach} with auto_load: true, which would load it into every new conversation. Don't ask again, with auto_load or without, unless they want it.",
+                plan.name
+            ),
             Answer::Rejected { .. } => format!(
                 "The user chose not to {verb} the skill {} for {reach}, so don't ask again unless they want it.",
                 plan.name
@@ -1879,11 +1897,12 @@ impl Tool for AddSkill {
         let downloaded = matches!(plan.draft.origin, Origin::Downloaded { .. });
         let asks = plan.scope == Scope::User
             || downloaded
+            || plan.parsed.auto_load
             || crate::extension_prefs::load(&self.0.root).review_project_skills;
         let mut words = None;
         if asks {
             if !self.0.approver.can_answer() {
-                // (A user-scope or downloaded save was refused before.)
+                // (A user-scope, downloaded or auto-loading save was refused before.)
                 return Err(refused(
                     "No one can approve a skill in this session, and the user reviews the skills agents save. Tell the user what it would hold.",
                 ));
