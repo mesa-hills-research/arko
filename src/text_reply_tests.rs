@@ -693,7 +693,10 @@ async fn a_note_a_stopped_turn_left_unread_gets_a_reply_in_the_news_turn() {
     .unwrap();
     let _sender = typing.await.unwrap();
     assert!(matches!(end, TurnEnd::Stopped));
-    assert_eq!(harness.unread, ["Set the limit to five"]);
+    assert_eq!(
+        harness.unread,
+        [crate::unread::Unread::from("Set the limit to five")]
+    );
 
     let end = tokio::time::timeout(
         Duration::from_secs(25),

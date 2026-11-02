@@ -150,9 +150,9 @@ impl Share {
     }
 }
 
-/// What a section of the user's unread notes says first, before the notes,
-/// where their words can't say it: each note ends with the line of its
-/// images ([`images_line`]).
+/// What a section of the user's unread notes says first, where their words
+/// can't say it, that each note ends with the line of its images
+/// ([`images_line`]).
 pub(crate) const NOTES_COUNTED: &str =
     "Each note ends with how many of the images after this message are its own.";
 
