@@ -417,6 +417,7 @@ async fn workers_report_with_complete_task_and_the_lead_replies_in_text() {
 #[tokio::test]
 async fn a_news_turn_with_nothing_for_the_user_ends_without_a_reply() {
     const NUDGE: &str = "Your response had no text and no tool call";
+    const QUIET: &str = "If nothing in it is for the user, end this turn with an empty response";
     let server = ModelServer::start(Arc::new(|_, body: String| {
         Box::pin(async move {
             if body.contains("You are agent run r1") {
@@ -428,7 +429,12 @@ async fn a_news_turn_with_nothing_for_the_user_ends_without_a_reply() {
                     reply("m4", "")
                 }
             } else if body.contains("Code done.") {
-                reply("m3", "")
+                // Silent only when the turn's message says it may be.
+                if body.contains(QUIET) {
+                    reply("m3", "")
+                } else {
+                    reply("m3", "Not told it may stay silent.")
+                }
             } else if body.contains("call_m1") {
                 reply("m2", "Started r1.")
             } else {
@@ -542,12 +548,14 @@ async fn only_a_turn_for_news_alone_may_end_without_a_reply() {
     .await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), true);
-    replying(&mut harness);
     let news = [
         Prompt::News { resent: false },
         Prompt::Jobs(Vec::new()),
         Prompt::Monitor(crate::openings::Opening::Alert, Vec::new()),
     ];
+    let news_alone = |harness: &Harness| news.iter().any(|prompt| harness.reply_optional(prompt));
+    assert!(!news_alone(&harness), "complete_task");
+    replying(&mut harness);
     for (index, prompt) in news.iter().enumerate() {
         assert!(harness.reply_optional(prompt), "news turn {index}");
     }
@@ -562,7 +570,6 @@ async fn only_a_turn_for_news_alone_may_end_without_a_reply() {
     {
         assert!(!harness.reply_optional(prompt), "other turn {index}");
     }
-    let news_alone = |harness: &Harness| news.iter().any(|prompt| harness.reply_optional(prompt));
     harness.unread.push("Set the limit to five.".into());
     assert!(!news_alone(&harness), "what the user typed");
     harness.unread.clear();
@@ -571,9 +578,64 @@ async fn only_a_turn_for_news_alone_may_end_without_a_reply() {
     harness.pending_images.clear();
     harness.one_shot = true;
     assert!(!news_alone(&harness), "-p");
-    harness.one_shot = false;
-    harness.settings.text_replies = false;
-    assert!(!news_alone(&harness), "complete_task");
+}
+
+/// A session saved with text replies and resumed with -p keeps its
+/// conversation's saved configuration, but with -p every turn needs a reply.
+/// The turn's own message says when it may end without one, so its news
+/// turn doesn't say so, and the agent replies without a note asking it to.
+#[tokio::test]
+async fn a_session_resumed_with_p_gives_its_news_turns_no_leave_to_stay_silent() {
+    const NUDGE: &str = "Your response had no text and no tool call";
+    const LEAVE: &str = "with an empty response";
+    let bodies: Bodies = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let bodies = bodies.clone();
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            Box::pin(async move {
+                if !body.contains(&crate::openings::Opening::News.text()) {
+                    reply("m1", "Started.")
+                } else if body.contains(LEAVE) && !body.contains(NUDGE) {
+                    reply("m2", "")
+                } else {
+                    reply("m3", "Nothing to add.")
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    replying(&mut harness);
+    let end = harness.turn(Prompt::User("Start.".into()), &mut inputs).await;
+    assert!(matches!(end, TurnEnd::Answered));
+
+    // The session opens again with -p, which builds its agents afresh, and
+    // its conversation goes on with the configuration it was saved with.
+    harness.one_shot = true;
+    let (main, worker) = harness
+        .agent_configs(&harness.settings, &harness.providers)
+        .unwrap();
+    harness.main_config = main;
+    harness.worker_config = worker;
+    harness.open(true).unwrap();
+    let end = harness
+        .turn(Prompt::News { resent: false }, &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Nothing to add.");
+    let Conversation::Answered(result) = &harness.conversation else {
+        panic!("the news turn wasn't answered");
+    };
+    assert!(!result.task().unwrap().reply_optional);
+    let bodies = bodies.lock().unwrap().clone();
+    let news: Vec<&String> = bodies
+        .iter()
+        .filter(|body| body.contains(&crate::openings::Opening::News.text()))
+        .collect();
+    assert_eq!(news.len(), 1, "a note asked for a reply");
+    assert!(!news[0].contains(LEAVE));
 }
 
 /// What the user typed during a turn that was stopped before the agent read

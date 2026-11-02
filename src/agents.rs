@@ -344,9 +344,6 @@ pub struct AgentSettings<'a> {
     /// The main agent ends its turns with a reply in plain text (see
     /// `Settings::text_replies`).
     pub text_replies: bool,
-    /// The main agent may end a turn Arko started for news without a reply
-    /// ([`quiet_news`]), and its instructions say when.
-    pub quiet_news: bool,
     /// The agents on `cc:` models have Claude Code compact their
     /// conversation at the handover size, else they hand over (see
     /// `Settings::cc_handover`).
@@ -405,8 +402,6 @@ impl<'a> AgentSettings<'a> {
             index_tools: &[],
             indexes: &[],
             text_replies: settings.text_replies,
-            // A session with -p says otherwise.
-            quiet_news: quiet_news(settings.text_replies, false),
             cc_compact: !settings.cc_handover,
             extra_rules: settings.extra_rules,
             mode: settings.mode,
@@ -437,7 +432,6 @@ impl<'a> AgentSettings<'a> {
             index_tools: &[],
             indexes: &[],
             text_replies: false,
-            quiet_news: false,
             cc_compact: true,
             extra_rules: ExtraRules::Off,
             mode: crate::session::Mode::Agent,
@@ -614,15 +608,6 @@ fn environment() -> EnvironmentDetailsConfig {
         operating_system: detail,
         ..EnvironmentDetailsConfig::default()
     }
-}
-
-/// Whether the main agent may end a turn Arko started for news without a
-/// reply, when nothing in the turn is for the user. It ends its turns with a
-/// reply in text, and the session isn't -p's, whose standard output takes the
-/// last news turn's reply as its answer. A turn that brings what the user
-/// wrote needs a reply all the same (see `Harness::reply_optional`).
-pub(crate) fn quiet_news(text_replies: bool, one_shot: bool) -> bool {
-    text_replies && !one_shot
 }
 
 /// How the main agent ends its turns, as Arko tells the user. With
@@ -843,12 +828,6 @@ fn main_instructions(settings: &AgentSettings) -> String {
     } else {
         "The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes, then end the turn by calling `complete_task`, whose summary is your reply. Text you write outside tool calls is shown to the user as you work; keep it to short progress notes, and don't repeat your reply in it."
     };
-    // A turn for news that may end without a reply, as the session allows.
-    let news = if settings.quiet_news {
-        " Arko also starts a turn for you when news comes while you wait for the user, such as a worker's report, a finished job or a monitor's alert. If nothing in it is for the user and it holds nothing they wrote, end that turn with an empty response, without text or a tool call."
-    } else {
-        ""
-    };
     // A note can end a wait for the workers early, and the agent has
     // answered such a note in its thinking and waited again.
     let waiting = if settings.max_workers > 0 {
@@ -868,7 +847,7 @@ fn main_instructions(settings: &AgentSettings) -> String {
     );
     format!(
         "# How this conversation works\n\
-         {turns}{news}\n\n\
+         {turns}\n\n\
          When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
          The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work, or in your reply if your turn is ending anyway.{waiting} Use `message_user` too for anything they must know before you finish. Never repeat in your reply, or beside a call, what a message already said. The user may not see your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. Text beside your calls reaches them too, but text meant for them can slip into your thinking, so an answer to them goes in `message_user` or your reply. {ending}\n\n\
          When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`, with choices and the default you'd go with when they help. It waits for the answer. Never write or delete files, spend money, start workers, or follow a preference, design or scope on the strength of your default while a question about it is open. Pass `wait: false` only when you have work no answer could change, such as reading and investigating. The answers then reach you as a note, and you do only that work until they come. Close questions that no longer matter with `close_questions`. A message of the user's may answer your questions (it starts with \"(This message answers q3.)\") or end with those still open (\"(Still open: q5.)\"). If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n\n\
@@ -2265,16 +2244,13 @@ mod tests {
 
     /// With text replies, the lead ends its turns with a reply in text. It
     /// has no `complete_task`, nor the summary's description, and its
-    /// instructions say how its turn ends, and that a turn for news with
-    /// nothing for the user ends with an empty response. It answers mid-turn
-    /// with `message_user`, as without them. The workers keep `complete_task`.
-    /// With -p every turn needs a reply, so the lead isn't told of empty ones.
+    /// instructions say how its turn ends. It answers mid-turn with
+    /// `message_user`, as without them. The workers keep `complete_task`.
     #[test]
     fn with_text_replies_the_lead_ends_its_turns_with_a_reply() {
         let opus = model("opus", false);
         let replying = AgentSettings {
             text_replies: true,
-            quiet_news: quiet_news(true, false),
             ..AgentSettings::for_test(&opus, &opus)
         };
         let config = main_config(&replying).unwrap();
@@ -2290,8 +2266,6 @@ mod tests {
         assert!(instructions.contains("When you're done, reply without calling a tool."));
         assert!(instructions.contains("answer it with `message_user` and carry on with your work"));
         assert!(instructions.contains("Only a response without a tool call ends your turn"));
-        let quiet = "If nothing in it is for the user and it holds nothing they wrote, end that turn with an empty response";
-        assert!(instructions.contains(quiet));
         for gone in [
             "complete_task",
             "Every response of yours must call a tool",
@@ -2317,16 +2291,6 @@ mod tests {
                 .instructions
                 .contains("Every response of yours must call a tool")
         );
-        assert!(!calling.instructions.contains(quiet));
-        assert!(!quiet_news(false, false));
-        let one_shot = AgentSettings {
-            text_replies: true,
-            quiet_news: quiet_news(true, true),
-            ..AgentSettings::for_test(&opus, &opus)
-        };
-        let one_shot = main_config(&one_shot).unwrap();
-        assert!(one_shot.tool_config.ends_task_with_text());
-        assert!(!one_shot.instructions.contains(quiet));
     }
 
     /// Both ways of replying tell the lead that the user may not see its

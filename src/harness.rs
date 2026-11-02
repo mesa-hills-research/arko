@@ -3725,15 +3725,36 @@ impl Harness {
     }
 
     /// Whether a turn for `prompt` may end without a reply. A turn Arko
-    /// starts for news may, in a session whose main agent is told so
-    /// ([`agents::quiet_news`]), unless its message brings what the user
-    /// wrote (what they typed that the last turn didn't read, or images
-    /// waiting to go). A turn that recovers keeps what its run was saved with.
-    fn reply_optional(&self, prompt: &Prompt) -> bool {
+    /// starts for news may when the agent ends its turns with a reply in
+    /// text, unless its message brings what the user wrote (what they typed
+    /// that the last turn didn't read, or images waiting to go). With -p,
+    /// none may, since standard output takes the last news turn's reply as
+    /// its answer. A turn that recovers keeps what its run was saved with.
+    pub(crate) fn reply_optional(&self, prompt: &Prompt) -> bool {
         prompt.is_news()
-            && agents::quiet_news(self.settings.text_replies, self.one_shot)
+            && !self.one_shot
             && self.unread.is_empty()
             && self.pending_images.is_empty()
+            && self.next_turn_ends_with_text()
+    }
+
+    /// Whether the conversation's next turn runs on a configuration whose
+    /// reply in text ends its turn. A new conversation takes the session's.
+    /// A saved one keeps its own (`keep_saved_configs`), unless its next
+    /// message reconfigures it (`continue_options`).
+    fn next_turn_ends_with_text(&self) -> bool {
+        let result = match &self.conversation {
+            Conversation::New => return self.main_config.tool_config.ends_task_with_text(),
+            Conversation::Answered(result) => result,
+            Conversation::Stopped(run) => &run.result,
+        };
+        let options = self.continue_options(&self.conversation);
+        options
+            .config
+            .as_ref()
+            .unwrap_or(&result.info().agent_config)
+            .tool_config
+            .ends_task_with_text()
     }
 
     /// One turn. The message goes to the main agent, and its reply is
@@ -3784,8 +3805,6 @@ impl Harness {
         let resumes = !matches!(prompt, Prompt::Recover)
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
         let opening = prompt.opening();
-        // (Before the message takes what the user wrote.)
-        let reply_optional = self.reply_optional(&prompt);
         let about = self.subjects(&prompt);
         if matches!(prompt, Prompt::User(_)) {
             self.user_present();
@@ -3808,7 +3827,7 @@ impl Harness {
                 .map(|handover| handover.report.clone());
             self.cut_back = Some(0);
         }
-        let mut message = self.compose(prompt);
+        let (mut message, reply_optional) = self.compose(prompt);
         let told_stopped_jobs = message.contains(STOPPED_JOBS);
         let cut = self.cut_back.take();
         // A conversation cut back to its first message is named by the new
@@ -4789,13 +4808,16 @@ impl Harness {
         }
     }
 
-    /// The user's message with project instructions and unread operator notes.
-    /// arko injects worker news from its mailbox when the run continues.
-    /// Recovery keeps the existing prompt.
-    pub(crate) fn compose(&mut self, prompt: Prompt) -> String {
+    /// The user's message with project instructions and unread operator notes,
+    /// and whether the turn may end without a reply (see `reply_optional`),
+    /// which its opening says. arko injects worker news from its mailbox when
+    /// the run continues. Recovery keeps the existing prompt.
+    pub(crate) fn compose(&mut self, prompt: Prompt) -> (String, bool) {
         let opening = prompt.opening();
+        // (Before the message takes what the user wrote.)
+        let reply_optional = self.reply_optional(&prompt);
         let message = match prompt {
-            Prompt::Recover => return String::new(),
+            Prompt::Recover => return (String::new(), false),
             // As the agent reads it, with the questions still open.
             Prompt::User(message) => Some(self.labelled.take().unwrap_or(message)),
             Prompt::News { .. }
@@ -4874,16 +4896,17 @@ impl Harness {
             parts.push(stopped);
         }
         if let Some(opening) = opening {
-            parts.push(opening.text());
+            parts.push(opening.message(reply_optional));
         }
-        match message {
+        let message = match message {
             Some(message) if parts.is_empty() => message,
             Some(message) => {
                 parts.push(format!("# My message\n\n{message}"));
                 parts.join("\n\n")
             }
             None => parts.join("\n\n"),
-        }
+        };
+        (message, reply_optional)
     }
 
     /// The main agent's background jobs that were running when Arko last
@@ -7179,9 +7202,9 @@ pub(crate) mod tests {
             ModelServer::start(Arc::new(|_, _| Box::pin(async { complete("m", "Done.") }))).await;
         let temp = tempfile::tempdir().unwrap();
         let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), false);
-        let fresh = harness.compose(Prompt::News { resent: false });
+        let (fresh, _) = harness.compose(Prompt::News { resent: false });
         assert!(fresh.contains(&Opening::News.text()), "{fresh}");
-        let again = harness.compose(Prompt::News { resent: true });
+        let (again, _) = harness.compose(Prompt::News { resent: true });
         assert!(again.contains(&Opening::ResentNews.text()), "{again}");
         assert!(!again.contains(&Opening::News.text()), "{again}");
     }
