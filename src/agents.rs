@@ -822,9 +822,11 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
 }
 
 fn main_instructions(settings: &AgentSettings) -> String {
-    // How a turn goes and ends.
+    // How a turn goes and ends. With text replies, a turn Arko starts for
+    // news may end without one. With `complete_task`, the way -p ends turns,
+    // every turn has a reply, since standard output needs the last one.
     let turns = if settings.text_replies {
-        "The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes. When you're done, reply without calling a tool. That reply ends your turn, and the user reads it as your message, so write your answer there in full. Text you write beside tool calls is shown to the user as you work: keep it to short progress notes."
+        "The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes. When you're done, reply without calling a tool. That reply ends your turn, and the user reads it as your message, so write your answer there in full. Text you write beside tool calls is shown to the user as you work: keep it to short progress notes. Arko also starts a turn for you when news comes while you wait for the user, such as a worker's report, a finished job or a monitor's alert. If nothing in it is for the user, end that turn with an empty response, without text or a tool call."
     } else {
         "The user talks with you in a terminal. Each of their messages starts a turn: work on it with your tools for as long as it takes, then end the turn by calling `complete_task`, whose summary is your reply. Text you write outside tool calls is shown to the user as you work; keep it to short progress notes, and don't repeat your reply in it."
     };
@@ -2266,6 +2268,8 @@ mod tests {
         assert!(instructions.contains("When you're done, reply without calling a tool."));
         assert!(instructions.contains("answer it with `message_user` and carry on with your work"));
         assert!(instructions.contains("Only a response without a tool call ends your turn"));
+        let quiet = "If nothing in it is for the user, end that turn with an empty response";
+        assert!(instructions.contains(quiet));
         for gone in [
             "complete_task",
             "Every response of yours must call a tool",
@@ -2291,6 +2295,7 @@ mod tests {
                 .instructions
                 .contains("Every response of yours must call a tool")
         );
+        assert!(!calling.instructions.contains(quiet));
     }
 
     /// Both ways of replying tell the lead that the user may not see its
