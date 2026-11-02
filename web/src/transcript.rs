@@ -31,22 +31,22 @@ pub fn Transcript() -> impl IntoView {
         let worker = page.worker.get();
         let live = page.connection.get() == words::Connection::Live;
         if !live {
-            return (None, false);
+            return (None, false, false);
         }
         page.status.with(|status| {
             STORE.with(|store| {
-                layout::motion(
-                    &store.borrow(),
-                    status,
-                    view,
-                    worker.as_deref(),
-                    js_sys::Date::now(),
-                )
+                let store = store.borrow();
+                let now = js_sys::Date::now();
+                let (thinking, working) =
+                    layout::motion(&store, status, view, worker.as_deref(), now);
+                let room = layout::room(&store, status, view, worker.as_deref(), now);
+                (thinking, working, room)
             })
         })
     });
+    // The rows, and whether the Working row is only its room, unseen.
     let rows = Memo::new(move |_| {
-        let (thinking, working) = motion.get();
+        let (thinking, working, room) = motion.get();
         let (feed, rows) = laid_out.get();
         // A thinking in a Quiet row has no row of its own, so the Working
         // row says it thinks while it streams. A call that runs with a row of
@@ -55,14 +55,17 @@ pub fn Transcript() -> impl IntoView {
         let worker = page.worker.get();
         STORE.with(|store| {
             let store = store.borrow();
-            let working = working && !layout::running_shown(&rows, &store, worker.as_deref());
-            let rows = layout::with_working(rows, working || hidden, &store);
-            (feed, rows)
+            let elsewhere = working && layout::running_shown(&rows, &store, worker.as_deref());
+            let working = (working && !elsewhere) || hidden;
+            let room = !working && (room || elsewhere);
+            let rows = layout::with_working(rows, working || room, &store);
+            (feed, rows, room)
         })
     });
+    let room = Memo::new(move |_| rows.with(|(_, _, room)| *room));
     let thinking = Memo::new(move |_| motion.get().0);
     // Quiet rows that stay follow their words and calls.
-    Effect::new(move |_| rows.with(|(_, rows)| sync_quiet(rows)));
+    Effect::new(move |_| rows.with(|(_, rows, _)| sync_quiet(rows)));
     // The newest item the reader saw, while at the bottom.
     Effect::new(move |_| {
         rows.track();
@@ -72,7 +75,7 @@ pub fn Transcript() -> impl IntoView {
         }
     });
     let jump_label = move || {
-        rows.with(|(_, rows)| {
+        rows.with(|(_, rows, _)| {
             page.grown.with(|grown| {
                 STORE
                     .with(|store| layout::jump_label(rows, &store.borrow(), page.seen.get(), grown))
@@ -80,7 +83,7 @@ pub fn Transcript() -> impl IntoView {
         })
     };
     let empty = move || {
-        if !rows.with(|(_, rows)| rows.is_empty())
+        if !rows.with(|(_, rows, _)| rows.is_empty())
             || page.connection.get() != words::Connection::Live
         {
             return None;
@@ -110,11 +113,11 @@ pub fn Transcript() -> impl IntoView {
                 <div id="rows" class="column rows">
                     <For
                         each=move || {
-                            let (feed, rows) = rows.get();
+                            let (feed, rows, _) = rows.get();
                             rows.into_iter().map(move |row| (feed, row))
                         }
                         key=|(feed, row)| row_key(*feed, row)
-                        children=move |(_, row)| row_view(row, thinking)
+                        children=move |(_, row)| row_view(row, thinking, room)
                     />
                 </div>
                 <p class="empty">{empty}</p>
@@ -191,7 +194,9 @@ fn row_key(feed: Option<u64>, row: &Row) -> (Option<u64>, String) {
     (feed, key)
 }
 
-fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
+/// A row of the transcript. `room` says the Working row is only its room,
+/// unseen ([`layout::room`]).
+fn row_view(row: Row, thinking: Memo<Option<u64>>, room: Memo<bool>) -> AnyView {
     match row {
         Row::Working => {
             let page = page();
@@ -207,8 +212,9 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
                 STORE.with(|store| layout::working_label(&store.borrow(), worker.as_deref()))
             });
             view! {
-                <div class="row working">
-                    <Shimmer class="what" text=move || label.get() active=|| true />
+                <div class="row working" class:room=move || room.get()
+                    aria-hidden=move || room.get().then_some("true")>
+                    <Shimmer class="what" text=move || label.get() active=move || !room.get() />
                 </div>
             }
             .into_any()
@@ -413,7 +419,7 @@ fn quiet_member(
 ) -> AnyView {
     let page = page();
     let Row::Item(id, Kind::Call) = row else {
-        return row_view(row, thinking);
+        return row_view(row, thinking, Memo::new(|_| false));
     };
     let Some(cell) = cell(id) else {
         return ().into_any();

@@ -567,6 +567,8 @@ details.thinking .thinking-text { margin: 4px 0 0 16px; font-style: italic; }
    starts at the left edge of the reply text. */
 .row.working { margin: 12px 0; color: var(--muted); font-size: 13.5px; }
 .row.working .what { font-weight: 600; }
+/* Its room, while something else shows that the agent works. */
+.row.working.room { visibility: hidden; }
 /* A Thinking row and "Working…" have the same space above and below,
    whatever stands beside them. A neighbour's margin collapses with theirs,
    so theirs is as large as a reply's, and a turn's mark next to them gives

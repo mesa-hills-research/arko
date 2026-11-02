@@ -566,14 +566,12 @@ mod tests {
             .unwrap_or_else(|| panic!("{text:?} not drawn:\n{}", rows.join("\n")))
     }
 
-    /// What moves as the line comes and goes. Among the agent's calls the
-    /// next call takes its row, and the blank row it had above goes, so the
-    /// calls above move down one row. After what was said, the next block
-    /// (thinking, a call, text) takes its row, and the blank row it had
-    /// below goes, so what is above moves down one row, once as the first
-    /// thing of a turn comes.
+    /// What moves as the line comes and goes. What comes in its place (a
+    /// call, thinking, text) comes above its room, which stays blank while
+    /// that shows the agent works. So what is above moves up by the new
+    /// block's rows, as anything new at the end does, and never down.
     #[test]
-    fn the_transcript_moves_only_by_the_one_row_the_line_gives_back() {
+    fn the_transcript_moves_only_up_by_what_comes() {
         // A call ended, the line stands under it, the next call begins.
         let mut app = working(Above::Call, false, View::Full);
         let first = row_of(&screen(&mut app, 60, 24), "$ make");
@@ -586,9 +584,15 @@ mod tests {
         );
         assert_eq!(
             row_of(&rows, "$ make"),
-            first + 1,
-            "down by the blank row above the line"
+            first - 1,
+            "up by the new call's row"
         );
+        // It ends, and the line takes its room again.
+        app.transcript
+            .apply(Update::Change(call(300, "$ test", CallStatus::Ok)));
+        let rows = screen(&mut app, 60, 24);
+        assert!(padding(&rows).is_some(), "{}", rows.join("\n"));
+        assert_eq!(row_of(&rows, "$ make"), first - 1, "it stays");
 
         // The user's message, the line, then thinking begins.
         let mut app = working(Above::User, false, View::Full);
@@ -596,16 +600,12 @@ mod tests {
         app.transcript
             .apply(Update::Item(item(300, Kind::Thinking, "Where to start?")));
         let after = row_of(&screen(&mut app, 60, 24), "Fix the tests.");
-        assert_eq!(after, before + 1, "down by the blank row below the line");
+        assert_eq!(after, before - 1, "up by the thinking's row");
         // Then the first text.
         let mut app = working(Above::User, false, View::Full);
         app.transcript
             .apply(Update::Item(item(300, Kind::Text, "Starting.")));
         let after = row_of(&screen(&mut app, 60, 24), "Fix the tests.");
-        assert_eq!(
-            after,
-            before + 1,
-            "the text has the blank row the line had above"
-        );
+        assert_eq!(after, before - 1, "up by the text's row");
     }
 }

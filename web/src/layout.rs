@@ -487,24 +487,9 @@ pub fn motion(
     now: f64,
 ) -> (Option<u64>, bool) {
     let still = (None, false);
-    let mut since = i64::MIN;
-    if let Some(worker) = worker {
-        if store
-            .workers
-            .get(worker)
-            .is_none_or(|summary| summary.state != WorkerState::Running)
-        {
-            return still;
-        }
-    } else {
-        // While the agent asks, it waits on the user, not on its model.
-        if !status.working || status.question.is_some() {
-            return still;
-        }
-        if let Some(at) = status.since {
-            since = at;
-        }
-    }
+    let Some(since) = under_way(store, status, worker) else {
+        return still;
+    };
     match busy(&store.items, worker.unwrap_or(MAIN), since) {
         Busy::Model => (None, true),
         Busy::Text(id) => {
@@ -519,6 +504,41 @@ pub fn motion(
         Busy::Tool if view == View::Messages => (None, true),
         Busy::Tool | Busy::Done => still,
     }
+}
+
+/// When the turn of the agent of a view began, while it works (the
+/// earliest time for a worker's), else `None`.
+fn under_way(store: &Store, status: &StatusData, worker: Option<&str>) -> Option<i64> {
+    match worker {
+        Some(worker) => store
+            .workers
+            .get(worker)
+            .is_some_and(|summary| summary.state == WorkerState::Running)
+            .then_some(i64::MIN),
+        // While the agent asks, it waits on the user, not on its model.
+        None if !status.working || status.question.is_some() => None,
+        None => Some(status.since.unwrap_or(i64::MIN)),
+    }
+}
+
+/// Whether the room the "Working…" row takes stays at the end, unseen,
+/// because something else shows that the agent of a view works (a call
+/// of its own that runs, its thinking or its text as they stream), so
+/// nothing above moves as they come and go.
+pub fn room(
+    store: &Store,
+    status: &StatusData,
+    view: View,
+    worker: Option<&str>,
+    now: f64,
+) -> bool {
+    !motion(store, status, view, worker, now).1
+        && under_way(store, status, worker).is_some_and(|since| {
+            !matches!(
+                busy(&store.items, worker.unwrap_or(MAIN), since),
+                Busy::Done
+            )
+        })
 }
 
 /// What the "Working…" line says. While a call of the agent runs (which
@@ -850,6 +870,10 @@ mod tests {
         );
     }
 
+    /// The Working row shows while the agent waits on its model, and its
+    /// room stays, unseen, while something else shows that the agent works
+    /// (its thinking or text as they stream, a call that runs), so nothing
+    /// above moves as they come and go.
     #[test]
     fn working_shows_while_the_agent_waits_on_its_model_and_its_thinking_moves_as_it_streams() {
         let mut store = Store::default();
@@ -858,13 +882,17 @@ mod tests {
             since: Some(0),
             ..StatusData::default()
         };
+        let room = |store: &Store, view, now| room(store, &status, view, None, now);
         store.add(item(1, Kind::User, MAIN, "go"), 0.0);
         assert_eq!(motion(&store, &status, View::Full, None, 0.0), (None, true));
+        assert!(!room(&store, View::Full, 0.0));
         store.add(item(2, Kind::Thinking, MAIN, "hmm"), 0.0);
         assert_eq!(
             motion(&store, &status, View::Full, None, 0.0),
             (Some(2), false)
         );
+        assert!(room(&store, View::Full, 0.0));
+        assert!(!room(&store, View::Messages, 0.0));
         assert_eq!(
             motion(&store, &status, View::Messages, None, 0.0),
             (None, true)
@@ -874,10 +902,12 @@ mod tests {
             motion(&store, &status, View::Full, None, 500.0),
             (None, false)
         );
+        assert!(room(&store, View::Full, 500.0));
         assert_eq!(
             motion(&store, &status, View::Full, None, 100.0 + QUIET_MS),
             (None, true)
         );
+        assert!(!room(&store, View::Full, 100.0 + QUIET_MS));
         let mut call = item(4, Kind::Call, MAIN, "ls");
         call.status = Some(CallStatus::Running);
         call.act = Some(crate::protocol::Act {
@@ -890,6 +920,8 @@ mod tests {
             motion(&store, &status, View::Full, None, 0.0),
             (None, false)
         );
+        assert!(room(&store, View::Full, 0.0));
+        assert!(room(&store, View::Quiet, 0.0));
         // The Messages view counts calls, so its line at the end says what
         // the call that runs does.
         assert_eq!(
@@ -906,6 +938,7 @@ mod tests {
             motion(&store, &status, View::Full, None, 0.0),
             (None, false)
         );
+        assert!(!room(&store, View::Full, 0.0), "its reply ended it");
         // While it asks, it waits on the user.
         let asking = StatusData {
             question: Some(crate::protocol::Question {

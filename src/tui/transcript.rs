@@ -170,6 +170,9 @@ enum Shown {
     /// "Working…", at the end, while the agent waits on its model and
     /// nothing else shows it.
     Working,
+    /// The room "Working…" takes, blank, while something else shows that
+    /// the agent works.
+    Room,
     /// A row of the Quiet view, with calls in a few words, merged with their
     /// neighbours of a kind.
     Quiet(Arc<QuietRow>),
@@ -292,6 +295,11 @@ struct Motion {
     thinking: Option<u64>,
     /// The "Working…" line, at the end.
     working: bool,
+    /// Something else shows that the agent works (a call of its own that
+    /// runs, its thinking or its text as they stream), and the end keeps
+    /// the room the line takes, blank, so nothing above moves as they come
+    /// and go.
+    room: bool,
     /// What that line says instead of "Working…", in the Messages view
     /// while a call of the agent runs ("Waiting for r91…"), and while a
     /// thinking in a Quiet row streams ("Thinking").
@@ -852,6 +860,7 @@ impl Transcript {
         let thinking_shown = filter.view() != View::Messages;
         let working = |working| Motion {
             working,
+            room: !working,
             ..Motion::default()
         };
         match self.busy(agent, since) {
@@ -864,9 +873,11 @@ impl Transcript {
                 thinking: Some(id),
                 working: true,
                 label: Some(THINKING.to_string()),
+                ..Motion::default()
             },
             Busy::Thinking(id) if thinking_shown => Motion {
                 thinking: Some(id),
+                room: true,
                 ..Motion::default()
             },
             Busy::Thinking(_) => working(true),
@@ -883,7 +894,8 @@ impl Transcript {
                     ..Motion::default()
                 }
             }
-            Busy::Tool | Busy::Done => Motion::default(),
+            Busy::Tool => working(false),
+            Busy::Done => Motion::default(),
         }
     }
 
@@ -1149,7 +1161,7 @@ impl Transcript {
             let keys: HashSet<u64> = blocks.iter().map(|block| block.key).collect();
             self.quiet_cache.retain(|key, _| keys.contains(key));
         }
-        if self.motion.working {
+        if self.motion.working || self.motion.room {
             // Where the agent's output comes next, above the notes it hasn't
             // read, which wait at the end.
             let mut at = blocks.len();
@@ -1165,7 +1177,10 @@ impl Transcript {
             // agent's text, a message, a notice, a command's output) it is a
             // paragraph of its own, a blank line on each side. The notes it
             // stands above (they wait at the end) set it apart below with
-            // their own blank line.
+            // their own blank line. Its room stays while something else
+            // shows that the agent works, so what comes in its place (a
+            // call, thinking, text) comes above the room, and nothing above
+            // moves down.
             let notes_below = at < blocks.len();
             let among_calls = at
                 .checked_sub(1)
@@ -1173,14 +1188,15 @@ impl Transcript {
                 && self
                     .under_way(filter)
                     .is_some_and(|(agent, since)| self.calls_begun(agent, since));
+            let working = self.motion.working;
             blocks.insert(
                 at,
                 Block {
                     key: WORKING_KEY,
-                    shown: Shown::Working,
+                    shown: if working { Shown::Working } else { Shown::Room },
                     gap: at > 0,
                     lines: 1,
-                    tail: at > 0 && !among_calls && !notes_below,
+                    tail: working && at > 0 && !among_calls && !notes_below,
                 },
             );
         }
@@ -1606,11 +1622,12 @@ impl Transcript {
         }
         let blocks = self.blocks(filter, theme, width);
         let total: usize = blocks.iter().map(Block::height).sum();
-        // The lines of text. "Working…" comes and goes without being new.
+        // The lines of text. "Working…" and its room come and go without
+        // being new.
         let text_lines = total
             - blocks
                 .iter()
-                .filter(|block| block.shown == Shown::Working)
+                .filter(|block| matches!(block.shown, Shown::Working | Shown::Room))
                 .map(Block::height)
                 .sum::<usize>();
         let bottom = total.saturating_sub(height);
@@ -1769,9 +1786,9 @@ impl Transcript {
                     motion::paint(buffer, (x, row), text_width(THINKING), theme, ms);
                     moving = true;
                 }
-                if block.shown == Shown::Working {
+                if matches!(block.shown, Shown::Working | Shown::Room) {
                     // (Not text, so the mouse finds the line above it.)
-                    if line == usize::from(block.gap) {
+                    if block.shown == Shown::Working && line == usize::from(block.gap) {
                         let label = text_width(&glyphs::render(self.working_label()));
                         let x = area.x + SPINNER as u16;
                         motion::paint(buffer, (x, row), label, theme, ms);
@@ -1917,6 +1934,11 @@ impl Transcript {
                     Span::raw(" ".repeat(LABEL)),
                     Span::styled(label, theme.dim().add_modifier(Modifier::BOLD)),
                 ]);
+                line.bare = true;
+                vec![line]
+            }
+            Shown::Room => {
+                let mut line = Wrapped::line(Vec::new());
                 line.bare = true;
                 vec![line]
             }
@@ -4426,7 +4448,7 @@ mod tests {
         );
         t.working = Some(0);
         assert_eq!(
-            after_spinner(&rows(&mut t, &quiet, 40, 1)[0]),
+            after_spinner(&rows(&mut t, &quiet, 40, 3)[0]),
             Some(" Thinking")
         );
         t.entries[0].created -= Duration::from_secs(125);
@@ -4768,14 +4790,18 @@ mod tests {
         t.apply(Update::Worker(worker("r1", WorkerState::Running)));
         t.apply(Update::Item(item(1, Kind::Thinking, "Plan.").agent("r1")));
         let own = Filter::Worker("r1".into(), View::Full);
-        let shown = rows(&mut t, &own, 40, 5);
+        let shown = rows(&mut t, &own, 40, 7);
         assert_eq!(after_spinner(&shown[2]), Some(" Thinking"), "{shown:?}");
-        assert_eq!(shown[3..], ["    Plan.", "    ↑ show the first line only"]);
+        assert_eq!(
+            shown[3..],
+            ["    Plan.", "    ↑ show the first line only", "", ""],
+            "the room of the line it stands in for below it"
+        );
         assert!(t.drawn.moving);
         t.apply(Update::Item(
             item(2, Kind::Text, "Done planning.").agent("r1"),
         ));
-        let shown = rows(&mut t, &own, 40, 7);
+        let shown = rows(&mut t, &own, 40, 9);
         assert_eq!(shown[2], "  ▾ Thought", "{shown:?}");
         assert!(!t.drawn.moving);
         t.apply(Update::Item(item(3, Kind::Thinking, "More.").agent("r1")));
