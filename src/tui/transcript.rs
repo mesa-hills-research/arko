@@ -1108,18 +1108,14 @@ impl Transcript {
             {
                 at -= 1;
             }
-            // It has as many blank lines below as above, whatever started the
-            // turn. Among the agent's own calls (a call, its result, its
-            // thinking, a worker's line) it is one more row of that list,
-            // which runs together and stands against the status line's rule,
-            // none on either side. After anything else (the user's message,
-            // the agent's text, a message, a notice, a command's output) it
-            // is a paragraph of its own, a blank line on each side. So it is
-            // before the agent's first call of the turn, under the calls of
-            // its workers or the card of one that started from the queue,
-            // as it is under the user's message. The notes it stands above
-            // (they wait at the end) set it apart below with their own blank
-            // line, so it has one above too.
+            // It has a blank line above it, whatever comes before it. After
+            // the agent's own calls (a call, its result, its thinking, a
+            // worker's line) it stands against the status line's rule, with
+            // none below. After anything else (the user's message, the
+            // agent's text, a message, a notice, a command's output) it is a
+            // paragraph of its own, a blank line on each side. The notes it
+            // stands above (they wait at the end) set it apart below with
+            // their own blank line.
             let notes_below = at < blocks.len();
             let among_calls = at
                 .checked_sub(1)
@@ -1127,15 +1123,14 @@ impl Transcript {
                 && self
                     .under_way(filter)
                     .is_some_and(|(agent, since)| self.calls_begun(agent, since));
-            let apart = at > 0 && (notes_below || !among_calls);
             blocks.insert(
                 at,
                 Block {
                     key: WORKING_KEY,
                     shown: Shown::Working,
-                    gap: apart,
+                    gap: at > 0,
                     lines: 1,
-                    tail: apart && !notes_below,
+                    tail: at > 0 && !among_calls && !notes_below,
                 },
             );
         }
@@ -4353,14 +4348,14 @@ mod tests {
         t.apply(Update::Item(thinking));
         t.working = Some(0);
         let shown = rows(&mut t, &quiet, 40, 4);
-        assert_eq!(shown[0], "  ▸ Read a.rs", "{shown:?}");
-        assert_eq!(after_spinner(&shown[1]), Some(" Thinking"), "{shown:?}");
+        assert_eq!(shown[..2], ["  ▸ Read a.rs", ""], "{shown:?}");
+        assert_eq!(after_spinner(&shown[2]), Some(" Thinking"), "{shown:?}");
         assert!(t.drawn.moving);
         // The row's first line stays where it was when the next read joins.
         t.apply(Update::Item(read(3, "b.rs")));
         let shown = rows(&mut t, &quiet, 40, 4);
         assert_eq!(shown[0], "  ▸ Read a.rs and b.rs", "{shown:?}");
-        assert!(is_working(&shown[1]), "{shown:?}");
+        assert!(is_working(&shown[2]), "{shown:?}");
     }
 
     /// Times read in whole units, as the terminal and the page both say
@@ -4458,10 +4453,11 @@ mod tests {
         t.apply(Update::Change(call));
         let shown = rows(&mut t, &full(), 40, 5);
         assert_eq!(
-            shown[2], "  ▸ Thought · Where to start?",
+            shown[1], "  ▸ Thought · Where to start?",
             "it no longer moves"
         );
-        assert_eq!(shown[3], "    $ cargo test · ✓", "no blank line before it");
+        assert_eq!(shown[2], "    $ cargo test · ✓", "no blank line before it");
+        assert_eq!(shown[3], "", "a blank line above the line");
         assert!(is_working(&shown[4]), "{shown:?}");
         assert!(is_working(&last(&mut t, View::Quiet)));
         assert!(is_working(&last(&mut t, View::Messages)));
@@ -4858,17 +4854,17 @@ mod tests {
         );
         t.apply(Update::Item(item(1, Kind::Text, "Reading.").agent("r1")));
         t.apply(Update::Item(item(2, Kind::Result, "done").agent("r1")));
-        let shown = rows(&mut t, &own, 40, 5);
-        assert!(is_working(&shown[4]), "{shown:?}");
+        let shown = rows(&mut t, &own, 40, 6);
+        assert!(is_working(&shown[5]), "{shown:?}");
         // Selected to the end, it isn't copied.
         assert_eq!(shown[1], "  Reading.");
-        let (from, to) = (t.point_at(0, 1).unwrap(), t.point_at(39, 4).unwrap());
+        let (from, to) = (t.point_at(0, 1).unwrap(), t.point_at(39, 5).unwrap());
         t.select(from, to, &own);
         assert_eq!(
             t.selected_text(&own, &Theme::terminal()).unwrap(),
             "Reading.\n\ndone"
         );
-        assert_eq!(t.drawn.key_at(4, 4), None);
+        assert_eq!(t.drawn.key_at(4, 5), None);
         // Scrolled up, it isn't counted as new.
         t.selection = None;
         rows(&mut t, &own, 40, 2);
