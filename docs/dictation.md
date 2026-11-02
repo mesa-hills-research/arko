@@ -16,16 +16,29 @@ then leaves them at the prompt to edit and send.
 Arko records from the microphone of the computer it runs on, so over SSH it records from the remote
 computer's, and says so.
 
-## Session words
+## Favoured words
 
-Each recording favours words from its session that a speech model would otherwise misspell, so
-they come out as the session writes them. They are the identifiers, file names and names in the
-transcript (such as `DictationOptions`, `Cargo.toml` or `gpt-6`), the workspace's folder and package
-names and its top-level files, and the session's models, skills and worker profiles. Recent and
-repeated words count most, up to 300 of them. Words that can't be said, such as keys, hashes and
-IDs, are always left out. The recording starts at once, and the words apply as soon as they're
-ready. A word said differently from how it's written, such as "engine x" for nginx, still comes out
-as the model hears it.
+Each recording favours words that a speech model would otherwise misspell, so they come out as you
+write them. Up to 300 go in, in this order.
+
+1. Arko's own names, which are always in. They are Arko, Arko Studio, Telmo, Mesquite, GPUI, GPUI Kit, Capta and Mesa
+   Hills Research. A new session gives no reason to prefer "Arko" over "Arco", so they don't wait
+   for a mention.
+2. The session's words and the words you use across sessions, by turns, so neither crowds out the
+   other. Each gets half of what the names leave, and a source with fewer words leaves its share to
+   the other.
+
+The session's words are the identifiers, file names and names in the transcript (such as
+`DictationOptions`, `Cargo.toml` or `gpt-6`), the workspace's folder and package names and its
+top-level files, and the session's models, skills and worker profiles. The words from across
+sessions are the distinctive ones in your earlier messages (`history.txt` in Arko's folder), and
+any an app adds. In both, recent and repeated words count most. Words that can't be said, such as
+keys, hashes and IDs, are always left out. The recording starts at once, and the words apply as
+soon as they're ready. A word said differently from how it's written, such as "engine x" for nginx,
+still comes out as the model hears it.
+
+With `session_words` off, nothing is favoured, the names included, so the model's own spelling
+stands.
 
 ## The speech model
 
@@ -64,8 +77,8 @@ left out.
 | `language` | The language you speak, such as `fr` or `pt-BR`, in place of the system's |
 | `idle_minutes` | How long the model stays in memory after a recording |
 | `download` | `ask` before downloading a missing model, or `automatic` |
-| `session_words` | `true` to favour the [session's words](#session-words), or `false` |
-| `leave_out_secrets` | `true` to leave secrets out of the session's words, `false` by default |
+| `session_words` | `true` to favour [these words](#favoured-words), or `false` to favour none |
+| `leave_out_secrets` | `true` to leave secrets out of the favoured words, `false` by default |
 
 `leave_out_secrets` leaves out the values that context marks as secret and keeps the names. Those
 are what follows a password, key or token name (`API_KEY=…`, `password: …`, `--token …`), an
@@ -88,5 +101,6 @@ WAV file, played in real time, in place of the microphone.
 An app opens a dictation with `arko::dictation::DictationService::shared`, giving it a `Sink` that
 takes the events to the recording client, and hands it audio with `Dictation::push` or
 `Dictation::record`. It keeps the `Dictation` until `Done` or `Failed` comes, since dropping it
-cancels the dictation. `arko::dictation::favour_session_words` gives the dictation the session's
-words once they're built, on a thread of their own.
+cancels the dictation. `arko::dictation::favour_session_words` gives the dictation its favoured words once they're built,
+on a thread of their own. `favour_session_words_with` also takes a closure that returns an app's
+own words, such as a user dictionary, best first, and runs it on that thread.

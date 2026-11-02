@@ -333,6 +333,17 @@ fn the_words_telmo_refuses_are_left_out() {
     );
 }
 
+/// Telmo takes each of Arko's own names whole, and the merged list is
+/// within its size.
+#[test]
+fn telmo_accepts_the_own_names() {
+    let words = super::super::session_words::merge(Vec::new(), Vec::new());
+    let list = special_words(&words);
+    assert_eq!(list.len(), words.len());
+    assert!(list.words().any(|word| word == "Mesa Hills Research"));
+    const { assert!(super::super::session_words::MAX_WORDS <= SpecialWords::MAX_WORDS) };
+}
+
 /// Arko's folder with `dictation.json` holding `settings` and Granite
 /// Speech's real pack, and the clip to dictate, when `ARKO_TEST_SPEECH_PACK`
 /// names Granite's int8 pack and `ARKO_TEST_SPEECH_WAV` LibriSpeech's clip
