@@ -154,6 +154,8 @@ pub(crate) enum Admitted {
         /// What to tell the user of files that went otherwise than they
         /// might think.
         files_words: Option<String>,
+        /// Its files, as its transcript shows them.
+        files: Vec<crate::attachments::SentFile>,
         source: Source,
         attached: Vec<String>,
         reply: Reply,
@@ -222,6 +224,7 @@ impl Harness {
             }
             Event::Remote(Action::Message { text, files }) => {
                 self.echo_web(&text);
+                self.echo_files(&files);
                 Read::Sent(Sent {
                     line: text,
                     source: Source::Web,
@@ -250,6 +253,7 @@ impl Harness {
                 files,
             }) => {
                 self.echo_web(&text);
+                self.echo_files(&files);
                 Read::Sent(Sent {
                     line: text,
                     source: Source::Web,
@@ -397,8 +401,8 @@ impl Harness {
         }
         // The page's files go as their kinds and the model say, and the
         // agent reads their block before the text.
-        let (read, files_words) = match files.is_empty() {
-            true => (text.to_string(), None),
+        let (read, files_words, files) = match files.is_empty() {
+            true => (text.to_string(), None, Vec::new()),
             false => match self.attach_files(text, files) {
                 Ok(routed) => routed,
                 Err(why) => {
@@ -423,6 +427,7 @@ impl Harness {
             text: text.to_string(),
             read,
             files_words,
+            files,
             source,
             attached,
             reply,
@@ -433,13 +438,14 @@ impl Harness {
     /// model ([`crate::attachments::route`]). The images that go to the
     /// model wait for the message's turn or note, kept for the transcript
     /// too. Gives what the agent reads, the files' block and then `typed`,
-    /// and what to tell the user of files that went otherwise than they
-    /// might think, or why the files can't go.
+    /// what to tell the user of files that went otherwise than they might
+    /// think, and the files as the transcript shows them, or why the files
+    /// can't go.
     fn attach_files(
         &mut self,
         typed: &str,
         files: Vec<crate::attachments::Attached>,
-    ) -> Result<(String, Option<String>), String> {
+    ) -> Result<(String, Option<String>, Vec<crate::attachments::SentFile>), String> {
         let chat = self.settings.mode == crate::session::Mode::Chat;
         let model = &self.main_config.llm_config.model;
         let routed = crate::attachments::route(model, chat, typed, files)?;
@@ -451,7 +457,16 @@ impl Harness {
             self.pending_refs.push(shown);
         }
         let read = crate::attachments::with_block(&routed.block, typed);
-        Ok((read, routed.words))
+        Ok((read, routed.words, routed.files))
+    }
+
+    /// Shows in the terminal the files that came from the remote page, a
+    /// dim line each under the message.
+    fn echo_files(&self, files: &[crate::attachments::Attached]) {
+        let out = &self.output;
+        for attached in files {
+            out.echo(&out.dim(&format!("  {}", attached.file.line())));
+        }
     }
 
     /// Forgets the images an app's message attached, when it isn't one

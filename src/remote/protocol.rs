@@ -539,6 +539,10 @@ pub struct ItemData {
     /// tool returned.
     #[serde(default)]
     pub images: Vec<ImageData>,
+    /// The files a user's message sent from the page carried, in order,
+    /// images among them.
+    #[serde(default)]
+    pub files: Vec<FileData>,
 }
 
 /// The types of image the page shows, the only ones Arko serves it.
@@ -558,6 +562,30 @@ pub struct ImageData {
     /// Where the page gets it. The address holds the server's version, so a
     /// browser may keep it as long as the server runs.
     pub url: String,
+}
+
+/// A file a user's message sent from the page carried, which the page
+/// downloads from `url`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub struct FileData {
+    /// Its name in the project's `.arko/attachments` folder.
+    pub name: String,
+    /// Its MIME type, from its first bytes.
+    pub mime: String,
+    /// Its size in bytes.
+    pub bytes: u64,
+    /// A text file's lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<u64>,
+    /// It went to the model as an image, which the item's `images` show
+    /// too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shown: bool,
+    /// Where the page downloads it (`/api/attachments/{name}`), or `None`
+    /// when it isn't in this server's project folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// What a file sent from the page is, from its first bytes. An image may

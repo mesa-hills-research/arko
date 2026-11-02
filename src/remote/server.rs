@@ -772,6 +772,15 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 impl App {
+    /// The project's folder of the files sent from the page, where they
+    /// download from.
+    fn attachments(&self) -> PathBuf {
+        self.uploads
+            .workspace()
+            .join(crate::arko_dir::DIR)
+            .join(crate::attachments::FOLDER)
+    }
+
     fn wait(&self, ip: IpAddr) -> Option<Duration> {
         let now = Instant::now();
         lock(&self.failures)
@@ -1065,7 +1074,7 @@ struct Stream {
 }
 
 /// An item as the page gets it, with its Markdown's finished code blocks
-/// highlighted, and the addresses of its images.
+/// highlighted, and the addresses of its images and files.
 #[derive(Serialize)]
 struct PageItem<'a> {
     #[serde(flatten)]
@@ -1074,14 +1083,31 @@ struct PageItem<'a> {
     code: Vec<super::protocol::CodeSpans>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     images: Vec<ImageData>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    files: Vec<super::protocol::FileData>,
 }
 
 impl<'a> PageItem<'a> {
-    /// `item`, whose images are at addresses with `image_version`.
-    fn of(item: &'a Item, image_version: &str) -> Self {
+    /// `item`, whose images are at addresses with `image_version`, and whose
+    /// files download from the server when they're in its project's
+    /// attachments folder `attachments`.
+    fn of(item: &'a Item, image_version: &str, attachments: &Path) -> Self {
         PageItem {
             item,
             code: highlight::item_code(item),
+            files: item
+                .files
+                .iter()
+                .map(|sent| super::protocol::FileData {
+                    name: sent.file.name.clone(),
+                    mime: sent.file.mime.clone(),
+                    bytes: sent.file.bytes,
+                    lines: sent.file.lines,
+                    shown: sent.shown,
+                    url: (sent.file.path == attachments.join(&sent.file.name))
+                        .then(|| format!("/api/attachments/{}", encoded(&sent.file.name))),
+                })
+                .collect(),
             images: item
                 .images
                 .iter()
@@ -1110,10 +1136,11 @@ impl Stream {
         self.status = self.app.status(&snapshot.activity);
         let status: serde_json::Value = serde_json::from_str(&self.status).unwrap_or_default();
         self.streaming.clear();
+        let attachments = self.app.attachments();
         let items: Vec<PageItem> = snapshot
             .items
             .iter()
-            .map(|item| PageItem::of(item, &self.app.image_version))
+            .map(|item| PageItem::of(item, &self.app.image_version, &attachments))
             .collect();
         for item in &items {
             self.follow(item);
@@ -1163,7 +1190,8 @@ impl Stream {
     fn take(&mut self, update: Update) {
         match update {
             Update::Item(item) => {
-                let page_item = PageItem::of(&item, &self.app.image_version);
+                let page_item =
+                    PageItem::of(&item, &self.app.image_version, &self.app.attachments());
                 self.follow(&page_item);
                 self.pending.push_back(
                     Event::default()
@@ -1188,7 +1216,8 @@ impl Stream {
             }
             Update::Change(item) => {
                 self.streaming.remove(&item.id);
-                let page_item = PageItem::of(&item, &self.app.image_version);
+                let page_item =
+                    PageItem::of(&item, &self.app.image_version, &self.app.attachments());
                 self.follow(&page_item);
                 self.pending.push_back(
                     Event::default()
@@ -2160,16 +2189,23 @@ fn download_disposition(name: &str) -> String {
             _ => '_',
         })
         .collect();
-    let encoded: String = name
-        .bytes()
+    format!(
+        "attachment; filename=\"{plain}\"; filename*=UTF-8''{}",
+        encoded(name)
+    )
+}
+
+/// `name` with every byte but a letter, a digit and `-._~` written `%XX`,
+/// as it goes in an address or an RFC 5987 name.
+fn encoded(name: &str) -> String {
+    name.bytes()
         .map(|byte| match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 (byte as char).to_string()
             }
             _ => format!("%{byte:02X}"),
         })
-        .collect();
-    format!("attachment; filename=\"{plain}\"; filename*=UTF-8''{encoded}")
+        .collect()
 }
 
 #[cfg(test)]
@@ -2196,7 +2232,9 @@ mod tests {
         let items = snapshot.items;
         let page: Vec<serde_json::Value> = items
             .iter()
-            .map(|item| serde_json::to_value(PageItem::of(item, "1")).unwrap())
+            .map(|item| {
+                serde_json::to_value(PageItem::of(item, "1", Path::new("/nowhere"))).unwrap()
+            })
             .collect();
         let mut results = serde_json::Map::new();
         for item in items.iter().filter(|item| item.more.is_some()) {
@@ -5123,6 +5161,66 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
         assert_eq!(left, [".gitignore"]);
+    }
+
+    /// An item's files reach the page with the addresses they download
+    /// from, when they're in the project's attachments folder, and a file
+    /// that's gone answers 404 to the page's check.
+    #[tokio::test]
+    async fn an_items_files_come_with_their_downloads() {
+        use super::super::feed::{Delivery, Source};
+        use super::super::protocol::ResetData;
+        use crate::attachments::{FileRef, SentFile};
+        let feed = Feed::new("main");
+        let served = serve(&feed);
+        let cookie = served.login().await;
+        served.upload(&cookie, "Clip Final.mp4", &[0; 8]).await;
+        let sent = |path: PathBuf| SentFile {
+            file: FileRef {
+                name: path.file_name().unwrap().to_string_lossy().into_owned(),
+                mime: "video/mp4".into(),
+                bytes: 8,
+                path,
+                lines: None,
+            },
+            shown: false,
+        };
+        let folder = served.attachments();
+        let files = vec![
+            sent(folder.join("Clip-Final.mp4")),
+            sent(PathBuf::from("/elsewhere/.arko/attachments/x.mp4")),
+            sent(folder.join("é.mp4")),
+        ];
+        feed.user_with_files("Look.", Source::Web, Delivery::Turn, Vec::new(), files);
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        // (The page's types refuse a field they don't know.)
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        let files = &reset.items[0].files;
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| (file.name.as_str(), file.url.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("Clip-Final.mp4", Some("/api/attachments/Clip-Final.mp4")),
+                ("x.mp4", None),
+                ("é.mp4", Some("/api/attachments/%C3%A9.mp4")),
+            ]
+        );
+        assert_eq!((files[0].mime.as_str(), files[0].bytes), ("video/mp4", 8));
+        let head = |url: String| {
+            served
+                .http
+                .head(format!("{}{url}", served.base))
+                .header(header::COOKIE, &cookie)
+                .send()
+        };
+        let there = head(files[0].url.clone().unwrap()).await.unwrap();
+        assert_eq!(there.status(), StatusCode::OK);
+        let gone = head(files[2].url.clone().unwrap()).await.unwrap();
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
     }
 
     /// A message refused after the server stopped takes its file along.

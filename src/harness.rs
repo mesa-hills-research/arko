@@ -1577,7 +1577,7 @@ impl Harness {
                     Read::Done | Read::Other => continue,
                 },
             };
-            let (text, read, files_words, source, attached, mut reply) =
+            let (text, read, files_words, files, source, attached, mut reply) =
                 match self.admit(sent, Phase::Idle) {
                     None => continue,
                     Some(Admitted::Command {
@@ -1598,17 +1598,20 @@ impl Harness {
                         text,
                         read,
                         files_words,
+                        files,
                         source,
                         attached,
                         reply,
-                    }) => (text, read, files_words, source, attached, reply),
+                    }) => (text, read, files_words, files, source, attached, reply),
                 };
             let text = text.as_str();
             let shown = std::mem::take(&mut self.pending_refs);
             // What the user typed that the agent didn't read goes first, as
             // the message carries it.
             self.feed.notes_sent(&typed_parts(&self.unread));
-            let item = self.feed.user_with(text, source, Delivery::Turn, shown);
+            let item = self
+                .feed
+                .user_with_files(text, source, Delivery::Turn, shown, files);
             // A message that answers questions reaches the agent as their
             // note, which a turn of its own delivers.
             let (prompt, delivery, not_posted) = match self.reply_text(&read, &attached) {
@@ -3980,7 +3983,7 @@ impl Harness {
                             Read::Done | Read::Other => continue,
                         },
                     };
-                    let (text, read, files_words, source, attached, mut reply) = match self.admit(sent, Phase::Turn) {
+                    let (text, read, files_words, files, source, attached, mut reply) = match self.admit(sent, Phase::Turn) {
                         None => continue,
                         Some(Admitted::Command {
                             command,
@@ -4001,10 +4004,11 @@ impl Harness {
                             text,
                             read,
                             files_words,
+                            files,
                             source,
                             attached,
                             reply,
-                        }) => (text, read, files_words, source, attached, reply),
+                        }) => (text, read, files_words, files, source, attached, reply),
                     };
                     // The images an app's message sends go with its note.
                     let images = std::mem::take(&mut self.pending_images);
@@ -4014,7 +4018,7 @@ impl Harness {
                     match self.reply_text(&read, &attached) {
                         Replied::Answered { not_posted } => {
                             self.output.echo(&self.output.dim("  ✎ answered"));
-                            let item = self.feed.user(&text, source, Delivery::Answer);
+                            let item = self.feed.user_with_files(&text, source, Delivery::Answer, Vec::new(), files);
                             let partial =
                                 self.partly(&reply, Vec::new(), joined(not_posted, files_words));
                             reply.accept_partly(Delivery::Answer, Some(item), partial);
@@ -4026,7 +4030,7 @@ impl Harness {
                             self.output.echo(&self.output.dim(
                                 "  ✎ added to the task, and the agent reads it at its next step",
                             ));
-                            let item = self.feed.user(&text, source, Delivery::Note);
+                            let item = self.feed.user_with_files(&text, source, Delivery::Note, Vec::new(), files);
                             let mut not_passed = joined(not_posted, files_words);
                             if !images.is_empty()
                                 && let Some(run) = self.feed.questions_conversation()
@@ -4054,7 +4058,7 @@ impl Harness {
                             reply.accept_partly(Delivery::Note, Some(item), partial);
                         }
                         Replied::Plain { text: labelled, .. } if self.queue_lines => {
-                            let item = self.feed.user(&text, source, Delivery::Queued);
+                            let item = self.feed.user_with_files(&text, source, Delivery::Queued, Vec::new(), files);
                             queued.push((text, labelled));
                             let partial = self.partly(&reply, Vec::new(), files_words);
                             reply.accept_partly(Delivery::Queued, Some(item), partial);
@@ -4070,7 +4074,7 @@ impl Harness {
                                     self.output.echo(&self.output.dim(
                                         "  ✎ added to the task, and the agent reads it at its next step",
                                     ));
-                                    let item = self.feed.note(&text, source, seq.seq, shown);
+                                    let item = self.feed.note_with_files(&text, source, seq.seq, shown, files);
                                     notes.push((seq.seq, unread));
                                     let partial = self.partly(&reply, Vec::new(), files_words);
                                     reply.accept_partly(Delivery::Note, Some(item), partial);

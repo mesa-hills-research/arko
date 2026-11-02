@@ -3132,7 +3132,14 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
             } else {
                 (theme.text(), theme.accent())
             };
-            let mut lines = plain(&item.text, style, marked);
+            let mut lines = match item.text.is_empty() && !item.files.is_empty() {
+                true => Vec::new(),
+                false => plain(&item.text, style, marked),
+            };
+            // The files it carried, a dim line each.
+            for sent in &item.files {
+                lines.extend(plain(&sent.file.line(), theme.dim(), marked));
+            }
             if let Some(tag) = user_tag(item) {
                 // (Not the user's text, so a copy leaves it out.)
                 let tag = cut_end(&tag, marked);
@@ -5073,6 +5080,39 @@ mod tests {
                 Some(user.text.as_str())
             );
         }
+    }
+
+    /// A message's files are dim rows under its words, one each, its path
+    /// and size, and a message of files alone has only them.
+    #[test]
+    fn a_messages_files_are_dim_rows_under_it() {
+        use crate::attachments::{FileRef, SentFile};
+        let theme = Theme::terminal();
+        let sent = |name: &str, bytes| SentFile {
+            file: FileRef {
+                name: name.into(),
+                mime: "video/mp4".into(),
+                bytes,
+                path: std::path::PathBuf::from("/w/.arko/attachments").join(name),
+                lines: None,
+            },
+            shown: false,
+        };
+        let mut user = item(1, Kind::User, "Look.");
+        user.files = vec![sent("bug.png", 70), sent("RPReplay.MP4", 48_200_000)];
+        let lines = entry_lines(&user, &theme, 60, false, Look::default());
+        assert_eq!(
+            shown(&lines),
+            [
+                "  ▎ Look.",
+                "  ▎ /w/.arko/attachments/bug.png · 70 bytes",
+                "  ▎ /w/.arko/attachments/RPReplay.MP4 · 46.0 MB",
+            ]
+        );
+        assert_eq!(lines[1].spans.last().unwrap().style, theme.dim());
+        user.text.clear();
+        let lines = entry_lines(&user, &theme, 60, false, Look::default());
+        assert_eq!(lines.len(), 2);
     }
 
     /// The rows of `lines` as drawn.

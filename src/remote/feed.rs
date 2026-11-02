@@ -211,6 +211,12 @@ pub struct Item {
     /// `None` for a question asked before questions had ids.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub questions: Option<Vec<crate::questions::AgentQuestion>>,
+    /// The files a user's message sent from the web page carried, in
+    /// order, images among them. The web page gets them as
+    /// [`FileData`](super::protocol::FileData), with where to download
+    /// each.
+    #[serde(skip)]
+    pub files: Vec<crate::attachments::SentFile>,
 }
 
 impl Item {
@@ -250,6 +256,7 @@ impl Item {
             pending: false,
             opens_turn: false,
             questions: None,
+            files: Vec::new(),
         }
     }
 
@@ -2278,10 +2285,24 @@ impl Feed {
         delivery: Delivery,
         images: Vec<crate::images::ImageRef>,
     ) -> u64 {
+        self.user_with_files(text, source, delivery, images, Vec::new())
+    }
+
+    /// The user's text with the images and the page's files it sends, and
+    /// what became of it.
+    pub fn user_with_files(
+        &self,
+        text: &str,
+        source: Source,
+        delivery: Delivery,
+        images: Vec<crate::images::ImageRef>,
+        files: Vec<crate::attachments::SentFile>,
+    ) -> u64 {
         let mut item = Item::new(Kind::User, text.trim());
         item.source = Some(source);
         item.delivery = Some(delivery);
         item.images = images;
+        item.files = files;
         let mut state = self.lock();
         if delivery == Delivery::Turn {
             state.turn = Some(state.turn.map_or(1, |turn| turn + 1));
@@ -2301,10 +2322,23 @@ impl Feed {
         seq: u64,
         images: Vec<crate::images::ImageRef>,
     ) -> u64 {
+        self.note_with_files(text, source, seq, images, Vec::new())
+    }
+
+    /// The [`note`](Self::note) `text`, with the page's files it sends too.
+    pub fn note_with_files(
+        &self,
+        text: &str,
+        source: Source,
+        seq: u64,
+        images: Vec<crate::images::ImageRef>,
+        files: Vec<crate::attachments::SentFile>,
+    ) -> u64 {
         let mut item = Item::new(Kind::User, text.trim());
         item.source = Some(source);
         item.delivery = Some(Delivery::Note);
         item.images = images;
+        item.files = files;
         let mut state = self.lock();
         // (The agent may have read it before it came here.)
         item.pending = match state.early_reads.iter().position(|read| *read == seq) {

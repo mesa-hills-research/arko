@@ -57,6 +57,75 @@ pub struct FileRef {
     pub lines: Option<u64>,
 }
 
+/// A file a user's message carried, as its transcript shows it
+/// ([`crate::remote::Item::files`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentFile {
+    pub file: FileRef,
+    /// It went to the model as an image, so the message's images show it
+    /// too.
+    pub shown: bool,
+}
+
+/// The files of `text`'s attachments block, as the transcript shows them,
+/// and the text after it, or `None` when it starts with none. A text that
+/// went inline has its lines counted from the block.
+pub(crate) fn sent_files(text: &str) -> Option<(Vec<SentFile>, &str)> {
+    let (entries, typed) = split_block(text)?;
+    let files = entries
+        .into_iter()
+        .map(|entry| SentFile {
+            file: FileRef {
+                lines: entry.lines.or_else(|| entry.inline.as_deref().map(lines)),
+                name: entry.name,
+                mime: entry.mime,
+                bytes: entry.bytes,
+                path: PathBuf::from(entry.path),
+            },
+            shown: entry.shown,
+        })
+        .collect();
+    Some((files, typed))
+}
+
+/// The user's `item` restored from what the agent read, as it was live. Its
+/// text loses the attachments block it starts with, its files come from the
+/// block, and its images are named as their files. (The last images are
+/// the message's own, after those of notes it carried.)
+pub(crate) fn restore_files(item: &mut crate::remote::Item) {
+    if item.kind != crate::remote::Kind::User {
+        return;
+    }
+    let Some((files, typed)) = sent_files(&item.text) else {
+        return;
+    };
+    let shown = files.iter().filter(|sent| sent.shown).rev();
+    for (image, sent) in item.images.iter_mut().rev().zip(shown) {
+        image.label = sent.file.name.clone();
+    }
+    item.text = typed.trim().to_string();
+    item.files = files;
+}
+
+/// The lines of `text`, a last line without a line break counted too, as
+/// an upload counts a text file's.
+pub(crate) fn lines(text: &str) -> u64 {
+    let breaks = text.bytes().filter(|byte| *byte == b'\n').count() as u64;
+    breaks + u64::from(!text.is_empty() && !text.ends_with('\n'))
+}
+
+impl FileRef {
+    /// The file as a line of the terminal's transcript, its path (the home
+    /// folder as `~`) and its size.
+    pub fn line(&self) -> String {
+        format!(
+            "{} · {}",
+            crate::skill_install::with_tilde(&self.path, std::env::home_dir().as_deref()),
+            crate::remote::protocol::size(self.bytes)
+        )
+    }
+}
+
 /// A file sent with a message, with its bytes when it may go to the model
 /// (an image up to [`MAX_IMAGE_BYTES`], a text up to [`INLINE_MAX_BYTES`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +145,8 @@ pub(crate) struct Routed {
     /// What to tell the user of the files that went otherwise than they
     /// might think, such as an image saved because the model takes none.
     pub words: Option<String>,
+    /// Every file, in order, as the message's transcript shows it.
+    pub files: Vec<SentFile>,
 }
 
 /// How `files`, sent with `typed`, go to a session on `model`, which is a
@@ -120,6 +191,10 @@ pub(crate) fn route(
             )),
             _ => {}
         }
+        routed.files.push(SentFile {
+            file: attached.file.clone(),
+            shown: entry.shown,
+        });
         if entry.shown {
             routed.images.push(attached);
         }
@@ -990,6 +1065,74 @@ mod tests {
             "{refused}"
         );
         assert!(route(&model(false), true, "", vec![image("a.png")]).is_err());
+    }
+
+    /// A message's files read back from its block as they were sent, an
+    /// inline text's lines counted from its text, and a restored item shows
+    /// them in place of the block, its image named as its file.
+    #[test]
+    fn a_messages_files_read_back_from_its_block() {
+        let files = vec![
+            image("bug.png"),
+            text("notes.md", "# Notes\nThe gap is 13 px."),
+            saved("RPReplay.MP4", "video/mp4"),
+        ];
+        let routed = route(&model(true), false, "Look.", files).unwrap();
+        assert_eq!(
+            routed
+                .files
+                .iter()
+                .map(|sent| (sent.file.name.as_str(), sent.shown))
+                .collect::<Vec<_>>(),
+            [
+                ("bug.png", true),
+                ("notes.md", false),
+                ("RPReplay.MP4", false)
+            ]
+        );
+        let read = with_block(&routed.block, "Look.");
+        let (back, typed) = sent_files(&read).unwrap();
+        assert_eq!(typed, "Look.");
+        assert_eq!(back, routed.files);
+        assert_eq!(back[1].file.lines, Some(2));
+        assert_eq!(sent_files("Look."), None);
+        let mut item = crate::remote::Item::new(crate::remote::Kind::User, read);
+        let other = crate::images::Images::default();
+        item.images = vec![
+            other.add(pixel(), "image/png", "image"),
+            other.add(pixel(), "image/png", "image"),
+        ];
+        restore_files(&mut item);
+        assert_eq!(item.text, "Look.");
+        assert_eq!(item.files, routed.files);
+        // (The first image is a note's, the last the message's own.)
+        assert_eq!(item.images[0].label, "image");
+        assert_eq!(item.images[1].label, "bug.png");
+        // Only the user's items, and only those with a block.
+        let mut reply = crate::remote::Item::new(crate::remote::Kind::Reply, routed.block.clone());
+        restore_files(&mut reply);
+        assert!(reply.files.is_empty());
+        assert_eq!(lines("one\ntwo\n"), 2);
+        assert_eq!(lines("one\ntwo"), 2);
+        assert_eq!(lines(""), 0);
+    }
+
+    /// A file's line in the terminal's transcript is its path, the home
+    /// folder as `~`, and its size.
+    #[test]
+    fn a_files_line_is_its_path_and_size() {
+        let mut file = file("RPReplay.MP4", "video/mp4", 48_200_000);
+        assert_eq!(
+            file.line(),
+            "/work/.arko/attachments/RPReplay.MP4 · 46.0 MB"
+        );
+        if let Some(home) = std::env::home_dir() {
+            file.path = home.join("project/.arko/attachments/RPReplay.MP4");
+            assert_eq!(
+                file.line(),
+                "~/project/.arko/attachments/RPReplay.MP4 · 46.0 MB"
+            );
+        }
     }
 
     #[test]

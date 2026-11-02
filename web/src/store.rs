@@ -320,6 +320,7 @@ pub mod tests {
             code: Vec::new(),
             questions: None,
             images: Vec::new(),
+            files: Vec::new(),
         }
     }
 

@@ -156,6 +156,72 @@ async fn a_pages_files_reach_the_agent_as_their_kinds_say() {
     assert!(body.contains(&image), "the image goes to the model");
 }
 
+/// A page's message shows its files the same live and restored from what
+/// the agent read. Live, its item has every file in order, the image among
+/// them, and the text as typed. Restored, the attachments block becomes the
+/// same files, and the image is named as its file.
+#[tokio::test]
+async fn a_pages_files_show_the_same_live_and_restored() {
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let server = keeping(&bodies, None).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let feed = harness.feed.clone();
+    let actions = harness.remote_actions.clone();
+    let dir = temp.path().join("work").join(".arko").join("attachments");
+    let live: Arc<Mutex<Option<crate::remote::Item>>> = Arc::default();
+    let shown = live.clone();
+    let client = async move {
+        let message = Action::Message {
+            text: "The spacing is wrong.".into(),
+            files: three_files(&dir),
+        };
+        let Verdict::Accepted { item, .. } = page_send(&actions, message).await else {
+            panic!("accepted");
+        };
+        *lock(&shown) = feed.main_item(item.unwrap());
+        until(|| !feed.activity().working).await;
+        sender.send(Input::Eof).unwrap();
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    let live = lock(&live).take().unwrap();
+    assert_eq!(live.text, "The spacing is wrong.");
+    assert_eq!(
+        live.files
+            .iter()
+            .map(|sent| (sent.file.name.as_str(), sent.shown))
+            .collect::<Vec<_>>(),
+        [("bug.png", true), ("notes.md", false), ("RPReplay.MP4", false)]
+    );
+    let Conversation::Answered(result) = &harness.conversation else {
+        panic!("answered");
+    };
+    let task = result.task().unwrap();
+    let restored = crate::remote::history(
+        &task.conversation.messages,
+        task.agent_config.tool_config.ends_task_with_text(),
+        &harness.images,
+    );
+    let user = restored
+        .iter()
+        .find(|item| item.kind == crate::remote::Kind::User)
+        .unwrap();
+    assert_eq!(user.text, live.text);
+    assert_eq!(user.files, live.files);
+    let images = |item: &crate::remote::Item| {
+        item.images
+            .iter()
+            .map(|image| (image.label.clone(), image.mime.clone(), image.bytes))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(images(user), images(&live));
+}
+
 /// With a model that takes no images, the image is saved as a file, the
 /// send says so, and the model gets its path instead. A chat refuses a
 /// video, which it has no tools to read.
@@ -271,10 +337,15 @@ async fn files_sent_during_a_turn_go_with_its_note() {
                 attached(&dir, "bug.png", Kind::Image, "image/png", &one_pixel()),
             ],
         };
-        let Verdict::Accepted { delivery, .. } = page_send(&actions, message).await else {
+        let Verdict::Accepted { delivery, item, .. } = page_send(&actions, message).await else {
             panic!("accepted");
         };
         assert_eq!(delivery, Delivery::Note);
+        // Its note shows what was typed, and its files.
+        let note = feed.main_item(item.unwrap()).unwrap();
+        assert_eq!(note.text, "Also this log.");
+        let names: Vec<&str> = note.files.iter().map(|sent| sent.file.name.as_str()).collect();
+        assert_eq!(names, ["server.log", "bug.png"]);
         held.notify_one();
         until(|| !feed.activity().working && lock(&kept).len() >= 2).await;
         sender.send(Input::Eof).unwrap();

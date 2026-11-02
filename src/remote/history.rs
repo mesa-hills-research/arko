@@ -213,6 +213,7 @@ fn items_from(
         }
         for item in &mut items[start..] {
             item.turn = turns[index];
+            crate::attachments::restore_files(item);
         }
     }
     items
