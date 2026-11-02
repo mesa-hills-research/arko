@@ -22,6 +22,7 @@ impl Server {
         _actions: mpsc::UnboundedSender<Action>,
         _meter: Arc<dyn Meter>,
         _sessions_file: Option<std::path::PathBuf>,
+        _project: super::Project,
     ) -> std::io::Result<Self> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,

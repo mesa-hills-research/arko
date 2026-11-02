@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub(crate) use crate::remote::protocol::FileKind as Kind;
+pub use crate::remote::protocol::FileKind as Kind;
 
 /// The folder in the project's `.arko` folder that holds the files.
 pub(crate) const FOLDER: &str = "attachments";
@@ -46,7 +46,7 @@ const SHOWN: &str = "as an image after this message";
 
 /// A file saved in the attachments folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FileRef {
+pub struct FileRef {
     /// Its name in the folder.
     pub name: String,
     /// Its MIME type, from its first bytes.
@@ -60,7 +60,7 @@ pub(crate) struct FileRef {
 /// A file sent with a message, with its bytes when it may go to the model
 /// (an image up to [`MAX_IMAGE_BYTES`], a text up to [`INLINE_MAX_BYTES`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Attached {
+pub struct Attached {
     pub file: FileRef,
     pub kind: Kind,
     pub content: Option<Arc<[u8]>>,
@@ -259,6 +259,12 @@ pub(crate) fn split_block(text: &str) -> Option<(Vec<Entry>, &str)> {
     }
 }
 
+/// What the user typed of `text`, a message the agent read, without the
+/// attachments block it may start with.
+pub(crate) fn typed(text: &str) -> &str {
+    split_block(text).map_or(text, |(_, typed)| typed)
+}
+
 /// The `name="value"` pairs of `text`, unescaped.
 fn parse_attributes(mut text: &str) -> Option<Vec<(&str, String)>> {
     let mut pairs = Vec::new();
@@ -382,10 +388,51 @@ pub(crate) fn numbered_name(name: &str, n: u32) -> String {
 /// file the bytes don't tell. `head` is text when it is UTF-8 (a character
 /// cut at its end counts) without NUL bytes.
 pub(crate) fn sniff(head: &[u8], name: &str) -> (Kind, &'static str) {
+    if let Some(signed) = signature(head, name) {
+        return signed;
+    }
+    if is_text(head) {
+        return (Kind::Text, text_type(name));
+    }
+    (
+        Kind::File,
+        match extension(name).as_str() {
+            "mov" => "video/quicktime",
+            "mp4" | "m4v" => "video/mp4",
+            "mp3" => "audio/mpeg",
+            "m4a" => "audio/mp4",
+            _ => "application/octet-stream",
+        },
+    )
+}
+
+/// The type a file the page sent is downloaded as. Only an image, a video
+/// or a PDF its bytes name is served as itself, a text as plain text, and
+/// anything else (HTML, SVG and scripts included) as bytes.
+pub(crate) fn download_type(head: &[u8], name: &str) -> &'static str {
+    const SERVED: [&str; 7] = [
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "video/mp4",
+        "video/quicktime",
+        "application/pdf",
+    ];
+    match signature(head, name) {
+        Some((_, mime)) if SERVED.contains(&mime) => mime,
+        Some(_) => "application/octet-stream",
+        None if is_text(head) => "text/plain; charset=utf-8",
+        None => "application/octet-stream",
+    }
+}
+
+/// The kind and type the signature `head` starts with names, if any.
+fn signature(head: &[u8], name: &str) -> Option<(Kind, &'static str)> {
     let starts = |magic: &[u8]| head.starts_with(magic);
     let at = |offset: usize, magic: &[u8]| head.get(offset..offset + magic.len()) == Some(magic);
-    let image = |mime| (Kind::Image, mime);
-    let file = |mime| (Kind::File, mime);
+    let image = |mime| Some((Kind::Image, mime));
+    let file = |mime| Some((Kind::File, mime));
     if starts(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
         return image("image/png");
     }
@@ -463,16 +510,7 @@ pub(crate) fn sniff(head: &[u8], name: &str) -> (Kind, &'static str) {
     if starts(b"BM") && at(6, &[0, 0, 0, 0]) {
         return file("image/bmp");
     }
-    if is_text(head) {
-        return (Kind::Text, text_type(name));
-    }
-    file(match extension(name).as_str() {
-        "mov" => "video/quicktime",
-        "mp4" | "m4v" => "video/mp4",
-        "mp3" => "audio/mpeg",
-        "m4a" => "audio/mp4",
-        _ => "application/octet-stream",
-    })
+    None
 }
 
 /// Whether `head` reads as text, UTF-8 without NUL bytes, its last
@@ -680,6 +718,32 @@ mod tests {
         ];
         for (head, name, kind, mime) in cases {
             assert_eq!(sniff(&head, name), (kind, mime), "{name} {head:?}");
+        }
+    }
+
+    #[test]
+    fn a_download_is_served_as_itself_only_when_its_bytes_say_so() {
+        let mp4 = b"\0\0\0\x18ftypisom\0\0\0\0isommp41";
+        let not_mp4 = [0u8, 7, 14, 21, 28, 35];
+        let cases: [(&[u8], &str, &str); 7] = [
+            (mp4, "RPReplay.MP4", "video/mp4"),
+            (&not_mp4, "RPReplay.MP4", "application/octet-stream"),
+            (b"%PDF-1.7\n", "x.bin", "application/pdf"),
+            (
+                b"<html><script>alert(1)</script>",
+                "page.html",
+                "text/plain; charset=utf-8",
+            ),
+            (
+                b"<svg onload=\"alert(1)\"/>",
+                "x.svg",
+                "text/plain; charset=utf-8",
+            ),
+            (b"PK\x03\x04....", "a.zip", "application/octet-stream"),
+            (b"\x89PNG\r\n\x1a\n....", "a.png", "image/png"),
+        ];
+        for (head, name, served) in cases {
+            assert_eq!(download_type(head, name), served, "{name}");
         }
     }
 

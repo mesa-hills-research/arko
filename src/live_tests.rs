@@ -198,7 +198,7 @@ async fn outside_access_changed_from_the_web_page_is_announced() {
     let gauges = harness.gauges.clone();
     let outside = harness.outside.clone();
     let typing = async move {
-        actions.send(Action::Message("/outside on".into())).unwrap();
+        actions.send(Action::message("/outside on")).unwrap();
         until(|| {
             says(
                 &feed,
@@ -208,13 +208,13 @@ async fn outside_access_changed_from_the_web_page_is_announced() {
         })
         .await;
         assert!(remote::Meter::read(gauges.as_ref()).settings.outside);
-        actions.send(Action::Message("/outside on".into())).unwrap();
+        actions.send(Action::message("/outside on")).unwrap();
         actions
-            .send(Action::Message("/outside sideways".into()))
+            .send(Action::message("/outside sideways"))
             .unwrap();
-        actions.send(Action::Message("/outside".into())).unwrap();
+        actions.send(Action::message("/outside")).unwrap();
         actions
-            .send(Action::Message("/outside off".into()))
+            .send(Action::message("/outside off"))
             .unwrap();
         until(|| {
             says(
@@ -2275,7 +2275,7 @@ async fn the_users_message_to_a_worker_reaches_that_worker_only() {
                     continue_uncached: false,
                 }))
                 .unwrap();
-            actions.send(Action::Message(line(SENT[2]))).unwrap();
+            actions.send(Action::message(line(SENT[2]))).unwrap();
             until(|| to_r1(&feed).len() == SENT.len()).await;
             go.send(true).unwrap();
             sender

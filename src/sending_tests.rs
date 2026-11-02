@@ -591,7 +591,7 @@ async fn refusals_read_as_before_without_a_verdict_and_as_kinds_with_one() {
             ),
             (
                 Phase::Idle,
-                Event::Remote(Action::Message("/exit".into())),
+                Event::Remote(Action::message("/exit")),
                 true,
                 Some(RefusalKind::TerminalOnly),
                 Some("/exit works only at the terminal.".into()),

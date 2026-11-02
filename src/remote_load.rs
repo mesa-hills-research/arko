@@ -391,6 +391,10 @@ async fn remote_page_load() {
         actions,
         meter.clone(),
         None,
+        crate::remote::Project {
+            workspace: std::env::temp_dir().join("arko-load-work"),
+            root: std::env::temp_dir().join("arko-load-root"),
+        },
     )
     .unwrap();
     // The page's messages become the user's items, as a session's would.
@@ -398,7 +402,7 @@ async fn remote_page_load() {
         let feed = feed.clone();
         tokio::spawn(async move {
             while let Some(action) = received.recv().await {
-                if let crate::remote::Action::Message(text) = action {
+                if let crate::remote::Action::Message { text, .. } = action {
                     feed.user(&text, Source::Web, Delivery::Note);
                 }
             }

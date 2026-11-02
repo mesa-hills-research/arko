@@ -26,7 +26,7 @@ use crate::openings::{Opening, Subjects};
 use crate::remote::{
     Action, Confirm, Delivery, Level, Partial, REFRESH_MESSAGE, RefusalKind, Source,
 };
-use crate::sending::{Admitted, Phase, Read, Reply};
+use crate::sending::{Admitted, Phase, Read, Reply, joined};
 use crate::session::{Mode, Session, Settings};
 use crate::shell::{Shell, ShellTool};
 use crate::status::Gauges;
@@ -1560,38 +1560,41 @@ impl Harness {
                     Read::Done | Read::Other => continue,
                 },
             };
-            let (text, source, attached, mut reply) = match self.admit(sent, Phase::Idle) {
-                None => continue,
-                Some(Admitted::Command {
-                    command,
-                    source,
-                    confirmed,
-                    reply,
-                }) => {
-                    if self
-                        .run_command(&command, source, Phase::Idle, input, reply, confirmed)
-                        .await
-                    {
-                        break;
+            let (text, read, files_words, source, attached, mut reply) =
+                match self.admit(sent, Phase::Idle) {
+                    None => continue,
+                    Some(Admitted::Command {
+                        command,
+                        source,
+                        confirmed,
+                        reply,
+                    }) => {
+                        if self
+                            .run_command(&command, source, Phase::Idle, input, reply, confirmed)
+                            .await
+                        {
+                            break;
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                Some(Admitted::Message {
-                    text,
-                    source,
-                    attached,
-                    reply,
-                }) => (text, source, attached, reply),
-            };
+                    Some(Admitted::Message {
+                        text,
+                        read,
+                        files_words,
+                        source,
+                        attached,
+                        reply,
+                    }) => (text, read, files_words, source, attached, reply),
+                };
             let text = text.as_str();
             let shown = std::mem::take(&mut self.pending_refs);
             // What the user typed that the agent didn't read goes first, as
             // the message carries it.
-            self.feed.notes_sent(&self.unread);
+            self.feed.notes_sent(&typed_parts(&self.unread));
             let item = self.feed.user_with(text, source, Delivery::Turn, shown);
             // A message that answers questions reaches the agent as their
             // note, which a turn of its own delivers.
-            let (prompt, delivery, not_posted) = match self.reply_text(text, &attached) {
+            let (prompt, delivery, not_posted) = match self.reply_text(&read, &attached) {
                 Replied::Plain { text: labelled, .. } => {
                     self.labelled = Some(labelled);
                     (Prompt::User(text.to_string()), Delivery::Turn, None)
@@ -1601,7 +1604,7 @@ impl Harness {
                 }
             };
             // It went, so the turn starts with it.
-            let partial = self.partly(&reply, Vec::new(), not_posted);
+            let partial = self.partly(&reply, Vec::new(), joined(not_posted, files_words));
             reply.accept_partly(delivery, Some(item), partial);
             if let TurnEnd::Exit = self.turn(prompt, input).await {
                 break;
@@ -1880,6 +1883,10 @@ impl Harness {
                 harness.remote_actions.clone(),
                 harness.gauges.clone(),
                 Some(harness.session.dir.join(remote::SESSIONS_FILE)),
+                remote::Project {
+                    workspace: harness.settings.workspace.clone(),
+                    root: harness.root.clone(),
+                },
             )
         };
         let server = match served {
@@ -3956,7 +3963,7 @@ impl Harness {
                             Read::Done | Read::Other => continue,
                         },
                     };
-                    let (text, source, attached, mut reply) = match self.admit(sent, Phase::Turn) {
+                    let (text, read, files_words, source, attached, mut reply) = match self.admit(sent, Phase::Turn) {
                         None => continue,
                         Some(Admitted::Command {
                             command,
@@ -3975,21 +3982,24 @@ impl Harness {
                         }
                         Some(Admitted::Message {
                             text,
+                            read,
+                            files_words,
                             source,
                             attached,
                             reply,
-                        }) => (text, source, attached, reply),
+                        }) => (text, read, files_words, source, attached, reply),
                     };
                     // The images an app's message sends go with its note.
                     let images = std::mem::take(&mut self.pending_images);
                     let shown = std::mem::take(&mut self.pending_refs);
                     // A message that answers questions the agent waits for
                     // is the answer.
-                    match self.reply_text(&text, &attached) {
+                    match self.reply_text(&read, &attached) {
                         Replied::Answered { not_posted } => {
                             self.output.echo(&self.output.dim("  ✎ answered"));
                             let item = self.feed.user(&text, source, Delivery::Answer);
-                            let partial = self.partly(&reply, Vec::new(), not_posted);
+                            let partial =
+                                self.partly(&reply, Vec::new(), joined(not_posted, files_words));
                             reply.accept_partly(Delivery::Answer, Some(item), partial);
                         }
                         // One that answers questions went as their note, which
@@ -4000,7 +4010,7 @@ impl Harness {
                                 "  ✎ added to the task, and the agent reads it at its next step",
                             ));
                             let item = self.feed.user(&text, source, Delivery::Note);
-                            let mut not_passed = not_posted;
+                            let mut not_passed = joined(not_posted, files_words);
                             if !images.is_empty()
                                 && let Some(run) = self.feed.questions_conversation()
                                 && let Err(error) = self.post_users_note(
@@ -4029,7 +4039,8 @@ impl Harness {
                         Replied::Plain { text: labelled, .. } if self.queue_lines => {
                             let item = self.feed.user(&text, source, Delivery::Queued);
                             queued.push((text, labelled));
-                            reply.accept(Delivery::Queued, Some(item));
+                            let partial = self.partly(&reply, Vec::new(), files_words);
+                            reply.accept_partly(Delivery::Queued, Some(item), partial);
                         }
                         Replied::Plain { text: labelled, settled } => {
                             let note = Note::new(labelled).to([MAIN]).once().images(images);
@@ -4039,8 +4050,11 @@ impl Harness {
                                         "  ✎ added to the task, and the agent reads it at its next step",
                                     ));
                                     let item = self.feed.note(&text, source, seq.seq, shown);
-                                    notes.push((seq.seq, text));
-                                    reply.accept(Delivery::Note, Some(item));
+                                    // (One the agent doesn't get to read goes
+                                    // with the next message as it reads it.)
+                                    notes.push((seq.seq, read));
+                                    let partial = self.partly(&reply, Vec::new(), files_words);
+                                    reply.accept_partly(Delivery::Note, Some(item), partial);
                                 }
                                 // Refused only when nothing of it happened. One
                                 // that answered Arko's own question did that.
@@ -4721,7 +4735,7 @@ impl Harness {
                     self.page_job_action(action)
                 }
                 Event::Remote(
-                    Action::Message(_)
+                    Action::Message { .. }
                     | Action::Continue(_)
                     | Action::Answer { .. }
                     | Action::Reply { .. }
@@ -4802,7 +4816,7 @@ impl Harness {
         }
         if !self.unread.is_empty() {
             let unread = std::mem::take(&mut self.unread);
-            self.feed.notes_sent(&unread);
+            self.feed.notes_sent(&typed_parts(&unread));
             parts.push(format!(
                 "# What I typed during your last turn, which you didn't get to read\n\n{}",
                 unread
@@ -5063,6 +5077,15 @@ pub(crate) fn conversation_of(workflow: &Workflow, run: Option<uuid::Uuid>) -> C
     }
 }
 
+/// What the user typed of each of `texts`, notes as the agent reads them,
+/// as the transcript shows them (without their attachments block).
+fn typed_parts(texts: &[String]) -> Vec<String> {
+    texts
+        .iter()
+        .map(|text| crate::attachments::typed(text).to_string())
+        .collect()
+}
+
 /// The command `text` is, if it is one, meaning a command's name, alone or with
 /// what it takes, as the registry ([`commands::find`]) says. That holds for
 /// the commands that also run while the agent works ([`LIVE_COMMANDS`]), so
@@ -5304,6 +5327,13 @@ pub(crate) mod tests {
     mod sends {
         use super::*;
         include!("sending_tests.rs");
+    }
+
+    /// The end-to-end tests of the files the web page sends, in their own
+    /// file.
+    mod attachments {
+        use super::*;
+        include!("attachments_tests.rs");
     }
 
     /// `/keys`'s end-to-end tests, in their own file.
@@ -10023,7 +10053,7 @@ pub(crate) mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(message, Action::Message("Thanks.".into()));
+        assert_eq!(message, Action::message("Thanks."));
         reply.accept(Delivery::Turn, None);
         assert_eq!(
             thanks.await.unwrap(),
@@ -10129,8 +10159,8 @@ pub(crate) mod tests {
         let actions = harness.remote_actions.clone();
         let feed = harness.feed.clone();
         let typing = async move {
-            actions.send(Action::Message("/exit".into())).unwrap();
-            actions.send(Action::Message("/workers".into())).unwrap();
+            actions.send(Action::message("/exit")).unwrap();
+            actions.send(Action::message("/workers")).unwrap();
             until(|| shown(&feed).iter().any(|item| item.0 == "output")).await;
             sender.send(Input::Eof).unwrap();
         };

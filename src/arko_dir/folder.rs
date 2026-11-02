@@ -252,6 +252,7 @@ impl Folder {
     /// The new file `name`, opened to write, which its owner alone may read
     /// where the system has permissions. Fails when anything, a link too, is
     /// there.
+    #[cfg(feature = "remote")]
     pub(crate) fn create_file(&self, name: impl AsRef<OsStr>) -> io::Result<std::fs::File> {
         let name = name.as_ref();
         #[cfg(unix)]

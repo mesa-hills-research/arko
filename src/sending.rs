@@ -19,6 +19,14 @@ use crate::remote::{
 };
 use crate::ui::{self, Input};
 
+/// The sentences `first` and `then` together, either of which may be none.
+pub(crate) fn joined(first: Option<String>, then: Option<String>) -> Option<String> {
+    match (first, then) {
+        (Some(first), Some(then)) => Some(format!("{first} {then}")),
+        (first, then) => first.or(then),
+    }
+}
+
 /// What the session is doing as a send comes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -118,6 +126,9 @@ pub(crate) struct Sent {
     /// An app's message's images, which [`Harness::admit`] attaches. `None`
     /// for what isn't an app's message.
     images: Option<Vec<ui::Attachment>>,
+    /// The files the web page sent with it, which [`Harness::admit`] routes
+    /// ([`crate::attachments::route`]).
+    files: Vec<crate::attachments::Attached>,
     /// The user agreed, as they sent it, to continue a worker whose prompt
     /// cache expired or isn't known. It holds for this send alone.
     confirmed: bool,
@@ -137,6 +148,12 @@ pub(crate) enum Admitted {
     /// A message, trimmed, with the open questions it answers.
     Message {
         text: String,
+        /// What the agent reads, the attachments block of its files, if it
+        /// has any, before `text`.
+        read: String,
+        /// What to tell the user of files that went otherwise than they
+        /// might think.
+        files_words: Option<String>,
         source: Source,
         attached: Vec<String>,
         reply: Reply,
@@ -174,6 +191,7 @@ impl Harness {
                 source,
                 attached,
                 images: None,
+                files: Vec::new(),
                 confirmed: false,
                 reply,
             })
@@ -188,6 +206,7 @@ impl Harness {
                 source: self.input_source,
                 attached: message.answers,
                 images: Some(message.images),
+                files: Vec::new(),
                 confirmed: message.continue_uncached,
                 reply,
             }),
@@ -201,9 +220,17 @@ impl Harness {
                 };
                 sent(text, self.input_source, attached, reply)
             }
-            Event::Remote(Action::Message(text)) => {
+            Event::Remote(Action::Message { text, files }) => {
                 self.echo_web(&text);
-                sent(text, Source::Web, Vec::new(), reply)
+                Read::Sent(Sent {
+                    line: text,
+                    source: Source::Web,
+                    attached: Vec::new(),
+                    images: None,
+                    files,
+                    confirmed: false,
+                    reply,
+                })
             }
             Event::Remote(Action::Continue(line)) => {
                 self.echo_web(&line);
@@ -212,13 +239,26 @@ impl Harness {
                     source: Source::Web,
                     attached: Vec::new(),
                     images: None,
+                    files: Vec::new(),
                     confirmed: true,
                     reply,
                 })
             }
-            Event::Remote(Action::Reply { text, answers }) => {
+            Event::Remote(Action::Reply {
+                text,
+                answers,
+                files,
+            }) => {
                 self.echo_web(&text);
-                sent(text, Source::Web, answers, reply)
+                Read::Sent(Sent {
+                    line: text,
+                    source: Source::Web,
+                    attached: answers,
+                    images: None,
+                    files,
+                    confirmed: false,
+                    reply,
+                })
             }
             Event::Remote(Action::Answer { question, text }) => {
                 let attached = match reporting {
@@ -260,6 +300,7 @@ impl Harness {
             source,
             attached,
             images,
+            files,
             confirmed,
             mut reply,
         } = sent;
@@ -283,12 +324,31 @@ impl Harness {
             Phase::Idle | Phase::Turn => !self.pending_images.is_empty(),
         };
         let text = line.trim();
-        if text.is_empty() && !has_images {
+        if text.is_empty() && !has_images && files.is_empty() {
             reply.refuse(RefusalKind::Empty, "There is nothing to send.");
             return None;
         }
         self.user_present();
         if let Some(command) = command(text) {
+            // (The page's files go with messages only. They stay uploaded,
+            // so the page can send them again.)
+            if !files.is_empty() {
+                self.drop_images(phase);
+                let (kind, words) = match split_live_command(command) {
+                    Some(("/message", _)) => (
+                        RefusalKind::WorkerTextOnly,
+                        "A message to a worker takes text only. Remove the attachments, or send them to Arko.",
+                    ),
+                    _ => (
+                        RefusalKind::Files,
+                        "A command takes no attachments. Remove them, or send them with a message.",
+                    ),
+                };
+                if !reply.refuse(kind, words) {
+                    self.say(Level::Warn, words);
+                }
+                return None;
+            }
             // (A send without a verdict to come drops the images, as it
             // always did.)
             if has_images
@@ -335,9 +395,25 @@ impl Harness {
             }
             return None;
         }
+        // The page's files go as their kinds and the model say, and the
+        // agent reads their block before the text.
+        let (read, files_words) = match files.is_empty() {
+            true => (text.to_string(), None),
+            false => match self.attach_files(text, files) {
+                Ok(routed) => routed,
+                Err(why) => {
+                    self.drop_images(phase);
+                    if !reply.refuse(RefusalKind::Files, &why) {
+                        self.say(Level::Warn, &why);
+                    }
+                    return None;
+                }
+            },
+        };
         // An answer too long to send isn't sent, and its questions stay
         // open.
-        if let Some(refusal) = self.reply_refused(text, &attached) {
+        if let Some(refusal) = self.reply_refused(&read, &attached) {
+            self.drop_images(phase);
             if !reply.refuse(RefusalKind::TooLong, &refusal) {
                 self.say(Level::Warn, &refusal);
             }
@@ -345,10 +421,37 @@ impl Harness {
         }
         Some(Admitted::Message {
             text: text.to_string(),
+            read,
+            files_words,
             source,
             attached,
             reply,
         })
+    }
+
+    /// Routes the files the page sent with `typed` for the main agent's
+    /// model ([`crate::attachments::route`]). The images that go to the
+    /// model wait for the message's turn or note, kept for the transcript
+    /// too. Gives what the agent reads, the files' block and then `typed`,
+    /// and what to tell the user of files that went otherwise than they
+    /// might think, or why the files can't go.
+    fn attach_files(
+        &mut self,
+        typed: &str,
+        files: Vec<crate::attachments::Attached>,
+    ) -> Result<(String, Option<String>), String> {
+        let chat = self.settings.mode == crate::session::Mode::Chat;
+        let model = &self.main_config.llm_config.model;
+        let routed = crate::attachments::route(model, chat, typed, files)?;
+        for image in routed.images {
+            let content = image.content.unwrap_or_else(|| std::sync::Arc::from([]));
+            self.pending_images
+                .push(arko_ai::Image::from_bytes(&content, &image.file.mime));
+            let shown = self.images.add(content, &image.file.mime, &image.file.name);
+            self.pending_refs.push(shown);
+        }
+        let read = crate::attachments::with_block(&routed.block, typed);
+        Ok((read, routed.words))
     }
 
     /// Forgets the images an app's message attached, when it isn't one

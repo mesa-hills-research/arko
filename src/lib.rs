@@ -35,7 +35,9 @@ mod agents;
 pub mod approvals;
 pub mod arko_dir;
 mod asking;
-mod attachments;
+// (Only the web page's server sends files, and names and reads them.)
+#[cfg_attr(not(feature = "remote"), allow(dead_code))]
+pub mod attachments;
 mod billing;
 pub mod builtin_skills;
 mod cache_memory;
