@@ -129,10 +129,9 @@ pub fn moves_rows(old: &ItemData, new: &ItemData, view: View) -> bool {
         || old.started.is_some() != new.started.is_some()
         || old.from.is_some() != new.from.is_some()
         || serious(old) != serious(new)
-        // A call's status moves a Messages count.
-        || (view == View::Messages && old.status != new.status)
-        // What a call did and how it went words its Quiet row.
-        || (view == View::Quiet
+        // A call's status moves a Messages count, and what a call did and
+        // how it went words its Quiet row, which a count that's open shows.
+        || (view != View::Full
             && (old.status != new.status
                 || old.act != new.act
                 || old.outcome != new.outcome
@@ -204,19 +203,29 @@ fn place(view: View, item: &ItemData) -> Place {
 /// transcript instead of the main one.
 #[cfg(test)]
 pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
-    layout_sealed(all, view, worker, &HashSet::new(), &HashSet::new())
+    layout_sealed(
+        all,
+        view,
+        worker,
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashSet::new(),
+    )
 }
 
 /// [`layout`], where `sealed` are the calls whose Quiet rows of one call
-/// the reader opened, which keep their form ([`quiet::Call::sealed`]), and
+/// the reader opened, which keep their form ([`quiet::Call::sealed`]),
 /// `nested` the workers that a worker started, whose reports and messages
-/// go to their lead's view.
+/// go to their lead's view, and `counts_open` the turns whose count of
+/// calls the reader opened in Messages, by their first call. From that call
+/// on, such a turn's items show as Quiet shows them, each where it came.
 pub fn layout_sealed(
     all: &[ItemData],
     view: View,
     worker: Option<&str>,
     sealed: &HashSet<u64>,
     nested: &HashSet<String>,
+    counts_open: &HashSet<u64>,
 ) -> Vec<Row> {
     let items = pending_last(all);
     // A result shows under its call, which other items may have followed
@@ -235,6 +244,7 @@ pub fn layout_sealed(
     // A result whose call is gone shows where it came.
     let orphan = |item: &ItemData| item.call.is_some_and(|call| !ids.contains(&call));
     let mut counts: HashMap<Option<u64>, usize> = HashMap::new();
+    let mut opened: HashSet<Option<u64>> = HashSet::new();
     for item in &items {
         if placed.contains(&item.id) && !orphan(item) {
             continue;
@@ -256,37 +266,42 @@ pub fn layout_sealed(
             }
             None => (Place::Hidden, false),
         };
-        match place {
-            Place::Hidden => {}
-            Place::Row => {
-                rows.push(Row::Item(item.id, item.kind));
-                if with_results {
-                    for &result in results.get(&item.id).into_iter().flatten() {
-                        rows.push(Row::Item(result, Kind::Result));
-                    }
+        if let Place::Count = place {
+            let at = *counts.entry(item.turn).or_insert_with(|| {
+                rows.push(Row::Count {
+                    turn: item.turn,
+                    id: item.id,
+                    count: Count::default(),
+                });
+                if counts_open.contains(&item.id) {
+                    opened.insert(item.turn);
+                }
+                rows.len() - 1
+            });
+            if let Row::Count { count, .. } = &mut rows[at] {
+                count.calls += 1;
+                match item.status {
+                    Some(CallStatus::Failed) => count.failed += 1,
+                    Some(CallStatus::Running) => count.running += 1,
+                    _ => {}
                 }
             }
-            Place::Count => {
-                let at = *counts.entry(item.turn).or_insert_with(|| {
-                    rows.push(Row::Count {
-                        turn: item.turn,
-                        id: item.id,
-                        count: Count::default(),
-                    });
-                    rows.len() - 1
-                });
-                if let Row::Count { count, .. } = &mut rows[at] {
-                    count.calls += 1;
-                    match item.status {
-                        Some(CallStatus::Failed) => count.failed += 1,
-                        Some(CallStatus::Running) => count.running += 1,
-                        _ => {}
-                    }
+        }
+        let place = if with_results && opened.contains(&item.turn) {
+            self::place(View::Quiet, item)
+        } else {
+            place
+        };
+        if let Place::Row = place {
+            rows.push(Row::Item(item.id, item.kind));
+            if with_results {
+                for &result in results.get(&item.id).into_iter().flatten() {
+                    rows.push(Row::Item(result, Kind::Result));
                 }
             }
         }
     }
-    if view == View::Quiet {
+    if view == View::Quiet || !opened.is_empty() {
         rows = quiet_rows(rows, &items, sealed);
     }
     rows
@@ -510,22 +525,33 @@ pub fn motion(
 /// the Messages view alone shows the line for) it says what the call does,
 /// as its Quiet row would ("Waiting for r91…").
 pub fn working_label(store: &Store, worker: Option<&str>) -> String {
-    let agent = worker.unwrap_or(MAIN);
-    store
-        .items
-        .iter()
-        .rev()
-        .find(|item| {
-            item.agent == agent
-                && !item.pending
-                && item.kind == Kind::Call
-                && item.status == Some(CallStatus::Running)
-        })
+    running(store, worker)
         .and_then(|item| item.act.as_ref())
         .map_or_else(
             || "Working…".to_string(),
             |act| format!("{}…", quiet::doing(act)),
         )
+}
+
+/// The latest call of the agent of a view (`worker`, or the main agent)
+/// that runs.
+fn running<'a>(store: &'a Store, worker: Option<&str>) -> Option<&'a ItemData> {
+    let agent = worker.unwrap_or(MAIN);
+    store.items.iter().rev().find(|item| {
+        item.agent == agent
+            && !item.pending
+            && item.kind == Kind::Call
+            && item.status == Some(CallStatus::Running)
+    })
+}
+
+/// Whether the agent's call that runs has a row of its own among `rows`,
+/// which shows that it runs, as it does in Messages where its turn's count
+/// is open.
+pub fn running_shown(rows: &[Row], store: &Store, worker: Option<&str>) -> bool {
+    running(store, worker).is_some_and(|call| {
+        in_quiet_row(rows, call.id) || rows.contains(&Row::Item(call.id, Kind::Call))
+    })
 }
 
 /// Whether the item `id` is in a Quiet row of `rows` (a thinking after a
@@ -1007,6 +1033,96 @@ mod tests {
         assert_eq!(jump_label(&rows, &store, 5, &HashSet::new()), "Latest");
     }
 
+    /// A turn's count of calls that's open shows the turn's Quiet rows, each
+    /// where it came among what the agent said, with the thinking and the
+    /// results Quiet puts in them. Each turn keeps one count.
+    #[test]
+    fn a_turns_count_opens_to_its_quiet_rows_in_place() {
+        use crate::protocol::{Act, ActKind};
+        let read = |id: u64, path: &str, turn: u64| ItemData {
+            status: Some(CallStatus::Ok),
+            act: Some(Act {
+                kind: ActKind::Read,
+                target: path.into(),
+                ..Act::default()
+            }),
+            turn: Some(turn),
+            ..item(id, Kind::Call, MAIN, path)
+        };
+        let of_turn = |item: ItemData, turn: u64| ItemData {
+            turn: Some(turn),
+            ..item
+        };
+        let mut result = item(4, Kind::Result, MAIN, "fn main() {}");
+        result.call = Some(3);
+        let items = [
+            of_turn(item(1, Kind::User, MAIN, "Fix the parser"), 1),
+            read(2, "a.rs", 1),
+            read(3, "b.rs", 1),
+            of_turn(result, 1),
+            of_turn(item(5, Kind::Thinking, MAIN, "There."), 1),
+            of_turn(item(6, Kind::Text, MAIN, "Found it."), 1),
+            read(7, "c.rs", 1),
+            of_turn(item(8, Kind::Reply, MAIN, "Fixed."), 1),
+            of_turn(item(9, Kind::User, MAIN, "Thanks"), 2),
+            read(10, "d.rs", 2),
+        ];
+        let laid = |open: &[u64]| {
+            let open: HashSet<u64> = open.iter().copied().collect();
+            layout_sealed(
+                &items,
+                View::Messages,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+                &open,
+            )
+        };
+        let closed = ["i1", "c1:2", "i6", "i8", "i9", "c2:10"];
+        assert_eq!(ids(&laid(&[])), closed);
+        let open = laid(&[2]);
+        assert_eq!(
+            ids(&open),
+            ["i1", "c1:2", "q2", "i6", "q7", "i8", "i9", "c2:10"]
+        );
+        let Row::Quiet { row, .. } = &open[2] else {
+            panic!("{open:?}");
+        };
+        assert_eq!(row.words.text, "Read a.rs and b.rs");
+        assert_eq!(
+            ids(&row.calls),
+            ["i2", "i3", "i4", "i5"],
+            "its calls, a result and the thinking after them"
+        );
+        assert!(
+            matches!(
+                open[1],
+                Row::Count {
+                    count: Count { calls: 3, .. },
+                    ..
+                }
+            ),
+            "{open:?}"
+        );
+        assert_eq!(
+            ids(&laid(&[10])),
+            ["i1", "c1:2", "i6", "i8", "i9", "c2:10", "q10"]
+        );
+        // A call that runs shows it in its row, where the count is open.
+        let mut running = read(11, "e.rs", 2);
+        running.status = Some(CallStatus::Running);
+        let mut all = items.to_vec();
+        all.push(running);
+        let store = store_of(&all);
+        let laid = |open: &[u64]| {
+            let open: HashSet<u64> = open.iter().copied().collect();
+            let (sealed, nested) = (HashSet::new(), HashSet::new());
+            layout_sealed(&store.items, View::Messages, None, &sealed, &nested, &open)
+        };
+        assert!(running_shown(&laid(&[10]), &store, None));
+        assert!(!running_shown(&laid(&[]), &store, None));
+    }
+
     #[test]
     fn a_count_row_shows_no_text() {
         let mut call = item(3, Kind::Call, MAIN, "ls");
@@ -1171,7 +1287,14 @@ mod tests {
         let nested: HashSet<String> = ["r2".to_string()].into();
         for view in View::ALL {
             assert_eq!(
-                layout_sealed(&items, view, None, &HashSet::new(), &nested),
+                layout_sealed(
+                    &items,
+                    view,
+                    None,
+                    &HashSet::new(),
+                    &nested,
+                    &HashSet::new()
+                ),
                 [Row::Item(1, Kind::User), Row::Status(5), Row::Status(9)],
                 "{view:?}"
             );
@@ -1343,13 +1466,20 @@ mod tests {
         let items = [read(1, "a.rs"), read(2, "b.rs")];
         let words = |sealed: &[u64]| -> Vec<String> {
             let sealed: HashSet<u64> = sealed.iter().copied().collect();
-            layout_sealed(&items, View::Quiet, None, &sealed, &HashSet::new())
-                .into_iter()
-                .filter_map(|row| match row {
-                    Row::Quiet { row, .. } => Some(row.words.text),
-                    _ => None,
-                })
-                .collect()
+            layout_sealed(
+                &items,
+                View::Quiet,
+                None,
+                &sealed,
+                &HashSet::new(),
+                &HashSet::new(),
+            )
+            .into_iter()
+            .filter_map(|row| match row {
+                Row::Quiet { row, .. } => Some(row.words.text),
+                _ => None,
+            })
+            .collect()
         };
         assert_eq!(words(&[]), ["Read a.rs and b.rs"]);
         assert_eq!(words(&[1]), ["Read a.rs", "Read b.rs"]);
@@ -1508,10 +1638,11 @@ mod tests {
             assert!(moves(&|item| item.from = Some(MAIN.into()), view));
             assert!(!moves(&|item| item.text.push_str(" Mostly."), view));
             assert!(!moves(&|item| item.level = Some(Level::Info), view));
-            // How a call went words its Quiet row.
+            // How a call went words its Quiet row, which a count that's
+            // open shows in Messages.
             assert_eq!(
                 moves(&|item| item.outcome = Some("ok".into()), view),
-                view == View::Quiet
+                view != View::Full
             );
         }
         // A call's status counts in Messages and words a Quiet row.

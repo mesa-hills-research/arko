@@ -2786,8 +2786,8 @@ impl App {
     }
 
     /// A click (no drag) at `at`, a row of the agent list shows that
-    /// agent, the "new" marker goes to the end, a turn's counted calls
-    /// open in the Full view, a command's fold line opens or closes its
+    /// agent, the "new" marker goes to the end, a turn's count of calls
+    /// opens to its Quiet rows, a command's fold line opens or closes its
     /// whole output, and a worker's line opens its transcript. Elsewhere it
     /// does nothing.
     fn click(&mut self, at: ratatui::layout::Position) {
@@ -2842,8 +2842,7 @@ impl App {
             return;
         };
         if self.transcript.is_counter(key) {
-            self.set_view(View::Full);
-            self.transcript.show(key);
+            self.transcript.toggle_count(key, at.y);
             return;
         }
         let (filter, theme) = (self.filter(), self.theme.clone());

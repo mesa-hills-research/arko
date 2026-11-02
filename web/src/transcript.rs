@@ -49,10 +49,14 @@ pub fn Transcript() -> impl IntoView {
         let (thinking, working) = motion.get();
         let (feed, rows) = laid_out.get();
         // A thinking in a Quiet row has no row of its own, so the Working
-        // row says it thinks while it streams.
+        // row says it thinks while it streams. A call that runs with a row of
+        // its own shows that there.
         let hidden = thinking.is_some_and(|id| layout::in_quiet_row(&rows, id));
+        let worker = page.worker.get();
         STORE.with(|store| {
-            let rows = layout::with_working(rows, working || hidden, &store.borrow());
+            let store = store.borrow();
+            let working = working && !layout::running_shown(&rows, &store, worker.as_deref());
+            let rows = layout::with_working(rows, working || hidden, &store);
             (feed, rows)
         })
     });
@@ -143,6 +147,7 @@ fn laid_out(
         page.workers.track();
         let view = view.get();
         let worker = worker.get();
+        let counts_open = page.counts_open.get();
         page.quiet_sealed.with(|sealed| {
             STORE.with(|store| {
                 let store = store.borrow();
@@ -153,8 +158,14 @@ fn laid_out(
                     .filter(|worker| worker.parent.is_some())
                     .map(|worker| worker.id.clone())
                     .collect();
-                let rows =
-                    layout::layout_sealed(&store.items, view, worker.as_deref(), sealed, &nested);
+                let rows = layout::layout_sealed(
+                    &store.items,
+                    view,
+                    worker.as_deref(),
+                    sealed,
+                    &nested,
+                    &counts_open,
+                );
                 (store.feed, rows)
             })
         })
@@ -216,7 +227,8 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
 }
 
 /// A turn's tool calls as one line (Messages), its triangle in the column
-/// of every fold's. A click shows them in Full.
+/// of every fold's. A click opens it to the turn's Quiet rows, each where
+/// it came, and closes it again, its line staying where it is.
 fn count_row(id: u64, count: Count) -> AnyView {
     let page = page();
     let Count {
@@ -224,12 +236,17 @@ fn count_row(id: u64, count: Count) -> AnyView {
         failed,
         running,
     } = count;
+    let open = move || page.counts_open.with(|open| open.contains(&id));
     view! {
         <div class="row count" data-id=id>
-            <button type="button" class="call-line" title="Show them (Full view)"
+            <button type="button" class="call-line" aria-expanded=move || open().to_string()
                 on:click=move |_| {
                     scroll::keep_place(id);
-                    page.set_view(View::Full);
+                    page.counts_open.update(|open| {
+                        if !open.remove(&id) {
+                            open.insert(id);
+                        }
+                    });
                 }>
                 <span class="mark">"▸"</span>
                 <span>{words::plural(calls, "tool call", "tool calls")}</span>

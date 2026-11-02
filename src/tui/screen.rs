@@ -819,8 +819,9 @@ mod tests {
 
     /// The transcript's views of the session `ARKO_SCENARIO` names, at 100
     /// columns, in the folder `ARKO_RENDERINGS` names (`remote::scenario`):
-    /// Full, Quiet closed, Quiet with every row open, Messages, and the own
-    /// view (Full) of the worker r3 when the session has it.
+    /// Full, Quiet closed, Quiet with every row open, Messages, Messages with
+    /// each turn's count open, and the own view (Full) of the worker r3 when
+    /// the session has it.
     #[test]
     #[ignore]
     fn renderings() {
@@ -837,6 +838,7 @@ mod tests {
             (View::Quiet, "quiet-closed", false, None),
             (View::Quiet, "quiet-open", true, None),
             (View::Messages, "messages", false, None),
+            (View::Messages, "messages-open", true, None),
             (View::Full, "worker-r3", false, Some("r3")),
         ] {
             let mut app = app();

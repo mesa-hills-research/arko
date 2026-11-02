@@ -159,11 +159,13 @@ enum Shown {
     Worker(String),
     /// A worker view's heading, the worker's task.
     Heading(String),
-    /// A turn's tool activity, counted (the Messages view).
+    /// A turn's tool activity, counted (the Messages view). Open, the
+    /// turn's Quiet rows show under it, each where it came.
     Counter {
         calls: usize,
         failed: usize,
         running: usize,
+        open: bool,
     },
     /// "Working…", at the end, while the agent waits on its model and
     /// nothing else shows it.
@@ -242,6 +244,26 @@ enum Placed {
 
 /// The key of the "Working…" line, after every item's.
 const WORKING_KEY: u64 = u64::MAX;
+
+/// The bit that sets a turn's count of calls (Messages) apart from the
+/// Quiet row of its first call, which its key is otherwise.
+const COUNT_KEY: u64 = 1 << 63;
+
+/// Whether the block `key` is a turn's count of calls.
+fn is_count(key: u64) -> bool {
+    key != WORKING_KEY && key & COUNT_KEY != 0
+}
+
+/// A turn's calls as the Messages view counts them, on one line where the
+/// first one came.
+#[derive(Debug, Default)]
+struct Counted {
+    first: u64,
+    calls: usize,
+    failed: usize,
+    running: usize,
+    open: bool,
+}
 
 /// Text that hasn't grown for this long, while its agent works, no longer
 /// shows that the agent is under way (it may be writing a long call).
@@ -411,6 +433,9 @@ pub struct Transcript {
     /// The Quiet view's rows of one call the reader opened, by that call,
     /// which keep their form ([`quiet::Call::sealed`]).
     quiet_sealed: HashSet<u64>,
+    /// The turns whose count of calls the reader opened in the Messages
+    /// view, by their first call.
+    counts_open: HashSet<u64>,
     /// The calls that have content, a block of their result.
     contents: HashSet<u64>,
     /// The Quiet view's rows' lines as last drawn, by their first call.
@@ -452,6 +477,7 @@ impl Transcript {
             motion: Motion::default(),
             quiet_open: HashSet::new(),
             quiet_sealed: HashSet::new(),
+            counts_open: HashSet::new(),
             contents: HashSet::new(),
             quiet_cache: HashMap::new(),
             generation: 0,
@@ -728,20 +754,42 @@ impl Transcript {
         self.pending_scroll += lines;
     }
 
-    /// Shows the item `id` at the top (a counted turn's first call, when
-    /// the Full view opens on it).
-    pub fn show(&mut self, id: u64) {
-        self.anchor = Some(Anchor {
-            key: id,
-            offset: 0,
-            height: 0,
-        });
-        self.pending_scroll = 0;
-    }
-
     /// Whether the block `key` (as drawn last) is a turn's counted calls.
     pub fn is_counter(&self, key: u64) -> bool {
         self.drawn.counters.contains(&key)
+    }
+
+    /// Opens or closes the turn's count of calls `key` (Messages), its line
+    /// held on the screen's row `y` at the next draw, so what it opens to
+    /// comes below it.
+    pub fn toggle_count(&mut self, key: u64, y: u16) {
+        self.open_count(key, None);
+        let row = y.saturating_sub(self.drawn.area.y) as usize;
+        if let Some(at) = self.drawn.rows.get(row).copied().flatten()
+            && at.key == key
+        {
+            self.pin = Some(Pin {
+                key,
+                line: at.line,
+                row,
+            });
+        }
+    }
+
+    /// Opens (`Some(true)`), closes (`Some(false)`) or toggles (`None`) the
+    /// turn's count of calls `key` (Messages).
+    fn open_count(&mut self, key: u64, open: Option<bool>) {
+        let first = key & !COUNT_KEY;
+        let now = self.counts_open.contains(&first);
+        if open.unwrap_or(!now) == now {
+            return;
+        }
+        if now {
+            self.counts_open.remove(&first);
+        } else {
+            self.counts_open.insert(first);
+        }
+        self.generation += 1;
     }
 
     /// Makes the latest item's text look as if it stopped growing a while
@@ -794,8 +842,9 @@ impl Transcript {
     /// What shows that the agent of `filter`'s view is under way, besides
     /// its calls, which is its thinking as it streams, or else "Working…" while it
     /// waits on its model with nothing else to show. `placed` is what the
-    /// view shows, in order.
-    fn motion(&self, filter: &Filter, placed: &[Placed]) -> Motion {
+    /// view shows, in order, and `opened` the entries Messages shows as Quiet
+    /// does, where a turn's count is open.
+    fn motion(&self, filter: &Filter, placed: &[Placed], opened: &HashSet<usize>) -> Motion {
         let Some((agent, since)) = self.under_way(filter) else {
             return Motion::default();
         };
@@ -822,12 +871,18 @@ impl Transcript {
             },
             Busy::Thinking(_) => working(true),
             // The Messages view counts calls, so the line says what the
-            // agent's call does while it runs.
-            Busy::Tool if filter.view() == View::Messages => Motion {
-                working: true,
-                label: self.doing(agent),
-                ..Motion::default()
-            },
+            // agent's call does while it runs, unless its turn's count is
+            // open, where its row shows that.
+            Busy::Tool
+                if filter.view() == View::Messages
+                    && !self.running(agent).is_some_and(|at| opened.contains(&at)) =>
+            {
+                Motion {
+                    working: true,
+                    label: self.doing(agent),
+                    ..Motion::default()
+                }
+            }
             Busy::Tool | Busy::Done => Motion::default(),
         }
     }
@@ -843,17 +898,19 @@ impl Transcript {
     /// What the latest call of `agent` that runs does ("Running cargo
     /// test…").
     fn doing(&self, agent: &str) -> Option<String> {
-        self.entries
-            .iter()
-            .rev()
-            .map(|entry| &entry.item)
-            .find(|item| {
-                item.agent == agent
-                    && item.kind == Kind::Call
-                    && item.status == Some(CallStatus::Running)
-            })
-            .and_then(|item| item.act.as_ref())
+        self.running(agent)
+            .and_then(|at| self.entries[at].item.act.as_ref())
             .map(|act| format!("{}…", quiet::doing(act)))
+    }
+
+    /// The entry of the latest call of `agent` that runs.
+    fn running(&self, agent: &str) -> Option<usize> {
+        self.entries.iter().rposition(|entry| {
+            let item = &entry.item;
+            item.agent == agent
+                && item.kind == Kind::Call
+                && item.status == Some(CallStatus::Running)
+        })
     }
 
     /// The agent of `filter`'s view and when its turn began (Unix
@@ -908,12 +965,14 @@ impl Transcript {
             });
         }
         // The Messages view counts each turn's tool activity on one line,
-        // where the activity began.
-        let mut counters: HashMap<Option<u64>, usize> = HashMap::new();
+        // where the activity began. A count that's open shows the turn's
+        // Quiet rows, each where it came.
+        let (counts, opened) = self.counted(filter);
+        let as_quiet = filter.in_view(View::Quiet);
         let mut last_group: Option<Group> = blocks.first().map(|_| Group::Prose);
         let now = chrono::Utc::now().timestamp_millis();
         let quiet = filter.view() == View::Quiet;
-        let placed: Arc<Vec<Placed>> = if quiet {
+        let placed: Arc<Vec<Placed>> = if quiet || !opened.is_empty() {
             match &self.quiet_order {
                 Some((seen, generation, placed))
                     if seen == filter && *generation == self.generation =>
@@ -921,7 +980,7 @@ impl Transcript {
                     placed.clone()
                 }
                 _ => {
-                    let placed = Arc::new(self.quiet_placed(filter));
+                    let placed = Arc::new(self.quiet_placed(filter, &counts, &opened));
                     self.quiet_order = Some((filter.clone(), self.generation, placed.clone()));
                     placed
                 }
@@ -930,45 +989,36 @@ impl Transcript {
             Arc::new(self.order().into_iter().map(Placed::Entry).collect())
         };
         // (Before the lines, because the thinking that streams is labelled so.)
-        self.motion = self.motion(filter, &placed);
+        self.motion = self.motion(filter, &placed, &opened);
         for placed in placed.iter() {
             let (index, shown) = match placed {
                 Placed::Quiet(row) => (row.members[0], Some(Shown::Quiet(row.clone()))),
                 Placed::Entry(index) => (*index, None),
             };
             let item = &self.entries[index].item;
+            let opens = opened.contains(&index);
+            if let Some(count) = counts
+                .get(&item.turn)
+                .filter(|count| count.first == item.id)
+            {
+                blocks.push(Block {
+                    key: COUNT_KEY | count.first,
+                    shown: Shown::Counter {
+                        calls: count.calls,
+                        failed: count.failed,
+                        running: count.running,
+                        open: count.open,
+                    },
+                    gap: last_group.is_some_and(|last| last != Group::Activity),
+                    lines: 1,
+                    tail: false,
+                });
+                last_group = Some(Group::Activity);
+            }
             let shown = match shown {
                 Some(shown) => shown,
-                None => match self.shows(filter, item) {
-                    Show::Hidden => continue,
-                    Show::Count => {
-                        let turn = item.turn;
-                        let failed = usize::from(item.status == Some(CallStatus::Failed));
-                        let running = usize::from(item.status == Some(CallStatus::Running));
-                        match counters.get(&turn) {
-                            Some(&at) => {
-                                if let Shown::Counter {
-                                    calls,
-                                    failed: failures,
-                                    running: runs,
-                                } = &mut blocks[at].shown
-                                {
-                                    *calls += 1;
-                                    *failures += failed;
-                                    *runs += running;
-                                }
-                                continue;
-                            }
-                            None => {
-                                counters.insert(turn, blocks.len());
-                                Shown::Counter {
-                                    calls: 1,
-                                    failed,
-                                    running,
-                                }
-                            }
-                        }
-                    }
+                None => match self.shows(if opens { &as_quiet } else { filter }, item) {
+                    Show::Hidden | Show::Count => continue,
                     Show::Worker(id) => Shown::Worker(id),
                     // A call's content shows while the call is open.
                     Show::Item if self.closed_content(item) => continue,
@@ -1001,7 +1051,7 @@ impl Transcript {
                     };
                     let entry = &mut self.entries[*index];
                     // Only a click opens thinking in the quiet view.
-                    let quiet = quiet && entry.item.kind == Kind::Thinking;
+                    let quiet = (quiet || opens) && entry.item.kind == Kind::Thinking;
                     let open = if quiet { entry.open_quiet } else { entry.open };
                     let clock = if entry.item.kind == Kind::Thinking {
                         (!streams).then(|| thought_time(entry))
@@ -1095,7 +1145,7 @@ impl Transcript {
                 tail: false,
             });
         }
-        if quiet {
+        if quiet || !opened.is_empty() {
             let keys: HashSet<u64> = blocks.iter().map(|block| block.key).collect();
             self.quiet_cache.retain(|key, _| keys.contains(key));
         }
@@ -1162,32 +1212,52 @@ impl Transcript {
 
     /// What the Quiet view shows, in order, with each run of the agent's calls
     /// as rows ([`quiet::rows`]), and the rest as it is. A call's content
-    /// goes in its row.
-    fn quiet_placed(&self, filter: &Filter) -> Vec<Placed> {
-        // The entries shown, each with the results of its own.
-        let mut shown: Vec<(usize, Vec<usize>)> = Vec::new();
+    /// goes in its row. In the Messages view, the entries of `opened` (of
+    /// the turns whose count is open) show so, and the rest as Messages
+    /// shows them, with each turn's first call of `counts`, where its
+    /// count goes.
+    fn quiet_placed(
+        &self,
+        filter: &Filter,
+        counts: &HashMap<Option<u64>, Counted>,
+        opened: &HashSet<usize>,
+    ) -> Vec<Placed> {
+        let messages = filter.view() == View::Messages;
+        let as_quiet = filter.in_view(View::Quiet);
+        // The entries shown, each with the results of its own, and whether
+        // it stands as it is.
+        let mut shown: Vec<(usize, Vec<usize>, bool)> = Vec::new();
         for index in self.order() {
             let item = &self.entries[index].item;
-            if matches!(self.shows(filter, item), Show::Hidden) {
+            let opens = opened.contains(&index);
+            let first = counts
+                .get(&item.turn)
+                .is_some_and(|count| count.first == item.id);
+            let hidden = matches!(
+                self.shows(if opens { &as_quiet } else { filter }, item),
+                Show::Hidden
+            );
+            if hidden && !(messages && first) {
                 continue;
             }
             // (A result comes right under its call.)
             if item.kind == Kind::Result
-                && let Some((call, results)) = shown.last_mut()
+                && let Some((call, results, _)) = shown.last_mut()
                 && item.call == Some(self.entries[*call].item.id)
             {
                 results.push(index);
                 continue;
             }
-            shown.push((index, Vec::new()));
+            shown.push((index, Vec::new(), messages && (!opens || hidden)));
         }
         let steps: Vec<quiet::Step> = shown
             .iter()
-            .map(|(index, results)| {
+            .map(|(index, results, as_is)| {
                 let item = &self.entries[*index].item;
                 match item.kind {
                     // (A note the agent hasn't read waits at the end.)
                     _ if item.pending => quiet::Step::Aside,
+                    _ if *as_is => quiet::Step::Other(item.id),
                     Kind::Call if filter.owns(item) => quiet::Step::Call(quiet::Call {
                         id: item.id,
                         act: item.act.as_ref(),
@@ -1209,14 +1279,14 @@ impl Transcript {
         for piece in pieces {
             match piece {
                 quiet::Piece::Step(at) => {
-                    let (index, results) = &shown[at];
+                    let (index, results, _) = &shown[at];
                     placed.push(Placed::Entry(*index));
                     placed.extend(results.iter().copied().map(Placed::Entry));
                 }
                 quiet::Piece::Row(row) => {
                     let mut members = Vec::new();
                     for at in &row.members {
-                        let (index, results) = &shown[*at];
+                        let (index, results, _) = &shown[*at];
                         members.push(*index);
                         members.extend(results.iter().copied());
                     }
@@ -1232,15 +1302,63 @@ impl Transcript {
         placed
     }
 
+    /// The turns' counts of calls in `filter`'s view when it's Messages, by
+    /// turn, and the entries that show as the Quiet view shows them because
+    /// their turn's count is open (its first call and what came after it in
+    /// the turn).
+    fn counted(&self, filter: &Filter) -> (HashMap<Option<u64>, Counted>, HashSet<usize>) {
+        let mut counts: HashMap<Option<u64>, Counted> = HashMap::new();
+        let mut opened = HashSet::new();
+        if filter.view() != View::Messages {
+            return (counts, opened);
+        }
+        for index in self.order() {
+            let item = &self.entries[index].item;
+            if matches!(self.shows(filter, item), Show::Count) {
+                let count = counts.entry(item.turn).or_insert_with(|| Counted {
+                    first: item.id,
+                    open: self.counts_open.contains(&item.id),
+                    ..Counted::default()
+                });
+                count.calls += 1;
+                count.failed += usize::from(item.status == Some(CallStatus::Failed));
+                count.running += usize::from(item.status == Some(CallStatus::Running));
+            }
+            if filter.owns(item) && counts.get(&item.turn).is_some_and(|count| count.open) {
+                opened.insert(index);
+            }
+        }
+        (counts, opened)
+    }
+
+    /// Whether `filter`'s view shows the item `id` as the Quiet view does,
+    /// as Messages does where its turn's count is open.
+    fn shown_quiet(&self, id: u64, filter: &Filter) -> bool {
+        match filter.view() {
+            View::Quiet => true,
+            View::Messages => self
+                .index(id)
+                .is_some_and(|at| self.counted(filter).1.contains(&at)),
+            View::Full => false,
+        }
+    }
+
     /// Opens what the renderings show open (`remote::scenario`). In Quiet
     /// that's every row, in a row of several its first call with something
     /// to show and every call that failed, and a worker's reports and
     /// messages. In Full it's the first read and the first edit, besides
-    /// the commands.
+    /// the commands. In Messages it's each turn's count.
     #[cfg(test)]
     pub(crate) fn open_for_renderings(&mut self, view: View) {
+        if view == View::Messages {
+            let (counts, _) = self.counted(&Filter::Main(view));
+            self.counts_open
+                .extend(counts.values().map(|count| count.first));
+            self.generation += 1;
+            return;
+        }
         if view == View::Quiet {
-            let placed = self.quiet_placed(&Filter::Main(view));
+            let placed = self.quiet_placed(&Filter::Main(view), &HashMap::new(), &HashSet::new());
             for row in placed.iter().filter_map(|placed| match placed {
                 Placed::Quiet(row) => Some(row),
                 Placed::Entry(_) => None,
@@ -1770,9 +1888,10 @@ impl Transcript {
                 calls,
                 failed,
                 running,
+                open,
             } => {
                 let mut spans = vec![
-                    marker("▸", theme.dim()),
+                    marker(if *open { "▾" } else { "▸" }, theme.dim()),
                     Span::styled(
                         format!("{calls} tool call{}", if *calls == 1 { "" } else { "s" }),
                         theme.dim(),
@@ -1961,7 +2080,7 @@ impl Transcript {
                 self.seal(item, filter, theme);
             }
         } else {
-            let quiet = filter.view() == View::Quiet;
+            let quiet = self.shown_quiet(item, filter);
             if !self
                 .item(item)
                 .is_some_and(|item| self.folds_in(item, filter))
@@ -2041,6 +2160,7 @@ impl Transcript {
                 Shown::Entry(index) if self.folds_in(&self.entries[*index].item, filter) => {
                     keys.push(Target::Block(block.key))
                 }
+                Shown::Counter { .. } => keys.push(Target::Block(block.key)),
                 _ => {}
             }
         }
@@ -2093,6 +2213,10 @@ impl Transcript {
                 return;
             }
         };
+        if is_count(key) {
+            self.open_count(key, open);
+            return;
+        }
         if self.quiet_row(key, filter, theme).is_some() {
             let now = self.quiet_open.contains(&key);
             if open.unwrap_or(!now) {
@@ -2103,7 +2227,7 @@ impl Transcript {
             }
             return;
         }
-        let quiet = filter.view() == View::Quiet;
+        let quiet = self.shown_quiet(key, filter);
         if !self
             .item(key)
             .is_some_and(|item| self.folds_in(item, filter))
@@ -2420,6 +2544,14 @@ impl View {
 }
 
 impl Filter {
+    /// The same agent's transcript in `view`.
+    fn in_view(&self, view: View) -> Filter {
+        match self {
+            Filter::Main(_) => Filter::Main(view),
+            Filter::Worker(id, _) => Filter::Worker(id.clone(), view),
+        }
+    }
+
     /// The view whose rule applies to the agent's own items.
     fn view(&self) -> View {
         match self {
@@ -4321,6 +4453,115 @@ mod tests {
         t.follow();
         assert_eq!(rows(&mut t, &quiet, 40, 3)[..1], ["  ▸ Thought for 2m"]);
         assert_eq!(rows(&mut t, &full(), 40, 5)[..1], ["  ▾ Thought for 2m"]);
+    }
+
+    /// In Messages a turn's count of calls opens to the turn's Quiet rows in
+    /// place, each where it came among what the agent said, its line staying
+    /// on its row. It closes again, and each turn keeps one count, which the
+    /// keyboard opens too.
+    #[test]
+    fn a_turns_count_opens_to_its_quiet_rows_in_place() {
+        use crate::remote::{Act, ActKind};
+        let theme = Theme::terminal();
+        let messages = Filter::Main(View::Messages);
+        let mut t = Transcript::new();
+        let of_turn = |mut item: Item, turn: u64| {
+            item.turn = Some(turn);
+            item
+        };
+        let read = |id: u64, path: &str, turn: u64| {
+            let mut call = item(id, Kind::Call, &format!("read {path}"));
+            call.status = Some(CallStatus::Ok);
+            call.act = Some(Act {
+                kind: ActKind::Read,
+                target: path.into(),
+                ..Act::default()
+            });
+            of_turn(call, turn)
+        };
+        let mut user = item(1, Kind::User, "Fix the parser");
+        user.delivery = Some(Delivery::Turn);
+        let mut thanks = item(7, Kind::User, "Thanks");
+        thanks.delivery = Some(Delivery::Turn);
+        for update in [
+            of_turn(user, 1),
+            read(2, "a.rs", 1),
+            read(3, "b.rs", 1),
+            of_turn(item(4, Kind::Text, "Found it."), 1),
+            read(5, "c.rs", 1),
+            of_turn(item(6, Kind::Reply, "Fixed."), 1),
+            of_turn(thanks, 2),
+            read(8, "d.rs", 2),
+        ] {
+            t.apply(Update::Item(update));
+        }
+        let closed = [
+            "  ▎ Fix the parser",
+            "",
+            "  ▸ 3 tool calls",
+            "",
+            "  Found it.",
+            "",
+            "  Fixed.",
+            "",
+            "  ▎ Thanks",
+            "",
+            "  ▸ 1 tool call",
+        ];
+        assert_eq!(rows(&mut t, &messages, 40, 11), closed);
+        // A screen too short for the turn, its count on the top row.
+        rows(&mut t, &messages, 40, 8);
+        t.scroll(-1);
+        let shown = rows(&mut t, &messages, 40, 8);
+        assert_eq!(shown[0], "  ▸ 3 tool calls", "{shown:?}");
+        t.toggle_count(COUNT_KEY | 2, 0);
+        let shown = rows(&mut t, &messages, 40, 8);
+        assert_eq!(
+            shown[..7],
+            [
+                "  ▾ 3 tool calls",
+                "  ▸ Read a.rs and b.rs",
+                "",
+                "  Found it.",
+                "",
+                "    Read c.rs",
+                "",
+            ],
+            "the turn's rows under its count, the count on its row"
+        );
+        // Closed again, as it was.
+        t.toggle_count(COUNT_KEY | 2, 0);
+        t.follow();
+        assert_eq!(rows(&mut t, &messages, 40, 11), closed);
+        // The keyboard reaches each turn's count, and opens it.
+        assert!(t.move_focus(0, &messages, &theme));
+        assert_eq!(t.focus, Some(Target::Block(COUNT_KEY | 8)));
+        t.open_focus(Some(true), &messages, &theme);
+        let shown = rows(&mut t, &messages, 40, 12);
+        assert_eq!(
+            shown[shown.len() - 2..],
+            ["  ▾ 1 tool call", "    Read d.rs"],
+            "{shown:?}"
+        );
+        assert_eq!(
+            shown.iter().filter(|row| row.contains("tool call")).count(),
+            2,
+            "one count a turn"
+        );
+        // A call that runs shows it in its row there, so no line says it
+        // again, as one does while the count is closed.
+        let mut running = read(9, "e.rs", 2);
+        running.status = Some(CallStatus::Running);
+        t.apply(Update::Item(running));
+        t.working = Some(0);
+        let shown = rows(&mut t, &messages, 40, 12);
+        assert!(!shown.iter().any(|row| is_working(row)), "{shown:?}");
+        t.open_focus(Some(false), &messages, &theme);
+        let shown = rows(&mut t, &messages, 40, 12);
+        assert!(
+            shown.iter().any(|row| row.ends_with("Reading e.rs…")),
+            "{shown:?}"
+        );
     }
 
     /// In the Quiet view a thinking after a call is in that call's row from
