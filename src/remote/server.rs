@@ -1833,9 +1833,9 @@ mod tests {
     use super::*;
 
     /// The items of the session `ARKO_SCENARIO` names as the page gets
-    /// them, and the whole contents it asks for, in the folder
-    /// `ARKO_RENDERINGS` names (`items.json`, `results.json`), for the
-    /// page's renderings (`remote::scenario`).
+    /// them, its workers, and the whole contents it asks for, in the folder
+    /// `ARKO_RENDERINGS` names (`items.json`, `workers.json`,
+    /// `results.json`), for the page's renderings (`remote::scenario`).
     #[test]
     #[ignore]
     fn renderings() {
@@ -1846,7 +1846,9 @@ mod tests {
             return;
         };
         let feed = super::super::scenario::play(&script);
-        let items = feed.subscribe().0.items;
+        let snapshot = feed.subscribe().0;
+        let workers = serde_json::to_value(&snapshot.workers).unwrap();
+        let items = snapshot.items;
         let page: Vec<serde_json::Value> = items
             .iter()
             .map(|item| serde_json::to_value(PageItem::of(item, "1")).unwrap())
@@ -1864,6 +1866,7 @@ mod tests {
             std::fs::write(format!("{out}/{name}"), value.to_string()).unwrap();
         };
         write("items.json", page.into());
+        write("workers.json", workers);
         write("results.json", results.into());
     }
 

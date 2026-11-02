@@ -30,7 +30,7 @@ use std::collections::HashMap;
 
 #[cfg(test)]
 use super::protocol::ContentKind;
-use super::protocol::{Act, ActKind, CallStatus, Came};
+use super::protocol::{Act, ActKind, CallStatus, Came, Kind};
 
 /// A call's outcome when a stop cancelled it.
 pub const STOPPED: &str = "stopped";
@@ -724,6 +724,44 @@ fn words(group: &Group) -> Words {
         many => Some(plural(many.len(), "job", "jobs")),
     };
     words
+}
+
+/// The main agent's name, which a worker's message to it as its lead names.
+const MAIN: &str = "main";
+
+/// What a worker's item is in the main transcript, which shows a worker of
+/// the main agent only as its reports and its messages to the main agent,
+/// its lead. Each is a row of its own, a status and not a call, that opens
+/// to its words. The rest of the worker's, its text, its calls and its
+/// conversation with the user, is in its own view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerRow {
+    Reported,
+    MessagedLead,
+}
+
+impl WorkerRow {
+    /// The row of a worker's item of `kind`, with its `act` for a call, if
+    /// it has one in the main transcript.
+    pub fn of(kind: Kind, act: Option<&Act>) -> Option<Self> {
+        match kind {
+            Kind::Reply => Some(WorkerRow::Reported),
+            Kind::Call
+                if act.is_some_and(|act| act.kind == ActKind::Message && act.target == MAIN) =>
+            {
+                Some(WorkerRow::MessagedLead)
+            }
+            _ => None,
+        }
+    }
+
+    /// What the row says after the worker's name ("r1 reported").
+    pub fn words(self) -> &'static str {
+        match self {
+            WorkerRow::Reported => "reported",
+            WorkerRow::MessagedLead => "messaged the lead",
+        }
+    }
 }
 
 /// Who a message is from and who it's for, as the user reads it: "r12 to

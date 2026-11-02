@@ -513,6 +513,8 @@ details.call > .holds, .row.result > .holds {
   cursor: pointer;
 }
 .holds .door:disabled { cursor: default; }
+/* A worker's report, under its row in the main transcript, reads as text. */
+.row.status .holds .md { color: var(--text); }
 
 .row.output pre {
   margin: 0;

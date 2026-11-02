@@ -86,6 +86,9 @@ pub enum Row {
     /// Calls in a few words (Quiet), by the ID of the first, and what the
     /// row shows.
     Quiet { id: u64, row: QuietRow },
+    /// A worker's report or message to its lead in the main transcript, as
+    /// a row that opens to its words ([`quiet::WorkerRow`]).
+    Status(u64),
     /// The agent waits on its model.
     Working,
 }
@@ -102,6 +105,7 @@ impl Row {
                 turn.map_or("none".to_string(), |turn| turn.to_string())
             ),
             Row::Quiet { id, .. } => format!("q{id}"),
+            Row::Status(id) => format!("s{id}"),
             Row::Working => "working".into(),
         }
     }
@@ -110,12 +114,6 @@ impl Row {
 /// Whether a notice (or a failed call) is a warning or an error.
 pub fn serious(item: &ItemData) -> bool {
     matches!(item.level, Some(Level::Warn | Level::Error))
-}
-
-/// Whether `item` is an agent's message to the user, which the main
-/// transcript shows for a worker too. (A message a worker got has a sender.)
-pub fn is_to_user(item: &ItemData) -> bool {
-    item.kind == Kind::Message && item.from.is_none()
 }
 
 /// Whether an item that changed from `old` to `new` moves the rows of
@@ -206,16 +204,19 @@ fn place(view: View, item: &ItemData) -> Place {
 /// transcript instead of the main one.
 #[cfg(test)]
 pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
-    layout_sealed(all, view, worker, &HashSet::new())
+    layout_sealed(all, view, worker, &HashSet::new(), &HashSet::new())
 }
 
 /// [`layout`], where `sealed` are the calls whose Quiet rows of one call
-/// the reader opened, which keep their form ([`quiet::Call::sealed`]).
+/// the reader opened, which keep their form ([`quiet::Call::sealed`]), and
+/// `nested` the workers that a worker started, whose reports and messages
+/// go to their lead's view.
 pub fn layout_sealed(
     all: &[ItemData],
     view: View,
     worker: Option<&str>,
     sealed: &HashSet<u64>,
+    nested: &HashSet<String>,
 ) -> Vec<Row> {
     let items = pending_last(all);
     // A result shows under its call, which other items may have followed
@@ -238,19 +239,20 @@ pub fn layout_sealed(
         if placed.contains(&item.id) && !orphan(item) {
             continue;
         }
-        // The agent's own items follow the view. In the main transcript a
-        // worker's message to the user is the main agent's own, and the
-        // calls and troubles of the workers show inline in Full. Their
-        // text, their reports and what the user wrote to them are in their
-        // own views.
+        // The agent's own items follow the view. In every view of the main
+        // transcript, a worker of the main agent shows as its reports and
+        // its messages to its lead, each a row that opens to its words. Its
+        // text, its calls, its conversation with the user and its workers
+        // are its own view's.
         let (place, with_results) = match worker {
             Some(worker) if item.agent == worker => (place(view, item), true),
             Some(_) => (Place::Hidden, false),
-            None if item.agent == MAIN || is_to_user(item) => (place(view, item), true),
-            None if view == View::Full
-                && (item.kind == Kind::Call || (item.kind == Kind::Notice && serious(item))) =>
+            None if item.agent == MAIN => (place(view, item), true),
+            None if !nested.contains(&item.agent)
+                && quiet::WorkerRow::of(item.kind, item.act.as_ref()).is_some() =>
             {
-                (Place::Row, false)
+                rows.push(Row::Status(item.id));
+                continue;
             }
             None => (Place::Hidden, false),
         };
@@ -330,7 +332,7 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData], sealed: &HashSet<u64>) -> Vec
                 None => quiet::Step::Other(*id),
             },
             Row::Item(_, Kind::Thinking) => quiet::Step::Thinking,
-            Row::Item(id, _) => quiet::Step::Other(*id),
+            Row::Item(id, _) | Row::Status(id) => quiet::Step::Other(*id),
             _ => quiet::Step::Other(0),
         })
         .collect();
@@ -577,7 +579,7 @@ pub fn unseen(rows: &[Row], store: &Store, seen: u64) -> usize {
     rows.iter()
         .filter(|row| match row {
             Row::Item(id, _) => *id > seen && store.get(*id).is_some_and(is_read),
-            Row::Count { id, .. } => *id > seen,
+            Row::Count { id, .. } | Row::Status(id) => *id > seen,
             // As one thing, new when a call of it is.
             Row::Quiet { row, .. } => row
                 .calls
@@ -632,9 +634,10 @@ mod tests {
             worker_call,
             item(6, Kind::Reply, MAIN, "done"),
         ];
+        // (A worker's calls are its own view's.)
         assert_eq!(
             ids(&layout(&items, View::Full, None)),
-            ["i1", "i2", "i3", "i5", "i6"]
+            ["i1", "i2", "i3", "i6"]
         );
         assert_eq!(
             ids(&layout(&items, View::Quiet, None)),
@@ -686,9 +689,10 @@ mod tests {
             ids(&layout(&items, View::Quiet, None)),
             ["i1", "i3", "i4", "i5", "i6", "i9"]
         );
+        // (The call r1 made is r1's view's.)
         assert_eq!(
             ids(&layout(&items, View::Full, None)),
-            ["i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9"]
+            ["i1", "i2", "i3", "i4", "i5", "i6", "i7", "i9"]
         );
         let messages = layout(&items, View::Messages, None);
         assert_eq!(ids(&messages), ["i1", "c1:2", "i3", "i9"]);
@@ -994,8 +998,8 @@ mod tests {
         let grown: HashSet<u64> = [4].into();
         let rows = layout(&items, View::Full, None);
         let store = store_of(&items);
-        assert_eq!(jump_label(&rows, &store, 4, &grown), "1 new");
-        assert_eq!(jump_label(&rows, &store, 5, &grown), "New text");
+        assert_eq!(jump_label(&rows, &store, 3, &grown), "1 new");
+        assert_eq!(jump_label(&rows, &store, 4, &grown), "New text");
         // A worker's text that came since isn't new in the main view.
         items.push(item(6, Kind::Text, "r1", "more"));
         let rows = layout(&items, View::Full, None);
@@ -1099,8 +1103,10 @@ mod tests {
         assert_eq!(says(&items, View::Full, None, 1), "1 new");
     }
 
+    /// A worker's report is a row of every main view, and counts there.
+    /// Its text, its calls and the messages it got count in its own view.
     #[test]
-    fn a_workers_reply_and_messages_count_in_its_own_view_only() {
+    fn a_workers_report_counts_in_the_main_views() {
         let items = vec![
             item(1, Kind::User, MAIN, "go"),
             ItemData {
@@ -1111,24 +1117,39 @@ mod tests {
             item(4, Kind::Reply, "r1", "Fixed."),
         ];
         assert_eq!(says(&items, View::Full, Some("r1"), 0), "3 new");
-        // The main views show it as a card, which changes in place.
         for view in View::ALL {
-            assert_eq!(says(&items, view, None, 1), "Latest", "{view:?}");
+            assert_eq!(says(&items, view, None, 1), "1 new", "{view:?}");
         }
-        // A worker's calls are rows of the main Full view.
         let mut call = item(5, Kind::Call, "r1", "cat");
         call.status = Some(CallStatus::Ok);
         let mut items = items;
         items.push(call);
-        assert_eq!(says(&items, View::Full, None, 1), "1 new");
-        assert_eq!(says(&items, View::Quiet, None, 1), "Latest");
+        assert_eq!(says(&items, View::Full, None, 4), "Latest");
     }
 
-    /// A worker's message to the user (one without a sender) is a row of
-    /// its own view and of every main view, and counts in each. A message
-    /// the worker got stays in its own view.
+    /// A worker's message to the user is a row of its own view only. The
+    /// main views show the worker as its reports and its messages to its
+    /// lead, each a row that opens to its words, and leave out a worker's
+    /// worker's, which go to its lead's view.
     #[test]
-    fn a_workers_message_to_the_user_shows_in_its_view_and_the_main_one() {
+    fn a_worker_shows_in_the_main_views_as_its_reports_and_messages() {
+        use crate::protocol::{Act, ActKind};
+        let mut to_lead = item(5, Kind::Call, "r1", "message main “Halfway.”");
+        to_lead.status = Some(CallStatus::Ok);
+        to_lead.act = Some(Act {
+            kind: ActKind::Message,
+            target: MAIN.into(),
+            ..Act::default()
+        });
+        let mut said = item(6, Kind::Result, "r1", "Halfway.");
+        said.call = Some(5);
+        let mut read = item(7, Kind::Call, "r1", "read a.rs");
+        read.status = Some(CallStatus::Ok);
+        read.act = Some(Act {
+            kind: ActKind::Read,
+            target: "a.rs".into(),
+            ..Act::default()
+        });
         let items = vec![
             item(1, Kind::User, MAIN, "go"),
             ItemData {
@@ -1137,24 +1158,28 @@ mod tests {
             },
             item(3, Kind::Text, "r1", "On it."),
             item(4, Kind::Message, "r1", "Found it."),
+            to_lead,
+            said,
+            read,
+            ItemData {
+                level: Some(Level::Error),
+                ..item(8, Kind::Notice, "r1", "failed (boom)")
+            },
+            item(9, Kind::Reply, "r1", "Fixed."),
+            item(10, Kind::Reply, "r2", "Counted."),
         ];
+        let nested: HashSet<String> = ["r2".to_string()].into();
         for view in View::ALL {
             assert_eq!(
-                layout(&items, view, None),
-                [Row::Item(1, Kind::User), Row::Item(4, Kind::Message)],
+                layout_sealed(&items, view, None, &HashSet::new(), &nested),
+                [Row::Item(1, Kind::User), Row::Status(5), Row::Status(9)],
                 "{view:?}"
             );
-            assert_eq!(says(&items, view, None, 1), "1 new", "{view:?}");
         }
         assert_eq!(
-            layout(&items, View::Full, Some("r1")),
-            [
-                Row::Item(2, Kind::Message),
-                Row::Item(3, Kind::Text),
-                Row::Item(4, Kind::Message)
-            ]
+            ids(&layout(&items, View::Full, Some("r1"))),
+            ["i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9"]
         );
-        assert!(is_to_user(&items[3]) && !is_to_user(&items[1]));
     }
 
     #[test]
@@ -1318,7 +1343,7 @@ mod tests {
         let items = [read(1, "a.rs"), read(2, "b.rs")];
         let words = |sealed: &[u64]| -> Vec<String> {
             let sealed: HashSet<u64> = sealed.iter().copied().collect();
-            layout_sealed(&items, View::Quiet, None, &sealed)
+            layout_sealed(&items, View::Quiet, None, &sealed, &HashSet::new())
                 .into_iter()
                 .filter_map(|row| match row {
                     Row::Quiet { row, .. } => Some(row.words.text),

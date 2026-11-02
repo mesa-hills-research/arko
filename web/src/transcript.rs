@@ -140,12 +140,21 @@ fn laid_out(
     let page = page();
     Memo::new(move |_| {
         version.track();
+        page.workers.track();
         let view = view.get();
         let worker = worker.get();
         page.quiet_sealed.with(|sealed| {
             STORE.with(|store| {
                 let store = store.borrow();
-                let rows = layout::layout_sealed(&store.items, view, worker.as_deref(), sealed);
+                // The workers that workers started.
+                let nested: HashSet<String> = store
+                    .workers
+                    .values()
+                    .filter(|worker| worker.parent.is_some())
+                    .map(|worker| worker.id.clone())
+                    .collect();
+                let rows =
+                    layout::layout_sealed(&store.items, view, worker.as_deref(), sealed, &nested);
                 (store.feed, rows)
             })
         })
@@ -195,6 +204,10 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
         }
         Row::Count { id, count, .. } => count_row(id, count),
         Row::Quiet { id, row } => quiet_row(id, row, thinking),
+        Row::Status(id) => match cell(id) {
+            Some(cell) => status_row(id, cell.for_row()),
+            None => ().into_any(),
+        },
         Row::Item(id, _) => match cell(id) {
             Some(cell) => item_row(id, cell.for_row(), thinking),
             None => ().into_any(),
@@ -663,6 +676,53 @@ fn kind_class(kind: Kind) -> &'static str {
         Kind::WorkerLine => "wline",
         Kind::Conversation => "conversation",
     }
+}
+
+/// A worker's report or message to its lead in the main transcript, as
+/// the terminal's row says it ("r1 reported", "r1 messaged the lead"),
+/// which opens to its words, the report's Markdown and the message as its
+/// call's content has it.
+fn status_row(id: u64, cell: RowCell) -> AnyView {
+    let page = page();
+    let data = cell.data;
+    let (agent, row) = data.with_untracked(|item| {
+        (
+            item.agent.clone(),
+            crate::quiet::WorkerRow::of(item.kind, item.act.as_ref()),
+        )
+    });
+    let Some(row) = row else {
+        return ().into_any();
+    };
+    let words = match row {
+        crate::quiet::WorkerRow::Reported => {
+            view! { <Md id=id text=cell.text code=cell.code /> }.into_any()
+        }
+        crate::quiet::WorkerRow::MessagedLead => {
+            let message = move || {
+                page.version.track();
+                let result = STORE.with(|store| store.borrow().content_of(id))?;
+                let data = crate::app::cell(result)?.for_row().data;
+                Some(contents::content_view(data))
+            };
+            message.into_any()
+        }
+    };
+    view! {
+        <div class="row call status" data-id=id>
+            <details class="call">
+                <summary>
+                    <span class="call-line">
+                        <span class="mark">"▸"</span>
+                        <span class="who">{agent}</span>
+                        <span class="what">{row.words()}</span>
+                    </span>
+                </summary>
+                <div class="holds">{words}</div>
+            </details>
+        </div>
+    }
+    .into_any()
 }
 
 /// Whether a call shows its content in Full, which a command does from the
@@ -1282,6 +1342,7 @@ mod tests {
                             Row::Item(_, kind) => format!("{kind:?}"),
                             Row::Count { count, .. } => format!("{} calls", count.calls),
                             Row::Quiet { row, .. } => row.words.text.clone(),
+                            Row::Status(id) => format!("status {id}"),
                             Row::Working => "working".into(),
                         })
                         .collect::<Vec<_>>()

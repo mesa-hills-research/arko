@@ -819,7 +819,8 @@ mod tests {
 
     /// The transcript's views of the session `ARKO_SCENARIO` names, at 100
     /// columns, in the folder `ARKO_RENDERINGS` names (`remote::scenario`):
-    /// Full, Quiet closed, Quiet with every row open, and Messages.
+    /// Full, Quiet closed, Quiet with every row open, Messages, and the own
+    /// view (Full) of the worker r3 when the session has it.
     #[test]
     #[ignore]
     fn renderings() {
@@ -831,15 +832,22 @@ mod tests {
             return;
         };
         let feed = crate::remote::scenario::play(&script);
-        for (view, name, open) in [
-            (View::Full, "full", true),
-            (View::Quiet, "quiet-closed", false),
-            (View::Quiet, "quiet-open", true),
-            (View::Messages, "messages", false),
+        for (view, name, open, worker) in [
+            (View::Full, "full", true, None),
+            (View::Quiet, "quiet-closed", false, None),
+            (View::Quiet, "quiet-open", true, None),
+            (View::Messages, "messages", false, None),
+            (View::Full, "worker-r3", false, Some("r3")),
         ] {
             let mut app = app();
             app.reset(feed.subscribe().0);
             app.set_view(view);
+            if let Some(worker) = worker {
+                if app.transcript.worker(worker).is_none() {
+                    continue;
+                }
+                app.watching = Some(worker.to_string());
+            }
             if open {
                 app.transcript.open_for_renderings(view);
             }

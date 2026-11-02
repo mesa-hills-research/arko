@@ -11,7 +11,7 @@ use arko_workflows::WorkflowEvent;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::feed::{Delivery, Feed, Source};
+use super::feed::{Delivery, Feed, Source, WorkerChange};
 
 #[derive(Deserialize)]
 struct Script {
@@ -33,13 +33,21 @@ struct Step {
     refused: Option<String>,
     #[serde(default)]
     running: bool,
+    /// The worker whose step it is (`worker_start`, `worker_text`,
+    /// `worker_call`, `worker_finish`).
+    #[serde(default)]
+    worker: String,
 }
 
 fn event(event: AgentEvent) -> WorkflowEvent {
+    agent_event("main", event)
+}
+
+fn agent_event(agent: &str, event: AgentEvent) -> WorkflowEvent {
     WorkflowEvent {
         timestamp: chrono::Utc::now(),
         workflow_run_id: Uuid::nil(),
-        agent_name: "main".into(),
+        agent_name: agent.into(),
         agent_run_id: Uuid::nil(),
         event,
     }
@@ -59,6 +67,31 @@ pub(crate) fn play(path: &str) -> Feed {
             "text" => {
                 let chunk = AgentEvent::AssistantResponseChunk(step.text.clone());
                 feed.event(&event(chunk), None);
+            }
+            "worker_start" => feed.worker(&step.worker, &step.text, WorkerChange::Started),
+            "worker_text" => {
+                let chunk = AgentEvent::AssistantResponseChunk(step.text.clone());
+                feed.event(&agent_event("worker", chunk), Some(&step.worker));
+            }
+            "worker_finish" => feed.worker(
+                &step.worker,
+                "",
+                WorkerChange::Finished { report: &step.text },
+            ),
+            "worker_call" => {
+                let id = Uuid::new_v4();
+                let call = AgentEvent::ToolCallFormatted {
+                    tool_call_id: id,
+                    tool_name: step.tool.clone(),
+                    parameters: step.parameters,
+                };
+                feed.event(&agent_event("worker", call), Some(&step.worker));
+                let result = AgentEvent::ToolResult {
+                    tool_call_id: id,
+                    tool_name: step.tool,
+                    output: step.output.unwrap_or_default(),
+                };
+                feed.event(&agent_event("worker", result), Some(&step.worker));
             }
             _ => {
                 let id = Uuid::new_v4();
