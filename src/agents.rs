@@ -983,7 +983,7 @@ fn known_indexes(indexes: &[index::Known]) -> String {
 
 /// What the main agent is told of choosing a worker's model (see
 /// `worker_options`).
-const CHOOSING: &str = "A worker runs on the session's worker model unless you choose otherwise. Choose with `profile` (a named setup the user or you saved) or with `model` and `effort`. Match the model to the job. A small one reads and searches well, a strong one does hard reasoning, and a model from another maker gives a second opinion or a comparison. `worker_options` lists the profiles and the models usable now with their prices. A stronger model costs more, so pick the weakest one that does the job. Set `cache` to `1h` for a worker you will send more work to after it reports, and to `5m` for a one-off.";
+const CHOOSING: &str = "A worker runs on the session's worker model unless you choose a profile, or a model and effort. Pick the weakest model that does the job, and a model from another maker for a second opinion. `worker_options` lists the profiles and the models usable now with their prices. Set `cache` to `long` for a worker you will send more work to after it reports, and to `short` for a one-off.";
 
 /// What the main agent is told of saving skills, in its Skills section.
 pub(crate) const SAVING_SKILLS: &str = "\n\nSave a skill with `add_skill` when instructions would help later conversations or workers, such as this project's release steps or a workaround for a tool, and change one an agent saved with `edit_skill`. Give models an exact id for a workaround tied to one release, and a short name or pattern for advice that should carry over to the family's next release.";
@@ -1020,7 +1020,7 @@ pub(crate) fn billing_words(billing: WorkerBilling) -> &'static str {
 }
 
 /// What it is told when the user lets it start workers with a profile only.
-const PROFILES_ONLY: &str = "A worker runs on the session's worker model unless you start it with a profile, a named setup the user saved. `worker_options` lists the profiles, which set each worker's model and effort, and what the models cost.";
+const PROFILES_ONLY: &str = "A worker runs on the session's worker model unless you start it with a profile the user saved. `worker_options` lists the profiles with their models and what the models cost.";
 
 /// The profiles when the session started, as a sentence. Nothing when
 /// there were none.
@@ -1046,14 +1046,13 @@ fn profile_names(profiles: &[ProfileName]) -> String {
     )
 }
 
-/// What continuing a worker after its cache expired costs, against a fresh
-/// worker, and how `message_agent` asks first (see `worker_cache`), for the
-/// end of [`cache_paragraph`].
+/// When to start a fresh worker instead of continuing one whose cache
+/// expired, for the end of [`cache_paragraph`]. `message_agent` says what
+/// continuing costs and how to confirm it (see `worker_cache`).
 fn uncached_continue_words() -> String {
     format!(
-        "A cached read of a worker's conversation costs about a tenth of the input price. Once its cache has expired, continuing it reads the whole conversation again at the full input price and writes it to the cache again (on Claude 1.25 times the input price, twice with the long cache), and on a plan that uses more of its limits. A fresh worker costs only its task and what it reads to do it. So when a finished worker's cache has expired and its conversation is past {}k tokens, start a fresh worker, unless you really need its context. `list_agents` says each finished worker's cache and size. `message_agent` to such a worker says what continuing it costs instead of sending, and the same call with `{}: true` continues it.",
-        crate::worker_cache::CONFIRM_TOKENS / 1000,
-        crate::worker_cache::CONFIRM_PARAM
+        "Once a finished worker's cache has expired, continuing it reads its whole conversation again at the full price, so past {}k tokens start a fresh worker unless you need its context. `message_agent` says what continuing costs and asks first.",
+        crate::worker_cache::CONFIRM_TOKENS / 1000
     )
 }
 
@@ -1063,7 +1062,7 @@ fn cache_paragraph(settings: &AgentSettings) -> String {
     let openai = settings.worker.provider() == Ok(Provider::OpenAI);
     if settings.worker.in_claude_code() {
         format!(
-            "\nA worker runs in Claude Code and keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `long` (an hour) for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` (5 minutes) for a quick one-off such as a research task. Without `cache`, Claude Code uses an hour on a Claude plan. {}\n",
+            "\nA worker runs in Claude Code and keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `long` (an hour) for a worker you will send more work to after it reports, and to `short` (5 minutes) for a one-off. Without `cache`, Claude Code uses an hour on a Claude plan. {}\n",
             uncached_continue_words()
         )
     } else if let Ok(model) = resolve_model(&settings.worker.model)
@@ -1073,7 +1072,7 @@ fn cache_paragraph(settings: &AgentSettings) -> String {
     {
         let choice = providers::CacheChoice::of(&model);
         format!(
-            "\nA worker keeps a prompt cache of its conversation for {} after its last step, or {} with a long cache. Set `start_agent`'s `cache` to `long` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` for a quick one-off such as a research task. A long cache costs more to write, {} the input price instead of 1.25 times, and reads cost the same. The default is `{}`. {}\n",
+            "\nA worker keeps a prompt cache of its conversation for {} after its last step, or {} with a long cache. Set `start_agent`'s `cache` to `long` for a worker you will send more work to after it reports, and to `short` for a one-off. A long cache costs more to write, {} the input price instead of 1.25 times, and reads cost the same. The default is `{}`. {}\n",
             choice.short_words,
             choice.long_words,
             choice.long_write,
@@ -1105,10 +1104,10 @@ fn worker_instructions(settings: &AgentSettings) -> String {
     };
     let mut text = format!(
         "\n# Workers\n\
-         `start_agent` with `agent: worker` starts a worker: a subagent with the same tools (shell, terminal, files, search) that carries out one task while you go on with your own work. {limit}\n\n\
-         With `isolated: true` a worker works in its own git worktree: a separate checkout of the current commit, on a branch of its own, where it commits its changes. Use one for each worker that changes files, so workers don't edit the same files as each other or you; then review its branch and merge it into the working directory (`git merge` or `git cherry-pick`). A worktree has the committed files only: commit what a worker needs first. Without a worktree, a worker works in the working directory itself, which suits investigations, reviews and small changes to files no one else touches.\n\n\
-         Workers report on their own: a worker's report, and its messages to you, reach you as notes from its run (`r1` and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. Use `wait_for_agents` only when you can't go on without their results. Give follow-up work to the worker that already knows the code, with `message_agent`. Once you have merged an isolated worker's branch, remove its worktree with `stop_agent` and `remove_workspace: true`.\n\n\
-         Use workers for independent parts of a large task (exploring separate areas of a codebase, an audit split by area, changes in separate worktrees), or to keep a long investigation out of your own context. Do small things yourself. Check what a worker reports before you rely on it.\n"
+         `start_agent` with `agent: worker` starts a worker, a subagent with your tools that carries out one task while you go on with your own work. {limit}\n\n\
+         Use workers for independent parts of a large task, or to keep a long investigation out of your own context, and do small things yourself. Give each worker enough context to finish its part, link workers whose results affect each other, and check what a worker reports before you rely on it.\n\n\
+         A worker that changes files works in a worktree of its own (`isolated: true`), a checkout of the current commit on its own branch, so workers don't edit each other's files or yours. Commit what it needs first. When it reports, review its branch, merge it, and remove the worktree with `stop_agent`. Investigations, reviews and small changes to files no one else touches can run in the working directory.\n\n\
+         Workers report on their own. Their reports and messages reach you as notes from their runs (`r1` and so on) while you work, and start a turn for you if you have ended yours, so don't wait idly. Use `wait_for_agents` only when you can't go on without a result. Send follow-up work to the worker that already knows the code with `message_agent`.\n"
     );
     // With every worker on the session's model, or with one level, none
     // starts workers.
@@ -1324,7 +1323,7 @@ mod tests {
         // cache, and `worker_options` tells it each model's.)
         assert!(
             main.instructions
-                .contains("Set `cache` to `1h` for a worker")
+                .contains("Set `cache` to `long` for a worker")
         );
         assert!(!main.instructions.contains("an hour after"));
         // With every worker on the session's model, the main agent hears of
@@ -1432,7 +1431,7 @@ mod tests {
                 !text.contains("30 minutes") && !text.contains("an hour after"),
                 "{text}"
             );
-            assert!(text.contains("Set `cache` to `1h` for a worker"));
+            assert!(text.contains("Set `cache` to `long` for a worker"));
             assert!(text.contains("`worker_options`"));
         }
     }
