@@ -663,8 +663,10 @@ impl Harness {
                 "Your next message starts it."
             }
             Conversation::Answered(result) => {
-                out.echo(&out.dim("Its last reply is below."));
-                out.echo(result.summary.trim());
+                if let Some(reply) = crate::harness::last_reply(result) {
+                    out.echo(&out.dim("Its last reply is below."));
+                    out.echo(&reply);
+                }
                 "Your next message continues it."
             }
             Conversation::Stopped(_) => {

@@ -2594,7 +2594,7 @@ async fn kept_notes_come_back_after_a_handover_and_start_a_new_conversation() {
     assert!(body(&bodies, heading, "").contains(STAGING_SERVER));
     // A new conversation starts with them.
     harness.new_conversation();
-    let message = harness.compose(Prompt::User("Third.".into()));
+    let (message, _) = harness.compose(Prompt::User("Third.".into()));
     assert!(message.starts_with(heading) && message.contains(STAGING_SERVER));
 }
 
@@ -3352,7 +3352,7 @@ async fn keep_note_replaces_a_note_for_the_workers_it_was_and_is_for() {
     assert_eq!(kept.len(), 1);
     assert_eq!((kept[0].id, kept[0].text.as_str()), (1, "Use spaces."));
     harness.new_conversation();
-    let message = harness.compose(Prompt::User("Next.".into()));
+    let (message, _) = harness.compose(Prompt::User("Next.".into()));
     assert!(message.starts_with("# Your kept notes"), "{message}");
     assert!(message.contains("- Kept note 1, for r2,") && message.contains("Use spaces."));
     assert!(!message.contains("Use tabs."));

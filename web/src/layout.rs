@@ -250,6 +250,10 @@ pub fn layout_sealed(
     let orphan = |item: &ItemData| item.call.is_some_and(|call| !ids.contains(&call));
     let mut counts: HashMap<Option<u64>, usize> = HashMap::new();
     let mut opened: HashSet<Option<u64>> = HashSet::new();
+    // Whether the turn so far has a row in this view. A turn Arko started
+    // for news may end without a reply, and Messages leaves out its opening,
+    // so its line would end a turn that shows nothing.
+    let mut turn_shown = false;
     for item in &items {
         if placed.contains(&item.id) && !orphan(item) {
             continue;
@@ -270,12 +274,14 @@ pub fn layout_sealed(
             )
             .is_some()
         {
+            turn_shown = true;
             rows.push(Row::Status(item.id));
             continue;
         } else {
             (Place::Hidden, false)
         };
         if let Place::Count = place {
+            turn_shown = true;
             let at = *counts.entry(item.turn).or_insert_with(|| {
                 rows.push(Row::Count {
                     turn: item.turn,
@@ -301,13 +307,22 @@ pub fn layout_sealed(
         } else {
             place
         };
-        if let Place::Row = place {
-            rows.push(Row::Item(item.id, item.kind));
-            if with_results {
-                for &result in results.get(&item.id).into_iter().flatten() {
-                    rows.push(Row::Item(result, Kind::Result));
+        match place {
+            Place::Row if matches!(item.kind, Kind::Turn | Kind::Conversation) => {
+                if std::mem::take(&mut turn_shown) || item.kind == Kind::Conversation {
+                    rows.push(Row::Item(item.id, item.kind));
                 }
             }
+            Place::Row => {
+                turn_shown = true;
+                rows.push(Row::Item(item.id, item.kind));
+                if with_results {
+                    for &result in results.get(&item.id).into_iter().flatten() {
+                        rows.push(Row::Item(result, Kind::Result));
+                    }
+                }
+            }
+            Place::Hidden | Place::Count => {}
         }
     }
     if view == View::Quiet || !opened.is_empty() {
@@ -1239,6 +1254,59 @@ mod tests {
             level: Some(Level::Info),
             ..item(id, Kind::Notice, MAIN, text)
         }
+    }
+
+    /// A turn Arko started for news that ended without a reply. Full shows
+    /// its opening and its work, then its line. Messages leaves all of it
+    /// out, so it leaves out the line too, which would end a turn that shows
+    /// nothing there. A turn whose calls Messages counts keeps its line.
+    #[test]
+    fn a_turn_that_shows_nothing_has_no_line() {
+        let mut call = item(11, Kind::Call, MAIN, "cat report.md");
+        call.status = Some(CallStatus::Ok);
+        let items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            item(2, Kind::Reply, MAIN, "Started r1."),
+            item(3, Kind::Turn, MAIN, "3 s"),
+            opening(4, "r1 reported"),
+            item(5, Kind::Thinking, MAIN, "Nothing for the user."),
+            item(6, Kind::Turn, MAIN, "2 s"),
+            item(7, Kind::User, MAIN, "and now?"),
+            item(8, Kind::Reply, MAIN, "Done."),
+            item(9, Kind::Turn, MAIN, "1 s"),
+            opening(10, "r1 reported"),
+            call,
+            item(12, Kind::Turn, MAIN, "2 s"),
+        ];
+        assert_eq!(
+            ids(&layout(&items, View::Full, None)),
+            [
+                "i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9", "i10", "i11", "i12"
+            ]
+        );
+        assert_eq!(
+            ids(&layout(&items, View::Messages, None)),
+            ["i1", "i2", "i3", "i7", "i8", "i9", "c1:11", "i12"]
+        );
+    }
+
+    /// A news turn after a worker's report keeps its line in Messages, since
+    /// the report's row shows there.
+    #[test]
+    fn a_turn_after_a_workers_report_keeps_its_line() {
+        let items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            item(2, Kind::Reply, MAIN, "Started r1."),
+            item(3, Kind::Turn, MAIN, "3 s"),
+            item(4, Kind::Reply, "r1", "Counted."),
+            opening(5, "r1 reported"),
+            item(6, Kind::Thinking, MAIN, "Nothing for the user."),
+            item(7, Kind::Turn, MAIN, "2 s"),
+        ];
+        assert_eq!(
+            ids(&layout(&items, View::Messages, None)),
+            ["i1", "i2", "i3", "s4", "i7"]
+        );
     }
 
     #[test]

@@ -9,6 +9,9 @@ const STARTED: &str = "(Arko started this turn for it. The user hasn't written.)
 /// How it ended before it was reworded.
 const EARLIER_STARTED: &str = "(Arko started this turn for it; the user hasn't written.)";
 
+/// What the opening of a turn that may end without a reply adds at its end.
+const QUIET: &str = "If nothing in it is for the user, end this turn with an empty response, without text or a tool call.";
+
 /// How the message of a monitor's warning begins, before the time left.
 const ENDS: &str = "A monitor of yours ends ";
 
@@ -60,6 +63,18 @@ impl Opening {
         format!("{lead} {STARTED}")
     }
 
+    /// The message, which says when the turn may end without a reply
+    /// (`reply_optional`). Saying it in the turn's own message keeps it true
+    /// whatever instructions the conversation was saved with.
+    pub(crate) fn message(self, reply_optional: bool) -> String {
+        let text = self.text();
+        if reply_optional {
+            format!("{text} {QUIET}")
+        } else {
+            text
+        }
+    }
+
     /// The transcript's line as the turn starts, naming who and what it is
     /// for (`about`). A reopened session's transcript shows the same line.
     /// The user's answers have none, since answering already says where
@@ -87,6 +102,9 @@ impl Opening {
     pub(crate) fn of(text: &str) -> Option<Self> {
         text.split("\n\n").find_map(|paragraph| {
             let paragraph = paragraph.trim();
+            let paragraph = paragraph
+                .strip_suffix(QUIET)
+                .map_or(paragraph, str::trim_end);
             if paragraph == ANSWERS {
                 return Some(Self::Answers);
             }
@@ -392,7 +410,14 @@ mod tests {
             assert_eq!(Opening::of(&opening.text()), Some(opening));
             let after = format!("# Session capabilities\n\nNo images.\n\n{}", opening.text());
             assert_eq!(Opening::of(&after), Some(opening));
+            assert_eq!(Opening::of(&opening.message(true)), Some(opening));
+            assert_eq!(opening.message(false), opening.text());
         }
+        // A turn that may end without a reply says so after the rest.
+        assert_eq!(
+            Opening::News.message(true),
+            "Your workers sent you news as your last turn ended. It follows. (Arko started this turn for it. The user hasn't written.) If nothing in it is for the user, end this turn with an empty response, without text or a tool call."
+        );
         // News that goes out again says so to the agent, and the user sees
         // the same line.
         assert_eq!(
