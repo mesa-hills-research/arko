@@ -629,8 +629,10 @@ mod tests {
     }
 
     /// Asks the fake Claude Code in `options`, as a way.
+    #[cfg(target_os = "linux")]
     struct ClaudeAsk(cc::ClaudeOptions);
 
+    #[cfg(target_os = "linux")]
     #[async_trait]
     impl Ask for ClaudeAsk {
         async fn ask(

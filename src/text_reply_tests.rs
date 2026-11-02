@@ -11,40 +11,6 @@ use tokio::sync::Notify;
 /// The requests' bodies, as the model got them.
 type Bodies = Arc<Mutex<Vec<String>>>;
 
-/// The lines printed at the line prompt (or as progress, with -p).
-#[derive(Clone, Default)]
-struct Lines(Arc<Mutex<Vec<String>>>);
-
-impl crate::ui::Printer for Lines {
-    fn print(&mut self, text: String) -> Result<(), ()> {
-        let mut lines = self.0.lock().unwrap();
-        lines.extend(text.lines().map(str::to_string));
-        Ok(())
-    }
-}
-
-impl Lines {
-    /// How many printed lines are `text`.
-    fn count(&self, text: &str) -> usize {
-        self.0
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|line| line.trim() == text)
-            .count()
-    }
-}
-
-/// Prints `harness`'s output to `Lines` from now on, at the line prompt,
-/// or (`one_shot`) as -p does, the progress there and the answer to
-/// standard output. Its workflow is opened again with it.
-fn recording(harness: &mut Harness, one_shot: bool) -> Lines {
-    let lines = Lines::default();
-    harness.output = Arc::new(Output::new(Some(Box::new(lines.clone())), one_shot));
-    harness.open(false).unwrap();
-    lines
-}
-
 /// Text replies on, before the conversation starts, as `/text-replies on`
 /// turns them on.
 fn replying(harness: &mut Harness) {
@@ -218,7 +184,8 @@ async fn with_p_the_reply_is_not_printed_as_progress() {
 
 /// Text beside a call is progress, so the turn goes on. What the user types
 /// meanwhile reaches the agent as a note, and it answers in text beside its
-/// next call, also progress, and the turn ends with its reply.
+/// next call, also progress, and the turn ends with its reply. Resumed, the
+/// session shows the text and the reply again.
 #[tokio::test]
 async fn text_beside_a_call_is_progress_and_answers_a_note_mid_turn() {
     let bodies: Bodies = Arc::default();
@@ -282,6 +249,15 @@ async fn text_beside_a_call_is_progress_and_answers_a_note_mid_turn() {
     ] {
         assert_eq!(lines.count(line), 1, "{line}");
     }
+
+    harness.open(true).unwrap();
+    harness.banner_end(false);
+    let feed = &harness.feed;
+    assert_eq!(
+        texts(feed, "text"),
+        ["Listing the files.", "Halfway: the files are listed."].repeat(2)
+    );
+    assert_eq!(texts(feed, "reply"), ["Done: the workspace is empty."; 2]);
 }
 
 /// With text replies the agent answers mid-turn with `message_user`, as
@@ -667,7 +643,7 @@ fn without_message_user(config: &arko_agents::AgentConfig) -> arko_agents::Agent
 /// What a context update with a note from the user ends with, for an agent
 /// that has `message_user` (with text replies or without), and for one saved
 /// with text replies before it had it.
-const TOOL_HINT: &str = "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above with `message_user` first, even if they cut a wait short, then carry on with your work.";
+const TOOL_HINT: &str = "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above with `message_user`, even if they cut a wait short, or in your reply if your turn is ending anyway.";
 const TEXT_HINT: &str = "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above in the text you write beside your next tool call.";
 
 /// A model that notes a message at once, except "List the files.", where it

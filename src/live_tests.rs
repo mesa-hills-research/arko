@@ -1657,7 +1657,9 @@ async fn handover_compacts_a_main_agent_in_claude_code() {
 
 /// A main agent in Claude Code shows what it writes beside its calls, meaning its
 /// thinking, folded, then each response's text, an item of its own before
-/// the call it goes with, with text replies and with `complete_task`.
+/// the call it goes with, with text replies and with `complete_task`. The
+/// page reads the text as such. Restored, the session shows the text and
+/// the reply again, in their order (its thinking isn't kept).
 #[cfg(unix)]
 #[tokio::test]
 async fn a_main_agent_in_claude_code_shows_its_thinking_and_text_beside_its_calls() {
@@ -1709,6 +1711,41 @@ async fn a_main_agent_in_claude_code_shows_its_thinking_and_text_beside_its_call
         assert_eq!(shown[1].1, "Listing the files.");
         assert_eq!(shown[3].1, "Halfway: the files are listed.");
         assert_eq!(shown[5].1, "Done: the workspace is listed.");
+        let (snapshot, _) = harness.feed.subscribe();
+        let text = snapshot
+            .items
+            .iter()
+            .find(|item| item.text == "Halfway: the files are listed.")
+            .unwrap();
+        let read: crate::remote::protocol::ItemData =
+            serde_json::from_value(serde_json::to_value(text).unwrap()).unwrap();
+        assert_eq!((read.agent.as_str(), read.kind), (MAIN, remote::Kind::Text));
+
+        // Arko closes, and the session is resumed.
+        let before = harness.feed.subscribe().0.items.len();
+        harness.crew.as_ref().unwrap().shutdown().await;
+        harness.open(true).unwrap();
+        harness.banner_end(false);
+        let restored: Vec<(remote::Kind, String)> = harness.feed.subscribe().0.items[before..]
+            .iter()
+            .filter(|item| item.is_main())
+            .filter(|item| {
+                matches!(
+                    item.kind,
+                    remote::Kind::Thinking | remote::Kind::Text | remote::Kind::Reply
+                )
+            })
+            .map(|item| (item.kind, item.text.clone()))
+            .collect();
+        assert_eq!(
+            restored,
+            [
+                (remote::Kind::Text, "Listing the files.".to_string()),
+                (remote::Kind::Text, "Halfway: the files are listed.".to_string()),
+                (remote::Kind::Reply, "Done: the workspace is listed.".to_string()),
+            ],
+            "{text_replies}"
+        );
         harness.crew.as_ref().unwrap().shutdown().await;
         managers.shutdown().await;
     }
@@ -1992,12 +2029,14 @@ fn to_r1(feed: &remote::Feed) -> Vec<(String, Option<remote::Source>)> {
         .collect()
 }
 
-/// `/message r1 …` typed while the main agent waits for its worker. The
-/// running worker reads it at its next step, marked as from the user, and
-/// the lead's wait returns a copy with the report. The feed has it as the
-/// user's message to r1. The worker answers with `message_user`, which the
-/// feed has as r1's message to the user, for its own view and the main
-/// transcript, and the page reads it as such.
+/// `/message r1 …` typed at the line prompt while the main agent waits for
+/// its worker. The running worker reads it at its next step, marked as from
+/// the user, and the lead's wait returns a copy with the report. The feed
+/// has it as the user's message to r1. The worker answers with
+/// `message_user`, which the feed has as r1's message to the user, and the
+/// page reads it as such. The line prompt, which has no worker's view,
+/// prints the answer under r1's name, and the text beside its calls stays
+/// in its own view.
 #[tokio::test]
 async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
     let temp = tempfile::tempdir().unwrap();
@@ -2013,8 +2052,9 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
                     if body.contains("call_w2") {
                         complete("w3", "Used tabs.")
                     } else if body.contains("call_w1") {
-                        tool_call(
+                        crate::mock_model::say_and_call(
                             "w2",
+                            "Changing the indents.",
                             crate::message::MESSAGE_USER,
                             serde_json::json!({"message": "Tabs it is."}),
                         )
@@ -2036,6 +2076,7 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
     .await;
     let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
     let _managers = equip(&mut harness, false);
+    let lines = recording(&mut harness, false);
     let feed = harness.feed.clone();
     let typing = tokio::spawn({
         let bodies = bodies.clone();
@@ -2110,6 +2151,11 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
         (read.agent.as_str(), read.kind, read.from, read.text.as_str()),
         ("r1", remote::Kind::Message, None, "Tabs it is.")
     );
+    // The line prompt prints the answer under r1's name, and not the text.
+    harness.flush_printer().await;
+    assert_eq!(lines.count("✉ r1 to you"), 1);
+    assert_eq!(lines.count("Tabs it is."), 1);
+    assert_eq!(lines.count("Changing the indents."), 0);
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 

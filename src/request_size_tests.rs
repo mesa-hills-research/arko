@@ -43,7 +43,6 @@ fn sizes(body: &str) -> (usize, usize, usize, Vec<String>) {
     (prompt.chars().count(), tools.chars().count(), text, names)
 }
 
-#[cfg(unix)]
 #[tokio::test]
 #[ignore = "writes the requests to $ARKO_REQUESTS"]
 async fn request_sizes() {

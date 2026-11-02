@@ -624,9 +624,10 @@ pub fn replies_text(text_replies: bool) -> &'static str {
 /// typed, where the agent answers it. Text it writes only in its thinking may
 /// never reach the user, and the rule that says so in its instructions is far
 /// from the note. The agent answers with `message_user`, also when the note
-/// cut a wait short. An agent without it (a session saved when a main agent
-/// that replies in text had none) answers in text beside its next call. A
-/// chat has no calls to answer beside, and so no hint.
+/// cut a wait short, or in its reply when its turn ends anyway. An agent
+/// without it (a session saved when a main agent that replies in text had
+/// none) answers in text beside its next call. A chat has no calls to
+/// answer beside, and so no hint.
 pub fn operator_note_hint(config: &AgentConfig) -> Option<&'static str> {
     let tools = &config.tool_config;
     if tools.chat {
@@ -637,7 +638,7 @@ pub fn operator_note_hint(config: &AgentConfig) -> Option<&'static str> {
         .any(|name| name == crate::message::MESSAGE_USER)
     {
         Some(
-            "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above with `message_user` first, even if they cut a wait short, then carry on with your work.",
+            "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above with `message_user`, even if they cut a wait short, or in your reply if your turn is ending anyway.",
         )
     } else {
         Some(
@@ -773,8 +774,8 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "# Your task\n\
          Make reasonable choices yourself, and say which in your report. If something blocks you, report what and why.\n\n\
          # The lead\n\
-         The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation. The user may also write to you directly: their messages reach you the same way, marked as from the user, and you treat them as the lead's. The lead sees only your messages to it and your report, never your thinking or the text beside your calls, so an answer meant for the lead goes in one of those. Text written only in your thinking may never reach anyone, and a long wait is where that is most likely.\n\n\
-         When the user writes to you, answer them with `message_user`, and tell the lead only what it needs to know. Never answer them only in your thinking. Keep `message_user` for answering the user and for what they must know now, not for progress notes.\n",
+         The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation. The user may also write to you directly: their messages reach you the same way, marked as from the user, and you treat them as the lead's.\n\n\
+         `message_user` reaches only the user, who reads it in your own view. Use it to answer the user when they write to you, and for what they must know now. Never repeat its words beside a call or in your report. Progress, findings and questions about your task go to the lead with `message_agent` (to `lead`), the only way the lead hears from you besides your report. Text written only in your thinking may never reach anyone, and a long wait is where that is most likely.\n",
     );
     instructions.push_str(&tool_instructions(settings, true));
     if settings.extra_rules.for_model(settings.worker)
@@ -848,7 +849,7 @@ fn main_instructions(settings: &AgentSettings) -> String {
         "# How this conversation works\n\
          {turns}\n\n\
          When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
-         The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work.{waiting} Use `message_user` too for anything they must know before you finish. The user may not see your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. So every answer, question or progress note meant for them goes in what you write (your text, `message_user` or your reply). Text written only in your thinking may never reach them, and a long wait is where that is most likely. {ending}\n\n\
+         The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work, or in your reply if your turn is ending anyway.{waiting} Use `message_user` too for anything they must know before you finish. Never repeat in your reply, or beside a call, what a message already said. The user may not see your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. Text beside your calls reaches them too, but text meant for them can slip into your thinking, so an answer to them goes in `message_user` or your reply. {ending}\n\n\
          When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`, with choices and the default you'd go with when they help. It waits for the answer. Never write or delete files, spend money, start workers, or follow a preference, design or scope on the strength of your default while a question about it is open. Pass `wait: false` only when you have work no answer could change, such as reading and investigating. The answers then reach you as a note, and you do only that work until they come. Close questions that no longer matter with `close_questions`. A message of the user's may answer your questions (it starts with \"(This message answers q3.)\") or end with those still open (\"(Still open: q5.)\"). If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n\n\
          {kept_notes}\n"
     )
@@ -983,7 +984,7 @@ fn known_indexes(indexes: &[index::Known]) -> String {
 
 /// What the main agent is told of choosing a worker's model (see
 /// `worker_options`).
-const CHOOSING: &str = "A worker runs on the session's worker model unless you choose otherwise. Choose with `profile` (a named setup the user or you saved) or with `model` and `effort`. Match the model to the job. A small one reads and searches well, a strong one does hard reasoning, and a model from another maker gives a second opinion or a comparison. `worker_options` lists the profiles and the models usable now with their prices. A stronger model costs more, so pick the weakest one that does the job. Set `cache` to `1h` for a worker you will send more work to after it reports, and to `5m` for a one-off.";
+const CHOOSING: &str = "A worker runs on the session's worker model unless you choose a profile, or a model and effort. Pick the weakest model that does the job, and a model from another maker for a second opinion. `worker_options` lists the profiles and the models usable now with their prices. Set `cache` to `long` for a worker you will send more work to after it reports, and to `short` for a one-off.";
 
 /// What the main agent is told of saving skills, in its Skills section.
 pub(crate) const SAVING_SKILLS: &str = "\n\nSave a skill with `add_skill` when instructions would help later conversations or workers, such as this project's release steps or a workaround for a tool, and change one an agent saved with `edit_skill`. Give models an exact id for a workaround tied to one release, and a short name or pattern for advice that should carry over to the family's next release.";
@@ -1020,7 +1021,7 @@ pub(crate) fn billing_words(billing: WorkerBilling) -> &'static str {
 }
 
 /// What it is told when the user lets it start workers with a profile only.
-const PROFILES_ONLY: &str = "A worker runs on the session's worker model unless you start it with a profile, a named setup the user saved. `worker_options` lists the profiles, which set each worker's model and effort, and what the models cost.";
+const PROFILES_ONLY: &str = "A worker runs on the session's worker model unless you start it with a profile the user saved. `worker_options` lists the profiles with their models and what the models cost.";
 
 /// The profiles when the session started, as a sentence. Nothing when
 /// there were none.
@@ -1046,14 +1047,13 @@ fn profile_names(profiles: &[ProfileName]) -> String {
     )
 }
 
-/// What continuing a worker after its cache expired costs, against a fresh
-/// worker, and how `message_agent` asks first (see `worker_cache`), for the
-/// end of [`cache_paragraph`].
+/// When to start a fresh worker instead of continuing one whose cache
+/// expired, for the end of [`cache_paragraph`]. `message_agent` says what
+/// continuing costs and how to confirm it (see `worker_cache`).
 fn uncached_continue_words() -> String {
     format!(
-        "A cached read of a worker's conversation costs about a tenth of the input price. Once its cache has expired, continuing it reads the whole conversation again at the full input price and writes it to the cache again (on Claude 1.25 times the input price, twice with the long cache), and on a plan that uses more of its limits. A fresh worker costs only its task and what it reads to do it. So when a finished worker's cache has expired and its conversation is past {}k tokens, start a fresh worker, unless you really need its context. `list_agents` says each finished worker's cache and size. `message_agent` to such a worker says what continuing it costs instead of sending, and the same call with `{}: true` continues it.",
-        crate::worker_cache::CONFIRM_TOKENS / 1000,
-        crate::worker_cache::CONFIRM_PARAM
+        "Once a finished worker's cache has expired, continuing it reads its whole conversation again at the full price, so past {}k tokens start a fresh worker unless you need its context. `message_agent` says what continuing costs and asks first.",
+        crate::worker_cache::CONFIRM_TOKENS / 1000
     )
 }
 
@@ -1063,7 +1063,7 @@ fn cache_paragraph(settings: &AgentSettings) -> String {
     let openai = settings.worker.provider() == Ok(Provider::OpenAI);
     if settings.worker.in_claude_code() {
         format!(
-            "\nA worker runs in Claude Code and keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `long` (an hour) for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` (5 minutes) for a quick one-off such as a research task. Without `cache`, Claude Code uses an hour on a Claude plan. {}\n",
+            "\nA worker runs in Claude Code and keeps a prompt cache of its conversation. Set `start_agent`'s `cache` to `long` (an hour) for a worker you will send more work to after it reports, and to `short` (5 minutes) for a one-off. Without `cache`, Claude Code uses an hour on a Claude plan. {}\n",
             uncached_continue_words()
         )
     } else if let Ok(model) = resolve_model(&settings.worker.model)
@@ -1073,7 +1073,7 @@ fn cache_paragraph(settings: &AgentSettings) -> String {
     {
         let choice = providers::CacheChoice::of(&model);
         format!(
-            "\nA worker keeps a prompt cache of its conversation for {} after its last step, or {} with a long cache. Set `start_agent`'s `cache` to `long` for a worker you expect to send messages or follow-up work after it reports, so continuing it reuses its cache, and to `short` for a quick one-off such as a research task. A long cache costs more to write, {} the input price instead of 1.25 times, and reads cost the same. The default is `{}`. {}\n",
+            "\nA worker keeps a prompt cache of its conversation for {} after its last step, or {} with a long cache. Set `start_agent`'s `cache` to `long` for a worker you will send more work to after it reports, and to `short` for a one-off. A long cache costs more to write, {} the input price instead of 1.25 times, and reads cost the same. The default is `{}`. {}\n",
             choice.short_words,
             choice.long_words,
             choice.long_write,
@@ -1105,10 +1105,10 @@ fn worker_instructions(settings: &AgentSettings) -> String {
     };
     let mut text = format!(
         "\n# Workers\n\
-         `start_agent` with `agent: worker` starts a worker: a subagent with the same tools (shell, terminal, files, search) that carries out one task while you go on with your own work. {limit}\n\n\
-         With `isolated: true` a worker works in its own git worktree: a separate checkout of the current commit, on a branch of its own, where it commits its changes. Use one for each worker that changes files, so workers don't edit the same files as each other or you; then review its branch and merge it into the working directory (`git merge` or `git cherry-pick`). A worktree has the committed files only: commit what a worker needs first. Without a worktree, a worker works in the working directory itself, which suits investigations, reviews and small changes to files no one else touches.\n\n\
-         Workers report on their own: a worker's report, and its messages to you, reach you as notes from its run (`r1` and so on) while you work, and start a new turn for you if you have ended yours. So don't wait idly: do other work, and end your turn when you have something to tell the user, saying which workers are still running. Use `wait_for_agents` only when you can't go on without their results. Give follow-up work to the worker that already knows the code, with `message_agent`. Once you have merged an isolated worker's branch, remove its worktree with `stop_agent` and `remove_workspace: true`.\n\n\
-         Use workers for independent parts of a large task (exploring separate areas of a codebase, an audit split by area, changes in separate worktrees), or to keep a long investigation out of your own context. Do small things yourself. Check what a worker reports before you rely on it.\n"
+         `start_agent` with `agent: worker` starts a worker, a subagent with your tools that carries out one task while you go on with your own work. {limit}\n\n\
+         Use workers for independent parts of a large task, or to keep a long investigation out of your own context, and do small things yourself. Give each worker enough context to finish its part, link workers whose results affect each other, and check what a worker reports before you rely on it.\n\n\
+         A worker that changes files works in a worktree of its own (`isolated: true`), a checkout of the current commit on its own branch, so workers don't edit each other's files or yours. Commit what it needs first. When it reports, review its branch, merge it, and remove the worktree with `stop_agent`. Investigations, reviews and small changes to files no one else touches can run in the working directory.\n\n\
+         Workers report on their own. Their reports and messages reach you as notes from their runs (`r1` and so on) while you work, and start a turn for you if you have ended yours, so don't wait idly. Use `wait_for_agents` only when you can't go on without a result. Send follow-up work to the worker that already knows the code with `message_agent`.\n"
     );
     // With every worker on the session's model, or with one level, none
     // starts workers.
@@ -1324,7 +1324,7 @@ mod tests {
         // cache, and `worker_options` tells it each model's.)
         assert!(
             main.instructions
-                .contains("Set `cache` to `1h` for a worker")
+                .contains("Set `cache` to `long` for a worker")
         );
         assert!(!main.instructions.contains("an hour after"));
         // With every worker on the session's model, the main agent hears of
@@ -1432,7 +1432,7 @@ mod tests {
                 !text.contains("30 minutes") && !text.contains("an hour after"),
                 "{text}"
             );
-            assert!(text.contains("Set `cache` to `1h` for a worker"));
+            assert!(text.contains("Set `cache` to `long` for a worker"));
             assert!(text.contains("`worker_options`"));
         }
     }
@@ -2010,7 +2010,8 @@ mod tests {
         assert!(summary.contains("the only thing it sees of your work"));
         assert!(summary.contains("file paths and line numbers"));
         assert!(!worker.instructions.contains("complete_task"));
-        assert!(!worker.instructions.contains("message_agent"));
+        // Named once, as the way to the lead.
+        assert_eq!(worker.instructions.matches("message_agent").count(), 1);
     }
 
     /// The extra rules go to agents on small models, each agent by its own
@@ -2293,9 +2294,11 @@ mod tests {
     }
 
     /// Both ways of replying tell the lead that the user may not see its
-    /// thinking, so an answer to a note goes in `message_user`, and that a
-    /// long wait is where text written only in thinking is most likely lost.
-    /// A lead in Claude Code once answered notes in its thinking alone.
+    /// thinking, and that text beside its calls reaches them but can slip
+    /// into thinking, so an answer goes in `message_user` or the reply, the
+    /// reply when the turn ends anyway. A lead in Claude Code once answered
+    /// notes in its thinking alone, even with no text beside its call. Leads
+    /// also sent a message and then repeated it in their reply.
     #[test]
     fn the_lead_is_told_its_thinking_may_not_reach_the_user() {
         let opus = model("opus", false);
@@ -2305,12 +2308,15 @@ mod tests {
         })
         .unwrap();
         let never = "The user may not see your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary.";
-        let goes = "goes in what you write (your text, `message_user` or your reply). Text written only in your thinking may never reach them, and a long wait is where that is most likely.";
-        assert!(replying.instructions.contains(never));
-        assert!(replying.instructions.contains(goes));
+        let goes = "Text beside your calls reaches them too, but text meant for them can slip into your thinking, so an answer to them goes in `message_user` or your reply.";
+        let ending = "answer it with `message_user` and carry on with your work, or in your reply if your turn is ending anyway.";
+        let repeat = "Never repeat in your reply, or beside a call, what a message already said.";
         let calling = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
-        assert!(calling.instructions.contains(never));
-        assert!(calling.instructions.contains(goes));
+        for config in [&replying, &calling] {
+            for said in [never, goes, ending, repeat] {
+                assert_eq!(config.instructions.matches(said).count(), 1, "{said}");
+            }
+        }
         // Workers answer the lead, which sees their messages and reports.
         let worker = worker_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert!(
@@ -2318,9 +2324,11 @@ mod tests {
                 .instructions
                 .contains("The user may not see your thinking")
         );
-        assert!(worker.instructions.contains(
-            "The lead sees only your messages to it and your report, never your thinking"
-        ));
+        assert!(
+            worker
+                .instructions
+                .contains("the only way the lead hears from you besides your report")
+        );
         assert!(worker.instructions.contains(
             "Text written only in your thinking may never reach anyone, and a long wait is where that is most likely."
         ));
@@ -2438,10 +2446,12 @@ mod tests {
         );
     }
 
-    /// A worker answers the user who writes to it with `message_user`, and
-    /// tells its lead only what the lead needs, as its instructions say
-    /// where they speak of the lead. A worker once answered the user in its
-    /// thinking alone, which the user never saw.
+    /// A worker's instructions say, where they speak of the lead, that
+    /// `message_user` reaches only the user, in the worker's own view, that
+    /// its words aren't repeated beside a call or in the report, and that
+    /// progress, findings and questions go to the lead with `message_agent`. A worker once answered the user in its thinking
+    /// alone, which the user never saw, and another sent progress meant for
+    /// its lead to the user.
     #[test]
     fn a_worker_answers_the_user_with_message_user() {
         let opus = model("opus", false);
@@ -2454,7 +2464,7 @@ mod tests {
                 .any(|name| name == crate::message::MESSAGE_USER)
         );
         let instructions = &worker.instructions;
-        let said = "When the user writes to you, answer them with `message_user`, and tell the lead only what it needs to know. Never answer them only in your thinking. Keep `message_user` for answering the user and for what they must know now, not for progress notes.";
+        let said = "`message_user` reaches only the user, who reads it in your own view. Use it to answer the user when they write to you, and for what they must know now. Never repeat its words beside a call or in your report. Progress, findings and questions about your task go to the lead with `message_agent` (to `lead`), the only way the lead hears from you besides your report. Text written only in your thinking may never reach anyone, and a long wait is where that is most likely.";
         let at = instructions.find(said).expect("the paragraph");
         assert!(instructions.find("# The lead\n").unwrap() < at);
         assert!(at < instructions.find("# Tools\n").unwrap());

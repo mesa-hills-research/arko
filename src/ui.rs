@@ -2637,7 +2637,9 @@ mod tests {
     }
 
     /// A worker's message to the user prints whole, as the main agent's
-    /// does, under the worker's name. Its other calls print a line each.
+    /// does, under the worker's name, whether or not the user wrote to it
+    /// (the line prompt has no worker's view). Its other calls print a line
+    /// each, and its text none.
     #[tokio::test]
     async fn a_workers_message_to_the_user_prints_under_its_name() {
         let printed = Printed::default();
@@ -2656,6 +2658,10 @@ mod tests {
                 parameters: [(name.to_string(), value.into())].into(),
             },
         };
+        printer.event(WorkflowEvent {
+            event: AgentEvent::AssistantResponseChunk("Looking.\n".into()),
+            ..call(crew::LIST_AGENTS, "x", "")
+        });
         printer.event(call(
             message::MESSAGE_USER,
             message::MESSAGE_PARAM,
