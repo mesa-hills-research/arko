@@ -451,9 +451,9 @@ details.call > summary::-webkit-details-marker,
 details.thinking > summary::-webkit-details-marker,
 details.more > summary::-webkit-details-marker { display: none; }
 details.quiet > summary { display: block; }
-.row.quiet.muted .what { opacity: 0.6; }
+.row:is(.quiet, .status).muted .what { opacity: 0.6; }
 /* A row with nothing more to show than its words has no fold. */
-.row.quiet.still summary { cursor: default; }
+.row:is(.quiet, .status).still summary { cursor: default; }
 /* A failed Quiet row's one ✗ stands at its right. */
 .call-line .outcome.right { margin-left: auto; }
 .call-line .outcome.right::before { content: none; }

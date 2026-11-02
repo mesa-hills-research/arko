@@ -154,19 +154,18 @@ fn laid_out(
         page.quiet_sealed.with(|sealed| {
             STORE.with(|store| {
                 let store = store.borrow();
-                // The workers that workers started.
-                let nested: HashSet<String> = store
+                // The workers that workers started, by their leads.
+                let leads: HashMap<String, String> = store
                     .workers
                     .values()
-                    .filter(|worker| worker.parent.is_some())
-                    .map(|worker| worker.id.clone())
+                    .filter_map(|worker| Some((worker.id.clone(), worker.parent.clone()?)))
                     .collect();
                 let rows = layout::layout_sealed(
                     &store.items,
                     view,
                     worker.as_deref(),
                     sealed,
-                    &nested,
+                    &leads,
                     &counts_open,
                 );
                 (store.feed, rows)
@@ -701,44 +700,102 @@ fn kind_class(kind: Kind) -> &'static str {
     }
 }
 
-/// A worker's report or message to its lead in the main transcript, as
-/// the terminal's row says it ("r1 reported", "r1 messaged the lead"),
-/// which opens to its words, the report's Markdown and the message as its
-/// call's content has it.
+/// A worker's report or message to its lead in its lead's view, as the
+/// terminal's row says it ("r1 reported", "r1 messaged the lead"), with how
+/// a message's call stands (the spinner while it runs, ✗ when it failed,
+/// the stop that cut it short). It opens to its words, the report's
+/// Markdown and the message as its call's content has it, once there are
+/// any.
 fn status_row(id: u64, cell: RowCell) -> AnyView {
     let page = page();
     let data = cell.data;
-    let (agent, row) = data.with_untracked(|item| {
-        (
-            item.agent.clone(),
-            crate::quiet::WorkerRow::of(item.kind, item.act.as_ref()),
-        )
-    });
-    let Some(row) = row else {
-        return ().into_any();
+    let agent = data.with_untracked(|item| item.agent.clone());
+    // The worker's lead, whose view it shows in.
+    let lead = {
+        let agent = agent.clone();
+        move || {
+            page.workers.track();
+            STORE.with(|store| {
+                store
+                    .borrow()
+                    .workers
+                    .get(&agent)
+                    .and_then(|worker| worker.parent.clone())
+                    .unwrap_or_else(|| MAIN.to_string())
+            })
+        }
     };
-    let words = match row {
-        crate::quiet::WorkerRow::Reported => {
+    let row = Memo::new(move |_| {
+        let lead = lead();
+        data.with(|item| {
+            crate::quiet::WorkerRow::of(
+                item.kind,
+                item.act.as_ref(),
+                item.status,
+                item.outcome.as_deref(),
+                &lead,
+            )
+            .map(|row| (row, row.words(item.outcome.as_deref())))
+        })
+    });
+    // The message's content, once its result came.
+    let content = move || {
+        page.version.track();
+        let result = STORE.with(|store| store.borrow().content_of(id))?;
+        Some(crate::app::cell(result)?.for_row().data)
+    };
+    let report = move || matches!(row.get(), Some((crate::quiet::WorkerRow::Reported, _)));
+    let opens = move || {
+        if report() {
+            cell.text.with(|text| !text.trim().is_empty())
+        } else {
+            content().is_some()
+        }
+    };
+    let words = move || {
+        if report() {
             view! { <Md id=id text=cell.text code=cell.code /> }.into_any()
+        } else {
+            content().map(contents::content_view).into_any()
         }
-        crate::quiet::WorkerRow::MessagedLead => {
-            let message = move || {
-                page.version.track();
-                let result = STORE.with(|store| store.borrow().content_of(id))?;
-                let data = crate::app::cell(result)?.for_row().data;
-                Some(contents::content_view(data))
-            };
-            message.into_any()
+    };
+    let said = move || row.get().map(|(_, words)| words).unwrap_or_default();
+    let class = move || {
+        let said = said();
+        let mut class = "row call status".to_string();
+        if said.failed {
+            class.push_str(" has-failure");
         }
+        if said.muted {
+            class.push_str(" muted");
+        }
+        if !opens() {
+            class.push_str(" still");
+        }
+        class
     };
     view! {
-        <div class="row call status" data-id=id>
+        <div class=class data-id=id>
             <details class="call">
-                <summary>
+                <summary
+                    tabindex=move || if opens() { "0" } else { "-1" }
+                    on:click=move |event| {
+                        if !opens() {
+                            event.prevent_default();
+                        }
+                    }
+                >
                     <span class="call-line">
-                        <span class="mark">"▸"</span>
+                        <span class="mark">{move || if opens() { "▸" } else { "" }}</span>
                         <span class="who">{agent}</span>
-                        <span class="what">{row.words()}</span>
+                        <span class="what">{move || said().text}</span>
+                        {move || said().note.map(|note| view! { <span class="outcome">{note}</span> })}
+                        {move || said().running.then(|| view! {
+                            <span class="outcome"><Spinner /></span>
+                        })}
+                        {move || said().failed.then(|| view! {
+                            <span class="outcome right"><span class="failed">"✗"</span></span>
+                        })}
                     </span>
                 </summary>
                 <div class="holds">{words}</div>

@@ -178,11 +178,7 @@ impl Member<'_> {
 
     /// It failed, which a call a stop or a compaction cut short didn't.
     fn failed(&self) -> bool {
-        self.call.status == Some(CallStatus::Failed)
-            && !matches!(
-                self.call.outcome.map(str::trim),
-                Some(STOPPED | HELD | INTERRUPTED)
-            )
+        self.call.status == Some(CallStatus::Failed) && !cut_short(self.call.outcome)
     }
 
     /// A call that can run long, which a row shows as it runs ("· running
@@ -726,42 +722,84 @@ fn words(group: &Group) -> Words {
     words
 }
 
-/// The main agent's name, which a worker's message to it as its lead names.
-const MAIN: &str = "main";
-
-/// What a worker's item is in the main transcript, which shows a worker of
-/// the main agent only as its reports and its messages to the main agent,
-/// its lead. Each is a row of its own, a status and not a call, that opens
-/// to its words. The rest of the worker's, its text, its calls and its
-/// conversation with the user, is in its own view.
+/// What a worker's item is in its lead's view, which shows a worker only
+/// as its reports and its messages to that lead (the main agent, or the
+/// worker that started it). Each is a row of its own, a status and not a
+/// call, that opens to its words. The rest of the worker's, its text, its
+/// calls and its conversation with the user, is in its own view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerRow {
+    /// A report, the reply a run of the worker ended with.
     Reported,
-    MessagedLead,
+    /// A message to the lead, as its call stands.
+    Message(Sending),
+}
+
+/// How a worker's message to its lead stands, from its call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sending {
+    /// Its call runs.
+    Running,
+    /// It reached the lead.
+    Sent,
+    /// It failed or was refused.
+    Failed,
+    /// A stop, a compaction or the session's end cut its call short.
+    CutShort,
 }
 
 impl WorkerRow {
-    /// The row of a worker's item of `kind`, with its `act` for a call, if
-    /// it has one in the main transcript.
-    pub fn of(kind: Kind, act: Option<&Act>) -> Option<Self> {
+    /// The row of a worker's item of `kind` in the view of `lead` (the
+    /// main agent's "main", or a worker's ID), whose worker it is, with its
+    /// `act`, `status` and `outcome` for a call, if it has one there.
+    pub fn of(
+        kind: Kind,
+        act: Option<&Act>,
+        status: Option<CallStatus>,
+        outcome: Option<&str>,
+        lead: &str,
+    ) -> Option<Self> {
         match kind {
             Kind::Reply => Some(WorkerRow::Reported),
             Kind::Call
-                if act.is_some_and(|act| act.kind == ActKind::Message && act.target == MAIN) =>
+                if act.is_some_and(|act| act.kind == ActKind::Message && act.target == lead) =>
             {
-                Some(WorkerRow::MessagedLead)
+                Some(WorkerRow::Message(match status {
+                    Some(CallStatus::Ok) => Sending::Sent,
+                    Some(CallStatus::Failed) if cut_short(outcome) => Sending::CutShort,
+                    Some(CallStatus::Failed) => Sending::Failed,
+                    Some(CallStatus::Running) | None => Sending::Running,
+                }))
             }
             _ => None,
         }
     }
 
-    /// What the row says after the worker's name ("r1 reported").
-    pub fn words(self) -> &'static str {
-        match self {
+    /// What the row says after the worker's name ("r1 reported", "r1
+    /// messaged the lead"), with its call's `outcome` after it when a stop
+    /// cut the call short, ✗ when it failed, and the spinner while it runs.
+    pub fn words(self, outcome: Option<&str>) -> Words {
+        let text = match self {
             WorkerRow::Reported => "reported",
-            WorkerRow::MessagedLead => "messaged the lead",
+            WorkerRow::Message(Sending::Running) => "messaging the lead",
+            WorkerRow::Message(Sending::Sent) => "messaged the lead",
+            WorkerRow::Message(Sending::Failed | Sending::CutShort) => "couldn’t message the lead",
+        };
+        let cut = self == WorkerRow::Message(Sending::CutShort);
+        Words {
+            text: text.into(),
+            failed: self == WorkerRow::Message(Sending::Failed),
+            note: outcome.map(str::trim).filter(|_| cut).map(str::to_string),
+            muted: cut,
+            running: self == WorkerRow::Message(Sending::Running),
         }
     }
+}
+
+/// Whether a call's `outcome` says a stop, a compaction or the session's
+/// end cut it short, which isn't a failure.
+fn cut_short(outcome: Option<&str>) -> bool {
+    matches!(outcome.map(str::trim), Some(STOPPED | HELD | INTERRUPTED))
 }
 
 /// Who a message is from and who it's for, as the user reads it: "r12 to
@@ -1482,6 +1520,51 @@ mod tests {
             target: target.into(),
             ..Act::default()
         }
+    }
+
+    /// A worker's row in its lead's view keeps how its message's call
+    /// stands, and a message counts only in the view of the lead it's to.
+    #[test]
+    fn a_workers_row_keeps_its_messages_call() {
+        let message = act(ActKind::Message, "r1");
+        let row = |status, outcome| {
+            WorkerRow::of(Kind::Call, Some(&message), Some(status), outcome, "r1")
+                .map(|row| row.words(outcome))
+        };
+        let said = |words: Option<Words>| {
+            words.map(|words| (words.text, words.note, words.failed, words.running))
+        };
+        assert_eq!(
+            said(row(CallStatus::Running, None)),
+            Some(("messaging the lead".into(), None, false, true))
+        );
+        assert_eq!(
+            said(row(CallStatus::Ok, Some("sent"))),
+            Some(("messaged the lead".into(), None, false, false))
+        );
+        assert_eq!(
+            said(row(CallStatus::Failed, Some("refused"))),
+            Some(("couldn’t message the lead".into(), None, true, false))
+        );
+        assert_eq!(
+            said(row(CallStatus::Failed, Some(STOPPED))),
+            Some((
+                "couldn’t message the lead".into(),
+                Some(STOPPED.into()),
+                false,
+                false
+            ))
+        );
+        // To another agent than the view's, it's no row there.
+        let to_main = act(ActKind::Message, "main");
+        assert_eq!(
+            WorkerRow::of(Kind::Call, Some(&to_main), None, None, "r1"),
+            None
+        );
+        assert_eq!(
+            WorkerRow::of(Kind::Reply, None, None, None, "r1"),
+            Some(WorkerRow::Reported)
+        );
     }
 
     /// The rows of `calls` (thinking is `None`), each a row's words or

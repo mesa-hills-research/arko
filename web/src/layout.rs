@@ -208,15 +208,16 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
         view,
         worker,
         &HashSet::new(),
-        &HashSet::new(),
+        &HashMap::new(),
         &HashSet::new(),
     )
 }
 
 /// [`layout`], where `sealed` are the calls whose Quiet rows of one call
 /// the reader opened, which keep their form ([`quiet::Call::sealed`]),
-/// `nested` the workers that a worker started, whose reports and messages
-/// go to their lead's view, and `counts_open` the turns whose count of
+/// `leads` the workers that a worker started, by the worker that started
+/// each, whose reports and messages go to that lead's view, and
+/// `counts_open` the turns whose count of
 /// calls the reader opened in Messages, by their first call. From that call
 /// on, such a turn's items show as Quiet shows them, each where it came.
 pub fn layout_sealed(
@@ -224,9 +225,13 @@ pub fn layout_sealed(
     view: View,
     worker: Option<&str>,
     sealed: &HashSet<u64>,
-    nested: &HashSet<String>,
+    leads: &HashMap<String, String>,
     counts_open: &HashSet<u64>,
 ) -> Vec<Row> {
+    // The agent whose view it is, and the lead of each worker, the main
+    // agent unless a worker started it.
+    let viewed = worker.unwrap_or(MAIN);
+    let lead_of = |agent: &str| leads.get(agent).map_or(MAIN, String::as_str);
     let items = pending_last(all);
     // A result shows under its call, which other items may have followed
     // by the time it came.
@@ -249,22 +254,26 @@ pub fn layout_sealed(
         if placed.contains(&item.id) && !orphan(item) {
             continue;
         }
-        // The agent's own items follow the view. In every view of the main
-        // transcript, a worker of the main agent shows as its reports and
-        // its messages to its lead, each a row that opens to its words. Its
-        // text, its calls, its conversation with the user and its workers
-        // are its own view's.
-        let (place, with_results) = match worker {
-            Some(worker) if item.agent == worker => (place(view, item), true),
-            Some(_) => (Place::Hidden, false),
-            None if item.agent == MAIN => (place(view, item), true),
-            None if !nested.contains(&item.agent)
-                && quiet::WorkerRow::of(item.kind, item.act.as_ref()).is_some() =>
-            {
-                rows.push(Row::Status(item.id));
-                continue;
-            }
-            None => (Place::Hidden, false),
+        // The agent's own items follow the view. In every view, a worker of
+        // the agent shows as its reports and its messages to it, its lead,
+        // each a row that opens to its words. Its text, its calls, its
+        // conversation with the user and its workers are its own view's.
+        let (place, with_results) = if item.agent == viewed {
+            (place(view, item), true)
+        } else if lead_of(&item.agent) == viewed
+            && quiet::WorkerRow::of(
+                item.kind,
+                item.act.as_ref(),
+                item.status,
+                item.outcome.as_deref(),
+                viewed,
+            )
+            .is_some()
+        {
+            rows.push(Row::Status(item.id));
+            continue;
+        } else {
+            (Place::Hidden, false)
         };
         if let Place::Count = place {
             let at = *counts.entry(item.turn).or_insert_with(|| {
@@ -1107,7 +1116,7 @@ mod tests {
                 View::Messages,
                 None,
                 &HashSet::new(),
-                &HashSet::new(),
+                &HashMap::new(),
                 &open,
             )
         };
@@ -1149,8 +1158,8 @@ mod tests {
         let store = store_of(&all);
         let laid = |open: &[u64]| {
             let open: HashSet<u64> = open.iter().copied().collect();
-            let (sealed, nested) = (HashSet::new(), HashSet::new());
-            layout_sealed(&store.items, View::Messages, None, &sealed, &nested, &open)
+            let (sealed, leads) = (HashSet::new(), HashMap::new());
+            layout_sealed(&store.items, View::Messages, None, &sealed, &leads, &open)
         };
         assert!(running_shown(&laid(&[10]), &store, None));
         assert!(!running_shown(&laid(&[]), &store, None));
@@ -1317,24 +1326,28 @@ mod tests {
             item(9, Kind::Reply, "r1", "Fixed."),
             item(10, Kind::Reply, "r2", "Counted."),
         ];
-        let nested: HashSet<String> = ["r2".to_string()].into();
+        let leads: HashMap<String, String> = [("r2".to_string(), "r1".to_string())].into();
+        let laid = |view, worker| {
+            layout_sealed(
+                &items,
+                view,
+                worker,
+                &HashSet::new(),
+                &leads,
+                &HashSet::new(),
+            )
+        };
         for view in View::ALL {
             assert_eq!(
-                layout_sealed(
-                    &items,
-                    view,
-                    None,
-                    &HashSet::new(),
-                    &nested,
-                    &HashSet::new()
-                ),
+                laid(view, None),
                 [Row::Item(1, Kind::User), Row::Status(5), Row::Status(9)],
                 "{view:?}"
             );
         }
+        // r2's report goes to r1, its lead, in r1's view.
         assert_eq!(
-            ids(&layout(&items, View::Full, Some("r1"))),
-            ["i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9"]
+            ids(&laid(View::Full, Some("r1"))),
+            ["i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9", "s10"]
         );
     }
 
@@ -1504,7 +1517,7 @@ mod tests {
                 View::Quiet,
                 None,
                 &sealed,
-                &HashSet::new(),
+                &HashMap::new(),
                 &HashSet::new(),
             )
             .into_iter()

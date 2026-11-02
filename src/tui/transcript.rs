@@ -134,6 +134,8 @@ struct Cached {
     open: bool,
     quiet: bool,
     folds: bool,
+    /// It was drawn as a worker's row in its lead's view.
+    status: Option<quiet::WorkerRow>,
     lines: Vec<Wrapped>,
 }
 
@@ -535,50 +537,63 @@ impl Transcript {
             .collect();
     }
 
-    /// What `filter`'s view does with `item`, where the main transcript
-    /// shows the reports and the messages to the lead of the main agent's
-    /// own workers, and those of their workers are in their leads' views.
+    /// What `filter`'s view does with `item`. A view shows its agent's own
+    /// items by its rule, and the agent's own workers as their reports and
+    /// their messages to it, each a row that opens to its words, a
+    /// message's content under it while it's open. The rest of a worker's,
+    /// its text, its calls, its conversation with the user and its workers,
+    /// is its own view's.
     fn shows(&self, filter: &Filter, item: &Item) -> Show {
-        let nested = || {
-            self.worker(&item.agent)
-                .is_some_and(|worker| worker.parent.is_some())
-        };
-        match filter.show(item) {
-            Show::Item if matches!(filter, Filter::Main(_)) && !item.is_main() && nested() => {
-                Show::Hidden
-            }
-            shown => shown,
+        if filter.owns(item) {
+            return filter.view().shows(item);
+        }
+        let status = |item: &Item| self.status_row(item, filter).is_some();
+        let content = item.kind == Kind::Result
+            && item
+                .call
+                .and_then(|call| self.item(call))
+                .is_some_and(status);
+        if status(item) || content {
+            Show::Item
+        } else {
+            Show::Hidden
         }
     }
 
-    /// The words of a worker's message to its lead (`item`, its call), from
-    /// its content, which its row in the main transcript opens to.
-    fn message_held(&self, item: &Item) -> Option<String> {
-        if status_row(item) != Some(quiet::WorkerRow::MessagedLead) {
+    /// The row of `item` in `filter`'s view when it is a report or a
+    /// message to its lead of one of the view's agent's own workers
+    /// ([`quiet::WorkerRow`]).
+    fn status_row(&self, item: &Item, filter: &Filter) -> Option<quiet::WorkerRow> {
+        let lead = filter.agent();
+        if filter.owns(item) || self.lead_of(&item.agent) != lead {
             return None;
         }
-        let at = self.index(item.id)?;
-        let result =
-            self.entries.iter().skip(at + 1).find(|entry| {
-                entry.item.kind == Kind::Result && entry.item.call == Some(item.id)
-            })?;
-        Some(
-            result
-                .item
-                .whole
-                .as_deref()
-                .unwrap_or(&result.item.text)
-                .to_string(),
+        quiet::WorkerRow::of(
+            item.kind,
+            item.act.as_ref(),
+            item.status,
+            item.outcome.as_deref(),
+            lead,
         )
     }
 
+    /// The agent that started the worker `agent`, its lead, which is the
+    /// main agent unless a worker started it.
+    fn lead_of(&self, agent: &str) -> &str {
+        self.worker(agent)
+            .and_then(|worker| worker.parent.as_deref())
+            .unwrap_or(MAIN_AGENT)
+    }
+
     /// Whether `item`'s block opens and closes in `filter`'s view, as it
-    /// does in every view ([`Transcript::folds`]), or as a worker's report
-    /// in the main transcript, which opens to the report.
+    /// does in every view ([`Transcript::folds`]), or as a worker's row
+    /// there, a report that has words and a message whose content came.
     fn folds_in(&self, item: &Item, filter: &Filter) -> bool {
-        self.folds(item)
-            || (matches!(filter, Filter::Main(_))
-                && status_row(item) == Some(quiet::WorkerRow::Reported))
+        match self.status_row(item, filter) {
+            Some(quiet::WorkerRow::Reported) => !item.text.trim().is_empty(),
+            Some(quiet::WorkerRow::Message(_)) => self.contents.contains(&item.id),
+            None => self.folds(item),
+        }
     }
 
     /// Whether `item`'s block opens and closes. A call does when it has a
@@ -1040,7 +1055,7 @@ impl Transcript {
             let group = match &shown {
                 Shown::Entry(_) if item.kind == Kind::Output => Group::Output,
                 // (A worker's report or message runs with the calls.)
-                Shown::Entry(_) if !own && status_row(item).is_some() => Group::Activity,
+                Shown::Entry(_) if self.status_row(item, filter).is_some() => Group::Activity,
                 Shown::Entry(_) => group(item),
                 _ => Group::Activity,
             };
@@ -1056,11 +1071,7 @@ impl Transcript {
                 Shown::Entry(index) => {
                     let streams = self.motion.thinking == Some(self.entries[*index].item.id);
                     let folds = self.folds_in(&self.entries[*index].item, filter);
-                    let held = if own {
-                        None
-                    } else {
-                        self.message_held(&self.entries[*index].item)
-                    };
+                    let status = self.status_row(&self.entries[*index].item, filter);
                     let entry = &mut self.entries[*index];
                     // Only a click opens thinking in the quiet view.
                     let quiet = (quiet || opens) && entry.item.kind == Kind::Thinking;
@@ -1077,6 +1088,7 @@ impl Transcript {
                             && c.open == open
                             && c.quiet == quiet
                             && c.folds == folds
+                            && c.status == status
                     });
                     if !fresh {
                         entry.cache = Some(Cached {
@@ -1092,13 +1104,14 @@ impl Transcript {
                                     quiet,
                                     clock: clock.as_deref(),
                                     folds,
-                                    held: held.as_deref(),
+                                    status,
                                 },
                             ),
                             clock,
                             open,
                             quiet,
                             folds,
+                            status,
                         });
                     }
                     entry.cache.as_ref().map_or(0, |c| c.lines.len())
@@ -1399,11 +1412,13 @@ impl Transcript {
                     first = false;
                 }
             }
-            for entry in &mut self.entries {
-                if status_row(&entry.item).is_some() {
-                    entry.open = true;
-                    entry.touch();
-                }
+            let filter = Filter::Main(view);
+            let rows: Vec<usize> = (0..self.entries.len())
+                .filter(|at| self.status_row(&self.entries[*at].item, &filter).is_some())
+                .collect();
+            for at in rows {
+                self.entries[at].open = true;
+                self.entries[at].touch();
             }
             return;
         }
@@ -1512,7 +1527,7 @@ impl Transcript {
                         quiet: true,
                         clock: took.as_deref(),
                         folds: true,
-                        held: None,
+                        status: None,
                     };
                     // Its line as a row's, the triangle where the bar goes, and
                     // its text behind the bar, under the label.
@@ -2032,7 +2047,7 @@ impl Transcript {
                     .filter(|id| self.item(*id).is_some_and(|item| self.folds(item)))
             }),
             Shown::Entry(index) if self.folds_in(&self.entries[*index].item, filter) => {
-                let line = self.fold_line(block, *index, theme, width);
+                let line = self.fold_line(block, *index, filter, theme, width);
                 (row.line == line).then_some(row.key)
             }
             _ => None,
@@ -2055,7 +2070,7 @@ impl Transcript {
                 match &block.shown {
                     Shown::Quiet(quiet) if quiet.opens => Some(usize::from(block.gap)),
                     Shown::Entry(index) if self.folds_in(&self.entries[*index].item, filter) => {
-                        Some(self.fold_line(block, *index, theme, width))
+                        Some(self.fold_line(block, *index, filter, theme, width))
                     }
                     _ => return None,
                 }
@@ -2074,11 +2089,18 @@ impl Transcript {
         None
     }
 
-    /// The line of the entry `index`'s block that opens and closes it, a
-    /// call's line, else its last.
-    fn fold_line(&self, block: &Block, index: usize, theme: &Theme, width: usize) -> usize {
+    /// The line of the entry `index`'s block in `filter`'s view that opens
+    /// and closes it, a call's line or a worker's row's, else its last.
+    fn fold_line(
+        &self,
+        block: &Block,
+        index: usize,
+        filter: &Filter,
+        theme: &Theme,
+        width: usize,
+    ) -> usize {
         let item = &self.entries[index].item;
-        if item.kind == Kind::Call || status_row(item).is_some() {
+        if item.kind == Kind::Call || self.status_row(item, filter).is_some() {
             usize::from(block.gap)
         } else {
             self.block_rows(block, theme, width).len().saturating_sub(1)
@@ -2581,19 +2603,11 @@ impl Filter {
         }
     }
 
-    fn show(&self, item: &Item) -> Show {
+    /// The agent whose transcript it is, the main agent or a worker.
+    fn agent(&self) -> &str {
         match self {
-            Filter::Worker(id, view) if &item.agent == id => view.shows(item),
-            Filter::Worker(..) => Show::Hidden,
-            Filter::Main(view) if item.is_main() => view.shows(item),
-            // A worker shows in every view as its reports and its messages
-            // to its lead, each a row that opens to its words. Its text, its
-            // calls, its conversation with the user and its workers are its
-            // own view's.
-            Filter::Main(_) => match status_row(item) {
-                Some(_) => Show::Item,
-                None => Show::Hidden,
-            },
+            Filter::Main(_) => MAIN_AGENT,
+            Filter::Worker(id, _) => id,
         }
     }
 
@@ -2605,15 +2619,6 @@ impl Filter {
             Filter::Worker(id, _) => &item.agent == id,
         }
     }
-}
-
-/// The row of a worker's report or message to its lead in the main
-/// transcript ([`quiet::WorkerRow`]), for a worker's item.
-fn status_row(item: &Item) -> Option<quiet::WorkerRow> {
-    if item.is_main() {
-        return None;
-    }
-    quiet::WorkerRow::of(item.kind, item.act.as_ref())
 }
 
 /// What kind of block an item makes, for the spacing. Tool activity runs
@@ -2687,9 +2692,8 @@ struct Look<'a> {
     clock: Option<&'a str>,
     /// A call has a detail or content, which its fold opens.
     folds: bool,
-    /// What a worker's message to its lead says, which its row in the main
-    /// transcript opens to.
-    held: Option<&'a str>,
+    /// It is a worker's row in its lead's view, a report or a message.
+    status: Option<quiet::WorkerRow>,
 }
 
 /// A Quiet row's line, with its words, how it failed, how its job goes, and
@@ -2719,9 +2723,15 @@ fn quiet_line(
         ),
         Span::raw(" ".repeat(LABEL)),
     );
-    if words.failed
-        && let Some(first) = lines.first_mut()
-    {
+    if words.failed {
+        cross_at_right(&mut lines, theme, width);
+    }
+    lines
+}
+
+/// The ✗ of a row that failed, in the last column of its first line.
+fn cross_at_right(lines: &mut [Wrapped], theme: &Theme, width: usize) {
+    if let Some(first) = lines.first_mut() {
         let used = spans_width(&first.spans);
         let cross = glyphs::render("✗").into_owned();
         let cross_width = text_width(&cross);
@@ -2731,7 +2741,6 @@ fn quiet_line(
         first.spans.push(Span::styled(cross, theme.error()));
         first.tail += gap + cross_width;
     }
-    lines
 }
 
 /// Quiet words as a line says them, with how its job goes, and how long it
@@ -2970,46 +2979,46 @@ fn marker(symbol: &str, style: Style) -> Span<'static> {
     )
 }
 
-/// A worker's report or message to its lead as its row in the main
-/// transcript says it ("r1 reported", "r1 messaged the lead"), and open its
-/// words behind the bar, the report's Markdown and the message (`held`) as
-/// it was sent.
+/// A worker's report or message to its lead as its row in its lead's view
+/// says it ("r1 reported", "r1 messaged the lead"), with how a message's
+/// call stands, after ▸ (▾ while it's `open`) when it `folds`. Open, a
+/// report shows its Markdown behind the bar. A message's content is its
+/// result's block under it.
 fn status_lines(
     item: &Item,
     row: quiet::WorkerRow,
-    held: Option<&str>,
     theme: &Theme,
     width: usize,
-    open: bool,
+    look: Look,
 ) -> Vec<Wrapped> {
-    let marked = width.saturating_sub(LABEL).max(1);
-    let words = match row {
-        quiet::WorkerRow::Reported => Some(item.text.as_str()),
-        quiet::WorkerRow::MessagedLead => held,
-    }
-    .filter(|words| !words.trim().is_empty());
-    let symbol = match (words.is_some(), open) {
+    let words = row.words(item.outcome.as_deref());
+    // (A failed row's ✗ stands in its last column, two from its words.)
+    let room = if words.failed { 3 } else { 0 };
+    let symbol = match (look.folds, look.open) {
         (false, _) => " ",
         (true, false) => "▸",
         (true, true) => "▾",
     };
-    let spans = vec![
-        Span::styled(
-            format!("{} ", item.agent),
-            theme.dim().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(row.words().to_string(), theme.dim()),
-    ];
+    let mut spans = vec![Span::styled(
+        format!("{} ", item.agent),
+        theme.dim().add_modifier(Modifier::BOLD),
+    )];
+    spans.extend(quiet_spans(&words, theme, look.clock));
     let mut lines = wrap::prefixed(
-        wrap::wrap_lines(&spans, marked, 2),
+        wrap::wrap_lines(&spans, width.saturating_sub(LABEL + room).max(1), 2),
         marker(symbol, theme.dim()),
         Span::raw(" ".repeat(LABEL)),
     );
-    if let (Some(words), true) = (words, open) {
-        let body = match row {
-            quiet::WorkerRow::Reported => markdown::render(words, theme.text(), theme, marked),
-            quiet::WorkerRow::MessagedLead => plain(words, theme.text(), marked),
-        };
+    if words.failed {
+        cross_at_right(&mut lines, theme, width);
+    }
+    if row == quiet::WorkerRow::Reported && look.folds && look.open {
+        let body = markdown::render(
+            &item.text,
+            theme.text(),
+            theme,
+            width.saturating_sub(LABEL).max(1),
+        );
         lines.extend(railed(body, theme));
     }
     lines
@@ -3092,11 +3101,11 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
         quiet,
         clock,
         folds,
-        held,
+        status,
     } = look;
-    // A worker's report or message to its lead, in the main transcript.
-    if !own && let Some(row) = status_row(item) {
-        return status_lines(item, row, held, theme, width, open);
+    // A worker's report or message to its lead, in its lead's view.
+    if let Some(row) = status {
+        return status_lines(item, row, theme, width, look);
     }
     // The agent's text starts at the margin. A row with a marker has it in
     // the spinner's column and its text at the label's.
@@ -4036,6 +4045,127 @@ mod tests {
         let own = rows(&mut t, &Filter::Worker("r3".into(), View::Full), 40, 12);
         assert!(own.iter().any(|row| row.contains("Looking.")), "{own:?}");
         assert!(own.iter().any(|row| row.contains("read a.rs")), "{own:?}");
+    }
+
+    /// A worker's message to its lead keeps how its call stands. While it
+    /// runs its row says so, with no fold until its content comes. Sent, it
+    /// opens to its content as a call's does, its first lines and the door
+    /// to the rest. Failed, it says so with ✗, and cut short, with the stop.
+    /// A worker's worker shows so in its lead's view, not in main.
+    #[test]
+    fn a_workers_message_row_keeps_its_call_and_its_content() {
+        use crate::remote::{Act, ActKind};
+        let theme = Theme::terminal();
+        let mut t = Transcript::new();
+        t.workers.push(WorkerSummary {
+            parent: Some("r1".into()),
+            ..WorkerSummary::new("r2")
+        });
+        let message = |id: u64, agent: &str, lead: &str| {
+            let mut call = item(id, Kind::Call, "message the lead").agent(agent);
+            call.status = Some(CallStatus::Running);
+            call.act = Some(Act {
+                kind: ActKind::Message,
+                target: lead.into(),
+                ..Act::default()
+            });
+            call
+        };
+        let main = full();
+        t.apply(Update::Item(item(1, Kind::User, "Fix it")));
+        let mut call = message(2, "r1", "main");
+        t.apply(Update::Item(call.clone()));
+        assert_eq!(
+            rows(&mut t, &main, 40, 3)[2],
+            "    r1 messaging the lead …",
+            "no fold while it runs"
+        );
+        call.status = Some(CallStatus::Ok);
+        t.apply(Update::Change(call));
+        let lines: Vec<String> = (1..=40).map(|at| format!("Line {at}")).collect();
+        let mut said = item(3, Kind::Result, &lines[..16].join("\n")).agent("r1");
+        said.content = Some(ContentKind::Plain);
+        said.call = Some(2);
+        said.more = Some("… 24 more lines".into());
+        said.whole = Some(lines.join("\n").into());
+        t.apply(Update::Item(said));
+        assert_eq!(rows(&mut t, &main, 40, 3)[2], "  ▸ r1 messaged the lead");
+        t.toggle(2, 2, &main, &theme);
+        t.follow();
+        let shown = rows(&mut t, &main, 40, 20);
+        assert_eq!(shown[2], "  ▾ r1 messaged the lead", "{shown:?}");
+        assert_eq!(shown[3], "  │ Line 1");
+        assert_eq!(shown[18], "  │ Line 16");
+        assert_eq!(shown[19], "  │ … 24 more lines", "its door, not all 40");
+        // Its door opens the rest.
+        t.toggle(3, 19, &main, &theme);
+        t.follow();
+        let shown = rows(&mut t, &main, 40, 50);
+        assert!(shown.iter().any(|row| row == "  │ Line 40"), "{shown:?}");
+        // Once its whole is no longer kept, its door says so.
+        t.toggle(3, 0, &main, &theme);
+        if let Some(entry) = t.find_mut(3) {
+            entry.item.whole = None;
+            entry.touch();
+        }
+        let shown = rows(&mut t, &main, 40, 20);
+        assert_eq!(shown[19], "  │ No longer kept", "{shown:?}");
+        t.toggle(2, 2, &main, &theme);
+
+        // One that failed, and one a stop cut short.
+        let mut failed = message(4, "r1", "main");
+        failed.status = Some(CallStatus::Failed);
+        t.apply(Update::Item(failed));
+        let mut why = item(5, Kind::Result, "Couldn't deliver the message.").agent("r1");
+        why.content = Some(ContentKind::Muted);
+        why.call = Some(4);
+        t.apply(Update::Item(why));
+        let mut stopped = message(6, "r1", "main");
+        stopped.status = Some(CallStatus::Failed);
+        stopped.outcome = Some(quiet::STOPPED.into());
+        t.apply(Update::Item(stopped));
+        rows(&mut t, &main, 60, 5);
+        t.follow();
+        let shown = rows(&mut t, &main, 60, 5);
+        let at = shown
+            .iter()
+            .position(|row| row.starts_with("  ▸ r1 couldn’t message the lead"))
+            .unwrap_or_else(|| panic!("{shown:?}"));
+        assert!(shown[at].ends_with("✗"), "{shown:?}");
+        assert_eq!(shown[at + 1], "    r1 couldn’t message the lead · stopped");
+        t.toggle(4, at as u16, &main, &theme);
+        rows(&mut t, &main, 60, 6);
+        t.follow();
+        let shown = rows(&mut t, &main, 60, 6);
+        assert!(
+            shown
+                .iter()
+                .any(|row| row == "  │ Couldn't deliver the message."),
+            "{shown:?}"
+        );
+
+        // r2, r1's worker, messages r1 and reports to it. r1's view shows
+        // those rows. Main doesn't, and r1's own message is its own call.
+        let mut child = message(7, "r2", "r1");
+        child.status = Some(CallStatus::Ok);
+        t.apply(Update::Item(child));
+        t.apply(Update::Item(item(8, Kind::Reply, "Counted.").agent("r2")));
+        let lead = Filter::Worker("r1".into(), View::Full);
+        let shown = rows(&mut t, &lead, 40, 12);
+        assert!(
+            shown.iter().any(|row| row == "    r2 messaged the lead"),
+            "{shown:?}"
+        );
+        assert!(
+            shown.iter().any(|row| row == "  ▸ r2 reported"),
+            "{shown:?}"
+        );
+        assert!(
+            !shown.iter().any(|row| row.contains("r1 messaged")),
+            "{shown:?}"
+        );
+        let shown = rows(&mut t, &main, 40, 12);
+        assert!(!shown.iter().any(|row| row.contains("r2")), "{shown:?}");
     }
 
     /// What the user wrote to a worker shows in that worker's own view, as
