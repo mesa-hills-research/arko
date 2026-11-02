@@ -137,14 +137,17 @@ fn laid_out(
     view: RwSignal<View>,
     worker: RwSignal<Option<String>>,
 ) -> Memo<(Option<u64>, Vec<Row>)> {
+    let page = page();
     Memo::new(move |_| {
         version.track();
         let view = view.get();
         let worker = worker.get();
-        STORE.with(|store| {
-            let store = store.borrow();
-            let rows = layout::layout(&store.items, view, worker.as_deref());
-            (store.feed, rows)
+        page.quiet_sealed.with(|sealed| {
+            STORE.with(|store| {
+                let store = store.borrow();
+                let rows = layout::layout_sealed(&store.items, view, worker.as_deref(), sealed);
+                (store.feed, rows)
+            })
         })
     })
 }
@@ -333,11 +336,18 @@ fn quiet_row(id: u64, row: layout::QuietRow, thinking: Memo<Option<u64>>) -> Any
                         if !opens() {
                             return;
                         }
+                        let opening = page.quiet_open.with_untracked(|open| !open.contains(&id));
                         page.quiet_open.update(|open| {
                             if !open.remove(&id) {
                                 open.insert(id);
                             }
                         });
+                        // A row of one call the reader opened keeps its form.
+                        if opening && !data.with_untracked(|row| row.merged) {
+                            page.quiet_sealed.update(|sealed| {
+                                sealed.insert(id);
+                            });
+                        }
                     }
                 >
                     <span class="call-line">

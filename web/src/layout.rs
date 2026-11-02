@@ -204,7 +204,19 @@ fn place(view: View, item: &ItemData) -> Place {
 
 /// The rows `view` shows, in order. `worker` picks a worker's own
 /// transcript instead of the main one.
+#[cfg(test)]
 pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
+    layout_sealed(all, view, worker, &HashSet::new())
+}
+
+/// [`layout`], where `sealed` are the calls whose Quiet rows of one call
+/// the reader opened, which keep their form ([`quiet::Call::sealed`]).
+pub fn layout_sealed(
+    all: &[ItemData],
+    view: View,
+    worker: Option<&str>,
+    sealed: &HashSet<u64>,
+) -> Vec<Row> {
     let items = pending_last(all);
     // A result shows under its call, which other items may have followed
     // by the time it came.
@@ -273,7 +285,7 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
         }
     }
     if view == View::Quiet {
-        rows = quiet_rows(rows, &items);
+        rows = quiet_rows(rows, &items, sealed);
     }
     rows
 }
@@ -282,7 +294,7 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
 /// words ([`quiet::rows`], as the terminal makes them), and the rest as it
 /// is. A call's results go in its row, and show under the row only when
 /// the call failed alone.
-fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
+fn quiet_rows(rows: Vec<Row>, items: &[&ItemData], sealed: &HashSet<u64>) -> Vec<Row> {
     let by_id: HashMap<u64, &ItemData> = items.iter().map(|item| (item.id, *item)).collect();
     // The rows, each with the results of its own.
     let mut shown: Vec<(Row, Vec<Row>)> = Vec::new();
@@ -313,6 +325,7 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
                     turn: item.turn,
                     content: !results.is_empty(),
                     ended: item.ended,
+                    sealed: sealed.contains(&item.id),
                 }),
                 None => quiet::Step::Other(*id),
             },
@@ -1286,6 +1299,35 @@ mod tests {
             words(&together),
             [("Ran 2 commands (cargo, sed)".to_string(), true)]
         );
+    }
+
+    /// A Quiet row of one call that the reader opened keeps its form, as
+    /// the terminal's: the next read starts a row of its own.
+    #[test]
+    fn an_opened_quiet_row_of_one_call_keeps_its_form() {
+        use crate::protocol::{Act, ActKind};
+        let read = |id: u64, path: &str| ItemData {
+            status: Some(CallStatus::Ok),
+            act: Some(Act {
+                kind: ActKind::Read,
+                target: path.into(),
+                ..Act::default()
+            }),
+            ..item(id, Kind::Call, MAIN, path)
+        };
+        let items = [read(1, "a.rs"), read(2, "b.rs")];
+        let words = |sealed: &[u64]| -> Vec<String> {
+            let sealed: HashSet<u64> = sealed.iter().copied().collect();
+            layout_sealed(&items, View::Quiet, None, &sealed)
+                .into_iter()
+                .filter_map(|row| match row {
+                    Row::Quiet { row, .. } => Some(row.words.text),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(words(&[]), ["Read a.rs and b.rs"]);
+        assert_eq!(words(&[1]), ["Read a.rs", "Read b.rs"]);
     }
 
     /// A thinking after a call is in that call's Quiet row from the start,

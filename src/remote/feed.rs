@@ -5327,6 +5327,7 @@ mod tests {
                             turn: item.turn,
                             content: !results.is_empty(),
                             ended: item.ended,
+                            sealed: false,
                         }),
                         _ => quiet::Step::Other(item.id),
                     }

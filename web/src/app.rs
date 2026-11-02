@@ -121,6 +121,9 @@ pub struct Page {
     pub ask: crate::questions::Asking,
     /// The Quiet view's rows the reader opened, by their first call.
     pub quiet_open: RwSignal<HashSet<u64>>,
+    /// The Quiet view's rows of one call the reader opened, by that call,
+    /// which keep their form ([`crate::quiet::Call::sealed`]).
+    pub quiet_sealed: RwSignal<HashSet<u64>>,
     /// The calls whose content the reader opened or closed in Full, where
     /// a command's shows from the start ([`full_open`](crate::transcript)).
     pub flipped: RwSignal<HashSet<u64>>,
@@ -259,6 +262,7 @@ impl Page {
             pinned: RwSignal::new(true),
             ask: crate::questions::Asking::new(),
             quiet_open: RwSignal::new(HashSet::new()),
+            quiet_sealed: RwSignal::new(HashSet::new()),
             flipped: RwSignal::new(HashSet::new()),
             calls_open: RwSignal::new(HashSet::new()),
             doors_open: RwSignal::new(HashSet::new()),
@@ -1038,6 +1042,7 @@ fn start_feed(page: Page) {
     page.feeds.update(|feeds| *feeds += 1);
     // Another feed's items have other ids.
     page.quiet_open.update(HashSet::clear);
+    page.quiet_sealed.update(HashSet::clear);
     page.flipped.update(HashSet::clear);
     page.calls_open.update(HashSet::clear);
     page.doors_open.update(HashSet::clear);

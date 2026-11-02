@@ -12,7 +12,8 @@
 //! shows on its row while it runs ("Ran 4 commands · running cargo build"),
 //! and a call that fails or goes on in the background stays in its row,
 //! which shows one ✗. A failure ends its row, so a call that comes after it
-//! starts a row of its own. A test run and a call of another kind have rows of
+//! starts a row of its own, and so does a row of one call that the reader
+//! opened, which keeps its form ([`Call::sealed`]). A test run and a call of another kind have rows of
 //! their own. The images a call's tool returned and the buttons of its job
 //! show under its row's line, in whatever row it is. Rows only grow at the
 //! end, and a row keeps its calls once anything shows after it ([`rows`]).
@@ -74,6 +75,11 @@ pub struct Call<'a> {
     /// (`Item::ended`). A call with that ID or a higher one came after the
     /// failure.
     pub ended: Option<u64>,
+    /// The reader opened its row while it held this call alone. The row
+    /// keeps that form, so it takes no more calls, and the next one starts a
+    /// row of its own instead of turning it into a row of several. It stays
+    /// so once the row closes, so no later row goes into it.
+    pub sealed: bool,
 }
 
 /// What the view shows for its steps, in order.
@@ -265,6 +271,17 @@ impl<'a> Group<'a> {
     /// a long one too, so no row shows only while a call runs.
     fn take(&mut self, member: Member<'a>) -> Result<(), Member<'a>> {
         if self.alone || member.alone() {
+            return Err(member);
+        }
+        // A row of one call that the reader opened keeps its form.
+        let alone = self.calls.len() + self.absorbed.len() == 1;
+        if alone
+            && self
+                .calls
+                .iter()
+                .chain(&self.absorbed)
+                .any(|call| call.call.sealed)
+        {
             return Err(member);
         }
         // A failure ends the row. A call that came while the failed one ran
@@ -1480,6 +1497,7 @@ mod tests {
             turn: Some(1),
             content: fixture.content.is_some(),
             ended: fixture.ended,
+            sealed: false,
         })];
         match rows(&steps).as_slice() {
             [Piece::Row(row)] => row.clone(),
@@ -1586,6 +1604,48 @@ mod tests {
         assert_eq!(
             said(&[stopped, call(3, sed, Ok, None)]),
             ["Ran 2 commands (cargo, sed)"]
+        );
+    }
+
+    /// A row of one call that the reader opened keeps its form, so the next
+    /// call of its kind starts a row of its own.
+    #[test]
+    fn an_opened_row_of_one_call_keeps_its_form() {
+        let (a, b, c) = (act(Read, "a.rs"), act(Read, "b.rs"), act(Read, "c.rs"));
+        let call = |id: u64, act: &'static Act, sealed: bool| {
+            Step::Call(Call {
+                id,
+                act: Some(act),
+                status: Some(Ok),
+                sealed,
+                turn: Some(1),
+                ..Call::default()
+            })
+        };
+        let (a, b, c): (&'static Act, &'static Act, &'static Act) = (
+            Box::leak(Box::new(a)),
+            Box::leak(Box::new(b)),
+            Box::leak(Box::new(c)),
+        );
+        assert_eq!(
+            said(&[call(1, a, false), call(2, b, false)]),
+            ["Read a.rs and b.rs"]
+        );
+        assert_eq!(
+            said(&[call(1, a, true), call(2, b, false)]),
+            ["Read a.rs", "Read b.rs"]
+        );
+        // (An edit of the file an opened read read starts its own row too.)
+        let edit: &'static Act = Box::leak(Box::new(act(Edit, "a.rs")));
+        assert_eq!(
+            said(&[call(1, a, true), call(2, edit, false)]),
+            ["Read a.rs", "Made 1 edit to a.rs"]
+        );
+        // A row the reader didn't open takes more calls, and so does a row
+        // of several that it opened (the clients mark only a row of one).
+        assert_eq!(
+            said(&[call(1, a, true), call(2, b, false), call(3, c, false)]),
+            ["Read a.rs", "Read b.rs and c.rs"]
         );
     }
 

@@ -398,6 +398,9 @@ pub struct Transcript {
     motion: Motion,
     /// The Quiet view's rows the reader opened, by their first call.
     quiet_open: HashSet<u64>,
+    /// The Quiet view's rows of one call the reader opened, by that call,
+    /// which keep their form ([`quiet::Call::sealed`]).
+    quiet_sealed: HashSet<u64>,
     /// The calls that have content, a block of their result.
     contents: HashSet<u64>,
     /// The Quiet view's rows' lines as last drawn, by their first call.
@@ -438,6 +441,7 @@ impl Transcript {
             working: None,
             motion: Motion::default(),
             quiet_open: HashSet::new(),
+            quiet_sealed: HashSet::new(),
             contents: HashSet::new(),
             quiet_cache: HashMap::new(),
             generation: 0,
@@ -1142,6 +1146,7 @@ impl Transcript {
                         turn: item.turn,
                         content: !results.is_empty(),
                         ended: item.ended,
+                        sealed: self.quiet_sealed.contains(&item.id),
                     }),
                     Kind::Thinking => quiet::Step::Thinking,
                     _ => quiet::Step::Other(item.id),
@@ -1188,8 +1193,10 @@ impl Transcript {
                 Placed::Quiet(row) => Some(row),
                 Placed::Entry(_) => None,
             }) {
-                self.quiet_open.insert(self.entries[row.members[0]].item.id);
+                let key = self.entries[row.members[0]].item.id;
+                self.quiet_open.insert(key);
                 if !row.merged {
+                    self.quiet_sealed.insert(key);
                     continue;
                 }
                 let mut first = true;
@@ -1891,6 +1898,7 @@ impl Transcript {
         if row {
             if !self.quiet_open.remove(&item) {
                 self.quiet_open.insert(item);
+                self.seal(item, filter, theme);
             }
         } else {
             let quiet = filter.view() == View::Quiet;
@@ -1914,6 +1922,18 @@ impl Transcript {
             row: y.saturating_sub(self.drawn.area.y) as usize,
         });
         Some(fold)
+    }
+
+    /// The Quiet row `key` the reader opened keeps its form, when it holds
+    /// one call, so later calls start rows of their own.
+    fn seal(&mut self, key: u64, filter: &Filter, theme: &Theme) {
+        let width = self.drawn.area.width as usize;
+        let alone = self.blocks(filter, theme, width).iter().any(|block| {
+            block.key == key && matches!(&block.shown, Shown::Quiet(row) if !row.merged)
+        });
+        if alone && self.quiet_sealed.insert(key) {
+            self.generation += 1;
+        }
     }
 
     /// Whether the block `key` is a Quiet row of `filter`'s view that opens,
@@ -1992,6 +2012,7 @@ impl Transcript {
             let now = self.quiet_open.contains(&key);
             if open.unwrap_or(!now) {
                 self.quiet_open.insert(key);
+                self.seal(key, filter, theme);
             } else {
                 self.quiet_open.remove(&key);
             }
@@ -5337,6 +5358,51 @@ mod tests {
             word(&plain[0], "fn main() {}").fg,
             Theme::terminal().text().fg
         );
+    }
+
+    /// A Quiet row of one call that the reader opened keeps its form: the
+    /// next read starts a row of its own, under it, and the opened row's
+    /// content stays as it was, also once it closes and opens again.
+    #[test]
+    fn an_opened_quiet_row_of_one_call_keeps_its_form() {
+        use crate::remote::{Act, ActKind};
+        let quiet = Filter::Main(View::Quiet);
+        let theme = Theme::terminal();
+        let read = |id: u64, path: &str| {
+            let mut call = item(id, Kind::Call, path);
+            call.turn = Some(1);
+            call.status = Some(CallStatus::Ok);
+            call.act = Some(Act {
+                kind: ActKind::Read,
+                target: path.into(),
+                ..Act::default()
+            });
+            call
+        };
+        let lines = |id: u64, call: u64| {
+            let mut result = item(id, Kind::Result, "1\tone\n2\ttwo");
+            result.content = Some(ContentKind::Lines);
+            result.call = Some(call);
+            result.turn = Some(1);
+            result
+        };
+        let mut t = Transcript::new();
+        t.apply(Update::Item(read(1, "a.rs")));
+        t.apply(Update::Item(lines(2, 1)));
+        rows(&mut t, &quiet, 40, 6);
+        t.toggle(1, 0, &quiet, &theme);
+        let open = rows(&mut t, &quiet, 40, 6);
+        assert_eq!(open[..3], ["  ▾ Read a.rs", "  │ 1  one", "  │ 2  two"]);
+        t.apply(Update::Item(read(3, "b.rs")));
+        let shown = rows(&mut t, &quiet, 40, 6);
+        assert_eq!(
+            shown[..4],
+            ["  ▾ Read a.rs", "  │ 1  one", "  │ 2  two", "    Read b.rs"]
+        );
+        // Closed again, it still keeps its calls.
+        t.toggle(1, 0, &quiet, &theme);
+        let closed = rows(&mut t, &quiet, 40, 6);
+        assert_eq!(closed[..2], ["  ▸ Read a.rs", "    Read b.rs"]);
     }
 
     /// A failure ends its Quiet row, which keeps its ✗, and the command
