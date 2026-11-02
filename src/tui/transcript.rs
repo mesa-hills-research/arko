@@ -2783,7 +2783,8 @@ fn content_lines(item: &Item, theme: &Theme, width: usize, open: bool) -> Vec<Wr
                     _ => None,
                 };
                 let tinted = tint.and_then(|tint| theme.tint(tint));
-                let on = |style: Style| tinted.map_or(style, |tinted| style.patch(tinted));
+                // (Shaded to read on the tint.)
+                let on = |style: Style| tint.map_or(style, |tint| theme.on_tint(style, tint));
                 let (lead, lead_style, base) = match mark {
                     content::Mark::None => {
                         (format!("{number:>numbers$}  "), theme.dim(), theme.text())
