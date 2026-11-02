@@ -817,6 +817,49 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    /// The transcript's views of the session `ARKO_SCENARIO` names, at 100
+    /// columns, in the folder `ARKO_RENDERINGS` names (`remote::scenario`):
+    /// Full, Quiet closed, Quiet with every row open, and Messages.
+    #[test]
+    #[ignore]
+    fn renderings() {
+        use crate::tui::transcript::View;
+        let (Ok(script), Ok(out)) = (
+            std::env::var("ARKO_SCENARIO"),
+            std::env::var("ARKO_RENDERINGS"),
+        ) else {
+            return;
+        };
+        let feed = crate::remote::scenario::play(&script);
+        for (view, name, open) in [
+            (View::Full, "full", true),
+            (View::Quiet, "quiet-closed", false),
+            (View::Quiet, "quiet-open", true),
+            (View::Messages, "messages", false),
+        ] {
+            let mut app = app();
+            app.reset(feed.subscribe().0);
+            app.set_view(view);
+            if open {
+                app.transcript.open_for_renderings(view);
+            }
+            // As tall as it takes, from its first line, without the empty
+            // rows between its last and the status line.
+            let rows = screen(&mut app, 100, 400);
+            let first = rows.iter().position(|row| !row.is_empty()).unwrap_or(0);
+            let bar = rows
+                .iter()
+                .position(|row| row.starts_with('─'))
+                .unwrap_or(rows.len());
+            let last = rows[..bar]
+                .iter()
+                .rposition(|row| !row.is_empty())
+                .unwrap_or(first);
+            let text = [&rows[first..=last], &rows[bar..]].concat().join("\n") + "\n";
+            std::fs::write(format!("{out}/terminal-{name}.txt"), text).unwrap();
+        }
+    }
+
     fn app() -> App {
         use crate::tui::app::Info;
         use crate::tui::input::{Editor, History};
@@ -2453,7 +2496,7 @@ mod tests {
     /// The Quiet view's calls as the feed sends them, which are two edits of a file,
     /// a test run that failed with its output, and a message to a worker.
     fn quiet_calls(app: &mut App) {
-        use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Level, Update};
+        use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Update};
         let call = |id: u64, text: &str, act: Act, status: CallStatus| {
             let mut call = Item::new(Kind::Call, text);
             call.id = id;
@@ -2488,25 +2531,22 @@ mod tests {
         let mut failed = call(5, "$ cargo test", test, CallStatus::Failed);
         failed.outcome = Some("exit 101 · 1 failed, 3 passed".into());
         app.transcript.apply(Update::Item(failed));
-        let mut result = Item::new(Kind::Result, "exit code 101, 2.0 s")
-            .detail("test a ... FAILED")
-            .level(Level::Warn);
+        let mut result = Item::new(Kind::Result, "test a ... FAILED");
+        result.content = Some(crate::remote::ContentKind::Plain);
         result.id = 6;
         result.call = Some(5);
         app.transcript.apply(Update::Item(result));
-        // (Its body holds its message, as the feed makes it.)
+        // (Its content is its message, as the feed makes it.)
         let text = "Use the UTC time from the stats, not the local clock.";
-        let to_r3 = Act {
-            body: vec![crate::remote::Fact {
-                label: String::new(),
-                text: text.into(),
-            }],
-            ..on(ActKind::Message, "r3")
-        };
-        let mut message =
-            call(7, "message r3 “Use the UTC time…”", to_r3, CallStatus::Ok).detail(text);
+        let to_r3 = on(ActKind::Message, "r3");
+        let mut message = call(7, "message r3 “Use the UTC time…”", to_r3, CallStatus::Ok);
         message.outcome = Some("sent".into());
         app.transcript.apply(Update::Item(message));
+        let mut sent = Item::new(Kind::Result, text);
+        sent.content = Some(crate::remote::ContentKind::Plain);
+        sent.id = 8;
+        sent.call = Some(7);
+        app.transcript.apply(Update::Item(sent));
     }
 
     /// In the Quiet view each call says what it did in a few words,
@@ -2526,16 +2566,15 @@ mod tests {
                 .unwrap_or_else(|| panic!("{text}: {rows:#?}"))
         };
         let edits = at(&rows, "▸ Made 2 edits to app.rs");
-        assert_eq!(
-            rows[edits + 1..edits + 4],
-            [
-                // (Its output shows under it, so it has nothing more to open.)
-                "    Ran cargo test · ✗ 1 failed, 3 passed",
-                "  │ test a ... FAILED",
-                "  ▸ Messaged r3",
-            ],
+        // (A failed row shows one ✗ at its right.)
+        let test = &rows[edits + 1];
+        assert!(
+            test.starts_with("  ▸ Ran cargo test (1 failed, 3 passed) ")
+                && test.ends_with('✗')
+                && test.chars().count() == 70,
             "{rows:#?}"
         );
+        assert_eq!(rows[edits + 2], "  ▸ Messaged r3", "{rows:#?}");
         assert!(!rows.iter().any(|row| row.contains("read src/app.rs")));
         // Its line opens it, and the same line closes it.
         let left = MouseButton::Left;
@@ -2546,9 +2585,9 @@ mod tests {
         assert_eq!(
             open[edits + 1..edits + 4],
             [
-                "  │ Read app.rs",
-                "  │ Made 1 edit to app.rs",
-                "  │ Made 1 edit to app.rs",
+                "  │   read src/app.rs · ✓",
+                "  │   edit src/app.rs · ✓",
+                "  │   edit src/app.rs · ✓",
             ],
             "{open:#?}"
         );
@@ -2621,10 +2660,11 @@ mod tests {
             ..Act::default()
         });
         app.transcript.apply(Update::Item(call));
-        let mut result =
-            Item::new(Kind::Result, "exit code 0, 0.1 s").detail("1\n2\n3\n4\n… 3 more lines");
+        let mut result = Item::new(Kind::Result, "1\n2\n3\n4");
         result.id = 3;
         result.call = Some(2);
+        result.content = Some(crate::remote::ContentKind::Plain);
+        result.more = Some("… 3 more lines".into());
         result.whole = Some("1\n2\n3\n4\n5\n6\n7".into());
         app.transcript.apply(Update::Item(result));
         let at = |rows: &[String], text: &str| {
@@ -3439,10 +3479,15 @@ mod tests {
         let mut app = app();
         let mut call = Item::new(Kind::Call, "$ seq 10");
         call.status = Some(CallStatus::Ok);
-        // (As the feed makes a command's block.)
+        call.act = Some(crate::remote::Act {
+            kind: crate::remote::ActKind::Command,
+            ..Default::default()
+        });
+        // (As the feed makes a command's content, with a shorter preview.)
         let output: Vec<String> = (1..=10).map(|n| format!("line {n}")).collect();
-        let mut block = Item::new(Kind::Result, "exit code 0, 0.1 s")
-            .detail(format!("{}\n… 6 more lines", output[..4].join("\n")));
+        let mut block = Item::new(Kind::Result, output[..4].join("\n"));
+        block.content = Some(crate::remote::ContentKind::Plain);
+        block.more = Some("… 6 more lines".into());
         block.whole = Some(output.join("\n").into());
         block.call = Some(2);
         let after = Item::new(Kind::Output, "a\nb\nc\nd\ne\nf");

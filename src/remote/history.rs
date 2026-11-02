@@ -66,7 +66,10 @@ fn items_from(
     let messages = &messages[first..];
     let mut items: Vec<Item> = Vec::new();
     // The calls waiting for their results, meaning their items, by call ID.
-    let mut calls: HashMap<String, (usize, String)> = HashMap::new();
+    // (With each call's tool and parameters, which its content is made
+    // from with its result.)
+    let mut calls: HashMap<String, (usize, String, HashMap<String, serde_json::Value>)> =
+        HashMap::new();
     let push = |items: &mut Vec<Item>, mut item: Item| -> usize {
         item.id = items.len() as u64 + 1;
         items.push(item);
@@ -85,7 +88,7 @@ fn items_from(
                 for content in &message.content {
                     match content {
                         Content::ToolResult(result) => {
-                            let Some((index, tool)) =
+                            let Some((index, tool, parameters)) =
                                 result.call_id.as_ref().and_then(|id| calls.remove(id))
                             else {
                                 continue;
@@ -99,7 +102,7 @@ fn items_from(
                             let outcome = if result.is_error {
                                 render::Outcome::failed(&result.output)
                             } else {
-                                render::outcome(&tool, &result.output)
+                                render::outcome(&tool, &parameters, &result.output)
                             };
                             let call = &mut items[index];
                             call.settle(outcome.status, outcome.text, &outcome.settled);
@@ -202,7 +205,7 @@ fn items_from(
                     if (call_item || call.name == ASK_USER_TOOL_NAME)
                         && let Some(id) = &call.id
                     {
-                        calls.insert(id.clone(), (index, call.name.clone()));
+                        calls.insert(id.clone(), (index, call.name.clone(), parameters));
                     }
                 }
             }
@@ -816,7 +819,7 @@ mod tests {
                 (Kind::User, "Run the tests"),
                 (Kind::Text, "Let me check."),
                 (Kind::Call, "$ cargo test"),
-                (Kind::Result, "exit code 0, 1.0 s"),
+                (Kind::Result, "test result: ok. 12 passed; 0 failed"),
                 (Kind::User, "yes"),
                 (Kind::Reply, "All 12 pass."),
             ]
@@ -869,13 +872,15 @@ mod tests {
                 (Kind::Call, None, None),
             ]
         );
-        // The line comes right after its call, in the call's turn.
+        // The line comes right after its call and its content, in the
+        // call's turn.
         let line = reopened
             .iter()
             .position(|item| item.kind == Kind::WorkerLine)
             .unwrap();
-        assert_eq!(reopened[line - 1].kind, Kind::Call);
-        assert_eq!(reopened[line].turn, reopened[line - 1].turn);
+        assert_eq!(reopened[line - 1].kind, Kind::Result);
+        assert_eq!(reopened[line - 2].kind, Kind::Call);
+        assert_eq!(reopened[line].turn, reopened[line - 2].turn);
         let exported = all_items(&messages, false, &Images::default());
         assert_eq!(
             shape(&exported),

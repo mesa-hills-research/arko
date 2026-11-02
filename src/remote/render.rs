@@ -17,7 +17,8 @@ use uuid::Uuid;
 
 use arko_agents::LOAD_SKILL_TOOL_NAME;
 
-use super::feed::{Act, ActKind, CallStatus, Came, Fact, Item, Kind, Level};
+use super::content;
+use super::feed::{Act, ActKind, CallStatus, Came, ContentKind, Item, Kind};
 use super::quiet;
 use crate::crew;
 use crate::message;
@@ -25,9 +26,6 @@ use crate::shell::{IN_THE_BACKGROUND, SHELL_TOOL_NAME};
 use crate::ui;
 
 type Parameters = HashMap<String, Value>;
-
-/// The lines of a command's output shown under its status.
-const SHOWN_LINES: usize = 4;
 
 pub use crate::ui::cut;
 
@@ -61,113 +59,23 @@ pub fn call(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
         // (In the order of their names, because a `HashMap` has none.)
         let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
         item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
-        let (mut act, said) = act(tool, parameters, lead);
-        act.body = body(tool, parameters, &said);
+        let act = act(tool, parameters, lead);
+        // Full's line says the call as written, and its detail is what
+        // the Quiet row's says that the line doesn't.
+        if item.detail.is_none() {
+            let left: Vec<&str> = act
+                .detail
+                .lines()
+                .filter(|line| !item.text.contains(line))
+                .collect();
+            item = item.detail(left.join("\n"));
+        }
         item.act = Some(act);
     }
     Some(item)
 }
 
-/// [`call`], with what its row's words state whole, as the branch that made
-/// them reports it.
-#[cfg(test)]
-pub(crate) fn call_said(tool: &str, parameters: &Parameters, lead: &str) -> Option<(Item, Said)> {
-    let item = call(tool, parameters, lead)?;
-    let (_, said) = act(tool, parameters, lead);
-    Some((item, said))
-}
-
-/// The most lines a fact of a call's body keeps.
-const BODY_LINES: usize = 400;
-/// The most characters a fact of a call's body keeps.
-const BODY_CHARS: usize = 40_000;
-
-/// The body of a call of `tool` ([`Act::body`]), from its parameters. It
-/// holds every parameter the row's words don't state whole, which is all
-/// but those the branch that made the words reports (`said`), the call's
-/// main one first without a label, then the others by name, each value
-/// whole up to what a body keeps, which says how much more there was.
-fn body(tool: &str, parameters: &Parameters, said: &Said) -> Vec<Fact> {
-    let mut left: std::collections::BTreeMap<&str, &Value> = parameters
-        .iter()
-        .filter(|(name, value)| !value.is_null() && !said.says(name))
-        .map(|(name, value)| (name.as_str(), value))
-        .collect();
-    let mut facts = Vec::new();
-    let mut main = |text: String| {
-        facts.push(Fact {
-            label: String::new(),
-            text: bounded(&text),
-        });
-    };
-    match tool {
-        // A read's path and its lines, as Full writes them.
-        READ_FILE_TOOL_NAME
-            if ["path", "start_line", "end_line"]
-                .iter()
-                .any(|name| left.contains_key(name)) =>
-        {
-            let value = |name: &str| parameters.get(name).map(value_text).unwrap_or_default();
-            let range = match (value("start_line"), value("end_line")) {
-                (start, end) if start.is_empty() && end.is_empty() => String::new(),
-                (start, end) if end.is_empty() => format!(":{start}-"),
-                (start, end) if start.is_empty() => format!(":1-{end}"),
-                (start, end) => format!(":{start}-{end}"),
-            };
-            main(format!("{}{range}", value("path")));
-            for name in ["path", "start_line", "end_line"] {
-                left.remove(name);
-            }
-        }
-        _ => {
-            if let Some(name) = main_parameter(tool)
-                && let Some(value) = left.remove(name)
-            {
-                main(value_text(value));
-            }
-        }
-    }
-    // (An edit's old text before its new.)
-    for name in ["old_string", "new_string"] {
-        if let Some(value) = left.remove(name) {
-            facts.push(fact(name, value));
-        }
-    }
-    facts.extend(left.into_iter().map(|(name, value)| fact(name, value)));
-    facts
-}
-
-/// A fact of a body, the parameter `name` with `value`.
-fn fact(name: &str, value: &Value) -> Fact {
-    Fact {
-        label: name.to_string(),
-        text: bounded(&value_text(value)),
-    }
-}
-
-/// The parameter of a call of `tool` that its body shows first, without
-/// its name: what the call runs, reads, writes or says.
-fn main_parameter(tool: &str) -> Option<&'static str> {
-    Some(match tool {
-        SHELL_TOOL_NAME | "Bash" | "terminal_start" | "monitor_start" => "command",
-        READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => {
-            "path"
-        }
-        "Read" | "Write" | "Edit" | "MultiEdit" => "file_path",
-        LIST_FILES_TOOL_NAME => "directory",
-        "index_search" => "query",
-        "Grep" | "Glob" => "pattern",
-        crew::MESSAGE_AGENT => "message",
-        crew::START_AGENT => "task",
-        "keep_note" => "text",
-        crate::mcp::MCP_TOOL_NAME => "arguments",
-        _ => return None,
-    })
-}
-
-/// A parameter's value as a body shows it: text exactly as it is (a file's
-/// trailing spaces and blank lines too), a number or a flag as written, and
-/// a list or an object as JSON.
+/// `value` as text, a string as it is and anything else as JSON.
 fn value_text(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
@@ -179,143 +87,12 @@ fn value_text(value: &Value) -> String {
     }
 }
 
-/// `text` whole, or as much as a fact of a body keeps ([`BODY_LINES`],
-/// [`BODY_CHARS`]) and how much more there was ("… 1,240 more lines").
-fn bounded(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.len() <= BODY_LINES && text.chars().count() <= BODY_CHARS {
-        return text.to_string();
-    }
-    let mut kept: Vec<&str> = Vec::new();
-    let mut chars = 0;
-    for line in &lines {
-        let length = line.chars().count() + 1;
-        if kept.len() == BODY_LINES || chars + length > BODY_CHARS {
-            break;
-        }
-        kept.push(line);
-        chars += length;
-    }
-    if kept.is_empty() {
-        // One line longer than a body keeps.
-        let shown: String = text.chars().take(BODY_CHARS).collect();
-        let more = text.chars().count() - BODY_CHARS;
-        return format!(
-            "{shown}\n… {} more character{}",
-            grouped(more),
-            plural_s(more)
-        );
-    }
-    let more = lines.len() - kept.len();
-    format!(
-        "{}\n… {} more line{}",
-        kept.join("\n"),
-        grouped(more),
-        plural_s(more)
-    )
-}
-
-fn plural_s(count: usize) -> &'static str {
-    if count == 1 { "" } else { "s" }
-}
-
-/// `count` with its thousands apart ("1,240").
-fn grouped(count: usize) -> String {
-    let digits = count.to_string();
-    let mut out = String::new();
-    for (at, digit) in digits.chars().enumerate() {
-        if at > 0 && (digits.len() - at).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
-}
-
-/// The parameters a call's row's words state whole, as the branch that
-/// made the words reports them, in every form the row takes (while it runs,
-/// once it ended, when it failed or was refused, held or stopped). A call's
-/// body leaves them out ([`body`]).
-#[derive(Debug, Default)]
-pub(crate) struct Said(Vec<(&'static str, Shown)>);
-
-/// How a call's row's words state one of its parameters.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Shown {
-    /// As this text, in every form: the value as it is, or a defined form
-    /// of it (a number written out, each run of a list, "lead" by the lead's
-    /// name).
-    Text(Vec<String>),
-    /// By the words its value chose, which are another phrase in each form
-    /// ("Listing jobs", "Listed jobs", "Couldn’t list jobs"), for one of
-    /// the values the branch knows.
-    Choice,
-}
-
-impl Said {
-    /// Whether the words state the parameter `name`.
-    fn says(&self, name: &str) -> bool {
-        self.0.iter().any(|(said, _)| *said == name)
-    }
-
-    /// The parameters said, each with how the words show it.
-    #[cfg(test)]
-    pub(crate) fn all(&self) -> &[(&'static str, Shown)] {
-        &self.0
-    }
-
-    /// The words show `name` as `shown` in every form.
-    fn shown(&mut self, name: &'static str, shown: impl Into<String>) {
-        self.0.push((name, Shown::Text(vec![shown.into()])));
-    }
-
-    /// The words of every form are made from the value of `name`, one the
-    /// branch knows.
-    fn choice(&mut self, name: &'static str) {
-        self.0.push((name, Shown::Choice));
-    }
-
-    /// The words show the text `name` as it is, which is so when it is at
-    /// most `limit` characters and nothing in it is changed for the row.
-    fn whole(&mut self, parameters: &Parameters, name: &'static str, limit: usize) {
-        if let Some(Value::String(value)) = parameters.get(name)
-            && !value.is_empty()
-            && cut(value, limit) == *value
-        {
-            self.shown(name, value.clone());
-        }
-    }
-
-    /// The words name the path `name` by its file name, which is all of it
-    /// when it has no folder.
-    fn path(&mut self, parameters: &Parameters, name: &'static str) {
-        if parameters
-            .get(name)
-            .and_then(Value::as_str)
-            .is_some_and(|path| !path.contains(['/', '\\']))
-        {
-            self.whole(parameters, name, 160);
-        }
-    }
-
-    /// The words show the number (or the text of one) `name`.
-    fn number(&mut self, parameters: &Parameters, name: &'static str) {
-        match parameters.get(name) {
-            Some(Value::Number(number)) => self.shown(name, number.to_string()),
-            Some(Value::String(_)) => self.whole(parameters, name, 160),
-            _ => {}
-        }
-    }
-}
-
 /// The longest search query a Quiet row names, in characters.
 const ROW_QUERY_CHARS: usize = 60;
 
-/// What a call of `tool` does, for the Quiet view's row ([`quiet`]), and
-/// the parameters the row's words state whole, as the branch that makes the
-/// words reports them.
-fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
-    let mut said = Said::default();
+/// What a call of `tool` does, for the Quiet view's row ([`quiet`]), with
+/// what its words cut whole ([`Act::detail`]).
+fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
     // A parameter as a row names it, at most as long as Full shows a path.
     let raw = |name: &str| text(parameters, name).trim().to_string();
     let text = |name: &str| cut(&raw(name), 160);
@@ -343,123 +120,72 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         let id = text("job_id");
         format!("job {}", id.get(..8).unwrap_or(&id))
     };
-    let act = match tool {
+    match tool {
         READ_FILE_TOOL_NAME | "Read" => {
             let name = if tool == "Read" { "file_path" } else { "path" };
-            said.path(parameters, name);
             on(ActKind::Read, path(name))
         }
-        LIST_FILES_TOOL_NAME => {
-            said.path(parameters, "directory");
-            on(ActKind::List, path("directory"))
-        }
-        WRITE_FILE_TOOL_NAME => {
-            said.path(parameters, "path");
-            on(ActKind::Write, path("path"))
-        }
-        "Write" => {
-            said.path(parameters, "file_path");
-            on(ActKind::Write, path("file_path"))
-        }
-        EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => {
-            said.path(parameters, "path");
-            on(ActKind::Edit, path("path"))
-        }
-        "Edit" | "MultiEdit" => {
-            said.path(parameters, "file_path");
-            on(ActKind::Edit, path("file_path"))
-        }
+        LIST_FILES_TOOL_NAME => on(ActKind::List, path("directory")),
+        WRITE_FILE_TOOL_NAME => on(ActKind::Write, path("path")),
+        "Write" => on(ActKind::Write, path("file_path")),
+        EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => on(ActKind::Edit, path("path")),
+        "Edit" | "MultiEdit" => on(ActKind::Edit, path("file_path")),
         SHELL_TOOL_NAME | "Bash" => {
             let command = text_of(parameters, "command");
-            let words = command_words_kept(command, &text("cwd"));
-            if words.kept {
-                said.shown("command", command);
-            }
-            // (A folder the command goes to with `cd` names that folder.)
-            if words.folder == Some(Folder::Cwd) {
-                said.path(parameters, "cwd");
-            }
+            let cwd = text_of(parameters, "cwd").trim();
+            let words = command_words_kept(command, cwd);
+            // The whole command, with the folder the words named by its
+            // last part.
+            let whole = command.trim();
+            let detail = match words.folder {
+                _ if words.kept => String::new(),
+                Some(Folder::Cwd) => format!("(in {cwd}) {whole}"),
+                _ => whole.to_string(),
+            };
             Act {
                 alone: runs_tests(&raw("command")),
+                detail,
                 ..on(ActKind::Command, words.words)
             }
         }
-        "index_search" => {
-            said.whole(parameters, "query", ROW_QUERY_CHARS);
-            Act {
-                query: cut(&text("query"), ROW_QUERY_CHARS),
-                ..on(ActKind::Search, index_name(&text("index")))
-            }
-        }
-        "Grep" | "Glob" => {
-            said.whole(parameters, "pattern", ROW_QUERY_CHARS);
-            Act {
-                query: cut(&text("pattern"), ROW_QUERY_CHARS),
-                ..on(ActKind::Search, String::new())
-            }
-        }
-        LOAD_SKILL_TOOL_NAME => {
-            said.whole(parameters, "name", 160);
-            on(ActKind::Skill, text("name"))
-        }
-        crew::MESSAGE_AGENT => {
-            let to = addressee(&text("to"), lead);
-            if parameters
-                .get("to")
-                .and_then(Value::as_str)
-                .is_some_and(|given| !given.is_empty() && cut(given, 160) == given)
-            {
-                said.shown("to", to.clone());
-            }
-            on(ActKind::Message, to)
-        }
+        "index_search" => Act {
+            query: cut(&text("query"), ROW_QUERY_CHARS),
+            detail: long(&raw("query"), ROW_QUERY_CHARS),
+            ..on(ActKind::Search, index_name(&text("index")))
+        },
+        "Grep" | "Glob" => Act {
+            query: cut(&text("pattern"), ROW_QUERY_CHARS),
+            detail: long(&raw("pattern"), ROW_QUERY_CHARS),
+            ..on(ActKind::Search, String::new())
+        },
+        LOAD_SKILL_TOOL_NAME => on(ActKind::Skill, text("name")),
+        crew::MESSAGE_AGENT => on(ActKind::Message, addressee(&text("to"), lead)),
         // The runs it names. One that names none waits for the agent's
         // workers, which its row calls so ([`quiet`]).
-        crew::WAIT_FOR_AGENTS => {
-            let runs = ui::waited_runs(parameters, &[]);
-            if (1..=3).contains(&runs.len()) && runs.iter().all(|run| cut(run, 160) == *run) {
-                said.0.push(("runs", Shown::Text(runs.clone())));
-            }
-            on(ActKind::Wait, runs.join(", "))
-        }
+        crew::WAIT_FOR_AGENTS => on(ActKind::Wait, ui::waited_runs(parameters, &[]).join(", ")),
         "terminal_status" => on(ActKind::Check, job()),
         "terminal_control" => match text("action").as_str() {
-            "wait" => {
-                said.choice("action");
-                on(ActKind::Check, job())
-            }
-            "list" => {
-                said.choice("action");
-                other(
-                    "Listing jobs".into(),
-                    "Listed jobs".into(),
-                    "list jobs".into(),
-                )
-            }
-            "cancel" => {
-                said.choice("action");
-                other(
-                    format!("Stopping {}", job()),
-                    format!("Stopped {}", job()),
-                    format!("stop {}", job()),
-                )
-            }
-            "forget" => {
-                said.choice("action");
-                other(
-                    format!("Forgetting {}", job()),
-                    format!("Forgot {}", job()),
-                    format!("forget {}", job()),
-                )
-            }
-            action => {
-                said.whole(parameters, "action", 160);
-                other(
-                    format!("Using {action} on {}", job()),
-                    format!("Used {action} on {}", job()),
-                    format!("use {action} on {}", job()),
-                )
-            }
+            "wait" => on(ActKind::Check, job()),
+            "list" => other(
+                "Listing jobs".into(),
+                "Listed jobs".into(),
+                "list jobs".into(),
+            ),
+            "cancel" => other(
+                format!("Stopping {}", job()),
+                format!("Stopped {}", job()),
+                format!("stop {}", job()),
+            ),
+            "forget" => other(
+                format!("Forgetting {}", job()),
+                format!("Forgot {}", job()),
+                format!("forget {}", job()),
+            ),
+            action => other(
+                format!("Using {action} on {}", job()),
+                format!("Used {action} on {}", job()),
+                format!("use {action} on {}", job()),
+            ),
         },
         "terminal_input" => other(
             format!("Typing into {}", job()),
@@ -468,55 +194,52 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         ),
         "terminal_start" => {
             let words = command_words_kept(text_of(parameters, "command"), "");
-            if words.kept {
-                said.whole(parameters, "command", 160);
-            }
             let command = words.words;
-            other(
-                format!("Starting {command} in a terminal"),
-                format!("Started {command} in a terminal"),
-                format!("start {command} in a terminal"),
-            )
+            Act {
+                detail: if words.kept {
+                    String::new()
+                } else {
+                    raw("command")
+                },
+                ..other(
+                    format!("Starting {command} in a terminal"),
+                    format!("Started {command} in a terminal"),
+                    format!("start {command} in a terminal"),
+                )
+            }
         }
         "monitor_start" => {
             let words = command_words_kept(text_of(parameters, "command"), "");
-            if words.kept {
-                said.whole(parameters, "command", 160);
-            }
             let command = words.words;
-            other(
-                format!("Starting to watch {command}"),
-                format!("Started watching {command}"),
-                format!("watch {command}"),
-            )
+            let mut detail = vec![monitor_settings(parameters)];
+            if !words.kept {
+                detail.insert(0, raw("command"));
+            }
+            Act {
+                detail: detail.join("\n"),
+                ..other(
+                    format!("Starting to watch {command}"),
+                    format!("Started watching {command}"),
+                    format!("watch {command}"),
+                )
+            }
         }
         "monitor_control" => match text("action").as_str() {
-            "list" => {
-                said.choice("action");
-                other(
-                    "Listing monitors".into(),
-                    "Listed monitors".into(),
-                    "list monitors".into(),
-                )
-            }
-            "rearm" => {
-                said.choice("action");
-                other(
-                    "Keeping a monitor going".into(),
-                    "Kept a monitor going".into(),
-                    "keep a monitor going".into(),
-                )
-            }
-            action => {
-                if action == "stop" {
-                    said.choice("action");
-                }
-                other(
-                    "Stopping a monitor".into(),
-                    "Stopped a monitor".into(),
-                    "stop a monitor".into(),
-                )
-            }
+            "list" => other(
+                "Listing monitors".into(),
+                "Listed monitors".into(),
+                "list monitors".into(),
+            ),
+            "rearm" => other(
+                "Keeping a monitor going".into(),
+                "Kept a monitor going".into(),
+                "keep a monitor going".into(),
+            ),
+            _ => other(
+                "Stopping a monitor".into(),
+                "Stopped a monitor".into(),
+                "stop a monitor".into(),
+            ),
         },
         "keep_note"
             if parameters
@@ -528,7 +251,6 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
                 _ => text("replaces"),
             };
             // (Its words name the note, not its text or audience.)
-            said.number(parameters, "replaces");
             other(
                 format!("Changing note {number}"),
                 format!("Changed note {number}"),
@@ -540,9 +262,6 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
                 "" | "lead" => String::new(),
                 audience => audience.to_string(),
             };
-            if !audience.is_empty() {
-                said.whole(parameters, "audience", 160);
-            }
             on(ActKind::Note, audience)
         }
         "forget_note" => {
@@ -550,7 +269,6 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
                 Some(Value::Number(number)) => number.to_string(),
                 _ => text("id"),
             };
-            said.number(parameters, "id");
             other(
                 format!("Forgetting note {number}"),
                 format!("Forgot note {number}"),
@@ -560,19 +278,6 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         crate::mcp::MCP_TOOL_NAME => {
             let server = text("server");
             let action = text("action");
-            // An action it knows chooses its words, and another shows in them.
-            let known = ["call", "servers", "tools", "start", "stop", "add", "remove"];
-            if known.contains(&action.as_str()) {
-                said.choice("action");
-            } else {
-                said.whole(parameters, "action", 160);
-            }
-            if action != "servers" {
-                said.whole(parameters, "server", 160);
-            }
-            if action == "call" {
-                said.whole(parameters, "tool", 160);
-            }
             match action.as_str() {
                 "call" => on(ActKind::Mcp, format!("{} on {server}", text("tool"))),
                 "servers" => other(
@@ -619,10 +324,8 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         ),
         crew::STOP_AGENT => {
             let run = text("run");
-            said.whole(parameters, "run", 160);
             // A worktree it removes, in every form of its words.
             let (removing, removed, remove) = if flag(parameters, "remove_workspace") {
-                said.choice("remove_workspace");
                 (
                     " and removing its worktree",
                     " and removed its worktree",
@@ -654,7 +357,6 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         ),
         crew::SAVE_WORKER_PROFILE => {
             let name = text("name");
-            said.whole(parameters, "name", 160);
             other(
                 format!("Saving the {name} profile"),
                 format!("Saved the {name} profile"),
@@ -665,7 +367,6 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         | crate::skill_install::EDIT_SKILL
         | crate::skill_install::REMOVE_SKILL => {
             let name = text("name");
-            said.whole(parameters, "name", 160);
             let (doing, done, verb) = match tool {
                 crate::skill_install::ADD_SKILL => ("Saving", "Saved", "save"),
                 crate::skill_install::EDIT_SKILL => ("Changing", "Changed", "change"),
@@ -699,9 +400,6 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         ),
         "index_status" => {
             let index = index_name(&text("index"));
-            if index == raw("index") {
-                said.whole(parameters, "index", 160);
-            }
             let which = if index.is_empty() {
                 "the indexes".to_string()
             } else {
@@ -715,9 +413,6 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         }
         "index_create" => {
             let name = index_name(&path("path"));
-            if name == raw("path") {
-                said.whole(parameters, "path", 160);
-            }
             other(
                 format!("Indexing {name}"),
                 format!("Indexed {name}"),
@@ -726,9 +421,6 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
         }
         "index_manage" => {
             let index = index_name(&text("index"));
-            if index == raw("index") {
-                said.whole(parameters, "index", 160);
-            }
             let the = format!("the {index} index");
             let (doing, done, verb) = match text("action").as_str() {
                 "rebuild" => ("Rebuilding", "Rebuilt", "rebuild"),
@@ -751,9 +443,6 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
                 "remove" => ("Removing", "Removed", "remove"),
                 _ => ("Changing", "Changed", "change"),
             };
-            if done != "Changed" {
-                said.choice("action");
-            }
             // (Watching and estimating name the index, not "the … index".)
             let the = if matches!(
                 text("action").as_str(),
@@ -779,20 +468,29 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
                 .next()
                 .unwrap_or_default()
                 .to_string();
-            other(
-                format!("Fetching {host}"),
-                format!("Fetched {host}"),
-                format!("fetch {host}"),
-            )
+            Act {
+                detail: if url.trim_end_matches('/').ends_with(&host) {
+                    String::new()
+                } else {
+                    raw("url")
+                },
+                ..other(
+                    format!("Fetching {host}"),
+                    format!("Fetched {host}"),
+                    format!("fetch {host}"),
+                )
+            }
         }
         "WebSearch" => {
-            said.whole(parameters, "query", 60);
             let query = format!("“{}”", cut(&text("query"), 60));
-            other(
-                format!("Searching the web for {query}"),
-                format!("Searched the web for {query}"),
-                format!("search the web for {query}"),
-            )
+            Act {
+                detail: long(&raw("query"), 60),
+                ..other(
+                    format!("Searching the web for {query}"),
+                    format!("Searched the web for {query}"),
+                    format!("search the web for {query}"),
+                )
+            }
         }
         "TodoWrite" => other(
             "Updating the plan".into(),
@@ -807,8 +505,46 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> (Act, Said) {
                 format!("use {other_tool}"),
             ),
         },
+    }
+}
+
+/// How a `monitor_start` call's monitor watches, as its detail says it
+/// ("every 15 s, when it starts succeeding, for 30 min").
+fn monitor_settings(parameters: &Parameters) -> String {
+    let number = |name: &str| match parameters.get(name) {
+        Some(Value::Number(number)) => number.as_u64(),
+        Some(Value::String(text)) => text.trim().parse().ok(),
+        _ => None,
     };
-    (act, said)
+    let mut parts = Vec::new();
+    match number("every_seconds") {
+        Some(every) => {
+            parts.push(format!("every {every} s"));
+            parts.push(
+                match text(parameters, "alert_when").trim() {
+                    "success" => "when it starts succeeding",
+                    "failure" => "when it starts failing",
+                    "output" => "when its output changes",
+                    _ => "when its result changes",
+                }
+                .to_string(),
+            );
+        }
+        None => match text(parameters, "pattern").trim() {
+            "" => parts.push("every line".to_string()),
+            pattern => parts.push(format!("lines that match {pattern}")),
+        },
+    }
+    if flag(parameters, "once") {
+        parts.push("once".to_string());
+    }
+    if text(parameters, "lasts").trim() == "while_workers_run" {
+        parts.push("while workers run".to_string());
+    } else {
+        let minutes = number("expires_minutes").unwrap_or(30);
+        parts.push(format!("for {minutes} min"));
+    }
+    parts.join(", ")
 }
 
 /// The text of the parameter `name`, as given (empty when it isn't text).
@@ -921,8 +657,7 @@ fn line(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
     let call = |line: String| Item::new(Kind::Call, line);
     Some(match tool {
         "complete_task" | ASK_USER_TOOL_NAME => return None,
-        HANDOVER_REPORT_TOOL_NAME => call("handover report".into())
-            .detail(text(parameters, HANDOVER_REPORT_PARAM_NAME).trim()),
+        HANDOVER_REPORT_TOOL_NAME => call("handover report".into()),
         message::MESSAGE_USER => Item::new(
             Kind::Message,
             text(parameters, message::MESSAGE_PARAM).trim(),
@@ -954,7 +689,7 @@ fn line(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
                 format!(" ({})", notes.join(", "))
             };
             let task = text(parameters, "task").trim();
-            call(format!("start worker{notes} “{}”", cut(task, 160))).detail(long(task, 160))
+            call(format!("start worker{notes} “{}”", cut(task, 160)))
         }
         crew::MESSAGE_AGENT => {
             let message = text(parameters, "message").trim();
@@ -963,7 +698,6 @@ fn line(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
                 addressee(text(parameters, "to").trim(), lead),
                 cut(message, 160)
             ))
-            .detail(long(message, 160))
         }
         crew::WAIT_FOR_AGENTS if ui::waited_runs(parameters, &[]).is_empty() => {
             call("waiting for workers".into())
@@ -1002,10 +736,11 @@ fn line(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
             };
             let command = text(parameters, "command").trim();
             let item = call(format!("{place}{}", ui::brief(tool, parameters)));
-            if command.lines().count() > 1 {
-                item.detail(command)
-            } else {
+            // (The whole command, when the line cut it.)
+            if item.text.contains(command) {
                 item
+            } else {
+                item.detail(command)
             }
         }
         RUN_WORKFLOW_AGENT_TOOL_NAME => {
@@ -1015,7 +750,7 @@ fn line(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
             } else {
                 " (resumed)"
             };
-            call(format!("worker{resumed} “{}”", cut(prompt, 160))).detail(long(prompt, 160))
+            call(format!("worker{resumed} “{}”", cut(prompt, 160)))
         }
         other => call(ui::brief(other, parameters)),
     })
@@ -1112,7 +847,8 @@ pub struct Outcome {
     pub status: CallStatus,
     /// A few words for the call's own line, as "12 passed", "exit 1", "r2".
     pub text: Option<String>,
-    /// A block to show under the call, meaning a command's first lines of output.
+    /// The call's content, as a block (a `result`) that shows under it
+    /// when it's open ([`content`](super::content)).
     pub block: Option<Item>,
     /// The call's whole result (or why it failed), for an app's view of it
     /// (the call item's `output`). A command's is its block's `whole`.
@@ -1155,8 +891,9 @@ impl Outcome {
     }
 
     /// A call that failed with `message` (an error, a rejection), meaning its
-    /// first words on the call's line, and the whole of a longer message
-    /// as a block under it.
+    /// first words on the call's line ("refused" for a rejection), and the
+    /// whole message as its content, muted. A stop's and a compaction's
+    /// words are all there is to say.
     pub fn failed(message: &str) -> Self {
         // arko's "Tool 'read_file' execution failed: I/O error during tool
         // execution for tool 'read_file': ..." names what the line already
@@ -1174,9 +911,26 @@ impl Outcome {
         {
             message = why.trim();
         }
-        let text = cut(message.lines().next().unwrap_or_default(), OUTCOME_CHARS);
-        let block = (message != text)
-            .then(|| Item::new(Kind::Result, clip(message, 600)).level(Level::Error));
+        // A refusal, as the feed words it ("refused (outside access is
+        // off)"), says why as a sentence of its own.
+        let why = message
+            .strip_prefix("refused (")
+            .and_then(|rest| rest.strip_suffix(')'));
+        let (text, said) = match why {
+            Some(why) => (
+                "refused".to_string(),
+                format!("Refused. {}", upper_first(why)),
+            ),
+            None => (
+                cut(message.lines().next().unwrap_or_default(), OUTCOME_CHARS),
+                message.to_string(),
+            ),
+        };
+        let block = (![quiet::STOPPED, quiet::HELD, quiet::INTERRUPTED, "refused"]
+            .contains(&message))
+        .then(|| Content::new(ContentKind::Muted, said, None))
+        .flatten()
+        .map(Content::block);
         Self {
             status: CallStatus::Failed,
             text: (!text.is_empty()).then_some(text),
@@ -1232,20 +986,22 @@ impl Settled {
     }
 }
 
-/// `text`, at most `limit` characters of it, with its line breaks.
-fn clip(text: &str, limit: usize) -> String {
-    match text.char_indices().nth(limit) {
-        Some((end, _)) => format!("{}…", &text[..end]),
-        None => text.to_string(),
+/// `text` with its first letter in upper case.
+fn upper_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 
 /// The longest outcome on a call's line, in characters.
 const OUTCOME_CHARS: usize = 60;
 
-/// What the result `output` of a call of `tool` says, in brief, with the
-/// whole of it for an app's view of the call.
-pub fn outcome(tool: &str, output: &str) -> Outcome {
+/// What the result `output` of a call of `tool` with `parameters` says, in
+/// brief, with its content, and the whole of it for an app's view of the
+/// call.
+pub fn outcome(tool: &str, parameters: &Parameters, output: &str) -> Outcome {
     let job = moved_job(output);
     if tool != SHELL_TOOL_NAME
         && let Some(job) = job
@@ -1269,6 +1025,9 @@ pub fn outcome(tool: &str, output: &str) -> Outcome {
     if tool != SHELL_TOOL_NAME && outcome.output.is_none() && !output.trim().is_empty() {
         outcome.output = Some(output.into());
     }
+    if outcome.block.is_none() && tool != SHELL_TOOL_NAME {
+        outcome.block = content(tool, parameters, output).map(Content::block);
+    }
     outcome
 }
 
@@ -1285,7 +1044,15 @@ fn brief(tool: &str, output: &str) -> Outcome {
     };
     match tool {
         SHELL_TOOL_NAME => command_outcome(output),
-        READ_FILE_TOOL_NAME => Outcome::ok(plural(lines(), "line", "lines")),
+        // (Not the line that says which lines it read.)
+        READ_FILE_TOOL_NAME => {
+            let read = output
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .filter(|line| !(line.starts_with("[Lines ") && line.ends_with(".]")))
+                .count();
+            Outcome::ok(plural(read, "line", "lines"))
+        }
         LIST_FILES_TOOL_NAME => Outcome::ok(plural(lines(), "entry", "entries")),
         WRITE_FILE_TOOL_NAME | HANDOVER_REPORT_TOOL_NAME => Outcome::ok(""),
         // "Edited a.rs at lines 3-5: ..." or "Replaced 4 occurrences in
@@ -1318,11 +1085,7 @@ fn brief(tool: &str, output: &str) -> Outcome {
                 [done, all, ..] if first.starts_with("Applied") => Outcome {
                     status: CallStatus::Failed,
                     text: Some(format!("{done} of {all} edits")),
-                    block: Some(
-                        Item::new(Kind::Result, cut(first, 160))
-                            .detail(output.lines().skip(1).collect::<Vec<_>>().join("\n"))
-                            .level(Level::Warn),
-                    ),
+                    block: None,
                     output: None,
                     job: None,
                     started: None,
@@ -1354,7 +1117,9 @@ fn brief(tool: &str, output: &str) -> Outcome {
         // framework gives a tool's result as data.
         "index_search" => {
             let first = output.lines().next().unwrap_or_default();
-            let mut outcome = Outcome::ok(cut(first, OUTCOME_CHARS));
+            // ("6 results from arko (code, hybrid)", without the colon that
+            // leads the agent to them.)
+            let mut outcome = Outcome::ok(cut(first.trim_end_matches(':'), OUTCOME_CHARS));
             if let Some((indexes, hits)) = crate::index::read_search_header(first) {
                 outcome.settled.found(&indexes, hits);
             }
@@ -1381,6 +1146,334 @@ fn brief(tool: &str, output: &str) -> Outcome {
                 .unwrap_or_default(),
         ),
     }
+}
+
+/// A call's content before it's a block: its kind, its whole text, and the
+/// language of its file's lines.
+struct Content {
+    kind: ContentKind,
+    text: String,
+    language: Option<String>,
+}
+
+impl Content {
+    /// `text` as a content of `kind`, without its blank lines at the end,
+    /// and `None` when it's blank.
+    fn new(kind: ContentKind, text: impl Into<String>, language: Option<String>) -> Option<Self> {
+        let text = text.into();
+        let text = text.trim_end().trim_start_matches(['\n', '\r']);
+        (!text.is_empty()).then(|| Self {
+            kind,
+            text: text.to_string(),
+            language,
+        })
+    }
+
+    /// Its block, which shows its preview, and keeps the whole when the
+    /// preview leaves some out.
+    fn block(self) -> Item {
+        let (preview, more) = content::preview(&self.text);
+        let mut block = Item::new(Kind::Result, preview);
+        block.content = Some(self.kind);
+        block.whole = more.is_some().then(|| self.text.into());
+        block.more = more;
+        block.language = self.language;
+        block
+    }
+}
+
+/// The language of the file `path`, by its extension ("rs"), or by its
+/// name for a file without one ("makefile").
+fn language(path: &str) -> Option<String> {
+    let name = path.trim().rsplit(['/', '\\']).next()?;
+    let language = match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => extension,
+        _ => name,
+    };
+    (!language.is_empty()).then(|| language.to_lowercase())
+}
+
+/// The content of a call of `tool` with `parameters` that ended well with
+/// the result `output`, in the form that fits the tool (a command's is its
+/// output, [`command_outcome`]).
+fn content(tool: &str, parameters: &Parameters, output: &str) -> Option<Content> {
+    let given = |name: &str| text(parameters, name);
+    let result = |kind: ContentKind| Content::new(kind, output, None);
+    match tool {
+        READ_FILE_TOOL_NAME | "Read" => {
+            let path = given(if tool == "Read" { "file_path" } else { "path" });
+            if output.trim().is_empty() {
+                return Content::new(ContentKind::Muted, "Empty", None);
+            }
+            match read_lines(output, tool == "Read") {
+                Some(lines) => Content::new(ContentKind::Lines, lines, language(path)),
+                // (An image, which shows as one.)
+                None => result(ContentKind::Muted),
+            }
+        }
+        WRITE_FILE_TOOL_NAME | "Write" => {
+            let path = given(if tool == "Write" { "file_path" } else { "path" });
+            let lines: Vec<String> = given("content")
+                .lines()
+                .enumerate()
+                .map(|(at, line)| content::numbered(at + 1, line))
+                .collect();
+            Content::new(ContentKind::Lines, lines.join("\n"), language(path))
+        }
+        EDIT_FILE_TOOL_NAME => {
+            let diff = edit_diff(given("old_string"), given("new_string"), output);
+            Content::new(ContentKind::Diff, diff, language(given("path")))
+        }
+        "Edit" => {
+            let diff = edit_diff(given("old_string"), given("new_string"), "");
+            Content::new(ContentKind::Diff, diff, language(given("file_path")))
+        }
+        "MultiEdit" => {
+            let edits = parameters.get("edits").and_then(Value::as_array);
+            let diff: Vec<String> = edits
+                .into_iter()
+                .flatten()
+                .map(|edit| {
+                    let part = |name: &str| edit.get(name).and_then(Value::as_str).unwrap_or("");
+                    edit_diff(part("old_string"), part("new_string"), "")
+                })
+                .collect();
+            Content::new(
+                ContentKind::Diff,
+                diff.join("\n"),
+                language(given("file_path")),
+            )
+        }
+        LIST_FILES_TOOL_NAME | "Grep" | "Glob" | "Bash" => result(ContentKind::Plain),
+        "index_search" => {
+            let hits = crate::index::read_search_hits(output)?;
+            Content::new(ContentKind::Plain, hits.join("\n"), None)
+        }
+        LOAD_SKILL_TOOL_NAME | "monitor_start" | "terminal_start" => None,
+        crew::MESSAGE_AGENT => Content::new(ContentKind::Plain, given("message").trim(), None),
+        // (Nothing came, which its row says.)
+        crew::WAIT_FOR_AGENTS if came(output) == Came::default() => None,
+        crew::WAIT_FOR_AGENTS => Content::new(ContentKind::Plain, mail(output), None),
+        crew::START_AGENT => Content::new(ContentKind::Muted, given("task").trim(), None),
+        "keep_note" => Content::new(ContentKind::Plain, given("text").trim(), None),
+        HANDOVER_REPORT_TOOL_NAME => Content::new(
+            ContentKind::Plain,
+            given(HANDOVER_REPORT_PARAM_NAME).trim(),
+            None,
+        ),
+        crate::mcp::MCP_TOOL_NAME if given("action") == "call" => {
+            let arguments = parameters
+                .get("arguments")
+                .map(json_text)
+                .unwrap_or_default();
+            Content::new(ContentKind::Plain, arguments_then(&arguments, output), None)
+        }
+        other => match crate::mcp::split_tool_name(other) {
+            Some(_) => {
+                let arguments = json_text(&Value::Object(
+                    parameters
+                        .iter()
+                        .map(|(name, value)| (name.clone(), value.clone()))
+                        .collect(),
+                ));
+                Content::new(ContentKind::Plain, arguments_then(&arguments, output), None)
+            }
+            None => result(ContentKind::Muted),
+        },
+    }
+}
+
+/// An MCP call's `arguments`, then its result.
+fn arguments_then(arguments: &str, output: &str) -> String {
+    match (arguments.trim(), output.trim()) {
+        ("" | "{}", output) => output.to_string(),
+        (arguments, "") => arguments.to_string(),
+        (arguments, output) => format!("{arguments}\n{output}"),
+    }
+}
+
+/// A value as JSON, pretty, and a text of JSON the same way.
+fn json_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => match serde_json::from_str::<Value>(text) {
+            Ok(parsed @ (Value::Object(_) | Value::Array(_))) => value_text(&parsed),
+            _ => text.clone(),
+        },
+        other => value_text(other),
+    }
+}
+
+/// A read's lines, numbered, from its result: `read_file`'s `12 | text`
+/// lines (`claude_code`, Claude Code's `Read`, numbers its lines `12→text`).
+/// The line that says which lines it read goes, since the call's line says
+/// it. `None` for a result without numbered lines (an image).
+fn read_lines(output: &str, claude_code: bool) -> Option<String> {
+    let mut lines = Vec::new();
+    let mut numbered = false;
+    for line in output.lines() {
+        let split = if claude_code {
+            line.trim_start().split_once('→')
+        } else {
+            line.split_once(" | ")
+        };
+        match split
+            .filter(|(number, _)| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+        {
+            Some((number, text)) => {
+                numbered = true;
+                lines.push(format!("{number}\t{text}"));
+            }
+            // ("[Lines 3-4 of 10.]", and Claude Code's reminders.)
+            None if claude_code || (line.starts_with("[Lines ") && line.ends_with(".]")) => {}
+            None => lines.push(line.to_string()),
+        }
+    }
+    numbered.then(|| lines.join("\n"))
+}
+
+/// The diff of an edit that replaced `old` with `new`, with the lines of
+/// the file around it that its result `output` shows (`edit_file`'s
+/// "Edited a.rs at lines 3-5:" and the lines numbered as `read_file` numbers
+/// them). The removed lines have their numbers in the file before the edit
+/// and the others theirs after it. An edit whose result shows no lines
+/// (one that replaced every match, or Claude Code's) is its old and new
+/// lines without numbers.
+fn edit_diff(old: &str, new: &str, output: &str) -> String {
+    use content::Mark;
+    let bare = || {
+        let removed = old
+            .lines()
+            .map(|line| content::diff_line(Mark::Removed, None, line));
+        let added = new
+            .lines()
+            .map(|line| content::diff_line(Mark::Added, None, line));
+        removed.chain(added).collect::<Vec<_>>().join("\n")
+    };
+    let mut lines = output.lines();
+    let Some(range) = lines
+        .next()
+        .and_then(|first| first.strip_prefix("Edited "))
+        .and_then(|rest| rest.rsplit_once(" at line"))
+        .map(|(_, range)| range.trim_start_matches('s').trim().trim_end_matches(':'))
+    else {
+        return bare();
+    };
+    let Some(first) = range
+        .split('-')
+        .next()
+        .and_then(|n| n.trim().parse::<usize>().ok())
+    else {
+        return bare();
+    };
+    // The file's lines it shows, by number.
+    let shown: Vec<(usize, &str)> = lines
+        .filter_map(|line| {
+            let (number, text) = line.split_once(" | ")?;
+            Some((number.parse().ok()?, text))
+        })
+        .collect();
+    let at = |number: usize| {
+        shown
+            .iter()
+            .find(|(n, _)| *n == number)
+            .map(|(_, text)| *text)
+    };
+    // (One line break at the end of either names no line of its own.)
+    let new_core = new.strip_suffix('\n').unwrap_or(new);
+    let old_core = old.strip_suffix('\n').unwrap_or(old);
+    // The new lines as the file has them, and the old ones they replaced,
+    // whole lines both.
+    let (removed, added): (Vec<String>, Vec<String>) = if new.is_empty() {
+        (old.lines().map(str::to_string).collect(), Vec::new())
+    } else {
+        let count = new_core.split('\n').count();
+        let span: Option<Vec<&str>> = (first..first + count).map(at).collect();
+        match span {
+            Some(span) => {
+                let after = span.join("\n");
+                match after.find(new_core) {
+                    Some(start) => {
+                        let before = format!(
+                            "{}{old_core}{}",
+                            &after[..start],
+                            &after[start + new_core.len()..]
+                        );
+                        (
+                            before.split('\n').map(str::to_string).collect(),
+                            span.iter().map(|line| line.to_string()).collect(),
+                        )
+                    }
+                    None => return bare(),
+                }
+            }
+            None => return bare(),
+        }
+    };
+    let last = first + added.len();
+    let mut diff: Vec<String> = Vec::new();
+    for (number, text) in shown.iter().filter(|(n, _)| *n < first) {
+        diff.push(content::diff_line(Mark::Kept, Some(*number), text));
+    }
+    for (at, text) in removed.iter().enumerate() {
+        diff.push(content::diff_line(Mark::Removed, Some(first + at), text));
+    }
+    for (at, text) in added.iter().enumerate() {
+        diff.push(content::diff_line(Mark::Added, Some(first + at), text));
+    }
+    for (number, text) in shown.iter().filter(|(n, _)| *n >= last) {
+        diff.push(content::diff_line(Mark::Kept, Some(*number), text));
+    }
+    diff.join("\n")
+}
+
+/// What came while a wait waited, from its result, as the user reads it:
+/// each item of mail by its heading, from the user's side ("r3 finished.
+/// Its report:"), and its text, without the markers that set it apart for
+/// the agent.
+// shortcut: reads the framework's markers and headings, as `came` does.
+fn mail(output: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut inside: Option<&str> = None;
+    for line in output.lines() {
+        if let Some(number) = inside
+            && line.trim() == format!("[end of mail {number}]")
+        {
+            inside = None;
+            continue;
+        }
+        if inside.is_none()
+            && let Some((number, heading)) = line
+                .strip_prefix("[mail ")
+                .and_then(|rest| rest.split_once("] "))
+        {
+            inside = Some(number);
+            // "r1 (agent `worker`) finished" as "r1 finished".
+            let heading = match heading.split_once(" (agent `") {
+                Some((run, rest)) => match rest.split_once("`)") {
+                    Some((_, rest)) => format!("{run}{rest}"),
+                    None => heading.to_string(),
+                },
+                None => heading.to_string(),
+            };
+            out.push(heading.replace(" sent you a message", " sent a message"));
+            continue;
+        }
+        // (Two blank lines read as one.)
+        if line.trim().is_empty() && out.last().is_some_and(|last| last.trim().is_empty()) {
+            continue;
+        }
+        // What woke the wait, without what it tells the agent to do.
+        if inside.is_none() && line.starts_with("An update for you arrived") {
+            out.push("An update came.".to_string());
+            continue;
+        }
+        if inside.is_none() && line.starts_with("A note for you arrived") {
+            out.push("A note came.".to_string());
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    out.join("\n")
 }
 
 /// What reached a wait, from its result. That is the mail it holds, each
@@ -1520,14 +1613,10 @@ fn command_outcome(output: &str) -> Outcome {
     // "exit code 1, 2.0 s", "cancelled, 0.4 s", "stopped after 60 s (timeout_seconds), 60.0 s"
     let (how, time) = status.rsplit_once(", ").unwrap_or((status, ""));
     let tests = tests(&rest);
-    // Its row says how its tests went, or how it failed, and that it ran.
+    // Its row says how its tests went, and that it ran. (A ✗ says it
+    // failed.)
     let settled = Settled {
-        news: Some(match (&tests, how.strip_prefix("exit code ")) {
-            (Some(tests), _) => tests.clone(),
-            (None, _) if ok => String::new(),
-            (None, Some(code)) => format!("exit {code}"),
-            (None, None) => how.to_string(),
-        }),
+        news: Some(tests.clone().unwrap_or_default()),
         ran: true,
         ..Settled::default()
     };
@@ -1545,25 +1634,12 @@ fn command_outcome(output: &str) -> Outcome {
             None => how,
         }
     };
-    let mut shown: Vec<String> = Vec::new();
-    let mut left_out = rest.len() > SHOWN_LINES;
-    if !(rest.len() == 1 && rest[0] == "(no output)") {
-        shown.extend(rest.iter().take(SHOWN_LINES).map(|line| {
-            let shown = cut(line, 300);
-            left_out |= shown != *line;
-            shown
-        }));
-        if rest.len() > SHOWN_LINES {
-            shown.push(ui::more_lines(rest.len() - SHOWN_LINES));
-        }
-    }
-    let block = (!shown.is_empty()).then(|| {
-        let mut block = Item::new(Kind::Result, status).detail(shown.join("\n"));
-        if left_out {
-            block.whole = Some(rest.join("\n").into());
-        }
-        if ok { block } else { block.level(Level::Warn) }
-    });
+    // Its content is its output.
+    let block = if rest.len() == 1 && rest[0] == "(no output)" {
+        None
+    } else {
+        Content::new(ContentKind::Plain, rest.join("\n"), None).map(Content::block)
+    };
     Outcome {
         status: if ok {
             CallStatus::Ok
@@ -1631,16 +1707,94 @@ mod tests {
         super::call(tool, parameters, "main")
     }
 
-    /// A call's act holds what its Quiet row's words leave out of it, from
-    /// its parameters, as the shared fixtures expect ([`quiet::fixtures`]).
+    /// What a result of a call without parameters says.
+    fn outcome(tool: &str, output: &str) -> Outcome {
+        super::outcome(tool, &Parameters::new(), output)
+    }
+
+    /// Each call of the shared fixtures ([`quiet::fixtures`]) makes their
+    /// item, its act once its result came, and its content: a read's lines
+    /// numbered, an edit's diff, a command's output, a message's text, a
+    /// search's hits, the mail a wait got, any other tool's result muted.
     #[test]
-    fn a_calls_act_holds_what_its_row_leaves_out() {
+    fn calls_make_the_fixtures_items_and_contents() {
         for fixture in quiet::fixtures() {
+            let name = fixture.name;
             let parameters: Parameters = serde_json::from_str(fixture.parameters).unwrap();
-            let item = super::call(fixture.tool, &parameters, "main").unwrap();
-            assert_eq!(item.act.as_ref(), Some(&fixture.act), "{}", fixture.name);
-            assert_eq!(item.detail.as_deref(), fixture.detail, "{}", fixture.name);
+            let mut item = super::call(fixture.tool, &parameters, "main").unwrap();
+            assert_eq!(item.text, fixture.full, "{name}");
+            assert_eq!(item.detail.as_deref(), fixture.full_detail, "{name}");
+            let outcome = if fixture.status == CallStatus::Failed && fixture.tool != SHELL_TOOL_NAME
+                || fixture.output.starts_with("refused")
+            {
+                Outcome::failed(fixture.output)
+            } else {
+                super::outcome(fixture.tool, &parameters, fixture.output)
+            };
+            outcome.settled.apply(&mut item.act);
+            assert_eq!(item.act.as_ref(), Some(&fixture.act), "{name}");
+            assert_eq!(outcome.status, fixture.status, "{name}");
+            assert_eq!(
+                outcome.text.as_deref().unwrap_or(""),
+                fixture.outcome,
+                "{name}"
+            );
+            assert_eq!(outcome.job.is_some(), fixture.job, "{name}");
+            let block = outcome.block.as_ref();
+            assert_eq!(
+                block.map(|block| (block.content.unwrap(), block.text.as_str())),
+                fixture.content,
+                "{name}"
+            );
+            assert_eq!(
+                block.and_then(|block| block.more.as_deref()),
+                fixture.more,
+                "{name}"
+            );
+            // The whole content is kept when the preview leaves some out.
+            assert_eq!(
+                block.is_some_and(|block| block.whole.is_some()),
+                fixture.more.is_some(),
+                "{name}"
+            );
         }
+    }
+
+    /// An edit's diff has the lines around it the result shows, kept, the
+    /// old lines, removed, numbered as the file had them, and the new ones,
+    /// added, numbered as it has them now. An edit inside a line shows
+    /// that line whole, and a deletion has no added lines.
+    #[test]
+    fn an_edits_diff_shows_whole_lines_around_it() {
+        let output = "Edited a.rs at lines 3-4:\n1 | one\n2 | two\n3 | new a\n4 | new b\n5 | five";
+        assert_eq!(
+            edit_diff("old", "new a\nnew b", output),
+            " 1\tone\n 2\ttwo\n-3\told\n+3\tnew a\n+4\tnew b\n 5\tfive"
+        );
+        let output = "Edited a.rs at line 2:\n1 | fn a() {\n2 |     let x = Some(1);\n3 | }";
+        assert_eq!(
+            edit_diff("None", "Some(1)", output),
+            " 1\tfn a() {\n-2\t    let x = None;\n+2\t    let x = Some(1);\n 3\t}"
+        );
+        let output = "Edited a.rs at line 2:\n1 | one\n2 | three";
+        assert_eq!(
+            edit_diff("two\n", "", output),
+            " 1\tone\n-2\ttwo\n 2\tthree"
+        );
+        // Without the file's lines (every match, Claude Code's edit).
+        assert_eq!(edit_diff("a\nb", "c", ""), "-\ta\n-\tb\n+\tc");
+    }
+
+    /// A wait's content is the mail that came, each by its heading, from
+    /// the user's side.
+    #[test]
+    fn a_waits_content_is_its_mail_as_the_user_reads_it() {
+        assert_eq!(
+            mail(
+                "Still running: r4.\n\n[mail 2] r3 (agent `worker`) finished. Its report:\n\nDone.\n\n[end of mail 2]\n\n[mail 3] r4 (agent `worker`) sent you a message:\n\nHalfway.\n\n[end of mail 3]"
+            ),
+            "Still running: r4.\n\nr3 finished. Its report:\n\nDone.\n\nr4 sent a message:\n\nHalfway.\n"
+        );
     }
 
     /// A wait says the runs it names, also when they ended. One that names
@@ -1668,7 +1822,7 @@ mod tests {
             ("waiting for r1, r2".into(), "r1, r2".into())
         );
         assert_eq!(
-            quiet::doing(&super::act(crew::WAIT_FOR_AGENTS, &params(&[]), "main").0),
+            quiet::doing(&super::act(crew::WAIT_FOR_AGENTS, &params(&[]), "main")),
             "Waiting for workers"
         );
         // A wait's line says what came, as the user reads it, not as its
@@ -1698,7 +1852,8 @@ mod tests {
             item.text
                 .starts_with("start worker (worktree) “Fix the parser. Fix")
         );
-        assert_eq!(item.detail.as_deref(), Some(task.trim()));
+        // (Its task is its content.)
+        assert_eq!(item.detail, None);
         // The worker's profile, model and effort show on its call.
         let item = call(
             crew::START_AGENT,
@@ -1860,8 +2015,12 @@ mod tests {
         );
         let block = failed.block.unwrap();
         assert_eq!(
-            (block.kind, block.level, block.text.as_str()),
-            (Kind::Result, Some(Level::Warn), "exit code 101, 3.0 s")
+            (block.kind, block.content, block.text.as_str()),
+            (
+                Kind::Result,
+                Some(ContentKind::Plain),
+                "===== 1 failed, 4 passed in 0.31s ====="
+            )
         );
         assert_eq!(
             told(SHELL_TOOL_NAME, "exit code 0, 0.2 s\n(no output)"),
@@ -1880,7 +2039,12 @@ mod tests {
         let failed = Outcome::failed("Tool 'x' execution failed: boom\nat line 3");
         assert_eq!(failed.text.as_deref(), Some("boom"));
         assert_eq!(failed.block.unwrap().text, "boom\nat line 3");
-        assert!(Outcome::failed("short").block.is_none());
+        // Why it failed is its content, unless its line says it all.
+        assert_eq!(
+            Outcome::failed("short").block.map(|block| block.content),
+            Some(Some(ContentKind::Muted))
+        );
+        assert!(Outcome::failed(quiet::STOPPED).block.is_none());
     }
 
     /// Each call says what it does for the Quiet view, and its result
@@ -2001,7 +2165,7 @@ mod tests {
         assert_eq!(moved.map(|act| act.news).as_deref(), Some(""));
         // (It runs tests, so it stands alone even when it prints no counts.)
         let built = settled(SHELL_TOOL_NAME, "exit code 2, 3.0 s\nerror", shell.clone());
-        assert_eq!((built.news.as_str(), built.alone), ("exit 2", true));
+        assert_eq!((built.news.as_str(), built.alone), ("", true));
         let quiet = settled(SHELL_TOOL_NAME, "exit code 0, 0.1 s\n(no output)", shell);
         assert_eq!((quiet.news.as_str(), quiet.ran), ("", true));
         // A search's indexes and its count come from the search itself.
@@ -2091,62 +2255,27 @@ mod tests {
         assert_eq!(queued.done, "Queued r5");
     }
 
-    /// A command's block keeps its whole output when it shows less of it, meaning
-    /// fewer lines, or a long line's start only.
+    /// A command's block previews its output, and keeps the whole when the
+    /// preview leaves some of it out, lines or the end of a long line.
     #[test]
-    fn a_commands_whole_output_is_kept_when_any_of_it_is_left_out() {
-        let whole = |output: &str| {
-            outcome(SHELL_TOOL_NAME, output)
-                .block
-                .and_then(|block| block.whole)
-                .map(|whole| whole.to_string())
-        };
+    fn a_commands_output_is_previewed_and_kept_whole() {
+        let block = |output: &str| outcome(SHELL_TOOL_NAME, output).block.unwrap();
+        let short = block("exit code 0, 0.1 s\nshort\nlines");
         assert_eq!(
-            whole(
-                "exit code 0, 0.1 s
-short
-lines"
-            ),
-            None
+            (short.text.as_str(), short.more, short.whole),
+            ("short\nlines", None, None)
         );
         let long = "x".repeat(500);
+        let cut = block(&format!("exit code 0, 0.1 s\nshort\n{long}"));
+        assert_eq!(cut.more.as_deref(), Some("… 100 more characters"));
         assert_eq!(
-            whole(&format!(
-                "exit code 0, 0.1 s
-short
-{long}"
-            )),
-            Some(format!("short\n{long}"))
+            cut.whole.as_deref(),
+            Some(format!("short\n{long}").as_str())
         );
-        assert_eq!(
-            whole(
-                "exit code 0, 0.1 s
-1
-2
-3
-4
-5"
-            ),
-            Some("1\n2\n3\n4\n5".into())
-        );
-    }
-
-    /// The line that counts what a command's block leaves out says "line"
-    /// for one.
-    #[test]
-    fn a_block_counts_the_lines_it_leaves_out() {
-        let left_out = |lines: usize| {
-            let output: Vec<String> = (1..=lines).map(|n| n.to_string()).collect();
-            outcome(
-                SHELL_TOOL_NAME,
-                &format!("exit code 0, 0.1 s\n{}", output.join("\n")),
-            )
-            .block
-            .and_then(|block| block.detail)
-            .and_then(|detail| detail.lines().last().map(str::to_string))
-        };
-        assert_eq!(left_out(5).as_deref(), Some("… 1 more line"));
-        assert_eq!(left_out(7).as_deref(), Some("… 3 more lines"));
+        let lines: Vec<String> = (1..=17).map(|n| n.to_string()).collect();
+        let many = block(&format!("exit code 0, 0.1 s\n{}", lines.join("\n")));
+        assert_eq!(many.text.lines().count(), content::PREVIEW_LINES);
+        assert_eq!(many.more.as_deref(), Some("… 1 more line"));
     }
 
     /// A command moved to the background shows as such, with its output so
@@ -2161,10 +2290,6 @@ short
             Some("in the background · job 1f0c2d3e")
         );
         let block = moved.block.unwrap();
-        assert_eq!(block.level, None);
-        assert_eq!(
-            block.detail.as_deref(),
-            Some("Compiling arko\nCompiling arko_agents")
-        );
+        assert_eq!(block.text, "Compiling arko\nCompiling arko_agents");
     }
 }

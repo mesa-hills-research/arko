@@ -32,8 +32,8 @@ use super::theme::Theme;
 use super::wrap::{self, Join, Wrapped, width as text_width};
 use crate::glyphs;
 use crate::remote::{
-    CallStatus, Delivery, Fact, Item, Kind, Level, MAIN_AGENT, Snapshot, Source, Update,
-    WorkerState, WorkerSummary, quiet,
+    ActKind, CallStatus, ContentKind, Delivery, Item, Kind, Level, MAIN_AGENT, Snapshot, Source,
+    Update, WorkerState, WorkerSummary, content, quiet,
 };
 
 /// The items kept, as the feed keeps them, the main agent's and the
@@ -83,11 +83,12 @@ const WHOLES_KEPT: usize = 8 * 1024 * 1024;
 struct Entry {
     item: Item,
     cache: Option<Cached>,
-    /// A command's block shows its whole output, or an agent's thinking
-    /// shows whole (a click opened it).
+    /// A call shows its content in the Full view, a content shows its
+    /// whole, or an agent's thinking shows whole (a click opened it).
     open: bool,
-    /// An agent's thinking is opened in the quiet view, which a click does
-    /// and nothing else (`open` is for the full view).
+    /// An agent's thinking, or a call in a Quiet row of several, is opened
+    /// in the quiet view, which a click does and nothing else (`open` is
+    /// for the full view).
     open_quiet: bool,
     /// When it came.
     created: Instant,
@@ -132,6 +133,7 @@ struct Cached {
     clock: Option<String>,
     open: bool,
     quiet: bool,
+    folds: bool,
     lines: Vec<Wrapped>,
 }
 
@@ -178,8 +180,8 @@ struct QuietRow {
     /// calls' results, which show when it's open.
     members: Vec<usize>,
     words: quiet::Words,
-    /// What it shows of each of its calls when it's open.
-    calls: Vec<quiet::Opened>,
+    /// It holds several calls, each of which shows as its Full line.
+    merged: bool,
     /// It has more to show than its words. One that hasn't has no fold.
     opens: bool,
 }
@@ -396,6 +398,8 @@ pub struct Transcript {
     motion: Motion,
     /// The Quiet view's rows the reader opened, by their first call.
     quiet_open: HashSet<u64>,
+    /// The calls that have content, a block of their result.
+    contents: HashSet<u64>,
     /// The Quiet view's rows' lines as last drawn, by their first call.
     quiet_cache: HashMap<u64, QuietCached>,
     /// One more each time an item comes, changes or goes.
@@ -434,6 +438,7 @@ impl Transcript {
             working: None,
             motion: Motion::default(),
             quiet_open: HashSet::new(),
+            contents: HashSet::new(),
             quiet_cache: HashMap::new(),
             generation: 0,
             quiet_order: None,
@@ -455,13 +460,41 @@ impl Transcript {
     }
 
     /// An entry for `item`, where an agent's thinking opens as `open_thinking`
-    /// says.
+    /// says, and a command shows its output in the Full view.
     fn entry(&self, item: Item) -> Entry {
         let item = for_terminal(item);
-        let open = self.open_thinking && item.kind == Kind::Thinking;
+        let open = match item.kind {
+            Kind::Thinking => self.open_thinking,
+            Kind::Call => item
+                .act
+                .as_ref()
+                .is_some_and(|act| act.kind == ActKind::Command),
+            _ => false,
+        };
         Entry {
             open,
             ..Entry::new(item)
+        }
+    }
+
+    /// Notes the calls that have content, from the entries.
+    fn note_contents(&mut self) {
+        self.contents = self
+            .entries
+            .iter()
+            .filter(|entry| entry.item.kind == Kind::Result)
+            .filter_map(|entry| entry.item.call)
+            .collect();
+    }
+
+    /// Whether `item`'s block opens and closes. A call does when it has a
+    /// detail or content, a content when its preview leaves some out, and an
+    /// agent's thinking always.
+    fn folds(&self, item: &Item) -> bool {
+        match item.kind {
+            Kind::Thinking => true,
+            Kind::Call => item.detail.is_some() || self.contents.contains(&item.id),
+            _ => item.whole.is_some(),
         }
     }
 
@@ -478,6 +511,7 @@ impl Transcript {
             .collect();
         self.workers = snapshot.workers;
         self.trim();
+        self.note_contents();
     }
 
     /// Takes the feed's `update`.
@@ -491,6 +525,15 @@ impl Transcript {
         }
         match update {
             Update::Item(item) => {
+                // A call's content came, so its line opens.
+                if item.kind == Kind::Result
+                    && let Some(call) = item.call
+                {
+                    self.contents.insert(call);
+                    if let Some(entry) = self.find_mut(call) {
+                        entry.touch();
+                    }
+                }
                 let entry = self.entry(item);
                 self.entries.push_back(entry);
                 self.trim();
@@ -523,10 +566,12 @@ impl Transcript {
                 self.entries
                     .retain(|entry| entry.item.id < from || !entry.item.is_main());
                 self.selection = None;
+                self.note_contents();
             }
             Update::Remove { id } => {
                 self.changed(id);
                 self.entries.retain(|entry| entry.item.id != id);
+                self.note_contents();
             }
             // A moved call's line follows its job through its changes.
             Update::Job(_) => {}
@@ -865,6 +910,8 @@ impl Transcript {
                         }
                     }
                     Show::Worker(id) => Shown::Worker(id),
+                    // A call's content shows while the call is open.
+                    Show::Item if self.closed_content(item) => continue,
                     Show::Item => Shown::Entry(index),
                 },
             };
@@ -891,6 +938,7 @@ impl Transcript {
                         _ => None,
                     };
                     let streams = self.motion.thinking == Some(self.entries[*index].item.id);
+                    let folds = self.folds(&self.entries[*index].item);
                     let entry = &mut self.entries[*index];
                     // Only a click opens thinking in the quiet view.
                     let quiet = quiet && entry.item.kind == Kind::Thinking;
@@ -906,6 +954,7 @@ impl Transcript {
                             && c.clock == clock
                             && c.open == open
                             && c.quiet == quiet
+                            && c.folds == folds
                     });
                     if !fresh {
                         entry.cache = Some(Cached {
@@ -921,11 +970,13 @@ impl Transcript {
                                     open,
                                     quiet,
                                     clock: clock.as_deref(),
+                                    folds,
                                 },
                             ),
                             clock,
                             open,
                             quiet,
+                            folds,
                         });
                     }
                     entry.cache.as_ref().map_or(0, |c| c.lines.len())
@@ -1031,6 +1082,16 @@ impl Transcript {
         blocks
     }
 
+    /// Whether `item` is a call's content whose call is closed in the Full
+    /// view.
+    fn closed_content(&self, item: &Item) -> bool {
+        item.kind == Kind::Result
+            && item
+                .call
+                .and_then(|call| self.index(call))
+                .is_some_and(|call| !self.entries[call].open)
+    }
+
     /// Whether `block` is part of the agent's run of calls, namely a call, its
     /// result, its thinking, a worker's line or a turn's count of calls.
     fn is_call_run(&self, block: &Block) -> bool {
@@ -1045,9 +1106,8 @@ impl Transcript {
     }
 
     /// What the Quiet view shows, in order, with each run of the agent's calls
-    /// as rows ([`quiet::rows`]), and the rest as it is. A call's results
-    /// go in its row, and show under the row only when the call failed
-    /// alone ([`quiet::Row::output_under`]).
+    /// as rows ([`quiet::rows`]), and the rest as it is. A call's content
+    /// goes in its row.
     fn quiet_placed(&self, filter: &Filter) -> Vec<Placed> {
         // The entries shown, each with the results of its own.
         let mut shown: Vec<(usize, Vec<usize>)> = Vec::new();
@@ -1080,7 +1140,7 @@ impl Transcript {
                         outcome: item.outcome.as_deref(),
                         job: item.job.is_some(),
                         turn: item.turn,
-                        output: !results.is_empty(),
+                        content: !results.is_empty(),
                     }),
                     Kind::Thinking => quiet::Step::Thinking,
                     _ => quiet::Step::Other(item.id),
@@ -1097,29 +1157,66 @@ impl Transcript {
                     placed.extend(results.iter().copied().map(Placed::Entry));
                 }
                 quiet::Piece::Row(row) => {
-                    let alone = row.output_under();
                     let mut members = Vec::new();
-                    let mut under = Vec::new();
                     for at in &row.members {
                         let (index, results) = &shown[*at];
                         members.push(*index);
-                        if alone {
-                            under.extend(results.iter().copied());
-                        } else {
-                            members.extend(results.iter().copied());
-                        }
+                        members.extend(results.iter().copied());
                     }
                     placed.push(Placed::Quiet(Arc::new(QuietRow {
                         members,
                         words: row.words,
-                        calls: row.calls,
+                        merged: row.merged,
                         opens: row.opens,
                     })));
-                    placed.extend(under.into_iter().map(Placed::Entry));
                 }
             }
         }
         placed
+    }
+
+    /// Opens what the renderings show open (`remote::scenario`). In Quiet
+    /// that's every row, and in a row of several its first call with
+    /// something to show and every call that failed. In Full it's the first
+    /// read and the first edit, besides the commands.
+    #[cfg(test)]
+    pub(crate) fn open_for_renderings(&mut self, view: View) {
+        if view == View::Quiet {
+            let placed = self.quiet_placed(&Filter::Main(view));
+            for row in placed.iter().filter_map(|placed| match placed {
+                Placed::Quiet(row) => Some(row),
+                Placed::Entry(_) => None,
+            }) {
+                self.quiet_open.insert(self.entries[row.members[0]].item.id);
+                if !row.merged {
+                    continue;
+                }
+                let mut first = true;
+                for member in &row.members {
+                    let item = &self.entries[*member].item;
+                    if item.kind != Kind::Call || !self.folds(item) {
+                        continue;
+                    }
+                    let failed = item.status == Some(CallStatus::Failed);
+                    if first || failed {
+                        self.entries[*member].open_quiet = true;
+                        self.entries[*member].touch();
+                    }
+                    first = false;
+                }
+            }
+            return;
+        }
+        for kind in [ActKind::Read, ActKind::Edit] {
+            if let Some(entry) = self
+                .entries
+                .iter_mut()
+                .find(|entry| entry.item.act.as_ref().is_some_and(|act| act.kind == kind))
+            {
+                entry.open = true;
+                entry.touch();
+            }
+        }
     }
 
     /// How long the call of a Quiet row that runs has run.
@@ -1135,11 +1232,11 @@ impl Transcript {
     }
 
     /// The lines of a Quiet row, which are its words, and when it's open what
-    /// its calls hold behind a bar under them ([`quiet::Opened`]). Each call
-    /// has its own line there, except the one the row's line names, and under
-    /// it the text the call holds, its outcome and its output. A thinking
-    /// after them has its triangle in the bar's place, in the column every
-    /// fold's triangle stands in, and its text behind the bar.
+    /// its calls hold behind a bar under them. A row of one call shows the
+    /// call's detail and content. A row of several shows each call's Full
+    /// line, which opens to the call's detail and content under it. A
+    /// thinking after them has its triangle in the bar's place, in the
+    /// column every fold's triangle stands in, and its text behind the bar.
     fn quiet_lines(
         &self,
         row: &QuietRow,
@@ -1164,54 +1261,57 @@ impl Transcript {
             )
         };
         let inner = width.saturating_sub(LABEL).max(1);
-        // What a call holds goes under its own line, when it has one.
-        let mut indent = 0;
+        // Whether the content of the call before shows, and how far in.
+        let (mut shown, mut indent) = (true, 0);
         for member in &row.members {
             let entry = &self.entries[*member];
             let item = &entry.item;
-            let room = |indent: usize| inner.saturating_sub(indent).max(1);
+            let room = inner.saturating_sub(indent).max(1);
             let mut rows = Vec::new();
             match item.kind {
-                Kind::Call => {
-                    let opened = row.calls.iter().find(|call| call.id == item.id);
-                    let line = opened.and_then(|call| call.line.as_ref());
-                    indent = if line.is_some() { 2 } else { 0 };
-                    if let Some(line) = line {
-                        let clock = running_time(item, now);
-                        let words = quiet_spans(line, theme, clock.as_deref());
-                        rows.extend(wrap::wrap_lines(&words, inner, 2));
-                    }
-                    for fact in item.act.iter().flat_map(|act| &act.body) {
-                        let fact = fact_lines(fact, theme, room(indent));
-                        rows.extend(indented(fact, indent));
-                    }
-                    if opened.is_some_and(|call| call.outcome)
-                        && let Some(outcome) = item.outcome.as_deref()
-                    {
-                        let outcome = plain(outcome.trim(), theme.dim(), room(indent));
-                        rows.extend(indented(outcome, indent));
+                Kind::Call if row.merged => {
+                    let folds = self.folds(item);
+                    (shown, indent) = (folds && entry.open_quiet, 2);
+                    let line = call_line(
+                        item,
+                        theme,
+                        width.saturating_sub(MARGIN),
+                        true,
+                        None,
+                        folds.then_some(shown),
+                        true,
+                    );
+                    rows.extend(line.into_iter().map(|line| outdented(line, MARGIN)));
+                    if shown && let Some(detail) = &item.detail {
+                        let detail = detail_lines(detail, theme, inner - indent);
+                        rows.extend(indented(detail, indent));
                     }
                 }
-                Kind::Result => {
-                    let (text, style, whole) = result_body(item, theme, entry.open);
-                    let mut body = plain(&text, style, room(indent));
-                    if whole {
-                        body.extend(
-                            plain(FOLD_CLOSE, style, room(indent))
+                Kind::Call => {
+                    (shown, indent) = (true, 0);
+                    let detail = item.act.as_ref().map_or("", |act| act.detail.as_str());
+                    if !detail.is_empty() {
+                        lines.extend(
+                            detail_lines(detail, theme, inner)
                                 .into_iter()
-                                .map(|line| Wrapped { bare: true, ..line }),
+                                .map(|line| line.decorated(bar())),
                         );
                     }
-                    rows.extend(indented(body, indent));
+                    continue;
+                }
+                Kind::Result if shown => {
+                    let content = content_lines(item, theme, room, entry.open);
+                    rows.extend(indented(content, indent));
                 }
                 Kind::Thinking => {
-                    indent = 0;
+                    (shown, indent) = (true, 0);
                     // (One that streams says "Thinking".)
                     let took = (self.motion.thinking != Some(item.id)).then(|| thought_time(entry));
                     let look = Look {
                         open: entry.open_quiet,
                         quiet: true,
                         clock: took.as_deref(),
+                        folds: true,
                     };
                     // Its line as a row's, the triangle where the bar goes, and
                     // its text behind the bar, under the label.
@@ -1248,17 +1348,21 @@ impl Transcript {
     }
 
     /// The line of `block`, an open Quiet row, that opens and closes the
-    /// output or the thinking `id` inside it (its last).
+    /// call, the content or the thinking `id` inside it (a call's line, the
+    /// last line of the others).
     fn inner_line(&self, block: &Block, id: u64) -> Option<usize> {
         let Shown::Quiet(_) = block.shown else {
             return None;
         };
         let cached = self.quiet_cache.get(&block.key)?;
+        let call = self.item(id).is_some_and(|item| item.kind == Kind::Call);
         cached
             .spans
             .iter()
             .find(|(inner, _)| *inner == id)
-            .map(|(_, lines)| usize::from(block.gap) + lines.end - 1)
+            .map(|(_, lines)| {
+                usize::from(block.gap) + if call { lines.start } else { lines.end - 1 }
+            })
     }
 
     /// The entries in the order they are drawn, by ID, except that a
@@ -1699,9 +1803,9 @@ impl Transcript {
         self.hold = false;
     }
 
-    /// The fold at the screen's `x`, `y`, namely a Quiet row's line, the last line
-    /// of a command's whole output or of an agent's thinking, and the same
-    /// lines of those inside an open Quiet row.
+    /// The fold at the screen's `x`, `y`, namely a Quiet row's line, a call's
+    /// line, a content's door, the last line of an agent's thinking, and the
+    /// same lines of those inside an open Quiet row.
     pub fn fold_at(&mut self, x: u16, y: u16, filter: &Filter, theme: &Theme) -> Option<Fold> {
         let row = self.drawn.row_at(x, y)?;
         let width = self.drawn.area.width as usize;
@@ -1717,11 +1821,11 @@ impl Transcript {
                     .iter()
                     .map(|(id, _)| *id)
                     .find(|id| self.inner_line(block, *id) == Some(row.line))
-                    .filter(|id| self.item(*id).is_some_and(folds))
+                    .filter(|id| self.item(*id).is_some_and(|item| self.folds(item)))
             }),
-            Shown::Entry(index) if folds(&self.entries[*index].item) => {
-                let rows = self.block_rows(block, theme, width);
-                (row.line + 1 == rows.len()).then_some(row.key)
+            Shown::Entry(index) if self.folds(&self.entries[*index].item) => {
+                let line = self.fold_line(block, *index, theme, width);
+                (row.line == line).then_some(row.key)
             }
             _ => None,
         };
@@ -1732,22 +1836,24 @@ impl Transcript {
         })
     }
 
-    /// Where the fold of `item` is in `filter`'s view.
-    fn fold(&mut self, item: u64, filter: &Filter, theme: &Theme) -> Option<Fold> {
+    /// Where the fold of `item` is in `filter`'s view, or with `inner` its
+    /// fold inside an open Quiet row (the first call of a row of several has
+    /// the row's key).
+    fn fold(&mut self, item: u64, inner: bool, filter: &Filter, theme: &Theme) -> Option<Fold> {
         let width = self.drawn.area.width as usize;
         let blocks = self.blocks(filter, theme, width);
         for block in &blocks {
-            let line = if block.key == item {
+            let line = if block.key == item && !inner {
                 match &block.shown {
                     Shown::Quiet(quiet) if quiet.opens => Some(usize::from(block.gap)),
-                    Shown::Entry(index) if folds(&self.entries[*index].item) => {
-                        Some(self.block_rows(block, theme, width).len().saturating_sub(1))
+                    Shown::Entry(index) if self.folds(&self.entries[*index].item) => {
+                        Some(self.fold_line(block, *index, theme, width))
                     }
                     _ => return None,
                 }
             } else {
                 self.inner_line(block, item)
-                    .filter(|_| self.item(item).is_some_and(folds))
+                    .filter(|_| self.item(item).is_some_and(|item| self.folds(item)))
             };
             if let Some(line) = line {
                 return Some(Fold {
@@ -1760,28 +1866,47 @@ impl Transcript {
         None
     }
 
+    /// The line of the entry `index`'s block that opens and closes it, a
+    /// call's line, else its last.
+    fn fold_line(&self, block: &Block, index: usize, theme: &Theme, width: usize) -> usize {
+        if self.entries[index].item.kind == Kind::Call {
+            usize::from(block.gap)
+        } else {
+            self.block_rows(block, theme, width).len().saturating_sub(1)
+        }
+    }
+
     /// Opens or closes the fold of the item `item`, its line held on the
     /// screen's row `y` at the next draw. Returns where that line is.
     pub fn toggle(&mut self, item: u64, y: u16, filter: &Filter, theme: &Theme) -> Option<Fold> {
-        if self.quiet_row(item, filter, theme).is_some() {
+        // A Quiet row, unless the line is inside it, on its first call.
+        let gap = self.quiet_row(item, filter, theme);
+        let row = gap.is_some_and(|gap| {
+            let drawn = (y as usize)
+                .checked_sub(self.drawn.area.y as usize)
+                .and_then(|at| self.drawn.rows.get(at).copied().flatten());
+            drawn.is_none_or(|at| at.key != item || at.line == usize::from(gap))
+        });
+        if row {
             if !self.quiet_open.remove(&item) {
                 self.quiet_open.insert(item);
             }
         } else {
             let quiet = filter.view() == View::Quiet;
-            let entry = self.find_mut(item)?;
-            if !folds(&entry.item) {
+            if !self.item(item).is_some_and(|item| self.folds(item)) {
                 return None;
             }
-            // A thinking opens in the Quiet view apart from the Full view.
-            if quiet && entry.item.kind == Kind::Thinking {
+            let entry = self.find_mut(item)?;
+            // A thinking and a call open in the Quiet view apart from the
+            // Full view.
+            if quiet && matches!(entry.item.kind, Kind::Thinking | Kind::Call) {
                 entry.open_quiet = !entry.open_quiet;
             } else {
                 entry.open = !entry.open;
             }
             entry.touch();
         }
-        let fold = self.fold(item, filter, theme)?;
+        let fold = self.fold(item, gap.is_some() && !row, filter, theme)?;
         self.pin = Some(Pin {
             key: fold.block,
             line: fold.line,
@@ -1803,7 +1928,7 @@ impl Transcript {
     }
 
     /// The blocks of `filter`'s view that open and close, by key. Those are Quiet
-    /// rows, the agents' thinking and commands' whole outputs.
+    /// rows, calls, contents and the agents' thinking.
     fn openable(&mut self, filter: &Filter, theme: &Theme) -> Vec<u64> {
         let width = self.drawn.area.width as usize;
         let mut keys = Vec::new();
@@ -1812,18 +1937,23 @@ impl Transcript {
                 Shown::Quiet(row) if !row.opens => {}
                 Shown::Quiet(_) => {
                     keys.push(block.key);
-                    // The outputs and thinking inside it, while it's open.
+                    // The calls, contents and thinking inside it, while it's
+                    // open. (Its first call has its key, which opens the
+                    // row.)
                     if let Some(cached) = self.quiet_cache.get(&block.key) {
                         keys.extend(
                             cached
                                 .spans
                                 .iter()
                                 .map(|(id, _)| *id)
-                                .filter(|id| self.item(*id).is_some_and(folds)),
+                                .filter(|id| *id != block.key)
+                                .filter(|id| self.item(*id).is_some_and(|item| self.folds(item))),
                         );
                     }
                 }
-                Shown::Entry(index) if folds(&self.entries[*index].item) => keys.push(block.key),
+                Shown::Entry(index) if self.folds(&self.entries[*index].item) => {
+                    keys.push(block.key)
+                }
                 _ => {}
             }
         }
@@ -1867,10 +1997,11 @@ impl Transcript {
             return;
         }
         let quiet = filter.view() == View::Quiet;
-        if let Some(entry) = self.find_mut(key)
-            && folds(&entry.item)
-        {
-            if quiet && entry.item.kind == Kind::Thinking {
+        if !self.item(key).is_some_and(|item| self.folds(item)) {
+            return;
+        }
+        if let Some(entry) = self.find_mut(key) {
+            if quiet && matches!(entry.item.kind, Kind::Thinking | Kind::Call) {
                 entry.open_quiet = open.unwrap_or(!entry.open_quiet);
             } else {
                 entry.open = open.unwrap_or(!entry.open);
@@ -2117,12 +2248,6 @@ fn for_terminal(mut item: Item) -> Item {
     item
 }
 
-/// Whether `item`'s block folds, a command's whole output, kept, or an
-/// agent's thinking.
-fn folds(item: &Item) -> bool {
-    item.whole.is_some() || item.kind == Kind::Thinking
-}
-
 /// What a view shows.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Filter {
@@ -2260,7 +2385,7 @@ const THOUGHT: &str = "Thought";
 const WORKING: &str = "Working…";
 /// The column of the spinner on the "Working…" line, and of every row's
 /// marker ([`marker`]), such as a fold's triangle, the user's bar or ✉.
-/// It is the column of the rail a command's output hangs from (`gutter`),
+/// It is the column of the rail a call's content hangs from (`railed`),
 /// and of the bar of an open Quiet row, so they run into it.
 const SPINNER: usize = MARGIN;
 /// The column of the word after the spinner, where the text of every row
@@ -2283,6 +2408,8 @@ struct Look<'a> {
     /// took (`for 12s`, empty when unknown). `None` for a thinking that
     /// streams.
     clock: Option<&'a str>,
+    /// A call has a detail or content, which its fold opens.
+    folds: bool,
 }
 
 /// A Quiet row's line, with its words, how it failed, how its job goes, and
@@ -2296,14 +2423,11 @@ fn quiet_line(
     width: usize,
     clock: Option<&str>,
 ) -> Vec<Wrapped> {
-    let inner = width.saturating_sub(LABEL).max(1);
+    // (A failed row's ✗ stands in its last column, two from its words.)
+    let room = if words.failed { 3 } else { 0 };
+    let inner = width.saturating_sub(LABEL + room).max(1);
     let spans = quiet_spans(words, theme, clock);
-    let style = if words.failed.is_some() {
-        theme.error()
-    } else {
-        theme.dim()
-    };
-    wrap::prefixed(
+    let mut lines = wrap::prefixed(
         wrap::wrap_lines(&spans, inner, 2),
         marker(
             match fold {
@@ -2311,20 +2435,29 @@ fn quiet_line(
                 Some(false) => "▸",
                 None => " ",
             },
-            style,
+            theme.dim(),
         ),
         Span::raw(" ".repeat(LABEL)),
-    )
+    );
+    if words.failed
+        && let Some(first) = lines.first_mut()
+    {
+        let used = spans_width(&first.spans);
+        let cross = glyphs::render("✗").into_owned();
+        let cross_width = text_width(&cross);
+        let gap = width.saturating_sub(used + cross_width).max(1);
+        // (Not the row's words, so a copy leaves it out.)
+        first.spans.push(Span::raw(" ".repeat(gap)));
+        first.spans.push(Span::styled(cross, theme.error()));
+        first.tail += gap + cross_width;
+    }
+    lines
 }
 
-/// Quiet words as a line says them, with how it failed, how its job goes,
-/// and how long it has run.
+/// Quiet words as a line says them, with how its job goes, and how long it
+/// has run.
 fn quiet_spans(words: &quiet::Words, theme: &Theme, clock: Option<&str>) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(rendered(&words.text), theme.dim())];
-    if let Some(why) = &words.failed {
-        spans.push(Span::styled(rendered(" · "), theme.dim()));
-        spans.push(Span::styled(rendered(format!("✗ {why}")), theme.error()));
-    }
     if let Some(note) = &words.note {
         spans.push(Span::styled(rendered(format!(" · {note}")), theme.dim()));
     }
@@ -2338,39 +2471,6 @@ fn quiet_spans(words: &quiet::Words, theme: &Theme, clock: Option<&str>) -> Vec<
         ));
     }
     spans
-}
-
-/// A fact of a call's body at `width`: its label, muted, and its text after
-/// it, the text's later lines under its first. A copy takes the text.
-fn fact_lines(fact: &Fact, theme: &Theme, width: usize) -> Vec<Wrapped> {
-    if fact.label.is_empty() {
-        return plain(&fact.text, theme.dim(), width);
-    }
-    let label = rendered(&fact.label);
-    let hang = text_width(&label) + 2;
-    let text = wrap::clean(&glyphs::render(&fact.text));
-    let mut lines = Vec::new();
-    for (n, line) in text.split('\n').enumerate() {
-        let lead = if n == 0 {
-            Span::styled(
-                format!("{label}  "),
-                theme.dim().add_modifier(Modifier::ITALIC),
-            )
-        } else {
-            Span::raw(" ".repeat(hang))
-        };
-        let mut wrapped = wrap::wrap_lines(
-            &[Span::styled(line.to_string(), theme.dim())],
-            width.saturating_sub(hang).max(1),
-            0,
-        );
-        // (A blank line of it keeps its row.)
-        if wrapped.is_empty() {
-            wrapped.push(Wrapped::line(Vec::new()));
-        }
-        lines.extend(wrap::prefixed(wrapped, lead, Span::raw(" ".repeat(hang))));
-    }
-    lines
 }
 
 /// `lines` moved right by `indent` columns.
@@ -2400,25 +2500,88 @@ fn outdented(mut line: Wrapped, by: usize) -> Wrapped {
     line
 }
 
-/// What a call's result shows, which is its first lines, or all of them
-/// while it's `open` (then the last item is true, and a line under them
-/// closes it), and their style.
-fn result_body(item: &Item, theme: &Theme, open: bool) -> (String, Style, bool) {
-    let style = match item.level {
-        Some(Level::Error) => theme.error(),
-        Some(Level::Warn) => theme.warning(),
-        _ => theme.dim(),
-    };
+/// A call's content (its result's block) at `width`, a file's numbers
+/// muted, a diff's lines in the diff's colours, and when its preview
+/// leaves some out the door to the rest, muted, or while it's `open`
+/// the whole and the line that closes it. Its numbers and marks are not
+/// copied with its text.
+fn content_lines(item: &Item, theme: &Theme, width: usize, open: bool) -> Vec<Wrapped> {
+    // (A result from an Arko before contents reads as muted text.)
+    let kind = item.content.unwrap_or(ContentKind::Muted);
     let whole = item.whole.as_deref().filter(|_| open);
-    let text = match (&item.detail, whole) {
-        (_, Some(whole)) => whole.to_string(),
-        (Some(detail), None) if item.level == Some(Level::Error) => {
-            format!("{}\n{detail}", item.text)
+    let text = whole.unwrap_or(&item.text);
+    let numbers = content::number_width(kind, text);
+    let mut out = Vec::new();
+    for line in text.split('\n') {
+        let (lead, style, text) = match content::line(kind, line) {
+            content::Line::Numbered { number, mark, text } => {
+                let (lead, style) = match mark {
+                    content::Mark::None => (format!("{number:>numbers$}  "), theme.text()),
+                    content::Mark::Kept => (format!("{number:>numbers$}   "), theme.text()),
+                    content::Mark::Removed => (format!("{number:>numbers$} - "), theme.error()),
+                    content::Mark::Added => (format!("{number:>numbers$} + "), theme.success()),
+                };
+                let lead_style = if matches!(mark, content::Mark::None | content::Mark::Kept) {
+                    theme.dim()
+                } else {
+                    style
+                };
+                (Some(Span::styled(lead, lead_style)), style, text)
+            }
+            content::Line::Plain(text) => {
+                let style = match kind {
+                    ContentKind::Plain => theme.text(),
+                    _ => theme.dim(),
+                };
+                (None, style, text)
+            }
+        };
+        let text = wrap::clean(&glyphs::render(text));
+        let hang = lead.as_ref().map_or(0, |lead| text_width(&lead.content));
+        let mut wrapped = wrap::wrap_lines(
+            &[Span::styled(text, style)],
+            width.saturating_sub(hang).max(1),
+            0,
+        );
+        // (A blank line keeps its row.)
+        if wrapped.is_empty() {
+            wrapped.push(Wrapped::line(Vec::new()));
         }
-        (Some(detail), None) => detail.clone(),
-        (None, None) => item.text.clone(),
-    };
-    (text, style, whole.is_some())
+        match lead {
+            Some(lead) => out.extend(wrap::prefixed(wrapped, lead, Span::raw(" ".repeat(hang)))),
+            None => out.extend(wrapped),
+        }
+    }
+    // (The line that closes it isn't text, so a copy leaves it out.)
+    if whole.is_some() {
+        out.extend(
+            plain(FOLD_CLOSE, theme.dim(), width)
+                .into_iter()
+                .map(|line| Wrapped { bare: true, ..line }),
+        );
+    } else if let Some(more) = &item.more {
+        out.extend(plain(more, theme.dim(), width));
+    }
+    out
+}
+
+/// A call's detail, one muted line (wrapped) at `width`, which says what
+/// its line cut.
+fn detail_lines(detail: &str, theme: &Theme, width: usize) -> Vec<Wrapped> {
+    plain(detail, theme.dim(), width)
+}
+
+/// `lines` behind the bar that hangs from the marker's column, the rail of
+/// a call's content in the Full view.
+fn railed(lines: Vec<Wrapped>, theme: &Theme) -> Vec<Wrapped> {
+    let side = Span::styled(
+        format!("{}{}", " ".repeat(SPINNER), glyphs::render("│ ")),
+        theme.dim(),
+    );
+    lines
+        .into_iter()
+        .map(|line| line.decorated(side.clone()))
+        .collect()
 }
 
 /// A row's marker (a fold's triangle, ✉, ·) in the spinner's column, and
@@ -2429,6 +2592,74 @@ fn marker(symbol: &str, style: Style) -> Span<'static> {
     Span::styled(
         format!("{}{symbol}{}", " ".repeat(SPINNER), " ".repeat(pad)),
         style,
+    )
+}
+
+/// A call's line as the Full view says it, the call as written and how it
+/// went, at `width`, after its fold's triangle (`fold`, open or not) or a
+/// blank for a call with nothing to show. `own` is set in its worker's own
+/// view, where a worker's lines don't name it. A call that runs shows how
+/// long it has run (`clock`) and that it runs, unless its line is in a
+/// Quiet row (`in_row`), whose own line shows that.
+fn call_line(
+    item: &Item,
+    theme: &Theme,
+    width: usize,
+    own: bool,
+    clock: Option<&str>,
+    fold: Option<bool>,
+    in_row: bool,
+) -> Vec<Wrapped> {
+    let marked = width.saturating_sub(LABEL).max(1);
+    let mut spans = Vec::new();
+    if !(item.is_main() || own) {
+        spans.push(Span::styled(
+            format!("{} ", item.agent),
+            theme.dim().add_modifier(Modifier::BOLD),
+        ));
+    }
+    let failed = item.status == Some(CallStatus::Failed);
+    spans.push(Span::styled(rendered(&item.text), theme.dim()));
+    match item.status {
+        Some(CallStatus::Ok) => {
+            spans.push(Span::styled(rendered(" · "), theme.dim()));
+            spans.push(Span::styled(
+                glyphs::render("✓").into_owned(),
+                theme.success(),
+            ));
+            if let Some(outcome) = &item.outcome {
+                spans.push(Span::styled(rendered(format!(" {outcome}")), theme.dim()));
+            }
+        }
+        Some(CallStatus::Failed) => {
+            spans.push(Span::styled(rendered(" · "), theme.dim()));
+            let outcome = item.outcome.as_deref().unwrap_or("failed");
+            spans.push(Span::styled(
+                rendered(format!("✗ {outcome}")),
+                theme.error(),
+            ));
+        }
+        _ if in_row => {}
+        _ => {
+            if let Some(clock) = clock {
+                spans.push(Span::styled(rendered(format!(" · {clock}")), theme.dim()));
+            }
+            spans.push(Span::styled(
+                format!(" {}", glyphs::render("…")),
+                theme.dim(),
+            ));
+        }
+    }
+    let symbol = match fold {
+        None => " ",
+        Some(false) => "▸",
+        Some(true) => "▾",
+    };
+    let marker_style = if failed { theme.error() } else { theme.dim() };
+    wrap::prefixed(
+        wrap::wrap_lines(&spans, marked, 2),
+        marker(symbol, marker_style),
+        Span::raw(" ".repeat(LABEL)),
     )
 }
 
@@ -2444,7 +2675,12 @@ fn entry_lines(
     under: Option<&str>,
     look: Look,
 ) -> Vec<Wrapped> {
-    let Look { open, quiet, clock } = look;
+    let Look {
+        open,
+        quiet,
+        clock,
+        folds,
+    } = look;
     // The agent's text starts at the margin. A row with a marker has it in
     // the spinner's column and its text at the label's.
     let inner = width.saturating_sub(MARGIN).max(1);
@@ -2565,59 +2801,19 @@ fn entry_lines(
             wrap::prefixed(lines, mark("?", theme.accent()), hang())
         }
         Kind::Call => {
-            let mut spans = worker_prefix(item);
-            let failed = item.status == Some(CallStatus::Failed);
-            spans.push(Span::styled(rendered(&item.text), theme.dim()));
-            match item.status {
-                Some(CallStatus::Ok) => {
-                    spans.push(Span::styled(rendered(" · "), theme.dim()));
-                    spans.push(Span::styled(
-                        glyphs::render("✓").into_owned(),
-                        theme.success(),
-                    ));
-                    if let Some(outcome) = &item.outcome {
-                        spans.push(Span::styled(rendered(format!(" {outcome}")), theme.dim()));
-                    }
-                }
-                Some(CallStatus::Failed) => {
-                    spans.push(Span::styled(rendered(" · "), theme.dim()));
-                    let outcome = item.outcome.as_deref().unwrap_or("failed");
-                    spans.push(Span::styled(
-                        rendered(format!("✗ {outcome}")),
-                        theme.error(),
-                    ));
-                }
-                _ => {
-                    if let Some(clock) = clock {
-                        spans.push(Span::styled(rendered(format!(" · {clock}")), theme.dim()));
-                    }
-                    spans.push(Span::styled(
-                        format!(" {}", glyphs::render("…")),
-                        theme.dim(),
-                    ));
-                }
-            }
-            let marker_style = if failed { theme.error() } else { theme.dim() };
-            wrap::prefixed(
-                wrap::wrap_lines(&spans, marked, 2),
-                mark("▸", marker_style),
-                hang(),
-            )
-        }
-        Kind::Result => {
-            let (text, style, whole) = result_body(item, theme, open);
-            let mut lines = gutter(&text, style, theme, inner);
-            // An open fold ends with the line that closes it, which a copy
-            // leaves out (it isn't the output's).
-            if whole {
-                lines.extend(
-                    gutter(FOLD_CLOSE, style, theme, inner)
-                        .into_iter()
-                        .map(|line| Wrapped { bare: true, ..line }),
-                );
+            // A call that has something to show opens to it, its detail
+            // here and its content as its result's block.
+            let fold = folds.then_some(open);
+            let mut lines = call_line(item, theme, width, own, clock, fold, false);
+            if folds
+                && open
+                && let Some(detail) = &item.detail
+            {
+                lines.extend(railed(detail_lines(detail, theme, marked), theme));
             }
             lines
         }
+        Kind::Result => railed(content_lines(item, theme, marked, open), theme),
         Kind::Notice => {
             let (symbol, style) = match item.level {
                 Some(Level::Error) => ("✗", theme.error()),
@@ -3029,17 +3225,6 @@ fn plain(text: &str, style: Style, width: usize) -> Vec<Wrapped> {
     lines
 }
 
-/// `text` beside a gutter, under its call, such as a command's output or an error.
-/// (The gutter isn't copied.)
-fn gutter(text: &str, style: Style, theme: &Theme, width: usize) -> Vec<Wrapped> {
-    let lines = plain(text, style, width.saturating_sub(2).max(1));
-    let side = Span::styled(format!("  {}", glyphs::render("│ ")), theme.dim());
-    lines
-        .into_iter()
-        .map(|line| line.decorated(side.clone()))
-        .collect()
-}
-
 fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|span| text_width(&span.content)).sum()
 }
@@ -3331,7 +3516,7 @@ mod tests {
         t.apply(Update::Item(message));
         assert_eq!(
             rows(&mut t, &full(), 40, 2),
-            ["  ▸ message r1: Also the docs. · ✓ sent", ""]
+            ["    message r1: Also the docs. · ✓ sent", ""]
         );
         assert_eq!(
             rows(&mut t, &Filter::Worker("r1".into(), View::Full), 40, 2),
@@ -3406,21 +3591,21 @@ mod tests {
         call.at -= 900;
         t.apply(Update::Item(call.clone()));
         let own = Filter::Worker("r1".into(), View::Full);
-        assert_eq!(rows(&mut t, &own, 40, 1)[0], "  ▸ $ sleep 30 …");
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "    $ sleep 30 …");
         std::thread::sleep(std::time::Duration::from_millis(150));
-        assert_eq!(rows(&mut t, &own, 40, 1)[0], "  ▸ $ sleep 30 · 1s …");
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "    $ sleep 30 · 1s …");
         call.at -= 2 * 60_000;
         t.apply(Update::Change(call.clone()));
-        assert_eq!(rows(&mut t, &full(), 40, 1)[0], "  ▸ r1 $ sleep 30 · 2m …");
+        assert_eq!(rows(&mut t, &full(), 40, 1)[0], "    r1 $ sleep 30 · 2m …");
         call.status = Some(CallStatus::Ok);
         call.outcome = Some("30.0 s".into());
         t.apply(Update::Change(call));
-        assert_eq!(rows(&mut t, &own, 40, 1)[0], "  ▸ $ sleep 30 · ✓ 30.0 s");
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "    $ sleep 30 · ✓ 30.0 s");
     }
 
-    /// A call's outcome is on its line. A command's output is a block
-    /// under it. The user's message has the bar. The end of a turn draws
-    /// nothing (the status line says how long it ran).
+    /// A call's outcome is on its line. A command's output is its content,
+    /// open under it from the start. The user's message has the bar. The
+    /// end of a turn draws nothing (the status line says how long it ran).
     #[test]
     fn items_draw_as_the_design_says() {
         let mut t = Transcript::new();
@@ -3429,12 +3614,17 @@ mod tests {
         t.apply(Update::Item(user));
         let mut call = item(2, Kind::Call, "$ cargo test");
         call.status = Some(CallStatus::Running);
+        call.act = Some(crate::remote::Act {
+            kind: ActKind::Command,
+            ..Default::default()
+        });
         t.apply(Update::Item(call.clone()));
-        assert_eq!(rows(&mut t, &full(), 40, 3)[2], "  ▸ $ cargo test …");
+        assert_eq!(rows(&mut t, &full(), 40, 3)[2], "    $ cargo test …");
         call.status = Some(CallStatus::Ok);
         call.outcome = Some("12 passed".into());
         t.apply(Update::Change(call));
-        let mut result = item(3, Kind::Result, "exit code 0, 1.0 s").detail("running 12 tests");
+        let mut result = item(3, Kind::Result, "running 12 tests");
+        result.content = Some(ContentKind::Plain);
         result.call = Some(2);
         t.apply(Update::Item(result));
         t.apply(Update::Item(item(4, Kind::Reply, "All **12** pass.")));
@@ -3444,7 +3634,7 @@ mod tests {
             [
                 "  ▎ Run the tests",
                 "",
-                "  ▸ $ cargo test · ✓ 12 passed",
+                "  ▾ $ cargo test · ✓ 12 passed",
                 "  │ running 12 tests",
                 "",
                 "  All 12 pass.",
@@ -3658,11 +3848,11 @@ mod tests {
             shown[..6],
             [
                 "  ▾ Read a.rs and b.rs",
-                "  │ Read a.rs · 3 lines",
+                "  │   a.rs · ✓ 3 lines",
                 "  ▾ Thought",
                 "  │   Which one?",
                 "  │   ↑ show the first line only",
-                "  │ Read b.rs · 3 lines",
+                "  │   b.rs · ✓ 3 lines",
             ]
         );
         let at = |row: &str, column: usize| row.chars().nth(column);
@@ -3923,7 +4113,7 @@ mod tests {
         let mut call = item(3, Kind::Call, "$ cargo test");
         call.status = Some(CallStatus::Running);
         t.apply(Update::Item(call.clone()));
-        assert_eq!(last(&mut t, View::Full), "  ▸ $ cargo test …");
+        assert_eq!(last(&mut t, View::Full), "    $ cargo test …");
         call.status = Some(CallStatus::Ok);
         t.apply(Update::Change(call));
         let shown = rows(&mut t, &full(), 40, 5);
@@ -3931,7 +4121,7 @@ mod tests {
             shown[2], "  ▸ Thought · Where to start?",
             "it no longer moves"
         );
-        assert_eq!(shown[3], "  ▸ $ cargo test · ✓", "no blank line before it");
+        assert_eq!(shown[3], "    $ cargo test · ✓", "no blank line before it");
         assert!(is_working(&shown[4]), "{shown:?}");
         assert!(is_working(&last(&mut t, View::Quiet)));
         assert!(is_working(&last(&mut t, View::Messages)));
@@ -3954,7 +4144,7 @@ mod tests {
         for call in &calls {
             t.apply(Update::Item(call.clone()));
         }
-        assert_eq!(last(&mut t, View::Full), "  ▸ read b.rs · ✓");
+        assert_eq!(last(&mut t, View::Full), "    read b.rs · ✓");
         calls[0].status = Some(CallStatus::Ok);
         t.apply(Update::Change(calls[0].clone()));
         assert!(is_working(&last(&mut t, View::Full)));
@@ -4294,7 +4484,7 @@ mod tests {
         t.apply(Update::Item(note));
         // The note's blank line sets it apart below, so it has one above too.
         let shown = rows(&mut t, &full(), 40, 5);
-        assert_eq!(shown[..2], ["  ▸ $ make · ✓", ""]);
+        assert_eq!(shown[..2], ["    $ make · ✓", ""]);
         assert!(is_working(&shown[2]), "{shown:?}");
         assert_eq!(
             shown[3..],
@@ -4613,8 +4803,13 @@ mod tests {
         let mut call = item(2, Kind::Call, "$ ls");
         call.status = Some(CallStatus::Ok);
         call.outcome = Some("2 files".into());
+        call.act = Some(crate::remote::Act {
+            kind: ActKind::Command,
+            ..Default::default()
+        });
         t.apply(Update::Item(call));
-        let mut result = item(3, Kind::Result, "exit code 0, 0.1 s").detail("a.rs\nb.rs");
+        let mut result = item(3, Kind::Result, "a.rs\nb.rs");
+        result.content = Some(ContentKind::Plain);
         result.call = Some(2);
         t.apply(Update::Item(result));
         let filter = full();
@@ -4802,7 +4997,7 @@ mod tests {
         assert!(!worker.iter().any(|r| r.contains("Fix it")));
         // Its own view doesn't name it on its calls.
         assert!(
-            worker.iter().any(|r| r.starts_with("  ▸ cargo test")),
+            worker.iter().any(|r| r.starts_with("    cargo test")),
             "{worker:?}"
         );
         // A turn of text and notices only has no counter.
@@ -4969,8 +5164,13 @@ mod tests {
         t.toggle(2, 0, &quiet, &theme);
         let shown = rows(&mut t, &quiet, 50, 4);
         assert_eq!(
-            shown[..2],
-            ["  ▾ Made 1 edit to a.rs …", "  │ Reading a.rs …"],
+            shown[..3],
+            [
+                // (The row's line says it runs.)
+                "  ▾ Made 1 edit to a.rs …",
+                "  │   edit a.rs · ✓",
+                "  │   read a.rs"
+            ],
             "{shown:?}"
         );
         let mut read = call(3, "read a.rs", ActKind::Read, CallStatus::Ok);
@@ -4978,16 +5178,21 @@ mod tests {
         t.apply(Update::Change(read));
         let shown = rows(&mut t, &quiet, 50, 4);
         assert_eq!(
-            shown[..3],
-            ["  ▾ Made 1 edit to a.rs", "  │ Read a.rs · 12 lines", ""],
+            shown[..4],
+            [
+                "  ▾ Made 1 edit to a.rs",
+                "  │   edit a.rs · ✓",
+                "  │   read a.rs · ✓ 12 lines",
+                ""
+            ],
             "{shown:?}"
         );
     }
 
     /// An open Quiet row shows what its calls hold behind a bar under its
-    /// line, and no line twice. A row of one call has its output right
-    /// under the line, and a row of several names each call by its own
-    /// words, with what the call holds under them.
+    /// line, and no line twice. A row of one call has its content right
+    /// under the line, and a row of several shows each call's Full line,
+    /// which opens to its content under it.
     #[test]
     fn an_open_quiet_row_shows_what_its_calls_hold() {
         use crate::remote::{Act, ActKind};
@@ -5004,7 +5209,8 @@ mod tests {
             call
         };
         let output = |id: u64, call: u64, text: &str| {
-            let mut result = item(id, Kind::Result, "exit code 0, 0.1 s").detail(text);
+            let mut result = item(id, Kind::Result, text);
+            result.content = Some(ContentKind::Plain);
             result.call = Some(call);
             result.turn = Some(1);
             result
@@ -5025,29 +5231,45 @@ mod tests {
             opened(vec![build(), output(2, 1, "Compiling arko\nFinished")], 5),
             [
                 "  ▾ Ran cargo build",
-                "  │ 2.0 s",
                 "  │ Compiling arko",
                 "  │ Finished",
+                "",
                 ""
             ]
         );
+        let two = vec![
+            build(),
+            output(2, 1, "Compiling arko\nFinished"),
+            call(3, ActKind::Command, "rg x", "0.1 s"),
+            output(4, 3, "a.rs:1: x"),
+        ];
         assert_eq!(
-            opened(
-                vec![
-                    build(),
-                    output(2, 1, "Compiling arko\nFinished"),
-                    call(3, ActKind::Command, "rg x", "0.1 s"),
-                    output(4, 3, "a.rs:1: x"),
-                ],
-                7
-            ),
+            opened(two.clone(), 5),
             [
                 "  ▾ Ran 2 commands (cargo, rg)",
-                "  │ Ran cargo build · 2.0 s",
+                "  │ ▸ cargo build · ✓ 2.0 s",
+                "  │ ▸ rg x · ✓ 0.1 s",
+                "",
+                ""
+            ]
+        );
+        // Its first call opens to its content, under its line.
+        let mut t = Transcript::new();
+        for item in two {
+            t.apply(Update::Item(item));
+        }
+        rows(&mut t, &quiet, 40, 6);
+        t.toggle(1, 0, &quiet, &theme);
+        rows(&mut t, &quiet, 40, 6);
+        t.toggle(1, 1, &quiet, &theme);
+        assert_eq!(
+            rows(&mut t, &quiet, 40, 6),
+            [
+                "  ▾ Ran 2 commands (cargo, rg)",
+                "  │ ▾ cargo build · ✓ 2.0 s",
                 "  │   Compiling arko",
                 "  │   Finished",
-                "  │ Ran rg x · 0.1 s",
-                "  │   a.rs:1: x",
+                "  │ ▸ rg x · ✓ 0.1 s",
                 ""
             ]
         );
@@ -5065,72 +5287,110 @@ mod tests {
             ),
             [
                 "  ▾ Read a.rs and b.rs",
-                "  │ Read a.rs · 3 lines",
+                "  │   a.rs · ✓ 3 lines",
                 "  ▸ Thought",
-                "  │ Read b.rs · 4 lines",
+                "  │   b.rs · ✓ 4 lines",
                 ""
             ]
         );
     }
 
-    /// Each of the shared fixtures, alone in its Quiet row, opens to its
-    /// body (what the row's words leave out of the call), its outcome when
-    /// the words leave that out, and its output, behind the bar, and a row
-    /// with nothing more to show has no fold (r127).
+    /// The call of `fixture` and its content's block, as the feed makes
+    /// them.
+    fn fixture_items(fixture: &crate::remote::quiet::Fixture) -> Vec<Item> {
+        let mut call = item(1, Kind::Call, fixture.full);
+        call.turn = Some(1);
+        call.status = Some(fixture.status);
+        call.outcome = Some(fixture.outcome.to_string()).filter(|outcome| !outcome.is_empty());
+        call.act = Some(fixture.act.clone());
+        call.detail = fixture.full_detail.map(str::to_string);
+        call.job = fixture.job.then(|| "4d2c1a9b".to_string());
+        let mut items = vec![call];
+        if let Some((kind, preview)) = fixture.content {
+            let mut result = item(2, Kind::Result, preview);
+            result.content = Some(kind);
+            result.more = fixture.more.map(str::to_string);
+            result.call = Some(1);
+            result.turn = Some(1);
+            items.push(result);
+        }
+        items
+    }
+
+    /// A content's first line as it's drawn behind the bar, its number
+    /// muted and aligned, a diff's mark after it.
+    fn first_content_row(kind: crate::remote::ContentKind, preview: &str) -> String {
+        let numbers = content::number_width(kind, preview);
+        let first = preview.split('\n').next().unwrap_or_default();
+        let shown = match content::line(kind, first) {
+            content::Line::Numbered { number, mark, text } => match mark {
+                content::Mark::None => format!("{number:>numbers$}  {text}"),
+                _ => format!("{number:>numbers$} {} {text}", mark.symbol()),
+            },
+            content::Line::Plain(text) => text.to_string(),
+        };
+        format!("  │ {shown}").trim_end().to_string()
+    }
+
+    /// Each of the shared fixtures, alone in its Quiet row, says what it did
+    /// with one ✗ at the row's right when it failed, and opens to its detail
+    /// and its content right under its line, with the door to the rest. A
+    /// row with nothing to show has no fold. In Full its line opens to the
+    /// same content, a command's open from the start.
     #[test]
-    fn quiet_rows_open_to_the_fixtures_bodies() {
+    fn quiet_rows_open_to_the_fixtures_contents() {
         let quiet = Filter::Main(View::Quiet);
         let theme = Theme::terminal();
         for fixture in crate::remote::quiet::fixtures() {
+            let name = fixture.name;
             let mut t = Transcript::new();
-            let mut call = item(1, Kind::Call, fixture.name);
-            call.turn = Some(1);
-            call.status = Some(fixture.status);
-            call.outcome = Some(fixture.outcome.to_string()).filter(|outcome| !outcome.is_empty());
-            call.act = Some(fixture.act.clone());
-            call.detail = fixture.detail.map(str::to_string);
-            call.job = fixture.job.then(|| "4d2c1a9b".to_string());
-            t.apply(Update::Item(call));
-            if fixture.output {
-                let mut result = item(2, Kind::Result, "exit code 0, 0.1 s").detail("its output");
-                result.call = Some(1);
-                result.turn = Some(1);
-                t.apply(Update::Item(result));
+            for item in fixture_items(&fixture) {
+                t.apply(Update::Item(item));
             }
-            let closed = rows(&mut t, &quiet, 220, 12);
+            let closed = rows(&mut t, &quiet, 220, 40);
+            if fixture.failed {
+                assert!(closed[0].ends_with('✗'), "{name}: {closed:?}");
+                assert_eq!(closed[0].chars().count(), 220, "{name}");
+            }
             t.toggle(1, 0, &quiet, &theme);
-            let open = rows(&mut t, &quiet, 220, 12);
+            let open = rows(&mut t, &quiet, 220, 40);
             if !fixture.opens {
-                assert_eq!(open, closed, "{}", fixture.name);
-                assert!(
-                    closed[0].starts_with("    "),
-                    "{}: {closed:?}",
-                    fixture.name
-                );
+                assert_eq!(open, closed, "{name}");
+                assert!(closed[0].starts_with("    "), "{name}: {closed:?}");
                 continue;
             }
-            assert!(open[0].starts_with("  ▾ "), "{}: {open:?}", fixture.name);
-            // Its facts, a label before its text, and the text's later lines
-            // under its first.
-            let mut body: Vec<String> = Vec::new();
-            for fact in &fixture.act.body {
-                for (n, line) in fact.text.split('\n').enumerate() {
-                    let row = match (fact.label.is_empty(), n) {
-                        (true, _) => format!("  │ {line}"),
-                        (false, 0) => format!("  │ {}  {line}", fact.label),
-                        (false, _) => format!("  │ {}{line}", " ".repeat(fact.label.len() + 2)),
-                    };
-                    body.push(row.trim_end().to_string());
-                }
-            }
-            if fixture.outcome_shown {
-                body.push(format!("  │ {}", fixture.outcome));
-            }
-            if fixture.output {
-                body.push("  │ its output".into());
-            }
+            assert!(closed[0].starts_with("  ▸ "), "{name}: {closed:?}");
+            assert!(open[0].starts_with("  ▾ "), "{name}: {open:?}");
             let end = open.iter().position(String::is_empty).unwrap_or(open.len());
-            assert_eq!(open[1..end], body, "{}", fixture.name);
+            let mut expected: Vec<String> = fixture
+                .act
+                .detail
+                .split('\n')
+                .filter(|_| !fixture.act.detail.is_empty())
+                .map(|line| format!("  │ {line}"))
+                .collect();
+            if let Some((kind, preview)) = fixture.content {
+                expected.push(first_content_row(kind, preview));
+            }
+            assert_eq!(open[1..=expected.len()], expected, "{name}: {open:?}");
+            if let Some(more) = fixture.more {
+                assert_eq!(open[end - 1], format!("  │ {more}"), "{name}");
+            }
+            // Full, where the call's line opens to the same content.
+            let full = Filter::Main(View::Full);
+            let lines = rows(&mut t, &full, 220, 40);
+            let command = fixture.act.kind == crate::remote::ActKind::Command;
+            match fixture.content {
+                Some((kind, preview)) if command => {
+                    assert!(lines[0].starts_with("  ▾ "), "{name}: {lines:?}");
+                    assert!(lines.contains(&first_content_row(kind, preview)), "{name}");
+                }
+                Some(_) => assert!(lines[0].starts_with("  ▸ "), "{name}: {lines:?}"),
+                None if fixture.full_detail.is_none() => {
+                    assert!(lines[0].starts_with("    "), "{name}: {lines:?}");
+                }
+                None => {}
+            }
         }
     }
 

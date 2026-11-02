@@ -982,7 +982,8 @@ impl EventPrinter {
                     // (A started worker is announced by the crew.) Its result
                     // is worded for the agent, so the line says it as the
                     // feed does, from the user's side ("r1 finished").
-                    let outcome = remote::call_outcome(&tool_name, &output).text;
+                    let outcome =
+                        remote::call_outcome(&tool_name, &Default::default(), &output).text;
                     let first = output.lines().next().unwrap_or_default();
                     let said = outcome.unwrap_or_else(|| cut(first, 160));
                     self.output.echo(&self.output.dim(&format!("  ⎿ {said}")));
@@ -1566,6 +1567,14 @@ pub fn brief_waiting_for(
         "monitor_start" => format!("monitor {}", command_line(text("command"))),
         "monitor_control" => format!("monitor {}", text("action")),
         LOAD_SKILL_TOOL_NAME => format!("skill {}", text("name")),
+        // ("mcp create_issue on github", "mcp servers", "mcp tools github")
+        mcp::MCP_TOOL_NAME => match text("action") {
+            "call" => format!("mcp {} on {}", text("tool"), text("server")),
+            "servers" => "mcp servers".to_string(),
+            action => format!("mcp {action} {}", text("server"))
+                .trim_end()
+                .to_string(),
+        },
         tool if index::TOOL_NAMES.contains(&tool) || mcp::split_tool_name(tool).is_some() => {
             let (name, detail) = labelled(tool, parameters);
             format!("{name}{detail}")

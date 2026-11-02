@@ -15,7 +15,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use tree_sitter::{Language, Query, QueryCursor};
 
-use super::feed::{Item, Kind};
+use super::content;
+use super::feed::{ContentKind, Item, Kind};
 use super::protocol::{CodeSpans, HIGHLIGHT_NAMES, code_hash};
 
 /// A language, meaning the names a fence gives it, its grammar and its highlight
@@ -370,14 +371,28 @@ fn closes(block: &str) -> bool {
     })
 }
 
-/// The code blocks of an item's Markdown highlighted, for the page. A text
-/// or thinking may still stream, so only the blocks it finished count.
+/// The code blocks of an item's Markdown highlighted, for the page, and a
+/// call's content of a file's lines. A text or thinking may still stream,
+/// so only the blocks it finished count.
 pub fn item_code(item: &Item) -> Vec<CodeSpans> {
     match item.kind {
         Kind::Text | Kind::Thinking => code_blocks(&item.text, true),
         Kind::Reply | Kind::Message | Kind::Question => code_blocks(&item.text, false),
+        Kind::Result => match item.content {
+            Some(kind) => content_code(kind, &item.text, item.language.as_deref()),
+            None => Vec::new(),
+        },
         _ => Vec::new(),
     }
+}
+
+/// The highlighting of a content `text` of `kind`, whose lines are of a
+/// file in `language` ([`content::code`]).
+pub fn content_code(kind: ContentKind, text: &str, language: Option<&str>) -> Vec<CodeSpans> {
+    let (Some(language), Some(code)) = (language, content::code(kind, text)) else {
+        return Vec::new();
+    };
+    block(language, &code).into_iter().collect()
 }
 
 /// Whether one of the whole lines that the last `added` bytes of `text`

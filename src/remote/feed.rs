@@ -68,8 +68,8 @@ pub(crate) const WORKER_EVERY: Duration = Duration::from_millis(250);
 
 // The types the web page reads too, which it compiles from the same file.
 pub use super::protocol::{
-    Act, ActKind, Activity, CallStatus, Came, Delivery, Fact, JobKind, JobState, JobSummary, Kind,
-    Level, Question, Source, WorkerState,
+    Act, ActKind, Activity, CallStatus, Came, ContentKind, Delivery, JobKind, JobState, JobSummary,
+    Kind, Level, Question, Source, WorkerState,
 };
 
 /// The message that keeps the prompt cache warm where the provider takes
@@ -117,9 +117,22 @@ pub struct Item {
     /// calls that have it, because the worker's own line stands for them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started: Option<String>,
-    /// A command's whole output, when its `detail` shows the first lines.
-    /// The terminal's view opens it on a click. The web page doesn't get
-    /// it, and its clones share it.
+    /// For a call's result (a `result`), what its content is, which its
+    /// `text` previews, and how a client draws it
+    /// ([`content`](super::content)).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<ContentKind>,
+    /// What the preview leaves out, as its door says it ("… 97 more
+    /// lines"). The content is in `whole`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub more: Option<String>,
+    /// The language of a content of a file's lines, by the file's extension
+    /// ("rs"), for its highlighting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// A content's whole, when its preview leaves some of it out. The
+    /// terminal's view opens it on a click, and the web page asks for it
+    /// (`/api/result/{id}`). Its clones share it.
     #[serde(skip)]
     pub whole: Option<Arc<str>>,
     /// The tool a `call` calls (`read_file`), for an app's view of it. The
@@ -209,6 +222,9 @@ impl Item {
             outcome: None,
             act: None,
             started: None,
+            content: None,
+            more: None,
+            language: None,
             whole: None,
             tool: None,
             parameters: None,
@@ -305,6 +321,7 @@ impl Item {
         96 + self.text.len()
             + self.detail.as_ref().map_or(0, String::len)
             + self.outcome.as_ref().map_or(0, String::len)
+            + self.more.as_ref().map_or(0, String::len)
             + self.act.as_ref().map_or(0, act_size)
     }
 
@@ -341,6 +358,7 @@ fn act_size(act: &Act) -> usize {
         &act.done,
         &act.verb,
         &act.news,
+        &act.detail,
     ]
     .into_iter()
     .map(String::len)
@@ -352,11 +370,6 @@ fn act_size(act: &Act) -> usize {
                 .map(String::len)
                 .sum()
         })
-        + act
-            .body
-            .iter()
-            .map(|fact| fact.label.len() + fact.text.len())
-            .sum::<usize>()
 }
 
 /// A worker, as a line such as
@@ -1310,6 +1323,8 @@ struct Call {
     agent: String,
     /// A `message_agent` call's message, for the worker that gets it.
     message: Option<String>,
+    /// Its parameters, which its content is made from with its result.
+    parameters: HashMap<String, serde_json::Value>,
     /// The background job it started, as it started and as it ended. The
     /// result may come after the job ended, when the feed no longer keeps
     /// the job, and its line says how the job ended from this.
@@ -2042,6 +2057,7 @@ impl Feed {
                             item: id,
                             agent: agent.clone(),
                             message: render::message(tool_name, parameters),
+                            parameters: parameters.clone(),
                             job: None,
                         },
                     );
@@ -2057,11 +2073,12 @@ impl Feed {
                 tool_name,
                 output,
             } => {
-                let message = state
-                    .calls
-                    .get_mut(tool_call_id)
-                    .and_then(|call| call.message.take());
-                self.settle(&mut state, tool_call_id, render::outcome(tool_name, output));
+                let (message, parameters) = match state.calls.get_mut(tool_call_id) {
+                    Some(call) => (call.message.take(), std::mem::take(&mut call.parameters)),
+                    None => (None, HashMap::new()),
+                };
+                let outcome = render::outcome(tool_name, &parameters, output);
+                self.settle(&mut state, tool_call_id, outcome);
                 // The worker that got a message shows it in its own
                 // transcript (a message to the lead is its call's line).
                 if let (Some(message), Some(to)) = (message, render::sent_to(output)) {
@@ -2325,6 +2342,23 @@ impl Feed {
     /// The main transcript's item `id`, while it is kept.
     pub fn main_item(&self, id: u64) -> Option<Item> {
         self.lock().main.find(id).map(|item| item.clone())
+    }
+
+    /// The whole content of the call's result `id` (a `result` item), with
+    /// its kind and language, while it is kept.
+    pub fn content(&self, id: u64) -> Option<(Arc<str>, ContentKind, Option<String>)> {
+        let state = self.lock();
+        let item = [&state.main, &state.workers_lane]
+            .into_iter()
+            .find_map(|lane| lane.items.get(lane.index(id)?))?;
+        let kind = item.content?;
+        // (A preview whose whole went to keep the budget has none.)
+        let whole = match (&item.whole, &item.more) {
+            (Some(whole), _) => whole.clone(),
+            (None, None) => item.text.as_str().into(),
+            (None, Some(_)) => return None,
+        };
+        Some((whole, kind, item.language.clone()))
     }
 
     /// The user's latest message that started a turn, while it is kept.
@@ -5255,7 +5289,7 @@ mod tests {
                             outcome: item.outcome.as_deref(),
                             job: item.job.is_some(),
                             turn: item.turn,
-                            output: !results.is_empty(),
+                            content: !results.is_empty(),
                         }),
                         _ => quiet::Step::Other(item.id),
                     }
@@ -5270,13 +5304,13 @@ mod tests {
                         let members: Vec<usize> =
                             row.members.iter().map(|member| shown[*member].0).collect();
                         let calls: Vec<_> = row
-                            .calls
+                            .members
                             .iter()
-                            .map(|call| (place(call.id), &call.line, call.outcome))
+                            .map(|member| place(items[shown[*member].0].id))
                             .collect();
                         format!(
-                            "row {members:?} {:?} opens {} calls {calls:?}",
-                            row.words, row.opens
+                            "row {members:?} {:?} opens {} merged {} calls {calls:?}",
+                            row.words, row.opens, row.merged
                         )
                     }
                 })
@@ -5374,7 +5408,11 @@ mod tests {
             [
                 (Kind::Text, "main", "Hello"),
                 (Kind::Call, "main", "$ cargo test"),
-                (Kind::Result, "main", "exit code 0, 2.0 s"),
+                (
+                    Kind::Result,
+                    "main",
+                    "running 3 tests\ntest result: ok. 3 passed; 0 failed"
+                ),
                 (Kind::WorkerLine, "main", "r1"),
                 (Kind::Call, "r1", "read src/a.rs"),
                 (Kind::Text, "r1", "Reading."),
@@ -5384,10 +5422,7 @@ mod tests {
         assert_eq!(items[1].outcome.as_deref(), Some("3 passed"));
         assert_eq!(items[2].level, None);
         assert_eq!(items[2].call, Some(items[1].id));
-        assert_eq!(
-            items[2].detail.as_deref(),
-            Some("running 3 tests\ntest result: ok. 3 passed; 0 failed")
-        );
+        assert_eq!(items[2].content, Some(ContentKind::Plain));
         assert_eq!(items[3].worker.as_deref(), Some("r1"));
         assert_eq!(items[4].status, Some(CallStatus::Running));
         let updates = updates(&mut receiver);
@@ -5737,10 +5772,7 @@ mod tests {
             outcomes,
             [
                 (Some(CallStatus::Failed), Some("no such file".into())),
-                (
-                    Some(CallStatus::Failed),
-                    Some("refused (outside the workspace)".into())
-                ),
+                (Some(CallStatus::Failed), Some("refused".into())),
                 (Some(CallStatus::Failed), Some("interrupted".into())),
                 (Some(CallStatus::Failed), Some("stopped".into())),
             ]
@@ -6904,7 +6936,9 @@ mod tests {
                 (Kind::Message, Some("main"), "Also the docs."),
                 (Kind::Text, None, "On it."),
                 (Kind::Call, None, "message r2 “a.rs is done.”"),
+                (Kind::Result, None, "a.rs is done."),
                 (Kind::Call, None, "message main “Halfway.”"),
+                (Kind::Result, None, "Halfway."),
             ]
         );
         assert_eq!(of("r2"), [(Kind::Message, Some("r1"), "a.rs is done.")]);
@@ -6912,7 +6946,7 @@ mod tests {
         assert!(
             of("main")
                 .iter()
-                .all(|(kind, ..)| matches!(kind, Kind::Call | Kind::WorkerLine))
+                .all(|(kind, ..)| matches!(kind, Kind::Call | Kind::Result | Kind::WorkerLine))
         );
     }
 
@@ -6943,6 +6977,7 @@ mod tests {
         lane.push(call, MAIN_BUDGET);
         let settled = render::outcome(
             "shell",
+            &HashMap::new(),
             "exit code 0, 1.0 s\ntest result: ok. 12 passed; 0 failed",
         );
         lane.change(1, |item| {
@@ -6964,14 +6999,15 @@ mod tests {
             let output = format!("exit code 0, 0.1 s\n{output}");
             feed.event(&event("main", result(call, &output)), None);
         };
-        let output = (1..=10).map(|n| n.to_string()).collect::<Vec<_>>();
+        let output = (1..=20).map(|n| n.to_string()).collect::<Vec<_>>();
         run(&output.join("\n"));
         let block = items(&feed).pop().unwrap();
-        assert_eq!(block.detail.as_deref(), Some("1\n2\n3\n4\n… 6 more lines"));
+        assert_eq!(block.text, output[..16].join("\n"));
+        assert_eq!(block.more.as_deref(), Some("… 4 more lines"));
         assert_eq!(block.whole.as_deref(), Some(output.join("\n").as_str()));
         let json = serde_json::to_value(&block).unwrap();
         assert!(json.get("whole").is_none(), "{json}");
-        assert!(json.get("detail").is_some());
+        assert!(json.get("more").is_some());
         // (A short output has nothing more to show.)
         run("1\n2");
         assert_eq!(items(&feed).pop().unwrap().whole, None);
@@ -7096,7 +7132,10 @@ mod tests {
             feed.event(&event("main", result), None);
         };
         edit(Uuid::new_v4(), "two");
-        let call = items(&feed).pop().unwrap();
+        let call = items(&feed)
+            .into_iter()
+            .rfind(|item| item.kind == Kind::Call)
+            .unwrap();
         assert_eq!(call.tool.as_deref(), Some(EDIT_FILE_TOOL_NAME));
         assert_eq!(
             call.parameters.as_deref(),
@@ -7138,7 +7177,10 @@ mod tests {
             reason: Some("Not that.".into()),
         };
         feed.event(&event("main", rejection), None);
-        let call = items(&feed).pop().unwrap();
+        let call = items(&feed)
+            .into_iter()
+            .rfind(|item| item.kind == Kind::Call)
+            .unwrap();
         assert_eq!(call.output.as_deref(), Some("refused (Not that.)"));
         // About a quarter of the budget each, and the oldest calls lose theirs.
         let long = "x".repeat(MAIN_BUDGET.wholes / 4);

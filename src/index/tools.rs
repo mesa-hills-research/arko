@@ -569,6 +569,42 @@ fn search_header(query: &str, searched: &[String], hits: usize) -> String {
     }
 }
 
+/// The hits of a search's result, as [`format_search_detail`] writes it,
+/// for a person: its first line ("6 results from arko (code, hybrid)"),
+/// then each result's header ("src/engine.rs:96-105 · fn branched")
+/// without the notes the agent reads (where the rest of a definition is, the
+/// lines that matched). `None` when it found nothing.
+pub fn read_search_hits(output: &str) -> Option<Vec<String>> {
+    let mut lines = output.lines();
+    let first = lines.next()?;
+    if read_search_header(first)?.1 == 0 {
+        return None;
+    }
+    let mut hits = vec![first.trim_end_matches(':').to_string()];
+    for line in lines {
+        // (A whole result's numbered lines, a snippet's indented ones, and
+        // the notes after the results.)
+        let numbered = line
+            .split_once(" | ")
+            .is_some_and(|(number, _)| number.bytes().all(|byte| byte.is_ascii_digit()));
+        if line.trim().is_empty()
+            || line.starts_with(char::is_whitespace)
+            || numbered
+            || line.starts_with("note: ")
+        {
+            continue;
+        }
+        let mut hit = line;
+        for note in [" (part of a ", " (matched lines ", ": in the lines "] {
+            if let Some((before, _)) = hit.split_once(note) {
+                hit = before;
+            }
+        }
+        hits.push(hit.to_string());
+    }
+    Some(hits)
+}
+
 /// What the first line of a search's result says, as [`search_header`]
 /// writes it, meaning the indexes searched and how many results there were.
 pub fn read_search_header(line: &str) -> Option<(Vec<String>, usize)> {

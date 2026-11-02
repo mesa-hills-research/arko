@@ -11,11 +11,15 @@
 //! comes later moves it. So a long call (a command, a wait, an MCP call)
 //! shows on its row while it runs ("Ran 4 commands · running cargo build"),
 //! and a call that fails or goes on in the background stays in its row,
-//! which says so ("1 failed"). A test run and a call of another kind have
-//! rows of their own. The images a call's tool returned and the buttons of
-//! its job show under its row's line, in whatever row it is. Rows only grow
-//! at the end, and a row keeps its calls once anything shows after it
-//! ([`rows`]).
+//! which shows one ✗. A test run and a call of another kind have rows of
+//! their own. The images a call's tool returned and the buttons of its job
+//! show under its row's line, in whatever row it is. Rows only grow at the
+//! end, and a row keeps its calls once anything shows after it ([`rows`]).
+//!
+//! An open row of one call shows the call's content right under its line
+//! ([`content`](super::content)), after its detail ([`Act::detail`]). An
+//! open row of several shows each call's Full line, which opens to the
+//! call's content in turn.
 //!
 //! The web page compiles this file beside `protocol.rs` as a module of its
 //! own, so it depends on the standard library and that module alone.
@@ -23,7 +27,7 @@
 use std::collections::HashMap;
 
 #[cfg(test)]
-use super::protocol::Fact;
+use super::protocol::ContentKind;
 use super::protocol::{Act, ActKind, CallStatus, Came};
 
 /// A call's outcome when a stop cancelled it.
@@ -63,8 +67,8 @@ pub struct Call<'a> {
     /// a monitor), whose state its row says.
     pub job: bool,
     pub turn: Option<u64>,
-    /// It has output, a block of its result, which its open row shows.
-    pub output: bool,
+    /// It has content, a block of its result, which its open row shows.
+    pub content: bool,
 }
 
 /// What the view shows for its steps, in order.
@@ -82,44 +86,21 @@ pub struct Row {
     /// thinking after them.
     pub members: Vec<usize>,
     pub words: Words,
-    /// What it shows of each of its calls when it's open, in order.
-    pub calls: Vec<Opened>,
+    /// It holds several calls, each of which shows as its Full line when
+    /// it's open. A row of one call shows the call's detail and content
+    /// right under its line.
+    pub merged: bool,
     /// It has more to show than its words, so it opens. A row that doesn't
     /// has no fold.
     pub opens: bool,
-}
-
-impl Row {
-    /// Whether its call's output shows under its line, open or not, rather
-    /// than inside it, which is so for a row of one call that failed.
-    pub fn output_under(&self) -> bool {
-        self.members.len() == 1 && self.words.failed.is_some()
-    }
-}
-
-/// What an open row shows of one of its calls, under the row's line and
-/// behind its bar: the call's own line, its body ([`Act::body`]), its
-/// outcome, and its output.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Opened {
-    /// The call's item ID.
-    pub id: u64,
-    /// Its own line, with its outcome ("Read a.rs · 11 lines"), in a row
-    /// whose words don't name it alone. `None` for the call the row's
-    /// words name (a row of one call), whose content goes right under the
-    /// row's line.
-    pub line: Option<Words>,
-    /// Its outcome shows on a line of its own ("11 lines"), since the row's
-    /// words name the call and leave its outcome out.
-    pub outcome: bool,
 }
 
 /// What a row says.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Words {
     pub text: String,
-    /// Why it failed, said after a ✗ in the error colour.
-    pub failed: Option<String>,
+    /// A call of it failed, which one ✗ at the row's right says.
+    pub failed: bool,
     /// More, said after it, muted, such as how a call's job is going.
     pub note: Option<String>,
     /// A call a stop or a compaction cut short, whose row is muted.
@@ -184,8 +165,13 @@ impl Member<'_> {
         self.call.status == Some(CallStatus::Running)
     }
 
+    /// It failed, which a call a stop or a compaction cut short didn't.
     fn failed(&self) -> bool {
         self.call.status == Some(CallStatus::Failed)
+            && !matches!(
+                self.call.outcome.map(str::trim),
+                Some(STOPPED | HELD | INTERRUPTED)
+            )
     }
 
     /// A call that can run long, which a row shows as it runs ("· running
@@ -203,34 +189,9 @@ impl Member<'_> {
         self.act.kind == ActKind::Other || self.act.alone
     }
 
-    /// Its outcome, when its words leave it out ("11 lines", "2.0 s"). A
-    /// failure's, a job's and a test run's are in its words, a wait's news
-    /// too, and a message's "sent" says nothing more.
-    fn untold(&self) -> Option<&str> {
-        let told = self.call.status != Some(CallStatus::Ok)
-            || self.call.job
-            || !self.act.news.is_empty()
-            || matches!(self.act.kind, ActKind::Wait | ActKind::Message);
-        self.call
-            .outcome
-            .map(str::trim)
-            .filter(|outcome| !told && !outcome.is_empty())
-    }
-
-    /// Whether an open row has something of it to show besides its words
-    /// and its output.
-    fn more(&self) -> bool {
-        !self.act.body.is_empty() || self.untold().is_some()
-    }
-
-    /// Its own line in an open row, with its outcome.
-    fn line(&self) -> Words {
-        let mut words = one(self);
-        words.running = self.running();
-        if words.note.is_none() {
-            words.note = self.untold().map(str::to_string);
-        }
-        words
+    /// Whether opening it shows something, its detail or its content.
+    fn opens(&self) -> bool {
+        !self.act.detail.is_empty() || self.call.content
     }
 }
 
@@ -379,17 +340,17 @@ fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut V
         let row = row_of.get(before)?;
         (!groups[*row].calls.iter().any(Member::alone)).then_some(*row)
     };
-    // Each row, and whether its calls have more to show and output.
+    // Each row, and whether its call has something to show.
     let mut more = Vec::with_capacity(groups.len());
     let mut rows: Vec<Option<Row>> = groups
         .iter()
         .map(|group| {
-            let (calls, has_more, output) = opened(group);
-            more.push((has_more, output));
+            let calls = group.calls.len() + group.absorbed.len();
+            more.push(group.calls.iter().chain(&group.absorbed).any(Member::opens));
             Some(Row {
                 members: Vec::new(),
                 words: words(group),
-                calls,
+                merged: calls > 1,
                 opens: false,
             })
         })
@@ -411,11 +372,11 @@ fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut V
             built.members.push(index);
         }
     }
-    // A row opens when it holds more than one step, or its call has more to
-    // show than its words, its output included unless that shows under it.
-    for (row, (has_more, output)) in rows.iter_mut().zip(more) {
+    // A row opens when it holds more than one step, or its call has
+    // something to show.
+    for (row, more) in rows.iter_mut().zip(more) {
         if let Some(row) = row.as_mut() {
-            row.opens = row.members.len() > 1 || has_more || (output && !row.output_under());
+            row.opens = row.members.len() > 1 || more;
         }
     }
     for (index, step) in steps.iter().enumerate().take(end).skip(start) {
@@ -434,33 +395,6 @@ fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut V
             out.push(Piece::Step(index));
         }
     }
-}
-
-/// What an open row of `group` shows of each of its calls, in order, and
-/// whether its calls have more to show than its words besides their
-/// output, and output. The call the words name is the group's one counted
-/// call, by its place, so two calls that read alike each keep a line.
-fn opened(group: &Group) -> (Vec<Opened>, bool, bool) {
-    let mut members: Vec<&Member> = group.calls.iter().chain(&group.absorbed).collect();
-    members.sort_by_key(|member| member.index);
-    let named = match group.calls.as_slice() {
-        [one] => Some(one.index),
-        _ => None,
-    };
-    let more = members.iter().any(|member| member.more());
-    let output = members.iter().any(|member| member.call.output);
-    let calls = members
-        .into_iter()
-        .map(|member| {
-            let alone = named == Some(member.index);
-            Opened {
-                id: member.call.id,
-                line: (!alone).then(|| member.line()),
-                outcome: alone && member.untold().is_some(),
-            }
-        })
-        .collect();
-    (calls, more, output)
 }
 
 /// How the rows of a turn name its files, by name, and with the folder too
@@ -612,19 +546,13 @@ fn words(group: &Group) -> Words {
     let calls = &group.calls;
     let every = || calls.iter().chain(&group.absorbed);
     let running = every().any(Member::running);
-    // (A call that failed stays in its row, which says so.)
-    let failed = every().filter(|member| member.failed()).count();
-    let failures = |words: &mut Words| {
-        if failed > 0 && words.failed.is_none() {
-            words.failed = Some(format!("{failed} failed"));
-        }
-    };
+    // (A call that failed stays in its row, which shows one ✗.)
+    let failed = every().any(Member::failed);
     if calls.len() == 1 {
         let mut words = one(&calls[0]);
         words.running = running;
-        if !calls[0].failed() {
-            failures(&mut words);
-        }
+        // (Or a read it holds.)
+        words.failed |= failed;
         return words;
     }
     let now = calls.iter().all(Member::running);
@@ -750,9 +678,9 @@ fn words(group: &Group) -> Words {
     let mut words = Words {
         text,
         running,
+        failed,
         ..Words::default()
     };
-    failures(&mut words);
     // How the jobs of its calls go, which stay in the row.
     let jobs: Vec<&Member> = every().filter(|member| member.call.job).collect();
     words.note = match jobs.as_slice() {
@@ -955,29 +883,33 @@ fn one(member: &Member) -> Words {
         .filter(|outcome| !outcome.is_empty());
     let news = (!act.news.is_empty()).then(|| act.news.clone());
     match member.call.status {
-        Some(CallStatus::Failed) => match outcome {
+        // A stop or a compaction cut it short.
+        Some(CallStatus::Failed) if !member.failed() => match outcome {
             Some(STOPPED) => Words {
                 text: format!("Stopped {}", lower_first(&doing)),
                 muted: true,
                 ..Words::default()
             },
-            Some(outcome @ (HELD | INTERRUPTED)) => Words {
+            outcome => Words {
                 text: doing,
-                note: Some(outcome.to_string()),
+                note: outcome.map(str::to_string),
                 muted: true,
                 ..Words::default()
             },
-            // It ran, and how it went is the news.
-            _ if act.ran || member.call.job => Words {
-                text: done,
-                failed: news.or(outcome.map(str::to_string)),
-                ..Words::default()
+        },
+        // It ran, and its tests' counts are news.
+        Some(CallStatus::Failed) if act.ran || member.call.job => Words {
+            text: match news {
+                Some(news) => format!("{done} ({news})"),
+                None => done,
             },
-            _ => Words {
-                text: format!("Couldn’t {verb}"),
-                failed: Some(outcome.unwrap_or("failed").to_string()),
-                ..Words::default()
-            },
+            failed: true,
+            ..Words::default()
+        },
+        Some(CallStatus::Failed) => Words {
+            text: format!("Couldn’t {verb}"),
+            failed: true,
+            ..Words::default()
         },
         Some(CallStatus::Ok) => {
             let mut text = done;
@@ -1003,400 +935,282 @@ fn one(member: &Member) -> Words {
     }
 }
 
-/// A call as `render` makes its item from its tool and parameters, with how
-/// it went, and what an open row of it alone shows. The clients' tests share
-/// them ([`fixtures`]).
+/// A call as `render` makes its item and its result's block from its tool,
+/// parameters and result, and what its Quiet row says and opens to. The
+/// clients' tests share them ([`fixtures`]).
 #[cfg(test)]
 pub(crate) struct Fixture {
     pub name: &'static str,
     pub tool: &'static str,
     /// Its parameters, as JSON.
     pub parameters: &'static str,
-    /// Its act, its body included.
+    /// Its result, or why it failed when `status` is failed.
+    pub output: &'static str,
+    /// Its act, once its result came.
     pub act: Act,
-    /// The item's `detail`, which Full shows.
-    pub detail: Option<&'static str>,
+    /// Its Full line, and the detail Full shows under it.
+    pub full: &'static str,
+    pub full_detail: Option<&'static str>,
     pub status: CallStatus,
+    /// Its outcome on its Full line.
     pub outcome: &'static str,
     pub job: bool,
-    /// It has a block of output.
-    pub output: bool,
-    /// Its row opens.
+    /// Its content, the kind and the preview, and the preview's door.
+    pub content: Option<(ContentKind, &'static str)>,
+    pub more: Option<&'static str>,
+    /// Its Quiet row's words, whether they show a ✗, and whether it opens.
+    pub words: &'static str,
+    pub failed: bool,
     pub opens: bool,
-    /// Its outcome shows in its open row, since the row's words leave it out.
-    pub outcome_shown: bool,
 }
 
-/// Calls of the kinds r127 found that opened to too little or to nothing:
-/// commands cut short or run in a folder (also one that goes from its folder
-/// to another, and a note that replaces another for a worker, whose
-/// parameters change each other's words), a worker stop that removes its
-/// worktree (which every form of its words says), reads of some lines or a long
-/// path, a write, an edit of every match, a refused or failed command,
-/// messages, searches past the row's and Full's lengths, a wait for many
-/// runs, a check of a job, MCP calls, a note, worker starts, a moved call,
-/// and calls with nothing more to show.
+/// Calls of every kind, as the owner's examples have them (a plain tool's
+/// result, an edit's diff, a read of many lines, a monitor whose command
+/// the words cut, a message), and commands cut short or run in a folder,
+/// a failed and a refused command, searches, a wait, a worker start, an
+/// MCP call, a note, a moved call, and calls with nothing to show.
 #[cfg(test)]
 pub(crate) fn fixtures() -> Vec<Fixture> {
-    const LONG_MESSAGE: &str = "The parser drops a token after a comment at the end of a line, so the next statement starts one token late. The fix is in lexer.rs, with a test for it. Merge it once the review passes.";
-    const SEARCH: &str =
-        "how does the feed decide where a long call goes when its row is the last one";
-    const LONG_SEARCH: &str = "where does the Quiet view decide which calls share a row, and how does it keep a row in place when a long call starts, fails, or moves to the background while other calls keep coming in after it";
-    const LONG_PATH: &str = "deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/x.rs";
-    const LONG_TASK: &str = "Count the files in src that have no tests, list them by folder with how many lines each has, and say which of them changed most in the last month, so we know where tests would help first.";
-    let act = |kind: ActKind, target: &str, body: &[(&str, &str)]| Act {
+    use ContentKind::{Diff, Lines, Muted, Plain};
+    let act = |kind: ActKind, target: &str| Act {
         kind,
         target: target.into(),
-        body: body
-            .iter()
-            .map(|(label, text)| Fact {
-                label: label.to_string(),
-                text: text.to_string(),
-            })
-            .collect(),
         ..Act::default()
     };
-    let other = |doing: &str, done: &str, verb: &str, body: &[(&str, &str)]| Act {
+    let other = |doing: &str, done: &str, verb: &str| Act {
         doing: doing.into(),
         done: done.into(),
         verb: verb.into(),
-        ..act(ActKind::Other, "", body)
+        ..Act::default()
     };
-    let fixture = |name, tool, parameters, act| Fixture {
+    let fixture = |name, tool, parameters, output, act, full, words| Fixture {
         name,
         tool,
         parameters,
+        output,
         act,
-        detail: None,
+        full,
+        full_detail: None,
         status: CallStatus::Ok,
         outcome: "",
         job: false,
-        output: false,
+        content: None,
+        more: None,
+        words,
+        failed: false,
         opens: true,
-        outcome_shown: false,
     };
-    let command = "CARGO_INCREMENTAL=0 printf '%s' this-is-a-command-with-a-critical-suffix";
+    let command = |target: &str| Act {
+        ran: true,
+        ..act(ActKind::Command, target)
+    };
     vec![
         Fixture {
+            outcome: "Prefer the models on the user's plans (`cc:` models, the Cha…",
+            content: Some((
+                Muted,
+                "Prefer the models on the user's plans (`cc:` models, the ChatGPT login) when they do the job.\n\nProfiles:\n- reviewer: cc:opus, xhigh effort\n- builder: cc:sonnet, high effort",
+            )),
+            ..fixture(
+                "worker options",
+                "worker_options",
+                "{}",
+                "Prefer the models on the user's plans (`cc:` models, the ChatGPT login) when they do the job.\n\nProfiles:\n- reviewer: cc:opus, xhigh effort\n- builder: cc:sonnet, high effort\n",
+                other(
+                    "Checking worker options",
+                    "Checked worker options",
+                    "check worker options",
+                ),
+                "list worker options",
+                "Checked worker options",
+            )
+        },
+        Fixture {
+            outcome: "1 edit",
+            content: Some((
+                Diff,
+                " 99\t    Message {\n 100\t        text: branch.text.clone(),\n 101\t        summary: branch.summary.clone(),\n-102\t        message_index: None,\n+102\t        message_index: Some(index),\n 103\t        at: branch.at,\n 104\t    }\n 105\t}",
+            )),
+            ..fixture(
+                "an edit",
+                "edit_file",
+                r#"{"path": "src/engine.rs", "old_string": "message_index: None,", "new_string": "message_index: Some(index),"}"#,
+                "Edited src/engine.rs at line 102:\n99 |     Message {\n100 |         text: branch.text.clone(),\n101 |         summary: branch.summary.clone(),\n102 |         message_index: Some(index),\n103 |         at: branch.at,\n104 |     }\n105 | }",
+                act(ActKind::Edit, "src/engine.rs"),
+                "edit src/engine.rs",
+                "Made 1 edit to engine.rs",
+            )
+        },
+        Fixture {
+            outcome: "3 replacements",
+            content: Some((Diff, "-\tlet a = 1;\n+\tlet b = 1;")),
+            ..fixture(
+                "an edit of every match",
+                "edit_file",
+                r#"{"path": "src/a.rs", "old_string": "let a = 1;", "new_string": "let b = 1;", "replace_all": true}"#,
+                "Replaced 3 occurrences in src/a.rs, at lines 3, 7 and 12.",
+                act(ActKind::Edit, "src/a.rs"),
+                "edit src/a.rs (all)",
+                "Made 1 edit to a.rs",
+            )
+        },
+        Fixture {
+            outcome: "20 lines",
+            content: Some((
+                Lines,
+                "120\t- Quiet rows carry no ✓.\n121\t- A failure shows one ✗ at the right of its row.\n122\t- Opened content shows 16 lines.\n123\t- A read's preview shows its line numbers, muted.\n124\t- Full and Quiet share one content model.\n125\t\n126\t## Workers\n127\t\n128\t- A worker's model shows on its line when it differs.\n129\t- Workers run on the plans.\n130\t- A queued worker keeps its row.\n131\t\n132\t## The page\n133\t\n134\t- The door is muted text.\n135\t- Diffs follow Studio's colours.",
+            )),
+            more: Some("… 4 more lines"),
+            ..fixture(
+                "a read of many lines",
+                "read_file",
+                r#"{"path": "/home/user/work/DECISIONS.md", "start_line": 120, "end_line": 139}"#,
+                "120 | - Quiet rows carry no ✓.\n121 | - A failure shows one ✗ at the right of its row.\n122 | - Opened content shows 16 lines.\n123 | - A read's preview shows its line numbers, muted.\n124 | - Full and Quiet share one content model.\n125 | \n126 | ## Workers\n127 | \n128 | - A worker's model shows on its line when it differs.\n129 | - Workers run on the plans.\n130 | - A queued worker keeps its row.\n131 | \n132 | ## The page\n133 | \n134 | - The door is muted text.\n135 | - Diffs follow Studio's colours.\n136 | \n137 | ## Studio\n138 | \n139 | - Studio adopts the crate's rows.\n[Lines 120-139 of 300.]",
+                act(ActKind::Read, "/home/user/work/DECISIONS.md"),
+                "read /home/user/work/DECISIONS.md:120-139",
+                "Read DECISIONS.md",
+            )
+        },
+        Fixture {
+            outcome: "monitoring",
+            job: true,
+            full_detail: Some("every 30 s, when its output changes, for 30 min"),
+            ..fixture(
+                "a monitor whose command the words cut",
+                "monitor_start",
+                r#"{"command": "grep -c \"^EXIT\" /home/user/work/scratch/build-master.log /home/user/work/scratch/build-0190.log", "every_seconds": 30, "alert_when": "output", "expires_minutes": 30}"#,
+                "Monitor 7f3e9a1c-1111-2222-3333-444455556666 started.",
+                Act {
+                    detail: "grep -c \"^EXIT\" /home/user/work/scratch/build-master.log /home/user/work/scratch/build-0190.log\nevery 30 s, when its output changes, for 30 min".into(),
+                    ..other(
+                        "Starting to watch grep -c \"^EXIT\" /home/user/work/scratch/build-ma…",
+                        "Started watching grep -c \"^EXIT\" /home/user/work/scratch/build-ma…",
+                        "watch grep -c \"^EXIT\" /home/user/work/scratch/build-ma…",
+                    )
+                },
+                "monitor $ grep -c \"^EXIT\" /home/user/work/scratch/build-master.log /home/user/work/scratch/build-0190.log",
+                "Started watching grep -c \"^EXIT\" /home/user/work/scratch/build-ma…",
+            )
+        },
+        Fixture {
+            outcome: "sent",
+            content: Some((
+                Plain,
+                "Review the fix in src/engine.rs and the test in src/engine_tests.rs. The branched message now carries its index through a handover.",
+            )),
+            ..fixture(
+                "a message",
+                "message_agent",
+                r#"{"to": "r136", "message": "Review the fix in src/engine.rs and the test in src/engine_tests.rs. The branched message now carries its index through a handover."}"#,
+                "Sent: r136 reads it at its next step.",
+                act(ActKind::Message, "r136"),
+                "message r136 “Review the fix in src/engine.rs and the test in src/engine_tests.rs. The branched message now carries its index through a handover.”",
+                "Messaged r136",
+            )
+        },
+        Fixture {
             outcome: "0.0 s",
-            outcome_shown: true,
+            content: Some((Plain, "this-is-a-command-with-a-critical-suffix")),
             ..fixture(
                 "a command cut short",
                 "shell",
                 r#"{"command": "CARGO_INCREMENTAL=0 printf '%s' this-is-a-command-with-a-critical-suffix"}"#,
-                act(
-                    ActKind::Command,
-                    "printf '%s' this-is-a-command-with-a-critical-su…",
-                    &[("", command)],
-                ),
+                "exit code 0, 0.0 s\nthis-is-a-command-with-a-critical-suffix",
+                Act {
+                    detail: "CARGO_INCREMENTAL=0 printf '%s' this-is-a-command-with-a-critical-suffix".into(),
+                    news: String::new(),
+                    ..command("printf '%s' this-is-a-command-with-a-critical-su…")
+                },
+                "$ CARGO_INCREMENTAL=0 printf '%s' this-is-a-command-with-a-critical-suffix",
+                "Ran printf '%s' this-is-a-command-with-a-critical-su…",
             )
         },
         Fixture {
-            detail: Some("printf one\nprintf two"),
+            full_detail: Some("printf one\nprintf two"),
             outcome: "2.0 s",
-            outcome_shown: true,
+            content: Some((Plain, "one\ntwo")),
             ..fixture(
                 "a command of two lines in a folder",
                 "shell",
                 r#"{"command": "printf one\nprintf two", "cwd": "src/specific/work"}"#,
-                act(
-                    ActKind::Command,
-                    "printf one in work",
-                    &[("", "printf one\nprintf two"), ("cwd", "src/specific/work")],
-                ),
+                "exit code 0, 2.0 s\none\ntwo",
+                Act {
+                    detail: "(in src/specific/work) printf one\nprintf two".into(),
+                    ..command("printf one in work")
+                },
+                "(in src/specific/work) $ printf one  (+1 lines)",
+                "Ran printf one in work",
             )
         },
         Fixture {
-            outcome: "0.0 s",
-            outcome_shown: true,
+            outcome: "2 passed",
+            content: Some((
+                Plain,
+                "running 2 tests\ntest a ... ok\ntest b ... ok\n\ntest result: ok. 2 passed; 0 failed",
+            )),
             ..fixture(
-                "a command that goes from its folder to another",
+                "a test run",
                 "shell",
-                r#"{"command": "cd child && pwd", "cwd": "parent"}"#,
-                act(
-                    ActKind::Command,
-                    "pwd in child",
-                    &[("", "cd child && pwd"), ("cwd", "parent")],
-                ),
-            )
-        },
-        Fixture {
-            outcome: "2.0 s",
-            output: true,
-            outcome_shown: true,
-            ..fixture(
-                "a command after cd",
-                "shell",
-                r#"{"command": "cd web && cargo build"}"#,
-                act(
-                    ActKind::Command,
-                    "cargo build in web",
-                    &[("", "cd web && cargo build")],
-                ),
-            )
-        },
-        Fixture {
-            outcome: "11 lines",
-            outcome_shown: true,
-            ..fixture(
-                "a read of some lines",
-                "read_file",
-                r#"{"path": "src/specific/a.rs", "start_line": 100, "end_line": 110}"#,
-                act(
-                    ActKind::Read,
-                    "src/specific/a.rs",
-                    &[("", "src/specific/a.rs:100-110")],
-                ),
-            )
-        },
-        Fixture {
-            outcome: "3 lines",
-            outcome_shown: true,
-            ..fixture(
-                "a read of a file by its name",
-                "read_file",
-                r#"{"path": "a.rs"}"#,
-                act(ActKind::Read, "a.rs", &[]),
-            )
-        },
-        Fixture {
-            ..fixture(
-                "a read of a long path",
-                "read_file",
-                r#"{"path": "deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/x.rs"}"#,
-                act(
-                    ActKind::Read,
-                    "deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/…",
-                    &[("", LONG_PATH)],
-                ),
-            )
-        },
-        fixture(
-            "a write",
-            "write_file",
-            r#"{"path": "new.rs", "content": "a\nb"}"#,
-            act(ActKind::Write, "new.rs", &[("content", "a\nb")]),
-        ),
-        fixture(
-            "a write that ends in spaces and blank lines",
-            "write_file",
-            r#"{"path": "new.txt", "content": "line  \n\n"}"#,
-            act(ActKind::Write, "new.txt", &[("content", "line  \n\n")]),
-        ),
-        fixture(
-            "a write of only spaces",
-            "write_file",
-            r#"{"path": "blank.txt", "content": "   "}"#,
-            act(ActKind::Write, "blank.txt", &[("content", "   ")]),
-        ),
-        Fixture {
-            outcome: "3 replacements",
-            outcome_shown: true,
-            ..fixture(
-                "an edit of every match",
-                "edit_file",
-                r#"{"path": "src/a.rs", "old_string": "a", "new_string": "b", "replace_all": true}"#,
-                act(
-                    ActKind::Edit,
-                    "src/a.rs",
-                    &[
-                        ("", "src/a.rs"),
-                        ("old_string", "a"),
-                        ("new_string", "b"),
-                        ("replace_all", "true"),
-                    ],
-                ),
-            )
-        },
-        Fixture {
-            status: CallStatus::Failed,
-            outcome: "The user refused it.",
-            opens: false,
-            ..fixture(
-                "a refused command",
-                "shell",
-                r#"{"command": "ls"}"#,
-                act(ActKind::Command, "ls", &[]),
+                r#"{"command": "cargo test -p arko-tui engine_tests"}"#,
+                "exit code 0, 41.8 s\nrunning 2 tests\ntest a ... ok\ntest b ... ok\n\ntest result: ok. 2 passed; 0 failed",
+                Act {
+                    alone: true,
+                    news: "2 passed".into(),
+                    ..command("cargo test -p arko-tui engine_tests")
+                },
+                "$ cargo test -p arko-tui engine_tests",
+                "Ran cargo test -p arko-tui engine_tests (2 passed)",
             )
         },
         Fixture {
             status: CallStatus::Failed,
             outcome: "exit 101",
-            output: true,
+            content: Some((
+                Plain,
+                "error: could not compile `arko-tui` (lib test) due to 1 previous error",
+            )),
+            words: "Ran cargo clippy",
+            failed: true,
+            ..fixture(
+                "a failed command",
+                "shell",
+                r#"{"command": "cargo clippy"}"#,
+                "exit code 101, 3.0 s\nerror: could not compile `arko-tui` (lib test) due to 1 previous error",
+                command("cargo clippy"),
+                "$ cargo clippy",
+                "",
+            )
+        },
+        Fixture {
+            status: CallStatus::Failed,
+            outcome: "refused",
+            content: Some((
+                Muted,
+                "Refused. ../old-notes is outside the working directory, and outside access is off.",
+            )),
+            words: "Couldn’t run rm -rf ../old-notes",
+            failed: true,
+            ..fixture(
+                "a refused command",
+                "shell",
+                r#"{"command": "rm -rf ../old-notes"}"#,
+                "refused (../old-notes is outside the working directory, and outside access is off.)",
+                act(ActKind::Command, "rm -rf ../old-notes"),
+                "$ rm -rf ../old-notes",
+                "",
+            )
+        },
+        Fixture {
+            outcome: "0.1 s",
             opens: false,
             ..fixture(
-                "a failed command, its output under its row",
+                "a command with no output",
                 "shell",
-                r#"{"command": "cargo build"}"#,
-                act(ActKind::Command, "cargo build", &[]),
-            )
-        },
-        Fixture {
-            outcome: "sent",
-            ..fixture(
-                "a short message",
-                "message_agent",
-                r#"{"to": "r2", "message": "a.rs is done."}"#,
-                act(ActKind::Message, "r2", &[("", "a.rs is done.")]),
-            )
-        },
-        Fixture {
-            detail: Some(LONG_MESSAGE),
-            outcome: "sent",
-            ..fixture(
-                "a long message",
-                "message_agent",
-                r#"{"to": "r2", "message": "The parser drops a token after a comment at the end of a line, so the next statement starts one token late. The fix is in lexer.rs, with a test for it. Merge it once the review passes."}"#,
-                act(ActKind::Message, "r2", &[("", LONG_MESSAGE)]),
-            )
-        },
-        Fixture {
-            outcome: "12 results",
-            outcome_shown: true,
-            ..fixture(
-                "a search past the row's length",
-                "index_search",
-                r#"{"index": "arko", "query": "how does the feed decide where a long call goes when its row is the last one"}"#,
-                Act {
-                    query: "how does the feed decide where a long call goes when its row…".into(),
-                    // (The index as given, since a search's row can name
-                    // the indexes its result names instead.)
-                    ..act(ActKind::Search, "arko", &[("", SEARCH), ("index", "arko")])
-                },
-            )
-        },
-        Fixture {
-            outcome: "3 results",
-            outcome_shown: true,
-            ..fixture(
-                "a search of an index by its path, past Full's length",
-                "index_search",
-                r#"{"index": "/home/user/indexes/arko-int", "query": "where does the Quiet view decide which calls share a row, and how does it keep a row in place when a long call starts, fails, or moves to the background while other calls keep coming in after it"}"#,
-                Act {
-                    query: "where does the Quiet view decide which calls share a row, an…".into(),
-                    ..act(
-                        ActKind::Search,
-                        "arko-int",
-                        &[("", LONG_SEARCH), ("index", "/home/user/indexes/arko-int")],
-                    )
-                },
-            )
-        },
-        Fixture {
-            outcome: "nothing new",
-            ..fixture(
-                "a wait for many runs",
-                "wait_for_agents",
-                r#"{"runs": "r1, r2, r3, r4, r5"}"#,
-                act(
-                    ActKind::Wait,
-                    "r1, r2, r3, r4, r5",
-                    &[("runs", "r1, r2, r3, r4, r5")],
-                ),
-            )
-        },
-        fixture(
-            "a check of a job",
-            "terminal_status",
-            r#"{"job_id": "4d2c1a9b-1111-2222-3333-444455556666"}"#,
-            act(
-                ActKind::Check,
-                "job 4d2c1a9b",
-                &[("job_id", "4d2c1a9b-1111-2222-3333-444455556666")],
-            ),
-        ),
-        Fixture {
-            outcome: "Created issue 7.",
-            outcome_shown: true,
-            ..fixture(
-                "an MCP call",
-                "mcp",
-                r#"{"action": "call", "server": "github", "tool": "create_issue", "arguments": {"title": "Bug"}}"#,
-                act(
-                    ActKind::Mcp,
-                    "create_issue on github",
-                    &[("", "{\n  \"title\": \"Bug\"\n}")],
-                ),
-            )
-        },
-        fixture(
-            "an MCP server's own tool",
-            "mcp__github__create_issue",
-            r#"{"title": "Bug", "labels": ["p1"]}"#,
-            act(
-                ActKind::Mcp,
-                "create_issue on github",
-                &[("labels", "[\n  \"p1\"\n]"), ("title", "Bug")],
-            ),
-        ),
-        Fixture {
-            outcome: "Kept note 1.",
-            outcome_shown: true,
-            ..fixture(
-                "a note",
-                "keep_note",
-                r#"{"text": "Use tabs in the tests."}"#,
-                act(ActKind::Note, "", &[("", "Use tabs in the tests.")]),
-            )
-        },
-        Fixture {
-            outcome: "Kept note 7.",
-            outcome_shown: true,
-            ..fixture(
-                "a note that replaces another for a worker",
-                "keep_note",
-                r#"{"text": "Replacement note text", "replaces": 7, "audience": "r3"}"#,
-                other(
-                    "Changing note 7",
-                    "Changed note 7",
-                    "change note 7",
-                    &[("", "Replacement note text"), ("audience", "r3")],
-                ),
-            )
-        },
-        Fixture {
-            outcome: "Stopped r1.",
-            outcome_shown: true,
-            ..fixture(
-                "a worker stop that removes its worktree",
-                "stop_agent",
-                r#"{"run": "r1", "remove_workspace": true}"#,
-                other(
-                    "Stopping r1 and removing its worktree",
-                    "Stopped r1 and removed its worktree",
-                    "stop r1 and remove its worktree",
-                    &[],
-                ),
-            )
-        },
-        fixture(
-            "a short worker start",
-            "start_agent",
-            r#"{"task": "Count.", "profile": "counter", "model": "sonnet", "effort": "high"}"#,
-            other(
-                "Starting a worker",
-                "Started a worker",
-                "start a worker",
-                &[
-                    ("", "Count."),
-                    ("effort", "high"),
-                    ("model", "sonnet"),
-                    ("profile", "counter"),
-                ],
-            ),
-        ),
-        Fixture {
-            detail: Some(LONG_TASK),
-            ..fixture(
-                "a long worker start",
-                "start_agent",
-                r#"{"task": "Count the files in src that have no tests, list them by folder with how many lines each has, and say which of them changed most in the last month, so we know where tests would help first.", "model": "sonnet"}"#,
-                other(
-                    "Starting a worker",
-                    "Started a worker",
-                    "start a worker",
-                    &[("", LONG_TASK), ("model", "sonnet")],
-                ),
+                r#"{"command": "sed -i 's/a/b/' src/a.rs"}"#,
+                "exit code 0, 0.1 s\n(no output)",
+                command("sed -i 's/a/b/' src/a.rs"),
+                "$ sed -i 's/a/b/' src/a.rs",
+                "Ran sed -i 's/a/b/' src/a.rs",
             )
         },
         Fixture {
@@ -1407,16 +1221,172 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                 "a moved call",
                 "shell",
                 r#"{"command": "cargo build"}"#,
-                act(ActKind::Command, "cargo build", &[]),
+                "in the background as job 4d2c1a9b-1111-2222-3333-444455556666, 600.0 s\nterminal_status shows how it goes.",
+                command("cargo build"),
+                "$ cargo build",
+                "Ran cargo build",
             )
         },
         Fixture {
+            outcome: "2 results from arko (code, hybrid)",
+            content: Some((
+                Plain,
+                "2 results from arko (code, hybrid)\nsrc/engine.rs:96-105 · fn branched\nsrc/sessions.rs:412-440 · fn restore_branch",
+            )),
+            ..fixture(
+                "a search",
+                "index_search",
+                r#"{"index": "arko", "query": "branched message index"}"#,
+                "2 results from arko (code, hybrid):\n\nsrc/engine.rs:96-105 · fn branched\n96 | fn branched() {\n97 | }\nsrc/sessions.rs:412-440 · fn restore_branch (part of a 200-line definition at lines 400-600: read_file shows the rest)\n412 | fn restore_branch() {",
+                Act {
+                    query: "branched message index".into(),
+                    ..act(ActKind::Search, "arko")
+                },
+                "index search “branched message index”",
+                "Searched the arko index for “branched message index”",
+            )
+        },
+        Fixture {
+            outcome: "1 result from arko (code, hybrid)",
+            full_detail: None,
+            content: Some((
+                Plain,
+                "1 result from arko (code, hybrid)\nsrc/remote/quiet.rs:138-155 · fn rows",
+            )),
+            ..fixture(
+                "a search past the row's length",
+                "index_search",
+                r#"{"index": "arko", "query": "how does the feed decide where a long call goes when its row is the last one"}"#,
+                "1 result from arko (code, hybrid):\nsrc/remote/quiet.rs:138-155 · fn rows\n    pub fn rows(steps: &[Step]) -> Vec<Piece> {",
+                Act {
+                    query: "how does the feed decide where a long call goes when its row…".into(),
+                    detail: "how does the feed decide where a long call goes when its row is the last one".into(),
+                    ..act(ActKind::Search, "arko")
+                },
+                "index search “how does the feed decide where a long call goes when its row is the last one”",
+                "Searched the arko index for “how does the feed decide where a long call goes when its row…”",
+            )
+        },
+        Fixture {
+            outcome: "r3 finished, 1 message",
+            content: Some((
+                Plain,
+                "r3 finished. Its report:\n\nThe fix is right.\n\nr4 sent a message:\n\nHalfway.",
+            )),
+            ..fixture(
+                "a wait",
+                "wait_for_agents",
+                r#"{"runs": "r3, r4"}"#,
+                "[mail 2] r3 (agent `worker`) finished. Its report:\n\nThe fix is right.\n\n[end of mail 2]\n\n[mail 3] r4 (agent `worker`) sent you a message:\n\nHalfway.\n\n[end of mail 3]",
+                Act {
+                    came: Some(Came {
+                        finished: vec!["r3".into()],
+                        messages: 1,
+                        ..Came::default()
+                    }),
+                    ..act(ActKind::Wait, "r3, r4")
+                },
+                "waiting for r3, r4",
+                "Waited for r3 and r4 · r3 finished, 1 message",
+            )
+        },
+        Fixture {
+            outcome: "nothing new",
+            opens: false,
+            ..fixture(
+                "a wait that got nothing",
+                "wait_for_agents",
+                r#"{"runs": "r1"}"#,
+                "Nothing to wait for: r1 is finished. Reports that came earlier reached you already.",
+                Act {
+                    came: Some(Came::default()),
+                    ..act(ActKind::Wait, "r1")
+                },
+                "waiting for r1",
+                "Waited for r1 · nothing new",
+            )
+        },
+        Fixture {
+            outcome: "r12 queued",
+            content: Some((Muted, "Count the files in src that have no tests.")),
+            ..fixture(
+                "a worker start",
+                "start_agent",
+                r#"{"task": "Count the files in src that have no tests.", "model": "sonnet"}"#,
+                "Queued r12 (agent `worker`). It starts when a place is free.",
+                Act {
+                    done: "Queued r12".into(),
+                    ..other("Starting a worker", "Started a worker", "start a worker")
+                },
+                "start worker (sonnet) “Count the files in src that have no tests.”",
+                "Queued r12",
+            )
+        },
+        Fixture {
+            outcome: "Created #412 https://github.com/mesa-hills-research/arko/iss…",
+            content: Some((
+                Plain,
+                "{\n  \"title\": \"Branched message loses its index\"\n}\nCreated #412 https://github.com/mesa-hills-research/arko/issues/412",
+            )),
+            ..fixture(
+                "an MCP call",
+                "mcp",
+                r#"{"action": "call", "server": "github", "tool": "create_issue", "arguments": {"title": "Branched message loses its index"}}"#,
+                "Created #412 https://github.com/mesa-hills-research/arko/issues/412",
+                act(ActKind::Mcp, "create_issue on github"),
+                "mcp create_issue on github",
+                "Called create_issue on github",
+            )
+        },
+        Fixture {
+            outcome: "Kept note 1.",
+            content: Some((Plain, "Use tabs in the tests.")),
+            ..fixture(
+                "a note",
+                "keep_note",
+                r#"{"text": "Use tabs in the tests."}"#,
+                "Kept note 1.",
+                act(ActKind::Note, ""),
+                "keep_note",
+                "Kept a note",
+            )
+        },
+        Fixture {
+            content: Some((Lines, "1\tuse super::*;\n2\t\n3\t#[test]\n4\tfn a() {}")),
+            ..fixture(
+                "a write",
+                "write_file",
+                r#"{"path": "src/engine_tests.rs", "content": "use super::*;\n\n#[test]\nfn a() {}\n"}"#,
+                "Wrote src/engine_tests.rs.",
+                act(ActKind::Write, "src/engine_tests.rs"),
+                "write src/engine_tests.rs (4 lines)",
+                "Wrote engine_tests.rs",
+            )
+        },
+        Fixture {
+            outcome: "4 entries",
+            content: Some((Plain, "engine.rs\nengine_tests.rs\nmain.rs\nsessions.rs")),
+            ..fixture(
+                "a list",
+                "list_files",
+                r#"{"directory": "src"}"#,
+                "engine.rs\nengine_tests.rs\nmain.rs\nsessions.rs",
+                act(ActKind::List, "src"),
+                "list src",
+                "Listed src",
+            )
+        },
+        Fixture {
+            outcome: "Loaded the skill.",
             opens: false,
             ..fixture(
                 "a skill",
                 "load_skill",
                 r#"{"name": "ponytail"}"#,
-                act(ActKind::Skill, "ponytail", &[]),
+                "Loaded the skill.",
+                act(ActKind::Skill, "ponytail"),
+                "skill ponytail",
+                "Loaded the ponytail skill",
             )
         },
     ]
@@ -1461,8 +1431,8 @@ mod tests {
                 Piece::Step(index) => format!("step {index}"),
                 Piece::Row(row) => {
                     let mut text = row.words.text;
-                    if let Some(failed) = row.words.failed {
-                        text.push_str(&format!(" · ✗ {failed}"));
+                    if row.words.failed {
+                        text.push_str(" ✗");
                     }
                     if let Some(note) = row.words.note {
                         text.push_str(&format!(" · {note}"));
@@ -1489,7 +1459,7 @@ mod tests {
             outcome: Some(fixture.outcome),
             job: fixture.job,
             turn: Some(1),
-            output: fixture.output,
+            content: fixture.content.is_some(),
         })];
         match rows(&steps).as_slice() {
             [Piece::Row(row)] => row.clone(),
@@ -1497,80 +1467,51 @@ mod tests {
         }
     }
 
-    /// An open row of one call shows its body, which holds what the row's
-    /// words leave out of it, and its outcome when the words leave that out,
-    /// and a row with nothing more has no fold (r127).
+    /// A row of one call says what it did in the past tense, with one ✗
+    /// when it failed, and opens when it has a detail or content to show.
+    /// A row with nothing to show has no fold.
     #[test]
-    fn an_open_row_shows_what_its_words_leave_out() {
+    fn a_rows_words_and_fold_follow_the_fixtures() {
         for fixture in fixtures() {
             let row = row_of(&fixture);
-            let [opened] = row.calls.as_slice() else {
-                panic!("{}: {:?}", fixture.name, row.calls);
-            };
-            assert_eq!(opened.line, None, "{}", fixture.name);
+            assert_eq!(row.words.text, fixture.words, "{}", fixture.name);
+            assert_eq!(row.words.failed, fixture.failed, "{}", fixture.name);
             assert_eq!(row.opens, fixture.opens, "{}", fixture.name);
-            assert_eq!(opened.outcome, fixture.outcome_shown, "{}", fixture.name);
-            if !fixture.opens {
-                assert!(fixture.act.body.is_empty(), "{}", fixture.name);
-            }
+            assert!(!row.merged, "{}", fixture.name);
         }
     }
 
-    /// In a row of several calls, each call has a line of its own words
-    /// with how it went, named as the row names it (`remote/mod.rs`), and
-    /// two calls that read alike each have one. A row of one call and the
-    /// reads an edit holds name them as their own line too.
+    /// A row of several calls opens to each call's Full line, the reads an
+    /// edit holds among them, and one with a failed call shows one ✗.
     #[test]
-    fn an_open_row_names_each_of_its_calls() {
-        fn read<'a>(id: u64, act: &'a Act, outcome: &'a str) -> Step<'a> {
+    fn a_row_of_several_calls_shows_each_as_its_line() {
+        fn call<'a>(id: u64, act: &'a Act, status: CallStatus) -> Step<'a> {
             Step::Call(Call {
                 id,
                 act: Some(act),
-                status: Some(Ok),
-                outcome: Some(outcome),
+                status: Some(status),
                 turn: Some(1),
                 ..Call::default()
             })
         }
-        let lines = |steps: &[Step]| -> Vec<Option<String>> {
+        let one = |steps: &[Step]| -> Row {
             let pieces = rows(steps);
             let [Piece::Row(row)] = pieces.as_slice() else {
                 panic!("{pieces:?}");
             };
-            assert!(row.opens);
-            row.calls
-                .iter()
-                .map(|call| {
-                    call.line.as_ref().map(|line| match &line.note {
-                        Some(note) => format!("{} · {note}", line.text),
-                        None => line.text.clone(),
-                    })
-                })
-                .collect()
+            row.clone()
         };
         let (remote, tui) = (act(Read, "src/remote/mod.rs"), act(Read, "src/tui/mod.rs"));
-        assert_eq!(
-            lines(&[read(1, &remote, "40 lines"), read(2, &tui, "12 lines")]),
-            [
-                Some("Read mod.rs · 40 lines".to_string()),
-                Some("Read tui/mod.rs · 12 lines".to_string())
-            ]
-        );
-        let a = act(Read, "src/a.rs");
-        assert_eq!(
-            lines(&[read(1, &a, "3 lines"), read(2, &a, "3 lines")]),
-            [
-                Some("Read a.rs · 3 lines".to_string()),
-                Some("Read a.rs · 3 lines".to_string())
-            ]
-        );
-        // An edit row names the edit by its words, and the read it holds by
-        // a line of its own.
-        let edit = act(Edit, "src/a.rs");
-        assert_eq!(
-            lines(&[read(1, &a, "3 lines"), read(2, &edit, "1 edit")]),
-            [Some("Read a.rs · 3 lines".to_string()), None]
-        );
+        let row = one(&[call(1, &remote, Ok), call(2, &tui, Ok)]);
+        assert!(row.merged && row.opens && !row.words.failed);
+        let (a, edit) = (act(Read, "src/a.rs"), act(Edit, "src/a.rs"));
+        let row = one(&[call(1, &a, Ok), call(2, &edit, Ok)]);
+        assert_eq!(row.words.text, "Made 1 edit to a.rs");
+        assert!(row.merged && row.opens);
+        let (rg, git) = (act(Command, "rg x"), act(Command, "git diff"));
+        let row = one(&[call(1, &rg, Ok), call(2, &git, Failed)]);
+        assert_eq!(row.words.text, "Ran 2 commands (rg, git)");
+        assert!(row.words.failed);
     }
 
     #[test]
@@ -1681,7 +1622,7 @@ mod tests {
                 Some((act(Edit, "a.rs"), Failed)),
                 ok(Edit, "a.rs")
             ]),
-            ["Made 3 edits to a.rs · ✗ 1 failed"]
+            ["Made 3 edits to a.rs ✗"]
         );
         // Thinking between calls of one row goes inside it.
         let calls = [ok(Read, "a.rs"), None, ok(Read, "b.rs")];
@@ -1801,7 +1742,7 @@ mod tests {
         test.news = "1 failed, 23 passed".into();
         assert_eq!(
             shown(&[Some((test, Failed))]),
-            ["Ran cargo test -p arko · ✗ 1 failed, 23 passed"]
+            ["Ran cargo test -p arko (1 failed, 23 passed) ✗"]
         );
         let steps = [Step::Call(Call {
             act: Some(&act(Read, "src/cache.rs")),
@@ -1809,10 +1750,7 @@ mod tests {
             outcome: Some("No such file or directory (os error 2)"),
             ..Call::default()
         })];
-        assert_eq!(
-            said(&steps),
-            ["Couldn’t read cache.rs · ✗ No such file or directory (os error 2)"]
-        );
+        assert_eq!(said(&steps), ["Couldn’t read cache.rs ✗"]);
         let build = act(Command, "cargo build");
         let stopped = [Step::Call(Call {
             act: Some(&build),
@@ -1878,15 +1816,9 @@ mod tests {
             call(2, &build, Failed),
             call(3, &read, Ok),
         ];
-        assert_eq!(
-            said(&failed),
-            ["Ran 2 commands (rg, cargo) · ✗ 1 failed", "Read a.rs"]
-        );
+        assert_eq!(said(&failed), ["Ran 2 commands (rg, cargo) ✗", "Read a.rs"]);
         // As the last row, the same.
-        assert_eq!(
-            said(&failed[..2]),
-            ["Ran 2 commands (rg, cargo) · ✗ 1 failed"]
-        );
+        assert_eq!(said(&failed[..2]), ["Ran 2 commands (rg, cargo) ✗"]);
         // A test run has a row of its own from the start.
         let tests = Act {
             alone: true,

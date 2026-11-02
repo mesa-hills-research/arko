@@ -2322,14 +2322,15 @@ async fn the_users_message_to_a_worker_reaches_that_worker_only() {
         assert!(at - heading - copy.len() <= "\\n\\n".len(), "{lead}");
     }
     // The feed has them as r1's, and the user's (in the order the
-    // session took them from its inputs).
+    // session took them from its inputs), besides the mail the main agent's
+    // wait got.
     let mut items: Vec<(String, remote::Kind, String)> = harness
         .feed
         .subscribe()
         .0
         .items
         .into_iter()
-        .filter(|item| item.text.contains("Tabs, from"))
+        .filter(|item| item.text.contains("Tabs, from") && item.kind != remote::Kind::Result)
         .map(|item| (item.agent, item.kind, item.text))
         .collect();
     items.sort_by(|a, b| a.2.cmp(&b.2));
