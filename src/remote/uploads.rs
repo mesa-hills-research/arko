@@ -14,6 +14,13 @@
 //! happens under the table's lock, in a statement of its own, and no disk
 //! work happens under it.
 //!
+//! The disk's free space is read under the uploads' disk budget, and the
+//! decision made on it is made under the budget too. An upload is admitted
+//! when the space left keeps the floor after the bytes every upload still
+//! needs, and a write when it keeps the floor after the bytes other writes
+//! have on their way. The budget is this server's, so another Arko writing
+//! to the same disk at once can take it below the floor by a write or so.
+//!
 //! What an upload holds is the length of its part file. A request that
 //! resumes says where it starts (the `Upload-Offset` header) and is refused
 //! unless that is the length. The newest request for an upload wins, because
@@ -26,9 +33,9 @@
 //! finish, the file in its slot and the gate shut until the disk is done.
 //! The step that completes an upload also records it as Complete, and the
 //! part file stays open until it has its name, so a step that fails leaves
-//! the upload to complete again. A step that holds the gate may take the
-//! table's lock, and the table's lock is never held while a gate is
-//! awaited (a sweep only tries one), so the two never wait on each other.
+//! the upload to complete again. The gate is taken before the budget, and
+//! either before the table's lock. The table's lock is never held while
+//! either is awaited (a sweep only tries a gate), so none waits on another.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -130,6 +137,12 @@ pub(super) struct Uploads {
     workspace: PathBuf,
     root: PathBuf,
     table: Table,
+    /// Held while the disk's free space is read and what was read decides
+    /// an upload's admission or a write.
+    budget: Arc<tokio::sync::Mutex<()>>,
+    /// The bytes of the writes on their way to the disk, counted from
+    /// before each starts until it lands.
+    writing: Arc<AtomicU64>,
     /// Tells of an upload whose files are gone, out of the table.
     deleted: Arc<tokio::sync::Notify>,
     /// Numbers the messages' claims.
@@ -169,6 +182,8 @@ impl Uploads {
             workspace,
             root,
             table: Arc::new(Mutex::new(HashMap::new())),
+            budget: Arc::new(tokio::sync::Mutex::new(())),
+            writing: Arc::new(AtomicU64::new(0)),
             deleted: Arc::new(tokio::sync::Notify::new()),
             claims: AtomicU64::new(1),
             free: free_bytes,
@@ -298,10 +313,16 @@ impl Uploads {
     }
 
     /// Holds a slot among the uploads waiting and `upload`'s bytes, as
-    /// `id`, when the disk has room for them, or says why not. Both checks
-    /// and the insert are one step, so uploads started at once can't pass
-    /// the limits together.
+    /// `id`, or says why not. The free space is read under the budget, after
+    /// the bytes the uploads still need, so a write that lands in between
+    /// counts twice rather than not at all. Both checks and the insert are
+    /// one step, so uploads started at once can't pass the limits together.
     async fn admit(&self, id: &str, upload: &Arc<Upload>) -> Result<(), Refused> {
+        let _budget = self.budget.lock().await;
+        let held: u64 = {
+            let table = lock(&self.table);
+            table.values().map(|entry| entry.reserved).sum()
+        };
         let (free, real) = (self.free, upload.folder.real().to_path_buf());
         let left = tokio::task::spawn_blocking(move || free(&real))
             .await
@@ -315,7 +336,6 @@ impl Uploads {
                 table.len()
             )));
         }
-        let held: u64 = table.values().map(|entry| entry.reserved).sum();
         if let Some(left) = left
             && left < held.saturating_add(upload.size).saturating_add(FREE_FLOOR)
         {
@@ -440,8 +460,9 @@ impl Uploads {
     }
 
     /// Writes `bytes` at the end of the upload `id`'s part file, when the
-    /// disk keeps its floor after them, and counts them off its
-    /// reservation. Gives the gate back with how many bytes it wrote.
+    /// disk keeps its floor after them and the other writes on their way,
+    /// and counts them off its reservation. Gives the gate back with how
+    /// many bytes it wrote.
     async fn append(
         &self,
         gate: OwnedMutexGuard<Option<File>>,
@@ -452,23 +473,33 @@ impl Uploads {
         if bytes.is_empty() {
             return Ok((gate, Ok(0)));
         }
+        let budget = self.budget.clone().lock_owned().await;
         let (table, id, free) = (self.table.clone(), id.to_string(), self.free);
+        let writing = self.writing.clone();
         let folder = upload.folder.real().to_path_buf();
         #[cfg(test)]
         let disk = self.disk;
         let write = move |slot: &mut Option<File>| {
             use std::io::Write as _;
-            #[cfg(test)]
-            std::thread::sleep(disk.delay);
             let file = slot
                 .as_mut()
                 .ok_or_else(|| std::io::Error::other("the file is gone"))?;
             let written = bytes.len() as u64;
+            // (The writes on their way are read before the disk, so one
+            // that lands in between counts twice rather than not at all.)
+            let on_their_way = writing.load(Ordering::SeqCst);
             if let Some(left) = free(&folder)
-                && left < FREE_FLOOR.saturating_add(written)
+                && left
+                    < FREE_FLOOR
+                        .saturating_add(on_their_way)
+                        .saturating_add(written)
             {
                 return Err(std::io::Error::from(std::io::ErrorKind::StorageFull));
             }
+            let _charged = Charged::new(writing, written);
+            drop(budget);
+            #[cfg(test)]
+            std::thread::sleep(disk.delay);
             file.write_all(&bytes)?;
             if let Some(entry) = lock(&table).get_mut(&id) {
                 entry.reserved = entry.reserved.saturating_sub(written);
@@ -774,6 +805,25 @@ impl Uploads {
             now.duration_since(entry.touched) > ABANDONED && entry.upload.writer.try_lock().is_ok()
         });
         futures_util::future::join_all(removing).await;
+    }
+}
+
+/// Bytes counted with the writes on their way to the disk, until dropped.
+struct Charged {
+    writing: Arc<AtomicU64>,
+    bytes: u64,
+}
+
+impl Charged {
+    fn new(writing: Arc<AtomicU64>, bytes: u64) -> Self {
+        writing.fetch_add(bytes, Ordering::SeqCst);
+        Charged { writing, bytes }
+    }
+}
+
+impl Drop for Charged {
+    fn drop(&mut self) {
+        self.writing.fetch_sub(self.bytes, Ordering::SeqCst);
     }
 }
 
@@ -1216,6 +1266,113 @@ pub(super) mod tests {
         assert!(store.put(&id, 300_000, whole(&[])).await.unwrap().done);
         assert_eq!(std::fs::read(folder.join("video.mp4")).unwrap(), bytes);
         assert_eq!(names(&work), [".gitignore", "video.mp4"]);
+    }
+
+    static STALE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static STALE_SAMPLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static STALE_GO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static STALE_LEFT: AtomicU64 = AtomicU64::new(FREE_FLOOR + 100);
+
+    /// The free space as [`STALE_LEFT`] has it when asked. The second
+    /// reading is given only once [`STALE_GO`] lets it go, or after a
+    /// second.
+    fn stale_free(_: &Path) -> Option<u64> {
+        let sampled = STALE_LEFT.load(Ordering::SeqCst);
+        if STALE_CALLS.fetch_add(1, Ordering::SeqCst) == 1 {
+            STALE_SAMPLED.store(true, Ordering::SeqCst);
+            let until = Instant::now() + Duration::from_secs(1);
+            while !STALE_GO.load(Ordering::SeqCst) && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        Some(sampled)
+    }
+
+    /// An upload admitted on a reading of the disk taken before another
+    /// upload's bytes landed still counts those bytes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_old_reading_of_the_disk_counts_the_bytes_written_since() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, _) = uploads(temp.path());
+        let store = Arc::new(store.with_free(stale_free));
+        let first = store.create("first.bin", 60).await.unwrap();
+        let second = tokio::spawn({
+            let store = store.clone();
+            async move { store.create("second.bin", 60).await }
+        });
+        while !STALE_SAMPLED.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        // The second has read the disk. The first writes its 60 bytes, and
+        // they leave its reservation.
+        store.put(&first, 0, whole(&data(60))).await.unwrap();
+        STALE_LEFT.store(FREE_FLOOR + 40, Ordering::SeqCst);
+        STALE_GO.store(true, Ordering::SeqCst);
+        let admitted = second.await.unwrap();
+        assert!(
+            matches!(admitted, Err(Refused::NoSpace(_))),
+            "60 bytes were let in with 40 left above the floor: {admitted:?}"
+        );
+    }
+
+    static RACE_WRITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static RACE_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// 120 bytes above the floor, until [`RACE_WRITING`]. Then another
+    /// program has taken 60 of them, and the files in `path` take the rest.
+    /// Each reading then waits (up to half a second) for a second one.
+    fn race_free(path: &Path) -> Option<u64> {
+        if !RACE_WRITING.load(Ordering::SeqCst) {
+            return Some(FREE_FLOOR + 120);
+        }
+        let used = held_bytes(path);
+        RACE_READS.fetch_add(1, Ordering::SeqCst);
+        let until = Instant::now() + Duration::from_millis(500);
+        while RACE_READS.load(Ordering::SeqCst) < 2 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Some((FREE_FLOOR + 60).saturating_sub(used))
+    }
+
+    /// The bytes of the files in the attachments folder `path`.
+    fn held_bytes(path: &Path) -> u64 {
+        std::fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_name() != ".gitignore")
+            .map(|entry| entry.metadata().unwrap().len())
+            .sum()
+    }
+
+    /// Two writes at once can't both use the room left above the floor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn writes_at_once_keep_the_floor_together() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, work) = uploads(temp.path());
+        let store = Arc::new(store.with_free(race_free));
+        let first = store.create("first.bin", 60).await.unwrap();
+        let second = store.create("second.bin", 60).await.unwrap();
+        RACE_WRITING.store(true, Ordering::SeqCst);
+        let puts: Vec<_> = [first, second]
+            .into_iter()
+            .map(|id| {
+                let store = store.clone();
+                tokio::spawn(async move { store.put(&id, 0, whole(&data(60))).await })
+            })
+            .collect();
+        let mut refused = 0;
+        for put in puts {
+            if put.await.unwrap() == Err(Refused::NoSpace("The computer’s disk is full.".into()))
+            {
+                refused += 1;
+            }
+        }
+        let used = held_bytes(&folder_of(&work));
+        assert!(
+            used <= 60,
+            "the writes took {used} bytes, with 60 above the floor"
+        );
+        assert_eq!(refused, 1);
     }
 
     fn uploads(temp: &Path) -> (Uploads, PathBuf) {
