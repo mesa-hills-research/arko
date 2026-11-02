@@ -305,11 +305,12 @@ impl Item {
     }
 
     /// Moves the item `ids` IDs and `turns` turns on, with everything in it
-    /// that names an item by its ID (the call a result is of), for items
-    /// made apart and added after others.
+    /// that names an item by its ID (the call a result is of, the ID a failed
+    /// call ended at), for items made apart and added after others.
     pub(crate) fn relocate(&mut self, ids: u64, turns: u64) {
         self.id += ids;
         self.call = self.call.map(|call| call + ids);
+        self.ended = self.ended.map(|ended| ended + ids);
         self.turn = self.turn.map(|turn| turn + turns);
     }
 
@@ -5113,6 +5114,8 @@ mod tests {
                     act: item.act.as_ref(),
                     status: item.status,
                     outcome: item.outcome.as_deref(),
+                    turn: item.turn,
+                    ended: item.ended,
                     ..Default::default()
                 })
             })
@@ -5124,6 +5127,32 @@ mod tests {
                 quiet::Piece::Step(at) => format!("step {at}"),
             })
             .collect()
+    }
+
+    /// Calls that ran together keep their Quiet row once restored after
+    /// other items, when the first of them failed before the other ended.
+    #[test]
+    fn restored_parallel_calls_keep_their_row_after_a_failure() {
+        let feed = Feed::new("main");
+        feed.user("Build", Source::Terminal, Delivery::Turn);
+        feed.turn_started();
+        let (clippy, rg) = (Uuid::new_v4(), Uuid::new_v4());
+        feed.event(&event("main", shell(clippy, "cargo clippy")), None);
+        feed.event(&event("main", shell(rg, "rg x")), None);
+        let failed = "exit code 101, 0.1 s\nfailed";
+        feed.event(&event("main", result(clippy, failed)), None);
+        feed.event(&event("main", result(rg, "exit code 0, 0.1 s\nx")), None);
+        let live = items(&feed);
+        assert_eq!(quiet_words(&live), ["Ran 2 commands (cargo, rg)"]);
+        let restored = Feed::new("main");
+        for _ in 0..20 {
+            restored.notice(Level::Info, "Earlier.");
+        }
+        restored.restore(live);
+        assert_eq!(
+            quiet_words(&items(&restored)),
+            ["Ran 2 commands (cargo, rg)"]
+        );
     }
 
     /// Items restored after others show the Quiet rows they showed live,
