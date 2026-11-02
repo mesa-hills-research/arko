@@ -218,7 +218,8 @@ async fn with_p_the_reply_is_not_printed_as_progress() {
 
 /// Text beside a call is progress, so the turn goes on. What the user types
 /// meanwhile reaches the agent as a note, and it answers in text beside its
-/// next call, also progress, and the turn ends with its reply.
+/// next call, also progress, and the turn ends with its reply. Resumed, the
+/// session shows the text and the reply again.
 #[tokio::test]
 async fn text_beside_a_call_is_progress_and_answers_a_note_mid_turn() {
     let bodies: Bodies = Arc::default();
@@ -282,6 +283,15 @@ async fn text_beside_a_call_is_progress_and_answers_a_note_mid_turn() {
     ] {
         assert_eq!(lines.count(line), 1, "{line}");
     }
+
+    harness.open(true).unwrap();
+    harness.banner_end(false);
+    let feed = &harness.feed;
+    assert_eq!(
+        texts(feed, "text"),
+        ["Listing the files.", "Halfway: the files are listed."].repeat(2)
+    );
+    assert_eq!(texts(feed, "reply"), ["Done: the workspace is empty."; 2]);
 }
 
 /// With text replies the agent answers mid-turn with `message_user`, as

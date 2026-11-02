@@ -1657,7 +1657,9 @@ async fn handover_compacts_a_main_agent_in_claude_code() {
 
 /// A main agent in Claude Code shows what it writes beside its calls, meaning its
 /// thinking, folded, then each response's text, an item of its own before
-/// the call it goes with, with text replies and with `complete_task`.
+/// the call it goes with, with text replies and with `complete_task`. The
+/// page reads the text as such. Restored, the session shows the text and
+/// the reply again, in their order (its thinking isn't kept).
 #[cfg(unix)]
 #[tokio::test]
 async fn a_main_agent_in_claude_code_shows_its_thinking_and_text_beside_its_calls() {
@@ -1709,6 +1711,41 @@ async fn a_main_agent_in_claude_code_shows_its_thinking_and_text_beside_its_call
         assert_eq!(shown[1].1, "Listing the files.");
         assert_eq!(shown[3].1, "Halfway: the files are listed.");
         assert_eq!(shown[5].1, "Done: the workspace is listed.");
+        let (snapshot, _) = harness.feed.subscribe();
+        let text = snapshot
+            .items
+            .iter()
+            .find(|item| item.text == "Halfway: the files are listed.")
+            .unwrap();
+        let read: crate::remote::protocol::ItemData =
+            serde_json::from_value(serde_json::to_value(text).unwrap()).unwrap();
+        assert_eq!((read.agent.as_str(), read.kind), (MAIN, remote::Kind::Text));
+
+        // Arko closes, and the session is resumed.
+        let before = harness.feed.subscribe().0.items.len();
+        harness.crew.as_ref().unwrap().shutdown().await;
+        harness.open(true).unwrap();
+        harness.banner_end(false);
+        let restored: Vec<(remote::Kind, String)> = harness.feed.subscribe().0.items[before..]
+            .iter()
+            .filter(|item| item.is_main())
+            .filter(|item| {
+                matches!(
+                    item.kind,
+                    remote::Kind::Thinking | remote::Kind::Text | remote::Kind::Reply
+                )
+            })
+            .map(|item| (item.kind, item.text.clone()))
+            .collect();
+        assert_eq!(
+            restored,
+            [
+                (remote::Kind::Text, "Listing the files.".to_string()),
+                (remote::Kind::Text, "Halfway: the files are listed.".to_string()),
+                (remote::Kind::Reply, "Done: the workspace is listed.".to_string()),
+            ],
+            "{text_replies}"
+        );
         harness.crew.as_ref().unwrap().shutdown().await;
         managers.shutdown().await;
     }
