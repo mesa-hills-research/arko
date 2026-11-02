@@ -967,3 +967,14 @@ fn a_message_reads_the_same_whatever_its_files_hold() {
     assert_eq!(notes_images(&composed, 3), 2);
     assert_eq!(notes_images(&composed, 1), 1);
 }
+
+/// A message of files alone keeps a handover's report after it out of its
+/// words.
+#[test]
+fn a_files_only_message_keeps_its_report_out_of_its_words() {
+    let plain = image_block("photo.png").trim_end().to_string();
+    let text = format!("{plain}\n\n# Handover report\n\nThe report.");
+    assert_eq!(crate::remote::shown_words(&text), "");
+    assert_eq!(crate::remote::as_sent(&text), plain);
+    assert_eq!(crate::remote::shown_words(&format!("{plain}\n\nLook.\n\n# Handover report\n\nThe report.")), "Look.");
+}

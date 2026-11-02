@@ -439,12 +439,18 @@ fn block_end(text: &str) -> Option<usize> {
 /// first message of a conversation that was handed over holds the message
 /// it answers, then the report), which is looked for after its block.
 fn without_report(text: &str) -> &str {
-    let from = block_end(text).unwrap_or(0);
-    let heading = format!("\n\n{}", arko_agents::handover::REPORT_HEADING);
-    match text[from..].find(&heading) {
-        Some(at) => text[..from + at].trim(),
-        None => text.trim(),
-    }
+    let heading = arko_agents::handover::REPORT_HEADING;
+    // (Right after a block, which takes the blank line before what
+    // follows it, the report has none of its own, as in a message of files
+    // alone.)
+    let at = match block_end(text) {
+        Some(end) if text[end..].starts_with(heading) => Some(end),
+        Some(end) => text[end..]
+            .find(&format!("\n\n{heading}"))
+            .map(|at| end + at),
+        None => text.find(&format!("\n\n{heading}")),
+    };
+    at.map_or(text, |at| &text[..at]).trim()
 }
 
 /// The user's own words in a message Arko sent, meaning before a handover's report,
