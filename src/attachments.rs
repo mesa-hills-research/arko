@@ -106,9 +106,8 @@ pub(crate) fn resent(sent: &str, typed: &str, images: bool) -> Option<(String, V
 }
 
 /// The user's `item` restored from what the agent read, as it was live. Its
-/// text loses the attachments block it starts with, its files come from the
-/// block, and its images are named as their files. (The last images are
-/// the message's own, after those of notes it carried.)
+/// text loses the attachments block it starts with, and its files come from
+/// the block.
 pub(crate) fn restore_files(item: &mut crate::remote::Item) {
     if item.kind != crate::remote::Kind::User {
         return;
@@ -116,12 +115,74 @@ pub(crate) fn restore_files(item: &mut crate::remote::Item) {
     let Some((files, typed)) = sent_files(&item.text) else {
         return;
     };
-    let shown = files.iter().filter(|sent| sent.shown).rev();
-    for (image, sent) in item.images.iter_mut().rev().zip(shown) {
-        image.label = sent.file.name.clone();
-    }
     item.text = typed.trim().to_string();
     item.files = files;
+}
+
+/// The user's items of a message being restored, made of one of its texts,
+/// and the images that follow that text, which they share out as they did
+/// live ([`close`](Self::close)).
+#[derive(Default)]
+pub(crate) struct Owners {
+    /// Each item, or `None` for a note that shows none, with how many images
+    /// its text says went with it, when it says.
+    group: Vec<(Option<usize>, Option<usize>)>,
+    images: Vec<crate::images::ImageRef>,
+}
+
+impl Owners {
+    /// The items `made` of the message's next text. The images so far go
+    /// to those before. A text that made none leaves them gathering for the
+    /// items before it.
+    pub(crate) fn text(
+        &mut self,
+        items: &mut [crate::remote::Item],
+        made: Vec<(Option<usize>, Option<usize>)>,
+    ) {
+        if made.is_empty() {
+            return;
+        }
+        self.close(items);
+        self.group = made;
+    }
+
+    /// The image that comes next in the message.
+    pub(crate) fn image(&mut self, image: crate::images::ImageRef) {
+        self.images.push(image);
+    }
+
+    /// Gives the items their files and the images they had. Each takes, in
+    /// order, as many as its text says went with it, else as many as its
+    /// block says went as images. The last keeps the rest (the message's own,
+    /// such as an app's). A note that shows none takes its own and drops
+    /// them. An item's images that are its files are named as they are.
+    pub(crate) fn close(&mut self, items: &mut [crate::remote::Item]) {
+        let mut images = std::mem::take(&mut self.images).into_iter();
+        let group = std::mem::take(&mut self.group);
+        let last = group.iter().rposition(|(at, _)| at.is_some());
+        for (n, (at, said)) in group.into_iter().enumerate() {
+            let Some(at) = at else {
+                images.by_ref().take(said.unwrap_or(0)).for_each(drop);
+                continue;
+            };
+            let item = &mut items[at];
+            restore_files(item);
+            let shown: Vec<String> = item
+                .files
+                .iter()
+                .filter(|sent| sent.shown)
+                .map(|sent| sent.file.name.clone())
+                .collect();
+            let mut own: Vec<_> = images.by_ref().take(said.unwrap_or(shown.len())).collect();
+            if Some(n) == last {
+                own.extend(images.by_ref());
+            }
+            for (image, name) in own.iter_mut().zip(shown) {
+                image.label = name;
+            }
+            item.images.extend(own);
+        }
+    }
 }
 
 /// The lines of `text`, a last line without a line break counted too, as
@@ -1113,18 +1174,18 @@ mod tests {
         assert_eq!(back, routed.files);
         assert_eq!(back[1].file.lines, Some(2));
         assert_eq!(sent_files("Look."), None);
-        let mut item = crate::remote::Item::new(crate::remote::Kind::User, read);
+        let mut items = vec![crate::remote::Item::new(
+            crate::remote::Kind::User,
+            read.clone(),
+        )];
         let other = crate::images::Images::default();
-        item.images = vec![
-            other.add(pixel(), "image/png", "image"),
-            other.add(pixel(), "image/png", "image"),
-        ];
-        restore_files(&mut item);
-        assert_eq!(item.text, "Look.");
-        assert_eq!(item.files, routed.files);
-        // (The first image is a note's, the last the message's own.)
-        assert_eq!(item.images[0].label, "image");
-        assert_eq!(item.images[1].label, "bug.png");
+        let mut owners = Owners::default();
+        owners.text(&mut items, vec![(Some(0), None)]);
+        owners.image(other.add(pixel(), "image/png", "image"));
+        owners.close(&mut items);
+        assert_eq!(items[0].text, "Look.");
+        assert_eq!(items[0].files, routed.files);
+        assert_eq!(items[0].images[0].label, "bug.png");
         // Only the user's items, and only those with a block.
         let mut reply = crate::remote::Item::new(crate::remote::Kind::Reply, routed.block.clone());
         restore_files(&mut reply);

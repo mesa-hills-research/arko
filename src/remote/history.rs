@@ -83,8 +83,9 @@ fn items_from(
         match message.role {
             Role::System => {}
             Role::User => {
-                // The user's item of this message, which its images join.
-                let mut mine: Option<usize> = None;
+                // The user's items of this message's text, which the images
+                // after it go with.
+                let mut owners = crate::attachments::Owners::default();
                 for content in &message.content {
                     match content {
                         Content::ToolResult(result) => {
@@ -129,30 +130,37 @@ fn items_from(
                             }
                         }
                         Content::Text(text) if answers.contains(&index) => {
-                            for item in answer_items(text) {
-                                mine = Some(push(&mut items, item));
-                            }
+                            let made = answer_items(text)
+                                .into_iter()
+                                .map(|item| (Some(push(&mut items, item)), None))
+                                .collect();
+                            owners.text(&mut items, made);
                         }
                         Content::Text(text) => {
                             let about = |opening| subjects_of(opening, messages, index);
-                            for (mut item, editable) in user_items(text, &about) {
+                            let mut made = Vec::new();
+                            for (item, editable, said) in user_items(text, &about) {
+                                let Some(mut item) = item else {
+                                    made.push((None, said));
+                                    continue;
+                                };
                                 // A message that started a turn can be
                                 // edited at its index.
                                 if editable && item.delivery == Some(Delivery::Turn) {
                                     item.message_index = Some(first + index);
                                 }
-                                mine = Some(push(&mut items, item));
+                                made.push((Some(push(&mut items, item)), said));
                             }
+                            owners.text(&mut items, made);
                         }
                         Content::Image(image) => {
-                            if let Some(at) = mine
-                                && let Some(shown) = images.add_image(image, "image")
-                            {
-                                items[at].images.push(shown);
+                            if let Some(shown) = images.add_image(image, "image") {
+                                owners.image(shown);
                             }
                         }
                     }
                 }
+                owners.close(&mut items);
             }
             Role::Assistant => {
                 let reply = text_replies && is_reply(messages, index, &answers);
@@ -213,7 +221,6 @@ fn items_from(
         }
         for item in &mut items[start..] {
             item.turn = turns[index];
-            crate::attachments::restore_files(item);
         }
     }
     items
@@ -413,26 +420,39 @@ const OPERATOR_NOTE: &str = " from the operator (the person running this workflo
 /// that message after the reopening notice, in a context update, where the
 /// live transcript doesn't offer to edit it either. The news that went
 /// with it there (a monitor's alert, a job's update) isn't theirs.
-fn user_items(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Vec<(Item, bool)> {
+///
+/// A note of the user's that shows no item (one of answers, or of images
+/// alone) is `None`. Each comes with how many images the update says went
+/// with it, which follow the update in its message.
+fn user_items(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Vec<Restored> {
     let Some(update) = context_update(text) else {
         return composed(text, about)
             .into_iter()
-            .map(|item| (item, true))
+            .map(|item| (Some(item), true, None))
             .collect();
     };
-    let items = match reopened_with(update) {
-        Some((prompt, rest)) => {
-            let mut items = composed(prompt, about);
-            items.extend(operator_notes(rest).into_iter().filter_map(note));
-            items
-        }
-        None => operator_notes(update)
-            .into_iter()
-            .filter_map(note)
-            .collect(),
+    let (mut items, rest): (Vec<Restored>, &str) = match reopened_with(update) {
+        Some((prompt, rest)) => (
+            composed(prompt, about)
+                .into_iter()
+                .map(|item| (Some(item), false, None))
+                .collect(),
+            rest,
+        ),
+        None => (Vec::new(), update),
     };
-    items.into_iter().map(|item| (item, false)).collect()
+    items.extend(
+        operator_notes(rest)
+            .into_iter()
+            .map(|(text, said)| (note(text), false, said)),
+    );
+    items
 }
+
+/// A user's item restored from a text, or `None` for a note of theirs that
+/// shows none, with whether it can be edited, and how many images the text
+/// says went with it, when it says.
+type Restored = (Option<Item>, bool, Option<usize>);
 
 /// The content of a context update, without what the runtime adds after it
 /// (the environment and reminders). `None` for any other text.
@@ -583,9 +603,10 @@ fn unread_notes(text: &str) -> Vec<String> {
 }
 
 /// The user's notes in a context update, meaning those from the operator, each a
-/// list item of indented lines, without the line saying images follow.
-/// The workflow's own notes and the agents' aren't the user's.
-fn operator_notes(update: &str) -> Vec<String> {
+/// list item of indented lines, without the line saying images follow, and
+/// with how many images that line says follow for it. The workflow's own
+/// notes and the agents' aren't the user's.
+fn operator_notes(update: &str) -> Vec<(String, Option<usize>)> {
     let mut notes = Vec::new();
     let mut note: Option<Vec<&str>> = None;
     for line in update.lines() {
@@ -602,22 +623,36 @@ fn operator_notes(update: &str) -> Vec<String> {
     notes
         .into_iter()
         .map(|mut lines| {
-            if lines.last().is_some_and(|last| {
-                last.starts_with("(With ") && last.ends_with("shown after this update.)")
-            }) {
+            let said = lines.last().and_then(|last| images_said(last));
+            if said.is_some() {
                 lines.pop();
             }
-            lines.join("\n").trim().to_string()
+            (lines.join("\n").trim().to_string(), said)
         })
-        .filter(|note| !note.is_empty())
+        .filter(|(note, said)| !note.is_empty() || said.is_some())
         .collect()
+}
+
+/// How many images the line a note ends with says follow the update for it
+/// ("(With an image, shown after this update.)", "(With 3 images, …)",
+/// "(With 2 of its 3 images, …)"), or `None` for another line.
+fn images_said(line: &str) -> Option<usize> {
+    let said = line.strip_prefix("(With ")?;
+    if !line.contains(", shown after this update.") || !line.ends_with(')') {
+        return None;
+    }
+    if said.starts_with("an image,") {
+        return Some(1);
+    }
+    let digits = said.find(|c: char| !c.is_ascii_digit())?;
+    said[..digits].parse().ok()
 }
 
 /// A note the user typed during a turn, as the live transcript shows it, meaning
 /// the user's words. A note Arko wrote about the agent's questions has
 /// none (their card shows the answers).
 fn note(text: String) -> Option<Item> {
-    if is_answer_note(&text) {
+    if is_answer_note(&text) || text.is_empty() {
         return None;
     }
     let mut item = Item::new(Kind::User, unlabelled(&text));

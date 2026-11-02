@@ -573,3 +573,137 @@ async fn a_turn_with_files_can_be_sent_again_and_edited() {
     assert_eq!(live.message_index, Some(index));
     assert_eq!(harness.message_at(live.id, "sent again"), Ok(index));
 }
+
+/// Notes with images restore each with its own, as they showed live: two
+/// the agent didn't read, which went in a turn of their own.
+#[tokio::test]
+async fn notes_restore_with_their_own_images() {
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let held = Arc::new(Notify::new());
+    let server = keeping(&bodies, Some(held.clone())).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let feed = harness.feed.clone();
+    let actions = harness.remote_actions.clone();
+    let dir = temp.path().join("work").join(".arko").join("attachments");
+    let kept = bodies.clone();
+    let client = async move {
+        sender.send(Input::Line("Start.".into())).unwrap();
+        until(|| feed.activity().working).await;
+        for (text, name) in [("First photo.", "first.png"), ("Second photo.", "second.png")] {
+            let files = vec![attached(&dir, name, Kind::Image, "image/png", &one_pixel())];
+            let message = Action::Message {
+                text: text.into(),
+                files,
+            };
+            assert!(matches!(
+                page_send(&actions, message).await,
+                Verdict::Accepted { .. }
+            ));
+        }
+        held.notify_one();
+        until(|| !feed.activity().working && lock(&kept).len() >= 2).await;
+        sender.send(Input::Eof).unwrap();
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    let Conversation::Answered(result) = &harness.conversation else {
+        panic!("answered");
+    };
+    let task = result.task().unwrap();
+    let restored = crate::remote::history(
+        &task.conversation.messages,
+        task.agent_config.tool_config.ends_task_with_text(),
+        &harness.images,
+    );
+    assert_eq!(shown_notes(&restored), shown_notes(&harness.feed.subscribe().0.items));
+}
+
+/// The user's items of `items`, their words, files and images.
+fn shown_notes(items: &[crate::remote::Item]) -> Vec<(String, Vec<String>, Vec<String>)> {
+    items
+        .iter()
+        .filter(|item| item.kind == crate::remote::Kind::User)
+        .map(|item| {
+            (
+                item.text.clone(),
+                item.files.iter().map(|sent| sent.file.name.clone()).collect(),
+                item.images.iter().map(|image| image.label.clone()).collect(),
+            )
+        })
+        .collect()
+}
+
+/// A message `text` of the user's with `images`.
+fn with_images(text: &str, images: usize) -> arko_ai::Message {
+    let mut contents = vec![arko_ai::Content::Text(text.into())];
+    for _ in 0..images {
+        contents.push(arko_ai::Content::Image(arko_ai::Image::from_bytes(
+            &one_pixel(),
+            "image/png",
+        )));
+    }
+    arko_ai::Message::new_user_with_contents(contents)
+}
+
+/// The block of a message with one image `name` that went to the model.
+fn image_block(name: &str) -> String {
+    format!(
+        "<attachments>\n<file name=\"{name}\" type=\"image/png\" size=\"70 bytes\" bytes=\"70\" path=\"/w/{name}\" shown=\"as an image after this message\"/>\n</attachments>\n\n"
+    )
+}
+
+/// Restored, each note keeps the images it went with: notes the agent read
+/// in an update (an app's image without a block too, and a note of images
+/// alone that shows none), and notes it didn't, before a message with its
+/// own image.
+#[test]
+fn restored_notes_keep_their_own_images() {
+    let note = |n: usize, text: &str, line: &str| {
+        let text = text.replace('\n', "\n  ");
+        format!(
+            "- Note {n} from the operator (the person running this workflow), 2026-11-02 08:00 UTC:\n  {text}\n  {line}\n"
+        )
+    };
+    let update = format!(
+        "# Workflow context update\n\nNew notes on your task, oldest first.\n{}{}{}{}",
+        note(1, &format!("{}First.", image_block("first.png")), "(With an image, shown after this update.)"),
+        note(2, "From the app.", "(With 2 images, shown after this update.)"),
+        note(3, "", "(With an image, shown after this update.)"),
+        note(4, &format!("{}Fourth.", image_block("fourth.png")), "(With an image, shown after this update.)"),
+    );
+    let unread = format!(
+        "# What I typed during your last turn, which you didn't get to read\n\n- {}\n- {}\n\n# My message\n\n{}Mine.",
+        format!("{}Fifth.", image_block("fifth.png")).replace('\n', "\n  "),
+        "No image.",
+        image_block("mine.png"),
+    );
+    let messages = vec![
+        arko_ai::Message::new_user("Start."),
+        arko_ai::Message::new_assistant("Working."),
+        with_images(&update, 5),
+        arko_ai::Message::new_assistant("Done."),
+        with_images(&unread, 2),
+    ];
+    let images = crate::images::Images::default();
+    let restored = crate::remote::history(&messages, false, &images);
+    let shown = shown_notes(&restored);
+    let images_of = |text: &str| {
+        shown
+            .iter()
+            .find(|(words, ..)| words == text)
+            .map(|(_, _, images)| images.clone())
+            .unwrap()
+    };
+    assert_eq!(images_of("First."), ["first.png"]);
+    assert_eq!(images_of("From the app."), ["image", "image"]);
+    assert_eq!(images_of("Fourth."), ["fourth.png"]);
+    assert_eq!(images_of("Fifth."), ["fifth.png"]);
+    assert!(images_of("No image.").is_empty());
+    assert_eq!(images_of("Mine."), ["mine.png"]);
+    assert!(shown.iter().all(|(words, ..)| !words.is_empty()), "{shown:?}");
+}
