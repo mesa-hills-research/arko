@@ -35,8 +35,10 @@ pub struct Chip {
     pub bytes: u64,
     /// A `blob:` address for an image's thumbnail.
     pub preview: Option<String>,
-    /// The feed the upload is Arko's in (another Arko knows nothing of it).
-    pub feed: Option<u64>,
+    /// The feed whose Arko took the upload, once one did (another Arko
+    /// knows nothing of it). A file attached before the page knew its feed
+    /// takes the feed its upload starts in.
+    pub feed: RwSignal<Option<u64>>,
     pub state: RwSignal<Upload>,
     /// The upload's ID, once Arko gave one.
     pub id: RwSignal<Option<String>>,
@@ -138,7 +140,7 @@ pub fn attach(files: Vec<web_sys::File>) {
             name: file.name(),
             bytes: file.size() as u64,
             preview,
-            feed: feed(),
+            feed: RwSignal::new(None),
             state: RwSignal::new(Upload::Waiting),
             id: RwSignal::new(None),
         };
@@ -220,7 +222,10 @@ fn still_attached(chip: &Chip) -> bool {
     page()
         .attached
         .with_untracked(|chips| chips.iter().any(|kept| kept.key == chip.key))
-        && feed() == chip.feed
+        && chip
+            .feed
+            .get_untracked()
+            .is_none_or(|taken| feed() == Some(taken))
 }
 
 fn percent(done: u64, of: u64) -> u8 {
@@ -367,9 +372,10 @@ fn came_of(status: u16, text: &str) -> Came {
 
 /// Asks Arko for an upload of `chip`'s file.
 async fn create(chip: &Chip) -> Came {
+    let asked = feed();
     let body = of_feed(
         serde_json::json!({ "name": chip.name, "size": chip.bytes }),
-        chip.feed,
+        asked,
     );
     let Some((status, text)) = request("POST", "/api/uploads", Some(body.to_string())).await else {
         return Came::Broke;
@@ -383,6 +389,7 @@ async fn create(chip: &Chip) -> Came {
     }
     match serde_json::from_str::<UploadCreated>(&text) {
         Ok(created) => {
+            chip.feed.set(asked);
             chip.id.set(Some(created.id));
             save();
             Came::Holds {
@@ -537,7 +544,7 @@ fn save() {
                     id: chip.id.get_untracked()?,
                     name: chip.name.clone(),
                     bytes: chip.bytes,
-                    feed: chip.feed,
+                    feed: chip.feed.get_untracked(),
                     done: chip.state.get_untracked() == Upload::Done,
                 })
             })
@@ -567,7 +574,7 @@ pub fn restore() {
             name: kept.name,
             bytes: kept.bytes,
             preview: None,
-            feed: kept.feed,
+            feed: RwSignal::new(kept.feed),
             state: RwSignal::new(Upload::Done),
             id: RwSignal::new(Some(kept.id)),
         })
@@ -598,7 +605,11 @@ pub fn feed_changed() {
     let gone: Vec<u64> = page().attached.with_untracked(|chips| {
         chips
             .iter()
-            .filter(|chip| chip.feed.is_some() && chip.feed != now)
+            .filter(|chip| {
+                chip.feed
+                    .get_untracked()
+                    .is_some_and(|taken| Some(taken) != now)
+            })
             .map(|chip| chip.key)
             .collect()
     });
@@ -774,6 +785,31 @@ mod tests {
         );
     }
 
+    /// A file attached before the page knew its feed goes on once the feed
+    /// comes, and an upload another Arko took doesn't.
+    #[test]
+    fn an_upload_belongs_to_the_feed_it_started_in() {
+        let page = crate::testing::page();
+        let chip = Chip {
+            key: 7,
+            name: "a".into(),
+            bytes: 1,
+            preview: None,
+            feed: RwSignal::new(None),
+            state: RwSignal::new(Upload::Waiting),
+            id: RwSignal::new(None),
+        };
+        page.attached.set(vec![chip.clone()]);
+        assert!(still_attached(&chip));
+        crate::app::STORE.with(|store| store.borrow_mut().feed = Some(0xab));
+        assert!(still_attached(&chip), "the feed came after the file");
+        chip.feed.set(Some(0xab));
+        assert!(still_attached(&chip));
+        crate::app::STORE.with(|store| store.borrow_mut().feed = Some(0xcd));
+        assert!(!still_attached(&chip), "another Arko");
+        crate::app::STORE.with(|store| store.borrow_mut().feed = None);
+    }
+
     #[test]
     fn send_waits_for_every_upload() {
         let _page = crate::testing::page();
@@ -782,7 +818,7 @@ mod tests {
             name: "a".into(),
             bytes: 1,
             preview: None,
-            feed: None,
+            feed: RwSignal::new(None),
             state: RwSignal::new(state),
             id: RwSignal::new(id.map(str::to_string)),
         };
