@@ -70,13 +70,14 @@ your `/skills remove NAME` remove only such a skill, without asking. Delete your
 
 ## Built-in skills
 
-Arko has three skills built in, so no files are needed.
+Arko has four skills built in, so no files are needed.
 
 | Skill | Load it for |
 |---|---|
 | `user-facing-prose` | Any text a person reads, such as UI text, messages, errors, docs and commit messages |
 | `repo-docs-style` | READMEs, docs pages, design notes and changelogs |
 | `ponytail` | Any coding task, and running workers |
+| `arko-taste` | Anything a person sees in an interface, designed, built or reviewed against twelve checks |
 
 The agents load them on demand like any other skill, and `/skills` lists them as built in.
 

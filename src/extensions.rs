@@ -376,11 +376,16 @@ mod tests {
         };
         assert_eq!(
             builtin(Some(true), &[]),
-            ["user-facing-prose", "repo-docs-style", "ponytail"]
+            [
+                "user-facing-prose",
+                "repo-docs-style",
+                "ponytail",
+                "arko-taste"
+            ]
         );
         assert_eq!(
             builtin(Some(true), &["repo-docs-style", "repo-doc-style"]),
-            ["user-facing-prose", "ponytail"]
+            ["user-facing-prose", "ponytail", "arko-taste"]
         );
         assert!(builtin(Some(false), &[]).is_empty());
     }

@@ -4,7 +4,8 @@ Arko has three interfaces, Arko Studio (GPUI and GPUI Kit), the web page (Rust a
 `web/`) and the terminal view (ratatui). This guide keeps them one product. It follows GPUI Kit's
 [design guide](https://github.com/mesa-hills-research/gpui_kit/blob/main/website/docs/design-guides.md),
 and where the two differ for Arko, this guide wins. When something isn't covered, do what Studio
-does.
+does. Every choice here has a reason, and a change to a rule comes with a rendering of what it
+changes.
 
 ## Principles
 
@@ -13,11 +14,75 @@ does.
    cache about to lapse shows. "Connected" and "Live" don't.
 3. Nothing moves under the reader. Streaming never shifts what is being read, the view follows the
    bottom only while the reader is there, and a finished row never changes height.
-4. Disclose progressively. Details are one click or tap away, never a toolbar of settings.
+4. Disclose progressively. Details are one click or tap away, never a toolbar of settings, and
+   never more than two levels deep.
 5. Everything works from the keyboard, focus always shows, and Esc closes the innermost layer.
 6. Theme tokens only. No raw colors, radii or spacing in feature code.
 7. Motion carries state and nothing else (see [Motion](#motion)).
 8. Few words (see [Text](#text)).
+9. The same thing has the same words and the same shape on every surface. When two surfaces
+   differ, one of them is wrong.
+
+## Transcript rows
+
+The transcript has three views. Full shows every call as its own row. Quiet merges neighbouring
+calls of one kind into a row that says what they did ("Read 4 files in src/tui", "Ran 2 commands
+(rg, sed)"). Messages shows the text and one line per turn ("▸ 8 tool calls") that opens to the
+turn's Quiet rows in place. The three views share one model of a row.
+
+- A row's line is its words and its outcome, nothing else. In Quiet the words are a sentence in
+  the past tense ("Read engine.rs", "Messaged r3"), or the present while the call runs ("Running
+  cargo build · 41s"). In Full they are the call as written ("read src/engine.rs:100-112"). The line
+  carries no quote or preview of what the call held.
+- The outcome is news only. A test run's count ("(24 passed)"), "no results", a monitor's state, a
+  spinner and a timer while a call runs. In Quiet a success shows nothing, since the past tense says
+  the call ended, and a failure shows one ✗ at the right of the row. In Full the line ends with ✓ or
+  ✗ and the outcome's words ("✓ 13 lines", "✗ exit 101").
+- Opening a row shows the call's content, which is its result in the form that fits the tool. It
+  sits directly under the row, with no call line between them.
+
+| Call | Content when opened |
+|---|---|
+| Read | The lines read, numbered as the tool numbered them, the numbers muted |
+| Edit | The diff, with its context lines, removed lines on the error tint and added ones on the success tint |
+| Write | The file's first lines |
+| Command, test run | Its output. In Full the output shows under the line without opening |
+| Search | The hits |
+| List | The entries |
+| Message to a worker | The message |
+| Wait | The mail that came |
+| Worker start | The task, muted (a worker started at once has the worker's line instead) |
+| Note | The note's text |
+| MCP call | The arguments, then the result |
+| Monitor, terminal | One muted line with what the words left out (the whole command, its settings) |
+| Skill | Nothing |
+| Any other tool | Its result, muted |
+
+- Detail is the exception, and it is one muted line. Where the words cut something the reader may
+  need (a command's whole text with its folder and variables, a long search), that whole thing shows
+  as one muted line above the content. Never a list of labelled parameters, and never the path or
+  target the words already said.
+- A merged row opens to one Full line per call, with its outcome, and each of those opens to its
+  content. Two levels at most, the row, then the call, then content.
+- Status and controls live on the row's line only. Stop, Move to background, the timer and the
+  spinner appear once per call, whatever is open.
+- A row with no content and no detail has no triangle. Long content shows its first 16 lines and
+  one line that says how much more there is ("… 97 more lines"), which opens the rest. That line is
+  muted text on every surface.
+- A row never moves. It keeps its place, its calls and its height once shown, and opening it adds
+  below it. A row's words change in place while calls join it, and only the last row of a run takes
+  new calls.
+- Every marker (a fold's ▸ or ▾, ✉, ·) stands in one column, the column of the Working spinner, in
+  every view and on every surface, a thinking inside an open row included.
+- Working… keeps a blank row above it, whatever comes before, and it is the one loading indicator of
+  a turn, with the status bar's Working. A thinking row has the same space above it.
+- A tag never sits between a message's rows. A message that fits on one row has its tag ("pending",
+  "queued", "from the web page") at the right of that row. One that wraps has the tag on a row of
+  its own under the last.
+- On the page and in Studio, the line after a turn (its time and cost) is left-aligned with the text.
+  The terminal shows a turn's time and cost in its status bar instead.
+- Content ends where it ends. A final table or code block has no gap below it, and a reply's actions
+  sit at the same distance from any last block.
 
 ## Theme tokens
 
@@ -44,7 +109,7 @@ as CSS variables that `web/theme-css` writes. Each variable takes the first toke
 | `--warn` | `warning.background`, `base.yellow` | Text that needs attention |
 | `--warn-mark` | `base.yellow` | A question's bar and marks (not text) |
 | `--error` | `base.red`, `danger.background` | Failures, destructive actions |
-| `--success` | `success.background`, `base.green` | A call that succeeded, used sparingly |
+| `--success` | `success.background`, `base.green` | A call that succeeded in Full, an added line in a diff, used sparingly |
 | `--switch-off`, `--switch-thumb` | `switch.background`, `switch.thumb.background` | A switch that is off, and its knob |
 | `--thumb`, `--thumb-hover` | `scrollbar.thumb.background`, `…hover.background` | Scrollbars |
 | `--popover`, `--popover-text` | `popover.background`, `popover.foreground` | Menus, popovers, sheets |
@@ -55,7 +120,8 @@ as CSS variables that `web/theme-css` writes. Each variable takes the first toke
 
 A theme that sets none of a variable's tokens takes the default theme's of the same mode, except a
 syntax style, which shows in the code's own color. A gradient gives its first color. The defaults
-are macOS Classic Light and Dark, which follow the system's setting. The web page keeps a chosen
+are macOS Classic Light and Dark, which follow the system's setting. A theme being chosen previews
+after a 350 ms rest, with a one-time notice that previews can flash. The web page keeps a chosen
 theme in the browser's localStorage and loads the other themes' variables only once one is chosen.
 
 The terminal colors code with the same `highlight.syntax` styles, chosen the same way, in 24-bit
@@ -70,24 +136,30 @@ there, so it follows the chosen theme. The one fixed color is the white behind a
 reads only dark on light.
 
 Status colors only carry their meaning, and never alone. A failed call has its red mark and the
-word ("exit 1").
+word ("exit 1"). What needs attention takes the warning color, such as an "API Error" line or
+"every project" in an approval. Contrast follows GPUI Kit's levels (text 4.5, a control's state
+3.0, input borders 1.4, selection 1.2, dividers 1.12, hover 1.05) in all of the kit's themes, which
+`script/themes check` in the kit measures. Find matches reach 4.5 on plain text, and code blocks
+sit on the editor surface with a hairline.
 
 ## Scale
 
 Spacing goes 2, 4, 8, 12, 16, 24 and 32 px (GPUI Kit's `xxs` to `xxl`). Parts of one control are
 4 apart, related controls 8, groups in a section 16, sections 24. A component owns its padding,
-and its parent owns the gaps between components.
+and its parent owns the gaps between components. Gaps meant to be equal are equal to the rendered
+pixel. One pixel off is a defect.
 
 Type sizes are 12, 13, 14, 16, 18 and 20 px, with 16 px body text. The web page's fields are
-16 px so iOS doesn't zoom on focus.
+16 px so iOS doesn't zoom on focus. Users choose the family, the size and the zoom.
 
 | Use | Face |
 |---|---|
-| Interface and prose | The system's UI font (Studio offers Work Sans) |
-| Code, tool lines, worker IDs, paths, shortcuts | JetBrains Mono |
-| Figures that line up (cost, time, tokens) | Tabular figures |
+| Interface and prose | Work Sans in Studio, bundled as a variable font. The system's UI font on the web page |
+| Code, tool lines, worker IDs, paths, shortcuts | JetBrains Mono, bundled in Studio and on the web page |
+| Figures that line up (cost, time, tokens, counts) | Tabular figures, aligned right |
 
-Headings in a reply stay small. Markdown's levels 1 and 2 show at body size in bold.
+Headings in a reply stay small. Markdown's levels 1 and 2 show at body size in bold. Times are
+12-hour in the local zone with its name ("Resets at 8:00 PM MDT"), with summer time named.
 
 ## Shape
 
@@ -100,15 +172,37 @@ Headings in a reply stay small. Markdown's levels 1 and 2 show at body size in b
 | `full` | a pill or circle | The message field (40 px tall, 20 px radius), round icon buttons |
 
 A theme with radius 0 (Windows) squares every tier, `full` included, but for the web page's message
-field and its send button, which stay round so they match. Nested shapes are concentric, so an
-inner radius is the outer one minus the gap. On the page, a rounded parent sets `--outer` (its
-radius) and `--inset` (its padding plus border), and its children take `--r-inner`. The terminal
-keeps square corners.
+field and its send button, which stay round so they match. The terminal draws rounded corners for a
+theme with a radius and square ones for radius 0, in the symbols the terminal shows.
+
+Nested shapes are concentric. The inner radius is the outer one minus the inset, with a floor for
+rows and tiles, `max(outer − inset, min(3 px, outer ÷ 2))`, so menu rows, select rows and image
+tiles come out at 3 px like the command menu's rows. GPUI Kit has `concentric_radius`,
+`enclosing_radius` and `rounded_inside`, and on the page a rounded parent sets `--outer` (its
+radius) and `--inset` (its padding plus border), and its children take `--r-inner`. GPUI doesn't
+clip children to a rounded parent, so every fill inside a rounded border needs its own radius.
+
+No cards inside cards, and shadows only on what sits above other content. The composer's subtle
+shadow sets it apart from the transcript. Selection is a fill on the item itself, never a bar at
+its side. A segmented selector is a window-colored track with a border and the chosen option in
+grey with a soft outline. The web page's view switch has no track, plain options and the chosen
+one outlined in `--outline` on `--muted-bg`.
 
 Borders are 1 px hairlines in `--line`. A region's boundary belongs to one side only.
 
 Focus rings are 2 px of `--ring` with a 2 px offset on buttons and controls. A text field shows
-focus by its 1 px border turning `--ring`, with no ring outside it.
+focus by its 1 px border turning `--ring`, with no ring outside it. Clicking elsewhere in a card or
+popover takes focus away from its field.
+
+## Keycaps
+
+A shortcut shows as one key cap for the whole chord ("Ctrl+C" together, not a box per key), in
+the mono font, as compact as stays readable, and often in a tooltip rather than in the main view.
+Studio uses GPUI Kit's `Kbd` in tooltips and menus, and a button that carries its shortcut shows it
+as a cap inside the button, as Reject and Approve do on the approval tray. The web page's `kbd` is
+one cap per chord with a 2 px bottom border, shown only on devices with a fine pointer that
+hovers. The terminal draws " Ctrl+O " as one cap, reversed in a terminal-colors theme or on the
+surface color otherwise, and shows a few key hints in the status line ("Ctrl+C  stop").
 
 ## Components
 
@@ -148,8 +242,9 @@ Each web component matches a GPUI Kit component and its variants.
 | Danger | A destructive commitment | Stop all workers, New key |
 
 A view has at most one primary button. A destructive action names what it ends and asks first
-when it can't be undone. Links are only for web addresses and email. Buttons that open a sheet or
-dialog end with "…".
+when it can't be undone ("Delete…" names the session). Links are only for web addresses and
+email. Buttons that open a sheet or dialog end with "…". Buttons keep the arrow cursor, and the
+pointing hand is only for links.
 
 Sizes are 24, 32 and 40 px. On touch screens a button's target is at least 40 px even when it
 draws smaller.
@@ -187,11 +282,11 @@ when its meaning, scope or shortcut needs one.
 
 Icons are 16 px in rows and bars and 18 px in the header, drawn with Lucide's 2 px stroke.
 
-The web page's calls, thinking and call counts use text marks rather than icons. ▸ starts each
-one and turns down as it opens. After a call come ✓ in `--success` once it succeeded, ✗ in
-`--error` once it failed, or the running spinner, Lucide's loader circle as two arcs half a turn
-apart so it turns without wobbling. A command's output that warns has a rule in `--warn-mark`
-beside it.
+The web page's and the terminal's calls, thinking and call counts use text marks rather than icons.
+▸ starts each one and turns down as it opens. In Full a call's line ends with ✓ in `--success`
+once it succeeded or ✗ in `--error` once it failed, and in Quiet only ✗ shows. A running call has
+the spinner, Lucide's loader circle as two arcs half a turn apart, so it turns without wobbling. A
+command's output that warns has a rule in `--warn-mark` beside it.
 
 ## States
 
@@ -207,26 +302,35 @@ beside it.
 | Pending | A user's note the agent hasn't read is muted |
 | Error | A line near the action that says what happened and what to do |
 
+A row's secondary actions appear on hover or focus in space the row already has, so nothing
+shifts, and stay visible on touch screens. Tooltips first show after 500 ms. While one is open a
+neighbour's shows after 100 ms of rest, the open state ends 400 ms after the pointer leaves, and
+the box moves and resizes over 80 ms with the text never moving or clipped. No tooltip shows over
+an open menu or popover, its own trigger's included.
+
 ## Motion
 
 Motion is for a change of state. It is quiet, short and never decorative, and it stops entirely
-with reduced motion (the system setting, or Studio's Settings › Appearance › Motion). Nothing needs
-motion to be understood.
+with reduced motion (the system setting, or Studio's Settings › Appearance › Motion, with System as
+the default). The terminal has no switch for it. Nothing needs motion to be understood.
 
 | State | Motion |
 |---|---|
 | Working, thinking | A shimmer across the label, one sweep every 2 s. On the web page and in the terminal a band about 60 % of the label wide, in the text color, sweeps over the muted label. In Studio the band's half-width is 30 % of the label and its color the text's mixed 20 % toward the background (light themes) or the text color (dark ones), at most 12 frames a second |
-| A call running | A spinner on its row, at most 30 frames a second |
-| Streaming text | Appears as it comes, with no fade |
+| A call running | A spinner on its row. Studio's is GPUI Kit's eased spokes at 1.2 s a turn, the web page's two arcs at 1.2 s a turn, the terminal's the balanced braille frames ⣷⣯⣟⡿⢿⣻⣽⣾ at 100 ms each |
+| Streaming text | Appears as it comes, with no fade. Smooth typing in text fields is on by default |
 | A new row arriving | Appears in place. The view follows only if the reader is at the bottom |
 | Latest | Jumps to the bottom at once |
 | Mouse wheel (Windows, Linux, Android) | A critically damped spring, about 0.2 s. Apple systems keep their own momentum |
 | Moving to the background, done, failed | The row changes in place, with no motion |
 | Menus, popovers, the Latest button | A fade of 150 ms |
 | Copied | The copy icon cross-fades to a check in `--success` (120 ms), which holds for a second, then fades back |
-| Sheets and panels | Appear without sliding |
+| The context ring | Its value changes smoothly |
+| Sheets and panels | Appear without sliding, since a glide would lay out the transcript again every frame |
 
 Not allowed are staggered entrances, pulses, bouncing, sliding panels and animated layout.
+Something that moves never redraws the content around it. On the web page only `transform` and
+`opacity` animate, and in GPUI an animation is a paint effect that replays the last frame.
 
 ## Layout
 
@@ -243,15 +347,70 @@ The web page uses the dynamic viewport height, and its field grows to six lines 
   question are always in view.
 - Dense lists stay calm. Rows keep stable columns, numbers align right in tabular figures, and
   only unusual states take color.
-- Secondary actions on a row appear on hover or focus, in space the row already has, so nothing
-  shifts. On touch screens they stay visible, or move into the row's menu.
 - Only the region that overflows scrolls. A scrollbar sits at that region's edge. On Windows,
   Linux and Android it is thin and rounded and appears only when needed. Apple systems keep theirs.
 - The web page doesn't refresh when pulled down and doesn't zoom on a double tap. Pinch zoom stays.
 
+## Notices and status
+
+- No "Live" or "Connected" badges and no decorative dots. A dot that means something stays, such as
+  the sidebar's dot in the info color for a session with news.
+- A state shows only when it's unusual. The status bar has Working and its time only while a turn
+  runs, a worker count only above 0, plan usage only from 80 %, and outside access or a shared web
+  page only while on.
+- One loading indicator per turn, the status bar's Working plus the row of whatever runs. A screen
+  reader hears "Working" once per turn.
+- A state takes one word where one fits ("Pending" for a note the agent hasn't read).
+- A setting that took shows nothing, and one that failed says why.
+- No row explains the obvious, such as a hint that answers go to the agent.
+- "Stopping the turn…" becomes "Stopped the turn." in place, and turn notices say who and what
+  ("r1 reported").
+- A mistyped command stays in the message box and says it's unknown.
+- Notifications show the current session by default, with a Session | All selector.
+- Cache reminders come 5 minutes before expiry and at 1 minute with a countdown and Refresh, and
+  they give both costs.
+
+## Questions, approvals and confirmations
+
+- A question shows in one place at a time. While it's open it's in the answer panel or a chip above
+  the message box, and its card in the transcript is one quiet line. Once one settles, the card
+  becomes a boxed record with each question's outcome.
+- The answer panel opens by itself only while the message box is empty and no key was pressed for
+  about 2 s. Otherwise a chip waits and leaves the keyboard alone.
+- Questions are numbered from 1 within each ask, never by id. "Choose any" sits muted right after
+  the question's words. Each has its choices, "You decide" with the agent's default, and an Other
+  field.
+- Esc or Answer in chat attaches the open questions to the message box ("Replying to 2 questions
+  ×"). The user's answers show as a chat bubble under the question card, so they read as the user's
+  own words.
+- Approvals have their own tray above the message field, one row per request that opens in place. A
+  batch has a checkbox per row, all ticked, and one button that counts ("Approve all", "Approve 2,
+  reject 1"), plus Reject all. Text in the message field goes with the answer when Include message
+  is on. Studio binds ⇧⌘A and ⇧⌘R.
+- A confirmation names what it ends and what it costs. Switching between Chat and Agent says what
+  changes and what the lost cache costs ("about 180k tokens, ≈ $0.90"), and continuing a worker
+  whose cache expired asks first and gives the cost.
+- "Don't ask again" is remembered only when the user picks the action that goes ahead.
+
+## Keyboard
+
+- Every action has a keyboard path. Esc backs out of the innermost layer and returns focus to what
+  opened it.
+- Enter sends by default, with Mod+Enter and Shift+Enter as options, and the chosen chord never also
+  adds a new line. On the web page Enter sends only on devices with a fine pointer that hovers, and
+  on touch screens it makes a new line.
+- ↑ on the first line and ↓ on the last walk the sent messages. Alt+↑ on an empty box edits the last
+  one.
+- Alt+Q (Option+Q on a Mac) opens the answer panel from anywhere, Alt+A the approval tray, and
+  Ctrl+B moves a running call to the background. In the terminal Ctrl+O switches the view and Ctrl+T
+  reaches the agent list.
+- Dictation is Ctrl+R in the terminal. In Studio and on the web page a click toggles it and a press
+  held past about 300 ms is hold-to-talk.
+
 ## Text
 
-Everything a user reads takes the fewest words that keep the meaning.
+Everything a user reads takes the fewest words that keep the meaning, as the built-in
+`user-facing-prose` skill asks.
 
 - Labels are a word or two and don't repeat their surroundings.
 - A state is named only when it's unusual, in one word where one fits ("Pending", "Failed").
@@ -260,3 +419,18 @@ Everything a user reads takes the fewest words that keep the meaning.
 - Errors say what happened and what to do ("Couldn’t send. Arko isn’t reachable.").
 - Sentence case, the "…" character, and no final period on labels.
 - The same thing has the same name in every interface, in the words Arko's commands use.
+
+## Where the surfaces differ
+
+They share the theme files, the spacing and type scales, the icon set, the principles, the words
+and the names of things. These differences come from the medium.
+
+| | Studio | Web page | Terminal |
+|---|---|---|---|
+| Spinner | Eased spokes, 1.2 s a turn | Two arcs, 1.2 s a turn | Braille, 100 ms a frame |
+| Shimmer | Band half-width 30 %, 12 fps | Band 60 % wide, to the text color | Band 60 % wide |
+| Message field | `md` corners | A pill, round even at radius 0 | A line with a prompt |
+| Shortcuts | In tooltips and menus | Hints on devices that hover | In the status line |
+| A row's secondary actions | On hover or focus | On hover or focus, always on touch | None |
+| Panels | Docked from 1200 px, sheets below | Sheets at every width | In place |
+| Reduced motion | System or Settings | System | None |
