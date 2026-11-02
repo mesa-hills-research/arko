@@ -56,6 +56,8 @@ pub use feed::{
     REFRESH_MESSAGE, Received, Snapshot, Source, Update, WorkerChange, WorkerInfo, WorkerState,
     WorkerSummary, family_order, family_order_with_levels,
 };
+#[cfg(feature = "remote")]
+pub(crate) use highlight::content_line_spans;
 pub use history::items as history;
 pub(crate) use history::own_words;
 pub(crate) use history::{all_items, job_ran, message_turns};

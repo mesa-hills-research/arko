@@ -28,7 +28,7 @@ use ratatui::text::{Line, Span};
 
 use super::markdown;
 use super::motion;
-use super::theme::Theme;
+use super::theme::{Theme, Tint};
 use super::wrap::{self, Join, Wrapped, width as text_width};
 use crate::glyphs;
 use crate::remote::{
@@ -2502,56 +2502,91 @@ fn outdented(mut line: Wrapped, by: usize) -> Wrapped {
 }
 
 /// A call's content (its result's block) at `width`, a file's numbers
-/// muted, a diff's lines in the diff's colours, and when its preview
-/// leaves some out the door to the rest, muted, or while it's `open`
-/// the whole and the line that closes it. Its numbers and marks are not
-/// copied with its text.
+/// muted, its code in the theme's syntax colours, a diff's removed and added
+/// lines on the theme's error and success tints (or in those colours, where
+/// the theme has no tints), and when its preview leaves some out the door
+/// to the rest, muted, or while it's `open` the whole and the line that
+/// closes it. Its numbers and marks are not copied with its text.
 fn content_lines(item: &Item, theme: &Theme, width: usize, open: bool) -> Vec<Wrapped> {
     // (A result from an Arko before contents reads as muted text.)
     let kind = item.content.unwrap_or(ContentKind::Muted);
     let whole = item.whole.as_deref().filter(|_| open);
     let text = whole.unwrap_or(&item.text);
     let numbers = content::number_width(kind, text);
+    // The highlighting of its numbered lines, in their order.
+    let mut painted = code_spans(kind, text, item.language.as_deref(), theme).into_iter();
     let mut out = Vec::new();
     for line in text.split('\n') {
-        let (lead, style, text) = match content::line(kind, line) {
+        let (lead, spans, tinted) = match content::line(kind, line) {
             content::Line::Numbered { number, mark, text } => {
-                let (lead, style) = match mark {
-                    content::Mark::None => (format!("{number:>numbers$}  "), theme.text()),
-                    content::Mark::Kept => (format!("{number:>numbers$}   "), theme.text()),
-                    content::Mark::Removed => (format!("{number:>numbers$} - "), theme.error()),
-                    content::Mark::Added => (format!("{number:>numbers$} + "), theme.success()),
+                let spans = painted.next().unwrap_or_default();
+                let tint = match mark {
+                    content::Mark::Removed => Some(Tint::Removed),
+                    content::Mark::Added => Some(Tint::Added),
+                    _ => None,
                 };
-                let lead_style = if matches!(mark, content::Mark::None | content::Mark::Kept) {
-                    theme.dim()
-                } else {
-                    style
+                let tinted = tint.and_then(|tint| theme.tint(tint));
+                let on = |style: Style| tinted.map_or(style, |tinted| style.patch(tinted));
+                let (lead, lead_style, base) = match mark {
+                    content::Mark::None => {
+                        (format!("{number:>numbers$}  "), theme.dim(), theme.text())
+                    }
+                    content::Mark::Kept => {
+                        (format!("{number:>numbers$}   "), theme.dim(), theme.text())
+                    }
+                    content::Mark::Removed => (
+                        format!("{number:>numbers$} - "),
+                        on(theme.error()),
+                        if tinted.is_some() {
+                            on(theme.text())
+                        } else {
+                            theme.error()
+                        },
+                    ),
+                    content::Mark::Added => (
+                        format!("{number:>numbers$} + "),
+                        on(theme.success()),
+                        if tinted.is_some() {
+                            on(theme.text())
+                        } else {
+                            theme.success()
+                        },
+                    ),
                 };
-                (Some(Span::styled(lead, lead_style)), style, text)
+                let spans =
+                    painted_spans(text, &spans, base, |name| theme.syntax(name, tint).map(on));
+                (Some(Span::styled(lead, lead_style)), spans, tinted)
             }
             content::Line::Plain(text) => {
                 let style = match kind {
                     ContentKind::Plain => theme.text(),
                     _ => theme.dim(),
                 };
-                (None, style, text)
+                (None, painted_spans(text, &[], style, |_| None), None)
             }
         };
-        let text = wrap::clean(&glyphs::render(text));
         let hang = lead.as_ref().map_or(0, |lead| text_width(&lead.content));
-        let mut wrapped = wrap::wrap_lines(
-            &[Span::styled(text, style)],
-            width.saturating_sub(hang).max(1),
-            0,
-        );
+        let mut wrapped = wrap::wrap_lines(&spans, width.saturating_sub(hang).max(1), 0);
         // (A blank line keeps its row.)
         if wrapped.is_empty() {
             wrapped.push(Wrapped::line(Vec::new()));
         }
-        match lead {
-            Some(lead) => out.extend(wrap::prefixed(wrapped, lead, Span::raw(" ".repeat(hang)))),
-            None => out.extend(wrapped),
+        let mut rows = match lead {
+            Some(lead) => {
+                let rest = Span::styled(" ".repeat(hang), tinted.unwrap_or_default());
+                wrap::prefixed(wrapped, lead, rest)
+            }
+            None => wrapped,
+        };
+        // A tinted line's tint runs to its end.
+        if let Some(tinted) = tinted {
+            for row in &mut rows {
+                let pad = width.saturating_sub(spans_width(&row.spans));
+                row.spans.push(Span::styled(" ".repeat(pad), tinted));
+                row.tail += pad;
+            }
         }
+        out.extend(rows);
     }
     // (The line that closes it isn't text, so a copy leaves it out.)
     if whole.is_some() {
@@ -2563,6 +2598,59 @@ fn content_lines(item: &Item, theme: &Theme, width: usize, open: bool) -> Vec<Wr
     } else if let Some(more) = &item.more {
         out.extend(plain(more, theme.dim(), width));
     }
+    out
+}
+
+/// The highlighting of each numbered line of a content `text` of `kind`,
+/// whose lines are of a file in `language`, where the theme colours code
+/// ([`crate::remote::content_line_spans`]).
+fn code_spans(
+    kind: ContentKind,
+    text: &str,
+    language: Option<&str>,
+    theme: &Theme,
+) -> Vec<Vec<[u32; 3]>> {
+    if !theme.colours_code() {
+        return Vec::new();
+    }
+    #[cfg(feature = "remote")]
+    return crate::remote::content_line_spans(kind, text, language).unwrap_or_default();
+    #[cfg(not(feature = "remote"))]
+    {
+        let _ = (kind, text, language);
+        Vec::new()
+    }
+}
+
+/// `text` in `base`, but for its highlighted `spans` (`[start, end, name]`
+/// in bytes), each in the style `style_of` gives its name, if any.
+fn painted_spans(
+    text: &str,
+    spans: &[[u32; 3]],
+    base: Style,
+    style_of: impl Fn(usize) -> Option<Style>,
+) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut push = |part: &str, style: Style| {
+        if !part.is_empty() {
+            out.push(Span::styled(wrap::clean(&glyphs::render(part)), style));
+        }
+    };
+    let mut at = 0;
+    for &[start, end, name] in spans {
+        let (start, end) = (start as usize, end as usize);
+        if start < at
+            || end > text.len()
+            || !text.is_char_boundary(start)
+            || !text.is_char_boundary(end)
+        {
+            continue;
+        }
+        push(&text[at..start], base);
+        push(&text[start..end], style_of(name as usize).unwrap_or(base));
+        at = end;
+    }
+    push(&text[at..], base);
     out
 }
 
@@ -5187,6 +5275,67 @@ mod tests {
                 ""
             ],
             "{shown:?}"
+        );
+    }
+
+    /// A read's code shows in the theme's syntax colours, and a diff's added
+    /// line on the success tint to its end, its code in those colours too.
+    /// The terminal's own colours show code in the text's colour.
+    #[cfg(feature = "remote")]
+    #[test]
+    fn a_contents_code_shows_in_the_themes_colours() {
+        use crate::remote::protocol::HIGHLIGHT_NAMES;
+        use crate::tui::theme::{Catalog, Depth};
+        let theme = Catalog::load(None).theme("macOS Classic Dark", Depth::Rgb);
+        let keyword = HIGHLIGHT_NAMES
+            .iter()
+            .position(|name| *name == "keyword")
+            .unwrap();
+        let keyword = theme.syntax(keyword, None).unwrap().fg;
+        let mut read = item(2, Kind::Result, "1\tfn main() {}\n2\tlet x = 1;");
+        read.content = Some(ContentKind::Lines);
+        read.language = Some("rs".into());
+        let lines = content_lines(&read, &theme, 40, false);
+        let word = |line: &Wrapped, word: &str| {
+            line.spans
+                .iter()
+                .find(|span| span.content == word)
+                .unwrap_or_else(|| panic!("{word}: {:?}", line.spans))
+                .style
+        };
+        assert_eq!(word(&lines[0], "fn").fg, keyword);
+        assert_eq!(word(&lines[1], "let").fg, keyword);
+        let mut diff = item(3, Kind::Result, " 1\tfn a() {}\n+2\tlet y = 2;");
+        diff.content = Some(ContentKind::Diff);
+        diff.language = Some("rs".into());
+        let lines = content_lines(&diff, &theme, 40, false);
+        let tint = theme.tint(Tint::Added).unwrap().bg;
+        assert!(tint.is_some());
+        assert!(
+            lines[1].spans.iter().all(|span| span.style.bg == tint),
+            "{:?}",
+            lines[1].spans
+        );
+        assert_eq!(spans_width(&lines[1].spans), 40);
+        assert!(
+            word(&lines[1], "let")
+                .fg
+                .is_some_and(|fg| Some(fg) != theme.text().fg)
+        );
+        assert_eq!(
+            lines[0]
+                .spans
+                .iter()
+                .find(|span| span.content == "fn")
+                .unwrap()
+                .style
+                .bg,
+            None
+        );
+        let plain = content_lines(&read, &Theme::terminal(), 40, false);
+        assert_eq!(
+            word(&plain[0], "fn main() {}").fg,
+            Theme::terminal().text().fg
         );
     }
 

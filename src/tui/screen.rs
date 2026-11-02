@@ -844,8 +844,9 @@ mod tests {
                 app.transcript.open_for_renderings(view);
             }
             // As tall as it takes, from its first line, without the empty
-            // rows between its last and the status line.
-            let rows = screen(&mut app, 100, 400);
+            // rows between its last and the status line, as text and in its
+            // colours as HTML.
+            let (rows, html) = screen_html(&mut app, 100, 400);
             let first = rows.iter().position(|row| !row.is_empty()).unwrap_or(0);
             let bar = rows
                 .iter()
@@ -855,9 +856,82 @@ mod tests {
                 .iter()
                 .rposition(|row| !row.is_empty())
                 .unwrap_or(first);
-            let text = [&rows[first..=last], &rows[bar..]].concat().join("\n") + "\n";
+            let shown: Vec<usize> = (first..=last).chain(bar..rows.len()).collect();
+            let pick = |lines: &[String]| -> Vec<String> {
+                shown.iter().map(|at| lines[*at].clone()).collect()
+            };
+            let text = pick(&rows).join("\n") + "\n";
             std::fs::write(format!("{out}/terminal-{name}.txt"), text).unwrap();
+            let (background, foreground) = (css(app.theme.background), css(app.theme.text));
+            let html = format!(
+                "<!doctype html><meta charset=utf-8><body style=\"margin:0;background:{}\"><pre style=\"margin:0;padding:12px;font:13px/1.3 'JetBrains Mono',monospace;color:{}\">{}</pre>",
+                background.unwrap_or_default(),
+                foreground.unwrap_or_default(),
+                pick(&html).join("\n")
+            );
+            std::fs::write(format!("{out}/terminal-{name}.html"), html).unwrap();
         }
+    }
+
+    /// A colour as CSS writes it, where it's one of red, green and blue.
+    fn css(color: ratatui::style::Color) -> Option<String> {
+        match color {
+            ratatui::style::Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
+            _ => None,
+        }
+    }
+
+    /// The screen at `width` by `height`, its rows as text and as HTML in
+    /// their cells' colours.
+    fn screen_html(app: &mut App, width: u16, height: u16) -> (Vec<String>, Vec<String>) {
+        use ratatui::style::Modifier;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut text = Vec::new();
+        let mut html = Vec::new();
+        for y in 0..height {
+            let mut row = String::new();
+            let mut painted = String::new();
+            let mut x = 0;
+            while x < width {
+                let look = |x: u16| {
+                    let cell = &buffer[(x, y)];
+                    (cell.fg, cell.bg, cell.modifier)
+                };
+                let (fg, bg, modifier) = look(x);
+                let mut run = String::new();
+                while x < width && look(x) == (fg, bg, modifier) {
+                    run.push_str(buffer[(x, y)].symbol());
+                    x += 1;
+                }
+                row.push_str(&run);
+                let mut rule = String::new();
+                if let Some(fg) = css(fg) {
+                    rule.push_str(&format!("color:{fg};"));
+                }
+                if let Some(bg) = css(bg) {
+                    rule.push_str(&format!("background:{bg};"));
+                }
+                if modifier.contains(Modifier::BOLD) {
+                    rule.push_str("font-weight:bold;");
+                }
+                if modifier.contains(Modifier::ITALIC) {
+                    rule.push_str("font-style:italic;");
+                }
+                if modifier.contains(Modifier::DIM) {
+                    rule.push_str("opacity:0.6;");
+                }
+                let run = run
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                painted.push_str(&format!("<span style=\"{rule}\">{run}</span>"));
+            }
+            text.push(row.trim_end().to_string());
+            html.push(painted);
+        }
+        (text, html)
     }
 
     fn app() -> App {

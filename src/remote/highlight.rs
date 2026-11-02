@@ -386,6 +386,39 @@ pub fn item_code(item: &Item) -> Vec<CodeSpans> {
     }
 }
 
+/// The highlighting of each numbered line of a content `text` of `kind`,
+/// whose lines are of a file in `language`, for the terminal. Each line's
+/// spans are `[start, end, name]` in bytes of its text. None for a content
+/// without code in a language with a grammar here.
+pub fn content_line_spans(
+    kind: ContentKind,
+    text: &str,
+    language: Option<&str>,
+) -> Option<Vec<Vec<[u32; 3]>>> {
+    let code = content::code(kind, text)?;
+    let spans = content_code(kind, text, language).pop()?.spans;
+    // Where each line starts in the code.
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(code.match_indices('\n').map(|(at, _)| at + 1))
+        .collect();
+    let mut lines = vec![Vec::new(); starts.len()];
+    for [start, end, name] in spans {
+        let (mut at, end) = (start as usize, end as usize);
+        // (A span over a line break goes on in the next line.)
+        while at < end {
+            let line = starts.partition_point(|&start| start <= at) - 1;
+            let line_end = starts.get(line + 1).map_or(code.len(), |next| next - 1);
+            let stop = end.min(line_end);
+            if stop > at {
+                let base = starts[line];
+                lines[line].push([(at - base) as u32, (stop - base) as u32, name]);
+            }
+            at = line_end + 1;
+        }
+    }
+    Some(lines)
+}
+
 /// The highlighting of a content `text` of `kind`, whose lines are of a
 /// file in `language` ([`content::code`]).
 pub fn content_code(kind: ContentKind, text: &str, language: Option<&str>) -> Vec<CodeSpans> {
