@@ -662,8 +662,8 @@ impl Harness {
             {
                 "Your next message starts it."
             }
-            Conversation::Answered(_) => {
-                if let Some(reply) = self.feed.last_reply() {
+            Conversation::Answered(result) => {
+                if let Some(reply) = crate::harness::last_reply(result) {
                     out.echo(&out.dim("Its last reply is below."));
                     out.echo(&reply);
                 }

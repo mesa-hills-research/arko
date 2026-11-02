@@ -2350,19 +2350,6 @@ impl Feed {
         item.cloned()
     }
 
-    /// The main agent's latest reply. A turn Arko started for news may have
-    /// ended without one, so it can be a turn before the last.
-    pub(crate) fn last_reply(&self) -> Option<String> {
-        let state = self.lock();
-        let item = state
-            .main
-            .items
-            .iter()
-            .rev()
-            .find(|item| item.kind == Kind::Reply && item.is_main());
-        item.map(|item| item.text.clone())
-    }
-
     /// The feed item of the call `call` that is still running, for a client
     /// that offers to move it to the background.
     pub(crate) fn running_call_item(&self, call: Uuid) -> Option<u64> {

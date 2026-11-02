@@ -270,6 +270,39 @@ pub(crate) fn message_turns(messages: &[Message], text_replies: bool) -> Vec<Opt
     turns
 }
 
+/// The latest reply in `messages`, by the rule [`items`] describes, read
+/// from all of them. A turn Arko started for news may have ended without
+/// one, so it can be an earlier turn's.
+pub(crate) fn last_reply(messages: &[Message], text_replies: bool) -> Option<String> {
+    let answers = waited_answers(messages);
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, message)| message.role == Role::Assistant)
+        .find_map(|(index, message)| {
+            let summary = message
+                .tool_calls
+                .iter()
+                .rev()
+                .filter(|call| call.name == "complete_task")
+                .find_map(|call| call.arguments.get("summary")?.as_str())
+                .map(str::trim);
+            let text = (text_replies && is_reply(messages, index, &answers)).then(|| {
+                message
+                    .content
+                    .iter()
+                    .filter_map(Content::as_text)
+                    .collect::<String>()
+            });
+            summary
+                .map(str::to_string)
+                .or(text)
+                .map(|reply| reply.trim().to_string())
+                .filter(|reply| !reply.is_empty())
+        })
+}
+
 /// The card of an `ask_user` call that asked `questions` (a list, or one
 /// question as text). Its text is the questions as the user reads them,
 /// which it shows when the session no longer keeps what became of them.
@@ -1463,8 +1496,9 @@ mod tests {
     /// response (an API model's, which the conversation keeps), or with
     /// nothing saved after its last call (Claude Code doesn't save a
     /// response of thinking alone). Neither shows a reply, and the turns
-    /// after them keep their numbers, as in the live transcript. Without
-    /// text replies, `complete_task` with an empty summary is such an end.
+    /// after them keep their numbers, as in the live transcript, and the last
+    /// reply is the turn's before. Without text replies, `complete_task` with
+    /// an empty summary is such an end.
     #[test]
     fn a_news_turn_without_a_reply_keeps_the_turns_after_it() {
         let mut check = Message::new_assistant("Checking the report.");
@@ -1505,6 +1539,12 @@ mod tests {
                 ("r1 is done.".to_string(), Some(4)),
             ]
         );
+        // The last reply, from the turns before a news turn without one.
+        assert_eq!(
+            last_reply(&messages[..7], true).as_deref(),
+            Some("Started r1.")
+        );
+        assert_eq!(last_reply(&messages, true).as_deref(), Some("r1 is done."));
 
         let complete = |id: &str, summary: &str| {
             let mut message = Message::new_assistant("");
@@ -1533,6 +1573,10 @@ mod tests {
             .map(|item| item.text)
             .collect();
         assert_eq!(replies, ["Started r1.", "r1 is done."]);
+        assert_eq!(
+            last_reply(&messages[..4], false).as_deref(),
+            Some("Started r1.")
+        );
     }
 
     /// An ask's card holds its questions with the ids its result names, in

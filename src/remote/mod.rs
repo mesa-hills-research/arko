@@ -55,7 +55,7 @@ pub use feed::{
 };
 pub use history::items as history;
 pub(crate) use history::own_words;
-pub(crate) use history::{all_items, job_ran, message_turns};
+pub(crate) use history::{all_items, job_ran, last_reply, message_turns};
 #[cfg(any(test, feature = "remote"))]
 pub use links::Kind as LinkKind;
 pub use links::{HOST_VARIABLE, Interface, Link};

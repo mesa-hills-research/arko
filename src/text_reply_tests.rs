@@ -529,6 +529,89 @@ async fn a_news_turn_with_nothing_for_the_user_ends_without_a_reply() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// `/resume` shows the conversation's own last reply. A conversation whose
+/// only turn ended without a reply has none, and another conversation's
+/// reply doesn't stand in for it.
+#[tokio::test]
+async fn resume_shows_no_other_conversations_reply() {
+    let server = ModelServer::start(Arc::new(|_, body: String| {
+        Box::pin(async move {
+            if body.contains("First question") {
+                reply("m1", "First conversation's reply.")
+            } else {
+                reply("m2", "")
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    replying(&mut harness);
+    let lines = recording(&mut harness, false);
+    let end = harness
+        .turn(Prompt::User("First question".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    harness.new_conversation();
+    let end = harness
+        .turn(Prompt::News { resent: false }, &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "");
+    harness.new_conversation();
+    harness.flush_printer().await;
+    let before = lines.count("First conversation's reply.");
+    harness.resume_command("2").await;
+    harness.flush_printer().await;
+    assert_eq!(lines.count("First conversation's reply."), before);
+    assert_eq!(lines.count("Its last reply is below."), 0);
+}
+
+/// A resumed session shows its conversation's last reply from all of its
+/// saved messages, also one older than the transcript keeps, behind turns
+/// for news that ended without a reply.
+#[tokio::test]
+async fn resume_finds_the_last_reply_beyond_the_restored_transcript() {
+    let server = ModelServer::start(Arc::new(|_, _| {
+        Box::pin(async { reply("m1", "The real reply.") })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    replying(&mut harness);
+    let lines = recording(&mut harness, false);
+    let end = harness
+        .turn(Prompt::User("Start.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    let Conversation::Answered(result) = &harness.conversation else {
+        panic!("the turn wasn't answered");
+    };
+    // The same conversation, with 601 turns for news after the reply, each
+    // ended without one.
+    let mut task = result.task().unwrap().clone();
+    task.id = uuid::Uuid::new_v4();
+    task.current_state = arko_agents::TaskState::Completed {
+        summary: String::new(),
+    };
+    task.conversation.messages.extend((0..601).flat_map(|_| {
+        [
+            arko_ai::Message::new_user(&crate::openings::Opening::News.text()),
+            arko_ai::Message::new_assistant(""),
+        ]
+    }));
+    let result = harness.workflow().import_agent_run(MAIN, task).unwrap();
+    harness.conversation = Conversation::Answered(result);
+    harness.track_conversations();
+    harness.feed = remote::Feed::new(MAIN);
+    harness.flush_printer().await;
+    let before = lines.count("The real reply.");
+    harness.banner_end(false);
+    harness.flush_printer().await;
+    assert_eq!(lines.count("Resumed. The last reply is below."), 1);
+    assert_eq!(lines.count("The real reply."), before + 1);
+}
+
 /// `/text-replies` says how the main agent ends its turns, and before the
 /// conversation starts turns text replies on or off, and the agents are built
 /// again, and the session and the settings (the full screen's, the web

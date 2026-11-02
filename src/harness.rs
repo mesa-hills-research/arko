@@ -1300,7 +1300,7 @@ impl Harness {
             {
                 // A branch before its conversation's first message.
                 out.echo(&out.dim("Resumed. Your next message starts this branch's conversation."));
-            } else if let Some(reply) = self.feed.last_reply() {
+            } else if let Some(reply) = last_reply(result) {
                 out.echo(&out.dim("Resumed. The last reply is below."));
                 out.echo(&reply);
             } else {
@@ -5063,6 +5063,21 @@ impl Harness {
         self.output.echo(&self.output.dim(&format!("── {line} ──")));
         self.feed.turn_ended(&parts, stats.plan_usage.as_deref());
     }
+}
+
+/// The latest reply of the conversation whose latest run is `result`. A turn
+/// Arko started for news may have ended without one, so it can be an earlier
+/// turn's, which the run's saved conversation holds.
+pub(crate) fn last_reply(result: &AgentResult) -> Option<String> {
+    let summary = result.summary.trim();
+    if !summary.is_empty() {
+        return Some(summary.to_string());
+    }
+    let task = result.task().ok()?;
+    remote::last_reply(
+        &task.conversation.messages,
+        task.agent_config.tool_config.ends_task_with_text(),
+    )
 }
 
 /// Where the conversation whose latest run is `run` stands, meaning stopped (or
