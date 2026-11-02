@@ -1,7 +1,7 @@
 # Kept notes
 
-The main agent can keep notes during a session, such as "tear the build box down when the last build
-is done". A handover or a Claude Code compaction can lose what the agent was told, so its notes come
+The main agent can keep notes during a session, such as "tear the staging server down when the last
+build is done". A handover or a Claude Code compaction can lose what the agent was told, so its notes come
 back on their own. They sit in the session's folder (`kept-notes.json`), so a resumed session has
 them.
 

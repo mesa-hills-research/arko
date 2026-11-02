@@ -526,7 +526,7 @@ async fn a_conversation_resumed_gets_the_notes_kept_since() {
     harness
         .turn(Prompt::User("Pears are green.".into()), &mut inputs)
         .await;
-    let note = "Tear the build box down.";
+    let note = "Tear the staging server down.";
     harness.kept.add(note, kept_notes::Audience::Lead).unwrap();
     harness.resume_command("1").await;
     for message in ["Which fruit?", "And the colour?"] {
@@ -551,7 +551,7 @@ async fn a_conversation_resumed_is_told_when_no_notes_are_left() {
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
     harness
         .kept
-        .add("Tear the build box down.", kept_notes::Audience::Lead)
+        .add("Tear the staging server down.", kept_notes::Audience::Lead)
         .unwrap();
     harness
         .turn(Prompt::User("Apples are red.".into()), &mut inputs)

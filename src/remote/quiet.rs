@@ -1181,11 +1181,11 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
             ..fixture(
                 "a read of many lines",
                 "read_file",
-                r#"{"path": "/home/user/work/DECISIONS.md", "start_line": 120, "end_line": 139}"#,
+                r#"{"path": "/home/user/work/NOTES.md", "start_line": 120, "end_line": 139}"#,
                 "120 | - Quiet rows carry no ✓.\n121 | - A failure shows one ✗ at the right of its row.\n122 | - Opened content shows 16 lines.\n123 | - A read's preview shows its line numbers, muted.\n124 | - Full and Quiet share one content model.\n125 | \n126 | ## Workers\n127 | \n128 | - A worker's model shows on its line when it differs.\n129 | - Workers run on the plans.\n130 | - A queued worker keeps its row.\n131 | \n132 | ## The page\n133 | \n134 | - The door is muted text.\n135 | - Diffs follow Studio's colours.\n136 | \n137 | ## Studio\n138 | \n139 | - Studio adopts the crate's rows.\n[Lines 120-139 of 300.]",
-                act(ActKind::Read, "/home/user/work/DECISIONS.md"),
-                "read /home/user/work/DECISIONS.md:120-139",
-                "Read DECISIONS.md",
+                act(ActKind::Read, "/home/user/work/NOTES.md"),
+                "read /home/user/work/NOTES.md:120-139",
+                "Read NOTES.md",
             )
         },
         Fixture {
@@ -1195,18 +1195,18 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
             ..fixture(
                 "a monitor whose command the words cut",
                 "monitor_start",
-                r#"{"command": "grep -c \"^EXIT\" /home/user/work/scratch/build-master.log /home/user/work/scratch/build-0190.log", "every_seconds": 30, "alert_when": "output", "expires_minutes": 30}"#,
+                r#"{"command": "grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log", "every_seconds": 30, "alert_when": "output", "expires_minutes": 30}"#,
                 "Monitor 7f3e9a1c-1111-2222-3333-444455556666 started.",
                 Act {
-                    detail: "grep -c \"^EXIT\" /home/user/work/scratch/build-master.log /home/user/work/scratch/build-0190.log\nevery 30 s, when its output changes, for 30 min".into(),
+                    detail: "grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log\nevery 30 s, when its output changes, for 30 min".into(),
                     ..other(
-                        "Starting to watch grep -c \"^EXIT\" /home/user/work/scratch/build-ma…",
-                        "Started watching grep -c \"^EXIT\" /home/user/work/scratch/build-ma…",
-                        "watch grep -c \"^EXIT\" /home/user/work/scratch/build-ma…",
+                        "Starting to watch grep -c \"^EXIT\" /home/user/work/logs/build-linux…",
+                        "Started watching grep -c \"^EXIT\" /home/user/work/logs/build-linux…",
+                        "watch grep -c \"^EXIT\" /home/user/work/logs/build-linux…",
                     )
                 },
-                "monitor $ grep -c \"^EXIT\" /home/user/work/scratch/build-master.log /home/user/work/scratch/build-0190.log",
-                "Started watching grep -c \"^EXIT\" /home/user/work/scratch/build-ma…",
+                "monitor $ grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log",
+                "Started watching grep -c \"^EXIT\" /home/user/work/logs/build-linux…",
             )
         },
         Fixture {

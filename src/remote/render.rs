@@ -1570,7 +1570,7 @@ fn runs_tests(command: &str) -> bool {
     words.iter().enumerate().any(|(at, word)| {
         let then = || subcommands(at);
         match *word {
-            "cargo" | "cargo-locked" => matches!(then().first(), Some(&("test" | "nextest"))),
+            "cargo" => matches!(then().first(), Some(&("test" | "nextest"))),
             "npm" | "pnpm" | "yarn" | "bun" => {
                 matches!(then().as_slice(), ["test", ..] | ["run", "test"])
             }
@@ -2189,10 +2189,10 @@ mod tests {
             SHELL_TOOL_NAME,
             &[(
                 "command",
-                "set -o pipefail; CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=line-tables-only cargo-locked test --lib".into(),
+                "set -o pipefail; CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=line-tables-only cargo test --lib".into(),
             )],
         );
-        assert_eq!(set.target, "cargo-locked test --lib");
+        assert_eq!(set.target, "cargo test --lib");
         let then = act(
             SHELL_TOOL_NAME,
             &[("command", "cd ../arko; git log -3".into())],

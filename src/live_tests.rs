@@ -2523,7 +2523,7 @@ async fn text_of_a_response_asked_again_without_streaming_stays_in_the_feed() {
 }
 
 /// The note kept in these tests.
-const BUILD_BOX: &str = "Tear the build box down when the last build is done.";
+const STAGING_SERVER: &str = "Tear the staging server down when the last build is done.";
 
 /// A note the main agent keeps comes back, listed as current, in the fresh
 /// conversation after a handover. The turns before don't carry it, and a
@@ -2545,7 +2545,7 @@ async fn kept_notes_come_back_after_a_handover_and_start_a_new_conversation() {
                         tool_call(
                             "k1",
                             kept_notes::KEEP_NOTE,
-                            serde_json::json!({"text": BUILD_BOX}),
+                            serde_json::json!({"text": STAGING_SERVER}),
                         )
                     }
                 } else {
@@ -2576,7 +2576,7 @@ async fn kept_notes_come_back_after_a_handover_and_start_a_new_conversation() {
         .turn(Prompt::User("First.".into()), &mut inputs)
         .await;
     assert!(matches!(end, TurnEnd::Answered));
-    assert_eq!(harness.kept.list().unwrap()[0].text, BUILD_BOX);
+    assert_eq!(harness.kept.list().unwrap()[0].text, STAGING_SERVER);
     harness.live_command("/handover", Source::Terminal);
     let end = tokio::time::timeout(
         Duration::from_secs(30),
@@ -2591,11 +2591,11 @@ async fn kept_notes_come_back_after_a_handover_and_start_a_new_conversation() {
     for body in bodies.lock().unwrap().iter() {
         assert!(!body.contains(heading) || body.contains("REPORT:"));
     }
-    assert!(body(&bodies, heading, "").contains(BUILD_BOX));
+    assert!(body(&bodies, heading, "").contains(STAGING_SERVER));
     // A new conversation starts with them.
     harness.new_conversation();
     let message = harness.compose(Prompt::User("Third.".into()));
-    assert!(message.starts_with(heading) && message.contains(BUILD_BOX));
+    assert!(message.starts_with(heading) && message.contains(STAGING_SERVER));
 }
 
 /// Claude Code's compaction leaves the main agent a summary, and its kept
@@ -2606,7 +2606,7 @@ async fn kept_notes_come_back_after_claude_code_compacts_the_conversation() {
     let temp = tempfile::tempdir().unwrap();
     let script = serde_json::json!([
         [
-            {"tool": "mcp__arko__keep_note", "input": {"text": BUILD_BOX}, "input_tokens": 1000},
+            {"tool": "mcp__arko__keep_note", "input": {"text": STAGING_SERVER}, "input_tokens": 1000},
             {"tool": "mcp__arko__shell", "input": {"command": "echo two"}, "input_tokens": 642_000},
             {"text": "Not reached: the turn was interrupted."},
         ],
@@ -2651,7 +2651,7 @@ async fn kept_notes_come_back_after_claude_code_compacts_the_conversation() {
     assert!(given(&log[..compacted]).is_empty());
     let after = given(&log[compacted..]);
     assert!(
-        after.len() == 1 && after[0].contains(BUILD_BOX),
+        after.len() == 1 && after[0].contains(STAGING_SERVER),
         "{after:?}"
     );
     harness.crew.as_ref().unwrap().shutdown().await;
@@ -2807,13 +2807,13 @@ async fn a_forgotten_note_is_not_current_after_a_handover() {
     let _managers = equip(&mut harness, false);
     harness
         .kept
-        .add(BUILD_BOX, kept_notes::Audience::Lead)
+        .add(STAGING_SERVER, kept_notes::Audience::Lead)
         .unwrap();
     let end = harness
         .turn(Prompt::User("First.".into()), &mut inputs)
         .await;
     assert!(matches!(end, TurnEnd::Answered));
-    // The build box is down, and the agent forgets the note.
+    // The staging server is down, and the agent forgets the note.
     harness.live_command("/notes remove 1", Source::Terminal);
     harness.live_command("/handover", Source::Terminal);
     let end = tokio::time::timeout(
@@ -2827,7 +2827,7 @@ async fn a_forgotten_note_is_not_current_after_a_handover() {
     // The restated first message has the note, and what follows replaces it.
     let fresh = body(&bodies, "No notes are kept now.", "");
     assert!(fresh.contains("REPORT:"));
-    assert!(fresh.find(BUILD_BOX).unwrap() < fresh.find("No notes are kept now.").unwrap());
+    assert!(fresh.find(STAGING_SERVER).unwrap() < fresh.find("No notes are kept now.").unwrap());
 }
 
 /// A branch of a session has its kept notes, which its conversation holds
@@ -2844,13 +2844,13 @@ async fn a_branch_has_the_kept_notes() {
     assert!(matches!(end, TurnEnd::Answered));
     harness
         .kept
-        .add(BUILD_BOX, kept_notes::Audience::Lead)
+        .add(STAGING_SERVER, kept_notes::Audience::Lead)
         .unwrap();
     let branch = harness.branch(None).unwrap();
     let branch = Session::open(&harness.root, &branch).unwrap();
     let notes = kept_notes::KeptNotes::new(&branch.dir).list().unwrap();
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].text, BUILD_BOX);
+    assert_eq!(notes[0].text, STAGING_SERVER);
 }
 
 /// `/notes` lists the session's notes, removes one by its number, and says
@@ -2865,7 +2865,7 @@ async fn notes_lists_and_removes_the_kept_notes() {
     assert!(says(&harness.feed, "output", "No notes are kept."));
     harness
         .kept
-        .add(BUILD_BOX, kept_notes::Audience::Lead)
+        .add(STAGING_SERVER, kept_notes::Audience::Lead)
         .unwrap();
     harness
         .kept
@@ -2875,7 +2875,7 @@ async fn notes_lists_and_removes_the_kept_notes() {
     assert!(says(
         &harness.feed,
         "output",
-        &format!("1  for the main agent\n   {BUILD_BOX}\n2  for every worker\n   Use tabs.")
+        &format!("1  for the main agent\n   {STAGING_SERVER}\n2  for every worker\n   Use tabs.")
     ));
     harness.live_command("/notes remove 1", Source::Terminal);
     assert!(says(&harness.feed, "output", "Removed note 1."));
@@ -3053,7 +3053,7 @@ async fn a_removed_note_is_announced_to_the_main_agent_once() {
     }))
     .await;
     let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
-    let note = "Tear the build box down when the last build is done, and tell the user what it cost.\nThe box is named build-1.";
+    let note = "Tear the staging server down when the last build is done, and tell the user what it cost.\nThe server is named staging-1.";
     harness.kept.add(note, kept_notes::Audience::Lead).unwrap();
     for message in ["First.", "Second.", "Third."] {
         if message == "Second." {
@@ -3066,7 +3066,7 @@ async fn a_removed_note_is_announced_to_the_main_agent_once() {
     }
     // The request after the removal has the line, and the one after that
     // has the same single line in the conversation. (The bodies are JSON.)
-    let line = r#"The user removed kept note 1 (\"Tear the build box down when the last build is done, and tel…\")."#;
+    let line = r#"The user removed kept note 1 (\"Tear the staging server down when the last build is done, an…\")."#;
     let held: Vec<usize> = bodies
         .lock()
         .unwrap()

@@ -1039,12 +1039,12 @@ mod tests {
     fn notes_are_kept_across_a_resume_and_removed_by_number() {
         let (temp, notes) = notes();
         let first = notes
-            .add("  Tear the build box down.  ", Audience::Lead)
+            .add("  Tear the staging server down.  ", Audience::Lead)
             .unwrap();
         let second = notes.add("Use tabs.", Audience::AllWorkers).unwrap();
         assert_eq!(
             (first.id, first.text.as_str()),
-            (1, "Tear the build box down.")
+            (1, "Tear the staging server down.")
         );
         // A session that opens the folder again has them.
         let resumed = KeptNotes::new(temp.path());

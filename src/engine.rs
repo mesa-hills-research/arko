@@ -1774,7 +1774,7 @@ mod tests {
         let dir = Session::open(&root, &id).unwrap().dir;
         crate::kept_notes::KeptNotes::new(&dir)
             .add(
-                "Tear the build box down.",
+                "Tear the staging server down.",
                 crate::kept_notes::Audience::Lead,
             )
             .unwrap();

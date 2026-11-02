@@ -1491,7 +1491,7 @@ mod tests {
             )]),
             &workspace,
             &["claude-opus-5-5".into(), "gpt-6.1-sol".into()],
-            &["root-cause".into(), "reviewer".into()],
+            &["release-notes".into(), "reviewer".into()],
             false,
         );
         let found = texts(&words);
@@ -1506,7 +1506,7 @@ mod tests {
             "Opus",
             "GPT-6.1 Sol",
             "Sol",
-            "root-cause",
+            "release-notes",
         ] {
             assert!(found.contains(&word), "{word}: {found:?}");
         }
