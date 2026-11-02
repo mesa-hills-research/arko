@@ -241,8 +241,9 @@ async fn an_image_a_model_cant_take_goes_as_a_file() {
     .unwrap();
 }
 
-/// A page's message during a turn becomes a note that carries the block,
-/// which the agent reads with the rest of the note.
+/// A page's message during a turn becomes a note that carries the block.
+/// When the turn ends before the agent reads it, it goes with the next
+/// message, its image too.
 #[tokio::test]
 async fn files_sent_during_a_turn_go_with_its_note() {
     let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -259,13 +260,16 @@ async fn files_sent_during_a_turn_go_with_its_note() {
         until(|| feed.activity().working).await;
         let message = Action::Message {
             text: "Also this log.".into(),
-            files: vec![attached(
-                &dir,
-                "server.log",
-                Kind::Text,
-                "text/plain",
-                b"error at line 9\n",
-            )],
+            files: vec![
+                attached(
+                    &dir,
+                    "server.log",
+                    Kind::Text,
+                    "text/plain",
+                    b"error at line 9\n",
+                ),
+                attached(&dir, "bug.png", Kind::Image, "image/png", &one_pixel()),
+            ],
         };
         let Verdict::Accepted { delivery, .. } = page_send(&actions, message).await else {
             panic!("accepted");
@@ -286,4 +290,63 @@ async fn files_sent_during_a_turn_go_with_its_note() {
     assert!(later.contains("error at line 9"), "{later}");
     assert!(later.contains("server.log"), "{later}");
     assert!(later.contains("Also this log."), "{later}");
+    assert!(later.contains("as an image after this message"), "{later}");
+    use base64::Engine as _;
+    let image = base64::engine::general_purpose::STANDARD.encode(one_pixel());
+    assert!(
+        later.contains(&image),
+        "the image goes with the next message"
+    );
+}
+
+/// An app's image sent during a turn goes with the next message when the
+/// agent didn't get to read its note.
+#[tokio::test]
+async fn an_unread_notes_image_goes_with_the_next_message() {
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let held = Arc::new(Notify::new());
+    let server = keeping(&bodies, Some(held.clone())).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let feed = harness.feed.clone();
+    let kept = bodies.clone();
+    let client = async move {
+        sender.send(Input::Line("Start.".into())).unwrap();
+        until(|| feed.activity().working).await;
+        sender
+            .send(Input::Message(crate::ui::Message {
+                text: "Look at this too.".into(),
+                images: vec![crate::ui::Attachment {
+                    bytes: Arc::from(one_pixel()),
+                    mime: "image/png".into(),
+                    name: Some("dot.png".into()),
+                }],
+                ..Default::default()
+            }))
+            .unwrap();
+        until(|| {
+            shown(&feed)
+                .iter()
+                .any(|(_, text, _)| text == "Look at this too.")
+        })
+        .await;
+        held.notify_one();
+        until(|| !feed.activity().working && lock(&kept).len() >= 2).await;
+        sender.send(Input::Eof).unwrap();
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    let bodies = lock(&bodies);
+    let later = bodies[1..].join("\n");
+    assert!(later.contains("Look at this too."), "{later}");
+    use base64::Engine as _;
+    let image = base64::engine::general_purpose::STANDARD.encode(one_pixel());
+    assert!(
+        later.contains(&image),
+        "the image goes with the next message"
+    );
 }

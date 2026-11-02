@@ -113,6 +113,7 @@ pub mod testing;
 #[cfg(feature = "tui")]
 mod tui;
 mod ui;
+mod unread;
 #[cfg(feature = "tui")]
 mod watchdog;
 pub mod worker_cache;

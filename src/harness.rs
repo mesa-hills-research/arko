@@ -607,7 +607,7 @@ pub(crate) struct Harness {
     pub(crate) kept: Arc<kept_notes::KeptNotes>,
     /// What the user typed during a turn that the agent didn't read before
     /// the turn ended, so it goes with the next message.
-    pub(crate) unread: Vec<String>,
+    pub(crate) unread: Vec<crate::unread::Unread>,
     /// The conversation changed (`/new`, `/resume`). The next message names
     /// the workers still running, whose reports now come to it.
     pub(crate) switched: bool,
@@ -3880,7 +3880,7 @@ impl Harness {
             })
         };
         tokio::pin!(call);
-        let mut notes: Vec<(u64, String)> = Vec::new();
+        let mut notes: Vec<(u64, (String, Vec<arko_ai::Image>))> = Vec::new();
         // Lines typed without a terminal, each its own turn later, with the
         // message as the agent reads it.
         let mut queued: Vec<(String, String)> = Vec::new();
@@ -4043,6 +4043,10 @@ impl Harness {
                             reply.accept_partly(Delivery::Queued, Some(item), partial);
                         }
                         Replied::Plain { text: labelled, settled } => {
+                            // (One the agent doesn't get to read goes with
+                            // the next message as it reads it, its images
+                            // too.)
+                            let unread = (read, images.clone());
                             let note = Note::new(labelled).to([MAIN]).once().images(images);
                             match self.post_users_note(&workflow, None, note) {
                                 Ok(seq) => {
@@ -4050,9 +4054,7 @@ impl Harness {
                                         "  ✎ added to the task, and the agent reads it at its next step",
                                     ));
                                     let item = self.feed.note(&text, source, seq.seq, shown);
-                                    // (One the agent doesn't get to read goes
-                                    // with the next message as it reads it.)
-                                    notes.push((seq.seq, read));
+                                    notes.push((seq.seq, unread));
                                     let partial = self.partly(&reply, Vec::new(), files_words);
                                     reply.accept_partly(Delivery::Note, Some(item), partial);
                                 }
@@ -4817,9 +4819,12 @@ impl Harness {
         if !self.unread.is_empty() {
             let unread = std::mem::take(&mut self.unread);
             self.feed.notes_sent(&typed_parts(&unread));
+            // Their images go too, before the message's own.
+            let (texts, images) = crate::blocking(|| crate::unread::load(&unread));
+            self.pending_images.splice(0..0, images);
             parts.push(format!(
                 "# What I typed during your last turn, which you didn't get to read\n\n{}",
-                unread
+                texts
                     .iter()
                     .map(|text| format!("- {}", text.replace('\n', "\n  ")))
                     .collect::<Vec<_>>()
@@ -4937,7 +4942,7 @@ impl Harness {
     /// (`now`) a new turn takes them to it at once, and that turn starting
     /// is all the user needs to see. After a stop or a failure they wait
     /// for the next message, which the user is told.
-    pub(crate) fn keep_unread(&mut self, unread: Vec<String>, now: bool) {
+    pub(crate) fn keep_unread(&mut self, unread: Vec<(String, Vec<arko_ai::Image>)>, now: bool) {
         if unread.is_empty() {
             return;
         }
@@ -4947,7 +4952,15 @@ impl Harness {
                 "  (what you typed during the turn, which the agent didn't read, goes with your next message)",
             );
         }
-        self.unread.extend(unread);
+        // (Their images are saved, to go with the next message too.)
+        let dir = self.session.dir.clone();
+        let kept: Vec<crate::unread::Unread> = crate::blocking(|| {
+            unread
+                .into_iter()
+                .map(|(text, images)| crate::unread::keep(&dir, text, &images))
+                .collect()
+        });
+        self.unread.extend(kept);
     }
 
     pub(crate) fn stop(&self, workflow: &Workflow) -> bool {
@@ -5077,12 +5090,12 @@ pub(crate) fn conversation_of(workflow: &Workflow, run: Option<uuid::Uuid>) -> C
     }
 }
 
-/// What the user typed of each of `texts`, notes as the agent reads them,
-/// as the transcript shows them (without their attachments block).
-fn typed_parts(texts: &[String]) -> Vec<String> {
-    texts
+/// What the user typed of each of `notes`, as the transcript shows them
+/// (without their attachments block).
+fn typed_parts(notes: &[crate::unread::Unread]) -> Vec<String> {
+    notes
         .iter()
-        .map(|text| crate::attachments::typed(text).to_string())
+        .map(|note| crate::attachments::typed(&note.text).to_string())
         .collect()
 }
 

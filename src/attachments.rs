@@ -259,6 +259,21 @@ pub(crate) fn split_block(text: &str) -> Option<(Vec<Entry>, &str)> {
     }
 }
 
+/// `text`, a message the agent never read, as it goes with a later message,
+/// without its images, so its block no longer says they follow. The agent
+/// reads them from their paths instead.
+pub(crate) fn without_images(text: &str) -> String {
+    match split_block(text) {
+        Some((mut entries, typed)) if entries.iter().any(|entry| entry.shown) => {
+            for entry in &mut entries {
+                entry.shown = false;
+            }
+            with_block(&block(&entries), typed)
+        }
+        _ => text.to_string(),
+    }
+}
+
 /// What the user typed of `text`, a message the agent read, without the
 /// attachments block it may start with.
 pub(crate) fn typed(text: &str) -> &str {
@@ -933,6 +948,17 @@ mod tests {
         assert_eq!(entries[1].name, "a&b \"c\" <d>.txt");
         assert_eq!(entries[1].path, "/work/\"quoted\"/a&b.txt");
         assert_eq!(rest, "<attachments>\nnot a block");
+        // A message the agent never read loses its images, and its block
+        // says where they are instead.
+        let routed = route(&model(true), false, "Look.", vec![image("bug.png")]).unwrap();
+        let sent = with_block(&routed.block, "Look.");
+        assert!(sent.contains(SHOWN));
+        let later = without_images(&sent);
+        assert!(!later.contains(SHOWN), "{later}");
+        let (entries, typed) = split_block(&later).unwrap();
+        assert_eq!(typed, "Look.");
+        assert_eq!(entries[0].path, "/work/.arko/attachments/bug.png");
+        assert_eq!(without_images("Plain text."), "Plain text.");
         // Text that only looks like a block isn't one.
         assert_eq!(split_block("<attachments>\nhello"), None);
         assert_eq!(split_block("Plain text."), None);

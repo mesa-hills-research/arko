@@ -705,7 +705,7 @@ impl Harness {
                         .collect()
                 })
                 .unwrap_or_default(),
-            unread: self.unread.clone(),
+            unread: self.unread.iter().map(|note| note.text.clone()).collect(),
             ended: None,
         };
         if let Some(latest) = results.last() {
