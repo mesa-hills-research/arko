@@ -1,31 +1,43 @@
 //! The files the web page uploads before it sends them with a message. Each
 //! is written to `.<id>.part` in the project's `.arko/attachments` folder as
 //! its bytes come, and renamed to its own name, never over another file,
-//! once whole. A message then names the uploads it sends, and they become
-//! its files ([`crate::attachments`]). Uploads that are never sent are
-//! removed.
+//! once whole. A message then claims the uploads it names, and they become
+//! its files once it goes ([`crate::attachments`]). Uploads that are never
+//! sent are removed.
 //!
-//! What an upload holds is the length of its part file, read while the
-//! request that writes it holds its writer, so no count is kept beside it.
-//! A request that resumes says where it starts (the `Upload-Offset` header)
-//! and is refused unless that is the length. The newest request for an
-//! upload wins, because a phone's dropped connection can stay half open
-//! here after the phone has tried again. A request ends after
-//! [`STALL`] without bytes.
+//! The table is the one owner of every upload. An upload is Reserved (its
+//! slot and its bytes held against the limits), then Receiving, then
+//! Complete, then Claimed by a message, and leaves the table once sent or
+//! released. Every change of state happens under the table's lock, in a
+//! statement of its own, and no disk work happens under it. The admission
+//! of a new upload checks the uploads waiting and the bytes they still need
+//! against the disk's free space together with its insert.
 //!
-//! Every file operation runs off the runtime's workers, on its blocking
-//! pool (`tokio::fs` and `spawn_blocking`). The table's lock is taken in a
-//! statement of its own and never held across an `.await`.
+//! What an upload holds is the length of its part file. A request that
+//! resumes says where it starts (the `Upload-Offset` header) and is refused
+//! unless that is the length. The newest request for an upload wins, because
+//! a phone's dropped connection can stay half open here after the phone has
+//! tried again, and a request ends after [`STALL`] without bytes.
+//!
+//! The part file stays in its upload's writer slot for good. A request takes
+//! the slot's gate, and each disk step runs on the runtime's blocking pool
+//! holding the gate, so a request cancelled mid-step leaves the step to
+//! finish, the file in its slot and the gate shut until the disk is done.
+//! The step that completes an upload also records it as Complete. A step
+//! that holds the gate may take the table's lock, and the table's lock is
+//! never held while a gate is awaited (a sweep only tries one), so the two
+//! never wait on each other.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use axum::body::Body;
 use futures_util::StreamExt as _;
-use tokio::sync::watch;
+use tokio::sync::{OwnedMutexGuard, watch};
 
 use super::protocol::{UploadState, size};
 use crate::arko_dir::Folder;
@@ -64,6 +76,8 @@ pub(super) enum Refused {
     TooMany(String),
     /// No such upload, or it was removed.
     Gone(String),
+    /// A message is sending it.
+    Claimed(String),
     /// The request starts elsewhere than at what Arko holds, or a newer
     /// request took over. It holds this many bytes.
     Elsewhere(u64),
@@ -73,12 +87,41 @@ pub(super) enum Refused {
     Failed(String),
 }
 
+/// An upload's place in its life.
+#[derive(Debug, Clone)]
+enum State {
+    /// Its slot and bytes are held while its part file is made.
+    Reserved,
+    /// Its bytes come into its part file.
+    Receiving,
+    /// Whole and saved under its name.
+    Complete(FileRef, Kind),
+    /// A message with the claim this number names is sending it.
+    Claimed(FileRef, Kind, u64),
+}
+
+/// An upload as the table holds it.
+struct Entry {
+    upload: Arc<Upload>,
+    state: State,
+    /// The bytes still to come, held against the disk's free space.
+    reserved: u64,
+    /// When a request last used it.
+    touched: Instant,
+}
+
+/// The uploads, by ID. Behind an `Arc`, so a disk step can record what it
+/// did.
+type Table = Arc<Mutex<HashMap<String, Entry>>>;
+
 /// The uploads of one server, into the project `workspace`, whose folder
 /// follows the settings in Arko's folder `root`.
 pub(super) struct Uploads {
     workspace: PathBuf,
     root: PathBuf,
-    table: Mutex<HashMap<String, Arc<Upload>>>,
+    table: Table,
+    /// Numbers the messages' claims.
+    claims: AtomicU64,
     /// Reads the free space on a disk, as [`free_bytes`] does (a test
     /// gives its own).
     free: fn(&Path) -> Option<u64>,
@@ -86,25 +129,26 @@ pub(super) struct Uploads {
     disk: tests::Disk,
 }
 
+/// What doesn't change of an upload.
 struct Upload {
     /// The name it is saved under, when no file has it.
     name: String,
     size: u64,
     folder: Folder,
     part: String,
-    /// The part file, while bytes are to come. The request that writes
-    /// holds it.
-    writer: tokio::sync::Mutex<Option<File>>,
+    /// The part file, from when it's made until the upload is whole. A
+    /// request takes the gate for its disk steps.
+    writer: Arc<tokio::sync::Mutex<Option<File>>>,
     /// The number of the newest request. An older one stops when it grows.
     newest: watch::Sender<u64>,
-    state: Mutex<State>,
 }
 
-#[derive(Debug, Clone)]
-struct State {
-    touched: Instant,
-    /// The file, once whole and saved.
-    done: Option<(FileRef, Kind)>,
+/// The files a message claimed, with their bytes when they may go to the
+/// model. The claim is the message's until it is committed or released.
+#[derive(Debug)]
+pub(super) struct Claim {
+    pub(super) number: u64,
+    pub(super) files: Vec<Attached>,
 }
 
 impl Uploads {
@@ -112,7 +156,8 @@ impl Uploads {
         Uploads {
             workspace,
             root,
-            table: Mutex::new(HashMap::new()),
+            table: Arc::new(Mutex::new(HashMap::new())),
+            claims: AtomicU64::new(1),
             free: free_bytes,
             #[cfg(test)]
             disk: tests::Disk::default(),
@@ -130,14 +175,27 @@ impl Uploads {
         self
     }
 
-    /// The upload `id`.
-    fn get(&self, id: &str) -> Result<Arc<Upload>, Refused> {
-        let upload = lock(&self.table).get(id).cloned();
-        upload.ok_or_else(|| Refused::Gone("Arko no longer has this file. Attach it again.".into()))
+    /// The upload `id` and its state now, touched.
+    fn touch(&self, id: &str) -> Result<(Arc<Upload>, State), Refused> {
+        let mut table = lock(&self.table);
+        let entry = table.get_mut(id).ok_or_else(gone)?;
+        entry.touched = Instant::now();
+        Ok((entry.upload.clone(), entry.state.clone()))
+    }
+
+    /// The state of the upload `id` now, if it is still the upload
+    /// `upload`.
+    fn state_of(&self, id: &str, upload: &Arc<Upload>) -> Option<State> {
+        let table = lock(&self.table);
+        table
+            .get(id)
+            .filter(|entry| Arc::ptr_eq(&entry.upload, upload))
+            .map(|entry| entry.state.clone())
     }
 
     /// Starts an upload of `size` bytes, from a file the browser names
-    /// `name`, and gives its ID.
+    /// `name`, and gives its ID. Its slot among those waiting and its bytes
+    /// are held from now on.
     pub(super) async fn create(&self, name: &str, size_bytes: u64) -> Result<String, Refused> {
         let name = attachments::sanitize_name(name);
         if size_bytes > attachments::MAX_FILE_BYTES {
@@ -148,60 +206,100 @@ impl Uploads {
             )));
         }
         self.remove_abandoned().await;
-        let waiting = lock(&self.table).len();
-        if waiting >= MAX_UNSENT {
-            return Err(Refused::TooMany(format!(
-                "{waiting} files wait to be sent. Send or remove some first."
-            )));
-        }
-        let id = super::random_token(16);
-        let part = format!(".{id}.part");
-        let (workspace, root, free, made) = (
-            self.workspace.clone(),
-            self.root.clone(),
-            self.free,
-            part.clone(),
-        );
-        let named = name.clone();
+        let (workspace, root, free) = (self.workspace.clone(), self.root.clone(), self.free);
         let opened = tokio::task::spawn_blocking(move || {
             let folder =
                 folder(&workspace, &root).map_err(|why| Refused::Unwritable(sentence(why)))?;
-            if let Some(left) = free(folder.real())
-                && left < size_bytes.saturating_add(FREE_FLOOR)
-            {
-                return Err(Refused::NoSpace(format!(
-                    "There isn’t room for {named}. The computer has {} free.",
-                    size(left)
-                )));
-            }
-            let file = folder.create_file(&made).map_err(|error| {
-                Refused::Unwritable(format!(
-                    "Couldn’t write in {} ({}).",
-                    folder.path().display(),
-                    crate::profiles::reason_of(&error)
-                ))
-            })?;
-            Ok((folder, file))
+            let left = free(folder.real());
+            Ok::<_, Refused>((folder, left))
         })
         .await;
-        let (folder, file) = match opened {
+        let (folder, left) = match opened {
             Ok(opened) => opened?,
             Err(error) => return Err(Refused::Failed(format!("Couldn’t save {name} ({error})."))),
         };
+        let id = super::random_token(16);
         let upload = Arc::new(Upload {
+            part: format!(".{id}.part"),
             name,
             size: size_bytes,
             folder,
-            part,
-            writer: tokio::sync::Mutex::new(Some(file)),
+            writer: Arc::new(tokio::sync::Mutex::new(None)),
             newest: watch::Sender::new(0),
-            state: Mutex::new(State {
-                touched: Instant::now(),
-                done: None,
-            }),
         });
-        lock(&self.table).insert(id.clone(), upload);
-        Ok(id)
+        self.reserve(&id, &upload, left)?;
+        // (The step goes on if the request is cancelled, so the upload
+        // never stays Reserved.)
+        let (table, made) = (self.table.clone(), id.clone());
+        let ready = upload.clone();
+        let done = tokio::task::spawn_blocking(move || {
+            let file = ready.folder.create_file(&ready.part);
+            let mut slot = ready.writer.blocking_lock();
+            let mut table = lock(&table);
+            match file {
+                Ok(file) => {
+                    *slot = Some(file);
+                    if let Some(entry) = table.get_mut(&made) {
+                        entry.state = State::Receiving;
+                    }
+                    Ok(())
+                }
+                Err(error) => {
+                    table.remove(&made);
+                    Err(Refused::Unwritable(format!(
+                        "Couldn’t write in {} ({}).",
+                        ready.folder.path().display(),
+                        crate::profiles::reason_of(&error)
+                    )))
+                }
+            }
+        })
+        .await;
+        match done {
+            Ok(Ok(())) => Ok(id),
+            Ok(Err(refused)) => Err(refused),
+            Err(error) => {
+                lock(&self.table).remove(&id);
+                Err(Refused::Failed(format!(
+                    "Couldn’t save {} ({error}).",
+                    upload.name
+                )))
+            }
+        }
+    }
+
+    /// Holds a slot among the uploads waiting and `upload`'s bytes, as
+    /// `id`, when the disk has `left` bytes free, or says why not. Both
+    /// checks and the insert are one step, so uploads started at once can't
+    /// pass the limits together.
+    fn reserve(&self, id: &str, upload: &Arc<Upload>, left: Option<u64>) -> Result<(), Refused> {
+        let mut table = lock(&self.table);
+        if table.len() >= MAX_UNSENT {
+            return Err(Refused::TooMany(format!(
+                "{} files wait to be sent. Send or remove some first.",
+                table.len()
+            )));
+        }
+        let held: u64 = table.values().map(|entry| entry.reserved).sum();
+        if let Some(left) = left
+            && left < held.saturating_add(upload.size).saturating_add(FREE_FLOOR)
+        {
+            return Err(Refused::NoSpace(format!(
+                "There isn’t room for {}. Arko keeps {} of the computer’s disk free.",
+                upload.name,
+                size(FREE_FLOOR)
+            )));
+        }
+        table.insert(
+            id.to_string(),
+            Entry {
+                upload: upload.clone(),
+                state: State::Reserved,
+                reserved: upload.size,
+                touched: Instant::now(),
+            },
+        );
+        Ok(())
     }
 
     /// Writes `body` into the upload `id` from `offset`, which must be what
@@ -214,34 +312,32 @@ impl Uploads {
         offset: u64,
         body: Body,
     ) -> Result<UploadState, Refused> {
-        let upload = self.get(id)?;
-        upload.touch();
+        let (upload, _) = self.touch(id)?;
         let (mut newer, mine) = upload.take_over();
-        let mut writer = upload.writer.lock().await;
-        let Some(file) = writer.take() else {
-            return upload.state_without_writer();
-        };
-        let Some((file, held)) = on_disk(file, |file| Ok(file.metadata()?.len())).await else {
-            return Err(lost(&upload.name));
-        };
-        let mut received = match held {
-            Ok(held) => held,
-            Err(error) => {
-                *writer = Some(file);
-                return Err(write_failed(&upload.name, &error));
+        let gate = upload.writer.clone().lock_owned().await;
+        match self.state_of(id, &upload) {
+            Some(State::Receiving) => {}
+            Some(State::Complete(_, kind) | State::Claimed(_, kind, _)) => {
+                return Ok(upload.state_now(upload.size, Some(kind)));
             }
-        };
-        if *upload.newest.borrow() != mine || offset != received {
-            *writer = Some(file);
+            Some(State::Reserved) | None => return Err(gone()),
+        }
+        let (mut gate, held) = self.disk(gate, slot_length).await?;
+        let mut received = held.map_err(|error| write_failed(&upload.name, &error))?;
+        if *newer.borrow() > mine || offset != received {
             return Err(Refused::Elsewhere(received));
         }
-        let mut file = Some(file);
         let mut waiting = Vec::new();
         let mut stream = body.into_data_stream();
         let ended = loop {
             let chunk = tokio::select! {
                 chunk = tokio::time::timeout(STALL, stream.next()) => chunk,
-                _ = newer.changed() => break End::TakenOver,
+                changed = newer.changed() => {
+                    if changed.is_err() || *newer.borrow_and_update() > mine {
+                        break End::TakenOver;
+                    }
+                    continue;
+                }
             };
             let bytes = match chunk {
                 Err(_) | Ok(Some(Err(_))) => break End::Stalled,
@@ -255,53 +351,33 @@ impl Uploads {
             if waiting.len() < WRITE_BYTES {
                 continue;
             }
-            match self.append(file.take(), std::mem::take(&mut waiting)).await {
-                (Some(back), Ok(written)) => (file, received) = (Some(back), received + written),
-                (back, Err(error)) => {
-                    file = back;
-                    break End::Failed(error);
-                }
-                (None, Ok(_)) => break End::Lost,
+            let (back, written) = self
+                .append(gate, id, &upload, std::mem::take(&mut waiting))
+                .await?;
+            gate = back;
+            match written {
+                Ok(written) => received += written,
+                Err(error) => break End::Failed(error),
             }
         };
         // What came counts, whatever ended the request.
-        let (back, rest) = self.append(file.take(), waiting).await;
-        let ended = match (ended, rest) {
-            (ended @ (End::Failed(_) | End::Lost), _) => ended,
-            (_, Err(error)) => End::Failed(error),
-            (ended, Ok(written)) => {
-                received += written;
-                ended
-            }
-        };
-        upload.touch();
-        let Some(back) = back else {
-            return Err(lost(&upload.name));
-        };
-        let failed = match ended {
-            End::Body if received == upload.size => {
-                let Some((back, synced)) = on_disk(back, |file| file.sync_all()).await else {
-                    return Err(lost(&upload.name));
-                };
-                match synced {
-                    Ok(()) => {
-                        let saved = upload.clone();
-                        let done = tokio::task::spawn_blocking(move || {
-                            drop(back);
-                            saved.save()
-                        })
-                        .await;
-                        let done = done.map_err(|_| lost(&upload.name))??;
-                        lock(&upload.state).done = Some(done);
-                        return Ok(upload.state_now(upload.size));
+        let ended = match ended {
+            End::Failed(error) => End::Failed(error),
+            ended => {
+                let (back, written) = self.append(gate, id, &upload, waiting).await?;
+                gate = back;
+                match written {
+                    Ok(written) => {
+                        received += written;
+                        ended
                     }
-                    Err(error) => {
-                        *writer = Some(back);
-                        return Err(write_failed(&upload.name, &error));
-                    }
+                    Err(error) => End::Failed(error),
                 }
             }
-            End::Body => Ok(upload.state_now(received)),
+        };
+        match ended {
+            End::Body if received == upload.size => self.complete(gate, id, &upload).await,
+            End::Body => Ok(upload.state_now(received, None)),
             End::TakenOver => Err(Refused::Elsewhere(received)),
             End::Stalled => Err(Refused::Stalled(received)),
             End::TooLarge => Err(Refused::TooLarge(format!(
@@ -309,168 +385,283 @@ impl Uploads {
                 upload.name
             ))),
             End::Failed(error) => Err(write_failed(&upload.name, &error)),
-            End::Lost => Err(lost(&upload.name)),
-        };
-        *writer = Some(back);
-        failed
+        }
     }
 
-    /// Writes `bytes` at the end of `file` on the runtime's blocking pool,
-    /// and gives the file back with how many bytes it wrote. Without a file
-    /// (one a write lost), nothing is written.
+    /// Runs `work` on the writer's slot on the runtime's blocking pool,
+    /// holding the gate, and gives the gate back with what it did. Cancelled
+    /// while it runs, the step finishes and opens the gate itself.
+    async fn disk<T: Send + 'static>(
+        &self,
+        mut gate: OwnedMutexGuard<Option<File>>,
+        work: impl FnOnce(&mut Option<File>) -> std::io::Result<T> + Send + 'static,
+    ) -> Result<(OwnedMutexGuard<Option<File>>, std::io::Result<T>), Refused> {
+        tokio::task::spawn_blocking(move || {
+            let done = work(&mut gate);
+            (gate, done)
+        })
+        .await
+        .map_err(|error| Refused::Failed(format!("Couldn’t save the file ({error}).")))
+    }
+
+    /// Writes `bytes` at the end of the upload `id`'s part file, when the
+    /// disk keeps its floor after them, and counts them off its
+    /// reservation. Gives the gate back with how many bytes it wrote.
     async fn append(
         &self,
-        file: Option<File>,
+        gate: OwnedMutexGuard<Option<File>>,
+        id: &str,
+        upload: &Upload,
         bytes: Vec<u8>,
-    ) -> (Option<File>, std::io::Result<u64>) {
-        let Some(file) = file else {
-            return (None, Ok(0));
-        };
+    ) -> Result<(OwnedMutexGuard<Option<File>>, std::io::Result<u64>), Refused> {
         if bytes.is_empty() {
-            return (Some(file), Ok(0));
+            return Ok((gate, Ok(0)));
         }
-        let written = bytes.len() as u64;
+        let (table, id, free) = (self.table.clone(), id.to_string(), self.free);
+        let folder = upload.folder.real().to_path_buf();
         #[cfg(test)]
         let disk = self.disk;
-        let write = move |file: &mut File| {
+        let write = move |slot: &mut Option<File>| {
             use std::io::Write as _;
             #[cfg(test)]
             std::thread::sleep(disk.delay);
-            file.write_all(&bytes).map(|()| written)
+            let file = slot
+                .as_mut()
+                .ok_or_else(|| std::io::Error::other("the file is gone"))?;
+            let written = bytes.len() as u64;
+            if let Some(left) = free(&folder)
+                && left < FREE_FLOOR.saturating_add(written)
+            {
+                return Err(std::io::Error::from(std::io::ErrorKind::StorageFull));
+            }
+            file.write_all(&bytes)?;
+            if let Some(entry) = lock(&table).get_mut(&id) {
+                entry.reserved = entry.reserved.saturating_sub(written);
+                entry.touched = Instant::now();
+            }
+            Ok(written)
         };
         #[cfg(test)]
         if disk.on_worker {
-            let mut file = file;
-            let done = write(&mut file);
-            return (Some(file), done);
+            let mut gate = gate;
+            let done = write(&mut gate);
+            return Ok((gate, done));
         }
-        match on_disk(file, write).await {
-            Some((file, done)) => (Some(file), done),
-            None => (None, Ok(0)),
+        self.disk(gate, write).await
+    }
+
+    /// Saves the whole part file of the upload `id` under its name, or the
+    /// first numbered one no file has, and records it as Complete, in one
+    /// disk step. If the upload was removed meanwhile, the step removes the
+    /// file it saved.
+    async fn complete(
+        &self,
+        gate: OwnedMutexGuard<Option<File>>,
+        id: &str,
+        upload: &Arc<Upload>,
+    ) -> Result<UploadState, Refused> {
+        let (table, id, saving) = (self.table.clone(), id.to_string(), upload.clone());
+        let (_gate, done) = self
+            .disk(gate, move |slot| {
+                if let Some(file) = slot.as_mut() {
+                    file.sync_all()?;
+                }
+                // (Closed before it's renamed.)
+                *slot = None;
+                let (file, kind) = saving.save()?;
+                let mut table = lock(&table);
+                match table.get_mut(&id) {
+                    Some(entry) if Arc::ptr_eq(&entry.upload, &saving) => {
+                        entry.state = State::Complete(file, kind);
+                        entry.reserved = 0;
+                        entry.touched = Instant::now();
+                        Ok(Some(kind))
+                    }
+                    _ => {
+                        drop(table);
+                        let _ = saving.folder.remove_file(&file.name);
+                        Ok(None)
+                    }
+                }
+            })
+            .await?;
+        match done {
+            Ok(Some(kind)) => Ok(upload.state_now(upload.size, Some(kind))),
+            Ok(None) => Err(gone()),
+            Err(error) => Err(write_failed(&upload.name, &error)),
         }
     }
 
     /// What the upload `id` holds. A request still writing it stops first,
     /// so the page can go on from there.
     pub(super) async fn state(&self, id: &str) -> Result<UploadState, Refused> {
-        let upload = self.get(id)?;
-        upload.touch();
+        let (upload, _) = self.touch(id)?;
         let _ = upload.take_over();
-        let mut writer = upload.writer.lock().await;
-        let Some(file) = writer.take() else {
-            return upload.state_without_writer();
-        };
-        let Some((file, held)) = on_disk(file, |file| Ok(file.metadata()?.len())).await else {
-            return Err(lost(&upload.name));
-        };
-        *writer = Some(file);
+        let gate = upload.writer.clone().lock_owned().await;
+        match self.state_of(id, &upload) {
+            Some(State::Receiving) => {}
+            Some(State::Complete(_, kind) | State::Claimed(_, kind, _)) => {
+                return Ok(upload.state_now(upload.size, Some(kind)));
+            }
+            Some(State::Reserved) | None => return Err(gone()),
+        }
+        let (_gate, held) = self.disk(gate, slot_length).await?;
         match held {
-            Ok(held) => Ok(upload.state_now(held)),
+            Ok(held) => Ok(upload.state_now(held, None)),
             Err(error) => Err(write_failed(&upload.name, &error)),
         }
     }
 
-    /// Removes the upload `id` and its file, unless it was sent.
+    /// Removes the upload `id` and its file, unless a message is sending
+    /// it.
     pub(super) async fn remove(&self, id: &str) -> Result<(), Refused> {
-        let upload = lock(&self.table).remove(id);
-        let upload = upload.ok_or_else(|| Refused::Gone("Arko no longer has this file.".into()))?;
-        delete(upload).await;
+        let removed = {
+            let mut table = lock(&self.table);
+            let claimed = match table.get(id) {
+                None => return Err(Refused::Gone("Arko no longer has this file.".into())),
+                Some(entry) => match &entry.state {
+                    State::Claimed(file, ..) => Some(file.name.clone()),
+                    _ => None,
+                },
+            };
+            if let Some(name) = claimed {
+                return Err(Refused::Claimed(format!("{name} is being sent.")));
+            }
+            table.remove(id)
+        };
+        if let Some(entry) = removed {
+            delete(entry).await;
+        }
         Ok(())
     }
 
-    /// The uploads `ids`, whole, as files to send with a message, each with
-    /// its bytes when they may go to the model. They wait still, until
-    /// [`sent`](Self::sent).
-    pub(super) async fn take(&self, ids: &[String]) -> Result<Vec<Attached>, String> {
+    /// Claims the uploads `ids` for a message, all or none. Each must be
+    /// whole, not claimed by another message, and named once. Their files
+    /// come with their bytes when they may go to the model. The claim holds
+    /// until [`commit`](Self::commit) or [`release`](Self::release).
+    pub(super) async fn take(&self, ids: &[String]) -> Result<Claim, String> {
         if ids.len() > attachments::MAX_FILES {
             return Err(format!(
                 "A message takes {} files at most. Remove some, and send them with another.",
                 attachments::MAX_FILES
             ));
         }
-        let mut uploads = Vec::new();
-        for id in ids {
-            let Ok(upload) = self.get(id) else {
-                return Err("Arko no longer has a file you attached. Attach it again.".into());
-            };
-            upload.touch();
-            let done = lock(&upload.state).done.clone();
-            let Some(done) = done else {
-                return Err(format!("{} isn’t uploaded yet.", upload.name));
-            };
-            uploads.push((upload, done));
-        }
-        tokio::task::spawn_blocking(move || {
-            uploads
+        let number = self.claims.fetch_add(1, Ordering::Relaxed);
+        let claimed = self.claim(ids, number)?;
+        let read = tokio::task::spawn_blocking(move || {
+            claimed
                 .into_iter()
-                .map(|(upload, (file, kind))| {
-                    let most = match kind {
-                        Kind::Image => attachments::MAX_IMAGE_BYTES,
-                        Kind::Text => attachments::INLINE_MAX_BYTES as u64,
-                        Kind::File => 0,
-                    };
-                    let content = if file.bytes <= most {
-                        let bytes = upload.folder.read(&file.name).map_err(|error| {
-                            format!(
-                                "Couldn’t read {} ({}).",
-                                file.path.display(),
-                                crate::profiles::reason_of(&error)
-                            )
-                        })?;
-                        Some(Arc::from(bytes))
-                    } else {
-                        None
-                    };
-                    Ok(Attached {
-                        file,
-                        kind,
-                        content,
-                    })
-                })
-                .collect()
+                .map(|(upload, file, kind)| read_for_send(&upload, file, kind))
+                .collect::<Result<Vec<_>, String>>()
         })
         .await
-        .map_err(|error| format!("Couldn’t read the files ({error})."))?
+        .unwrap_or_else(|error| Err(format!("Couldn’t read the files ({error}).")));
+        match read {
+            Ok(files) => Ok(Claim { number, files }),
+            Err(why) => {
+                self.release(number);
+                Err(why)
+            }
+        }
     }
 
-    /// The uploads `ids` went with a message, so they are files of the
-    /// project now.
-    pub(super) fn sent(&self, ids: &[String]) {
+    /// Marks the uploads `ids` Claimed by the claim `number`, in one step,
+    /// or none of them when one can't be.
+    fn claim(
+        &self,
+        ids: &[String],
+        number: u64,
+    ) -> Result<Vec<(Arc<Upload>, FileRef, Kind)>, String> {
         let mut table = lock(&self.table);
+        let mut seen = HashSet::new();
+        let mut claimed = Vec::new();
         for id in ids {
-            table.remove(id);
+            let Some(entry) = table.get(id) else {
+                return Err("Arko no longer has a file you attached. Attach it again.".into());
+            };
+            if !seen.insert(id) {
+                return Err(format!("{} is attached twice.", entry.upload.name));
+            }
+            match &entry.state {
+                State::Complete(file, kind) => {
+                    claimed.push((entry.upload.clone(), file.clone(), *kind))
+                }
+                State::Claimed(file, ..) => {
+                    return Err(format!("{} is being sent with another message.", file.name));
+                }
+                State::Reserved | State::Receiving => {
+                    return Err(format!("{} isn’t uploaded yet.", entry.upload.name));
+                }
+            }
+        }
+        for (id, (_, file, kind)) in ids.iter().zip(&claimed) {
+            if let Some(entry) = table.get_mut(id) {
+                entry.state = State::Claimed(file.clone(), *kind, number);
+                entry.touched = Instant::now();
+            }
+        }
+        Ok(claimed)
+    }
+
+    /// The message of the claim `number` went, so its uploads are files of
+    /// the project now.
+    pub(super) fn commit(&self, number: u64) {
+        lock(&self.table).retain(
+            |_, entry| !matches!(entry.state, State::Claimed(.., claim) if claim == number),
+        );
+    }
+
+    /// The message of the claim `number` didn't go, so its uploads wait to
+    /// be sent again.
+    pub(super) fn release(&self, number: u64) {
+        let mut table = lock(&self.table);
+        for entry in table.values_mut() {
+            if let State::Claimed(file, kind, claim) = &entry.state
+                && *claim == number
+            {
+                entry.state = State::Complete(file.clone(), *kind);
+                entry.touched = Instant::now();
+            }
         }
     }
 
-    /// Removes every upload not sent, with its file, as the server stops.
+    /// Removes every upload not being sent, with its file, as the server
+    /// stops.
     pub(super) async fn remove_unsent(&self) {
-        let uploads: Vec<Arc<Upload>> = lock(&self.table)
-            .drain()
-            .map(|(_, upload)| upload)
-            .collect();
-        for upload in uploads {
-            delete(upload).await;
+        let removed: Vec<Entry> = {
+            let mut table = lock(&self.table);
+            let ids: Vec<String> = table
+                .iter()
+                .filter(|(_, entry)| !matches!(entry.state, State::Claimed(..)))
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.iter().filter_map(|id| table.remove(id)).collect()
+        };
+        for entry in removed {
+            delete(entry).await;
         }
     }
 
-    /// Removes the uploads no request touched for [`ABANDONED`].
+    /// Removes the uploads no request touched for [`ABANDONED`], deciding
+    /// and removing in one step from each as it is then. One a message is
+    /// sending, or a request is writing, stays.
     async fn remove_abandoned(&self) {
         let now = Instant::now();
-        let uploads: Vec<(String, Arc<Upload>)> = lock(&self.table)
-            .iter()
-            .map(|(id, upload)| (id.clone(), upload.clone()))
-            .collect();
-        let old: Vec<String> = uploads
-            .into_iter()
-            .filter(|(_, upload)| now.duration_since(upload.touched()) > ABANDONED)
-            .map(|(id, _)| id)
-            .collect();
-        let abandoned: Vec<Arc<Upload>> = {
+        let removed: Vec<Entry> = {
             let mut table = lock(&self.table);
-            old.iter().filter_map(|id| table.remove(id)).collect()
+            let ids: Vec<String> = table
+                .iter()
+                .filter(|(_, entry)| {
+                    now.duration_since(entry.touched) > ABANDONED
+                        && !matches!(entry.state, State::Claimed(..))
+                        && entry.upload.writer.try_lock().is_ok()
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.iter().filter_map(|id| table.remove(id)).collect()
         };
-        for upload in abandoned {
-            delete(upload).await;
+        for entry in removed {
+            delete(entry).await;
         }
     }
 }
@@ -482,40 +673,23 @@ enum End {
     Stalled,
     TooLarge,
     Failed(std::io::Error),
-    /// A write that panicked took the file with it.
-    Lost,
 }
 
 impl Upload {
-    fn touch(&self) {
-        lock(&self.state).touched = Instant::now();
-    }
-
-    fn touched(&self) -> Instant {
-        lock(&self.state).touched
-    }
-
     /// Makes this request the newest, which stops an older one, and gives
-    /// what tells of a newer one and this one's number.
+    /// what tells of a newer one and this one's number. The number is taken
+    /// in the same step that raises it, so no two requests share one.
     fn take_over(&self) -> (watch::Receiver<u64>, u64) {
-        self.newest.send_modify(|newest| *newest += 1);
-        let mut newer = self.newest.subscribe();
-        let mine = *newer.borrow_and_update();
+        let newer = self.newest.subscribe();
+        let mut mine = 0;
+        self.newest.send_modify(|newest| {
+            *newest += 1;
+            mine = *newest;
+        });
         (newer, mine)
     }
 
-    /// The state of an upload whose part file no request holds: saved,
-    /// or lost to a write that panicked.
-    fn state_without_writer(&self) -> Result<UploadState, Refused> {
-        let saved = lock(&self.state).done.is_some();
-        match saved {
-            true => Ok(self.state_now(self.size)),
-            false => Err(lost(&self.name)),
-        }
-    }
-
-    fn state_now(&self, received: u64) -> UploadState {
-        let kind = lock(&self.state).done.as_ref().map(|(_, kind)| *kind);
+    fn state_now(&self, received: u64, kind: Option<Kind>) -> UploadState {
         UploadState {
             received,
             size: self.size,
@@ -524,12 +698,11 @@ impl Upload {
         }
     }
 
-    /// Saves the whole part file under the upload's name, or the first
+    /// Renames the whole part file to the upload's name, or the first
     /// numbered one no file has, with its type, its kind and a text's
     /// lines. Blocks.
-    fn save(&self) -> Result<(FileRef, Kind), Refused> {
-        let failed = |error: std::io::Error| write_failed(&self.name, &error);
-        let (kind, mime, lines) = self.kind().map_err(failed)?;
+    fn save(&self) -> std::io::Result<(FileRef, Kind)> {
+        let (kind, mime, lines) = self.kind()?;
         let mut name = self.name.clone();
         for n in 2.. {
             match self.folder.rename_new(&self.part, &name) {
@@ -537,7 +710,7 @@ impl Upload {
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && n < 10_000 => {
                     name = attachments::numbered_name(&self.name, n);
                 }
-                Err(error) => return Err(failed(error)),
+                Err(error) => return Err(error),
             }
         }
         let file = FileRef {
@@ -581,22 +754,43 @@ impl Upload {
     }
 }
 
-/// Runs `work` on `file` on the runtime's blocking pool, and gives the file
-/// back with what it did, or `None` when it panicked.
-async fn on_disk<T: Send + 'static>(
-    mut file: File,
-    work: impl FnOnce(&mut File) -> std::io::Result<T> + Send + 'static,
-) -> Option<(File, std::io::Result<T>)> {
-    tokio::task::spawn_blocking(move || {
-        let done = work(&mut file);
-        (file, done)
-    })
-    .await
-    .ok()
+/// The length of the part file in `slot`.
+fn slot_length(slot: &mut Option<File>) -> std::io::Result<u64> {
+    let file = slot
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("the file is gone"))?;
+    Ok(file.metadata()?.len())
 }
 
-fn lost(name: &str) -> Refused {
-    Refused::Failed(format!("Couldn’t save {name}. Attach it again."))
+/// The file `file` of `upload` as a message sends it, with its bytes when
+/// they may go to the model. Blocks.
+fn read_for_send(upload: &Upload, file: FileRef, kind: Kind) -> Result<Attached, String> {
+    let most = match kind {
+        Kind::Image => attachments::MAX_IMAGE_BYTES,
+        Kind::Text => attachments::INLINE_MAX_BYTES as u64,
+        Kind::File => 0,
+    };
+    let content = if file.bytes <= most {
+        let bytes = upload.folder.read(&file.name).map_err(|error| {
+            format!(
+                "Couldn’t read {} ({}).",
+                file.path.display(),
+                crate::profiles::reason_of(&error)
+            )
+        })?;
+        Some(Arc::from(bytes))
+    } else {
+        None
+    };
+    Ok(Attached {
+        file,
+        kind,
+        content,
+    })
+}
+
+fn gone() -> Refused {
+    Refused::Gone("Arko no longer has this file. Attach it again.".into())
 }
 
 fn write_failed(name: &str, error: &std::io::Error) -> Refused {
@@ -618,17 +812,19 @@ fn sentence(words: String) -> String {
     }
 }
 
-/// Stops the upload's request and removes its file, part or whole.
-async fn delete(upload: Arc<Upload>) {
+/// Removes an upload taken out of the table, once a request writing it has
+/// stopped: its part file, or its saved file when it was whole.
+async fn delete(entry: Entry) {
+    let Entry { upload, state, .. } = entry;
     let _ = upload.take_over();
-    let file = upload.writer.lock().await.take();
+    let gate = upload.writer.clone().lock_owned().await;
     let _ = tokio::task::spawn_blocking(move || {
-        let whole = file.is_none();
-        drop(file);
-        let done = lock(&upload.state).done.clone();
-        let name = match (whole, done) {
-            (true, Some((file, _))) => file.name,
-            _ => upload.part.clone(),
+        let mut gate = gate;
+        // (Closed before it's removed.)
+        *gate = None;
+        let name = match state {
+            State::Complete(file, _) | State::Claimed(file, ..) => file.name,
+            State::Reserved | State::Receiving => upload.part.clone(),
         };
         if let Err(error) = upload.folder.remove_file(&name)
             && error.kind() != std::io::ErrorKind::NotFound
@@ -737,6 +933,7 @@ pub(super) fn remove_left_parts(workspace: &Path) {
     }
 }
 
+#[cfg(test)]
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
@@ -934,7 +1131,8 @@ pub(super) mod tests {
         assert_eq!(
             refused,
             Refused::NoSpace(
-                "There isn’t room for large.mov. The computer has 2.0 GB free.".into()
+                "There isn’t room for large.mov. Arko keeps 2.0 GB of the computer’s disk free."
+                    .into()
             )
         );
         assert_eq!(names(&work).len(), 2, "{:?}", names(&work));
@@ -956,7 +1154,7 @@ pub(super) mod tests {
                     let id = uploads.create("image.jpg", 4).await.unwrap();
                     uploads.put(&id, 0, whole(&bytes)).await.unwrap();
                     let taken = uploads.take(std::slice::from_ref(&id)).await.unwrap();
-                    (n, taken[0].file.name.clone())
+                    (n, taken.files[0].file.name.clone())
                 })
             })
             .collect();
@@ -1001,7 +1199,8 @@ pub(super) mod tests {
             uploads.put(&id, 0, whole(&bytes)).await.unwrap();
             ids.push(id);
         }
-        let taken = uploads.take(&ids).await.unwrap();
+        let claim = uploads.take(&ids).await.unwrap();
+        let taken = &claim.files;
         assert_eq!(taken[0].kind, Kind::Image);
         assert_eq!(taken[0].file.mime, "image/png");
         assert_eq!(taken[0].content.as_deref(), Some(&pixel()[..]));
@@ -1014,9 +1213,12 @@ pub(super) mod tests {
         assert_eq!(taken[2].kind, Kind::File);
         assert_eq!(taken[2].file.lines, None);
         assert_eq!(taken[2].content, None);
-        // They wait until sent, and stay once sent.
-        assert!(uploads.take(&ids).await.is_ok());
-        uploads.sent(&ids);
+        // Claimed, they can't go with another message until released, and
+        // they stay once sent.
+        assert!(uploads.take(&ids).await.is_err());
+        uploads.release(claim.number);
+        let again = uploads.take(&ids).await.unwrap();
+        uploads.commit(again.number);
         uploads.remove_unsent().await;
         assert!(uploads.take(&ids).await.is_err());
         assert!(taken.iter().all(|attached| attached.file.path.is_file()));
@@ -1062,7 +1264,8 @@ pub(super) mod tests {
             uploads.put(&id, 0, whole(&data(3))).await.unwrap();
             whole_ids.push(id);
         }
-        uploads.sent(&whole_ids[..1]);
+        let claim = uploads.take(&whole_ids[..1]).await.unwrap();
+        uploads.commit(claim.number);
         uploads.remove(&whole_ids[2]).await.unwrap();
         uploads.remove_unsent().await;
         assert_eq!(names(&work), [".gitignore", "sent.bin"]);
@@ -1146,8 +1349,8 @@ pub(super) mod tests {
                             let parts = bytes.chunks(WRITE_BYTES).map(<[u8]>::to_vec).collect();
                             assert!(store.put(&id, 0, chunks(parts)).await.unwrap().done);
                             let taken = store.take(std::slice::from_ref(&id)).await.unwrap();
-                            assert_eq!(taken[0].file.bytes, size as u64);
-                            store.sent(std::slice::from_ref(&id));
+                            assert_eq!(taken.files[0].file.bytes, size as u64);
+                            store.commit(taken.number);
                         }
                     })
                 })
@@ -1274,6 +1477,194 @@ pub(super) mod tests {
             assert!(refused.starts_with("Couldn't make"), "{refused}");
             assert!(refused.contains("permission denied"), "{refused}");
         }
+    }
+
+    /// Uploads started at once can't pass the limit on those waiting
+    /// together.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn uploads_started_at_once_keep_to_the_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, _) = uploads(temp.path());
+        let store = Arc::new(store.with_free(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            Some(100 << 30)
+        }));
+        let results = futures_util::future::join_all((0..64).map(|n| {
+            let store = store.clone();
+            async move { store.create(&format!("{n}.txt"), 1).await }
+        }))
+        .await;
+        let accepted = results.iter().filter(|result| result.is_ok()).count();
+        assert_eq!(accepted, MAX_UNSENT);
+    }
+
+    /// The bytes of uploads still to come are held against the disk's
+    /// free space, and given back as they're written.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn uploads_on_their_way_hold_their_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, _) = uploads(temp.path());
+        let store = store.with_free(|_| Some(FREE_FLOOR + 100));
+        let first = store.create("first.bin", 60).await.unwrap();
+        let refused = store.create("second.bin", 60).await.unwrap_err();
+        assert_eq!(
+            refused,
+            Refused::NoSpace(
+                "There isn’t room for second.bin. Arko keeps 2.0 GB of the computer’s disk free."
+                    .into()
+            )
+        );
+        store.put(&first, 0, whole(&data(60))).await.unwrap();
+        assert!(store.create("second.bin", 60).await.is_ok());
+    }
+
+    /// A write that would take the disk below its floor, as other programs
+    /// fill it, is refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_keeps_the_disk_above_its_floor() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, _) = uploads(temp.path());
+        static FREE: AtomicU64 = AtomicU64::new(u64::MAX);
+        let store = store.with_free(|_| Some(FREE.load(Ordering::Relaxed)));
+        let id = store.create("a.bin", 3 * WRITE_BYTES as u64).await.unwrap();
+        // Another program fills the disk once the upload started.
+        FREE.store(FREE_FLOOR + 1000, Ordering::Relaxed);
+        let refused = store
+            .put(&id, 0, chunks(vec![data(WRITE_BYTES); 3]))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused,
+            Refused::NoSpace("The computer’s disk is full.".into())
+        );
+    }
+
+    /// A message claims its uploads, all or none. Another message can't
+    /// send them, nor can they be removed, until the claim is released.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_claims_its_uploads_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, _) = uploads(temp.path());
+        let mut ids = Vec::new();
+        for name in ["a.mp4", "b.mp4"] {
+            let id = store.create(name, 1).await.unwrap();
+            store.put(&id, 0, whole(&[0])).await.unwrap();
+            ids.push(id);
+        }
+        let claim = store.take(&ids[..1]).await.unwrap();
+        assert_eq!(
+            store.take(&ids).await.err().unwrap(),
+            "a.mp4 is being sent with another message."
+        );
+        assert_eq!(
+            store.remove(&ids[0]).await,
+            Err(Refused::Claimed("a.mp4 is being sent.".into()))
+        );
+        // The second wasn't claimed by the message refused.
+        let other = store.take(&ids[1..]).await.unwrap();
+        store.release(other.number);
+        let twice = vec![ids[1].clone(), ids[1].clone()];
+        assert_eq!(
+            store.take(&twice).await.err().unwrap(),
+            "b.mp4 is attached twice."
+        );
+        store.commit(claim.number);
+        assert!(claim.files[0].file.path.is_file(), "a sent file stays");
+        assert!(store.take(&ids[..1]).await.is_err());
+    }
+
+    /// The sweep decides and removes in one step. An upload a message is
+    /// sending or a request is writing stays, however old.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_sweep_leaves_uploads_in_use() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, work) = uploads(temp.path());
+        let mut ids = Vec::new();
+        for name in ["claimed.bin", "writing.bin", "idle.bin"] {
+            let id = store.create(name, 2).await.unwrap();
+            if name != "writing.bin" {
+                store.put(&id, 0, whole(&[0, 0])).await.unwrap();
+            }
+            ids.push(id);
+        }
+        let claim = store.take(&ids[..1]).await.unwrap();
+        let writing = lock(&store.table)[&ids[1]].upload.clone();
+        let gate = writing.writer.clone().lock_owned().await;
+        for entry in lock(&store.table).values_mut() {
+            entry.touched = Instant::now() - ABANDONED - Duration::from_secs(1);
+        }
+        store.remove_abandoned().await;
+        drop(gate);
+        let left: Vec<String> = lock(&store.table).keys().cloned().collect();
+        assert!(left.contains(&ids[0]) && left.contains(&ids[1]), "{left:?}");
+        assert!(!left.contains(&ids[2]));
+        assert!(!folder_of(&work).join("idle.bin").exists());
+        store.commit(claim.number);
+    }
+
+    /// No two requests for an upload share a number, so the newest always
+    /// stops the one before.
+    #[test]
+    fn requests_take_numbers_of_their_own() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (store, _) = uploads(temp.path());
+        let id = runtime.block_on(store.create("a.bin", 1)).unwrap();
+        let upload = lock(&store.table)[&id].upload.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (upload, barrier) = (upload.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (0..10_000)
+                        .map(|_| upload.take_over().1)
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut numbers: Vec<u64> = threads
+            .into_iter()
+            .flat_map(|thread| thread.join().unwrap())
+            .collect();
+        let taken = numbers.len();
+        numbers.sort_unstable();
+        numbers.dedup();
+        assert_eq!(numbers.len(), taken);
+    }
+
+    /// A request cancelled while its bytes are written (a phone's
+    /// connection dropping) leaves the part file in its upload, which goes
+    /// on from what it holds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_cancelled_request_leaves_the_upload_to_go_on() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, work) = uploads(temp.path());
+        let slow = Disk {
+            delay: Duration::from_millis(500),
+            on_worker: false,
+        };
+        let store = Arc::new(Uploads {
+            disk: slow,
+            ..store
+        });
+        let bytes = data(300_000);
+        let id = store.create("video.mp4", 300_000).await.unwrap();
+        let writing = tokio::spawn({
+            let (store, id, bytes) = (store.clone(), id.clone(), bytes.clone());
+            async move { store.put(&id, 0, whole(&bytes)).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        writing.abort();
+        let _ = writing.await;
+        let state = store.state(&id).await.unwrap();
+        assert_eq!(state.received, 300_000, "the write in progress finished");
+        let done = store.put(&id, state.received, whole(&[])).await.unwrap();
+        assert!(done.done);
+        assert_eq!(
+            std::fs::read(folder_of(&work).join("video.mp4")).unwrap(),
+            bytes
+        );
     }
 
     #[test]

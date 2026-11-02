@@ -1445,15 +1445,6 @@ async fn message(
             ..
         },
     ) = sent;
-    let files = match ids.is_empty() || other_feed(&app, &body) {
-        true => Vec::new(),
-        false => match app.uploads.take(&ids).await {
-            Ok(files) => files,
-            Err(words) => {
-                return axum::Json(Verdict::refused(RefusalKind::Files, words)).into_response();
-            }
-        },
-    };
     let to = to.filter(|worker| !worker.is_empty() && !worker.contains(char::is_whitespace));
     // Text like "/usr/bin is missing" is a message, not a command, and one
     // that reads as a mistyped command is the session's to refuse.
@@ -1464,9 +1455,66 @@ async fn message(
         Some(worker) if !reads_as_command => format!("/message {worker} {}", text.trim()),
         _ => text,
     };
-    let action = match () {
+    // The files are claimed, sent and committed or released in a task of
+    // its own, so the claim ends with the verdict however this request
+    // ends (a phone's dropped connection included).
+    let sending = tokio::spawn(async move {
+        let claim = match ids.is_empty() || other_feed(&app, &body) {
+            true => None,
+            false => match app.uploads.take(&ids).await {
+                Ok(claim) => Some(claim),
+                Err(words) => {
+                    return Ok(Verdict::refused(RefusalKind::Files, words));
+                }
+            },
+        };
+        let (number, files) = match claim {
+            Some(claim) => (Some(claim.number), claim.files),
+            None => (None, Vec::new()),
+        };
+        let action = page_action(
+            line,
+            to.is_some(),
+            reads_as_command,
+            answers,
+            confirm_uncached,
+            files,
+        );
+        let verdict = verdict_of(&app, &body, action).await;
+        if let Some(number) = number {
+            match &verdict {
+                Ok(Verdict::Accepted { .. }) => app.uploads.commit(number),
+                _ => app.uploads.release(number),
+            }
+        }
+        verdict
+    });
+    match sending.await {
+        Ok(Ok(verdict)) => axum::Json(verdict).into_response(),
+        Ok(Err(response)) => response,
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error_body("Arko stopped before saying whether it went."),
+        )
+            .into_response(),
+    }
+}
+
+/// What the page's message `line` asks of the session with its `files`, as
+/// a reply to the questions `answers` names, a message that continues a
+/// worker once the user confirmed it, or a message. `to_worker` says it
+/// was sent from a worker's view.
+fn page_action(
+    line: String,
+    to_worker: bool,
+    reads_as_command: bool,
+    answers: Vec<String>,
+    confirm_uncached: bool,
+    files: Vec<crate::attachments::Attached>,
+) -> Action {
+    match () {
         // A reply to the main agent's questions.
-        _ if !answers.is_empty() && to.is_none() && !reads_as_command => Action::Reply {
+        _ if !answers.is_empty() && !to_worker && !reads_as_command => Action::Reply {
             text: line,
             answers,
             files,
@@ -1478,15 +1526,7 @@ async fn message(
             Action::Continue(line)
         }
         _ => Action::Message { text: line, files },
-    };
-    let verdict = match verdict_of(&app, &body, action).await {
-        Ok(verdict) => verdict,
-        Err(response) => return response,
-    };
-    if matches!(verdict, Verdict::Accepted { .. }) {
-        app.uploads.sent(&ids);
     }
-    axum::Json(verdict).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1970,6 +2010,7 @@ fn upload_refused(refused: UploadRefused) -> Response {
             (StatusCode::CONFLICT, words, None)
         }
         UploadRefused::Gone(words) => (StatusCode::NOT_FOUND, words, None),
+        UploadRefused::Claimed(words) => (StatusCode::CONFLICT, words, None),
         UploadRefused::Elsewhere(received) => (
             StatusCode::CONFLICT,
             "Arko holds another part of the file.".into(),
@@ -4819,6 +4860,97 @@ mod tests {
         let response = served.get("/api/attachments/notes.md", Some(&cookie)).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.text().await.unwrap(), "notes");
+    }
+
+    /// A file a message is sending can't be removed until the verdict, and
+    /// the accepted message's file stays.
+    #[tokio::test]
+    async fn a_file_being_sent_isnt_removed() {
+        let mut served = serve(&Feed::new("main"));
+        let cookie = served.login().await;
+        let id = served.upload(&cookie, "video.mp4", &[0]).await;
+        let body = serde_json::json!({ "text": "Look", "files": [id] }).to_string();
+        let request = tokio::spawn({
+            let (http, url, cookie) = (
+                served.http.clone(),
+                format!("{}/api/message", served.base),
+                cookie.clone(),
+            );
+            async move {
+                http.post(url)
+                    .header(header::COOKIE, cookie)
+                    .body(body)
+                    .send()
+                    .await
+                    .unwrap()
+            }
+        });
+        let Some(Action::Send { action, reply }) = served.actions.recv().await else {
+            panic!("a send");
+        };
+        let Action::Message { files, .. } = *action else {
+            panic!("a message");
+        };
+        let response = served
+            .http
+            .delete(format!("{}/api/uploads/{id}", served.base))
+            .header(header::COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        reply.answer(Verdict::accepted(super::super::Delivery::Turn, None));
+        let verdict: Verdict = request.await.unwrap().json().await.unwrap();
+        assert!(matches!(verdict, Verdict::Accepted { .. }));
+        assert!(files[0].file.path.is_file(), "the message's video stays");
+    }
+
+    /// Two messages sent at once with one upload: only one of them takes
+    /// it.
+    #[tokio::test]
+    async fn two_messages_cant_send_one_upload() {
+        let mut served = serve(&Feed::new("main"));
+        let cookie = served.login().await;
+        let id = served.upload(&cookie, "notes.md", b"abc").await;
+        let requests: Vec<_> = (0..2)
+            .map(|n| {
+                let (http, url, cookie, id) = (
+                    served.http.clone(),
+                    format!("{}/api/message", served.base),
+                    cookie.clone(),
+                    id.clone(),
+                );
+                tokio::spawn(async move {
+                    let body = serde_json::json!({ "text": format!("Look {n}"), "files": [id] });
+                    let response = http
+                        .post(url)
+                        .header(header::COOKIE, cookie)
+                        .body(body.to_string())
+                        .send()
+                        .await
+                        .unwrap();
+                    response.json::<Verdict>().await.unwrap()
+                })
+            })
+            .collect();
+        let Some(Action::Send { reply, .. }) = served.actions.recv().await else {
+            panic!("a send");
+        };
+        let second = tokio::time::timeout(Duration::from_millis(500), served.actions.recv()).await;
+        assert!(second.is_err(), "the second message reached the session");
+        reply.answer(Verdict::accepted(super::super::Delivery::Turn, None));
+        let mut refused = 0;
+        for request in requests {
+            if let Verdict::Refused(refusal) = request.await.unwrap() {
+                assert_eq!(refusal.kind, RefusalKind::Files);
+                assert_eq!(
+                    refusal.words,
+                    "notes.md is being sent with another message."
+                );
+                refused += 1;
+            }
+        }
+        assert_eq!(refused, 1);
     }
 
     /// A message sends the uploads it names, once. A refused one keeps
