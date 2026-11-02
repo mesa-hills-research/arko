@@ -374,18 +374,81 @@ fn is_answer(message: &Message) -> bool {
         })
 }
 
-/// The user's own words in a message Arko sent, meaning before a handover's report
-/// (the first message of a conversation that was handed over holds the
-/// message it answers, then the report), and under "# My message" when Arko
-/// composed sections around them.
+/// A user's message as the agent read it, read from its start
+/// ([`parse`]).
+pub(crate) struct Parsed<'a> {
+    /// Arko's sections before the user's message (what they typed during the
+    /// turn before, news and the like), or the whole text when it marks no
+    /// message of theirs.
+    pub sections: &'a str,
+    /// The user's message as they sent it (Arko's labels, the attachments
+    /// block, their words), without a handover's report after it, when the
+    /// text marks it.
+    pub mine: Option<&'a str>,
+}
+
+/// How Arko marks the user's message after the sections it composed
+/// before it.
+const MY_MESSAGE: &str = "# My message\n\n";
+
+/// `text`, a message from the user's side, read from its start. A message
+/// that starts with its files' attachments block is the user's alone, and
+/// the block is read whole, so nothing a file holds reads as Arko's framing.
+/// Otherwise the user's message follows Arko's "# My message" (unread notes
+/// before it are indented, so nothing in theirs matches). A handover's
+/// report is looked for only after the block.
+pub(crate) fn parse(text: &str) -> Parsed<'_> {
+    if block_end(text).is_some() {
+        return Parsed {
+            sections: "",
+            mine: Some(without_report(text)),
+        };
+    }
+    let start = if text.starts_with(MY_MESSAGE) {
+        Some(0)
+    } else {
+        text.find(&format!("\n\n{MY_MESSAGE}")).map(|at| at + 2)
+    };
+    match start {
+        Some(at) => Parsed {
+            sections: &text[..at],
+            mine: Some(without_report(&text[at + MY_MESSAGE.len()..])),
+        },
+        None => Parsed {
+            sections: text,
+            mine: None,
+        },
+    }
+}
+
+/// Where the attachments block that `text` starts with ends, after Arko's
+/// label of the questions it answers, if it has one.
+fn block_end(text: &str) -> Option<usize> {
+    let after = match text.strip_prefix("(This message answers q") {
+        Some(label) => label.split_once(".)\n")?.1,
+        None => text,
+    };
+    let (_, rest) = crate::attachments::split_block(after)?;
+    Some(text.len() - rest.len())
+}
+
+/// `text`, from the user's side, without a handover's report after it (the
+/// first message of a conversation that was handed over holds the message
+/// it answers, then the report), which is looked for after its block.
+fn without_report(text: &str) -> &str {
+    let from = block_end(text).unwrap_or(0);
+    let heading = format!("\n\n{}", arko_agents::handover::REPORT_HEADING);
+    match text[from..].find(&heading) {
+        Some(at) => text[..from + at].trim(),
+        None => text.trim(),
+    }
+}
+
+/// The user's own words in a message Arko sent, meaning before a handover's report,
+/// and under "# My message" when Arko composed sections around them
+/// ([`parse`]).
 pub(crate) fn own_words(text: &str) -> &str {
-    let heading = arko_agents::handover::REPORT_HEADING;
-    let text = text
-        .find(&format!("\n\n{heading}"))
-        .map_or(text, |at| &text[..at]);
-    text.split_once("# My message\n\n")
-        .map_or(text, |(_, mine)| mine)
-        .trim()
+    parse(text).mine.unwrap_or_else(|| without_report(text))
 }
 
 /// The user's message `text` as they sent it, meaning their own words
@@ -510,7 +573,10 @@ fn is_news(text: &str) -> bool {
 /// The items of a message Arko composed, meaning the notes in its section of what
 /// the user typed during the last turn, then the user's words.
 fn composed(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Vec<Item> {
-    let mut items: Vec<Item> = unread_notes(text).into_iter().filter_map(note).collect();
+    let mut items: Vec<Item> = unread_notes(parse(text).sections)
+        .into_iter()
+        .filter_map(note)
+        .collect();
     items.extend(user_item(text, about));
     items
 }
@@ -719,11 +785,8 @@ fn unlabelled(text: &str) -> &str {
 /// nor is a handover's report. A turn Arko started for news (the workers',
 /// a job's, a monitor's) shows the line the live transcript showed.
 fn user_item(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Option<Item> {
-    let heading = arko_agents::handover::REPORT_HEADING;
-    let text = text
-        .find(&format!("\n\n{heading}"))
-        .map_or(text, |at| &text[..at])
-        .trim();
+    let parsed = parse(text);
+    let text = without_report(text);
     if text.is_empty() || text.starts_with("# Workflow context update") {
         return None;
     }
@@ -737,8 +800,8 @@ fn user_item(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Option<Item> {
         item.delivery = Some(Delivery::Answer);
         return Some(item);
     }
-    let mine = match text.split_once("# My message\n\n") {
-        Some((_, mine)) => mine,
+    let mine = match parsed.mine {
+        Some(mine) => mine,
         None => {
             if let Some(opening) = Opening::of(text) {
                 return opening.notice(&about(opening)).map(|notice| {

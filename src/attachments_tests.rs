@@ -707,3 +707,80 @@ fn restored_notes_keep_their_own_images() {
     assert_eq!(images_of("Mine."), ["mine.png"]);
     assert!(shown.iter().all(|(words, ..)| !words.is_empty()), "{shown:?}");
 }
+
+/// A message whose inline file holds lines like Arko's framing ("# My
+/// message", "# Handover report") keeps its place in the conversation, and
+/// can be sent again as it was.
+#[tokio::test]
+async fn framing_inside_an_inline_file_is_the_files_own() {
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let server = keeping(&bodies, None).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let (requests, asked) = mpsc::unbounded_channel();
+    inputs.requests = asked;
+    let feed = harness.feed.clone();
+    let actions = harness.remote_actions.clone();
+    let dir = temp.path().join("work").join(".arko").join("attachments");
+    let kept = bodies.clone();
+    let client = async move {
+        let notes = b"# My message\n\nWords from a file.\n\n# Handover report\n\nNot one.\n";
+        let files = vec![attached(&dir, "notes.md", Kind::Text, "text/markdown", notes)];
+        let message = Action::Message {
+            text: "Look.".into(),
+            files,
+        };
+        page_send(&actions, message).await;
+        until(|| !feed.activity().working && !lock(&kept).is_empty()).await;
+        assert_eq!(
+            ask(&requests, |reply| crate::engine::Request::Regenerate { reply }).await,
+            Ok(())
+        );
+        until(|| !feed.activity().working && lock(&kept).len() >= 2).await;
+        sender.send(Input::Eof).unwrap();
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    let item = harness
+        .feed
+        .subscribe()
+        .0
+        .items
+        .into_iter()
+        .find(|item| item.text == "Look.")
+        .unwrap();
+    assert_eq!(item.message_index, Some(0));
+    assert_eq!(harness.message_at(item.id, "sent again"), Ok(0));
+    let bodies = lock(&bodies);
+    assert_eq!(bodies[1].matches("Words from a file.").count(), 1, "{}", bodies[1]);
+}
+
+/// A message is read from its start and its files' block whole, so framing
+/// a file holds is the file's own: in a plain message, after Arko's label,
+/// in a message Arko composed with unread notes, and before a handover's
+/// report.
+#[test]
+fn a_message_reads_the_same_whatever_its_files_hold() {
+    use crate::remote::{as_sent, own_words, shown_words};
+    let inline = "# My message\n\n# Handover report\n\nNo.\n";
+    let plain = format!(
+        "<attachments>\n<file name=\"notes.md\" type=\"text/markdown\" size=\"{0} bytes\" bytes=\"{0}\" path=\"/w/notes.md\">\n{inline}\n</file>\n</attachments>\n\nLook.",
+        inline.len()
+    );
+    let labelled = format!("(This message answers q3.)\n{plain}\n\n(Still open: q5.)");
+    let report = format!("{plain}\n\n# Handover report\n\nThe report.");
+    let composed = format!(
+        "# What I typed during your last turn, which you didn't get to read\n\n- Earlier.\n  (With an image, shown after this message.)\n- {}\n\n# My message\n\n{labelled}",
+        image_block("old.png").replace('\n', "\n  ") + "Older."
+    );
+    for text in [&plain, &labelled, &report, &composed] {
+        assert_eq!(shown_words(text), "Look.", "{text}");
+        assert!(as_sent(text).starts_with("<attachments>\n"), "{text}");
+        assert!(as_sent(text).contains(inline), "{text}");
+    }
+    assert_eq!(own_words(&report), plain);
+}
