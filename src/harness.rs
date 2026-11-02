@@ -597,8 +597,6 @@ pub(crate) struct Harness {
     pub(crate) stats: Arc<Mutex<Stats>>,
     pub(crate) workflow: Option<Arc<Workflow>>,
     pub(crate) printer: Option<(mpsc::UnboundedSender<Control>, tokio::task::JoinHandle<()>)>,
-    /// The workers the user wrote to, for the event printer.
-    pub(crate) written_to: ui::WrittenTo,
     pub(crate) conversation: Conversation,
     /// The session's conversations, and which one the next message goes
     /// to (`/new`, `/resume`).
@@ -1057,7 +1055,6 @@ impl Harness {
             configs[0].tool_config.ends_task_with_text(),
             Some(Arc::downgrade(&workflow)),
             Some(self.feed.clone()),
-            self.written_to.clone(),
         ));
         *lock(&self.gauges.workflow) = Some(workflow.clone());
         *lock(&self.gauges.crew) = self.crew.clone();
@@ -2826,16 +2823,10 @@ impl Harness {
             }
             return;
         }
-        // Noted before it goes, so the line prompt prints the worker's answer
-        // from the worker's own events (see `ui::WrittenTo`).
-        let noted = self.written_to.note(to.trim());
         let sent = match &self.crew {
             Some(crew) => crew.message(to, text, self.settings.message_copies),
             None => Err("this session has no workers".to_string()),
         };
-        if sent.is_err() {
-            self.written_to.unsent(to.trim(), noted);
-        }
         match sent {
             Ok(id) => {
                 let item = self.feed.to_worker(&id, text, source);
@@ -6483,7 +6474,6 @@ pub(crate) mod tests {
             stats,
             workflow: None,
             printer: None,
-            written_to: Default::default(),
             conversation: Conversation::New,
             conversations: Default::default(),
             project: Default::default(),

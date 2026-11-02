@@ -2035,7 +2035,8 @@ fn to_r1(feed: &remote::Feed) -> Vec<(String, Option<remote::Source>)> {
 /// has it as the user's message to r1. The worker answers with
 /// `message_user`, which the feed has as r1's message to the user, and the
 /// page reads it as such. The line prompt, which has no worker's view,
-/// prints the answer under r1's name, and the text beside the call too.
+/// prints the answer under r1's name, and the text beside its calls stays
+/// in its own view.
 #[tokio::test]
 async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
     let temp = tempfile::tempdir().unwrap();
@@ -2150,11 +2151,11 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
         (read.agent.as_str(), read.kind, read.from, read.text.as_str()),
         ("r1", remote::Kind::Message, None, "Tabs it is.")
     );
-    // The line prompt prints the text and the answer under r1's name.
+    // The line prompt prints the answer under r1's name, and not the text.
     harness.flush_printer().await;
-    assert_eq!(lines.count("✉ r1 to you"), 2);
-    assert_eq!(lines.count("Changing the indents."), 1);
+    assert_eq!(lines.count("✉ r1 to you"), 1);
     assert_eq!(lines.count("Tabs it is."), 1);
+    assert_eq!(lines.count("Changing the indents."), 0);
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 

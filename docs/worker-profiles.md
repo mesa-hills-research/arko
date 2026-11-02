@@ -151,9 +151,8 @@ it on.
 
 A worker answers your message with `message_user`, as the main agent answers what you type while it
 works, and tells the agent that started it only what that agent needs. The answer shows in the
-worker's own view (`/watch r1`, or the worker's view on the web page). The line prompt has no
-worker's view, so there it prints under "r1 to you" after your `/message`, with what the worker
-writes beside its calls, until its next report.
+worker's own view (`/watch r1`, or the worker's view on the web page), and at the line prompt as
+"r1 to you".
 
 ## Worker billing
 
