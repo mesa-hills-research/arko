@@ -34,7 +34,7 @@ tui = ["dep:arboard", "dep:clap", "dep:crossterm", "dep:ratatui", "dep:rustyline
 # The web page's server (--remote, /remote). Without it, a session says
 # this build has no web page.
 remote = [
-    "dep:axum", "dep:if-addrs", "dep:qrcodegen",
+    "dep:axum", "dep:if-addrs", "dep:qrcodegen", "dep:windows-sys",
     "dep:mesquite", "dep:mesquite_bash", "dep:mesquite_c", "dep:mesquite_c_sharp",
     "dep:mesquite_cpp", "dep:mesquite_css", "dep:mesquite_diff", "dep:mesquite_go",
     "dep:mesquite_html", "dep:mesquite_java", "dep:mesquite_javascript", "dep:mesquite_json",
@@ -133,7 +133,7 @@ libc = "0.2.182"
 signal-hook = { version = "0.3.18", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console"], optional = true }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

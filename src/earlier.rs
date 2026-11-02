@@ -738,7 +738,7 @@ fn run_turns(task: &arko_agents::Task, before: usize) -> Vec<Turn> {
         }));
     let handed_over = !task.handovers.is_empty();
     let mut restated =
-        handed_over.then(|| remote::own_words(&task.initial_task_prompt).to_string());
+        handed_over.then(|| remote::shown_words(&task.initial_task_prompt).to_string());
 
     // The user's words, the replies and the lines for news, as the
     // transcript shows them.

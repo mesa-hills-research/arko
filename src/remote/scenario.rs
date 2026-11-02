@@ -37,6 +37,17 @@ struct Step {
     /// `worker_call`, `worker_finish`).
     #[serde(default)]
     worker: String,
+    /// The files a `user` step's message carried from the web page.
+    #[serde(default)]
+    files: Vec<ScriptFile>,
+}
+
+/// A file of a `user` step, at `path`, of `bytes` and the type `mime`.
+#[derive(Deserialize)]
+struct ScriptFile {
+    path: std::path::PathBuf,
+    mime: String,
+    bytes: u64,
 }
 
 fn event(event: AgentEvent) -> WorkflowEvent {
@@ -61,7 +72,29 @@ pub(crate) fn play(path: &str) -> Feed {
     for step in script.steps {
         match step.kind.as_str() {
             "user" => {
-                feed.user(&step.text, Source::Terminal, Delivery::Turn);
+                let files: Vec<crate::attachments::SentFile> = step
+                    .files
+                    .iter()
+                    .map(|file| crate::attachments::SentFile {
+                        file: crate::attachments::FileRef {
+                            name: file
+                                .path
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                            mime: file.mime.clone(),
+                            bytes: file.bytes,
+                            path: file.path.clone(),
+                            lines: None,
+                        },
+                        shown: false,
+                    })
+                    .collect();
+                let source = match files.is_empty() {
+                    true => Source::Terminal,
+                    false => Source::Web,
+                };
+                feed.user_with_files(&step.text, source, Delivery::Turn, Vec::new(), files);
                 feed.turn_started();
             }
             "text" => {

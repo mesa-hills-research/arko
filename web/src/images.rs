@@ -2,7 +2,7 @@
 //! viewer that shows one large.
 
 use leptos::prelude::*;
-use lucide_leptos::X;
+use lucide_leptos::{Download, X};
 
 use crate::app::page;
 use crate::protocol::{IMAGE_TYPES, ImageData, ItemData};
@@ -12,8 +12,17 @@ use crate::words;
 /// its height as they load. Each loads once it nears the view.
 #[component]
 pub fn Thumbnails(data: RwSignal<ItemData>) -> impl IntoView {
-    // (Only a change of its images draws the tiles again.)
-    let images = Memo::new(move |_| data.with(|item| item.images.clone()));
+    // (Only a change of its images draws the tiles again. Those its files'
+    // chips show are left out.)
+    let images = Memo::new(move |_| {
+        data.with(|item| {
+            item.images
+                .iter()
+                .filter(|image| !crate::files::on_a_chip(image, &item.files))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+    });
     move || {
         let images = images.get();
         (!images.is_empty()).then(|| {
@@ -95,7 +104,11 @@ pub fn ImageViewer() -> impl IntoView {
                 view! {
                     <div class="viewer-head">
                         <span class="viewer-caption">{caption.clone()}</span>
-                        <button type="button" class="btn ghost icon" aria-label="Close" title="Close"
+                        <a class="btn ghost icon" href=image.url.clone() download=image.label.clone()
+                            aria-label="Download" title="Download">
+                            <Download size=16 />
+                        </a>
+                        <button type="button" class="btn ghost icon" aria-label="Close" title="Close" autofocus
                             on:click=move |_| page.image.set(None)>
                             <X size=16 />
                         </button>

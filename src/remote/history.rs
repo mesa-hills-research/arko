@@ -87,8 +87,9 @@ fn items_from(
         match message.role {
             Role::System => {}
             Role::User => {
-                // The user's item of this message, which its images join.
-                let mut mine: Option<usize> = None;
+                // The user's items of this message's text, which the images
+                // after it go with.
+                let mut owners = crate::attachments::Owners::default();
                 for content in &message.content {
                     match content {
                         Content::ToolResult(result) => {
@@ -133,30 +134,40 @@ fn items_from(
                             }
                         }
                         Content::Text(text) if answers.contains(&index) => {
-                            for item in answer_items(text) {
-                                mine = Some(push(&mut items, item));
-                            }
+                            let made = answer_items(text)
+                                .into_iter()
+                                .map(|item| {
+                                    let at = push(&mut items, item);
+                                    (Some(at), crate::attachments::Share::Rest)
+                                })
+                                .collect();
+                            owners.text(&mut items, made);
                         }
                         Content::Text(text) => {
                             let about = |opening| subjects_of(opening, messages, index);
-                            for (mut item, editable) in user_items(text, &about) {
+                            let mut made = Vec::new();
+                            for (item, editable, share) in user_items(text, &about) {
+                                let Some(mut item) = item else {
+                                    made.push((None, share));
+                                    continue;
+                                };
                                 // A message that started a turn can be
                                 // edited at its index.
                                 if editable && item.delivery == Some(Delivery::Turn) {
                                     item.message_index = Some(first + index);
                                 }
-                                mine = Some(push(&mut items, item));
+                                made.push((Some(push(&mut items, item)), share));
                             }
+                            owners.text(&mut items, made);
                         }
                         Content::Image(image) => {
-                            if let Some(at) = mine
-                                && let Some(shown) = images.add_image(image, "image")
-                            {
-                                items[at].images.push(shown);
+                            if let Some(shown) = images.add_image(image, "image") {
+                                owners.image(shown);
                             }
                         }
                     }
                 }
+                owners.close(&mut items);
             }
             Role::Assistant => {
                 let reply = text_replies && is_reply(messages, index, &answers);
@@ -406,18 +417,116 @@ fn is_answer(message: &Message) -> bool {
         })
 }
 
-/// The user's own words in a message Arko sent, meaning before a handover's report
-/// (the first message of a conversation that was handed over holds the
-/// message it answers, then the report), and under "# My message" when Arko
-/// composed sections around them.
-pub(crate) fn own_words(text: &str) -> &str {
+/// A user's message as the agent read it, read from its start
+/// ([`parse`]).
+pub(crate) struct Parsed<'a> {
+    /// Arko's sections before the user's message (what they typed during the
+    /// turn before, news and the like), or the whole text when it marks no
+    /// message of theirs.
+    pub sections: &'a str,
+    /// The user's message as they sent it (Arko's labels, the attachments
+    /// block, their words), without a handover's report after it, when the
+    /// text marks it.
+    pub mine: Option<&'a str>,
+}
+
+/// How Arko marks the user's message after the sections it composed
+/// before it.
+const MY_MESSAGE: &str = "# My message\n\n";
+
+/// `text`, a message from the user's side, read from its start. A message
+/// that starts with its files' attachments block is the user's alone, and
+/// the block is read whole, so nothing a file holds reads as Arko's framing.
+/// Otherwise the user's message follows Arko's "# My message" (unread notes
+/// before it are indented, so nothing in theirs matches). A handover's
+/// report is looked for only after the block.
+pub(crate) fn parse(text: &str) -> Parsed<'_> {
+    if block_end(text).is_some() {
+        return Parsed {
+            sections: "",
+            mine: Some(without_report(text)),
+        };
+    }
+    let start = if text.starts_with(MY_MESSAGE) {
+        Some(0)
+    } else {
+        text.find(&format!("\n\n{MY_MESSAGE}")).map(|at| at + 2)
+    };
+    match start {
+        Some(at) => Parsed {
+            sections: &text[..at],
+            mine: Some(without_report(&text[at + MY_MESSAGE.len()..])),
+        },
+        None => Parsed {
+            sections: text,
+            mine: None,
+        },
+    }
+}
+
+/// Where the attachments block that `text` starts with ends, after Arko's
+/// label of the questions it answers, if it has one.
+fn block_end(text: &str) -> Option<usize> {
+    let after = match text.strip_prefix("(This message answers q") {
+        Some(label) => label.split_once(".)\n")?.1,
+        None => text,
+    };
+    let (_, rest) = crate::attachments::split_block(after)?;
+    Some(text.len() - rest.len())
+}
+
+/// `text`, from the user's side, without a handover's report after it (the
+/// first message of a conversation that was handed over holds the message
+/// it answers, then the report), which is looked for after its block.
+fn without_report(text: &str) -> &str {
     let heading = arko_agents::handover::REPORT_HEADING;
-    let text = text
-        .find(&format!("\n\n{heading}"))
-        .map_or(text, |at| &text[..at]);
-    text.split_once("# My message\n\n")
-        .map_or(text, |(_, mine)| mine)
-        .trim()
+    // (Right after a block, which takes the blank line before what
+    // follows it, the report has none of its own, as in a message of files
+    // alone.)
+    let at = match block_end(text) {
+        Some(end) if text[end..].starts_with(heading) => Some(end),
+        Some(end) => text[end..]
+            .find(&format!("\n\n{heading}"))
+            .map(|at| end + at),
+        None => text.find(&format!("\n\n{heading}")),
+    };
+    at.map_or(text, |at| &text[..at]).trim()
+}
+
+/// The user's own words in a message Arko sent, meaning before a handover's report,
+/// and under "# My message" when Arko composed sections around them
+/// ([`parse`]).
+pub(crate) fn own_words(text: &str) -> &str {
+    parse(text).mine.unwrap_or_else(|| without_report(text))
+}
+
+/// How many of the images of the user's message `text` (of `images`) the
+/// notes it carried own, which come before the message's own
+/// ([`crate::attachments::Share`]).
+pub(crate) fn notes_images(text: &str, images: usize) -> usize {
+    unread_notes(parse(text).sections)
+        .into_iter()
+        .map(|(note, share)| {
+            share
+                .wanted(crate::attachments::shown_in(&note))
+                .unwrap_or(0)
+        })
+        .fold(0, usize::saturating_add)
+        .min(images)
+}
+
+/// The user's message `text` as they sent it, meaning their own words
+/// ([`own_words`]) without Arko's labels about questions, with the
+/// attachments block their files went in, if any.
+pub(crate) fn as_sent(text: &str) -> &str {
+    unlabelled(own_words(text))
+}
+
+/// The words of the user's message `text` as the transcript shows them, as
+/// sent ([`as_sent`]) without its attachments block. A message's item has
+/// them, live and restored, so they name the message in its conversation.
+pub(crate) fn shown_words(text: &str) -> &str {
+    crate::attachments::typed(as_sent(text)).trim()
 }
 
 /// The heading of the section of a message that holds what the user typed
@@ -438,26 +547,39 @@ const OPERATOR_NOTE: &str = " from the operator (the person running this workflo
 /// that message after the reopening notice, in a context update, where the
 /// live transcript doesn't offer to edit it either. The news that went
 /// with it there (a monitor's alert, a job's update) isn't theirs.
-fn user_items(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Vec<(Item, bool)> {
+///
+/// A note of the user's that shows no item (one of answers, or of images
+/// alone) is `None`. Each comes with how many images the update says went
+/// with it, which follow the update in its message.
+fn user_items(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Vec<Restored> {
     let Some(update) = context_update(text) else {
         return composed(text, about)
             .into_iter()
-            .map(|item| (item, true))
+            .map(|(item, share)| (item, true, share))
             .collect();
     };
-    let items = match reopened_with(update) {
-        Some((prompt, rest)) => {
-            let mut items = composed(prompt, about);
-            items.extend(operator_notes(rest).into_iter().filter_map(note));
-            items
-        }
-        None => operator_notes(update)
-            .into_iter()
-            .filter_map(note)
-            .collect(),
+    let (mut items, rest): (Vec<Restored>, &str) = match reopened_with(update) {
+        Some((prompt, rest)) => (
+            composed(prompt, about)
+                .into_iter()
+                .map(|(item, share)| (item, false, share))
+                .collect(),
+            rest,
+        ),
+        None => (Vec::new(), update),
     };
-    items.into_iter().map(|item| (item, false)).collect()
+    items.extend(
+        operator_notes(rest)
+            .into_iter()
+            .map(|(text, share)| (note(text), false, share)),
+    );
+    items
 }
+
+/// A user's item restored from a text, or `None` for a note of theirs that
+/// shows none, with whether it can be edited, and its share of the images
+/// after the text.
+type Restored = (Option<Item>, bool, crate::attachments::Share);
 
 /// The content of a context update, without what the runtime adds after it
 /// (the environment and reminders). `None` for any other text.
@@ -513,10 +635,20 @@ fn is_news(text: &str) -> bool {
 }
 
 /// The items of a message Arko composed, meaning the notes in its section of what
-/// the user typed during the last turn, then the user's words.
-fn composed(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Vec<Item> {
-    let mut items: Vec<Item> = unread_notes(text).into_iter().filter_map(note).collect();
-    items.extend(user_item(text, about));
+/// the user typed during the last turn, then the user's words, each with its
+/// share of the images after it. The message's own are the rest.
+fn composed(
+    text: &str,
+    about: &dyn Fn(Opening) -> Subjects,
+) -> Vec<(Option<Item>, crate::attachments::Share)> {
+    let mut items: Vec<_> = unread_notes(parse(text).sections)
+        .into_iter()
+        .map(|(text, share)| (note(text), share))
+        .filter(|(item, share)| item.is_some() || *share != crate::attachments::Share::Guess)
+        .collect();
+    if let Some(item) = user_item(text, about) {
+        items.push((Some(item), crate::attachments::Share::Rest));
+    }
     items
 }
 
@@ -581,7 +713,7 @@ pub(crate) fn job_ran(messages: &[Message], id: uuid::Uuid) -> Option<String> {
 
 /// The notes in the section of `text` that holds what the user typed during
 /// the last turn, which the agent didn't read then.
-fn unread_notes(text: &str) -> Vec<String> {
+fn unread_notes(text: &str) -> Vec<(String, crate::attachments::Share)> {
     let start = if text.starts_with(UNREAD_HEADING) {
         Some(0)
     } else {
@@ -591,6 +723,11 @@ fn unread_notes(text: &str) -> Vec<String> {
         return Vec::new();
     };
     let list = list.split("\n\n# ").next().unwrap_or(list);
+    // Arko says each note's images after it, and says so first. Before it
+    // did, a line of the user's own isn't taken for one.
+    let counted = list
+        .trim_start()
+        .starts_with(crate::attachments::NOTES_COUNTED);
     let mut notes: Vec<String> = Vec::new();
     for line in list.lines() {
         if let Some(first) = line.strip_prefix("- ") {
@@ -602,15 +739,29 @@ fn unread_notes(text: &str) -> Vec<String> {
     }
     notes
         .into_iter()
-        .map(|note| note.trim().to_string())
-        .filter(|note| !note.is_empty())
+        .map(|note| {
+            let mut lines: Vec<&str> = note.trim().lines().collect();
+            let said = lines
+                .last()
+                .filter(|_| counted)
+                .and_then(|last| images_said(last));
+            if said.is_some() {
+                lines.pop();
+            }
+            (
+                lines.join("\n").trim().to_string(),
+                crate::attachments::Share::of(said),
+            )
+        })
+        .filter(|(note, share)| !note.is_empty() || *share != crate::attachments::Share::Guess)
         .collect()
 }
 
 /// The user's notes in a context update, meaning those from the operator, each a
-/// list item of indented lines, without the line saying images follow.
-/// The workflow's own notes and the agents' aren't the user's.
-fn operator_notes(update: &str) -> Vec<String> {
+/// list item of indented lines, without the line saying images follow, and
+/// with how many images that line says follow for it. The workflow's own
+/// notes and the agents' aren't the user's.
+fn operator_notes(update: &str) -> Vec<(String, crate::attachments::Share)> {
     let mut notes = Vec::new();
     let mut note: Option<Vec<&str>> = None;
     for line in update.lines() {
@@ -627,22 +778,45 @@ fn operator_notes(update: &str) -> Vec<String> {
     notes
         .into_iter()
         .map(|mut lines| {
-            if lines.last().is_some_and(|last| {
-                last.starts_with("(With ") && last.ends_with("shown after this update.)")
-            }) {
+            let said = lines.last().and_then(|last| images_said(last));
+            if said.is_some() {
                 lines.pop();
             }
-            lines.join("\n").trim().to_string()
+            (
+                lines.join("\n").trim().to_string(),
+                crate::attachments::Share::of(said),
+            )
         })
-        .filter(|note| !note.is_empty())
+        .filter(|(note, share)| !note.is_empty() || *share != crate::attachments::Share::Guess)
         .collect()
+}
+
+/// How many images the line a note ends with says follow the update or the
+/// message for it ("(With an image, shown after this update.)", "(With 3
+/// images, …)", "(With 2 of its 3 images, …)"), or `None` for another line.
+fn images_said(line: &str) -> Option<usize> {
+    if line == crate::attachments::NO_IMAGES {
+        return Some(0);
+    }
+    let said = line.strip_prefix("(With ")?;
+    let follow = [", shown after this update.", ", shown after this message."];
+    if !follow.iter().any(|follow| line.contains(follow)) || !line.ends_with(')') {
+        return None;
+    }
+    if said.starts_with("an image,") {
+        return Some(1);
+    }
+    // (Bounded, so counts add up without overflowing. Those that own more
+    // than there are own what there is.)
+    let digits = said.find(|c: char| !c.is_ascii_digit())?;
+    (digits > 0).then(|| usize::from(said[..digits].parse::<u16>().unwrap_or(u16::MAX)))
 }
 
 /// A note the user typed during a turn, as the live transcript shows it, meaning
 /// the user's words. A note Arko wrote about the agent's questions has
 /// none (their card shows the answers).
 fn note(text: String) -> Option<Item> {
-    if is_answer_note(&text) {
+    if is_answer_note(&text) || text.is_empty() {
         return None;
     }
     let mut item = Item::new(Kind::User, unlabelled(&text));
@@ -709,11 +883,8 @@ fn unlabelled(text: &str) -> &str {
 /// nor is a handover's report. A turn Arko started for news (the workers',
 /// a job's, a monitor's) shows the line the live transcript showed.
 fn user_item(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Option<Item> {
-    let heading = arko_agents::handover::REPORT_HEADING;
-    let text = text
-        .find(&format!("\n\n{heading}"))
-        .map_or(text, |at| &text[..at])
-        .trim();
+    let parsed = parse(text);
+    let text = without_report(text);
     if text.is_empty() || text.starts_with("# Workflow context update") {
         return None;
     }
@@ -727,8 +898,8 @@ fn user_item(text: &str, about: &dyn Fn(Opening) -> Subjects) -> Option<Item> {
         item.delivery = Some(Delivery::Answer);
         return Some(item);
     }
-    let mine = match text.split_once("# My message\n\n") {
-        Some((_, mine)) => mine,
+    let mine = match parsed.mine {
+        Some(mine) => mine,
         None => {
             if let Some(opening) = Opening::of(text) {
                 return opening.notice(&about(opening)).map(|notice| {

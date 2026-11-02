@@ -121,6 +121,8 @@ pub struct Page {
     pub ask: crate::questions::Asking,
     /// The Quiet view's rows the reader opened, by their first call.
     pub quiet_open: RwSignal<HashSet<u64>>,
+    /// The files attached to the message box.
+    pub attached: RwSignal<Vec<crate::attach::Chip>>,
     /// The Quiet view's rows of one call the reader opened, by that call,
     /// which keep their form ([`crate::quiet::Call::sealed`]).
     pub quiet_sealed: RwSignal<HashSet<u64>>,
@@ -265,6 +267,7 @@ impl Page {
             pinned: RwSignal::new(true),
             ask: crate::questions::Asking::new(),
             quiet_open: RwSignal::new(HashSet::new()),
+            attached: RwSignal::new(Vec::new()),
             quiet_sealed: RwSignal::new(HashSet::new()),
             counts_open: RwSignal::new(HashSet::new()),
             flipped: RwSignal::new(HashSet::new()),
@@ -349,9 +352,20 @@ pub fn session_set(name: &str, value: Option<&str>) {
 /// Sends a request, and gives its status and body, or none when Arko can't
 /// be reached.
 pub async fn request(method: &str, path: &str, body: Option<String>) -> Option<(u16, String)> {
+    request_with(method, path, body, None).await
+}
+
+/// [`request`], which `stop` can abort, as none when it does.
+pub async fn request_with(
+    method: &str,
+    path: &str,
+    body: Option<String>,
+    stop: Option<&web_sys::AbortSignal>,
+) -> Option<(u16, String)> {
     let init = RequestInit::new();
     init.set_method(method);
     init.set_credentials(RequestCredentials::SameOrigin);
+    init.set_signal(stop);
     if let Some(body) = body {
         let headers = web_sys::Headers::new().ok()?;
         headers.set("Content-Type", "application/json").ok()?;
@@ -408,7 +422,9 @@ async fn login(key: Option<String>) -> Login {
         return Login::Wrong;
     };
     let body = serde_json::json!({ "key": key }).to_string();
-    match request("POST", "/api/session", Some(body)).await {
+    let stop = deadline(DEADLINE_MS);
+    let signal = stop.as_ref().map(web_sys::AbortController::signal);
+    match request_with("POST", "/api/session", Some(body), signal.as_ref()).await {
         Some((204, _)) => {
             session_set(KEY, Some(&key));
             Login::Ok
@@ -420,6 +436,33 @@ async fn login(key: Option<String>) -> Login {
         }
         Some(_) => Login::Wrong,
         None => Login::Offline,
+    }
+}
+
+/// How long a short request may take before it's given up.
+pub const DEADLINE_MS: i32 = 20_000;
+
+/// What aborts a request once `ms` have passed.
+pub fn deadline(ms: i32) -> Option<web_sys::AbortController> {
+    let stop = web_sys::AbortController::new().ok()?;
+    let abort = stop.clone();
+    let late = Closure::once_into_js(move || abort.abort());
+    let _ =
+        window().set_timeout_with_callback_and_timeout_and_arguments_0(late.unchecked_ref(), ms);
+    Some(stop)
+}
+
+/// Trades the key for a session cookie again, after the one the page had
+/// ended, and locks the page when the key no longer works. Returns whether
+/// the page is in.
+pub(crate) async fn relogin() -> bool {
+    match login(None).await {
+        Login::Ok => true,
+        Login::Offline => false,
+        result => {
+            lock(page(), result);
+            false
+        }
     }
 }
 
@@ -594,7 +637,7 @@ impl Sender {
 
 /// `body`, sent from the feed `feed`, which Arko refuses when it isn't its
 /// own.
-fn of_feed(mut body: serde_json::Value, feed: Option<u64>) -> serde_json::Value {
+pub(crate) fn of_feed(mut body: serde_json::Value, feed: Option<u64>) -> serde_json::Value {
     if let Some(feed) = feed {
         body["feed"] = format!("{feed:016x}").into();
     }
@@ -1054,6 +1097,7 @@ fn start_feed(page: Page) {
     page.calls_open.update(HashSet::clear);
     page.doors_open.update(HashSet::clear);
     crate::contents::forget();
+    crate::files::forget();
 }
 
 /// Gives a cell the item as Arko has it now, setting only what changed, and

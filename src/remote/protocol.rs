@@ -210,6 +210,9 @@ pub enum RefusalKind {
     /// The web page sent it from a view of another feed (Arko started
     /// again since the page loaded).
     Stale,
+    /// Its files can't go with it, such as files with a command, a file a
+    /// chat can't take, or one Arko no longer has.
+    Files,
 }
 
 /// What sending something again needs, which the user agrees to.
@@ -536,6 +539,10 @@ pub struct ItemData {
     /// tool returned.
     #[serde(default)]
     pub images: Vec<ImageData>,
+    /// The files a user's message sent from the page carried, in order,
+    /// images among them.
+    #[serde(default)]
+    pub files: Vec<FileData>,
 }
 
 /// The types of image the page shows, the only ones Arko serves it.
@@ -555,6 +562,61 @@ pub struct ImageData {
     /// Where the page gets it. The address holds the server's version, so a
     /// browser may keep it as long as the server runs.
     pub url: String,
+}
+
+/// A file a user's message sent from the page carried, which the page
+/// downloads from `url`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub struct FileData {
+    /// Its name in the project's `.arko/attachments` folder.
+    pub name: String,
+    /// Its MIME type, from its first bytes.
+    pub mime: String,
+    /// Its size in bytes.
+    pub bytes: u64,
+    /// A text file's lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<u64>,
+    /// It went to the model as an image, which the item's `images` show
+    /// too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shown: bool,
+    /// Where the page downloads it (`/api/attachments/{name}`), or `None`
+    /// when it isn't in this server's project folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// What a file sent from the page is, from its first bytes. An image may
+/// go to the model, a text may go in the message, and every file is saved
+/// where the agent reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileKind {
+    Image,
+    Text,
+    File,
+}
+
+/// The answer to `POST /api/uploads`, the upload to send the file's bytes to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadCreated {
+    pub id: String,
+}
+
+/// How far an upload is (`PUT` and `GET /api/uploads/{id}`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadState {
+    /// The bytes Arko holds, from the start.
+    pub received: u64,
+    pub size: u64,
+    /// Arko holds the whole file.
+    #[serde(default)]
+    pub done: bool,
+    /// What the file is, once whole.
+    #[serde(default)]
+    pub kind: Option<FileKind>,
 }
 
 /// One of the main agent's questions, as a card and the status give it.
@@ -1409,12 +1471,14 @@ fn thousands(count: u64) -> String {
     out
 }
 
-/// A file's size as people say it, such as `512 bytes`, `14 KB`, `1.2 MB`.
-fn size(bytes: u64) -> String {
+/// A file's size as people say it, such as `512 bytes`, `14 KB`, `1.2 MB`,
+/// `1.4 GB`.
+pub(crate) fn size(bytes: u64) -> String {
     match bytes {
         0..1024 => format!("{bytes} bytes"),
         1024..1_048_576 => format!("{} KB", (bytes as f64 / 1024.0).round() as u64),
-        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+        1_048_576..1_073_741_824 => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+        _ => format!("{:.1} GB", bytes as f64 / 1_073_741_824.0),
     }
 }
 

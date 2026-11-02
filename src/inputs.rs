@@ -99,7 +99,7 @@ impl Event {
                     | Input::DismissQuestions(_)
                     | Input::AnswerApprovals(_)
             )) | Event::Remote(
-                Action::Message(_)
+                Action::Message { .. }
                     | Action::Continue(_)
                     | Action::Answer { .. }
                     | Action::Reply { .. }

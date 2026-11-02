@@ -62,7 +62,7 @@ pub struct Record {
     /// this one's last turn that the agent didn't read. It goes with the
     /// next message in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub unread: Vec<String>,
+    pub unread: Vec<crate::unread::Unread>,
     /// The conversation it continues, by its place in `list`. A switch
     /// started it with a brief of that one, which `earlier_conversation`
     /// reads.
@@ -806,17 +806,33 @@ mod tests {
     }
 
     /// The record is kept in the session's folder, with what waits for a
-    /// conversation that isn't current. A current one past the list is
-    /// dropped.
+    /// conversation that isn't current, an unread note's images as files
+    /// beside it. A current one past the list is dropped.
     #[test]
     fn the_record_is_kept_in_the_sessions_folder() {
         let dir = tempfile::tempdir().unwrap();
         assert!(Conversations::load(dir.path()).is_none());
         let mut conversations = Conversations::derive(&[run(1, "First", false)]);
-        conversations.list[0].unread = vec!["also the docs".into()];
+        let pixel = arko_ai::Image::new_base64(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            "image/png",
+        );
+        let with_image =
+            crate::unread::keep(dir.path(), "and this".into(), std::slice::from_ref(&pixel));
+        conversations.list[0].unread = vec!["also the docs".into(), with_image];
         conversations.current = None;
         conversations.save(dir.path()).unwrap();
-        assert_eq!(Conversations::load(dir.path()).unwrap(), conversations);
+        let loaded = Conversations::load(dir.path()).unwrap();
+        assert_eq!(loaded, conversations);
+        // A note's image comes back from its file after the reload.
+        let (texts, images) = crate::unread::load(dir.path(), &loaded.list[0].unread);
+        assert_eq!(texts, ["also the docs", "and this"]);
+        assert_eq!(images, vec![pixel]);
+        let saved = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        assert!(
+            !saved.contains("iVBORw0KGgo"),
+            "no image bytes in the record"
+        );
         std::fs::write(
             dir.path().join(FILE),
             r#"{"list": [{"runs": [], "title": "x"}], "current": 3}"#,

@@ -250,6 +250,26 @@ impl Folder {
         file.sync_all()
     }
 
+    /// The new file `name`, opened to write, which its owner alone may read
+    /// where the system has permissions. Fails when anything, a link too, is
+    /// there.
+    #[cfg(feature = "remote")]
+    pub(crate) fn create_file(&self, name: impl AsRef<OsStr>) -> io::Result<std::fs::File> {
+        let name = name.as_ref();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file = sys::create_file(&self.fd, name)?;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            Ok(file)
+        }
+        #[cfg(not(unix))]
+        return std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(self.checked(name)?);
+    }
+
     /// Writes the file `name` whole, through a new file renamed into place,
     /// unless something is there already (`AlreadyExists`).
     pub(crate) fn create_whole(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
@@ -315,8 +335,11 @@ impl Folder {
     }
 
     /// Renames `from` to `to`, which mustn't be there (`AlreadyExists`).
-    /// The check and the rename are one step on Linux and macOS. Elsewhere,
-    /// and on a file system without it, `to` is checked first.
+    /// The check and the rename are one step on Linux and macOS. On a file
+    /// system without that, a file gets its new name by a link the system
+    /// refuses over an existing name, and isn't renamed at all where the
+    /// file system can't link either (`Unsupported`), while a folder's new
+    /// name is checked first. Elsewhere `to` is checked first.
     pub(crate) fn rename_new(
         &self,
         from: impl AsRef<OsStr>,
@@ -325,7 +348,17 @@ impl Folder {
         let (from, to) = (from.as_ref(), to.as_ref());
         #[cfg(unix)]
         match sys::rename_new(&self.fd, from, to) {
-            Err(error) if sys::unsupported(&error) => {}
+            Err(error) if sys::unsupported(&error) => {
+                if !matches!(
+                    self.entry(from)?,
+                    Some(Entry {
+                        kind: Kind::Folder,
+                        ..
+                    })
+                ) {
+                    return sys::link_new(&self.fd, from, to);
+                }
+            }
             other => return other,
         }
         if self.entry(to)?.is_some() {
@@ -567,6 +600,29 @@ mod sys {
         result(done).map(|_| ())
     }
 
+    /// Gives the file `from` the name `to`, which mustn't be there, by a
+    /// link, which the system refuses over an existing name, then takes the
+    /// name `from` away. `Unsupported` where the file system can't link.
+    pub fn link_new(dir: &OwnedFd, from: &OsStr, to: &OsStr) -> io::Result<()> {
+        let (from_c, to_c) = (c_name(from)?, c_name(to)?);
+        let fd = dir.as_raw_fd();
+        // SAFETY: both names are C strings, and the descriptor is open.
+        match result(unsafe { libc::linkat(fd, from_c.as_ptr(), fd, to_c.as_ptr(), 0) }) {
+            Ok(_) => remove(dir, from, false),
+            Err(error)
+                if error.raw_os_error().is_some_and(|code| {
+                    [libc::EPERM, libc::ENOTSUP, libc::EOPNOTSUPP, libc::ENOSYS].contains(&code)
+                }) =>
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "this file system can't save a file without replacing another",
+                ))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Whether `error` says the system or file system has no rename without
     /// replacing.
     pub fn unsupported(error: &io::Error) -> bool {
@@ -621,5 +677,27 @@ mod sys {
         // SAFETY: `stream` is an open listing, closed once.
         unsafe { libc::closedir(stream) };
         Ok(names)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// Where the file system has no rename that won't replace, a file still
+    /// never takes the name of another, by a link the system refuses over
+    /// it.
+    #[test]
+    fn a_file_linked_to_its_new_name_never_replaces_another() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = Folder::base(temp.path()).unwrap();
+        folder.create("part", b"new").unwrap();
+        folder.create("taken", b"old").unwrap();
+        let error = sys::link_new(&folder.fd, "part".as_ref(), "taken".as_ref()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(temp.path().join("taken")).unwrap(), b"old");
+        sys::link_new(&folder.fd, "part".as_ref(), "free".as_ref()).unwrap();
+        assert_eq!(std::fs::read(temp.path().join("free")).unwrap(), b"new");
+        assert!(!temp.path().join("part").exists());
     }
 }

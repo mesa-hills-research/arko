@@ -6,10 +6,12 @@
 
 mod app;
 mod approvals;
+mod attach;
 mod chrome;
 mod composer;
 mod contents;
 mod copy;
+mod files;
 mod images;
 mod layout;
 mod markdown;

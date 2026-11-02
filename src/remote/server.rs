@@ -27,7 +27,8 @@ use tokio::task::JoinHandle;
 
 use super::feed::{Activity, Feed, Following, Item, Kind, Received, Snapshot, Update};
 use super::highlight;
-use super::protocol::{IMAGE_TYPES, ImageData};
+use super::protocol::{IMAGE_TYPES, ImageData, UploadCreated};
+use super::uploads::{Refused as UploadRefused, Uploads};
 use super::{Action, Info, Meter, Reading, RefusalKind, Verdict};
 use crate::images::Images;
 
@@ -52,8 +53,9 @@ const APPLE_ICON: &[u8] = include_bytes!("page/apple-touch-icon.png");
 /// The page's monospace font, the same on every device (SIL Open Font
 /// License 1.1, see NOTICE).
 const MONO_FONT: &[u8] = include_bytes!("page/fonts/JetBrainsMono-Regular.ttf");
-/// The page may run its own files and WebAssembly, and reach only Arko.
-const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+/// The page may run its own files and WebAssembly, and reach only Arko. It
+/// shows the images it is about to send from `blob:` addresses.
+const POLICY: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self'; img-src 'self' blob:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /// The largest request body, meaning a long message, pasted.
 const MAX_BODY: usize = 512 * 1024;
@@ -372,12 +374,13 @@ pub struct Server {
     addr: SocketAddr,
     stop: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
+    uploads: Arc<Uploads>,
 }
 
 impl Server {
     /// Serves on `addr`, with `key`. The feed goes out with the images its
     /// items show from `images`, the actions come in on `actions`, and
-    /// `meter` tells the status.
+    /// `meter` tells the status. The files the page sends go in `project`.
     #[allow(clippy::too_many_arguments)]
     pub fn start(
         addr: SocketAddr,
@@ -388,6 +391,7 @@ impl Server {
         actions: mpsc::UnboundedSender<Action>,
         meter: Arc<dyn Meter>,
         sessions_file: Option<PathBuf>,
+        project: super::Project,
     ) -> std::io::Result<Self> {
         let listener = std::net::TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
@@ -395,6 +399,9 @@ impl Server {
         let addr = listener.local_addr()?;
         let (stop, closed) = watch::channel(false);
         let sessions = Store::open(sessions_file, &key, now_secs());
+        let uploads = Arc::new(Uploads::new(project.workspace.clone(), project.root));
+        let workspace = project.workspace;
+        tokio::task::spawn_blocking(move || super::uploads::remove_left_parts(&workspace));
         let app = Arc::new(App {
             addr,
             key,
@@ -410,6 +417,7 @@ impl Server {
             info,
             closed: closed.clone(),
             pings: watch::Sender::new(0),
+            uploads: uploads.clone(),
         });
         let router = router(app);
         let mut shutdown = closed;
@@ -428,6 +436,7 @@ impl Server {
             addr,
             stop,
             task: Some(task),
+            uploads,
         })
     }
 
@@ -441,6 +450,9 @@ impl Server {
     /// them. Those kept nowhere end with it.
     pub async fn stop(mut self) {
         let _ = self.stop.send(true);
+        // (Files still being written go once their writes end, without
+        // holding up the stop.)
+        let _ = tokio::time::timeout(Duration::from_secs(3), self.uploads.remove_unsent()).await;
         if let Some(mut task) = self.task.take()
             && tokio::time::timeout(Duration::from_secs(3), &mut task)
                 .await
@@ -460,7 +472,9 @@ impl Drop for Server {
         if let Some(mut task) = self.task.take()
             && let Ok(runtime) = tokio::runtime::Handle::try_current()
         {
+            let uploads = self.uploads.clone();
             runtime.spawn(async move {
+                uploads.remove_unsent().await;
                 if tokio::time::timeout(Duration::from_secs(3), &mut task)
                     .await
                     .is_err()
@@ -592,6 +606,12 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/commands", get(commands))
         .route("/api/choices", axum::routing::post(choices))
         .route("/api/images/{id}", get(image))
+        .route("/api/uploads", axum::routing::post(upload_create))
+        .route(
+            "/api/uploads/{id}",
+            get(upload_state).put(upload_put).delete(upload_remove),
+        )
+        .route("/api/attachments/{name}", get(attachment))
         .route("/api/result/{id}", get(result))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(axum::middleware::map_response(harden))
@@ -643,7 +663,8 @@ fn packed(headers: &HeaderMap, bytes: &'static [u8], kind: &'static str) -> Resp
 }
 
 /// Headers every response gets, meaning no caching, sniffing, framing or
-/// referrers, and a page that loads only its own files.
+/// referrers, and a page that loads only its own files (a file served as an
+/// attachment has a stricter policy of its own).
 async fn harden(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(
@@ -658,10 +679,9 @@ async fn harden(mut response: Response) -> Response {
     headers
         .entry(header::CACHE_CONTROL)
         .or_insert(HeaderValue::from_static("no-store"));
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(POLICY),
-    );
+    headers
+        .entry(header::CONTENT_SECURITY_POLICY)
+        .or_insert(HeaderValue::from_static(POLICY));
     response
 }
 
@@ -689,6 +709,8 @@ struct App {
     /// Counts the pings (`POST /api/ping`), each of which every stream
     /// sends on.
     pings: watch::Sender<u64>,
+    /// The files the page uploads, until it sends them.
+    uploads: Arc<Uploads>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -750,6 +772,15 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 impl App {
+    /// The project's folder of the files sent from the page, where they
+    /// download from.
+    fn attachments(&self) -> PathBuf {
+        self.uploads
+            .workspace()
+            .join(crate::arko_dir::DIR)
+            .join(crate::attachments::FOLDER)
+    }
+
     fn wait(&self, ip: IpAddr) -> Option<Duration> {
         let now = Instant::now();
         lock(&self.failures)
@@ -1043,7 +1074,7 @@ struct Stream {
 }
 
 /// An item as the page gets it, with its Markdown's finished code blocks
-/// highlighted, and the addresses of its images.
+/// highlighted, and the addresses of its images and files.
 #[derive(Serialize)]
 struct PageItem<'a> {
     #[serde(flatten)]
@@ -1052,14 +1083,31 @@ struct PageItem<'a> {
     code: Vec<super::protocol::CodeSpans>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     images: Vec<ImageData>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    files: Vec<super::protocol::FileData>,
 }
 
 impl<'a> PageItem<'a> {
-    /// `item`, whose images are at addresses with `image_version`.
-    fn of(item: &'a Item, image_version: &str) -> Self {
+    /// `item`, whose images are at addresses with `image_version`, and whose
+    /// files download from the server when they're in its project's
+    /// attachments folder `attachments`.
+    fn of(item: &'a Item, image_version: &str, attachments: &Path) -> Self {
         PageItem {
             item,
             code: highlight::item_code(item),
+            files: item
+                .files
+                .iter()
+                .map(|sent| super::protocol::FileData {
+                    name: sent.file.name.clone(),
+                    mime: sent.file.mime.clone(),
+                    bytes: sent.file.bytes,
+                    lines: sent.file.lines,
+                    shown: sent.shown,
+                    url: (sent.file.path == attachments.join(&sent.file.name))
+                        .then(|| format!("/api/attachments/{}", encoded(&sent.file.name))),
+                })
+                .collect(),
             images: item
                 .images
                 .iter()
@@ -1088,10 +1136,11 @@ impl Stream {
         self.status = self.app.status(&snapshot.activity);
         let status: serde_json::Value = serde_json::from_str(&self.status).unwrap_or_default();
         self.streaming.clear();
+        let attachments = self.app.attachments();
         let items: Vec<PageItem> = snapshot
             .items
             .iter()
-            .map(|item| PageItem::of(item, &self.app.image_version))
+            .map(|item| PageItem::of(item, &self.app.image_version, &attachments))
             .collect();
         for item in &items {
             self.follow(item);
@@ -1141,7 +1190,8 @@ impl Stream {
     fn take(&mut self, update: Update) {
         match update {
             Update::Item(item) => {
-                let page_item = PageItem::of(&item, &self.app.image_version);
+                let page_item =
+                    PageItem::of(&item, &self.app.image_version, &self.app.attachments());
                 self.follow(&page_item);
                 self.pending.push_back(
                     Event::default()
@@ -1166,7 +1216,8 @@ impl Stream {
             }
             Update::Change(item) => {
                 self.streaming.remove(&item.id);
-                let page_item = PageItem::of(&item, &self.app.image_version);
+                let page_item =
+                    PageItem::of(&item, &self.app.image_version, &self.app.attachments());
                 self.follow(&page_item);
                 self.pending.push_back(
                     Event::default()
@@ -1303,7 +1354,11 @@ impl Stream {
 
 #[derive(Deserialize)]
 struct MessageBody {
+    #[serde(default)]
     text: String,
+    /// The uploads it sends ([`upload_create`]).
+    #[serde(default)]
+    files: Vec<String>,
     /// The worker whose view it was sent from. What isn't a command goes
     /// to that worker, as the full-screen view sends it.
     #[serde(default)]
@@ -1338,12 +1393,20 @@ fn typed(text: &str) -> Option<String> {
 /// (Arko started again since it loaded) is refused before the session
 /// sees it, so it can't land in a session it wasn't meant for.
 async fn send(app: &App, body: &[u8], action: Action) -> Response {
+    match verdict_of(app, body, action).await {
+        Ok(verdict) => axum::Json(verdict).into_response(),
+        Err(response) => response,
+    }
+}
+
+/// What became of `action`, as [`send`] says, or the response to give
+/// when the session stopped first.
+async fn verdict_of(app: &App, body: &[u8], action: Action) -> Result<Verdict, Response> {
     if other_feed(app, body) {
-        return axum::Json(Verdict::refused(
+        return Ok(Verdict::refused(
             RefusalKind::Stale,
             "Not sent, because Arko restarted. Your text is kept.",
-        ))
-        .into_response();
+        ));
     }
     let (reply, verdict) = super::VerdictReply::new();
     let action = Action::Send {
@@ -1351,16 +1414,16 @@ async fn send(app: &App, body: &[u8], action: Action) -> Response {
         reply,
     };
     if app.actions.send(action).is_err() {
-        return axum::Json(Verdict::closed()).into_response();
+        return Ok(Verdict::closed());
     }
     match verdict.await {
-        Ok(verdict) => axum::Json(verdict).into_response(),
+        Ok(verdict) => Ok(verdict),
         // (The session stopped while it read the send.)
-        Err(_) => (
+        Err(_) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             error_body("Arko stopped before saying whether it went."),
         )
-            .into_response(),
+            .into_response()),
     }
 }
 
@@ -1384,7 +1447,8 @@ fn not_this_feed() -> Response {
 }
 
 /// `POST /api/message` with `{"text": ...}` acts as if typed at the prompt,
-/// answered with what became of it ([`send`]).
+/// answered with what became of it ([`send`]). `"files": [ID, ...]` names
+/// the uploads that go with it, which stay uploaded until it goes.
 async fn message(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1396,7 +1460,10 @@ async fn message(
     }
     let Some(sent) = serde_json::from_slice::<MessageBody>(&body)
         .ok()
-        .and_then(|sent| Some((typed(&sent.text)?, sent)))
+        .and_then(|sent| {
+            let text = typed(&sent.text).or_else(|| (!sent.files.is_empty()).then(String::new))?;
+            Some((text, sent))
+        })
     else {
         return (StatusCode::BAD_REQUEST, error_body("send {\"text\": ...}")).into_response();
     };
@@ -1406,6 +1473,7 @@ async fn message(
             to,
             answers,
             confirm_uncached,
+            files: ids,
             ..
         },
     ) = sent;
@@ -1419,18 +1487,78 @@ async fn message(
         Some(worker) if !reads_as_command => format!("/message {worker} {}", text.trim()),
         _ => text,
     };
-    let action = match () {
+    // The files are claimed, sent and committed or released in a task of
+    // its own, so the claim ends with the verdict however this request
+    // ends (a phone's dropped connection included).
+    let sending = tokio::spawn(async move {
+        let claim = match ids.is_empty() || other_feed(&app, &body) {
+            true => None,
+            false => match app.uploads.take(&ids).await {
+                Ok(claim) => Some(claim),
+                Err(words) => {
+                    return Ok(Verdict::refused(RefusalKind::Files, words));
+                }
+            },
+        };
+        let (number, files) = match claim {
+            Some(claim) => (Some(claim.number), claim.files),
+            None => (None, Vec::new()),
+        };
+        let action = page_action(
+            line,
+            to.is_some(),
+            reads_as_command,
+            answers,
+            confirm_uncached,
+            files,
+        );
+        let verdict = verdict_of(&app, &body, action).await;
+        if let Some(number) = number {
+            match &verdict {
+                Ok(Verdict::Accepted { .. }) => app.uploads.commit(number),
+                _ => app.uploads.release(number),
+            }
+        }
+        verdict
+    });
+    match sending.await {
+        Ok(Ok(verdict)) => axum::Json(verdict).into_response(),
+        Ok(Err(response)) => response,
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error_body("Arko stopped before saying whether it went."),
+        )
+            .into_response(),
+    }
+}
+
+/// What the page's message `line` asks of the session with its `files`, as
+/// a reply to the questions `answers` names, a message that continues a
+/// worker once the user confirmed it, or a message. `to_worker` says it
+/// was sent from a worker's view.
+fn page_action(
+    line: String,
+    to_worker: bool,
+    reads_as_command: bool,
+    answers: Vec<String>,
+    confirm_uncached: bool,
+    files: Vec<crate::attachments::Attached>,
+) -> Action {
+    match () {
         // A reply to the main agent's questions.
-        _ if !answers.is_empty() && to.is_none() && !reads_as_command => Action::Reply {
+        _ if !answers.is_empty() && !to_worker && !reads_as_command => Action::Reply {
             text: line,
             answers,
+            files,
         },
-        _ if confirm_uncached && crate::worker_cache::message_parts(&line).is_some() => {
+        _ if confirm_uncached
+            && files.is_empty()
+            && crate::worker_cache::message_parts(&line).is_some() =>
+        {
             Action::Continue(line)
         }
-        _ => Action::Message(line),
-    };
-    send(&app, &body, action).await
+        _ => Action::Message { text: line, files },
+    }
 }
 
 #[derive(Deserialize)]
@@ -1846,6 +1974,240 @@ async fn image(
     response
 }
 
+#[derive(Deserialize)]
+struct UploadBody {
+    name: String,
+    size: u64,
+}
+
+/// `POST /api/uploads` with `{"name": ..., "size": BYTES}` starts the upload
+/// of a file the page sends with a message, answered `201 {"id": ...}`. It
+/// is refused, before any of its bytes come, when it is over the size
+/// limit, when the disk lacks the room, or when the project can't take
+/// files.
+async fn upload_create(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    if other_feed(&app, &body) {
+        return not_this_feed();
+    }
+    let Ok(sent) = serde_json::from_slice::<UploadBody>(&body) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_body("send {\"name\": ..., \"size\": BYTES}"),
+        )
+            .into_response();
+    };
+    match app.uploads.create(&sent.name, sent.size).await {
+        Ok(id) => (StatusCode::CREATED, axum::Json(UploadCreated { id })).into_response(),
+        Err(refused) => upload_refused(refused),
+    }
+}
+
+/// `PUT /api/uploads/{id}` with the header `Upload-Offset: N` and the file's
+/// bytes from N on writes them, if N is what Arko holds, and answers with
+/// how far the upload is. A refusal that gives `received` says where to go
+/// on from.
+async fn upload_put(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    body: axum::body::Body,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let offset = headers
+        .get("upload-offset")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok());
+    let Some(offset) = offset else {
+        return (
+            StatusCode::BAD_REQUEST,
+            error_body("send the Upload-Offset header"),
+        )
+            .into_response();
+    };
+    match app.uploads.put(&id, offset, body).await {
+        Ok(state) => axum::Json(state).into_response(),
+        Err(refused) => upload_refused(refused),
+    }
+}
+
+/// `GET /api/uploads/{id}` says how far the upload is, once a request still
+/// writing it has stopped.
+async fn upload_state(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    match app.uploads.state(&id).await {
+        Ok(state) => axum::Json(state).into_response(),
+        Err(refused) => upload_refused(refused),
+    }
+}
+
+/// `DELETE /api/uploads/{id}` removes an upload that wasn't sent, and its
+/// file.
+async fn upload_remove(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+) -> Response {
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    match app.uploads.remove(&id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(refused) => upload_refused(refused),
+    }
+}
+
+fn upload_refused(refused: UploadRefused) -> Response {
+    let (status, words, received) = match refused {
+        UploadRefused::TooLarge(words) => (StatusCode::PAYLOAD_TOO_LARGE, words, None),
+        UploadRefused::NoSpace(words) => (StatusCode::INSUFFICIENT_STORAGE, words, None),
+        UploadRefused::Unwritable(words) | UploadRefused::TooMany(words) => {
+            (StatusCode::CONFLICT, words, None)
+        }
+        UploadRefused::Gone(words) => (StatusCode::NOT_FOUND, words, None),
+        UploadRefused::Claimed(words) => (StatusCode::CONFLICT, words, None),
+        UploadRefused::Elsewhere(received) => (
+            StatusCode::CONFLICT,
+            "Arko holds another part of the file.".into(),
+            Some(received),
+        ),
+        UploadRefused::Stalled(received) => (
+            StatusCode::REQUEST_TIMEOUT,
+            "The upload stopped.".into(),
+            Some(received),
+        ),
+        UploadRefused::Failed(words) => (StatusCode::INTERNAL_SERVER_ERROR, words, None),
+    };
+    let body = serde_json::json!({ "error": words, "received": received });
+    (status, axum::Json(body)).into_response()
+}
+
+/// `GET /api/attachments/{name}` downloads the file `name` the page sent,
+/// from the project's `.arko/attachments`. The name is one the page could
+/// have saved a file under, so it leads nowhere else, and the file is
+/// opened without following a link and only if it's a regular file. Its
+/// type comes from its first bytes. Refused off Linux and macOS
+/// ([`super::uploads::UNSUPPORTED`]).
+async fn attachment(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): Peer,
+    headers: HeaderMap,
+    UrlPath(name): UrlPath<String>,
+) -> Response {
+    use std::io::{Read as _, Seek as _};
+    if let Err(refusal) = app.authorize(&headers, peer.ip()) {
+        return refusal.into_response();
+    }
+    let not_found = || (StatusCode::NOT_FOUND, error_body("no such file")).into_response();
+    if cfg!(not(unix)) {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            error_body(super::uploads::UNSUPPORTED),
+        )
+            .into_response();
+    }
+    if crate::attachments::sanitize_name(&name) != name {
+        return not_found();
+    }
+    let workspace = app.uploads.workspace().to_path_buf();
+    let opened = {
+        let name = name.clone();
+        tokio::task::spawn_blocking(move || {
+            let folder = super::uploads::existing_folder(&workspace).ok()??;
+            let mut file = folder.open_file(&name).ok()?;
+            let size = file.metadata().ok()?.len();
+            let mut head = Vec::with_capacity(4096);
+            (&mut file).take(4096).read_to_end(&mut head).ok()?;
+            file.rewind().ok()?;
+            Some((file, size, head))
+        })
+        .await
+    };
+    let Ok(Some((file, size, head))) = opened else {
+        return not_found();
+    };
+    let served = crate::attachments::download_type(&head, &name);
+    // (No more than the length it's sent with, should the file grow.)
+    let file = tokio::io::AsyncReadExt::take(tokio::fs::File::from_std(file), size);
+    let stream = futures_util::stream::unfold(Some(file), |file| async move {
+        use tokio::io::AsyncReadExt as _;
+        let mut file = file?;
+        let mut buffer = vec![0; 64 * 1024];
+        match file.read(&mut buffer).await {
+            Ok(0) => None,
+            Ok(read) => {
+                buffer.truncate(read);
+                Some((Ok(Bytes::from(buffer)), Some(file)))
+            }
+            Err(error) => Some((Err(error), None)),
+        }
+    });
+    let mut response = axum::body::Body::from_stream(stream).into_response();
+    let headers = response.headers_mut();
+    let values = [
+        (header::CONTENT_TYPE, served.to_string()),
+        (header::CONTENT_LENGTH, size.to_string()),
+        (header::CONTENT_DISPOSITION, download_disposition(&name)),
+        (
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; sandbox".to_string(),
+        ),
+    ];
+    for (name, value) in values {
+        if let Ok(value) = HeaderValue::from_str(&value) {
+            headers.insert(name, value);
+        }
+    }
+    response
+}
+
+/// The `Content-Disposition` that downloads a file named `name`, with an
+/// ASCII name for old browsers and the whole one as RFC 5987 gives it.
+fn download_disposition(name: &str) -> String {
+    let plain: String = name
+        .chars()
+        .map(|c| match c {
+            ' '..='~' if c != '"' && c != '\\' => c,
+            _ => '_',
+        })
+        .collect();
+    format!(
+        "attachment; filename=\"{plain}\"; filename*=UTF-8''{}",
+        encoded(name)
+    )
+}
+
+/// `name` with every byte but a letter, a digit and `-._~` written `%XX`,
+/// as it goes in an address or an RFC 5987 name.
+fn encoded(name: &str) -> String {
+    name.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{Confirm, Refusal};
@@ -1870,7 +2232,9 @@ mod tests {
         let items = snapshot.items;
         let page: Vec<serde_json::Value> = items
             .iter()
-            .map(|item| serde_json::to_value(PageItem::of(item, "1")).unwrap())
+            .map(|item| {
+                serde_json::to_value(PageItem::of(item, "1", Path::new("/nowhere"))).unwrap()
+            })
             .collect();
         let mut results = serde_json::Map::new();
         for item in items.iter().filter(|item| item.more.is_some()) {
@@ -1999,6 +2363,7 @@ mod tests {
             info: Info::default(),
             closed,
             pings: watch::Sender::new(0),
+            uploads: Arc::new(Uploads::new("/nowhere".into(), "/nowhere".into())),
         }
     }
 
@@ -2146,6 +2511,19 @@ mod tests {
         actions: mpsc::UnboundedReceiver<Action>,
         base: String,
         http: reqwest::Client,
+        /// The project the page's files go in.
+        project: tempfile::TempDir,
+    }
+
+    /// A project of its own for a test server's files.
+    fn project() -> (tempfile::TempDir, crate::remote::Project) {
+        let temp = tempfile::tempdir().unwrap();
+        let project = crate::remote::Project {
+            workspace: temp.path().join("work"),
+            root: temp.path().join("arko"),
+        };
+        std::fs::create_dir_all(&project.workspace).unwrap();
+        (temp, project)
     }
 
     /// A meter whose reading a test changes.
@@ -2173,6 +2551,7 @@ mod tests {
         meter: Arc<dyn Meter>,
     ) -> Served {
         let (actions, received) = mpsc::unbounded_channel();
+        let (temp, project) = project();
         let server = Server::start(
             addr.parse().unwrap(),
             KEY.into(),
@@ -2182,6 +2561,7 @@ mod tests {
             actions,
             meter,
             None,
+            project,
         )
         .unwrap();
         Served {
@@ -2189,6 +2569,7 @@ mod tests {
             server,
             actions: received,
             http: arko_ai::http_client(),
+            project: temp,
         }
     }
 
@@ -3749,7 +4130,7 @@ mod tests {
                     r#"{"text": "Use tabs.\r\nThanks."}"#
                 )
                 .await,
-            Action::Message("Use tabs.\nThanks.".into())
+            Action::message("Use tabs.\nThanks.")
         );
         let response = served
             .post("/api/message", cookie, r#"{"text": "  "}"#)
@@ -3768,7 +4149,7 @@ mod tests {
             let body = serde_json::json!({ "text": text, "to": "r1" }).to_string();
             assert_eq!(
                 served.sent("/api/message", cookie, &body).await,
-                Action::Message(sent.into()),
+                Action::message(sent),
                 "{text}"
             );
         }
@@ -3898,7 +4279,7 @@ mod tests {
         let ours = serde_json::json!({ "text": "Hello.", "feed": format!("{:016x}", feed.id()) });
         assert_eq!(
             served.sent("/api/message", cookie, &ours.to_string()).await,
-            Action::Message("Hello.".into())
+            Action::message("Hello.")
         );
         // The session drops what it was reading.
         let request = served
@@ -4020,7 +4401,8 @@ mod tests {
                 .await,
             Action::Reply {
                 text: "Spaces, and push.".into(),
-                answers: vec!["q1".into(), "q2".into()]
+                answers: vec!["q1".into(), "q2".into()],
+                files: Vec::new(),
             }
         );
         // Without the session's cookie, nothing is answered.
@@ -4052,7 +4434,7 @@ mod tests {
             let (response, action) = served
                 .send("/api/message", cookie, &body.to_string(), uncached.clone())
                 .await;
-            assert_eq!(action, Action::Message("/message r3 Go on.".into()));
+            assert_eq!(action, Action::message("/message r3 Go on."));
             let refused: serde_json::Value =
                 serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
             assert_eq!(
@@ -4115,6 +4497,7 @@ mod tests {
     /// A server on `feed` that keeps its sessions in `file`.
     fn serve_keeping(feed: &Feed, file: PathBuf) -> Served {
         let (actions, received) = mpsc::unbounded_channel();
+        let (temp, project) = project();
         let server = Server::start(
             "127.0.0.1:0".parse().unwrap(),
             KEY.into(),
@@ -4124,6 +4507,7 @@ mod tests {
             actions,
             Arc::new(Still),
             Some(file),
+            project,
         )
         .unwrap();
         Served {
@@ -4131,6 +4515,7 @@ mod tests {
             server,
             actions: received,
             http: arko_ai::http_client(),
+            project: temp,
         }
     }
 
@@ -4476,5 +4861,494 @@ mod tests {
         assert!(app.session_at(&with_cookie(&token), now).is_none());
         app.new_session(now);
         assert!(!file.exists());
+    }
+
+    /// The upload routes and the files' downloads need the key, and refuse
+    /// a request from another site's page.
+    #[tokio::test]
+    async fn uploads_need_the_key_and_this_sites_page() {
+        let served = serve(&Feed::new("main"));
+        let cookie = served.login().await;
+        let create = r#"{"name": "a.txt", "size": 1}"#;
+        assert_eq!(
+            served.post("/api/uploads", None, create).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        for (method, path) in [
+            (reqwest::Method::PUT, "/api/uploads/x"),
+            (reqwest::Method::GET, "/api/uploads/x"),
+            (reqwest::Method::DELETE, "/api/uploads/x"),
+            (reqwest::Method::GET, "/api/attachments/a.txt"),
+        ] {
+            let response = served
+                .http
+                .request(method.clone(), format!("{}{path}", served.base))
+                .header("upload-offset", "0")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {path}"
+            );
+        }
+        let response = served
+            .http
+            .post(format!("{}/api/uploads", served.base))
+            .header(header::COOKIE, &cookie)
+            .header("sec-fetch-site", "cross-site")
+            .body(create)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!served.project.path().join("work").join(".arko").exists());
+    }
+
+    impl Served {
+        /// Starts an upload of `bytes` named `name`, and gives its ID.
+        async fn create_upload(&self, cookie: &str, name: &str, size: usize) -> String {
+            let body = serde_json::json!({ "name": name, "size": size }).to_string();
+            let response = self.post("/api/uploads", Some(cookie), &body).await;
+            assert_eq!(response.status(), StatusCode::CREATED);
+            let created: UploadCreated = response.json().await.unwrap();
+            created.id
+        }
+
+        async fn put_upload(
+            &self,
+            cookie: &str,
+            id: &str,
+            offset: usize,
+            bytes: &[u8],
+        ) -> (StatusCode, serde_json::Value) {
+            let response = self
+                .http
+                .put(format!("{}/api/uploads/{id}", self.base))
+                .header(header::COOKIE, cookie)
+                .header("upload-offset", offset.to_string())
+                .body(bytes.to_vec())
+                .send()
+                .await
+                .unwrap();
+            (response.status(), response.json().await.unwrap())
+        }
+
+        /// Uploads `bytes` whole as `name`, and gives the upload's ID.
+        async fn upload(&self, cookie: &str, name: &str, bytes: &[u8]) -> String {
+            let id = self.create_upload(cookie, name, bytes.len()).await;
+            let (status, state) = self.put_upload(cookie, &id, 0, bytes).await;
+            assert_eq!(status, StatusCode::OK, "{state}");
+            assert_eq!(state["done"], true);
+            id
+        }
+
+        fn attachments(&self) -> PathBuf {
+            self.project
+                .path()
+                .join("work")
+                .join(".arko")
+                .join("attachments")
+        }
+    }
+
+    /// A file larger than a request body may be goes up in parts, from what
+    /// Arko holds, and comes down as a download of its own type, or as bytes.
+    #[tokio::test]
+    async fn a_file_goes_up_in_parts_and_comes_down_as_a_download() {
+        let served = serve(&Feed::new("main"));
+        let cookie = served.login().await;
+        let bytes: Vec<u8> = (0..2_000_000u32).map(|n| (n % 251) as u8).collect();
+        let id = served
+            .create_upload(&cookie, "RPReplay Final.MP4", bytes.len())
+            .await;
+        let half = 1_200_000;
+        let (status, state) = served.put_upload(&cookie, &id, 0, &bytes[..half]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            (state["received"].as_u64(), state["done"].as_bool()),
+            (Some(half as u64), Some(false))
+        );
+        let state: serde_json::Value = served
+            .get(&format!("/api/uploads/{id}"), Some(&cookie))
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(state["received"], half);
+        let (status, refused) = served.put_upload(&cookie, &id, 0, &bytes).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(refused["received"], half);
+        let (status, state) = served.put_upload(&cookie, &id, half, &bytes[half..]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(state["done"], true);
+        assert_eq!(state["kind"], "file");
+        let response = served
+            .get("/api/attachments/RPReplay-Final.MP4", Some(&cookie))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers().clone();
+        assert_eq!(headers[header::CONTENT_TYPE], "application/octet-stream");
+        assert_eq!(
+            headers[header::CONTENT_DISPOSITION],
+            "attachment; filename=\"RPReplay-Final.MP4\"; filename*=UTF-8''RPReplay-Final.MP4"
+        );
+        assert_eq!(
+            headers[header::CONTENT_SECURITY_POLICY],
+            "default-src 'none'; sandbox"
+        );
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(response.bytes().await.unwrap(), bytes);
+        // A page of HTML or an SVG never comes down as itself.
+        for (name, body, served_as) in [
+            (
+                "clip.mp4",
+                &b"\0\0\0\x18ftypisom\0\0\0\0isommp41"[..],
+                "video/mp4",
+            ),
+            (
+                "page.html",
+                &b"<script>alert(1)</script>"[..],
+                "text/plain; charset=utf-8",
+            ),
+            (
+                "x.svg",
+                &b"<svg onload=\"alert(1)\"/>"[..],
+                "text/plain; charset=utf-8",
+            ),
+            ("doc.pdf", &b"%PDF-1.7\n"[..], "application/pdf"),
+        ] {
+            served.upload(&cookie, name, body).await;
+            let response = served
+                .get(&format!("/api/attachments/{name}"), Some(&cookie))
+                .await;
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                served_as,
+                "{name}"
+            );
+        }
+        // Unsent, they go when the server stops.
+        let attachments = served.attachments();
+        served.server.stop().await;
+        let left: Vec<String> = std::fs::read_dir(&attachments)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(left, [".gitignore"]);
+    }
+
+    /// A download reaches only a file the page could have saved in the
+    /// attachments folder, never through a link.
+    #[tokio::test]
+    async fn a_download_reaches_only_the_attachments_folder() {
+        let served = serve(&Feed::new("main"));
+        let cookie = served.login().await;
+        served.upload(&cookie, "notes.md", b"notes").await;
+        let secret = served.project.path().join("secret.txt");
+        std::fs::write(&secret, "secret").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, served.attachments().join("link.txt")).unwrap();
+        for path in [
+            "..%2Fsecret.txt",
+            "%2E%2E",
+            ".gitignore",
+            "notes%20copy.md",
+            "link.txt",
+            "missing.md",
+        ] {
+            let response = served
+                .get(&format!("/api/attachments/{path}"), Some(&cookie))
+                .await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+        let response = served.get("/api/attachments/notes.md", Some(&cookie)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "notes");
+    }
+
+    /// A file a message is sending can't be removed until the verdict, and
+    /// the accepted message's file stays.
+    #[tokio::test]
+    async fn a_file_being_sent_isnt_removed() {
+        let mut served = serve(&Feed::new("main"));
+        let cookie = served.login().await;
+        let id = served.upload(&cookie, "video.mp4", &[0]).await;
+        let body = serde_json::json!({ "text": "Look", "files": [id] }).to_string();
+        let request = tokio::spawn({
+            let (http, url, cookie) = (
+                served.http.clone(),
+                format!("{}/api/message", served.base),
+                cookie.clone(),
+            );
+            async move {
+                http.post(url)
+                    .header(header::COOKIE, cookie)
+                    .body(body)
+                    .send()
+                    .await
+                    .unwrap()
+            }
+        });
+        let Some(Action::Send { action, reply }) = served.actions.recv().await else {
+            panic!("a send");
+        };
+        let Action::Message { files, .. } = *action else {
+            panic!("a message");
+        };
+        let response = served
+            .http
+            .delete(format!("{}/api/uploads/{id}", served.base))
+            .header(header::COOKIE, &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        reply.answer(Verdict::accepted(super::super::Delivery::Turn, None));
+        let verdict: Verdict = request.await.unwrap().json().await.unwrap();
+        assert!(matches!(verdict, Verdict::Accepted { .. }));
+        assert!(files[0].file.path.is_file(), "the message's video stays");
+    }
+
+    /// A DELETE whose connection drops while a write goes on still removes
+    /// the part file once the write ends.
+    #[tokio::test]
+    async fn a_delete_whose_connection_drops_still_removes_the_part() {
+        use super::super::uploads::tests::{DISK, Disk};
+        DISK.with(|disk| {
+            disk.set(Disk {
+                delay: Duration::from_millis(500),
+                on_worker: false,
+            })
+        });
+        let served = serve(&Feed::new("main"));
+        DISK.with(|disk| disk.set(Disk::default()));
+        let cookie = served.login().await;
+        let id = served.create_upload(&cookie, "video.mp4", 600_000).await;
+        let url = format!("{}/api/uploads/{id}", served.base);
+        let writing = tokio::spawn({
+            let (http, url, cookie) = (served.http.clone(), url.clone(), cookie.clone());
+            async move {
+                http.put(url)
+                    .header(header::COOKIE, cookie)
+                    .header("upload-offset", "0")
+                    .body(vec![1; 300_000])
+                    .send()
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let deleting = tokio::spawn({
+            let (http, url, cookie) = (served.http.clone(), url.clone(), cookie.clone());
+            async move { http.delete(url).header(header::COOKIE, cookie).send().await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        deleting.abort();
+        let _ = deleting.await;
+        let state = served
+            .get(&format!("/api/uploads/{id}"), Some(&cookie))
+            .await;
+        assert_eq!(state.status(), StatusCode::NOT_FOUND);
+        let _ = writing.await;
+        let until = Instant::now() + Duration::from_secs(5);
+        let left = loop {
+            let mut left: Vec<String> = std::fs::read_dir(served.attachments())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            left.sort();
+            if left == [".gitignore"] || Instant::now() > until {
+                break left;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(left, [".gitignore"]);
+    }
+
+    /// An item's files reach the page with the addresses they download
+    /// from, when they're in the project's attachments folder, and a file
+    /// that's gone answers 404 to the page's check.
+    #[tokio::test]
+    async fn an_items_files_come_with_their_downloads() {
+        use super::super::feed::{Delivery, Source};
+        use super::super::protocol::ResetData;
+        use crate::attachments::{FileRef, SentFile};
+        let feed = Feed::new("main");
+        let served = serve(&feed);
+        let cookie = served.login().await;
+        served.upload(&cookie, "Clip Final.mp4", &[0; 8]).await;
+        let sent = |path: PathBuf| SentFile {
+            file: FileRef {
+                name: path.file_name().unwrap().to_string_lossy().into_owned(),
+                mime: "video/mp4".into(),
+                bytes: 8,
+                path,
+                lines: None,
+            },
+            shown: false,
+        };
+        let folder = served.attachments();
+        let files = vec![
+            sent(folder.join("Clip-Final.mp4")),
+            sent(PathBuf::from("/elsewhere/.arko/attachments/x.mp4")),
+            sent(folder.join("é.mp4")),
+        ];
+        feed.user_with_files("Look.", Source::Web, Delivery::Turn, Vec::new(), files);
+        let mut stream = served.get("/api/events", Some(&cookie)).await;
+        let mut buffer = String::new();
+        let events = read_until(&mut stream, &mut buffer, |name, _| name == "reset").await;
+        // (The page's types refuse a field they don't know.)
+        let reset: ResetData = serde_json::from_value(events.last().unwrap().1.clone()).unwrap();
+        let files = &reset.items[0].files;
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| (file.name.as_str(), file.url.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                ("Clip-Final.mp4", Some("/api/attachments/Clip-Final.mp4")),
+                ("x.mp4", None),
+                ("é.mp4", Some("/api/attachments/%C3%A9.mp4")),
+            ]
+        );
+        assert_eq!((files[0].mime.as_str(), files[0].bytes), ("video/mp4", 8));
+        let head = |url: String| {
+            served
+                .http
+                .head(format!("{}{url}", served.base))
+                .header(header::COOKIE, &cookie)
+                .send()
+        };
+        let there = head(files[0].url.clone().unwrap()).await.unwrap();
+        assert_eq!(there.status(), StatusCode::OK);
+        let gone = head(files[2].url.clone().unwrap()).await.unwrap();
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A message refused after the server stopped takes its file along.
+    #[tokio::test]
+    async fn a_send_refused_after_the_server_stops_takes_its_file_along() {
+        let mut served = serve(&Feed::new("main"));
+        let cookie = served.login().await;
+        let id = served.upload(&cookie, "refused.bin", &[0]).await;
+        let sending = tokio::spawn({
+            let (http, url) = (served.http.clone(), format!("{}/api/message", served.base));
+            async move {
+                http.post(url)
+                    .header(header::COOKIE, cookie)
+                    .json(&serde_json::json!({ "text": "Look", "files": [id] }))
+                    .send()
+                    .await
+            }
+        });
+        let Some(Action::Send { reply, .. }) = served.actions.recv().await else {
+            panic!("a send");
+        };
+        let file = served.attachments().join("refused.bin");
+        tokio::time::timeout(Duration::from_secs(7), served.server.stop())
+            .await
+            .unwrap();
+        assert!(file.is_file(), "a file being sent stays through the stop");
+        reply.answer(Verdict::refused(RefusalKind::Files, "Not this one."));
+        let _ = tokio::time::timeout(Duration::from_secs(2), sending).await;
+        let until = Instant::now() + Duration::from_secs(5);
+        while file.exists() && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!file.exists());
+    }
+
+    /// Two messages sent at once with one upload: only one of them takes
+    /// it.
+    #[tokio::test]
+    async fn two_messages_cant_send_one_upload() {
+        let mut served = serve(&Feed::new("main"));
+        let cookie = served.login().await;
+        let id = served.upload(&cookie, "notes.md", b"abc").await;
+        let requests: Vec<_> = (0..2)
+            .map(|n| {
+                let (http, url, cookie, id) = (
+                    served.http.clone(),
+                    format!("{}/api/message", served.base),
+                    cookie.clone(),
+                    id.clone(),
+                );
+                tokio::spawn(async move {
+                    let body = serde_json::json!({ "text": format!("Look {n}"), "files": [id] });
+                    let response = http
+                        .post(url)
+                        .header(header::COOKIE, cookie)
+                        .body(body.to_string())
+                        .send()
+                        .await
+                        .unwrap();
+                    response.json::<Verdict>().await.unwrap()
+                })
+            })
+            .collect();
+        let Some(Action::Send { reply, .. }) = served.actions.recv().await else {
+            panic!("a send");
+        };
+        let second = tokio::time::timeout(Duration::from_millis(500), served.actions.recv()).await;
+        assert!(second.is_err(), "the second message reached the session");
+        reply.answer(Verdict::accepted(super::super::Delivery::Turn, None));
+        let mut refused = 0;
+        for request in requests {
+            if let Verdict::Refused(refusal) = request.await.unwrap() {
+                assert_eq!(refusal.kind, RefusalKind::Files);
+                assert_eq!(
+                    refusal.words,
+                    "notes.md is being sent with another message."
+                );
+                refused += 1;
+            }
+        }
+        assert_eq!(refused, 1);
+    }
+
+    /// A message sends the uploads it names, once. A refused one keeps
+    /// them, so the page can send them again, and a file is refused before
+    /// any of it comes when it's over the limit.
+    #[tokio::test]
+    async fn a_message_sends_its_uploads_once() {
+        let mut served = serve(&Feed::new("main"));
+        let cookie = served.login().await;
+        let id = served.upload(&cookie, "notes.md", b"# Notes\n").await;
+        let body = serde_json::json!({ "text": "", "files": [id] }).to_string();
+        let refused = Verdict::refused(RefusalKind::Reporting, "Not now.");
+        let (_, action) = served
+            .send("/api/message", Some(&cookie), &body, refused)
+            .await;
+        let Action::Message { text, files } = action else {
+            panic!("a message");
+        };
+        assert_eq!(text, "");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file.name, "notes.md");
+        assert_eq!(files[0].kind, crate::attachments::Kind::Text);
+        assert_eq!(files[0].content.as_deref(), Some(&b"# Notes\n"[..]));
+        assert_eq!(files[0].file.lines, Some(1));
+        let Action::Message { files, .. } = served.sent("/api/message", Some(&cookie), &body).await
+        else {
+            panic!("a message");
+        };
+        assert_eq!(files.len(), 1);
+        // Sent, it's no upload any more, and stays as a file.
+        let response = served.post("/api/message", Some(&cookie), &body).await;
+        let verdict: Verdict = response.json().await.unwrap();
+        let Verdict::Refused(refusal) = verdict else {
+            panic!("refused");
+        };
+        assert_eq!(refusal.kind, RefusalKind::Files);
+        assert!(served.attachments().join("notes.md").is_file());
+        let huge = serde_json::json!({ "name": "huge.mov", "size": 2u64 << 30 }).to_string();
+        let response = served.post("/api/uploads", Some(&cookie), &huge).await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let refused: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(
+            refused["error"],
+            "huge.mov is 2.0 GB, and a file can be 1.0 GB at most."
+        );
     }
 }

@@ -1,5 +1,6 @@
-//! The message box, with the command menu and Stop, and the agent's
-//! questions and the approval tray above it.
+//! The message box, with the command menu, Stop and the files attached
+//! ([`crate::attach`]), and the agent's questions and the approval tray
+//! above it.
 
 use std::collections::HashMap;
 
@@ -129,6 +130,50 @@ pub fn Composer() -> impl IntoView {
         page.feeds.track();
         continue_asked.set(None);
     });
+    // The files attached, kept across a reload of the tab. Another feed's
+    // uploads are no use, and a page shown again goes on with its uploads.
+    crate::attach::own_chips();
+    crate::attach::restore();
+    let attached = page.attached;
+    Effect::new(move |_| {
+        page.feeds.track();
+        crate::attach::feed_changed();
+    });
+    let _shown = window_event_listener(leptos::ev::visibilitychange, |_| {
+        if document().visibility_state() == web_sys::VisibilityState::Visible {
+            crate::attach::shown_again();
+        }
+    });
+    // Files dragged over the page drop onto the box, wherever they're let go.
+    let dropping = RwSignal::new(false);
+    let _drag = window_event_listener(leptos::ev::dragover, move |event| {
+        if crate::attach::drags_files(&event) && page.worker.get_untracked().is_none() {
+            event.prevent_default();
+            dropping.set(true);
+        }
+    });
+    let _left = window_event_listener(leptos::ev::dragleave, move |event| {
+        // (Leaving the window, not one element for another.)
+        if event.related_target().is_none() {
+            dropping.set(false);
+        }
+    });
+    let _dropped = window_event_listener(leptos::ev::drop, move |event| {
+        dropping.set(false);
+        if crate::attach::drags_files(&event) {
+            event.prevent_default();
+            if page.worker.get_untracked().is_none() {
+                let files = event.data_transfer().and_then(|transfer| transfer.files());
+                crate::attach::attach(crate::attach::files_of(files));
+            }
+        }
+    });
+    // Send waits for every upload, and takes files without text. A message
+    // to a worker takes none.
+    let files_ready = move || match page.worker.get() {
+        Some(_) => Some(Vec::new()),
+        None => attached.with(|chips| crate::attach::ready(chips)),
+    };
     let stopping = RwSignal::new(false);
     let menu = RwSignal::new(None::<Menu>);
     let selected = RwSignal::new(None::<usize>);
@@ -226,7 +271,10 @@ pub fn Composer() -> impl IntoView {
             return;
         };
         let text = area.value();
-        if text.trim().is_empty() || sending.get_untracked() {
+        let Some(files) = files_ready() else {
+            return;
+        };
+        if (text.trim().is_empty() && files.is_empty()) || sending.get_untracked() {
             return;
         }
         let sender = begin_send();
@@ -241,13 +289,18 @@ pub fn Composer() -> impl IntoView {
             Some(_) => Vec::new(),
             None => ask.attached.get_untracked(),
         };
-        let body = match page.worker.get_untracked() {
+        let mut body = match page.worker.get_untracked() {
             Some(worker) => serde_json::json!({ "text": text, "to": worker }),
             None if !answers.is_empty() => {
                 serde_json::json!({ "text": text, "answers": answers })
             }
             None => serde_json::json!({ "text": text }),
         };
+        // (What it sends, so it removes those chips alone.)
+        let (sent_keys, ids): (Vec<u64>, Vec<String>) = files.into_iter().unzip();
+        if !ids.is_empty() {
+            body["files"] = ids.into();
+        }
         spawn_local(async move {
             let outcome = send_to_arko("/api/message", body, &sender).await;
             // A later send owns the box now.
@@ -256,10 +309,11 @@ pub fn Composer() -> impl IntoView {
             }
             match sender.take(outcome) {
                 Some(Posted::Taken) => {
-                    // The questions it answered, and the text unless the
-                    // box holds another meanwhile.
+                    // The questions it answered, its files, and the text
+                    // unless the box holds another meanwhile.
                     ask.attached
                         .update(|attached| attached.retain(|id| !answers.contains(id)));
+                    crate::attach::sent(&sent_keys);
                     if draft_now().as_ref() == Some(&sent) {
                         area.set_value("");
                         expanded.set(false);
@@ -395,6 +449,9 @@ pub fn Composer() -> impl IntoView {
                     page.feeds.track();
                     view! { <crate::approvals::Tray draft=draft /> }
                 }}
+                <Show when=move || page.worker.get().is_none()>
+                    <crate::attach::Chips />
+                </Show>
                 <form
                     class="compose"
                     class:expanded=move || expanded.get()
@@ -437,6 +494,10 @@ pub fn Composer() -> impl IntoView {
                             </div>
                         }
                     })}
+                    <crate::attach::DropOverlay dropping=dropping />
+                    <Show when=move || page.worker.get().is_none()>
+                        <crate::attach::AttachButton />
+                    </Show>
                     <div class="field">
                         <textarea
                             node_ref=input
@@ -453,6 +514,16 @@ pub fn Composer() -> impl IntoView {
                             on:focus=move |_| refresh_menu()
                             on:blur=move |_| { menu.set(None); CHOICES.with(|choices| choices.borrow_mut().clear()); }
                             on:keydown=keydown
+                            on:paste=move |event: web_sys::ClipboardEvent| {
+                                // Files pasted without text are attached.
+                                let Some(data) = event.clipboard_data() else { return };
+                                let files = crate::attach::files_of(data.files());
+                                let text = data.get_data("text/plain").unwrap_or_default();
+                                if !files.is_empty() && text.is_empty() && page.worker.get_untracked().is_none() {
+                                    event.prevent_default();
+                                    crate::attach::attach(files);
+                                }
+                            }
                         ></textarea>
                         <button
                             type="button"
@@ -482,8 +553,15 @@ pub fn Composer() -> impl IntoView {
                         type="submit"
                         class="btn primary icon send"
                         aria-label=move || if replying() != 0 { "Answer" } else { "Send" }
-                        title=move || if replying() != 0 { "Answer" } else { "Send" }
-                        disabled=move || empty.get() || sending.get()
+                        title=move || match (files_ready().is_none(), replying() != 0) {
+                            (true, _) => "Waiting for uploads",
+                            (false, true) => "Answer",
+                            (false, false) => "Send",
+                        }
+                        disabled=move || match files_ready() {
+                            None => true,
+                            Some(files) => (empty.get() && files.is_empty()) || sending.get(),
+                        }
                     >
                         <ArrowUp size=20 />
                     </button>

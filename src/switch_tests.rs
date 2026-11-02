@@ -762,8 +762,7 @@ async fn messages_during_the_report_are_refused_and_controls_still_work() {
         until(|| lines(&feed).contains("Asking gpt-6-luna for a report")).await;
         let activity = feed.activity();
         assert!(activity.reporting && activity.working, "{activity:?}");
-        page.send(Action::Message("Hello from the page.".into()))
-            .unwrap();
+        page.send(Action::message("Hello from the page.")).unwrap();
         sender
             .send(Input::Message(crate::ui::Message {
                 text: "Hello from the app.".into(),

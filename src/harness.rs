@@ -26,7 +26,7 @@ use crate::openings::{Opening, Subjects};
 use crate::remote::{
     Action, Confirm, Delivery, Level, Partial, REFRESH_MESSAGE, RefusalKind, Source,
 };
-use crate::sending::{Admitted, Phase, Read, Reply};
+use crate::sending::{Admitted, Phase, Read, Reply, joined};
 use crate::session::{Mode, Session, Settings};
 use crate::shell::{Shell, ShellTool};
 use crate::status::Gauges;
@@ -507,6 +507,19 @@ pub(crate) enum TurnEnd {
     Exit,
 }
 
+/// A message of the user's sent in place of the one at `index` of the
+/// agent's conversation, edited or as it was (`Request::Edit`,
+/// `Request::Regenerate`).
+pub(crate) struct Resent {
+    pub(crate) index: usize,
+    /// Its words, as the transcript shows them.
+    pub(crate) text: String,
+    /// What the agent reads, its files' block before its words, when it
+    /// has files.
+    pub(crate) read: Option<String>,
+    pub(crate) files: Vec<crate::attachments::SentFile>,
+}
+
 /// What starts a turn.
 pub(crate) enum Prompt {
     /// The user's message.
@@ -616,7 +629,7 @@ pub(crate) struct Harness {
     pub(crate) kept: Arc<kept_notes::KeptNotes>,
     /// What the user typed during a turn that the agent didn't read before
     /// the turn ended, so it goes with the next message.
-    pub(crate) unread: Vec<String>,
+    pub(crate) unread: Vec<crate::unread::Unread>,
     /// The conversation changed (`/new`, `/resume`). The next message names
     /// the workers still running, whose reports now come to it.
     pub(crate) switched: bool,
@@ -630,7 +643,7 @@ pub(crate) struct Harness {
     pub(crate) reopen: bool,
     /// An edited message (or one sent again) waits to start a turn, cutting
     /// the conversation back to its index (`Request::Edit`).
-    pub(crate) edited: Option<(usize, String)>,
+    pub(crate) edited: Option<Resent>,
     /// The next turn cuts the conversation back to this message first.
     pub(crate) cut_back: Option<usize>,
     /// The handover report the conversation it cuts back to its first
@@ -1476,13 +1489,18 @@ impl Harness {
                         continue;
                     }
                     // An edited message, or one sent again.
-                    let Some((index, text)) = self.edited.take() else {
+                    let Some(resent) = self.edited.take() else {
                         continue;
                     };
-                    self.cut_back = Some(index);
+                    self.cut_back = Some(resent.index);
                     let shown = std::mem::take(&mut self.pending_refs);
+                    let Resent {
+                        text, read, files, ..
+                    } = resent;
                     self.feed
-                        .user_with(&text, Source::App, Delivery::Turn, shown);
+                        .user_with_files(&text, Source::App, Delivery::Turn, shown, files);
+                    // The agent reads its files' block before its words.
+                    self.labelled = read;
                     if let TurnEnd::Exit = self.turn(Prompt::User(text), input).await {
                         break;
                     }
@@ -1571,38 +1589,44 @@ impl Harness {
                     Read::Done | Read::Other => continue,
                 },
             };
-            let (text, source, attached, mut reply) = match self.admit(sent, Phase::Idle) {
-                None => continue,
-                Some(Admitted::Command {
-                    command,
-                    source,
-                    confirmed,
-                    reply,
-                }) => {
-                    if self
-                        .run_command(&command, source, Phase::Idle, input, reply, confirmed)
-                        .await
-                    {
-                        break;
+            let (text, read, files_words, files, source, attached, mut reply) =
+                match self.admit(sent, Phase::Idle) {
+                    None => continue,
+                    Some(Admitted::Command {
+                        command,
+                        source,
+                        confirmed,
+                        reply,
+                    }) => {
+                        if self
+                            .run_command(&command, source, Phase::Idle, input, reply, confirmed)
+                            .await
+                        {
+                            break;
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                Some(Admitted::Message {
-                    text,
-                    source,
-                    attached,
-                    reply,
-                }) => (text, source, attached, reply),
-            };
+                    Some(Admitted::Message {
+                        text,
+                        read,
+                        files_words,
+                        files,
+                        source,
+                        attached,
+                        reply,
+                    }) => (text, read, files_words, files, source, attached, reply),
+                };
             let text = text.as_str();
             let shown = std::mem::take(&mut self.pending_refs);
             // What the user typed that the agent didn't read goes first, as
             // the message carries it.
-            self.feed.notes_sent(&self.unread);
-            let item = self.feed.user_with(text, source, Delivery::Turn, shown);
+            self.feed.notes_sent(&typed_parts(&self.unread));
+            let item = self
+                .feed
+                .user_with_files(text, source, Delivery::Turn, shown, files);
             // A message that answers questions reaches the agent as their
             // note, which a turn of its own delivers.
-            let (prompt, delivery, not_posted) = match self.reply_text(text, &attached) {
+            let (prompt, delivery, not_posted) = match self.reply_text(&read, &attached) {
                 Replied::Plain { text: labelled, .. } => {
                     self.labelled = Some(labelled);
                     (Prompt::User(text.to_string()), Delivery::Turn, None)
@@ -1612,7 +1636,7 @@ impl Harness {
                 }
             };
             // It went, so the turn starts with it.
-            let partial = self.partly(&reply, Vec::new(), not_posted);
+            let partial = self.partly(&reply, Vec::new(), joined(not_posted, files_words));
             reply.accept_partly(delivery, Some(item), partial);
             if let TurnEnd::Exit = self.turn(prompt, input).await {
                 break;
@@ -1891,6 +1915,10 @@ impl Harness {
                 harness.remote_actions.clone(),
                 harness.gauges.clone(),
                 Some(harness.session.dir.join(remote::SESSIONS_FILE)),
+                remote::Project {
+                    workspace: harness.settings.workspace.clone(),
+                    root: harness.root.clone(),
+                },
             )
         };
         let server = match served {
@@ -2307,7 +2335,7 @@ impl Harness {
             .into_iter()
             .filter(|turn| {
                 turn.kind != arko_agents::UserTurnKind::ContextUpdate
-                    && remote::own_words(&turn.text) == words
+                    && remote::shown_words(&turn.text) == words
             })
             .collect();
         let turn = turns
@@ -2321,28 +2349,58 @@ impl Harness {
 
     /// The user's message `item` edited to `text`. The conversation is cut
     /// back to just before it, and `text` starts a turn in its place (in
-    /// `repl`). Refused, saying why, while a worker runs, and for a message
-    /// the conversation no longer has (one before a handover, or of
-    /// another conversation).
+    /// `repl`). Its files stay, as files the agent reads where they are, and
+    /// images go again only as the edit sends them. Refused, saying why,
+    /// while a worker runs, and for a message the conversation no longer has
+    /// (one before a handover, or of another conversation).
     fn edit(&mut self, item: u64, text: String) -> Result<(), String> {
         let text = text.trim().to_string();
-        if text.is_empty() {
-            return Err("The message is empty.".into());
-        }
         if command(&text).is_some() {
             return Err("A command can't take a message's place.".into());
         }
-        if let Some(crew) = &self.crew
-            && let Some(worker) = crew.running().first()
-        {
-            return Err(format!(
-                "{worker} is running. Wait for the workers or stop them first."
-            ));
-        }
+        self.workers_stopped()?;
         let index = self.message_at(item, "edited")?;
+        let (read, files) = self
+            .sent_at(index)
+            .and_then(|sent| crate::attachments::resent(&sent, &text, false))
+            .map_or((None, Vec::new()), |(read, files)| (Some(read), files));
+        if text.is_empty() && files.is_empty() {
+            return Err("The message is empty.".into());
+        }
+        self.resend(
+            item,
+            Resent {
+                index,
+                text,
+                read,
+                files,
+            },
+        );
+        Ok(())
+    }
+
+    /// Why a message can't be sent in place of another now, while a worker
+    /// runs.
+    fn workers_stopped(&self) -> Result<(), String> {
+        match self
+            .crew
+            .as_ref()
+            .and_then(|crew| crew.running().first().cloned())
+        {
+            Some(worker) => Err(format!(
+                "{worker} is running. Wait for the workers or stop them first."
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// The user's message `item` sent again as `resent`. The conversation
+    /// is cut back to just before it, and `resent` starts a turn in its
+    /// place (in `repl`).
+    fn resend(&mut self, item: u64, resent: Resent) {
         // The first message of a conversation that was handed over holds the
-        // report the agent goes on from. The edited one keeps it.
-        self.cut_report = (index == 0)
+        // report the agent goes on from. The new one keeps it.
+        self.cut_report = (resent.index == 0)
             .then(|| self.conversation_task())
             .flatten()
             .and_then(|task| task.handovers.last())
@@ -2350,8 +2408,24 @@ impl Harness {
         self.feed.truncate(item);
         // What the user typed during the turns cut goes with them.
         self.unread.clear();
-        self.edited = Some((index, text));
-        Ok(())
+        self.edited = Some(resent);
+    }
+
+    /// The user's message at `index` of the agent's conversation, as they
+    /// sent it, its files' block before its words ([`remote::as_sent`]).
+    fn sent_at(&self, index: usize) -> Option<String> {
+        self.turn_text(index)
+            .map(|text| remote::as_sent(&text).to_string())
+    }
+
+    /// The text of the user's turn at `index` of the agent's conversation,
+    /// as the agent read it.
+    fn turn_text(&self, index: usize) -> Option<String> {
+        let task = self.conversation_task()?;
+        task.user_turns()
+            .into_iter()
+            .find(|turn| turn.index == index)
+            .map(|turn| turn.text)
     }
 
     /// Where the user's message `item` is in the agent's conversation now
@@ -2375,7 +2449,7 @@ impl Harness {
             task.user_turns().into_iter().any(|turn| {
                 turn.index == index
                     && turn.kind != arko_agents::UserTurnKind::ContextUpdate
-                    && remote::own_words(&turn.text) == words.trim()
+                    && remote::shown_words(&turn.text) == words.trim()
             })
         });
         if there { Ok(index) } else { Err(gone.into()) }
@@ -2539,15 +2613,17 @@ impl Harness {
         }
     }
 
-    /// The user's latest message sent again. Its turn's reply and what
-    /// followed are cut, and a new reply comes.
+    /// The user's latest message sent again, as the agent read it, its
+    /// files and images too. Its turn's reply and what followed are cut, and
+    /// a new reply comes.
     fn regenerate(&mut self) -> Result<(), String> {
         let Some(item) = self.feed.last_turn_message() else {
             return Err("There is no message to send again.".into());
         };
+        self.workers_stopped()?;
         let index = self.message_at(item.id, "sent again")?;
         // Its images go again, as the conversation has them.
-        let images: Vec<arko_ai::Image> = self
+        let mut images: Vec<arko_ai::Image> = self
             .conversation_task()
             .and_then(|task| task.conversation.messages.get(index))
             .map(|message| {
@@ -2559,7 +2635,24 @@ impl Harness {
                     .collect()
             })
             .unwrap_or_default();
-        self.edit(item.id, item.text)?;
+        let (read, files) = self
+            .sent_at(index)
+            .and_then(|sent| crate::attachments::resent(&sent, &item.text, true))
+            .map_or((None, Vec::new()), |(read, files)| (Some(read), files));
+        // Only its own, after those of the notes it carried, which don't go
+        // again.
+        if let Some(text) = self.turn_text(index) {
+            images = images.split_off(remote::notes_images(&text, images.len()));
+        }
+        self.resend(
+            item.id,
+            Resent {
+                index,
+                text: item.text.clone(),
+                read,
+                files,
+            },
+        );
         self.pending_images = images;
         self.pending_refs = item.images;
         Ok(())
@@ -3921,7 +4014,7 @@ impl Harness {
             })
         };
         tokio::pin!(call);
-        let mut notes: Vec<(u64, String)> = Vec::new();
+        let mut notes: Vec<(u64, (String, Vec<arko_ai::Image>))> = Vec::new();
         // Lines typed without a terminal, each its own turn later, with the
         // message as the agent reads it.
         let mut queued: Vec<(String, String)> = Vec::new();
@@ -4004,7 +4097,7 @@ impl Harness {
                             Read::Done | Read::Other => continue,
                         },
                     };
-                    let (text, source, attached, mut reply) = match self.admit(sent, Phase::Turn) {
+                    let (text, read, files_words, files, source, attached, mut reply) = match self.admit(sent, Phase::Turn) {
                         None => continue,
                         Some(Admitted::Command {
                             command,
@@ -4023,21 +4116,25 @@ impl Harness {
                         }
                         Some(Admitted::Message {
                             text,
+                            read,
+                            files_words,
+                            files,
                             source,
                             attached,
                             reply,
-                        }) => (text, source, attached, reply),
+                        }) => (text, read, files_words, files, source, attached, reply),
                     };
                     // The images an app's message sends go with its note.
                     let images = std::mem::take(&mut self.pending_images);
                     let shown = std::mem::take(&mut self.pending_refs);
                     // A message that answers questions the agent waits for
                     // is the answer.
-                    match self.reply_text(&text, &attached) {
+                    match self.reply_text(&read, &attached) {
                         Replied::Answered { not_posted } => {
                             self.output.echo(&self.output.dim("  ✎ answered"));
-                            let item = self.feed.user(&text, source, Delivery::Answer);
-                            let partial = self.partly(&reply, Vec::new(), not_posted);
+                            let item = self.feed.user_with_files(&text, source, Delivery::Answer, Vec::new(), files);
+                            let partial =
+                                self.partly(&reply, Vec::new(), joined(not_posted, files_words));
                             reply.accept_partly(Delivery::Answer, Some(item), partial);
                         }
                         // One that answers questions went as their note, which
@@ -4047,8 +4144,8 @@ impl Harness {
                             self.output.echo(&self.output.dim(
                                 "  ✎ added to the task, and the agent reads it at its next step",
                             ));
-                            let item = self.feed.user(&text, source, Delivery::Note);
-                            let mut not_passed = not_posted;
+                            let item = self.feed.user_with_files(&text, source, Delivery::Note, Vec::new(), files);
+                            let mut not_passed = joined(not_posted, files_words);
                             if !images.is_empty()
                                 && let Some(run) = self.feed.questions_conversation()
                                 && let Err(error) = self.post_users_note(
@@ -4075,20 +4172,26 @@ impl Harness {
                             reply.accept_partly(Delivery::Note, Some(item), partial);
                         }
                         Replied::Plain { text: labelled, .. } if self.queue_lines => {
-                            let item = self.feed.user(&text, source, Delivery::Queued);
+                            let item = self.feed.user_with_files(&text, source, Delivery::Queued, Vec::new(), files);
                             queued.push((text, labelled));
-                            reply.accept(Delivery::Queued, Some(item));
+                            let partial = self.partly(&reply, Vec::new(), files_words);
+                            reply.accept_partly(Delivery::Queued, Some(item), partial);
                         }
                         Replied::Plain { text: labelled, settled } => {
+                            // (One the agent doesn't get to read goes with
+                            // the next message as it reads it, its images
+                            // too.)
+                            let unread = (read, images.clone());
                             let note = Note::new(labelled).to([MAIN]).once().images(images);
                             match self.post_users_note(&workflow, None, note) {
                                 Ok(seq) => {
                                     self.output.echo(&self.output.dim(
                                         "  ✎ added to the task, and the agent reads it at its next step",
                                     ));
-                                    let item = self.feed.note(&text, source, seq.seq, shown);
-                                    notes.push((seq.seq, text));
-                                    reply.accept(Delivery::Note, Some(item));
+                                    let item = self.feed.note_with_files(&text, source, seq.seq, shown, files);
+                                    notes.push((seq.seq, unread));
+                                    let partial = self.partly(&reply, Vec::new(), files_words);
+                                    reply.accept_partly(Delivery::Note, Some(item), partial);
                                 }
                                 // Refused only when nothing of it happened. One
                                 // that answered Arko's own question did that.
@@ -4773,7 +4876,7 @@ impl Harness {
                     self.page_job_action(action)
                 }
                 Event::Remote(
-                    Action::Message(_)
+                    Action::Message { .. }
                     | Action::Continue(_)
                     | Action::Answer { .. }
                     | Action::Reply { .. }
@@ -4857,14 +4960,37 @@ impl Harness {
         }
         if !self.unread.is_empty() {
             let unread = std::mem::take(&mut self.unread);
-            self.feed.notes_sent(&unread);
-            parts.push(format!(
-                "# What I typed during your last turn, which you didn't get to read\n\n{}",
-                unread
+            self.feed.notes_sent(&typed_parts(&unread));
+            // Their images go too, before the message's own, and their files
+            // go once no note waiting in another conversation has them.
+            let loaded = crate::blocking(|| {
+                let loaded = crate::unread::load_each(&self.session.dir, &unread);
+                let waiting = self
+                    .conversations
+                    .list
                     .iter()
-                    .map(|text| format!("- {}", text.replace('\n', "\n  ")))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                    .flat_map(|record| &record.unread);
+                crate::unread::sweep(&self.session.dir, waiting);
+                loaded
+            });
+            // Each note ends with how many of the images are its own, as the
+            // workflow's notes the agent reads do, so the agent, and the
+            // transcript once restored, can tell whose they are. The section
+            // says so first, where no note's words can.
+            let mut images = Vec::new();
+            let notes: Vec<String> = loaded
+                .into_iter()
+                .map(|(text, own)| {
+                    let line = crate::attachments::images_line(own.len());
+                    images.extend(own);
+                    format!("- {}", format!("{text}\n{line}").replace('\n', "\n  "))
+                })
+                .collect();
+            self.pending_images.splice(0..0, images);
+            parts.push(format!(
+                "# What I typed during your last turn, which you didn't get to read\n\n{}\n\n{}",
+                crate::attachments::NOTES_COUNTED,
+                notes.join("\n")
             ));
         }
         if std::mem::take(&mut self.switched) {
@@ -4979,7 +5105,7 @@ impl Harness {
     /// (`now`) a new turn takes them to it at once, and that turn starting
     /// is all the user needs to see. After a stop or a failure they wait
     /// for the next message, which the user is told.
-    pub(crate) fn keep_unread(&mut self, unread: Vec<String>, now: bool) {
+    pub(crate) fn keep_unread(&mut self, unread: Vec<(String, Vec<arko_ai::Image>)>, now: bool) {
         if unread.is_empty() {
             return;
         }
@@ -4989,7 +5115,15 @@ impl Harness {
                 "  (what you typed during the turn, which the agent didn't read, goes with your next message)",
             );
         }
-        self.unread.extend(unread);
+        // (Their images are saved, to go with the next message too.)
+        let dir = self.session.dir.clone();
+        let kept: Vec<crate::unread::Unread> = crate::blocking(|| {
+            unread
+                .into_iter()
+                .map(|(text, images)| crate::unread::keep(&dir, text, &images))
+                .collect()
+        });
+        self.unread.extend(kept);
     }
 
     pub(crate) fn stop(&self, workflow: &Workflow) -> bool {
@@ -5132,6 +5266,15 @@ pub(crate) fn conversation_of(workflow: &Workflow, run: Option<uuid::Uuid>) -> C
     } else {
         Conversation::New
     }
+}
+
+/// What the user typed of each of `notes`, as the transcript shows them
+/// (without their attachments block).
+fn typed_parts(notes: &[crate::unread::Unread]) -> Vec<String> {
+    notes
+        .iter()
+        .map(|note| crate::attachments::typed(&note.text).to_string())
+        .collect()
 }
 
 /// The command `text` is, if it is one, meaning a command's name, alone or with
@@ -5375,6 +5518,13 @@ pub(crate) mod tests {
     mod sends {
         use super::*;
         include!("sending_tests.rs");
+    }
+
+    /// The end-to-end tests of the files the web page sends, in their own
+    /// file.
+    mod attachments {
+        use super::*;
+        include!("attachments_tests.rs");
     }
 
     /// `/keys`'s end-to-end tests, in their own file.
@@ -10122,7 +10272,7 @@ pub(crate) mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(message, Action::Message("Thanks.".into()));
+        assert_eq!(message, Action::message("Thanks."));
         reply.accept(Delivery::Turn, None);
         assert_eq!(
             thanks.await.unwrap(),
@@ -10228,8 +10378,8 @@ pub(crate) mod tests {
         let actions = harness.remote_actions.clone();
         let feed = harness.feed.clone();
         let typing = async move {
-            actions.send(Action::Message("/exit".into())).unwrap();
-            actions.send(Action::Message("/workers".into())).unwrap();
+            actions.send(Action::message("/exit")).unwrap();
+            actions.send(Action::message("/workers")).unwrap();
             until(|| shown(&feed).iter().any(|item| item.0 == "output")).await;
             sender.send(Input::Eof).unwrap();
         };

@@ -35,6 +35,8 @@ mod render;
 pub(crate) mod scenario;
 #[cfg(feature = "remote")]
 mod server;
+#[cfg(feature = "remote")]
+mod uploads;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -59,8 +61,8 @@ pub use feed::{
 #[cfg(all(feature = "remote", feature = "tui"))]
 pub(crate) use highlight::content_line_spans;
 pub use history::items as history;
-pub(crate) use history::own_words;
 pub(crate) use history::{all_items, job_ran, last_reply, message_turns};
+pub(crate) use history::{as_sent, notes_images, own_words, shown_words};
 #[cfg(any(test, feature = "remote"))]
 pub use links::Kind as LinkKind;
 pub use links::{HOST_VARIABLE, Interface, Link};
@@ -84,6 +86,25 @@ pub struct Info {
     pub app: String,
 }
 
+/// Where the files the page sends are saved, in the project `workspace`'s
+/// `.arko/attachments`, with Arko's folder `root`, whose settings that
+/// folder follows ([`crate::arko_dir`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    pub workspace: PathBuf,
+    pub root: PathBuf,
+}
+
+impl Action {
+    /// The message `text`, without files.
+    pub fn message(text: impl Into<String>) -> Self {
+        Action::Message {
+            text: text.into(),
+            files: Vec::new(),
+        }
+    }
+}
+
 /// The port served on when none is given, or another free one when it is
 /// taken.
 pub const DEFAULT_PORT: u16 = 8765;
@@ -96,10 +117,13 @@ pub const KEY_FILE: &str = "remote.key";
 #[cfg_attr(not(feature = "remote"), allow(dead_code))]
 #[non_exhaustive]
 pub enum Action {
-    /// A message, as if typed at the prompt. It's a note while the agent
-    /// works, a new turn when it is idle, the answer to its question, or a
-    /// command.
-    Message(String),
+    /// A message, as if typed at the prompt, with the files the page sent
+    /// with it. It's a note while the agent works, a new turn when it is
+    /// idle, the answer to its question, or a command.
+    Message {
+        text: String,
+        files: Vec<crate::attachments::Attached>,
+    },
     /// A `/message` the user confirmed after the warning that the worker's
     /// prompt cache expired. It continues the worker without asking.
     Continue(String),
@@ -108,8 +132,12 @@ pub enum Action {
     Answer { question: u64, text: String },
     /// A message that answers the main agent's open questions `answers`
     /// (the "Replying to" chip), as [`Message::answers`](crate::Message::answers)
-    /// says.
-    Reply { text: String, answers: Vec<String> },
+    /// says, with the files the page sent with it.
+    Reply {
+        text: String,
+        answers: Vec<String>,
+        files: Vec<crate::attachments::Attached>,
+    },
     /// Answers from the page's answer panel, as
     /// [`Input::AnswerQuestions`](crate::Input::AnswerQuestions) says.
     AnswerQuestions(crate::questions::Answers),
@@ -841,6 +869,7 @@ pub fn start(
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
     sessions_file: Option<PathBuf>,
+    project: Project,
 ) -> Result<Server, String> {
     start_with(
         (bind, false),
@@ -852,6 +881,7 @@ pub fn start(
         actions,
         meter,
         sessions_file,
+        project,
     )
 }
 
@@ -868,6 +898,7 @@ pub(crate) fn start_preferred(
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
     sessions_file: Option<PathBuf>,
+    project: Project,
 ) -> Result<Server, String> {
     start_with(
         (bind, true),
@@ -879,6 +910,7 @@ pub(crate) fn start_preferred(
         actions,
         meter,
         sessions_file,
+        project,
     )
 }
 
@@ -893,6 +925,7 @@ fn start_with(
     actions: mpsc::UnboundedSender<Action>,
     meter: Arc<dyn Meter>,
     sessions_file: Option<PathBuf>,
+    project: Project,
 ) -> Result<Server, String> {
     let start = |port: u16| {
         Server::start(
@@ -904,6 +937,7 @@ fn start_with(
             actions.clone(),
             meter.clone(),
             sessions_file.clone(),
+            project.clone(),
         )
     };
     let any_port = || {
