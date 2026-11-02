@@ -1,7 +1,7 @@
 # Moving to 0.20
 
-Arko 0.20 changes what the feed says about a call's result and how the Quiet view's rows are made.
-An app that shows the feed, such as Arko Studio, needs these changes.
+Arko 0.20 changes what the feed says about a call's result, how the Quiet view's rows are made and
+how a message carries files. An app that shows the feed, such as Arko Studio, needs these changes.
 
 ## The framework
 
@@ -28,6 +28,20 @@ edit without a receipt from its tool (Claude Code's edits, a restored session) h
 new `remote::content` module reads these lines (`content::line`) and makes them.
 
 The page's `ItemData` has the same `content`, `more` and `language`.
+
+## Files sent from the page
+
+The web page sends files with a message, saved in the project's `.arko/attachments`.
+
+- `remote::Action::Message` has fields, `Message { text, files }`, where `files` are
+  `attachments::Attached`. `Action::message(text)` makes one without files.
+- `Server::start` takes a `remote::Project`, the project's folder (`workspace`) and Arko's folder
+  (`root`), whose settings the attachments folder follows.
+- `Item.files` holds what a user's message carried, each an `attachments::SentFile`.
+  `Feed::user_with_files` and `Feed::note_with_files` add a message with them, and `user_with` and
+  `note` add one without.
+- The page's `ItemData.files` has them as `FileData`, with each file's name, type, size, lines and
+  the `url` that downloads it.
 
 ## A call's end
 
