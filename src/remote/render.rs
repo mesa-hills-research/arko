@@ -2177,7 +2177,7 @@ mod tests {
             SHELL_TOOL_NAME,
             &[(
                 "command",
-                "/home/me/Desktop/arko/target/debug/arko --resume 20261027 --remote 127.0.0.1:1"
+                "/home/ada/src/arko/target/debug/arko --resume 20261027 --remote 127.0.0.1:1"
                     .into(),
             )],
         );
