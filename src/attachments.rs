@@ -90,9 +90,8 @@ pub(crate) fn route(
 ) -> Result<Routed, String> {
     let mut routed = Routed::default();
     let mut entries = Vec::new();
+    let mut texts = Vec::new();
     let mut why = Vec::new();
-    // The block's frame and the line between it and the text.
-    let mut used = typed.trim().len() + "<attachments>\n</attachments>\n\n".len();
     for attached in files {
         let mut entry = Entry::of(&attached.file);
         match (attached.kind, &attached.content) {
@@ -111,12 +110,8 @@ pub(crate) fn route(
                 attached.file.name
             )),
             (Kind::Text, Some(content)) => {
-                let text = std::str::from_utf8(content).ok().map(str::to_string);
-                if let Some(text) = text {
-                    entry.inline = Some(text);
-                    if used + entry.written().len() > INLINE_MAX_BYTES {
-                        entry.inline = None;
-                    }
+                if let Ok(text) = std::str::from_utf8(content) {
+                    texts.push((entries.len(), text.to_string()));
                 }
             }
             _ if is_heic(&attached.file.mime) => why.push(format!(
@@ -125,17 +120,39 @@ pub(crate) fn route(
             )),
             _ => {}
         }
-        if chat && !entry.shown && entry.inline.is_none() {
-            return Err(format!(
-                "{} can’t go to a chat. A chat takes images and text files up to 16 KB. Other files go to an agent session.",
-                attached.file.name
-            ));
-        }
-        used += entry.written().len();
         if entry.shown {
             routed.images.push(attached);
         }
         entries.push(entry);
+    }
+    // Every entry and the block's frame first, then text inline in the
+    // order attached, in the room they leave.
+    let mut used = typed.trim().len()
+        + "<attachments>\n</attachments>\n\n".len()
+        + entries
+            .iter()
+            .map(|entry| entry.written().len())
+            .sum::<usize>();
+    for (at, text) in texts {
+        let entry = &mut entries[at];
+        let listed = entry.written().len();
+        entry.inline = Some(text);
+        let inlined = entry.written().len();
+        if used + inlined - listed > INLINE_MAX_BYTES {
+            entry.inline = None;
+        } else {
+            used += inlined - listed;
+        }
+    }
+    if chat
+        && let Some(entry) = entries
+            .iter()
+            .find(|entry| !entry.shown && entry.inline.is_none())
+    {
+        return Err(format!(
+            "{} can’t go to a chat. A chat takes images and text files up to 16 KB. Other files go to an agent session.",
+            entry.name
+        ));
     }
     routed.block = block(&entries);
     routed.words = (!why.is_empty()).then(|| why.join(" "));
@@ -907,6 +924,25 @@ mod tests {
         let large = text("server.log", &"line\n".repeat(10_000));
         let routed = route(&model(true), false, "", vec![large]).unwrap();
         assert!(routed.block.contains("lines=\"10000\""), "{}", routed.block);
+    }
+
+    /// Text goes inline only in the room every file's entry leaves, so the
+    /// whole message stays within a note's size however many files follow.
+    #[test]
+    fn later_files_leave_room_for_their_entries() {
+        let mut files = vec![text("notes.md", &"x".repeat(14_000))];
+        for n in 0..19 {
+            files.push(saved(&format!("{}-{n}.mp4", "a".repeat(85)), "video/mp4"));
+        }
+        let routed = route(&model(true), false, "Look", files).unwrap();
+        let sent = with_block(&routed.block, "Look");
+        assert!(sent.len() <= INLINE_MAX_BYTES, "{} bytes", sent.len());
+        let (entries, _) = split_block(&sent).unwrap();
+        assert!(
+            entries[0].inline.is_none(),
+            "the text didn't fit with the files"
+        );
+        assert_eq!(entries.len(), 20);
     }
 
     #[test]
