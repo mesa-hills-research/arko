@@ -10,9 +10,12 @@
 //! Complete, then Claimed by a message, and leaves the table once sent. One
 //! that is removed is Deleting until a task of its own has waited for its
 //! writes and deleted its files, and only then leaves the table, so a
-//! caller that stops waiting leaves nothing behind. Every change of state
-//! happens under the table's lock, in a statement of its own, and no disk
-//! work happens under it.
+//! caller that stops waiting leaves nothing behind. One whose files
+//! couldn't be deleted stays Undeleted, for the next removal to try again.
+//! Once the server begins to stop, no upload is admitted, and a claim
+//! released is removed, since no page can send it again. Every change of
+//! state happens under the table's lock, in a statement of its own, and no
+//! disk work happens under it.
 //!
 //! The disk's free space is read under the uploads' disk budget, and the
 //! decision made on it is made under the budget too. An upload is admitted
@@ -113,8 +116,28 @@ enum State {
     /// A message with the claim this number names is sending it.
     Claimed(FileRef, Kind, u64),
     /// Its files are being removed, by a task of its own that takes it out
-    /// of the table once they're gone.
-    Deleting,
+    /// of the table once they're gone. It holds the name of the file saved
+    /// whole, when there is one.
+    Deleting(Option<String>),
+    /// Its files couldn't be removed. It stays, with the name of the file
+    /// saved whole, so a later removal tries again.
+    Undeleted(Option<String>),
+}
+
+impl State {
+    /// The state of an upload whose files are to be removed, from this one.
+    fn deleting(&self) -> State {
+        State::Deleting(match self {
+            State::Complete(file, _) | State::Claimed(file, ..) => Some(file.name.clone()),
+            State::Deleting(saved) | State::Undeleted(saved) => saved.clone(),
+            State::Reserved | State::Receiving => None,
+        })
+    }
+
+    /// Whether it's being removed, or should have been.
+    fn removed(&self) -> bool {
+        matches!(self, State::Deleting(_) | State::Undeleted(_))
+    }
 }
 
 /// An upload as the table holds it.
@@ -127,9 +150,32 @@ struct Entry {
     touched: Instant,
 }
 
-/// The uploads, by ID. Behind an `Arc`, so a disk step can record what it
-/// did.
-type Table = Arc<Mutex<HashMap<String, Entry>>>;
+/// The uploads, by ID, and whether the server has begun to stop. Behind an
+/// `Arc`, so a disk step can record what it did.
+type Table = Arc<Mutex<Ledger>>;
+
+/// What the table holds. It reads as its entries.
+#[derive(Default)]
+struct Ledger {
+    entries: HashMap<String, Entry>,
+    /// Set once the server begins to stop. No upload is admitted from then
+    /// on, and a claim released is removed.
+    closing: bool,
+}
+
+impl std::ops::Deref for Ledger {
+    type Target = HashMap<String, Entry>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+impl std::ops::DerefMut for Ledger {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.entries
+    }
+}
 
 /// The uploads of one server, into the project `workspace`, whose folder
 /// follows the settings in Arko's folder `root`.
@@ -181,7 +227,7 @@ impl Uploads {
         Uploads {
             workspace,
             root,
-            table: Arc::new(Mutex::new(HashMap::new())),
+            table: Arc::new(Mutex::new(Ledger::default())),
             budget: Arc::new(tokio::sync::Mutex::new(())),
             writing: Arc::new(AtomicU64::new(0)),
             deleted: Arc::new(tokio::sync::Notify::new()),
@@ -209,7 +255,7 @@ impl Uploads {
         let mut table = lock(&self.table);
         let entry = table
             .get_mut(id)
-            .filter(|entry| !matches!(entry.state, State::Deleting))
+            .filter(|entry| !entry.state.removed())
             .ok_or_else(gone)?;
         entry.touched = Instant::now();
         Ok((entry.upload.clone(), entry.state.clone()))
@@ -330,6 +376,9 @@ impl Uploads {
                 Refused::Failed(format!("Couldn’t save {} ({error}).", upload.name))
             })?;
         let mut table = lock(&self.table);
+        if table.closing {
+            return Err(Refused::Unwritable("Arko stopped taking files.".into()));
+        }
         if table.len() >= MAX_UNSENT {
             return Err(Refused::TooMany(format!(
                 "{} files wait to be sent. Send or remove some first.",
@@ -375,7 +424,9 @@ impl Uploads {
             Some(State::Complete(_, kind) | State::Claimed(_, kind, _)) => {
                 return Ok(upload.state_now(upload.size, Some(kind)));
             }
-            Some(State::Reserved | State::Deleting) | None => return Err(gone()),
+            Some(State::Reserved | State::Deleting(_) | State::Undeleted(_)) | None => {
+                return Err(gone());
+            }
         }
         let (mut gate, held) = self.disk(gate, slot_length).await?;
         let mut received = held.map_err(|error| write_failed(&upload.name, &error))?;
@@ -535,28 +586,36 @@ impl Uploads {
                 }
                 let (file, kind) = saving.save()?;
                 *slot = None;
-                let removed = {
+                let unowned = {
                     let mut table = lock(&table);
-                    match table.get_mut(&id) {
-                        Some(entry)
-                            if Arc::ptr_eq(&entry.upload, &saving)
-                                && matches!(entry.state, State::Receiving) =>
-                        {
+                    match table
+                        .get_mut(&id)
+                        .filter(|entry| Arc::ptr_eq(&entry.upload, &saving))
+                    {
+                        Some(entry) if matches!(entry.state, State::Receiving) => {
                             entry.state = State::Complete(file, kind);
                             entry.reserved = 0;
                             entry.touched = Instant::now();
+                            return Ok(Some(kind));
+                        }
+                        // (Its removal waits for this gate, then removes
+                        // the file saved too.)
+                        Some(Entry {
+                            state: State::Deleting(saved),
+                            ..
+                        }) => {
+                            *saved = Some(file.name);
                             None
                         }
                         _ => Some(file),
                     }
                 };
-                match removed {
-                    None => Ok(Some(kind)),
-                    Some(file) => {
-                        let _ = saving.folder.remove_file(&file.name);
-                        Ok(None)
-                    }
+                if let Some(file) = unowned
+                    && let Err(error) = saving.folder.remove_file(&file.name)
+                {
+                    log::warn!("could not remove the upload {} ({error})", file.name);
                 }
+                Ok(None)
             })
             .await?;
         match done {
@@ -577,7 +636,9 @@ impl Uploads {
             Some(State::Complete(_, kind) | State::Claimed(_, kind, _)) => {
                 return Ok(upload.state_now(upload.size, Some(kind)));
             }
-            Some(State::Reserved | State::Deleting) | None => return Err(gone()),
+            Some(State::Reserved | State::Deleting(_) | State::Undeleted(_)) | None => {
+                return Err(gone());
+            }
         }
         let (_gate, held) = self.disk(gate, slot_length).await?;
         match held {
@@ -587,10 +648,11 @@ impl Uploads {
     }
 
     /// Removes the upload `id` and its file, unless a message is sending
-    /// it, once no request is writing it. The removal runs as a task of its
-    /// own, so it ends whether the caller waits or not.
+    /// it, once no request is writing it, and says why when a file can't be
+    /// removed. The removal runs as a task of its own, so it ends whether
+    /// the caller waits or not.
     pub(super) async fn remove(&self, id: &str) -> Result<(), Refused> {
-        let (upload, was) = {
+        let upload = {
             let mut table = lock(&self.table);
             let Some(entry) = table.get_mut(id) else {
                 return Err(Refused::Gone("Arko no longer has this file.".into()));
@@ -599,81 +661,116 @@ impl Uploads {
                 State::Claimed(file, ..) => {
                     return Err(Refused::Claimed(format!("{} is being sent.", file.name)));
                 }
-                State::Deleting => return Ok(()),
-                _ => (
-                    entry.upload.clone(),
-                    std::mem::replace(&mut entry.state, State::Deleting),
-                ),
+                State::Deleting(_) => return Ok(()),
+                state => {
+                    entry.state = state.deleting();
+                    entry.upload.clone()
+                }
             }
         };
-        let _ = self.discard(id.to_string(), upload, was).await;
-        Ok(())
+        match self.discard(id.to_string(), upload).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(why)) => Err(Refused::Failed(why)),
+            Err(error) => Err(Refused::Failed(format!(
+                "Couldn’t remove the file ({error})."
+            ))),
+        }
     }
 
     /// Marks the uploads `pick` chooses Deleting, in one step, and hands
     /// each to a task of its own that removes it
     /// ([`discard`](Self::discard)). One a message is sending, or one
     /// already being removed, is never chosen.
-    fn remove_where(
-        &self,
-        mut pick: impl FnMut(&str, &Entry) -> bool,
-    ) -> Vec<tokio::task::JoinHandle<()>> {
-        let marked: Vec<(String, Arc<Upload>, State)> = {
+    fn remove_where(&self, mut pick: impl FnMut(&str, &Entry) -> bool) -> Vec<Removal> {
+        let marked: Vec<(String, Arc<Upload>)> = {
             let mut table = lock(&self.table);
             table
                 .iter_mut()
                 .filter(|(id, entry)| {
-                    !matches!(entry.state, State::Claimed(..) | State::Deleting) && pick(id, entry)
+                    !matches!(entry.state, State::Claimed(..) | State::Deleting(_))
+                        && pick(id, entry)
                 })
                 .map(|(id, entry)| {
-                    let was = std::mem::replace(&mut entry.state, State::Deleting);
-                    (id.clone(), entry.upload.clone(), was)
+                    entry.state = entry.state.deleting();
+                    (id.clone(), entry.upload.clone())
                 })
                 .collect()
         };
         marked
             .into_iter()
-            .map(|(id, upload, was)| self.discard(id, upload, was))
+            .map(|(id, upload)| self.discard(id, upload))
             .collect()
     }
 
-    /// Removes the upload `id`, just marked Deleting from the state `was`,
-    /// in a task of its own. The task stops the upload's requests, waits
-    /// for the one writing it, deletes its files, and then takes it out of
-    /// the table. It goes on when its caller stops waiting.
-    fn discard(&self, id: String, upload: Arc<Upload>, was: State) -> tokio::task::JoinHandle<()> {
+    /// Removes the upload `id`, just marked Deleting, in a task of its own.
+    /// The task stops the upload's requests, waits for the one writing it,
+    /// and deletes its files, those the entry names once nothing writes
+    /// them. Then it takes the entry out of the table, or leaves it
+    /// Undeleted and gives the error when a file couldn't be deleted. It
+    /// tries once, and goes on when its caller stops waiting.
+    fn discard(&self, id: String, upload: Arc<Upload>) -> Removal {
         let (table, deleted) = (self.table.clone(), self.deleted.clone());
         tokio::spawn(async move {
             let _ = upload.take_over();
             let gate = upload.writer.clone().lock_owned().await;
-            let removing = upload.clone();
-            let _ = tokio::task::spawn_blocking(move || {
+            // (A completion may have saved the file meanwhile.)
+            let saved = {
+                let table = lock(&table);
+                match table.get(&id) {
+                    Some(Entry {
+                        upload: theirs,
+                        state: State::Deleting(saved),
+                        ..
+                    }) if Arc::ptr_eq(theirs, &upload) => saved.clone(),
+                    _ => None,
+                }
+            };
+            let (removing, names) = (upload.clone(), saved.clone());
+            let removed = tokio::task::spawn_blocking(move || {
                 let mut gate = gate;
                 // (Closed before it's removed.)
                 *gate = None;
-                let saved = match was {
-                    State::Complete(file, _) => Some(file.name),
-                    _ => None,
-                };
-                for name in std::iter::once(removing.part.clone()).chain(saved) {
-                    if let Err(error) = removing.folder.remove_file(&name)
-                        && error.kind() != std::io::ErrorKind::NotFound
-                    {
-                        log::warn!("could not remove the upload {name} ({error})");
+                let mut failed = Ok(());
+                for name in std::iter::once(removing.part.clone()).chain(names) {
+                    match removing.folder.remove_file(&name) {
+                        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                            log::warn!("could not remove the upload {name} ({error})");
+                            if failed.is_ok() {
+                                failed = Err(format!(
+                                    "Couldn’t remove {} ({}).",
+                                    removing.folder.path().join(&name).display(),
+                                    crate::profiles::reason_of(&error)
+                                ));
+                            }
+                        }
+                        _ => {}
                     }
                 }
+                failed
             })
-            .await;
+            .await
+            .unwrap_or_else(|error| Err(format!("Couldn’t remove {} ({error}).", upload.name)));
             {
                 let mut table = lock(&table);
-                if table
+                let ours = table
                     .get(&id)
-                    .is_some_and(|entry| Arc::ptr_eq(&entry.upload, &upload))
-                {
-                    table.remove(&id);
+                    .is_some_and(|entry| Arc::ptr_eq(&entry.upload, &upload));
+                match &removed {
+                    Ok(()) if ours => {
+                        table.remove(&id);
+                    }
+                    Err(_) if ours => {
+                        if let Some(entry) = table.get_mut(&id) {
+                            entry.state = State::Undeleted(saved);
+                            entry.reserved = 0;
+                            entry.touched = Instant::now();
+                        }
+                    }
+                    _ => {}
                 }
             }
             deleted.notify_waiters();
+            removed
         })
     }
 
@@ -687,7 +784,7 @@ impl Uploads {
                 let table = lock(&self.table);
                 table
                     .values()
-                    .any(|entry| matches!(entry.state, State::Deleting))
+                    .any(|entry| matches!(entry.state, State::Deleting(_)))
             };
             if !deleting {
                 return;
@@ -754,7 +851,7 @@ impl Uploads {
                 State::Reserved | State::Receiving => {
                     return Err(format!("{} isn’t uploaded yet.", entry.upload.name));
                 }
-                State::Deleting => return Err(gone()),
+                State::Deleting(_) | State::Undeleted(_) => return Err(gone()),
             }
         }
         for (id, (_, file, kind)) in ids.iter().zip(&claimed) {
@@ -775,38 +872,62 @@ impl Uploads {
     }
 
     /// The message of the claim `number` didn't go, so its uploads wait to
-    /// be sent again.
+    /// be sent again. Once the server has begun to stop, no page can send
+    /// them again, so they're removed.
     pub(super) fn release(&self, number: u64) {
-        let mut table = lock(&self.table);
-        for entry in table.values_mut() {
-            if let State::Claimed(file, kind, claim) = &entry.state
-                && *claim == number
-            {
-                entry.state = State::Complete(file.clone(), *kind);
+        let closing: Vec<(String, Arc<Upload>)> = {
+            let mut table = lock(&self.table);
+            let closing = table.closing;
+            let mut removing = Vec::new();
+            for (id, entry) in table.iter_mut() {
+                let State::Claimed(file, kind, claim) = &entry.state else {
+                    continue;
+                };
+                if *claim != number {
+                    continue;
+                }
+                entry.state = if closing {
+                    removing.push((id.clone(), entry.upload.clone()));
+                    entry.state.deleting()
+                } else {
+                    State::Complete(file.clone(), *kind)
+                };
                 entry.touched = Instant::now();
             }
+            removing
+        };
+        for (id, upload) in closing {
+            drop(self.discard(id, upload));
         }
     }
 
     /// Removes every upload not being sent, with its file, as the server
-    /// stops, and waits until the files of every upload being removed are
-    /// gone.
+    /// stops, and waits until every removal has ended. From then on no
+    /// upload is admitted, and a claim released is removed.
     pub(super) async fn remove_unsent(&self) {
+        lock(&self.table).closing = true;
         let _removing = self.remove_where(|_, _| true);
         self.deletions_end().await;
     }
 
     /// Removes the uploads no request touched for [`ABANDONED`], deciding
-    /// and marking in one step from each as it is then. One a request is
-    /// writing stays.
+    /// and marking in one step from each as it is then, and tries again
+    /// those whose files couldn't be removed. One a request is writing
+    /// stays.
     async fn remove_abandoned(&self) {
         let now = Instant::now();
         let removing = self.remove_where(|_, entry| {
-            now.duration_since(entry.touched) > ABANDONED && entry.upload.writer.try_lock().is_ok()
+            (matches!(entry.state, State::Undeleted(_))
+                || now.duration_since(entry.touched) > ABANDONED)
+                && entry.upload.writer.try_lock().is_ok()
         });
         futures_util::future::join_all(removing).await;
     }
 }
+
+/// A removal's task, which ends with the error when a file couldn't be
+/// removed.
+type Removal = tokio::task::JoinHandle<Result<(), String>>;
 
 /// Bytes counted with the writes on their way to the disk, until dropped.
 struct Charged {
@@ -1266,6 +1387,84 @@ pub(super) mod tests {
         assert!(store.put(&id, 300_000, whole(&[])).await.unwrap().done);
         assert_eq!(std::fs::read(folder.join("video.mp4")).unwrap(), bytes);
         assert_eq!(names(&work), [".gitignore", "video.mp4"]);
+    }
+
+    /// A removal whose files can't be deleted says why and keeps the
+    /// upload, and the next DELETE or the stop tries again.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_removal_that_fails_says_why_and_is_tried_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let (store, work) = uploads(temp.path());
+        let mut ids = Vec::new();
+        for name in ["again.bin", "at-stop.bin"] {
+            let id = store.create(name, 1).await.unwrap();
+            store.put(&id, 0, whole(&[0])).await.unwrap();
+            ids.push(id);
+        }
+        let folder = folder_of(&work);
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+        // (Root may delete anywhere.)
+        if std::fs::write(folder.join("root"), b"").is_ok() {
+            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+            return;
+        }
+        let mut removed = Vec::new();
+        for id in &ids {
+            removed.push(store.remove(id).await);
+        }
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for removed in removed {
+            let Err(Refused::Failed(why)) = removed else {
+                panic!("{removed:?}");
+            };
+            assert!(why.starts_with("Couldn’t remove"), "{why}");
+        }
+        assert_eq!(names(&work), [".gitignore", "again.bin", "at-stop.bin"]);
+        // Requests treat it as gone meanwhile.
+        assert!(matches!(store.state(&ids[0]).await, Err(Refused::Gone(_))));
+        assert!(store.take(std::slice::from_ref(&ids[0])).await.is_err());
+        store.remove(&ids[0]).await.unwrap();
+        assert_eq!(names(&work), [".gitignore", "at-stop.bin"]);
+        store.remove_unsent().await;
+        assert_eq!(names(&work), [".gitignore"]);
+        assert!(lock(&store.table).is_empty());
+    }
+
+    /// A message refused once the server began to stop takes its file
+    /// along, and one sent keeps it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_send_refused_after_the_stop_takes_its_file_along() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, work) = uploads(temp.path());
+        let mut claims = Vec::new();
+        for name in ["refused.bin", "sent.bin"] {
+            let id = store.create(name, 1).await.unwrap();
+            store.put(&id, 0, whole(&[0])).await.unwrap();
+            claims.push(store.take(std::slice::from_ref(&id)).await.unwrap());
+        }
+        store.remove_unsent().await;
+        store.release(claims[0].number);
+        store.commit(claims[1].number);
+        assert_eq!(
+            names_once(&work, &[".gitignore", "sent.bin"]).await,
+            [".gitignore", "sent.bin"]
+        );
+    }
+
+    /// No upload starts once the server began to stop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_upload_starts_once_the_server_stops() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, work) = uploads(temp.path());
+        store.create("a.bin", 1).await.unwrap();
+        store.remove_unsent().await;
+        assert_eq!(
+            store.create("b.bin", 1).await,
+            Err(Refused::Unwritable("Arko stopped taking files.".into()))
+        );
+        assert_eq!(names(&work), [".gitignore"]);
     }
 
     static STALE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

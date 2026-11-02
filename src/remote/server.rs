@@ -4971,6 +4971,39 @@ mod tests {
         assert_eq!(left, [".gitignore"]);
     }
 
+    /// A message refused after the server stopped takes its file along.
+    #[tokio::test]
+    async fn a_send_refused_after_the_server_stops_takes_its_file_along() {
+        let mut served = serve(&Feed::new("main"));
+        let cookie = served.login().await;
+        let id = served.upload(&cookie, "refused.bin", &[0]).await;
+        let sending = tokio::spawn({
+            let (http, url) = (served.http.clone(), format!("{}/api/message", served.base));
+            async move {
+                http.post(url)
+                    .header(header::COOKIE, cookie)
+                    .json(&serde_json::json!({ "text": "Look", "files": [id] }))
+                    .send()
+                    .await
+            }
+        });
+        let Some(Action::Send { reply, .. }) = served.actions.recv().await else {
+            panic!("a send");
+        };
+        let file = served.attachments().join("refused.bin");
+        tokio::time::timeout(Duration::from_secs(7), served.server.stop())
+            .await
+            .unwrap();
+        assert!(file.is_file(), "a file being sent stays through the stop");
+        reply.answer(Verdict::refused(RefusalKind::Files, "Not this one."));
+        let _ = tokio::time::timeout(Duration::from_secs(2), sending).await;
+        let until = Instant::now() + Duration::from_secs(5);
+        while file.exists() && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!file.exists());
+    }
+
     /// Two messages sent at once with one upload: only one of them takes
     /// it.
     #[tokio::test]
