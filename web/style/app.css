@@ -428,11 +428,13 @@ button.cache { padding: 0; border: 0; background: none; }
 .call-line .failed { color: var(--error); }
 /* The spinner is a still square box with a ring inside, two arcs of a
    third of a turn half a turn apart, so the ink stays centred. The arcs go
-   round by the angle of the ring's mask, which the browser paints each
-   frame, so they turn about the ring's centre whatever the line, the font
-   or the browser. (Turned by the compositor, the box went round off centre
-   in Safari on the iPhone.) The box has a layer of its own, so a frame
-   paints only the ring. */
+   round by the angle of the ring's mask, which the browser paints, so they
+   turn about the ring's centre whatever the line, the font or the browser.
+   (Turned by the compositor, the box went round off centre in Safari on the
+   iPhone.) A dot at each end of an arc rounds it off, as a stroke's round
+   cap would. The angle moves in 36 steps a turn, 30 a second, and the box
+   has a layer of its own, so a frame paints only the ring. Without the
+   registered angle, the ring stays still at its starting angle. */
 @property --turn { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 .spinner {
   position: relative;
@@ -443,14 +445,20 @@ button.cache { padding: 0; border: 0; background: none; }
   will-change: transform;
 }
 .spinner::before {
+  --turn: 0deg;
+  --arcs: conic-gradient(from var(--turn), #000 120deg, transparent 0 180deg, #000 0 300deg, transparent 0);
+  --cap-1: radial-gradient(circle at calc(50% + 4.5px * sin(var(--turn))) calc(50% - 4.5px * cos(var(--turn))), #000 0.3px, transparent 0.7px);
+  --cap-2: radial-gradient(circle at calc(50% + 4.5px * sin(var(--turn) + 120deg)) calc(50% - 4.5px * cos(var(--turn) + 120deg)), #000 0.3px, transparent 0.7px);
+  --cap-3: radial-gradient(circle at calc(50% + 4.5px * sin(var(--turn) + 180deg)) calc(50% - 4.5px * cos(var(--turn) + 180deg)), #000 0.3px, transparent 0.7px);
+  --cap-4: radial-gradient(circle at calc(50% + 4.5px * sin(var(--turn) + 300deg)) calc(50% - 4.5px * cos(var(--turn) + 300deg)), #000 0.3px, transparent 0.7px);
   content: "";
   position: absolute;
   inset: 1px;
   border: 1px solid;
   border-radius: 50%;
-  -webkit-mask-image: conic-gradient(from var(--turn), #000 120deg, transparent 0 180deg, #000 0 300deg, transparent 0);
-  mask-image: conic-gradient(from var(--turn), #000 120deg, transparent 0 180deg, #000 0 300deg, transparent 0);
-  animation: spin 1.2s linear infinite;
+  -webkit-mask-image: var(--arcs), var(--cap-1), var(--cap-2), var(--cap-3), var(--cap-4);
+  mask-image: var(--arcs), var(--cap-1), var(--cap-2), var(--cap-3), var(--cap-4);
+  animation: spin 1.2s steps(36, end) infinite;
 }
 .call-line .call-action { margin-left: 4px; font-family: var(--sans); }
 details.call > summary, details.thinking > summary, details.more > summary { cursor: pointer; list-style: none; }
