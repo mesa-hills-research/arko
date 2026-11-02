@@ -1141,6 +1141,7 @@ impl Transcript {
                         job: item.job.is_some(),
                         turn: item.turn,
                         content: !results.is_empty(),
+                        ended: item.ended,
                     }),
                     Kind::Thinking => quiet::Step::Thinking,
                     _ => quiet::Step::Other(item.id),
@@ -5189,6 +5190,40 @@ mod tests {
         );
     }
 
+    /// A failure ends its Quiet row, which keeps its ✗, and the command
+    /// after it starts a row of its own.
+    #[test]
+    fn a_failure_ends_its_quiet_row() {
+        use crate::remote::{Act, ActKind};
+        let call = |id: u64, target: &str, status: CallStatus, ended: Option<u64>| {
+            let mut call = item(id, Kind::Call, target);
+            call.turn = Some(1);
+            call.status = Some(status);
+            call.ended = ended;
+            call.act = Some(Act {
+                kind: ActKind::Command,
+                target: target.into(),
+                ..Act::default()
+            });
+            call
+        };
+        let mut t = Transcript::new();
+        for call in [
+            call(1, "rg x", CallStatus::Ok, None),
+            call(2, "cargo clippy", CallStatus::Failed, Some(3)),
+            call(3, "sed -i x", CallStatus::Ok, None),
+        ] {
+            t.apply(Update::Item(call));
+        }
+        let shown = rows(&mut t, &Filter::Main(View::Quiet), 50, 3);
+        assert!(
+            shown[0].starts_with("  ▸ Ran 2 commands (rg, cargo)"),
+            "{shown:?}"
+        );
+        assert!(shown[0].ends_with('✗'), "{shown:?}");
+        assert_eq!(shown[1], "    Ran sed -i x", "{shown:?}");
+    }
+
     /// An open Quiet row shows what its calls hold behind a bar under its
     /// line, and no line twice. A row of one call has its content right
     /// under the line, and a row of several shows each call's Full line,
@@ -5305,6 +5340,7 @@ mod tests {
         call.act = Some(fixture.act.clone());
         call.detail = fixture.full_detail.map(str::to_string);
         call.job = fixture.job.then(|| "4d2c1a9b".to_string());
+        call.ended = fixture.ended;
         let mut items = vec![call];
         if let Some((kind, preview)) = fixture.content {
             let mut result = item(2, Kind::Result, preview);

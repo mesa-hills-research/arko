@@ -107,6 +107,11 @@ pub struct Item {
     /// call's own line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    /// For a call that failed, the ID the next item had when it failed. A
+    /// call that came after the failure, with that ID or a higher one,
+    /// starts a Quiet row of its own instead of joining the failed one's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended: Option<u64>,
     /// What a call did, for the Quiet view's rows, which every client words
     /// and merges the same way ([`quiet`](super::quiet)).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -220,6 +225,7 @@ impl Item {
             delivery: None,
             status: None,
             outcome: None,
+            ended: None,
             act: None,
             started: None,
             content: None,
@@ -305,15 +311,22 @@ impl Item {
 
     /// How a call ended, or how the job it started went on, meaning its status,
     /// its outcome's words and what its act learns, together, so that what
-    /// its row says agrees with its line in every view.
+    /// its row says agrees with its line in every view. `next` is the ID the
+    /// next item gets, which a failure keeps ([`Item::ended`]).
     pub(crate) fn settle(
         &mut self,
         status: CallStatus,
         outcome: Option<String>,
         settled: &render::Settled,
+        next: u64,
     ) {
         self.status = Some(status);
         self.outcome = outcome;
+        if status != CallStatus::Failed {
+            self.ended = None;
+        } else if self.ended.is_none() {
+            self.ended = Some(next);
+        }
         settled.apply(&mut self.act);
     }
 
@@ -1807,13 +1820,14 @@ impl Feed {
         let Some(call) = state.calls.remove(id) else {
             return;
         };
+        let next = state.next_id + 1;
         let (lane, budget) = state.lane(&call.agent);
         if let Some(output) = outcome.output {
             lane.call_output(call.item, output, budget);
         }
         let job = outcome.job;
         if let Some(item) = lane.change(call.item, |item| {
-            item.settle(outcome.status, outcome.text, &outcome.settled);
+            item.settle(outcome.status, outcome.text, &outcome.settled, next);
             item.started = outcome.started;
             if let Some(job) = job {
                 item.job = Some(job.to_string());
@@ -2414,6 +2428,7 @@ impl Feed {
     /// doesn't have (it ended with an earlier Arko, or before the feed saw
     /// it run).
     fn end_monitor_line(&self, state: &mut State, agent: &str, item: u64, ended: JobState) {
+        let next = state.next_id + 1;
         let (lane, _) = state.lane(agent);
         let Some(call) = lane.find(item) else {
             return;
@@ -2434,7 +2449,7 @@ impl Feed {
         };
         let settled = render::Settled::job();
         if let Some(call) = lane.change(item, |call| {
-            call.settle(status, Some(text.to_string()), &settled);
+            call.settle(status, Some(text.to_string()), &settled, next);
         }) {
             self.publish(state, Update::Change(call));
         }
@@ -2639,6 +2654,7 @@ impl Feed {
     /// 3 alerts", "ended after 30 min · 4 alerts", "stopped", "command exited
     /// (exit 1)".
     fn follow_monitor(&self, state: &mut State, agent: &str, item: u64, job: &JobSummary) {
+        let next = state.next_id + 1;
         let (lane, _) = state.lane(agent);
         let Some(call) = lane.find(item) else {
             return;
@@ -2655,7 +2671,9 @@ impl Feed {
             return;
         }
         let settled = render::Settled::job();
-        if let Some(call) = lane.change(item, |call| call.settle(status, Some(text), &settled)) {
+        if let Some(call) =
+            lane.change(item, |call| call.settle(status, Some(text), &settled, next))
+        {
             self.publish(state, Update::Change(call));
         }
     }
@@ -2673,6 +2691,7 @@ impl Feed {
         started: Option<i64>,
         now: Option<i64>,
     ) {
+        let next = state.next_id + 1;
         let (lane, _) = state.lane(agent);
         let Some(call) = lane.find(item) else {
             return;
@@ -2702,7 +2721,8 @@ impl Feed {
             _ => (CallStatus::Failed, "stopped".to_string()),
         };
         let settled = render::Settled::job();
-        let Some(call) = lane.change(item, |call| call.settle(status, Some(text), &settled)) else {
+        let Some(call) = lane.change(item, |call| call.settle(status, Some(text), &settled, next))
+        else {
             return;
         };
         self.publish(state, Update::Change(call));
@@ -5147,6 +5167,17 @@ mod tests {
                 serde_json::json!({"command": "printf one\nprintf two", "cwd": "src/specific/work"}),
                 "exit code 0, 0.1 s\none\ntwo",
             ),
+            // A failure, which ends its row, so the next command has its own.
+            (
+                SHELL_TOOL_NAME,
+                serde_json::json!({"command": "cargo clippy"}),
+                "exit code 101, 3.0 s\nerror: could not compile",
+            ),
+            (
+                SHELL_TOOL_NAME,
+                serde_json::json!({"command": "ls"}),
+                "exit code 0, 0.1 s\na.rs",
+            ),
             (
                 "read_file",
                 serde_json::json!({"path": "src/specific/a.rs", "start_line": 100, "end_line": 110}),
@@ -5245,8 +5276,13 @@ mod tests {
                 .iter()
                 .map(|item| match item.kind {
                     Kind::Call => format!(
-                        "call {:?} {:?} {:?} {:?} {:?}",
-                        item.text, item.act, item.status, item.outcome, item.started
+                        "call {:?} {:?} {:?} {:?} {:?} {}",
+                        item.text,
+                        item.act,
+                        item.status,
+                        item.outcome,
+                        item.started,
+                        item.ended.is_some()
                     ),
                     Kind::Result => {
                         format!("result {:?} {:?} {:?}", item.text, item.detail, item.level)
@@ -5290,6 +5326,7 @@ mod tests {
                             job: item.job.is_some(),
                             turn: item.turn,
                             content: !results.is_empty(),
+                            ended: item.ended,
                         }),
                         _ => quiet::Step::Other(item.id),
                     }
@@ -5323,6 +5360,20 @@ mod tests {
                 .any(|row| row.contains("Waited for workers · nothing new")),
             "{:?}",
             rows(&live)
+        );
+        // The failed build joined the commands before it, and the command
+        // after it has a row of its own.
+        let said: Vec<String> = rows(&live);
+        assert!(
+            said.iter().any(
+                |row| row.contains("text: \"Ran 2 commands (printf, cargo)\"")
+                    && row.contains("failed: true")
+            ),
+            "{said:?}"
+        );
+        assert!(
+            said.iter().any(|row| row.contains("text: \"Ran ls\"")),
+            "{said:?}"
         );
     }
 
@@ -6981,7 +7032,7 @@ mod tests {
             "exit code 0, 1.0 s\ntest result: ok. 12 passed; 0 failed",
         );
         lane.change(1, |item| {
-            item.settle(CallStatus::Ok, Some("x".repeat(500)), &settled.settled);
+            item.settle(CallStatus::Ok, Some("x".repeat(500)), &settled.settled, 2);
         });
         let counted: usize = lane.items.iter().map(Item::size).sum();
         assert_eq!(lane.bytes, counted);

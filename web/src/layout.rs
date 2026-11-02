@@ -312,6 +312,7 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
                     job: item.job.is_some(),
                     turn: item.turn,
                     content: !results.is_empty(),
+                    ended: item.ended,
                 }),
                 None => quiet::Step::Other(*id),
             },
@@ -1214,6 +1215,7 @@ mod tests {
                 act: Some(fixture.act.clone()),
                 detail: fixture.full_detail.map(str::to_string),
                 job: fixture.job.then(|| "4d2c1a9b".to_string()),
+                ended: fixture.ended,
                 ..item(2, Kind::Call, MAIN, fixture.full)
             };
             let mut items = vec![item(1, Kind::User, MAIN, "go"), call];
@@ -1238,6 +1240,52 @@ mod tests {
                 .any(|row| matches!(row, Row::Item(3, Kind::Result)));
             assert_eq!(content, fixture.content.is_some(), "{name}");
         }
+    }
+
+    /// A failure ends its Quiet row, as the terminal's: the command after
+    /// it starts a row of its own, and one called with it stays in its row.
+    #[test]
+    fn a_failure_ends_its_quiet_row() {
+        use crate::protocol::{Act, ActKind};
+        let call = |id: u64, target: &str, status: CallStatus, ended: Option<u64>| ItemData {
+            status: Some(status),
+            ended,
+            act: Some(Act {
+                kind: ActKind::Command,
+                target: target.into(),
+                ..Act::default()
+            }),
+            ..item(id, Kind::Call, MAIN, target)
+        };
+        let words = |items: &[ItemData]| -> Vec<(String, bool)> {
+            layout(items, View::Quiet, None)
+                .into_iter()
+                .filter_map(|row| match row {
+                    Row::Quiet { row, .. } => Some((row.words.text, row.words.failed)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let after = [
+            call(1, "rg x", CallStatus::Ok, None),
+            call(2, "cargo clippy", CallStatus::Failed, Some(3)),
+            call(3, "sed -i x", CallStatus::Ok, None),
+        ];
+        assert_eq!(
+            words(&after),
+            [
+                ("Ran 2 commands (rg, cargo)".to_string(), true),
+                ("Ran sed -i x".to_string(), false)
+            ]
+        );
+        let together = [
+            call(1, "cargo clippy", CallStatus::Failed, Some(3)),
+            call(2, "sed -i x", CallStatus::Ok, None),
+        ];
+        assert_eq!(
+            words(&together),
+            [("Ran 2 commands (cargo, sed)".to_string(), true)]
+        );
     }
 
     /// A thinking after a call is in that call's Quiet row from the start,

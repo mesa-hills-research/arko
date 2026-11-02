@@ -11,7 +11,8 @@
 //! comes later moves it. So a long call (a command, a wait, an MCP call)
 //! shows on its row while it runs ("Ran 4 commands · running cargo build"),
 //! and a call that fails or goes on in the background stays in its row,
-//! which shows one ✗. A test run and a call of another kind have rows of
+//! which shows one ✗. A failure ends its row, so a call that comes after it
+//! starts a row of its own. A test run and a call of another kind have rows of
 //! their own. The images a call's tool returned and the buttons of its job
 //! show under its row's line, in whatever row it is. Rows only grow at the
 //! end, and a row keeps its calls once anything shows after it ([`rows`]).
@@ -69,6 +70,10 @@ pub struct Call<'a> {
     pub turn: Option<u64>,
     /// It has content, a block of its result, which its open row shows.
     pub content: bool,
+    /// For a call that failed, the ID the next item had when it failed
+    /// (`Item::ended`). A call with that ID or a higher one came after the
+    /// failure.
+    pub ended: Option<u64>,
 }
 
 /// What the view shows for its steps, in order.
@@ -260,6 +265,14 @@ impl<'a> Group<'a> {
     /// a long one too, so no row shows only while a call runs.
     fn take(&mut self, member: Member<'a>) -> Result<(), Member<'a>> {
         if self.alone || member.alone() {
+            return Err(member);
+        }
+        // A failure ends the row. A call that came while the failed one ran
+        // stays in it.
+        let after_failure = self.calls.iter().chain(&self.absorbed).any(|call| {
+            call.failed() && call.call.ended.is_some_and(|ended| member.call.id >= ended)
+        });
+        if after_failure {
             return Err(member);
         }
         let kind = member.act.kind;
@@ -954,6 +967,9 @@ pub(crate) struct Fixture {
     pub status: CallStatus,
     /// Its outcome on its Full line.
     pub outcome: &'static str,
+    /// For a failure, the ID the next item had when it failed, which the
+    /// feed keeps (`Item::ended`).
+    pub ended: Option<u64>,
     pub job: bool,
     /// Its content, the kind and the preview, and the preview's door.
     pub content: Option<(ContentKind, &'static str)>,
@@ -993,6 +1009,7 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
         full_detail: None,
         status: CallStatus::Ok,
         outcome: "",
+        ended: None,
         job: false,
         content: None,
         more: None,
@@ -1164,6 +1181,7 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
         },
         Fixture {
             status: CallStatus::Failed,
+            ended: Some(2),
             outcome: "exit 101",
             content: Some((
                 Plain,
@@ -1183,6 +1201,7 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
         },
         Fixture {
             status: CallStatus::Failed,
+            ended: Some(2),
             outcome: "refused",
             content: Some((
                 Muted,
@@ -1460,6 +1479,7 @@ mod tests {
             job: fixture.job,
             turn: Some(1),
             content: fixture.content.is_some(),
+            ended: fixture.ended,
         })];
         match rows(&steps).as_slice() {
             [Piece::Row(row)] => row.clone(),
@@ -1512,6 +1532,61 @@ mod tests {
         let row = one(&[call(1, &rg, Ok), call(2, &git, Failed)]);
         assert_eq!(row.words.text, "Ran 2 commands (rg, git)");
         assert!(row.words.failed);
+    }
+
+    /// A failure ends its row. The calls that come after it start a row of
+    /// their own, and those that came while it ran stay in its row, so no
+    /// row moves when the failure comes.
+    #[test]
+    fn a_failure_ends_its_row() {
+        let call = |id: u64, act: &'static Act, status: CallStatus, ended: Option<u64>| {
+            Step::Call(Call {
+                id,
+                act: Some(act),
+                status: Some(status),
+                ended,
+                turn: Some(1),
+                ..Call::default()
+            })
+        };
+        let leak = |kind: ActKind, target: &str| -> &'static Act {
+            Box::leak(Box::new(act(kind, target)))
+        };
+        let (clippy, rg, sed, git) = (
+            leak(Command, "cargo clippy"),
+            leak(Command, "rg x"),
+            leak(Command, "sed -i x"),
+            leak(Command, "git diff"),
+        );
+        // In turn, each call after the one before ended.
+        assert_eq!(
+            said(&[
+                call(1, rg, Ok, None),
+                call(3, clippy, Failed, Some(5)),
+                call(6, sed, Ok, None),
+                call(8, git, Ok, None),
+            ]),
+            ["Ran 2 commands (rg, cargo) ✗", "Ran 2 commands (sed, git)"]
+        );
+        // Called together, the later ones came while the failed one ran.
+        assert_eq!(
+            said(&[
+                call(1, clippy, Failed, Some(5)),
+                call(2, sed, Ok, None),
+                call(3, git, Ok, None),
+                call(6, rg, Ok, None),
+            ]),
+            ["Ran 3 commands (cargo, sed, git) ✗", "Ran rg x"]
+        );
+        // A stop isn't a failure, and the next call joins its row.
+        let mut stopped = call(1, clippy, Failed, Some(2));
+        if let Step::Call(stopped) = &mut stopped {
+            stopped.outcome = Some(STOPPED);
+        }
+        assert_eq!(
+            said(&[stopped, call(3, sed, Ok, None)]),
+            ["Ran 2 commands (cargo, sed)"]
+        );
     }
 
     #[test]

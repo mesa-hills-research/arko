@@ -280,6 +280,7 @@ pub mod tests {
             content: None,
             more: None,
             language: None,
+            ended: None,
             status: None,
             outcome: None,
             act: None,

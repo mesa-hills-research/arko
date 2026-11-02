@@ -104,8 +104,9 @@ fn items_from(
                             } else {
                                 render::outcome(&tool, &parameters, &result.output)
                             };
+                            let next = items.len() as u64 + 1;
                             let call = &mut items[index];
-                            call.settle(outcome.status, outcome.text, &outcome.settled);
+                            call.settle(outcome.status, outcome.text, &outcome.settled, next);
                             call.started = outcome.started.clone();
                             call.output = outcome.output;
                             // The job a moved call went on in, which may

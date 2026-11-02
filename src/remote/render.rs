@@ -1731,8 +1731,10 @@ mod tests {
             } else {
                 super::outcome(fixture.tool, &parameters, fixture.output)
             };
-            outcome.settled.apply(&mut item.act);
+            // (Its result comes before the item 2.)
+            item.settle(outcome.status, outcome.text.clone(), &outcome.settled, 2);
             assert_eq!(item.act.as_ref(), Some(&fixture.act), "{name}");
+            assert_eq!(item.ended, fixture.ended, "{name}");
             assert_eq!(outcome.status, fixture.status, "{name}");
             assert_eq!(
                 outcome.text.as_deref().unwrap_or(""),

@@ -491,6 +491,9 @@ pub struct ItemData {
     pub status: Option<CallStatus>,
     #[serde(default)]
     pub outcome: Option<String>,
+    /// For a call that failed, the ID the next item had when it failed.
+    #[serde(default)]
+    pub ended: Option<u64>,
     /// What a call did, for the Quiet view's rows.
     #[serde(default)]
     pub act: Option<Act>,
