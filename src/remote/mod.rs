@@ -32,6 +32,8 @@ pub(crate) mod random_session;
 mod render;
 #[cfg(feature = "remote")]
 mod server;
+#[cfg(feature = "remote")]
+mod uploads;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};

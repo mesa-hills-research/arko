@@ -1393,12 +1393,14 @@ fn thousands(count: u64) -> String {
     out
 }
 
-/// A file's size as people say it, such as `512 bytes`, `14 KB`, `1.2 MB`.
+/// A file's size as people say it, such as `512 bytes`, `14 KB`, `1.2 MB`,
+/// `1.4 GB`.
 pub(crate) fn size(bytes: u64) -> String {
     match bytes {
         0..1024 => format!("{bytes} bytes"),
         1024..1_048_576 => format!("{} KB", (bytes as f64 / 1024.0).round() as u64),
-        _ => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+        1_048_576..1_073_741_824 => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+        _ => format!("{:.1} GB", bytes as f64 / 1_073_741_824.0),
     }
 }
 

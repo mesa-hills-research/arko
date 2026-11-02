@@ -249,6 +249,25 @@ impl Folder {
         file.sync_all()
     }
 
+    /// The new file `name`, opened to write, which its owner alone may read
+    /// where the system has permissions. Fails when anything, a link too, is
+    /// there.
+    pub(crate) fn create_file(&self, name: impl AsRef<OsStr>) -> io::Result<std::fs::File> {
+        let name = name.as_ref();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file = sys::create_file(&self.fd, name)?;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            Ok(file)
+        }
+        #[cfg(not(unix))]
+        return std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(self.checked(name)?);
+    }
+
     /// Writes the file `name` whole, through a new file renamed into place,
     /// unless something is there already (`AlreadyExists`).
     pub(crate) fn create_whole(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
