@@ -805,7 +805,7 @@ async fn worker_models_sets_who_chooses_the_workers_models() {
     );
     assert_eq!(harness.settings.worker_models, crate::agents::ModelChoice::Profiles);
     assert!(!harness.main_config.instructions.contains("`save_worker_profile`"));
-    assert!(harness.main_config.instructions.contains("with a profile, a named setup the user saved"));
+    assert!(harness.main_config.instructions.contains("unless you start it with a profile the user saved"));
     assert_eq!(
         harness.session.load_settings().unwrap().worker_models,
         crate::agents::ModelChoice::Profiles
