@@ -763,29 +763,57 @@ fn slot_length(slot: &mut Option<File>) -> std::io::Result<u64> {
 }
 
 /// The file `file` of `upload` as a message sends it, with its bytes when
-/// they may go to the model. Blocks.
+/// they may go to the model, read from one handle opened without following
+/// a link. A file whose length, kind or type is no longer what was recorded
+/// (an agent may edit it) isn't sent, and no more than its recorded length
+/// is read. Blocks.
 fn read_for_send(upload: &Upload, file: FileRef, kind: Kind) -> Result<Attached, String> {
+    use std::io::Read as _;
+    let unreadable = |error: std::io::Error| {
+        format!(
+            "Couldn’t read {} ({}).",
+            file.path.display(),
+            crate::profiles::reason_of(&error)
+        )
+    };
+    let changed = || {
+        format!(
+            "{} changed since it was attached. Attach it again.",
+            file.name
+        )
+    };
+    let mut opened = upload.folder.open_file(&file.name).map_err(unreadable)?;
+    if opened.metadata().map_err(unreadable)?.len() != file.bytes {
+        return Err(changed());
+    }
     let most = match kind {
         Kind::Image => attachments::MAX_IMAGE_BYTES,
         Kind::Text => attachments::INLINE_MAX_BYTES as u64,
         Kind::File => 0,
     };
-    let content = if file.bytes <= most {
-        let bytes = upload.folder.read(&file.name).map_err(|error| {
-            format!(
-                "Couldn’t read {} ({}).",
-                file.path.display(),
-                crate::profiles::reason_of(&error)
-            )
-        })?;
-        Some(Arc::from(bytes))
+    let whole = file.bytes <= most;
+    let wanted = if whole {
+        file.bytes
     } else {
-        None
+        file.bytes.min(HEAD_BYTES as u64)
     };
+    let mut bytes = Vec::new();
+    // (Read whole, one byte past the length tells of a file that grew
+    // meanwhile.)
+    (&mut opened)
+        .take(wanted + u64::from(whole))
+        .read_to_end(&mut bytes)
+        .map_err(unreadable)?;
+    let head = &bytes[..bytes.len().min(HEAD_BYTES)];
+    if bytes.len() as u64 != wanted
+        || attachments::sniff(head, &file.name) != (kind, file.mime.as_str())
+    {
+        return Err(changed());
+    }
     Ok(Attached {
+        content: whole.then(|| Arc::from(bytes)),
         file,
         kind,
-        content,
     })
 }
 
@@ -1222,6 +1250,32 @@ pub(super) mod tests {
         uploads.remove_unsent().await;
         assert!(uploads.take(&ids).await.is_err());
         assert!(taken.iter().all(|attached| attached.file.path.is_file()));
+    }
+
+    /// A file changed after it was uploaded (an agent may edit it) isn't
+    /// read past the size it was saved with, nor sent as what it was: the
+    /// message is refused, and the upload waits to be sent again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_file_changed_since_its_upload_isnt_sent() {
+        let temp = tempfile::tempdir().unwrap();
+        let (uploads, work) = uploads(temp.path());
+        let id = uploads.create("small.txt", 1).await.unwrap();
+        uploads.put(&id, 0, whole(b"x")).await.unwrap();
+        let saved = folder_of(&work).join("small.txt");
+        std::fs::write(&saved, vec![b'y'; 100_000]).unwrap();
+        assert_eq!(
+            uploads.take(std::slice::from_ref(&id)).await.unwrap_err(),
+            "small.txt changed since it was attached. Attach it again."
+        );
+        // The same length, but no longer text.
+        std::fs::write(&saved, [0]).unwrap();
+        assert_eq!(
+            uploads.take(std::slice::from_ref(&id)).await.unwrap_err(),
+            "small.txt changed since it was attached. Attach it again."
+        );
+        std::fs::write(&saved, b"z").unwrap();
+        let claim = uploads.take(std::slice::from_ref(&id)).await.unwrap();
+        assert_eq!(claim.files[0].content.as_deref(), Some(&b"z"[..]));
     }
 
     /// A file swapped for a link after it was saved isn't read through it.

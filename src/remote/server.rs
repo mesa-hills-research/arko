@@ -2064,20 +2064,21 @@ async fn attachment(
         return not_found();
     };
     let served = crate::attachments::download_type(&head, &name);
-    let stream =
-        futures_util::stream::unfold(Some(tokio::fs::File::from_std(file)), |file| async move {
-            use tokio::io::AsyncReadExt as _;
-            let mut file = file?;
-            let mut buffer = vec![0; 64 * 1024];
-            match file.read(&mut buffer).await {
-                Ok(0) => None,
-                Ok(read) => {
-                    buffer.truncate(read);
-                    Some((Ok(Bytes::from(buffer)), Some(file)))
-                }
-                Err(error) => Some((Err(error), None)),
+    // (No more than the length it's sent with, should the file grow.)
+    let file = tokio::io::AsyncReadExt::take(tokio::fs::File::from_std(file), size);
+    let stream = futures_util::stream::unfold(Some(file), |file| async move {
+        use tokio::io::AsyncReadExt as _;
+        let mut file = file?;
+        let mut buffer = vec![0; 64 * 1024];
+        match file.read(&mut buffer).await {
+            Ok(0) => None,
+            Ok(read) => {
+                buffer.truncate(read);
+                Some((Ok(Bytes::from(buffer)), Some(file)))
             }
-        });
+            Err(error) => Some((Err(error), None)),
+        }
+    });
     let mut response = axum::body::Body::from_stream(stream).into_response();
     let headers = response.headers_mut();
     let values = [

@@ -192,12 +192,18 @@ impl Entry {
 
     /// The entry as the block writes it, a line, or its text between two.
     fn written(&self) -> String {
+        // (An inline text's own length, so the block reads back whatever
+        // length its file was recorded with.)
+        let bytes = self
+            .inline
+            .as_ref()
+            .map_or(self.bytes, |text| text.len() as u64);
         let mut out = format!(
             "<file name=\"{}\" type=\"{}\" size=\"{}\" bytes=\"{}\" path=\"{}\"",
             escape(&self.name),
             escape(&self.mime),
-            crate::remote::protocol::size(self.bytes),
-            self.bytes,
+            crate::remote::protocol::size(bytes),
+            bytes,
             escape(&self.path),
         );
         if self.shown {
@@ -943,6 +949,22 @@ mod tests {
             "the text didn't fit with the files"
         );
         assert_eq!(entries.len(), 20);
+    }
+
+    /// An inline text's entry gives the text's own length, so the block
+    /// reads back whatever length the file was recorded with.
+    #[test]
+    fn an_inline_entry_gives_its_texts_own_length() {
+        let changed = Attached {
+            file: file("small.txt", "text/plain", 1),
+            kind: Kind::Text,
+            content: Some(Arc::from(&b"changed"[..])),
+        };
+        let routed = route(&model(true), false, "Look", vec![changed]).unwrap();
+        let sent = with_block(&routed.block, "Look");
+        let (entries, typed) = split_block(&sent).unwrap();
+        assert_eq!(entries[0].inline.as_deref(), Some("changed"));
+        assert_eq!(typed, "Look");
     }
 
     #[test]
