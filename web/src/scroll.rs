@@ -348,26 +348,48 @@ fn tick(now: f64) {
     }
 }
 
-/// The reader's place, the item of the first row whose bottom shows, and
-/// how far its top is below the scroller's (above it when negative).
-pub fn first_visible() -> Option<(u64, f64)> {
+/// A row shown, by its own key among the rows shown (its `data-row`, the
+/// layout's [`Row::key`](crate::layout::Row::key)) and its item (its
+/// `data-id`). Two rows can share an item, such as a turn's count of calls
+/// in Messages and the Quiet row of its first call under it, and a place
+/// keeps to its own row. In another view, where the row's key is another
+/// one, it keeps to its item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Anchor {
+    pub id: u64,
+    pub key: String,
+}
+
+impl Anchor {
+    /// The anchor of the row `row`, from its attributes.
+    fn of(row: &Element) -> Option<Self> {
+        Some(Self {
+            id: row.get_attribute("data-id")?.parse().ok()?,
+            key: row.get_attribute("data-row").unwrap_or_default(),
+        })
+    }
+}
+
+/// The reader's place, the first row whose bottom shows, and how far its
+/// top is below the scroller's (above it when negative).
+pub fn first_visible() -> Option<(Anchor, f64)> {
     let log = STATE.with(|state| state.borrow().log.clone())?;
     let top = log.get_bounding_client_rect().top();
     let rows = log.query_selector("#rows").ok().flatten()?.children();
     place_among((0..rows.length()).filter_map(|at| {
         let row = rows.item(at)?;
-        let id = row.get_attribute("data-id")?.parse().ok()?;
+        let anchor = Anchor::of(&row)?;
         let rect = row.get_bounding_client_rect();
-        Some((id, rect.top() - top, rect.bottom() - top))
+        Some((anchor, rect.top() - top, rect.bottom() - top))
     }))
 }
 
-/// The place among `rows`, each an item and its top and bottom below the
+/// The place among `rows`, each a row and its top and bottom below the
 /// scroller's top.
-fn place_among(rows: impl IntoIterator<Item = (u64, f64, f64)>) -> Option<(u64, f64)> {
+fn place_among(rows: impl IntoIterator<Item = (Anchor, f64, f64)>) -> Option<(Anchor, f64)> {
     rows.into_iter()
-        .find(|&(_, _, bottom)| bottom > 1.0)
-        .map(|(id, top, _)| (id, top))
+        .find(|(_, _, bottom)| *bottom > 1.0)
+        .map(|(anchor, top, _)| (anchor, top))
 }
 
 /// The scroll position that moves a row from `top` below the scroller's
@@ -376,8 +398,8 @@ fn scroll_for(scroll_top: f64, top: f64, offset: f64) -> f64 {
     scroll_top + top - offset
 }
 
-/// The rows of the transcript, with their items.
-fn rows(log: &Element) -> Vec<(u64, Element)> {
+/// The rows of the transcript, each with its anchor.
+fn rows(log: &Element) -> Vec<(Anchor, Element)> {
     let Some(rows) = log.query_selector("#rows").ok().flatten() else {
         return Vec::new();
     };
@@ -385,24 +407,28 @@ fn rows(log: &Element) -> Vec<(u64, Element)> {
     (0..rows.length())
         .filter_map(|at| {
             let row = rows.item(at)?;
-            let id = row.get_attribute("data-id")?.parse().ok()?;
-            Some((id, row))
+            Some((Anchor::of(&row)?, row))
         })
         .collect()
 }
 
-/// Which of the rows, by their items in order, a place at the item `id`
-/// goes back to, and whether at the place's offset, its own row, else the
-/// nearest before it, else (the history let go of all those) the earliest
-/// left, from its top.
-fn anchor_row(ids: &[u64], id: u64) -> Option<(usize, bool)> {
-    let before = ids
+/// Which of the rows, by their anchors in order, a place at `anchor` goes
+/// back to, and whether at the place's offset. That's its own row, else
+/// (in another view) the first row of its item, else the nearest before
+/// it, else (the history let go of all those) the earliest left, from its
+/// top.
+fn anchor_row(rows: &[Anchor], anchor: &Anchor) -> Option<(usize, bool)> {
+    if let Some(at) = rows.iter().position(|row| row.key == anchor.key) {
+        return Some((at, true));
+    }
+    let nearest = rows
         .iter()
-        .enumerate()
-        .filter(|(_, row)| **row <= id)
-        .max_by_key(|(_, row)| **row)
-        .map(|(at, _)| (at, true));
-    before.or_else(|| (!ids.is_empty()).then_some((0, false)))
+        .map(|row| row.id)
+        .filter(|id| *id <= anchor.id)
+        .max()
+        .and_then(|id| rows.iter().position(|row| row.id == id))
+        .map(|at| (at, true));
+    nearest.or_else(|| (!rows.is_empty()).then_some((0, false)))
 }
 
 /// The offset a row goes back to, now `height` tall. It is `offset`, unless the
@@ -412,30 +438,30 @@ fn bounded_offset(offset: f64, height: f64) -> f64 {
     if offset + height > 1.0 { offset } else { 0.0 }
 }
 
-/// Keeps the reader's place at the item `id` (or the nearest row before it)
-/// across the layout that's about to change. It stays where it shows now,
-/// else a third of the way down.
-pub fn keep_place(id: u64) {
+/// Keeps the reader's place at the row `anchor` (or the nearest row before
+/// it) across the layout that's about to change. It stays where it shows
+/// now, else a third of the way down.
+pub fn keep_place(anchor: Anchor) {
     let Some(log) = STATE.with(|state| state.borrow().log.clone()) else {
         return;
     };
     let top = log.get_bounding_client_rect().top();
     let rows = rows(&log);
-    let ids: Vec<u64> = rows.iter().map(|(id, _)| *id).collect();
-    let offset = anchor_row(&ids, id)
+    let anchors: Vec<Anchor> = rows.iter().map(|(anchor, _)| anchor.clone()).collect();
+    let offset = anchor_row(&anchors, &anchor)
         .filter(|(_, at_offset)| *at_offset)
         .map(|(at, _)| rows[at].1.get_bounding_client_rect().top() - top)
         .filter(|offset| *offset >= 0.0 && *offset < log.client_height() as f64)
         .unwrap_or(log.client_height() as f64 / 3.0);
-    restore_place((id, offset));
+    restore_place((anchor, offset));
 }
 
 /// Puts the reader back at `place`, from [`first_visible`], once the layout
-/// that's about to change is drawn. Its item's row (or the nearest one
-/// before it) goes as far below the scroller's top as it was, or to the
-/// top when it got too short for that. With all those let go of, the
-/// earliest row left goes to the top.
-pub fn restore_place((id, offset): (u64, f64)) {
+/// that's about to change is drawn. Its row (or the nearest one before it)
+/// goes as far below the scroller's top as it was, or to the top when it
+/// got too short for that. With all those let go of, the earliest row left
+/// goes to the top.
+pub fn restore_place((anchor, offset): (Anchor, f64)) {
     let Some(log) = STATE.with(|state| state.borrow().log.clone()) else {
         return;
     };
@@ -447,8 +473,8 @@ pub fn restore_place((id, offset): (u64, f64)) {
     });
     let restore = Closure::once_into_js(move || {
         let rows = rows(&log);
-        let ids: Vec<u64> = rows.iter().map(|(id, _)| *id).collect();
-        if let Some((at, at_offset)) = anchor_row(&ids, id) {
+        let anchors: Vec<Anchor> = rows.iter().map(|(anchor, _)| anchor.clone()).collect();
+        if let Some((at, at_offset)) = anchor_row(&anchors, &anchor) {
             let rect = rows[at].1.get_bounding_client_rect();
             let top = rect.top() - log.get_bounding_client_rect().top();
             let offset = if at_offset {
@@ -480,16 +506,24 @@ mod tests {
         assert_eq!(settle_action(true, true, false), Settle::Stay);
     }
 
-    /// Rows of `heights`, each an item and its top and bottom below the
-    /// scroller's top at the scroll position `scroll_top`.
-    fn rows_at(heights: &[f64], scroll_top: f64) -> Vec<(u64, f64, f64)> {
+    /// Rows of `heights`, each an item's row and its top and bottom below
+    /// the scroller's top at the scroll position `scroll_top`.
+    fn rows_at(heights: &[f64], scroll_top: f64) -> Vec<(Anchor, f64, f64)> {
         let mut top = -scroll_top;
         let mut rows = Vec::new();
         for (id, height) in heights.iter().enumerate() {
-            rows.push((id as u64, top, top + height));
+            rows.push((item(id as u64), top, top + height));
             top += height;
         }
         rows
+    }
+
+    /// The row of item `id`.
+    fn item(id: u64) -> Anchor {
+        Anchor {
+            id,
+            key: format!("i{id}"),
+        }
     }
 
     #[test]
@@ -500,30 +534,60 @@ mod tests {
         let mut scroll_top = 205.0;
         // The first row whose bottom shows, its top above the scroller's.
         let place = place_among(rows_at(&heights, scroll_top)).unwrap();
-        assert_eq!(place, (3, -26.5));
+        assert_eq!(place, (item(3), -26.5));
         for _ in 0..5 {
             // A worker's view opens at its latest, and the main one lays out
             // again from wherever the scroller is.
             scroll_top = 1200.0;
-            let (_, top, _) = rows_at(&heights, scroll_top)[place.0 as usize];
+            let (_, top, _) = rows_at(&heights, scroll_top)[place.0.id as usize];
             scroll_top = scroll_for(scroll_top, top, place.1);
             assert_eq!(scroll_top, 205.0);
-            assert_eq!(place_among(rows_at(&heights, scroll_top)), Some(place));
+            assert_eq!(
+                place_among(rows_at(&heights, scroll_top)),
+                Some(place.clone())
+            );
         }
         // A row whose bottom is less than a pixel down is passed over.
-        assert_eq!(place_among(rows_at(&heights, 39.5)), Some((1, 0.5)));
+        assert_eq!(place_among(rows_at(&heights, 39.5)), Some((item(1), 0.5)));
+    }
+
+    /// Rows of items `ids`.
+    fn items(ids: &[u64]) -> Vec<Anchor> {
+        ids.iter().map(|id| item(*id)).collect()
     }
 
     #[test]
     fn a_place_goes_back_to_its_row_or_the_nearest_left() {
+        let at = item;
         // Its own row, at the place's offset, wherever pending rows put it.
-        assert_eq!(anchor_row(&[3, 4, 5, 9, 7], 5), Some((2, true)));
+        assert_eq!(
+            anchor_row(&items(&[3, 4, 5, 9, 7]), &at(5)),
+            Some((2, true))
+        );
         // Gone, the nearest row before it.
-        assert_eq!(anchor_row(&[3, 4, 6, 9, 7], 5), Some((1, true)));
+        assert_eq!(
+            anchor_row(&items(&[3, 4, 6, 9, 7]), &at(5)),
+            Some((1, true))
+        );
         // The history let go of it and of every row before it, so the earliest
         // row left, from its top.
-        assert_eq!(anchor_row(&[8, 9, 10], 5), Some((0, false)));
-        assert_eq!(anchor_row(&[], 5), None);
+        assert_eq!(anchor_row(&items(&[8, 9, 10]), &at(5)), Some((0, false)));
+        assert_eq!(anchor_row(&[], &at(5)), None);
+    }
+
+    /// A turn's count of calls and the Quiet row of its first call share an
+    /// item, and a place keeps to its own row of the two. In another view,
+    /// where neither is, it goes to its item's first row.
+    #[test]
+    fn a_place_keeps_to_its_own_row_of_rows_that_share_an_item() {
+        let row = |id: u64, key: &str| Anchor {
+            id,
+            key: key.to_string(),
+        };
+        let open = [row(1, "i1"), row(2, "c1:2"), row(2, "q2"), row(6, "i6")];
+        assert_eq!(anchor_row(&open, &row(2, "c1:2")), Some((1, true)));
+        assert_eq!(anchor_row(&open, &row(2, "q2")), Some((2, true)));
+        assert_eq!(anchor_row(&open, &row(2, "i2")), Some((1, true)));
     }
 
     #[test]

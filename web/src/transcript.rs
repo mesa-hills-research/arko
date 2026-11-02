@@ -194,8 +194,11 @@ fn row_key(feed: Option<u64>, row: &Row) -> (Option<u64>, String) {
 }
 
 /// A row of the transcript. `room` says the Working row is only its room,
-/// unseen ([`layout::room`]).
+/// unseen ([`layout::room`]). Each row says its item (`data-id`) and its own
+/// key among the rows shown (`data-row`, [`Row::key`]), which the reader's
+/// place keeps to ([`scroll::Anchor`]).
 fn row_view(row: Row, thinking: Memo<Option<u64>>, room: Memo<bool>) -> AnyView {
+    let key = row.key();
     match row {
         Row::Working => {
             let page = page();
@@ -218,14 +221,14 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>, room: Memo<bool>) -> AnyView 
             }
             .into_any()
         }
-        Row::Count { id, count, .. } => count_row(id, count),
-        Row::Quiet { id, row } => quiet_row(id, row, thinking),
+        Row::Count { id, count, .. } => count_row(id, key, count),
+        Row::Quiet { id, row } => quiet_row(id, key, row, thinking),
         Row::Status(id) => match cell(id) {
-            Some(cell) => status_row(id, cell.for_row()),
+            Some(cell) => status_row(id, key, cell.for_row()),
             None => ().into_any(),
         },
         Row::Item(id, _) => match cell(id) {
-            Some(cell) => item_row(id, cell.for_row(), thinking),
+            Some(cell) => item_row(id, key, cell.for_row(), thinking),
             None => ().into_any(),
         },
     }
@@ -234,7 +237,7 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>, room: Memo<bool>) -> AnyView 
 /// A turn's tool calls as one line (Messages), its triangle in the column
 /// of every fold's. A click opens it to the turn's Quiet rows, each where
 /// it came, and closes it again, its line staying where it is.
-fn count_row(id: u64, count: Count) -> AnyView {
+fn count_row(id: u64, key: String, count: Count) -> AnyView {
     let page = page();
     let Count {
         calls,
@@ -242,11 +245,16 @@ fn count_row(id: u64, count: Count) -> AnyView {
         running,
     } = count;
     let open = move || page.counts_open.with(|open| open.contains(&id));
+    // (It keeps its place as it opens, not the Quiet row of its first call.)
+    let anchor = scroll::Anchor {
+        id,
+        key: key.clone(),
+    };
     view! {
-        <div class="row count" data-id=id>
+        <div class="row count" data-id=id data-row=key>
             <button type="button" class="call-line" aria-expanded=move || open().to_string()
                 on:click=move |_| {
-                    scroll::keep_place(id);
+                    scroll::keep_place(anchor.clone());
                     page.counts_open.update(|open| {
                         if !open.remove(&id) {
                             open.insert(id);
@@ -273,7 +281,7 @@ fn count_row(id: u64, count: Count) -> AnyView {
 /// has no fold. Each of its calls keeps what its own row offers (Move to
 /// background, Stop) and the images its tool returned under the line, as
 /// Full does, whatever row it's in.
-fn quiet_row(id: u64, row: layout::QuietRow, thinking: Memo<Option<u64>>) -> AnyView {
+fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<u64>>) -> AnyView {
     let page = page();
     let shared = QUIET.with(|quiet| {
         quiet
@@ -362,7 +370,7 @@ fn quiet_row(id: u64, row: layout::QuietRow, thinking: Memo<Option<u64>>) -> Any
         })
     };
     view! {
-        <div class=class data-id=id>
+        <div class=class data-id=id data-row=key>
             <details class="call quiet" prop:open=open>
                 <summary
                     tabindex=move || if opens() { "0" } else { "-1" }
@@ -524,7 +532,7 @@ fn local_time(at: i64) -> String {
         .unwrap_or_default()
 }
 
-fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
+fn item_row(id: u64, key: String, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
     let page = page();
     let item = cell.data.get_untracked();
     let data = cell.data;
@@ -635,7 +643,7 @@ fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
         }
         Kind::Question => crate::questions::card_view(id, cell),
         Kind::Call => call_row(cell),
-        Kind::Result => return result_row(id, data),
+        Kind::Result => return result_row(id, key, data),
         Kind::Output => view! { <pre>{move || text.get()}</pre> }.into_any(),
         Kind::Turn => view! {
             <div class="turn-line"><span>{move || text.get()}</span></div>
@@ -674,7 +682,7 @@ fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
         }
     });
     view! {
-        <div class=class data-id=id title=title>
+        <div class=class data-id=id data-row=key title=title>
             {body}
             {more}
         </div>
@@ -706,7 +714,7 @@ fn kind_class(kind: Kind) -> &'static str {
 /// the stop that cut it short). It opens to its words, the report's
 /// Markdown and the message as its call's content has it, once there are
 /// any.
-fn status_row(id: u64, cell: RowCell) -> AnyView {
+fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
     let page = page();
     let data = cell.data;
     let agent = data.with_untracked(|item| item.agent.clone());
@@ -775,7 +783,7 @@ fn status_row(id: u64, cell: RowCell) -> AnyView {
         class
     };
     view! {
-        <div class=class data-id=id>
+        <div class=class data-id=id data-row=key>
             <details class="call">
                 <summary
                     tabindex=move || if opens() { "0" } else { "-1" }
@@ -938,7 +946,7 @@ fn call_row(cell: RowCell) -> AnyView {
 
 /// A call's content in Full, under the call, while the call is open. One
 /// whose call is gone shows as it is.
-fn result_row(id: u64, data: RwSignal<ItemData>) -> AnyView {
+fn result_row(id: u64, key: String, data: RwSignal<ItemData>) -> AnyView {
     let page = page();
     let call = data.with_untracked(|item| item.call);
     let command =
@@ -948,7 +956,7 @@ fn result_row(id: u64, data: RwSignal<ItemData>) -> AnyView {
         _ => true,
     };
     view! {
-        <div class="row result" data-id=id style:display=move || if shown() { "" } else { "none" }>
+        <div class="row result" data-id=id data-row=key style:display=move || if shown() { "" } else { "none" }>
             <div class="holds">{move || shown().then(|| contents::content_view(data))}</div>
         </div>
     }
@@ -1084,13 +1092,13 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
 thread_local! {
     /// Where the reader was in the main transcript, to come back to, and the
     /// feed it's a place among the rows of.
-    static MAIN_PLACE: std::cell::Cell<Option<(Option<u64>, (u64, f64))>> =
+    static MAIN_PLACE: std::cell::Cell<Option<(Option<u64>, (scroll::Anchor, f64))>> =
         const { std::cell::Cell::new(None) };
 }
 
 /// Where the reader was in the main transcript of `feed`, taken to go back
 /// to. A place of another feed is among rows that are gone.
-fn take_main_place(feed: Option<u64>) -> Option<(u64, f64)> {
+fn take_main_place(feed: Option<u64>) -> Option<(scroll::Anchor, f64)> {
     MAIN_PLACE
         .with(|place| place.take())
         .filter(|(of, _)| *of == feed)
@@ -1286,10 +1294,14 @@ mod tests {
     /// feed it was in, and a new feed's opens at its latest.
     #[test]
     fn a_place_of_another_feed_isnt_gone_back_to() {
-        MAIN_PLACE.with(|place| place.set(Some((Some(1), (7, -3.5)))));
-        assert_eq!(take_main_place(Some(1)), Some((7, -3.5)));
+        let at = || scroll::Anchor {
+            id: 7,
+            key: "i7".into(),
+        };
+        MAIN_PLACE.with(|place| place.set(Some((Some(1), (at(), -3.5)))));
+        assert_eq!(take_main_place(Some(1)), Some((at(), -3.5)));
         assert_eq!(take_main_place(Some(1)), None);
-        MAIN_PLACE.with(|place| place.set(Some((Some(1), (7, -3.5)))));
+        MAIN_PLACE.with(|place| place.set(Some((Some(1), (at(), -3.5)))));
         assert_eq!(take_main_place(Some(2)), None);
     }
 
