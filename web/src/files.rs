@@ -8,23 +8,55 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::app::{page, request};
+use crate::app::{feed, page, request};
 use crate::attach::short_name;
 use crate::protocol::{FileData, IMAGE_TYPES, ImageData, ItemData, size};
 
 thread_local! {
-    /// Whether each file address answered, once asked.
-    static THERE: RefCell<HashMap<String, bool>> = RefCell::new(HashMap::new());
+    /// Whether each file address of the feed shown is there, once Arko
+    /// answered, asked once whatever draws its chips. Another feed (another
+    /// Arko, or one started again) may have other files at the same
+    /// addresses.
+    static THERE: RefCell<HashMap<(Option<u64>, String), ArcRwSignal<Option<bool>>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Forgets which files were there, for another feed. An answer still on its
+/// way reaches only the chips of the feed it was asked for.
+pub fn forget() {
+    THERE.with(|there| there.borrow_mut().clear());
+}
+
+/// Whether the file at `url` is there, as Arko answers, asked once for the
+/// feed shown.
+fn there(url: &str) -> ArcRwSignal<Option<bool>> {
+    let key = (feed(), url.to_string());
+    if let Some(there) = THERE.with(|there| there.borrow().get(&key).cloned()) {
+        return there;
+    }
+    let there = ArcRwSignal::new(None);
+    THERE.with(|cell| cell.borrow_mut().insert(key, there.clone()));
+    let (answer, url) = (there.clone(), url.to_string());
+    spawn_local(async move {
+        if let Some((status, _)) = request("HEAD", &url, None).await {
+            answer.set(Some(status != 404));
+        }
+    });
+    there
 }
 
 /// The chips of the files the item `data` carried, before its text.
 #[component]
 pub fn SentFiles(data: RwSignal<ItemData>) -> impl IntoView {
-    // (Only a change of its files draws the chips again.)
-    let files = Memo::new(move |_| data.with(|item| (item.files.clone(), item.images.clone())));
+    // (Only a change of its files, or of the feed, draws the chips again.)
+    let page = page();
+    let files = Memo::new(move |_| {
+        let feeds = page.feeds.get();
+        data.with(|item| (item.files.clone(), item.images.clone(), feeds))
+    });
     let alone = move || data.with(|item| item.text.trim().is_empty());
     move || {
-        let (files, images) = files.get();
+        let (files, images, _) = files.get();
         (!files.is_empty()).then(|| {
             view! {
                 <ul class="attached sent" class:alone=alone>
@@ -65,20 +97,12 @@ pub fn on_a_chip(image: &ImageData, files: &[FileData]) -> bool {
 #[component]
 fn SentChip(file: FileData, image: Option<ImageData>) -> impl IntoView {
     let page = page();
-    let removed = RwSignal::new(file.url.is_none());
-    if let Some(url) = file.url.clone() {
-        match THERE.with(|there| there.borrow().get(&url).copied()) {
-            Some(there) => removed.set(!there),
-            None => spawn_local(async move {
-                // (Asked once for each file, whatever draws its chip.)
-                if let Some((status, _)) = request("HEAD", &url, None).await {
-                    let there = status != 404;
-                    THERE.with(|cell| cell.borrow_mut().insert(url, there));
-                    removed.set(!there);
-                }
-            }),
-        }
-    }
+    let there = file.url.as_deref().map(there);
+    let removed = Signal::derive(move || {
+        there
+            .as_ref()
+            .is_none_or(|there| there.get() == Some(false))
+    });
     let name = file.name.clone();
     let meta = format!(
         "{} · {}",

@@ -1097,6 +1097,7 @@ fn start_feed(page: Page) {
     page.calls_open.update(HashSet::clear);
     page.doors_open.update(HashSet::clear);
     crate::contents::forget();
+    crate::files::forget();
 }
 
 /// Gives a cell the item as Arko has it now, setting only what changed, and
