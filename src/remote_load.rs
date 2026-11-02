@@ -208,6 +208,7 @@ impl Sim {
                 tool_call_id: call,
                 tool_name: tool.into(),
                 output: out,
+                receipt: None,
             },
         );
     }

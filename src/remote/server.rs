@@ -3220,6 +3220,7 @@ mod tests {
             tool_call_id: call,
             tool_name: "read_file".into(),
             output: lines.join("\n"),
+            receipt: None,
         };
         feed.event(&event(result), None);
         let id = feed
@@ -3332,6 +3333,7 @@ mod tests {
                 tool_call_id: call,
                 tool_name: "read_file".into(),
                 output: "1 | a\n2 | b".into(),
+                receipt: None,
             }),
             None,
         );
@@ -3445,6 +3447,7 @@ mod tests {
                 tool_call_id: wait,
                 tool_name: "wait_for_agents".into(),
                 output: "r1 finished.".into(),
+                receipt: None,
             }),
             None,
         );

@@ -264,6 +264,7 @@ impl RandomSession {
             tool_call_id: call,
             tool_name: crate::shell::SHELL_TOOL_NAME.into(),
             output,
+            receipt: None,
         };
         self.event(agent.as_deref(), event);
         "result"

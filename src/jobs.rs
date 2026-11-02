@@ -454,6 +454,7 @@ mod tests {
                     "{}{job}, 0.2 s\nThe user moved this call to the background.",
                     terminal::IN_THE_BACKGROUND
                 ),
+                receipt: None,
             }),
             None,
         );

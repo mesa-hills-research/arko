@@ -1052,7 +1052,8 @@ pub(crate) struct Fixture {
     pub parameters: &'static str,
     /// Its result, or why it failed when `status` is failed.
     pub output: &'static str,
-    /// For an edit, its file's text as the edit started.
+    /// For an edit, its file's text as the edit started, which the tests
+    /// edit with `edit_file` for its receipt.
     pub before: Option<&'static str>,
     /// Its act, once its result came.
     pub act: Act,

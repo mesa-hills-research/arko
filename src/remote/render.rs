@@ -16,6 +16,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use arko_agents::LOAD_SKILL_TOOL_NAME;
+use arko_agents::tool::ToolReceipt;
 
 use super::content;
 use super::feed::{Act, ActKind, CallStatus, Came, ContentKind, Item, Kind};
@@ -1005,13 +1006,13 @@ pub fn outcome(tool: &str, parameters: &Parameters, output: &str) -> Outcome {
     outcome_after(tool, parameters, output, None)
 }
 
-/// [`outcome`], where an edit's file had the text `before` as the edit
-/// started, which its diff is made from.
+/// [`outcome`], with the tool's `receipt` of what the call did, which an
+/// edit's diff is made from.
 pub(crate) fn outcome_after(
     tool: &str,
     parameters: &Parameters,
     output: &str,
-    before: Option<&str>,
+    receipt: Option<&ToolReceipt>,
 ) -> Outcome {
     let job = moved_job(output);
     if tool != SHELL_TOOL_NAME
@@ -1037,7 +1038,7 @@ pub(crate) fn outcome_after(
         outcome.output = Some(output.into());
     }
     if outcome.block.is_none() && tool != SHELL_TOOL_NAME {
-        outcome.block = content(tool, parameters, output, before).map(Content::block);
+        outcome.block = content(tool, parameters, output, receipt).map(Content::block);
     }
     outcome
 }
@@ -1222,7 +1223,7 @@ fn content(
     tool: &str,
     parameters: &Parameters,
     output: &str,
-    before: Option<&str>,
+    receipt: Option<&ToolReceipt>,
 ) -> Option<Content> {
     let given = |name: &str| text(parameters, name);
     let result = |kind: ContentKind| Content::new(kind, output, None);
@@ -1252,8 +1253,8 @@ fn content(
         }
         EDIT_FILE_TOOL_NAME => {
             let (old, new) = (given("old_string"), given("new_string"));
-            let diff = before
-                .and_then(|before| edit_diff(before, old, new, flag(parameters, "replace_all")))
+            let diff = receipt
+                .and_then(receipt_diff)
                 .unwrap_or_else(|| bare_diff(old, new));
             Content::new(ContentKind::Diff, diff, language(given("path")))
         }
@@ -1364,105 +1365,51 @@ fn read_lines(output: &str, claude_code: bool) -> Option<String> {
     numbered.then(|| lines.join("\n"))
 }
 
-/// The lines around each change of an edit that its diff shows.
-const DIFF_CONTEXT: usize = 3;
+/// What a diff says after its lines when the edit's receipt left some out.
+const MORE_CHANGED: &str = "The edit changed more than this shows.";
 
-/// The diff of an edit of the file whose text was `before`, which replaced
-/// `old` with `new` (every match, with `all`) as `edit_file` does: the whole
-/// lines it changed, removed as the file had them and added as it has them
-/// now, numbered so, with the lines around them. `None` when `old` isn't in
-/// the text as the tool finds it (once, or with `all` at least once), which
-/// means the file changed since.
-fn edit_diff(before: &str, old: &str, new: &str, all: bool) -> Option<String> {
+/// The diff of an edit from the tool's receipt of it, its hunks with "…"
+/// between them, each line numbered as the file has it now, a removed one
+/// as the file had it.
+fn receipt_diff(receipt: &ToolReceipt) -> Option<String> {
+    use arko_agents::tool::LineChange;
     use content::Mark;
-    // As the tool matches, past a byte-order mark and with LF line breaks.
-    let lf = |text: &str| text.replace("\r\n", "\n");
-    let before = lf(before.strip_prefix('\u{feff}').unwrap_or(before));
-    let (old, new) = (lf(old), lf(new));
-    if old.is_empty() {
+    let ToolReceipt::Edit(receipt) = receipt else {
         return None;
-    }
-    let found: Vec<usize> = before.match_indices(&old).map(|(at, _)| at).collect();
-    if found.is_empty() || (!all && found.len() > 1) {
-        return None;
-    }
-    let mut after = String::with_capacity(before.len());
-    let mut starts = Vec::with_capacity(found.len());
-    let mut rest = 0;
-    for at in &found {
-        after.push_str(&before[rest..*at]);
-        starts.push(after.len());
-        after.push_str(&new);
-        rest = at + old.len();
-    }
-    after.push_str(&before[rest..]);
-    let lines = |text: &str| -> Vec<String> {
-        let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
-        if text.ends_with('\n') || text.is_empty() {
-            lines.pop();
-        }
-        lines
     };
-    let (was, is) = (lines(&before), lines(&after));
-    let line_of = |text: &str, at: usize| text[..at].matches('\n').count();
-    // Each change as the whole lines it spans, before and after: from the
-    // line it starts on to the line the text after it goes on in.
-    let mut changes: Vec<(usize, usize, usize, usize)> = Vec::new();
-    for (at, start) in found.iter().zip(&starts) {
-        let b = (line_of(&before, *at), line_of(&before, at + old.len()) + 1);
-        let a = (
-            line_of(&after, *start),
-            line_of(&after, start + new.len()) + 1,
-        );
-        let change = (b.0, b.1.min(was.len()), a.0, a.1.min(is.len()));
-        // (Two matches in one line are one change of it.)
-        match changes.last_mut() {
-            Some(last) if change.0 < last.1 => (last.1, last.3) = (change.1, change.3),
-            _ => changes.push(change),
-        }
+    if receipt.hunks.is_empty() {
+        return None;
     }
     let mut out: Vec<String> = Vec::new();
-    // The lines of the file now that show, up to here.
-    let mut shown = 0;
-    for (at, &(b0, b1, a0, a1)) in changes.iter().enumerate() {
-        // Without the lines at its ends that it leaves as they were, unless
-        // it changed only where a line ends.
-        let (mut b, mut a) = ((b0, b1), (a0, a1));
-        while b.0 < b.1 && a.0 < a.1 && was[b.0] == is[a.0] {
-            (b.0, a.0) = (b.0 + 1, a.0 + 1);
-        }
-        while b.1 > b.0 && a.1 > a.0 && was[b.1 - 1] == is[a.1 - 1] {
-            (b.1, a.1) = (b.1 - 1, a.1 - 1);
-        }
-        if b.0 == b.1 && a.0 == a.1 {
-            (b, a) = ((b0, b1), (a0, a1));
-        }
-        let from = a.0.saturating_sub(DIFF_CONTEXT).max(shown);
-        if from > shown && !out.is_empty() {
+    for hunk in &receipt.hunks {
+        if !out.is_empty() {
             out.push("…".to_string());
         }
-        // Lines from the line `from` on, numbered so, with `mark`.
-        let numbered = |lines: &[String], from: usize, mark: Mark| -> Vec<String> {
-            lines
-                .iter()
-                .enumerate()
-                .map(|(at, line)| content::diff_line(mark, Some(from + at + 1), line))
-                .collect()
-        };
-        out.extend(numbered(&is[from..a.0], from, Mark::Kept));
-        out.extend(numbered(&was[b.0..b.1], b.0, Mark::Removed));
-        out.extend(numbered(&is[a.0..a.1], a.0, Mark::Added));
-        let next = changes.get(at + 1).map_or(is.len(), |change| change.2);
-        let to = (a.1 + DIFF_CONTEXT).min(next).min(is.len()).max(a.1);
-        out.extend(numbered(&is[a.1..to], a.1, Mark::Kept));
-        shown = to;
+        let (mut old, mut new) = (hunk.old_start, hunk.new_start);
+        for line in &hunk.lines {
+            let (mark, number) = match line.change {
+                LineChange::Kept => (Mark::Kept, new),
+                LineChange::Removed => (Mark::Removed, old),
+                LineChange::Added => (Mark::Added, new),
+            };
+            out.push(content::diff_line(mark, Some(number), &line.text));
+            if line.change != LineChange::Added {
+                old += 1;
+            }
+            if line.change != LineChange::Removed {
+                new += 1;
+            }
+        }
+    }
+    if receipt.truncated {
+        out.push(MORE_CHANGED.to_string());
     }
     Some(out.join("\n"))
 }
 
-/// The diff of an edit whose file's text isn't known (a restored session,
-/// Claude Code's edits, a file too large to keep), which is its old text
-/// removed and its new text added, without numbers.
+/// The diff of an edit without the tool's receipt (a restored session,
+/// Claude Code's edits), which is its old text removed and its new text
+/// added, without numbers.
 fn bare_diff(old: &str, new: &str) -> String {
     use content::Mark;
     let removed = old
@@ -1777,7 +1724,12 @@ mod tests {
             {
                 Outcome::failed(fixture.output)
             } else {
-                outcome_after(fixture.tool, &parameters, fixture.output, fixture.before)
+                let receipt = fixture.before.map(|before| {
+                    let given = |name: &str| text(&parameters, name);
+                    let all = flag(&parameters, "replace_all");
+                    edited(before, given("old_string"), given("new_string"), all)
+                });
+                outcome_after(fixture.tool, &parameters, fixture.output, receipt.as_ref())
             };
             // (Its result comes before the item 2.)
             item.settle(outcome.status, outcome.text.clone(), &outcome.settled, 2);
@@ -1810,36 +1762,74 @@ mod tests {
         }
     }
 
-    /// An edit's diff is made from the file's text before it: the whole
-    /// lines it changed, removed as they were and added as they are, with
-    /// three lines around them, and a line between the changes of an edit
-    /// of every match that are apart. Without that text it is the edit's
-    /// old and new text, unnumbered.
+    /// The receipt `edit_file` gives for replacing `old` with `new` (every
+    /// match, with `all`) in a file whose text is `before`.
+    pub(crate) fn edited(before: &str, old: &str, new: &str, all: bool) -> ToolReceipt {
+        use arko_agents::tool::Tool;
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("f.txt"), before).unwrap();
+        let parameters: HashMap<String, Value> = serde_json::from_value(serde_json::json!({
+            "path": "f.txt", "old_string": old, "new_string": new, "replace_all": all,
+        }))
+        .unwrap();
+        let context = arko_agents::TaskContext::new(Uuid::nil(), "main", "", folder.path());
+        let run = arko_agents::builtins::EditFileTool.execute_with_output(&context, parameters);
+        let output = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(run)
+            .unwrap();
+        output.receipt.expect("edit_file gives a receipt")
+    }
+
+    /// An edit's diff is the tool's receipt of it, the whole lines it
+    /// changed, removed as the file had them and added as it has them, with
+    /// the lines around them numbered as the file has them now. Without a
+    /// receipt it is the edit's old and new text, without numbers.
     #[test]
-    fn an_edits_diff_is_made_from_the_files_text_before_it() {
-        let before = "1\n2\n3\n4\nold\n6\n7\n8\n9\n";
+    fn an_edits_diff_is_the_tools_receipt_of_it() {
+        let diff = |before, old, new, all| receipt_diff(&edited(before, old, new, all));
         assert_eq!(
-            edit_diff(before, "old", "new a\nnew b", false).as_deref(),
+            diff(
+                "1\n2\n3\n4\nold\n6\n7\n8\n9\n",
+                "old",
+                "new a\nnew b",
+                false
+            )
+            .as_deref(),
             Some(" 2\t2\n 3\t3\n 4\t4\n-5\told\n+5\tnew a\n+6\tnew b\n 7\t6\n 8\t7\n 9\t8")
         );
         // Inside a line, the line whole.
         assert_eq!(
-            edit_diff("fn a() {\n    let x = None;\n}\n", "None", "Some(1)", false).as_deref(),
+            diff("fn a() {\n    let x = None;\n}\n", "None", "Some(1)", false).as_deref(),
             Some(" 1\tfn a() {\n-2\t    let x = None;\n+2\t    let x = Some(1);\n 3\t}")
         );
         // Twice in a line with every match, one change of it.
         assert_eq!(
-            edit_diff("a x x\n", "x", "y", true).as_deref(),
+            diff("a x x\n", "x", "y", true).as_deref(),
             Some("-1\ta x x\n+1\ta y y")
         );
         // A final blank line is a line.
         assert_eq!(
-            edit_diff("a\n\n", "a", "b", false).as_deref(),
+            diff("a\n\n", "a", "b", false).as_deref(),
             Some("-1\ta\n+1\tb\n 2\t")
         );
-        // Not there, or there twice without every match: the file changed.
-        assert_eq!(edit_diff("a\n", "b", "c", false), None);
-        assert_eq!(edit_diff("a a\n", "a", "c", false), None);
+        // Changes far apart, with "…" between them.
+        let far: String = (1..=12)
+            .map(|n| match n {
+                2 | 11 => "x\n".to_string(),
+                n => format!("{n}\n"),
+            })
+            .collect();
+        assert_eq!(
+            diff(&far, "x\n", "y\n", true).as_deref(),
+            Some(
+                " 1\t1\n-2\tx\n+2\ty\n 3\t3\n 4\t4\n 5\t5\n…\n 8\t8\n 9\t9\n 10\t10\n-11\tx\n+11\ty\n 12\t12"
+            )
+        );
+        // A receipt that left changes out says so.
+        let many = diff(&"x\n".repeat(1_000), "x", "y", true).unwrap();
+        assert!(many.ends_with(MORE_CHANGED), "{many}");
         assert_eq!(bare_diff("a\nb", "c"), "-\ta\n-\tb\n+\tc");
     }
 
@@ -1890,7 +1880,7 @@ mod tests {
                 ("new_string", "b".into()),
             ]),
             "Edited a.rs at line 1:\n1 | b\n2 | ",
-            Some("a\n\n"),
+            Some(&edited("a\n\n", "a", "b", false)),
         );
         assert_eq!(edit.block.unwrap().text, "-1\ta\n+1\tb\n 2\t");
     }

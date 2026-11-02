@@ -90,6 +90,7 @@ pub(crate) fn play(path: &str) -> Feed {
                     tool_call_id: id,
                     tool_name: step.tool,
                     output: step.output.unwrap_or_default(),
+                    receipt: None,
                 };
                 feed.event(&agent_event("worker", result), Some(&step.worker));
             }
@@ -114,6 +115,7 @@ pub(crate) fn play(path: &str) -> Feed {
                         tool_call_id: id,
                         tool_name: step.tool,
                         output: step.output.unwrap_or_default(),
+                        receipt: None,
                     },
                 };
                 feed.event(&event(ended), None);

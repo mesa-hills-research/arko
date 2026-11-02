@@ -54,10 +54,6 @@ const WORKER_BUDGET: Budget = Budget {
     bytes: 2 * 1024 * 1024,
     wholes: 4 * 1024 * 1024,
 };
-/// The largest file whose text the feed keeps while an edit of it runs.
-const EDIT_KEPT: usize = 4 * 1024 * 1024;
-/// The most edits the feed keeps a file's text for at once.
-const EDITS_WAITING: usize = 64;
 /// The latest calls whose items the images their tools return find.
 const CALL_ITEMS: usize = 512;
 /// The images kept for calls whose items haven't come yet.
@@ -1394,9 +1390,6 @@ struct State {
     runs: HashMap<Uuid, String>,
     /// Calls waiting for their results, by call.
     calls: HashMap<Uuid, Call>,
-    /// The text of the file each edit (`edit_file`) changes, as it was when
-    /// the edit started, by call, until its result comes.
-    edits: HashMap<Uuid, Arc<str>>,
     /// Where each agent's output stood as its latest model request went
     /// out. What its response streams goes if the response fails.
     requests: HashMap<String, Streamed>,
@@ -1941,7 +1934,6 @@ impl Feed {
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
-            state.edits.remove(&id);
             self.settle(
                 state,
                 &id,
@@ -2095,14 +2087,14 @@ impl Feed {
                 tool_call_id,
                 tool_name,
                 output,
+                receipt,
             } => {
                 let (message, parameters) = match state.calls.get_mut(tool_call_id) {
                     Some(call) => (call.message.take(), std::mem::take(&mut call.parameters)),
                     None => (None, HashMap::new()),
                 };
-                let before = state.edits.remove(tool_call_id);
                 let outcome =
-                    render::outcome_after(tool_name, &parameters, output, before.as_deref());
+                    render::outcome_after(tool_name, &parameters, output, receipt.as_ref());
                 self.settle(&mut state, tool_call_id, outcome);
                 // The worker that got a message shows it in its own
                 // transcript (a message to the lead is its call's line).
@@ -2120,7 +2112,6 @@ impl Feed {
                 let why = reason.as_deref().unwrap_or_default().trim();
                 // A stop cancels the calls that run ("The task was
                 // cancelled while this call was running").
-                state.edits.remove(tool_call_id);
                 let message = if why.contains("cancelled") {
                     super::quiet::STOPPED.to_string()
                 } else if why == arko_agents::claude_code::HELD_FOR_COMPACTION {
@@ -2139,7 +2130,6 @@ impl Feed {
                 ..
             } => match tool_call_id {
                 Some(id) if state.calls.contains_key(id) => {
-                    state.edits.remove(id);
                     self.settle(&mut state, id, Outcome::failed(error_message));
                 }
                 _ => {
@@ -2364,23 +2354,6 @@ impl Feed {
         self.publish(state, Update::Remove { id });
         item.pending = false;
         self.push(state, item);
-    }
-
-    /// The edit `call` (`edit_file`) of `file` starts, whose text the feed
-    /// keeps until the call's result comes, to show the edit's diff from
-    /// what the file had. A file larger than [`EDIT_KEPT`] isn't kept, and
-    /// its diff shows the edit's old and new text.
-    pub(crate) fn edit_starts(&self, call: Uuid, file: &std::path::Path) {
-        let small = std::fs::metadata(file).is_ok_and(|meta| meta.len() <= EDIT_KEPT as u64);
-        let Some(text) = small.then(|| std::fs::read_to_string(file).ok()).flatten() else {
-            return;
-        };
-        let mut state = self.lock();
-        // (Edits whose results never came, of a run that went away.)
-        if state.edits.len() >= EDITS_WAITING {
-            state.edits.clear();
-        }
-        state.edits.insert(call, text.into());
     }
 
     /// Holds the feed for `time`, as a busy writer does, for tests of what
@@ -4148,6 +4121,7 @@ mod tests {
             tool_call_id: late,
             tool_name: "mcp__search__lookup".into(),
             output: "found".into(),
+            receipt: None,
         };
         feed.event(&event("main", result), None);
         let (_, mut updates) = feed.subscribe();
@@ -4196,6 +4170,7 @@ mod tests {
                         tool_call_id: call,
                         tool_name: crate::crew::START_AGENT.into(),
                         output: output.into(),
+                        receipt: None,
                     },
                 ),
                 None,
@@ -4301,6 +4276,7 @@ mod tests {
                         tool_call_id: call,
                         tool_name: "monitor_start".into(),
                         output,
+                        receipt: None,
                     },
                 ),
                 None,
@@ -4401,6 +4377,7 @@ mod tests {
                     tool_call_id: call,
                     tool_name: "mcp__search__lookup".into(),
                     output: moved(job),
+                    receipt: None,
                 },
             ),
             None,
@@ -4500,6 +4477,7 @@ mod tests {
                         tool_call_id: call,
                         tool_name: "mcp__search__lookup".into(),
                         output: moved(job),
+                        receipt: None,
                     },
                 ),
                 None,
@@ -4533,6 +4511,7 @@ mod tests {
                         tool_call_id: call,
                         tool_name: "mcp__search__lookup".into(),
                         output: moved(job),
+                        receipt: None,
                     },
                 ),
                 None,
@@ -4597,6 +4576,7 @@ mod tests {
                 tool_call_id: call,
                 tool_name: tool.into(),
                 output,
+                receipt: None,
             };
             feed.event(&event("main", returned), None);
         };
@@ -5087,6 +5067,7 @@ mod tests {
                         tool_call_id: read,
                         tool_name: "read_file".into(),
                         output: "1 | a".into(),
+                        receipt: None,
                     },
                 ),
                 None,
@@ -5297,6 +5278,7 @@ mod tests {
                         tool_call_id: id,
                         tool_name: tool.to_string(),
                         output: output.to_string(),
+                        receipt: None,
                     },
                 ),
                 None,
@@ -5471,6 +5453,7 @@ mod tests {
             tool_call_id: call,
             tool_name: SHELL_TOOL_NAME.into(),
             output: output.into(),
+            receipt: None,
         }
     }
 
@@ -6373,6 +6356,7 @@ mod tests {
                 tool_call_id: Uuid::new_v4(),
                 tool_name: arko_agents::builtins::ASK_USER_TOOL_NAME.into(),
                 output: output.into(),
+                receipt: None,
             },
         );
         result.agent_run_id = run;
@@ -7014,6 +6998,7 @@ mod tests {
                         tool_call_id: call,
                         tool_name,
                         output,
+                        receipt: None,
                     },
                 ),
                 label,
@@ -7246,6 +7231,7 @@ mod tests {
                 tool_call_id: id,
                 tool_name: EDIT_FILE_TOOL_NAME.into(),
                 output,
+                receipt: None,
             };
             feed.event(&event("main", result), None);
         };

@@ -204,8 +204,9 @@ async fn a_session_saved_with_apply_diff_resumes_with_it() {
 /// with the lines around them. That holds for a deletion inside a line, a
 /// replacement whose text the line has twice, a line break the edit adds or
 /// takes away, a file with CRLF line breaks, tabs and wide characters, a
-/// whole line deleted, and every match of an edit of all of them. A failed
-/// edit shows why it failed and no diff.
+/// whole line deleted, every match of an edit of all of them, and a file
+/// with both CRLF and LF line breaks, whose LF line `edit_file` leaves alone.
+/// A failed edit shows why it failed and no diff.
 #[tokio::test]
 async fn an_edits_diff_is_the_edit_that_ran() {
     // Each edit: its file, the file's text, and the call's parameters.
@@ -235,8 +236,13 @@ async fn an_edits_diff_is_the_edit_that_ran() {
             "x\n1\n2\n3\n4\n5\n6\n7\nx\n",
             serde_json::json!({"old_string": "x", "new_string": "y", "replace_all": true}),
         ),
+        (
+            "j.txt",
+            "old\r\nold\nend\n",
+            serde_json::json!({"old_string": "old\n", "new_string": "new\n", "replace_all": true}),
+        ),
     ];
-    let expected: [Option<&str>; 9] = [
+    let expected: [Option<&str>; 10] = [
         Some("-1\tabcde\n+1\tade"),
         Some("-1\tx ax\n+1\tx x"),
         Some("-1\tprefix foo\n-2\tsuffix\n+1\tprefix barsuffix"),
@@ -246,6 +252,7 @@ async fn an_edits_diff_is_the_edit_that_ran() {
         Some(" 1\ta\n-2\tb\n 2\tc"),
         None,
         Some("-1\tx\n+1\ty\n 2\t1\n 3\t2\n 4\t3\n…\n 6\t5\n 7\t6\n 8\t7\n-9\tx\n+9\ty"),
+        Some("-1\told\n+1\tnew\n 2\told\n 3\tend"),
     ];
     let calls: Vec<(String, serde_json::Value)> = edits
         .iter()
@@ -304,5 +311,44 @@ async fn an_edits_diff_is_the_edit_that_ran() {
             }
         }
     }
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// An edit the tool refuses before it opens the file fails at once, here of
+/// a FIFO nothing writes to, which nothing else reads first.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_edit_the_tool_refuses_fails_without_reading_the_file() {
+    let server = ModelServer::start(Arc::new(move |_, body: String| {
+        Box::pin(async move {
+            if body.contains("call_e1\"") {
+                complete("done", "It failed.")
+            } else {
+                tool_call(
+                    "e1",
+                    EDIT_FILE_TOOL_NAME,
+                    serde_json::json!({"path": "pipe", "old_string": "", "new_string": "x"}),
+                )
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    harness.open(false).unwrap();
+    let pipe = harness.settings.workspace.join("pipe");
+    let made = std::process::Command::new("mkfifo").arg(&pipe).status().unwrap();
+    assert!(made.success());
+    let turn = harness.turn(Prompt::User("Edit the pipe.".into()), &mut inputs);
+    let end = tokio::time::timeout(std::time::Duration::from_secs(30), turn)
+        .await
+        .expect("the turn ends");
+    assert!(matches!(end, TurnEnd::Answered));
+    let items = harness.feed.subscribe().0.items;
+    let call = items
+        .iter()
+        .find(|item| item.tool.as_deref() == Some(EDIT_FILE_TOOL_NAME))
+        .expect("the edit's call");
+    assert_eq!(call.status, Some(remote::CallStatus::Failed));
     harness.crew.as_ref().unwrap().shutdown().await;
 }

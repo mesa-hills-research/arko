@@ -369,7 +369,7 @@ async fn remote_page_demo() {
                             workflow_run_id: Uuid::nil(),
                             agent_name: MAIN.into(),
                             agent_run_id: Uuid::nil(),
-                            event: AgentEvent::ToolResult { tool_call_id: call, tool_name: "read_file".into(), output: "1 | a\n2 | b".into() },
+                            event: AgentEvent::ToolResult { tool_call_id: call, tool_name: "read_file".into(), output: "1 | a\n2 | b".into(), receipt: None  },
                         }, None);
                         if n % 50 == 0 {
                             tokio::time::sleep(Duration::from_millis(10)).await;

@@ -1007,23 +1007,6 @@ impl Harness {
         }
         // After the crew's hook, so a call it refuses doesn't act.
         builder = builder.hook(HookPoint::PreToolExecution, self.outside.hook());
-        // The text an edit's file has as the edit starts, which the
-        // transcript shows the edit's diff from.
-        let (feed, outside) = (self.feed.clone(), Arc::downgrade(&self.outside));
-        builder = builder.hook(
-            HookPoint::PreToolExecution,
-            Arc::new(move |hook| {
-                if hook.tool_name.as_deref() == Some(EDIT_FILE_TOOL_NAME)
-                    && let (Some(call), Some(params)) = (hook.tool_call_id, &hook.tool_params)
-                    && let Some(path) = params.get("path").and_then(serde_json::Value::as_str)
-                    && let Some(outside) = outside.upgrade()
-                {
-                    let file = outside.directory_of(hook.agent_run_id).join(path.trim());
-                    feed.edit_starts(call, &file);
-                }
-                HookResult::Continue
-            }),
-        );
         // The images the tools return, for the transcript.
         builder = builder.tool_image_sink(Arc::new(crate::images::ToolImages {
             feed: self.feed.clone(),

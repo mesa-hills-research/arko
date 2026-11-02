@@ -968,6 +968,7 @@ impl EventPrinter {
                 tool_call_id,
                 tool_name,
                 output,
+                ..
             } if main => {
                 if self.commands.remove(&tool_call_id).is_some() {
                     self.shell_result(&output);
@@ -2352,6 +2353,7 @@ mod tests {
                 tool_call_id: Uuid::new_v4(),
                 tool_name: crew::WAIT_FOR_AGENTS.into(),
                 output: "An update for you arrived while you waited. It follows. Wait again if you still need to. Still running: r3.".into(),
+                receipt: None,
             },
         ));
         printer.lead = "r3".into();
