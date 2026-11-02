@@ -2829,6 +2829,9 @@ impl Harness {
         };
         match sent {
             Ok(id) => {
+                if let Some((control, _)) = &self.printer {
+                    let _ = control.send(Control::Answering(id.clone()));
+                }
                 let item = self.feed.to_worker(&id, text, source);
                 self.output
                     .echo(&self.output.dim(&format!("  ✉ sent to {id}")));
@@ -9867,6 +9870,40 @@ pub(crate) mod tests {
         })
         .await
         .expect("in time");
+    }
+
+    /// The lines printed at the line prompt (or as progress, with -p).
+    #[derive(Clone, Default)]
+    struct Lines(Arc<Mutex<Vec<String>>>);
+
+    impl crate::ui::Printer for Lines {
+        fn print(&mut self, text: String) -> Result<(), ()> {
+            let mut lines = self.0.lock().unwrap();
+            lines.extend(text.lines().map(str::to_string));
+            Ok(())
+        }
+    }
+
+    impl Lines {
+        /// How many printed lines are `text`.
+        fn count(&self, text: &str) -> usize {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|line| line.trim() == text)
+                .count()
+        }
+    }
+
+    /// Prints `harness`'s output to `Lines` from now on, at the line prompt,
+    /// or (`one_shot`) as -p does, the progress there and the answer to
+    /// standard output. Its workflow is opened again with it.
+    fn recording(harness: &mut Harness, one_shot: bool) -> Lines {
+        let lines = Lines::default();
+        harness.output = Arc::new(Output::new(Some(Box::new(lines.clone())), one_shot));
+        harness.open(false).unwrap();
+        lines
     }
 
     /// The agent's question shows on the page, and the answer sent from

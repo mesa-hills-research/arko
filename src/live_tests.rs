@@ -2029,12 +2029,13 @@ fn to_r1(feed: &remote::Feed) -> Vec<(String, Option<remote::Source>)> {
         .collect()
 }
 
-/// `/message r1 …` typed while the main agent waits for its worker. The
-/// running worker reads it at its next step, marked as from the user, and
-/// the lead's wait returns a copy with the report. The feed has it as the
-/// user's message to r1. The worker answers with `message_user`, which the
-/// feed has as r1's message to the user, for its own view and the main
-/// transcript, and the page reads it as such.
+/// `/message r1 …` typed at the line prompt while the main agent waits for
+/// its worker. The running worker reads it at its next step, marked as from
+/// the user, and the lead's wait returns a copy with the report. The feed
+/// has it as the user's message to r1. The worker answers with
+/// `message_user`, which the feed has as r1's message to the user, and the
+/// page reads it as such. The line prompt, which has no worker's view,
+/// prints the answer under r1's name, and the text beside the call too.
 #[tokio::test]
 async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
     let temp = tempfile::tempdir().unwrap();
@@ -2050,8 +2051,9 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
                     if body.contains("call_w2") {
                         complete("w3", "Used tabs.")
                     } else if body.contains("call_w1") {
-                        tool_call(
+                        crate::mock_model::say_and_call(
                             "w2",
+                            "Changing the indents.",
                             crate::message::MESSAGE_USER,
                             serde_json::json!({"message": "Tabs it is."}),
                         )
@@ -2073,6 +2075,7 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
     .await;
     let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
     let _managers = equip(&mut harness, false);
+    let lines = recording(&mut harness, false);
     let feed = harness.feed.clone();
     let typing = tokio::spawn({
         let bodies = bodies.clone();
@@ -2147,6 +2150,11 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
         (read.agent.as_str(), read.kind, read.from, read.text.as_str()),
         ("r1", remote::Kind::Message, None, "Tabs it is.")
     );
+    // The line prompt prints the text and the answer under r1's name.
+    harness.flush_printer().await;
+    assert_eq!(lines.count("✉ r1 to you"), 2);
+    assert_eq!(lines.count("Changing the indents."), 1);
+    assert_eq!(lines.count("Tabs it is."), 1);
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 

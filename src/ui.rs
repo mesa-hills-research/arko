@@ -686,6 +686,9 @@ pub struct Stats {
 pub enum Control {
     /// Print what is buffered, then answer.
     Flush(oneshot::Sender<()>),
+    /// The user wrote to the worker with this handle, so its text beside
+    /// its calls prints until its next report, as its messages do.
+    Answering(String),
 }
 
 /// Prints a workflow's events until the workflow is gone, every one of them
@@ -756,6 +759,9 @@ pub async fn print_events(
                     printer.flush();
                     let _ = done.send(());
                 }
+                Some(Control::Answering(worker)) => {
+                    printer.answering.entry(worker).or_default();
+                }
                 None => break,
             },
         }
@@ -792,6 +798,10 @@ struct EventPrinter {
     thinking: String,
     /// Labels of the workers' runs, by run ID.
     workers: HashMap<Uuid, String>,
+    /// The workers the user wrote to, by label, each with its text since
+    /// its last call. The line prompt has no worker's view, so their text
+    /// prints here until their next report.
+    answering: HashMap<String, String>,
     /// The label of every run that isn't the main agent's.
     label: Option<String>,
     /// The runs the main agent has going, which its `wait_for_agents` call
@@ -831,6 +841,7 @@ impl EventPrinter {
             hold_text: false,
             thinking: String::new(),
             workers: HashMap::new(),
+            answering: HashMap::new(),
             label,
             running_runs: Vec::new(),
             commands: HashMap::new(),
@@ -840,6 +851,16 @@ impl EventPrinter {
             subagent_request: false,
             warned: HashMap::new(),
         }
+    }
+
+    /// What `worker` says to the user, named as its other lines are.
+    fn worker_says(&self, worker: &str, said: &str) {
+        self.output.echo(&format!(
+            "{} {}\n  {}",
+            self.output.accent("✉"),
+            self.output.bold(&format!("{worker} to you")),
+            said.trim().replace('\n', "\n  ")
+        ));
     }
 
     /// `message` without the text of the run's latest warning.
@@ -912,6 +933,15 @@ impl EventPrinter {
                 self.thinking.push_str(&text);
                 self.print_lines();
             }
+            AgentEvent::AssistantResponseChunk(text) => {
+                if let Some(said) = self
+                    .workers
+                    .get(&event.agent_run_id)
+                    .and_then(|worker| self.answering.get_mut(worker))
+                {
+                    said.push_str(&text);
+                }
+            }
             AgentEvent::ToolCallFormatted {
                 tool_call_id,
                 tool_name,
@@ -925,25 +955,30 @@ impl EventPrinter {
                     if tool_name == SHELL_TOOL_NAME {
                         self.commands.insert(tool_call_id, tool_name);
                     }
-                } else if tool_name == message::MESSAGE_USER {
-                    // A worker's answer to the user, named as its other lines are.
+                } else {
                     let worker = self.worker(event.agent_run_id);
-                    let message = parameters
-                        .get(message::MESSAGE_PARAM)
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .trim();
-                    self.output.echo(&format!(
-                        "{} {}\n  {}",
-                        self.output.accent("✉"),
-                        self.output.bold(&format!("{worker} to you")),
-                        message.replace('\n', "\n  ")
-                    ));
-                } else if tool_name != "complete_task" {
-                    let worker = self.worker(event.agent_run_id);
-                    let call = brief_waiting_for(&tool_name, &parameters, &self.running_runs);
-                    self.output
-                        .echo(&self.output.dim(&format!("  ↳ {worker} {call}")));
+                    // The text beside this call of a worker the user wrote
+                    // to. Its report ends that.
+                    let said = if tool_name == "complete_task" {
+                        self.answering.remove(&worker)
+                    } else {
+                        self.answering.get_mut(&worker).map(std::mem::take)
+                    };
+                    if let Some(said) = said.filter(|said| !said.trim().is_empty()) {
+                        self.worker_says(&worker, &said);
+                    }
+                    if tool_name == message::MESSAGE_USER {
+                        // A worker's message to the user.
+                        let message = parameters
+                            .get(message::MESSAGE_PARAM)
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default();
+                        self.worker_says(&worker, message);
+                    } else if tool_name != "complete_task" {
+                        let call = brief_waiting_for(&tool_name, &parameters, &self.running_runs);
+                        self.output
+                            .echo(&self.output.dim(&format!("  ↳ {worker} {call}")));
+                    }
                 }
             }
             AgentEvent::ToolResult {
@@ -2579,6 +2614,66 @@ mod tests {
                 "  ↳ r3 list workers",
             ]
         );
+    }
+
+    /// The line prompt has no worker's view, so once the user writes to a
+    /// worker, its text beside each call prints under its name, before the
+    /// call's line, until its report. Its text before that and after, and
+    /// another worker's, print nothing.
+    #[tokio::test]
+    async fn a_workers_text_prints_after_the_user_writes_to_it_until_its_report() {
+        let printed = Printed::default();
+        let output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
+        let mut printer = EventPrinter::new(output, Arc::default(), false, None);
+        let (r1, r2) = (Uuid::new_v4(), Uuid::new_v4());
+        printer.workers.insert(r1, "r1".into());
+        printer.workers.insert(r2, "r2".into());
+        let event = |run: Uuid, event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: Uuid::nil(),
+            agent_name: "worker".into(),
+            agent_run_id: run,
+            event,
+        };
+        let say = |run, text: &str| event(run, AgentEvent::AssistantResponseChunk(text.into()));
+        let call = |run, tool: &str| {
+            event(
+                run,
+                AgentEvent::ToolCallFormatted {
+                    tool_call_id: Uuid::new_v4(),
+                    tool_name: tool.into(),
+                    parameters: HashMap::new(),
+                },
+            )
+        };
+        printer.event(say(r1, "Reading the code."));
+        printer.event(call(r1, crew::LIST_AGENTS));
+        printer.answering.entry("r1".into()).or_default();
+        printer.event(say(r1, "Tabs it is.\n"));
+        printer.event(say(r1, "Changing them now."));
+        printer.event(say(r2, "Testing."));
+        printer.event(call(r2, crew::LIST_AGENTS));
+        printer.event(call(r1, crew::LIST_AGENTS));
+        printer.event(say(r1, "Done."));
+        printer.event(call(r1, "complete_task"));
+        printer.event(say(r1, "Back to work."));
+        printer.event(call(r1, crew::LIST_AGENTS));
+        let shown = printed.0.lock().unwrap().clone();
+        assert_eq!(
+            shown,
+            [
+                "  ↳ r1 list workers",
+                "  ↳ r2 list workers",
+                "✉ r1 to you",
+                "  Tabs it is.",
+                "  Changing them now.",
+                "  ↳ r1 list workers",
+                "✉ r1 to you",
+                "  Done.",
+                "  ↳ r1 list workers",
+            ]
+        );
+        assert!(printer.answering.is_empty());
     }
 
     /// Claude Code's message about a request that failed mid-response is
