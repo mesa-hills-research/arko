@@ -1074,6 +1074,7 @@ impl Engine {
             stats,
             workflow: None,
             printer: None,
+            written_to: Default::default(),
             conversation: Conversation::New,
             conversations: Default::default(),
             project: Default::default(),

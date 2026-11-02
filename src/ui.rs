@@ -686,9 +686,56 @@ pub struct Stats {
 pub enum Control {
     /// Print what is buffered, then answer.
     Flush(oneshot::Sender<()>),
-    /// The user wrote to the worker with this handle, so its text beside
-    /// its calls prints until its next report, as its messages do.
-    Answering(String),
+}
+
+/// The workers the user wrote to whose messages haven't reached them yet,
+/// by handle, each with when its first such message was about to go. Arko
+/// notes a message before it sends it, so the worker's events show it
+/// received it only after the note. The event printer takes the note at the
+/// first of those events and prints the worker's answer from there.
+#[derive(Clone, Default)]
+pub struct WrittenTo(Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>>>);
+
+impl WrittenTo {
+    /// Notes a message about to go to `worker` (its handle, in any case),
+    /// and returns the note's time.
+    /// An earlier note that hasn't been taken stays.
+    pub fn note(&self, worker: &str) -> chrono::DateTime<chrono::Utc> {
+        *self
+            .0
+            .lock()
+            .unwrap()
+            .entry(worker.to_ascii_lowercase())
+            .or_insert_with(chrono::Utc::now)
+    }
+
+    /// The message noted `at` didn't go.
+    pub fn unsent(&self, worker: &str, at: chrono::DateTime<chrono::Utc>) {
+        let worker = worker.to_ascii_lowercase();
+        let mut noted = self.0.lock().unwrap();
+        if noted.get(&worker) == Some(&at) {
+            noted.remove(&worker);
+        }
+    }
+
+    /// `worker` received mail `at`. Takes its note when the note came first.
+    fn received(&self, worker: &str, at: chrono::DateTime<chrono::Utc>) -> bool {
+        let worker = worker.to_ascii_lowercase();
+        let mut noted = self.0.lock().unwrap();
+        let earlier = noted.get(&worker).is_some_and(|noted| *noted <= at);
+        if earlier {
+            noted.remove(&worker);
+        }
+        earlier
+    }
+}
+
+/// What a worker the user wrote to has written since its last call, and how
+/// much of it its latest model request found.
+#[derive(Default)]
+struct Answer {
+    said: String,
+    request_start: usize,
 }
 
 /// Prints a workflow's events until the workflow is gone, every one of them
@@ -707,9 +754,11 @@ pub async fn print_events(
     text_replies: bool,
     workflow: Option<std::sync::Weak<arko_workflows::Workflow>>,
     feed: Option<remote::Feed>,
+    written_to: WrittenTo,
 ) {
     let mut printer = EventPrinter::new(output, stats, show_thinking, None);
     printer.hold_text = text_replies;
+    printer.written_to = written_to;
     loop {
         tokio::select! {
             biased;
@@ -759,9 +808,6 @@ pub async fn print_events(
                     printer.flush();
                     let _ = done.send(());
                 }
-                Some(Control::Answering(worker)) => {
-                    printer.answering.entry(worker).or_default();
-                }
                 None => break,
             },
         }
@@ -798,10 +844,11 @@ struct EventPrinter {
     thinking: String,
     /// Labels of the workers' runs, by run ID.
     workers: HashMap<Uuid, String>,
-    /// The workers the user wrote to, by label, each with its text since
-    /// its last call. The line prompt has no worker's view, so their text
-    /// prints here until their next report.
-    answering: HashMap<String, String>,
+    /// The workers answering the user, by run ID. The line prompt has no
+    /// worker's view, so a worker's text beside its calls prints from when
+    /// it receives the user's message until its run ends.
+    answering: HashMap<Uuid, Answer>,
+    written_to: WrittenTo,
     /// The label of every run that isn't the main agent's.
     label: Option<String>,
     /// The runs the main agent has going, which its `wait_for_agents` call
@@ -842,6 +889,7 @@ impl EventPrinter {
             thinking: String::new(),
             workers: HashMap::new(),
             answering: HashMap::new(),
+            written_to: WrittenTo::default(),
             label,
             running_runs: Vec::new(),
             commands: HashMap::new(),
@@ -850,6 +898,50 @@ impl EventPrinter {
             printed_since_request: (false, false),
             subagent_request: false,
             warned: HashMap::new(),
+        }
+    }
+
+    /// Keeps the answer of worker run `run` in step with its events, `at`.
+    /// It starts when the worker receives mail after the user's message was
+    /// noted, in a context update, a wait's result or a lead's answer. It
+    /// goes on through the run's model requests, a discarded response's text
+    /// leaving it, and the run's end ends it, with what wasn't beside a call.
+    /// shortcut: other mail received in the instant between the note and the
+    /// message starts it one step early, and a report in that step ends it
+    /// unseen (the worker's message_user still prints). A framework event
+    /// that names the user's mail would make it exact.
+    fn follow_answer(&mut self, run: Uuid, at: chrono::DateTime<chrono::Utc>, event: &AgentEvent) {
+        let received = match event {
+            AgentEvent::ContextInjected { ids, .. } => ids.iter().any(|id| id.starts_with("mail:")),
+            AgentEvent::ToolResult { tool_name, .. } => {
+                tool_name == crew::WAIT_FOR_AGENTS || tool_name == crew::MESSAGE_AGENT
+            }
+            _ => false,
+        };
+        if received
+            && let Some(worker) = self.workers.get(&run)
+            && self.written_to.received(worker, at)
+        {
+            self.answering.entry(run).or_default();
+        }
+        let Some(answer) = self.answering.get_mut(&run) else {
+            return;
+        };
+        match event {
+            AgentEvent::AssistantResponseChunk(text) => answer.said.push_str(text),
+            AgentEvent::ModelRequestStarted { subagent: None, .. } => {
+                answer.request_start = answer.said.len();
+            }
+            AgentEvent::StreamedOutputDiscarded { .. } => {
+                let start = answer.request_start.min(answer.said.len());
+                answer.said.truncate(start);
+            }
+            AgentEvent::TaskStateChanged(state)
+                if state.is_terminal() || matches!(state, TaskState::Interrupted { .. }) =>
+            {
+                self.answering.remove(&run);
+            }
+            _ => {}
         }
     }
 
@@ -915,6 +1007,9 @@ impl EventPrinter {
 
     fn event(&mut self, event: WorkflowEvent) {
         let main = event.agent_name == MAIN;
+        if !main {
+            self.follow_answer(event.agent_run_id, event.timestamp, &event.event);
+        }
         let at = event.timestamp.timestamp_millis();
         // A failure's warning and its error come before the next request.
         if matches!(
@@ -933,15 +1028,6 @@ impl EventPrinter {
                 self.thinking.push_str(&text);
                 self.print_lines();
             }
-            AgentEvent::AssistantResponseChunk(text) => {
-                if let Some(said) = self
-                    .workers
-                    .get(&event.agent_run_id)
-                    .and_then(|worker| self.answering.get_mut(worker))
-                {
-                    said.push_str(&text);
-                }
-            }
             AgentEvent::ToolCallFormatted {
                 tool_call_id,
                 tool_name,
@@ -957,15 +1043,17 @@ impl EventPrinter {
                     }
                 } else {
                     let worker = self.worker(event.agent_run_id);
-                    // The text beside this call of a worker the user wrote
-                    // to. Its report ends that.
-                    let said = if tool_name == "complete_task" {
-                        self.answering.remove(&worker)
+                    // The text beside this call of a worker answering the
+                    // user. Its report ends the answer.
+                    let answer = if tool_name == "complete_task" {
+                        self.answering.remove(&event.agent_run_id)
                     } else {
-                        self.answering.get_mut(&worker).map(std::mem::take)
+                        self.answering
+                            .get_mut(&event.agent_run_id)
+                            .map(std::mem::take)
                     };
-                    if let Some(said) = said.filter(|said| !said.trim().is_empty()) {
-                        self.worker_says(&worker, &said);
+                    if let Some(answer) = answer.filter(|answer| !answer.said.trim().is_empty()) {
+                        self.worker_says(&worker, &answer.said);
                     }
                     if tool_name == message::MESSAGE_USER {
                         // A worker's message to the user.
@@ -2616,52 +2704,98 @@ mod tests {
         );
     }
 
-    /// The line prompt has no worker's view, so once the user writes to a
-    /// worker, its text beside each call prints under its name, before the
-    /// call's line, until its report. Its text before that and after, and
-    /// another worker's, print nothing.
-    #[tokio::test]
-    async fn a_workers_text_prints_after_the_user_writes_to_it_until_its_report() {
+    /// A printer of workers r1 and r2's events at the line prompt, as Arko
+    /// opens it, with what it printed.
+    fn workers_printer() -> (EventPrinter, Printed, Uuid, Uuid) {
         let printed = Printed::default();
         let output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
         let mut printer = EventPrinter::new(output, Arc::default(), false, None);
         let (r1, r2) = (Uuid::new_v4(), Uuid::new_v4());
         printer.workers.insert(r1, "r1".into());
         printer.workers.insert(r2, "r2".into());
-        let event = |run: Uuid, event: AgentEvent| WorkflowEvent {
+        (printer, printed, r1, r2)
+    }
+
+    /// Worker run `run`'s `event`, now.
+    fn of_worker(run: Uuid, event: AgentEvent) -> WorkflowEvent {
+        WorkflowEvent {
             timestamp: chrono::Utc::now(),
             workflow_run_id: Uuid::nil(),
             agent_name: "worker".into(),
             agent_run_id: run,
             event,
-        };
-        let say = |run, text: &str| event(run, AgentEvent::AssistantResponseChunk(text.into()));
-        let call = |run, tool: &str| {
-            event(
-                run,
-                AgentEvent::ToolCallFormatted {
-                    tool_call_id: Uuid::new_v4(),
-                    tool_name: tool.into(),
-                    parameters: HashMap::new(),
-                },
-            )
-        };
-        printer.event(say(r1, "Reading the code."));
-        printer.event(call(r1, crew::LIST_AGENTS));
-        printer.answering.entry("r1".into()).or_default();
-        printer.event(say(r1, "Tabs it is.\n"));
-        printer.event(say(r1, "Changing them now."));
-        printer.event(say(r2, "Testing."));
-        printer.event(call(r2, crew::LIST_AGENTS));
-        printer.event(call(r1, crew::LIST_AGENTS));
-        printer.event(say(r1, "Done."));
-        printer.event(call(r1, "complete_task"));
-        printer.event(say(r1, "Back to work."));
-        printer.event(call(r1, crew::LIST_AGENTS));
+        }
+    }
+
+    fn says(run: Uuid, text: &str) -> WorkflowEvent {
+        of_worker(run, AgentEvent::AssistantResponseChunk(text.into()))
+    }
+
+    fn calls(run: Uuid, tool: &str) -> WorkflowEvent {
+        of_worker(
+            run,
+            AgentEvent::ToolCallFormatted {
+                tool_call_id: Uuid::new_v4(),
+                tool_name: tool.into(),
+                parameters: HashMap::new(),
+            },
+        )
+    }
+
+    /// Run `run` received mail in a context update.
+    fn gets_mail(run: Uuid) -> WorkflowEvent {
+        of_worker(
+            run,
+            AgentEvent::ContextInjected {
+                ids: vec!["mail:3".into()],
+                bytes: 40,
+            },
+        )
+    }
+
+    fn requests(run: Uuid) -> WorkflowEvent {
+        of_worker(
+            run,
+            AgentEvent::ModelRequestStarted {
+                model: "claude-opus-5-5".into(),
+                subagent: None,
+                sizes: None,
+                bytes_per_token: 3.0,
+                sent_at: None,
+            },
+        )
+    }
+
+    /// The line prompt has no worker's view, so once the user's message
+    /// reaches a worker, its text beside each call prints under its name,
+    /// before the call's line, until its report. Its text before that and
+    /// after, and another worker's, print nothing.
+    #[tokio::test]
+    async fn a_workers_text_prints_after_the_user_writes_to_it_until_its_report() {
+        let (mut printer, printed, r1, r2) = workers_printer();
+        printer.event(says(r1, "Reading the code."));
+        printer.event(calls(r1, crew::LIST_AGENTS));
+        printer.written_to.note("R1");
+        // Until the message reaches it, r1 isn't answering.
+        printer.event(says(r1, "Still reading."));
+        printer.event(calls(r1, crew::LIST_AGENTS));
+        printer.event(gets_mail(r2));
+        printer.event(gets_mail(r1));
+        printer.event(says(r1, "Tabs it is.\n"));
+        printer.event(says(r1, "Changing them now."));
+        printer.event(says(r2, "Testing."));
+        printer.event(calls(r2, crew::LIST_AGENTS));
+        printer.event(calls(r1, crew::LIST_AGENTS));
+        printer.event(says(r1, "Done."));
+        printer.event(calls(r1, "complete_task"));
+        printer.event(gets_mail(r1));
+        printer.event(says(r1, "Back to work."));
+        printer.event(calls(r1, crew::LIST_AGENTS));
         let shown = printed.0.lock().unwrap().clone();
         assert_eq!(
             shown,
             [
+                "  ↳ r1 list workers",
                 "  ↳ r1 list workers",
                 "  ↳ r2 list workers",
                 "✉ r1 to you",
@@ -2674,6 +2808,90 @@ mod tests {
             ]
         );
         assert!(printer.answering.is_empty());
+    }
+
+    /// The answer starts with the worker's own event of receiving mail after
+    /// the message was noted, however late the printer gets to it. Mail it
+    /// received before the note doesn't start it, and once its report ends
+    /// the answer, the lead's later work for it isn't printed as one.
+    #[tokio::test]
+    async fn the_answer_follows_the_workers_events_however_late_they_are_printed() {
+        let (mut printer, printed, r1, _) = workers_printer();
+        // Mail r1 received before the user wrote, printed after.
+        let before = gets_mail(r1);
+        printer.written_to.note("r1");
+        // The message reached r1, which answered and reported, all before
+        // the printer got to any of it.
+        let queued = [
+            before,
+            gets_mail(r1),
+            says(r1, "My answer."),
+            calls(r1, "complete_task"),
+        ];
+        for event in queued {
+            printer.event(event);
+        }
+        // Its lead continues it.
+        printer.event(gets_mail(r1));
+        printer.event(says(r1, "Progress for the lead."));
+        printer.event(calls(r1, crew::LIST_AGENTS));
+        let shown = printed.0.lock().unwrap().clone();
+        assert_eq!(
+            shown,
+            ["✉ r1 to you", "  My answer.", "  ↳ r1 list workers"]
+        );
+        // A message that didn't go leaves no note.
+        let noted = printer.written_to.note("r1");
+        printer.written_to.unsent("r1", noted);
+        printer.event(gets_mail(r1));
+        assert!(printer.answering.is_empty());
+    }
+
+    /// Text of a response the provider discarded leaves the answer, and its
+    /// retry's text takes its place.
+    #[tokio::test]
+    async fn a_discarded_response_leaves_the_answer() {
+        let (mut printer, printed, r1, _) = workers_printer();
+        printer.written_to.note("r1");
+        printer.event(gets_mail(r1));
+        printer.event(requests(r1));
+        printer.event(says(r1, "Wrong answer. "));
+        printer.event(of_worker(
+            r1,
+            AgentEvent::StreamedOutputDiscarded {
+                text_bytes: 14,
+                reasoning_bytes: 0,
+            },
+        ));
+        printer.event(requests(r1));
+        printer.event(says(r1, "Correct answer."));
+        printer.event(calls(r1, "complete_task"));
+        assert_eq!(
+            *printed.0.lock().unwrap(),
+            ["✉ r1 to you", "  Correct answer."]
+        );
+    }
+
+    /// A worker stopped before it reports ends its answer, and what it wrote
+    /// without a call after it is dropped. Its lead's later work for it
+    /// isn't printed as an answer.
+    #[tokio::test]
+    async fn a_stopped_worker_ends_its_answer() {
+        let (mut printer, printed, r1, _) = workers_printer();
+        printer.written_to.note("r1");
+        printer.event(gets_mail(r1));
+        printer.event(says(r1, "Before the stop. "));
+        printer.event(of_worker(
+            r1,
+            AgentEvent::TaskStateChanged(TaskState::Cancelled {
+                reason: "the user stopped it".into(),
+            }),
+        ));
+        assert!(printer.answering.is_empty());
+        printer.event(gets_mail(r1));
+        printer.event(says(r1, "Work for the lead."));
+        printer.event(calls(r1, crew::LIST_AGENTS));
+        assert_eq!(*printed.0.lock().unwrap(), ["  ↳ r1 list workers"]);
     }
 
     /// Claude Code's message about a request that failed mid-response is
