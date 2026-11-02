@@ -411,6 +411,7 @@ pub fn item_code(item: &Item) -> Vec<CodeSpans> {
 /// whose lines are of a file in `language`, for the terminal. Each line's
 /// spans are `[start, end, name]` in bytes of its text. None for a content
 /// without code in a language with a grammar here.
+#[cfg(feature = "tui")]
 pub fn content_line_spans(
     kind: ContentKind,
     text: &str,
