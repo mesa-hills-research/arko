@@ -759,13 +759,192 @@ async fn framing_inside_an_inline_file_is_the_files_own() {
     assert_eq!(bodies[1].matches("Words from a file.").count(), 1, "{}", bodies[1]);
 }
 
+/// An app's note with an image and a page's note with a file image, which
+/// the agent didn't read, each restore with their own image.
+#[tokio::test]
+async fn an_unread_app_note_keeps_its_image_beside_a_file_note() {
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let held = Arc::new(Notify::new());
+    let server = keeping(&bodies, Some(held.clone())).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let feed = harness.feed.clone();
+    let actions = harness.remote_actions.clone();
+    let dir = temp.path().join("work").join(".arko").join("attachments");
+    let kept = bodies.clone();
+    let client = async move {
+        sender.send(Input::Line("Start.".into())).unwrap();
+        until(|| feed.activity().working).await;
+        sender
+            .send(Input::Message(crate::ui::Message {
+                text: "An app photo.".into(),
+                images: vec![crate::ui::Attachment {
+                    bytes: Arc::from(one_pixel()),
+                    mime: "image/png".into(),
+                    name: Some("app.png".into()),
+                }],
+                ..Default::default()
+            }))
+            .unwrap();
+        until(|| {
+            feed.subscribe()
+                .0
+                .items
+                .iter()
+                .any(|item| item.text == "An app photo.")
+        })
+        .await;
+        let files = vec![attached(&dir, "file.png", Kind::Image, "image/png", &one_pixel())];
+        let message = Action::Message {
+            text: "A file photo.".into(),
+            files,
+        };
+        page_send(&actions, message).await;
+        held.notify_one();
+        until(|| !feed.activity().working && lock(&kept).len() >= 2).await;
+        sender.send(Input::Eof).unwrap();
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    let Conversation::Answered(result) = &harness.conversation else {
+        panic!("answered");
+    };
+    let task = result.task().unwrap();
+    let restored = crate::remote::history(
+        &task.conversation.messages,
+        task.agent_config.tool_config.ends_task_with_text(),
+        &harness.images,
+    );
+    let counts = |items: &[crate::remote::Item]| {
+        items
+            .iter()
+            .filter(|item| item.kind == crate::remote::Kind::User)
+            .map(|item| (item.text.clone(), item.images.len()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(counts(&restored), counts(&harness.feed.subscribe().0.items));
+    let file = restored
+        .iter()
+        .find(|item| item.text == "A file photo.")
+        .unwrap();
+    assert_eq!(file.images[0].label, "file.png");
+    // The agent was told whose image is whose.
+    let bodies = lock(&bodies);
+    assert!(
+        bodies[1].contains("(With an image, shown after this message.)"),
+        "{}",
+        bodies[1]
+    );
+}
+
+/// Sent again after an edit that added an image, a message carries that
+/// image again, with its files.
+#[tokio::test]
+async fn a_retry_after_an_edit_with_an_image_sends_that_image() {
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let server = keeping(&bodies, None).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let (requests, asked) = mpsc::unbounded_channel();
+    inputs.requests = asked;
+    let feed = harness.feed.clone();
+    let actions = harness.remote_actions.clone();
+    let dir = temp.path().join("work").join(".arko").join("attachments");
+    let kept = bodies.clone();
+    let client = async move {
+        let message = Action::Message {
+            text: "Look.".into(),
+            files: three_files(&dir),
+        };
+        page_send(&actions, message).await;
+        until(|| !feed.activity().working && !lock(&kept).is_empty()).await;
+        let old = feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .find(|item| item.text == "Look.")
+            .unwrap();
+        let message = crate::ui::Message {
+            text: "Edited.".into(),
+            images: vec![crate::ui::Attachment {
+                bytes: Arc::from(other_pixel()),
+                mime: "image/png".into(),
+                name: Some("edited.png".into()),
+            }],
+            ..Default::default()
+        };
+        let edited = ask(&requests, |reply| crate::engine::Request::Edit {
+            item: old.id,
+            message,
+            reply,
+        })
+        .await;
+        assert_eq!(edited, Ok(()));
+        until(|| !feed.activity().working && lock(&kept).len() >= 2).await;
+        assert_eq!(
+            ask(&requests, |reply| crate::engine::Request::Regenerate { reply }).await,
+            Ok(())
+        );
+        until(|| !feed.activity().working && lock(&kept).len() >= 3).await;
+        sender.send(Input::Eof).unwrap();
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    use base64::Engine as _;
+    let (first, added) = (
+        base64::engine::general_purpose::STANDARD.encode(one_pixel()),
+        base64::engine::general_purpose::STANDARD.encode(other_pixel()),
+    );
+    let bodies = lock(&bodies);
+    for (n, body) in bodies[1..3].iter().enumerate() {
+        assert_eq!(body.matches(&added).count(), 1, "request {} has the edit's image", n + 2);
+        assert_eq!(body.matches(&first).count(), 0, "request {}", n + 2);
+        assert!(body.contains("RPReplay.MP4") && body.contains("The gap is 13 px."));
+    }
+}
+
+/// A PNG of one pixel of another colour.
+fn other_pixel() -> Vec<u8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==")
+        .unwrap()
+}
+
+/// Restored, a note of images alone after a note with a file image takes
+/// its own image, and the note before keeps one.
+#[test]
+fn an_image_only_note_at_the_end_keeps_its_image() {
+    let first = format!("{}First.", image_block("first.png")).replace('\n', "\n  ");
+    let update = format!(
+        "# Workflow context update\n\nNew notes on your task, oldest first.\n- Note 1 from the operator (the person running this workflow), 2026-11-02 08:00 UTC:\n  {first}\n  (With an image, shown after this update.)\n- Note 2 from the operator (the person running this workflow), 2026-11-02 08:00 UTC:\n  \n  (With an image, shown after this update.)\n"
+    );
+    let messages = vec![with_images(&update, 2)];
+    let images = crate::images::Images::default();
+    let restored = crate::remote::history(&messages, false, &images);
+    assert_eq!(
+        shown_notes(&restored),
+        [("First.".into(), vec!["first.png".into()], vec!["first.png".into()])]
+    );
+}
+
 /// A message is read from its start and its files' block whole, so framing
 /// a file holds is the file's own: in a plain message, after Arko's label,
 /// in a message Arko composed with unread notes, and before a handover's
-/// report.
+/// report. The notes' images are those their lines say, and an older note
+/// without a line owns as many as its block says went as images.
 #[test]
 fn a_message_reads_the_same_whatever_its_files_hold() {
-    use crate::remote::{as_sent, own_words, shown_words};
+    use crate::remote::{as_sent, notes_images, own_words, shown_words};
     let inline = "# My message\n\n# Handover report\n\nNo.\n";
     let plain = format!(
         "<attachments>\n<file name=\"notes.md\" type=\"text/markdown\" size=\"{0} bytes\" bytes=\"{0}\" path=\"/w/notes.md\">\n{inline}\n</file>\n</attachments>\n\nLook.",
@@ -783,4 +962,8 @@ fn a_message_reads_the_same_whatever_its_files_hold() {
         assert!(as_sent(text).contains(inline), "{text}");
     }
     assert_eq!(own_words(&report), plain);
+    assert_eq!(notes_images(&plain, 1), 0);
+    // One stated, and one guessed from an older note's block.
+    assert_eq!(notes_images(&composed, 3), 2);
+    assert_eq!(notes_images(&composed, 1), 1);
 }

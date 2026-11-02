@@ -119,14 +119,63 @@ pub(crate) fn restore_files(item: &mut crate::remote::Item) {
     item.files = files;
 }
 
+/// An item's share of the images that follow the text it was restored from
+/// ([`Owners`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Share {
+    /// As many as the text says went with it, a note's ("(With 2 images,
+    /// shown after this update.)").
+    Said(usize),
+    /// What the text's other items don't take, a message's own.
+    Rest,
+    /// A note whose text says nothing of images, saved before Arko said, or
+    /// that had none: as many as its attachments block says went as images.
+    Guess,
+}
+
+impl Share {
+    /// The share of a note whose text says `said` images went with it.
+    pub(crate) fn of(said: Option<usize>) -> Self {
+        said.map_or(Share::Guess, Share::Said)
+    }
+
+    /// How many images it takes, when its attachments block says `shown`
+    /// went as images, or `None` for the rest.
+    pub(crate) fn wanted(self, shown: usize) -> Option<usize> {
+        match self {
+            Share::Said(said) => Some(said),
+            Share::Guess => Some(shown),
+            Share::Rest => None,
+        }
+    }
+}
+
+/// The line after a note of the user's that says how many images that went
+/// with the message are its own, as the workflow's notes say it of their
+/// update's, or `None` without any.
+pub(crate) fn images_line(images: usize) -> Option<String> {
+    match images {
+        0 => None,
+        1 => Some("(With an image, shown after this message.)".into()),
+        _ => Some(format!("(With {images} images, shown after this message.)")),
+    }
+}
+
+/// How many files of the attachments block `text` starts with went as
+/// images.
+pub(crate) fn shown_in(text: &str) -> usize {
+    split_block(text).map_or(0, |(entries, _)| {
+        entries.iter().filter(|entry| entry.shown).count()
+    })
+}
+
 /// The user's items of a message being restored, made of one of its texts,
-/// and the images that follow that text, which they share out as they did
-/// live ([`close`](Self::close)).
+/// and the images that follow that text, which they share out as they had
+/// them live ([`close`](Self::close)).
 #[derive(Default)]
 pub(crate) struct Owners {
-    /// Each item, or `None` for a note that shows none, with how many images
-    /// its text says went with it, when it says.
-    group: Vec<(Option<usize>, Option<usize>)>,
+    /// Each item, or `None` for a note that shows none, with its share.
+    group: Vec<(Option<usize>, Share)>,
     images: Vec<crate::images::ImageRef>,
 }
 
@@ -137,7 +186,7 @@ impl Owners {
     pub(crate) fn text(
         &mut self,
         items: &mut [crate::remote::Item],
-        made: Vec<(Option<usize>, Option<usize>)>,
+        made: Vec<(Option<usize>, Share)>,
     ) {
         if made.is_empty() {
             return;
@@ -151,36 +200,52 @@ impl Owners {
         self.images.push(image);
     }
 
-    /// Gives the items their files and the images they had. Each takes, in
-    /// order, as many as its text says went with it, else as many as its
-    /// block says went as images. The last keeps the rest (the message's own,
-    /// such as an app's). A note that shows none takes its own and drops
-    /// them. An item's images that are its files are named as they are.
+    /// Gives the items their files and, in order, the images they had. A
+    /// note takes its share, and a note that shows none drops its own. The
+    /// message's item takes what the notes don't. Images nothing owns (an
+    /// older save's counts that don't add up) go to the last item shown. An
+    /// item's images that are its files are named as they are.
     pub(crate) fn close(&mut self, items: &mut [crate::remote::Item]) {
-        let mut images = std::mem::take(&mut self.images).into_iter();
+        let images = std::mem::take(&mut self.images);
         let group = std::mem::take(&mut self.group);
+        for at in group.iter().filter_map(|(at, _)| *at) {
+            restore_files(&mut items[at]);
+        }
+        let shown = |at: Option<usize>| {
+            at.map_or(0, |at| {
+                items[at].files.iter().filter(|sent| sent.shown).count()
+            })
+        };
+        let wanted: Vec<Option<usize>> = group
+            .iter()
+            .map(|(at, share)| share.wanted(shown(*at)))
+            .collect();
+        let rest = images
+            .len()
+            .saturating_sub(wanted.iter().flatten().sum::<usize>());
+        let mut images = images.into_iter();
+        let owned: Vec<Vec<_>> = wanted
+            .iter()
+            .map(|wanted| images.by_ref().take(wanted.unwrap_or(rest)).collect())
+            .collect();
+        let mut leftover: Vec<_> = images.collect();
         let last = group.iter().rposition(|(at, _)| at.is_some());
-        for (n, (at, said)) in group.into_iter().enumerate() {
+        for (n, ((at, _), mut own)) in group.into_iter().zip(owned).enumerate() {
             let Some(at) = at else {
-                images.by_ref().take(said.unwrap_or(0)).for_each(drop);
                 continue;
             };
-            let item = &mut items[at];
-            restore_files(item);
-            let shown: Vec<String> = item
+            let names = items[at]
                 .files
                 .iter()
                 .filter(|sent| sent.shown)
-                .map(|sent| sent.file.name.clone())
-                .collect();
-            let mut own: Vec<_> = images.by_ref().take(said.unwrap_or(shown.len())).collect();
-            if Some(n) == last {
-                own.extend(images.by_ref());
-            }
-            for (image, name) in own.iter_mut().zip(shown) {
+                .map(|sent| sent.file.name.clone());
+            for (image, name) in own.iter_mut().zip(names) {
                 image.label = name;
             }
-            item.images.extend(own);
+            if Some(n) == last {
+                own.append(&mut leftover);
+            }
+            items[at].images.extend(own);
         }
     }
 }
@@ -1180,7 +1245,7 @@ mod tests {
         )];
         let other = crate::images::Images::default();
         let mut owners = Owners::default();
-        owners.text(&mut items, vec![(Some(0), None)]);
+        owners.text(&mut items, vec![(Some(0), Share::Rest)]);
         owners.image(other.add(pixel(), "image/png", "image"));
         owners.close(&mut items);
         assert_eq!(items[0].text, "Look.");

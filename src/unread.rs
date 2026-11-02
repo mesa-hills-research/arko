@@ -195,10 +195,23 @@ fn cached_name(path: &Path) -> Option<&OsStr> {
 }
 
 /// The texts of `notes` as the agent reads them, and their images, in
-/// order, read from the session's folder `session`. A note whose image
-/// can't be read goes without its images, and its attachments block no
-/// longer says they follow. Reads files.
+/// order, read from the session's folder `session` ([`load_each`]).
+#[cfg(test)]
 pub(crate) fn load(session: &Path, notes: &[Unread]) -> (Vec<String>, Vec<arko_ai::Image>) {
+    let mut texts = Vec::new();
+    let mut images = Vec::new();
+    for (text, own) in load_each(session, notes) {
+        texts.push(text);
+        images.extend(own);
+    }
+    (texts, images)
+}
+
+/// Each of `notes` as the agent reads it, with its images, read from the
+/// session's folder `session`. A note whose image can't be read goes
+/// without its images, and its attachments block no longer says they
+/// follow. Reads files.
+pub(crate) fn load_each(session: &Path, notes: &[Unread]) -> Vec<(String, Vec<arko_ai::Image>)> {
     let cache = if notes.iter().any(|note| !note.images.is_empty()) {
         images(session, false)
     } else {
@@ -213,28 +226,26 @@ pub(crate) fn load(session: &Path, notes: &[Unread]) -> (Vec<String>, Vec<arko_a
             Err(why) => Err(why.clone()),
         }
     };
-    let mut texts = Vec::new();
-    let mut images = Vec::new();
-    for note in notes {
-        let read: Result<Vec<arko_ai::Image>, String> = note
-            .images
-            .iter()
-            .map(|file| {
-                read_image(&file.path).map(|bytes| arko_ai::Image::from_bytes(&bytes, &file.mime))
-            })
-            .collect();
-        match read {
-            Ok(read) => {
-                texts.push(note.text.clone());
-                images.extend(read);
+    notes
+        .iter()
+        .map(|note| {
+            let read: Result<Vec<arko_ai::Image>, String> = note
+                .images
+                .iter()
+                .map(|file| {
+                    read_image(&file.path)
+                        .map(|bytes| arko_ai::Image::from_bytes(&bytes, &file.mime))
+                })
+                .collect();
+            match read {
+                Ok(read) => (note.text.clone(), read),
+                Err(error) => {
+                    log::warn!("could not read an unread note's image ({error})");
+                    (crate::attachments::without_images(&note.text), Vec::new())
+                }
             }
-            Err(error) => {
-                log::warn!("could not read an unread note's image ({error})");
-                texts.push(crate::attachments::without_images(&note.text));
-            }
-        }
-    }
-    (texts, images)
+        })
+        .collect()
 }
 
 /// Removes the images in the session's folder `session` that none of

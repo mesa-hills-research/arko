@@ -62,7 +62,7 @@ pub use feed::{
 pub(crate) use highlight::content_line_spans;
 pub use history::items as history;
 pub(crate) use history::{all_items, job_ran, message_turns};
-pub(crate) use history::{as_sent, own_words, shown_words};
+pub(crate) use history::{as_sent, notes_images, own_words, shown_words};
 #[cfg(any(test, feature = "remote"))]
 pub use links::Kind as LinkKind;
 pub use links::{HOST_VARIABLE, Interface, Link};

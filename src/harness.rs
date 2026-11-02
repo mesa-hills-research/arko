@@ -2420,11 +2420,18 @@ impl Harness {
     /// The user's message at `index` of the agent's conversation, as they
     /// sent it, its files' block before its words ([`remote::as_sent`]).
     fn sent_at(&self, index: usize) -> Option<String> {
+        self.turn_text(index)
+            .map(|text| remote::as_sent(&text).to_string())
+    }
+
+    /// The text of the user's turn at `index` of the agent's conversation,
+    /// as the agent read it.
+    fn turn_text(&self, index: usize) -> Option<String> {
         let task = self.conversation_task()?;
         task.user_turns()
             .into_iter()
             .find(|turn| turn.index == index)
-            .map(|turn| remote::as_sent(&turn.text).to_string())
+            .map(|turn| turn.text)
     }
 
     /// Where the user's message `item` is in the agent's conversation now
@@ -2638,11 +2645,10 @@ impl Harness {
             .sent_at(index)
             .and_then(|sent| crate::attachments::resent(&sent, &item.text, true))
             .map_or((None, Vec::new()), |(read, files)| (Some(read), files));
-        // With files, the images are its files' own, after any of the notes
-        // it carried, which don't go again.
-        if !files.is_empty() {
-            let own = files.iter().filter(|sent| sent.shown).count();
-            images = images.split_off(images.len().saturating_sub(own));
+        // Only its own, after those of the notes it carried, which don't go
+        // again.
+        if let Some(text) = self.turn_text(index) {
+            images = images.split_off(remote::notes_images(&text, images.len()));
         }
         self.resend(
             item.id,
@@ -4919,8 +4925,8 @@ impl Harness {
             self.feed.notes_sent(&typed_parts(&unread));
             // Their images go too, before the message's own, and their files
             // go once no note waiting in another conversation has them.
-            let (texts, images) = crate::blocking(|| {
-                let loaded = crate::unread::load(&self.session.dir, &unread);
+            let loaded = crate::blocking(|| {
+                let loaded = crate::unread::load_each(&self.session.dir, &unread);
                 let waiting = self
                     .conversations
                     .list
@@ -4929,14 +4935,26 @@ impl Harness {
                 crate::unread::sweep(&self.session.dir, waiting);
                 loaded
             });
+            // Each note says how many of the images are its own, as the
+            // workflow's notes the agent reads do, so the agent, and the
+            // transcript once restored, can tell whose they are.
+            let mut images = Vec::new();
+            let notes: Vec<String> = loaded
+                .into_iter()
+                .map(|(text, own)| {
+                    let line = crate::attachments::images_line(own.len());
+                    images.extend(own);
+                    let text = match line {
+                        Some(line) => format!("{text}\n{line}"),
+                        None => text,
+                    };
+                    format!("- {}", text.replace('\n', "\n  "))
+                })
+                .collect();
             self.pending_images.splice(0..0, images);
             parts.push(format!(
                 "# What I typed during your last turn, which you didn't get to read\n\n{}",
-                texts
-                    .iter()
-                    .map(|text| format!("- {}", text.replace('\n', "\n  ")))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                notes.join("\n")
             ));
         }
         if std::mem::take(&mut self.switched) {
