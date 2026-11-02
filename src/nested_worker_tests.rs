@@ -378,12 +378,12 @@ async fn a_worker_started_to_nest_starts_a_worker_whose_report_reaches_it() {
         );
     }
 
-    // r1's wait names the run it waits for, though the main agent has
-    // others going. (The feed names the runs of the agent that waits.)
+    // r1's wait names no run, so it says it waits for its workers, as it
+    // does once the session is restored.
     assert!(
         shown(&harness.feed)
             .iter()
-            .any(|(kind, text, _)| kind == "call" && text == "waiting for r2"),
+            .any(|(kind, text, _)| kind == "call" && text == "waiting for workers"),
         "{:?}",
         shown(&harness.feed)
     );

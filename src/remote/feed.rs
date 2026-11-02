@@ -68,8 +68,8 @@ pub(crate) const WORKER_EVERY: Duration = Duration::from_millis(250);
 
 // The types the web page reads too, which it compiles from the same file.
 pub use super::protocol::{
-    Act, ActKind, Activity, CallStatus, Came, Delivery, JobKind, JobState, JobSummary, Kind, Level,
-    Question, Source, WorkerState,
+    Act, ActKind, Activity, CallStatus, Came, Delivery, Fact, JobKind, JobState, JobSummary, Kind,
+    Level, Question, Source, WorkerState,
 };
 
 /// The message that keeps the prompt cache warm where the provider takes
@@ -279,14 +279,11 @@ impl Item {
     }
 
     /// Moves the item `ids` IDs and `turns` turns on, with everything in it
-    /// that names an item by its ID (the call a result is of, the point a
-    /// call's result came at), for items made apart and added after others.
+    /// that names an item by its ID (the call a result is of), for items
+    /// made apart and added after others.
     pub(crate) fn relocate(&mut self, ids: u64, turns: u64) {
         self.id += ids;
         self.call = self.call.map(|call| call + ids);
-        if let Some(act) = self.act.as_mut() {
-            act.ended = act.ended.map(|ended| ended + ids);
-        }
         self.turn = self.turn.map(|turn| turn + turns);
     }
 
@@ -355,6 +352,11 @@ fn act_size(act: &Act) -> usize {
                 .map(String::len)
                 .sum()
         })
+        + act
+            .body
+            .iter()
+            .map(|fact| fact.label.len() + fact.text.len())
+            .sum::<usize>()
 }
 
 /// A worker, as a line such as
@@ -1786,12 +1788,10 @@ impl Feed {
 
     /// The call `id` ended with `outcome`. Its line says so, and a block
     /// follows it when there is one.
-    fn settle(&self, state: &mut State, id: &Uuid, mut outcome: Outcome) {
+    fn settle(&self, state: &mut State, id: &Uuid, outcome: Outcome) {
         let Some(call) = state.calls.remove(id) else {
             return;
         };
-        // What came before this point came while the call ran.
-        outcome.settled.ended(state.next_id + 1);
         let (lane, budget) = state.lane(&call.agent);
         if let Some(output) = outcome.output {
             lane.call_output(call.item, output, budget);
@@ -1996,26 +1996,15 @@ impl Feed {
                 tool_name,
                 parameters,
             } => {
-                // The runs the agent has going are what a wait without ids
-                // waits for, meaning the workers it started, which are the main
-                // agent's for the main agent.
-                let running = if tool_name == crate::crew::WAIT_FOR_AGENTS {
-                    let starter = (!main).then_some(agent.as_str());
-                    crate::ui::sorted_runs(
-                        state
-                            .workers
-                            .iter()
-                            .filter(|worker| {
-                                worker.summary.state.is_active()
-                                    && worker.summary.parent.as_deref() == starter
-                            })
-                            .map(|worker| worker.summary.id.clone())
-                            .collect(),
-                    )
-                } else {
-                    Vec::new()
-                };
-                let Some(mut item) = render::call(tool_name, parameters, &running) else {
+                // Who the agent's lead is, by name, which a message to its
+                // lead says.
+                let lead = state
+                    .workers
+                    .iter()
+                    .find(|worker| worker.summary.id == agent)
+                    .and_then(|worker| worker.summary.parent.clone())
+                    .unwrap_or_else(|| MAIN_AGENT.to_string());
+                let Some(mut item) = render::call(tool_name, parameters, &lead) else {
                     // A call the feed doesn't draw (`ask_user`,
                     // `complete_task`) still ends the agent's text, so the
                     // next response's text doesn't run on into it.
@@ -4973,11 +4962,11 @@ mod tests {
         );
     }
 
-    /// A command that ends after the next call showed keeps its own Quiet
-    /// row, while one that ends first joins the row above. The feed records
-    /// where each result came, so the rows follow from the items alone.
+    /// A command joins the Quiet row above as it comes, whether it ends
+    /// before or after the next call shows, so the rows follow from the
+    /// items alone.
     #[test]
-    fn a_command_that_ends_after_the_next_call_keeps_its_quiet_row() {
+    fn a_command_keeps_its_quiet_row_whenever_it_ends() {
         let rows = |late: bool| {
             let feed = Feed::new("main");
             let (rg, build, read) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
@@ -5015,7 +5004,9 @@ mod tests {
             }
             quiet_words(&items(&feed))
         };
-        assert_eq!(rows(true), ["Ran rg x", "Ran cargo build", "Read a.rs"]);
+        // The build joins the row as it comes either way, so no row comes
+        // and goes with it.
+        assert_eq!(rows(true), ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
         assert_eq!(rows(false), ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
     }
 
@@ -5044,32 +5035,33 @@ mod tests {
             .collect()
     }
 
-    /// Items restored after others show the Quiet rows they showed live.
-    /// Everything that names an item by its ID moves with them, the point a
-    /// call's result came at included.
+    /// Items restored after others show the Quiet rows they showed live,
+    /// a call that failed in the row it joined included.
     #[test]
     fn restored_items_keep_their_quiet_rows() {
-        let call = |id: u64, kind: ActKind, target: &str, ended: u64| {
+        let call = |id: u64, kind: ActKind, target: &str| {
             let mut call = Item::new(Kind::Call, target);
             call.id = id;
-            call.status = Some(CallStatus::Ok);
+            // (The build fails.)
+            call.status = Some(if id == 2 {
+                CallStatus::Failed
+            } else {
+                CallStatus::Ok
+            });
             call.act = Some(Act {
                 kind,
                 target: target.into(),
-                ended: Some(ended),
                 ..Act::default()
             });
             call
         };
-        // As a restored session has them, where the build's result came after the
-        // read showed.
         let saved = vec![
-            call(1, ActKind::Command, "rg x", 2),
-            call(2, ActKind::Command, "cargo build", 4),
-            call(3, ActKind::Read, "a.rs", 4),
+            call(1, ActKind::Command, "rg x"),
+            call(2, ActKind::Command, "cargo build"),
+            call(3, ActKind::Read, "a.rs"),
         ];
         let live = quiet_words(&saved);
-        assert_eq!(live, ["Ran rg x", "Ran cargo build", "Read a.rs"]);
+        assert_eq!(live, ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
         let feed = Feed::new("main");
         // (An item first, so the restored ones move on.)
         feed.notice(Level::Info, "Resumed.");
@@ -5081,6 +5073,223 @@ mod tests {
                 .any(|item| item.kind == Kind::Call && item.id > 3)
         );
         assert_eq!(quiet_words(&restored), live);
+    }
+
+    /// A conversation says the same live and once restored from its saved
+    /// messages through `all_items` (r127). Live, the feed gets the calls'
+    /// events, the agent's text and the worker's start and end, and restored,
+    /// the same calls, text and the worker's report as mail. A wait that names
+    /// no runs after its worker finished is among them. The comparison covers
+    /// the main transcript's calls (their acts and bodies), their result
+    /// blocks, the user's and the agent's text, and the Quiet rows they make as
+    /// the clients place them (each row's calls, words, projection and whether
+    /// it opens, and where text ends a run). It leaves out thinking, which
+    /// history doesn't rebuild, the workers' lines, which `all_items` leaves
+    /// out by design, and Arko's notices, which the session adds live, not the
+    /// feed's events.
+    #[test]
+    fn live_and_restored_calls_agree() {
+        use super::super::quiet;
+        use crate::crew;
+        use arko_ai::{Content, Message, ToolCall, ToolResult};
+        let steps = [
+            (
+                crew::START_AGENT,
+                serde_json::json!({"task": "Count the files.", "profile": "counter", "effort": "high"}),
+                "Started r1 (agent `worker`).",
+            ),
+            (
+                crew::WAIT_FOR_AGENTS,
+                serde_json::json!({}),
+                "None of your agent runs is running now.",
+            ),
+            (
+                crew::WAIT_FOR_AGENTS,
+                serde_json::json!({"runs": "r1"}),
+                "Nothing to wait for: r1 is finished.",
+            ),
+            (
+                SHELL_TOOL_NAME,
+                serde_json::json!({"command": "printf one\nprintf two", "cwd": "src/specific/work"}),
+                "exit code 0, 0.1 s\none\ntwo",
+            ),
+            (
+                "read_file",
+                serde_json::json!({"path": "src/specific/a.rs", "start_line": 100, "end_line": 110}),
+                "100 | a\n101 | b",
+            ),
+            (
+                "keep_note",
+                serde_json::json!({"text": "Use tabs in the tests.", "audience": "r1"}),
+                "Kept note 1.",
+            ),
+            (
+                crate::mcp::MCP_TOOL_NAME,
+                serde_json::json!({"action": "call", "server": "github", "tool": "create_issue", "arguments": {"title": "Bug"}}),
+                "Created issue 7.",
+            ),
+            (
+                crew::MESSAGE_AGENT,
+                serde_json::json!({"to": "r1", "message": "Thanks."}),
+                "Sent.",
+            ),
+        ];
+        // The agent's text before the command, which ends the run of calls
+        // before it.
+        let text_before = 3;
+        let feed = Feed::new("main");
+        feed.add(Item::new(Kind::User, "Go.").agent("main"));
+        let mut messages = vec![Message::new_user("Go.")];
+        for (index, (tool, arguments, output)) in steps.iter().enumerate() {
+            let id = Uuid::new_v4();
+            let parameters: HashMap<String, serde_json::Value> =
+                serde_json::from_value(arguments.clone()).unwrap();
+            let said = (index == text_before).then_some("Now the build.");
+            if let Some(said) = said {
+                feed.event(&event("main", chunk(said)), None);
+            }
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolCallFormatted {
+                        tool_call_id: id,
+                        tool_name: tool.to_string(),
+                        parameters,
+                    },
+                ),
+                None,
+            );
+            feed.event(
+                &event(
+                    "main",
+                    AgentEvent::ToolResult {
+                        tool_call_id: id,
+                        tool_name: tool.to_string(),
+                        output: output.to_string(),
+                    },
+                ),
+                None,
+            );
+            let call_id = format!("call_{index}");
+            let mut ask = Message::new_assistant(said.unwrap_or_default());
+            ask.tool_calls = vec![
+                serde_json::from_value::<ToolCall>(
+                    serde_json::json!({"id": call_id, "name": tool, "arguments": arguments}),
+                )
+                .unwrap(),
+            ];
+            messages.push(ask);
+            messages.push(Message::new_user_with_contents(vec![Content::ToolResult(
+                ToolResult::new(Some(call_id), tool, output),
+            )]));
+            // r1 starts, finishes, and its report comes as mail.
+            if index == 0 {
+                feed.worker("r1", "Count the files.", WorkerChange::Started);
+                feed.worker("r1", "", WorkerChange::Finished { report: "Counted." });
+                messages.push(Message::new_user(
+                    "# Workflow context update\n\nNew mail from the agent runs you work with.\n- [mail 1] r1 (agent `worker`) finished. Its report:\n  Counted.\n  [end of mail 1]",
+                ));
+            }
+        }
+        let restored =
+            super::super::history::all_items(&messages, false, &crate::images::Images::default());
+        let live = items(&feed);
+        // The main transcript's items both keep.
+        let kept = |items: &[Item]| -> Vec<Item> {
+            items
+                .iter()
+                .filter(|item| item.is_main())
+                .filter(|item| {
+                    !matches!(item.kind, Kind::Thinking | Kind::WorkerLine | Kind::Notice)
+                })
+                .cloned()
+                .collect()
+        };
+        let (live, restored) = (kept(&live), kept(&restored));
+        let described = |items: &[Item]| -> Vec<String> {
+            items
+                .iter()
+                .map(|item| match item.kind {
+                    Kind::Call => format!(
+                        "call {:?} {:?} {:?} {:?} {:?}",
+                        item.text, item.act, item.status, item.outcome, item.started
+                    ),
+                    Kind::Result => {
+                        format!("result {:?} {:?} {:?}", item.text, item.detail, item.level)
+                    }
+                    kind => format!("{kind:?} {:?}", item.text),
+                })
+                .collect()
+        };
+        assert_eq!(described(&live), described(&restored));
+        assert_eq!(
+            live.iter().filter(|item| item.kind == Kind::Call).count(),
+            steps.len()
+        );
+        assert!(live.iter().any(|item| item.kind == Kind::Result));
+        assert!(live.iter().any(|item| item.kind == Kind::Text));
+        // The Quiet rows, as the clients place them: each call with its
+        // results, and anything else ending a run. Items go by their place,
+        // since their IDs differ.
+        let rows = |items: &[Item]| -> Vec<String> {
+            let mut shown: Vec<(usize, Vec<usize>)> = Vec::new();
+            for (at, item) in items.iter().enumerate() {
+                if item.kind == Kind::Result
+                    && let Some((call, results)) = shown.last_mut()
+                    && item.call == Some(items[*call].id)
+                {
+                    results.push(at);
+                    continue;
+                }
+                shown.push((at, Vec::new()));
+            }
+            let steps: Vec<quiet::Step> = shown
+                .iter()
+                .map(|(at, results)| {
+                    let item = &items[*at];
+                    match item.kind {
+                        Kind::Call => quiet::Step::Call(quiet::Call {
+                            id: item.id,
+                            act: item.act.as_ref(),
+                            status: item.status,
+                            outcome: item.outcome.as_deref(),
+                            job: item.job.is_some(),
+                            turn: item.turn,
+                            output: !results.is_empty(),
+                        }),
+                        _ => quiet::Step::Other(item.id),
+                    }
+                })
+                .collect();
+            let place = |id: u64| items.iter().position(|item| item.id == id);
+            quiet::rows(&steps)
+                .into_iter()
+                .map(|piece| match piece {
+                    quiet::Piece::Step(at) => format!("step {}", shown[at].0),
+                    quiet::Piece::Row(row) => {
+                        let members: Vec<usize> =
+                            row.members.iter().map(|member| shown[*member].0).collect();
+                        let calls: Vec<_> = row
+                            .calls
+                            .iter()
+                            .map(|call| (place(call.id), &call.line, call.outcome))
+                            .collect();
+                        format!(
+                            "row {members:?} {:?} opens {} calls {calls:?}",
+                            row.words, row.opens
+                        )
+                    }
+                })
+                .collect()
+        };
+        assert_eq!(rows(&live), rows(&restored));
+        assert!(
+            rows(&live)
+                .iter()
+                .any(|row| row.contains("Waited for workers · nothing new")),
+            "{:?}",
+            rows(&live)
+        );
     }
 
     fn event(agent: &str, event: AgentEvent) -> WorkflowEvent {
@@ -5202,13 +5411,12 @@ mod tests {
         assert_eq!(feed.workers()[0].last.as_deref(), Some("read src/a.rs"));
     }
 
-    /// A wait for no run in particular waits for a message when the main
-    /// agent has no runs going, and for the runs it has going otherwise, a
-    /// few by name and many as a count. A run that ended isn't waited for,
-    /// and a worker has no runs of its own. The worker's summary keeps the
-    /// words as what it did last.
+    /// A wait says the runs it names, also those that ended, and one that
+    /// names none waits for the agent's workers, whatever runs are going,
+    /// so it says the same once the session is restored. The worker's
+    /// summary keeps the words as what it did last.
     #[test]
-    fn a_wait_names_the_runs_the_agent_has_going() {
+    fn a_wait_names_only_the_runs_it_names() {
         let feed = Feed::new("main");
         let wait = |agent: &str, label: Option<&str>, parameters: serde_json::Value| {
             let parameters: HashMap<String, serde_json::Value> =
@@ -5231,27 +5439,15 @@ mod tests {
                 .text
         };
         let main = |parameters| wait("main", None, parameters);
-        // No runs.
-        assert_eq!(main(serde_json::json!({})), "waiting for a message");
+        assert_eq!(main(serde_json::json!({})), "waiting for workers");
         assert_eq!(
             main(serde_json::json!({"all": true, "timeout_seconds": 60})),
-            "waiting for a message"
+            "waiting for workers"
         );
-        // One run, several, and many.
         feed.worker("r1", "Count the files.", WorkerChange::Started);
-        assert_eq!(main(serde_json::json!({})), "waiting for r1");
         feed.worker("r2", "Read the docs.", WorkerChange::Queued);
-        assert_eq!(main(serde_json::json!({})), "waiting for r1, r2");
-        for id in ["r3", "r4", "r5"] {
-            feed.worker(id, "More.", WorkerChange::Started);
-        }
-        assert_eq!(main(serde_json::json!({})), "waiting for r1, r2 and 3 more");
-        // A run that ended isn't waited for, and the runs go by number.
+        assert_eq!(main(serde_json::json!({})), "waiting for workers");
         feed.worker("r1", "", WorkerChange::Finished { report: "Done." });
-        feed.worker("r4", "", WorkerChange::Stopped { reason: "" });
-        feed.worker("r5", "", WorkerChange::Failed { error: "oops" });
-        assert_eq!(main(serde_json::json!({})), "waiting for r2, r3");
-        // The ids a call names are what it waits for, also those that ended.
         assert_eq!(
             main(serde_json::json!({"runs": "r1, r4"})),
             "waiting for r1, r4"
@@ -5260,17 +5456,12 @@ mod tests {
             main(serde_json::json!({"runs": ["r1", "r2"]})),
             "waiting for r1, r2"
         );
-        // A worker has no runs of its own, and the agent list shows its
-        // words.
         assert_eq!(
             wait("worker", Some("r2"), serde_json::json!({})),
-            "waiting for a message"
+            "waiting for workers"
         );
         let r2 = feed.workers().into_iter().find(|w| w.id == "r2").unwrap();
-        assert_eq!(r2.last.as_deref(), Some("waiting for a message"));
-        feed.worker("r2", "", WorkerChange::Finished { report: "Done." });
-        feed.worker("r3", "", WorkerChange::Finished { report: "Done." });
-        assert_eq!(main(serde_json::json!({})), "waiting for a message");
+        assert_eq!(r2.last.as_deref(), Some("waiting for workers"));
     }
 
     /// A text item goes on with its own agent's chunks, whatever the other
@@ -6713,7 +6904,7 @@ mod tests {
                 (Kind::Message, Some("main"), "Also the docs."),
                 (Kind::Text, None, "On it."),
                 (Kind::Call, None, "message r2 “a.rs is done.”"),
-                (Kind::Call, None, "message lead “Halfway.”"),
+                (Kind::Call, None, "message main “Halfway.”"),
             ]
         );
         assert_eq!(of("r2"), [(Kind::Message, Some("r1"), "a.rs is done.")]);
@@ -6739,7 +6930,7 @@ mod tests {
             )]
             .into_iter()
             .collect(),
-            &[],
+            "main",
         )
         .unwrap();
         call.id = 1;

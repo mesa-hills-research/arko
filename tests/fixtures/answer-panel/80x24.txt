@@ -1,6 +1,6 @@
-? Arko asked 3 questions
+  ? Arko asked 3 questions
 
-? Arko asked a question
+  ? Arko asked a question
 
 
 
@@ -24,9 +24,9 @@
 ────────────────────────────────────────────────────────────────────────────────
 
 --- Long choices ---
-? Arko asked 3 questions
+  ? Arko asked 3 questions
 
-? Arko asked a question
+  ? Arko asked a question
 
 
 
@@ -50,9 +50,9 @@
 ────────────────────────────────────────────────────────────────────────────────
 
 --- Written answer ---
-? Arko asked 3 questions
+  ? Arko asked 3 questions
 
-? Arko asked a question
+  ? Arko asked a question
 
 
 
@@ -76,9 +76,9 @@
 ────────────────────────────────────────────────────────────────────────────────
 
 --- Summary ---
-? Arko asked 3 questions
+  ? Arko asked 3 questions
 
-? Arko asked a question
+  ? Arko asked a question
 
 
 

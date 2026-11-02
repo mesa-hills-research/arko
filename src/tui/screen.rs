@@ -2494,20 +2494,25 @@ mod tests {
         result.id = 6;
         result.call = Some(5);
         app.transcript.apply(Update::Item(result));
-        let mut message = call(
-            7,
-            "message r3 “Use the UTC time…”",
-            on(ActKind::Message, "r3"),
-            CallStatus::Ok,
-        )
-        .detail("Use the UTC time from the stats, not the local clock.");
+        // (Its body holds its message, as the feed makes it.)
+        let text = "Use the UTC time from the stats, not the local clock.";
+        let to_r3 = Act {
+            body: vec![crate::remote::Fact {
+                label: String::new(),
+                text: text.into(),
+            }],
+            ..on(ActKind::Message, "r3")
+        };
+        let mut message =
+            call(7, "message r3 “Use the UTC time…”", to_r3, CallStatus::Ok).detail(text);
         message.outcome = Some("sent".into());
         app.transcript.apply(Update::Item(message));
     }
 
     /// In the Quiet view each call says what it did in a few words,
     /// neighbours of a kind merge, a failure keeps its output under it, and
-    /// a click on a row's line opens it to the calls as Full shows them.
+    /// a click on a row's line opens it to what its calls hold, each call
+    /// on a line of its own words.
     #[test]
     fn quiet_rows_merge_calls_and_a_click_opens_one() {
         use crossterm::event::{MouseButton, MouseEventKind};
@@ -2524,9 +2529,10 @@ mod tests {
         assert_eq!(
             rows[edits + 1..edits + 4],
             [
-                "▸ Ran cargo test · ✗ 1 failed, 3 passed",
+                // (Its output shows under it, so it has nothing more to open.)
+                "    Ran cargo test · ✗ 1 failed, 3 passed",
                 "  │ test a ... FAILED",
-                "▸ Messaged r3",
+                "  ▸ Messaged r3",
             ],
             "{rows:#?}"
         );
@@ -2540,9 +2546,9 @@ mod tests {
         assert_eq!(
             open[edits + 1..edits + 4],
             [
-                "  ▸ read src/app.rs · ✓",
-                "  ▸ edit src/app.rs · ✓",
-                "  ▸ edit src/app.rs · ✓",
+                "  │ Read app.rs",
+                "  │ Made 1 edit to app.rs",
+                "  │ Made 1 edit to app.rs",
             ],
             "{open:#?}"
         );
