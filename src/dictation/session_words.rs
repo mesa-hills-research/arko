@@ -29,7 +29,7 @@ use super::Dictation;
 use super::settings::Settings;
 use crate::builtin_skills::BuiltinSkills;
 use crate::details::Details;
-use crate::history::{self, History};
+use crate::history;
 use crate::profiles::Roots;
 use crate::remote::{Feed, Item, Kind};
 use crate::shell::SHELL_TOOL_NAME;
@@ -143,30 +143,37 @@ fn favoured_words(
     merge(session, learned_words(root, settings, learned))
 }
 
-/// The words used across sessions, best first. They are the distinctive
-/// words of the user's earlier messages in `history.txt` in `root` (newest
-/// first, as the transcript's tail is read, so recent and repeated ones
-/// count most) and the `learned` words, with the same rules as the session's.
+/// The words used across sessions, best first. They are the `learned` words,
+/// in the order given, and then the distinctive words of the user's earlier
+/// messages in `history.txt` in `root`, read from its newest
+/// [`TRANSCRIPT_BYTES`] as the transcript's tail is (so recent and repeated
+/// ones count most). Both follow the session's rules for what can be said and
+/// for secrets.
 fn learned_words(root: &Path, settings: &Settings, learned: &[String]) -> Vec<SessionWord> {
-    let history = History::load(Some(history::path_in(root)));
     let mut tail = Tail::default();
-    for entry in history.entries().iter().rev() {
+    let entries = history::recent_entries(&history::path_in(root), TRANSCRIPT_BYTES as u64);
+    for entry in entries.iter().rev() {
         if !tail.take(&Item::new(Kind::User, entry.as_str())) {
             break;
         }
     }
-    rank(
-        &tail,
-        Path::new(""),
-        &[],
-        learned,
-        settings.leave_out_secrets,
-    )
+    let secrets = settings.leave_out_secrets;
+    let given = learned
+        .iter()
+        .filter(|word| sayable(word) && !(secrets && !secrets::secret_ranges(word).is_empty()))
+        .map(|word| SessionWord {
+            text: word.clone(),
+            code: true,
+        });
+    given
+        .chain(rank(&tail, Path::new(""), &[], &[], secrets))
+        .collect()
 }
 
 /// [`OWN_NAMES`] and then the words of `session` and `learned` by turns, to
-/// [`MAX_WORDS`]. A word already in, in any case, is skipped, so that a
-/// folder called `arko` doesn't bring in a second spelling of Arko.
+/// [`MAX_WORDS`]. A turn ends when a word is added, so a word already in, in
+/// any case, costs its source nothing, and a folder called `arko` doesn't
+/// bring in a second spelling of Arko.
 pub(super) fn merge(session: Vec<SessionWord>, learned: Vec<SessionWord>) -> Vec<SessionWord> {
     let mut words: Vec<SessionWord> = OWN_NAMES
         .iter()
@@ -176,21 +183,20 @@ pub(super) fn merge(session: Vec<SessionWord>, learned: Vec<SessionWord>) -> Vec
         })
         .collect();
     let mut sources = [session.into_iter(), learned.into_iter()];
+    let mut out = [false; 2];
     let mut turn = 0;
-    while words.len() < MAX_WORDS {
-        let next = sources[turn % 2]
-            .next()
-            .or_else(|| sources[1 - turn % 2].next());
-        let Some(word) = next else {
-            break;
-        };
-        turn += 1;
-        if !words
-            .iter()
-            .any(|have| have.text.to_lowercase() == word.text.to_lowercase())
-        {
-            words.push(word);
+    while words.len() < MAX_WORDS && !(out[0] && out[1]) {
+        if !out[turn] {
+            let new = sources[turn].find(|word| {
+                let lower = word.text.to_lowercase();
+                !words.iter().any(|have| have.text.to_lowercase() == lower)
+            });
+            match new {
+                Some(word) => words.push(word),
+                None => out[turn] = true,
+            }
         }
+        turn = 1 - turn;
     }
     words
 }
@@ -949,6 +955,7 @@ fn profile_names(roots: &Roots) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history::History;
 
     /// The tail of `items`, oldest first, as a feed gives it.
     fn tail(items: &[Item]) -> Tail {
@@ -1049,6 +1056,72 @@ mod tests {
         let found = texts(&words);
         assert_eq!(found[OWN_NAMES.len()..], ["Granite"]);
         assert_eq!(found[..OWN_NAMES.len()], OWN_NAMES);
+    }
+
+    /// Duplicates of the names cost a source no turn, so both keep half.
+    #[test]
+    fn duplicates_dont_spend_a_sources_share() {
+        let mut session: Vec<SessionWord> = OWN_NAMES
+            .iter()
+            .map(|name| word(&name.to_lowercase()))
+            .collect();
+        session.extend(numbered("Session", MAX_WORDS));
+        let words = merge(session, numbered("Learned", MAX_WORDS));
+        let found = texts(&words);
+        let share = (MAX_WORDS - OWN_NAMES.len()) / 2;
+        for prefix in ["Session", "Learned"] {
+            let kept = found.iter().filter(|word| word.starts_with(prefix)).count();
+            assert_eq!(kept, share, "{prefix}");
+        }
+    }
+
+    /// An app's words keep the order it gave them, to the cap.
+    #[test]
+    fn an_apps_words_keep_their_order() {
+        let root = tempfile::tempdir().unwrap();
+        let given: Vec<String> = ["ZebraModule", "AlphaModule"]
+            .into_iter()
+            .map(String::from)
+            .chain((0..MAX_WORDS).map(|n| format!("Dictionary{n}x")))
+            .collect();
+        let learned = learned_words(root.path(), &Settings::default(), &given);
+        assert_eq!(texts(&learned)[..2], ["ZebraModule", "AlphaModule"]);
+        let words = merge(Vec::new(), learned);
+        let found = texts(&words);
+        assert_eq!(found.len(), MAX_WORDS);
+        assert_eq!(
+            found[OWN_NAMES.len()..OWN_NAMES.len() + 3],
+            ["ZebraModule", "AlphaModule", "Dictionary0x"]
+        );
+        let kept = MAX_WORDS - OWN_NAMES.len();
+        assert_eq!(
+            found.last(),
+            Some(&format!("Dictionary{}x", kept - 3).as_str())
+        );
+    }
+
+    /// Only the newest part of a large history is read.
+    #[test]
+    fn only_the_newest_history_is_read() {
+        let root = tempfile::tempdir().unwrap();
+        let path = history::path_in(root.path());
+        let old = format!(
+            "Ask about the Oldrenderer and the Oldrenderer again. {}\n",
+            "word ".repeat(2000)
+        );
+        let recent = "Ask about the Newrenderer and the Newrenderer again.\n";
+        let text = format!(
+            "#V2\n{}{recent}",
+            old.repeat(TRANSCRIPT_BYTES / old.len() + 2)
+        );
+        std::fs::write(&path, text).unwrap();
+        let words = learned_words(root.path(), &Settings::default(), &[]);
+        let found = texts(&words);
+        assert!(found.contains(&"Newrenderer"), "{found:?}");
+        // The read part is the file's last bytes, whole records of them.
+        let read = history::recent_entries(&path, TRANSCRIPT_BYTES as u64);
+        assert!(read.len() < TRANSCRIPT_BYTES / old.len() + 2);
+        assert_eq!(read.last().map(String::as_str), Some(recent.trim_end()));
     }
 
     #[test]

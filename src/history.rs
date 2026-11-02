@@ -113,11 +113,36 @@ fn save(path: &Path, entries: &[String]) -> std::io::Result<()> {
 /// The entries of a history file, in version 2 (escaped) or the older plain
 /// one.
 fn parse(text: &str) -> Vec<String> {
-    let mut lines = text.lines();
     let v2 = text.starts_with("#V2");
-    if v2 {
-        lines.next();
+    decode(text.lines().skip(usize::from(v2)), v2)
+}
+
+/// The newest entries of the history file at `path`, oldest first, read from
+/// at most its last `max_bytes` (the file's, so escaped), without loading the
+/// rest. The record that the cut goes through is left out.
+pub fn recent_entries(path: &Path, max_bytes: u64) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let len = file.metadata().map_or(0, |meta| meta.len());
+    let mut header = [0; 3];
+    let v2 = file.read_exact(&mut header).is_ok() && header == *b"#V2";
+    let start = len.saturating_sub(max_bytes);
+    let mut bytes = Vec::new();
+    if file.seek(SeekFrom::Start(start)).is_err()
+        || file.take(max_bytes).read_to_end(&mut bytes).is_err()
+    {
+        return Vec::new();
     }
+    let text = String::from_utf8_lossy(&bytes);
+    // (The first line is the header, or the one that the cut went through.)
+    let skip = usize::from(v2 || start > 0);
+    decode(text.lines().skip(skip), v2)
+}
+
+/// The entries in `lines`, unescaped when `v2`.
+fn decode<'a>(lines: impl Iterator<Item = &'a str>, v2: bool) -> Vec<String> {
     lines
         .filter(|line| !line.is_empty())
         .map(|line| {
@@ -212,5 +237,30 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
         assert_eq!(History::load(Some(path)).entries(), ["first", "second"]);
+    }
+
+    /// The newest entries come from the end of the file alone, in either
+    /// format, and the record the cut goes through is left out.
+    #[test]
+    fn recent_entries_are_read_from_the_end_of_the_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = path_in(temp.path());
+        let mut history = History::load(Some(path.clone()));
+        for entry in ["first one", "second\none", "third one", "fourth one"] {
+            history.add(entry);
+        }
+        assert_eq!(
+            recent_entries(&path, 1 << 20),
+            ["first one", "second\none", "third one", "fourth one"]
+        );
+        // The last 20 bytes start inside "third one".
+        assert_eq!(recent_entries(&path, 20), ["fourth one"]);
+        assert!(recent_entries(&path.with_extension("none"), 20).is_empty());
+        std::fs::write(&path, "plain one\nplain two\nplain three\n").unwrap();
+        assert_eq!(
+            recent_entries(&path, 1 << 20),
+            ["plain one", "plain two", "plain three"]
+        );
+        assert_eq!(recent_entries(&path, 20), ["plain three"]);
     }
 }

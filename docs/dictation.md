@@ -32,7 +32,7 @@ The session's words are the identifiers, file names and names in the transcript 
 `DictationOptions`, `Cargo.toml` or `gpt-6`), the workspace's folder and package names and its
 top-level files, and the session's models, skills and worker profiles. The words from across
 sessions are the distinctive ones in your earlier messages (`history.txt` in Arko's folder), and
-any an app adds. In both, recent and repeated words count most. Words that can't be said, such as
+any an app adds, which come first in the order it gives them. In both, recent and repeated words count most. Words that can't be said, such as
 keys, hashes and IDs, are always left out. The recording starts at once, and the words apply as
 soon as they're ready. A word said differently from how it's written, such as "engine x" for nginx,
 still comes out as the model hears it.
