@@ -65,8 +65,9 @@ pub struct QuietRow {
     /// The rows of its calls and their results, and the thinking after
     /// them, whose content shows when it's open ([`quiet_members`]).
     pub calls: Vec<Row>,
-    /// What it shows of each call when it's open.
-    pub opened: Vec<quiet::Opened>,
+    /// It holds several calls, each of which shows as its Full line when
+    /// it's open.
+    pub merged: bool,
     /// It has more to show than its words. One that hasn't has no fold.
     pub opens: bool,
 }
@@ -310,7 +311,7 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
                     outcome: item.outcome.as_deref(),
                     job: item.job.is_some(),
                     turn: item.turn,
-                    output: !results.is_empty(),
+                    content: !results.is_empty(),
                 }),
                 None => quiet::Step::Other(*id),
             },
@@ -328,17 +329,11 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
                 out.extend(results.iter().cloned());
             }
             quiet::Piece::Row(row) => {
-                let alone = row.output_under();
                 let mut calls = Vec::new();
-                let mut under = Vec::new();
                 for at in &row.members {
                     let (member, results) = &shown[*at];
                     calls.push(member.clone());
-                    if alone {
-                        under.extend(results.iter().cloned());
-                    } else {
-                        calls.extend(results.iter().cloned());
-                    }
+                    calls.extend(results.iter().cloned());
                 }
                 let id = match calls.first() {
                     Some(Row::Item(id, _)) => *id,
@@ -349,11 +344,10 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData]) -> Vec<Row> {
                     row: QuietRow {
                         words: row.words,
                         calls,
-                        opened: row.calls,
+                        merged: row.merged,
                         opens: row.opens,
                     },
                 });
-                out.extend(under);
             }
         }
     }
@@ -1207,51 +1201,42 @@ mod tests {
         assert_eq!(said(&settled), ("Ran 2 commands (rg, cargo)".into(), false));
     }
 
-    /// Each of the shared fixtures, alone in its Quiet row, opens to what
-    /// the terminal's row opens to, from the same projection, and a row
-    /// with nothing more to show has no fold (r127).
+    /// Each of the shared fixtures, alone in its Quiet row, says and opens
+    /// to what the terminal's row does, from the same projection, its
+    /// content inside it, and a row with nothing to show has no fold.
     #[test]
-    fn quiet_rows_open_to_the_fixtures_bodies() {
+    fn quiet_rows_open_to_the_fixtures_contents() {
         for fixture in quiet::fixtures() {
+            let name = fixture.name;
             let call = ItemData {
                 status: Some(fixture.status),
                 outcome: Some(fixture.outcome.to_string()).filter(|outcome| !outcome.is_empty()),
                 act: Some(fixture.act.clone()),
-                detail: fixture.detail.map(str::to_string),
+                detail: fixture.full_detail.map(str::to_string),
                 job: fixture.job.then(|| "4d2c1a9b".to_string()),
-                ..item(2, Kind::Call, MAIN, fixture.name)
+                ..item(2, Kind::Call, MAIN, fixture.full)
             };
             let mut items = vec![item(1, Kind::User, MAIN, "go"), call];
-            if fixture.output {
-                let mut result = item(3, Kind::Result, MAIN, "its output");
+            if let Some((kind, preview)) = fixture.content {
+                let mut result = item(3, Kind::Result, MAIN, preview);
+                result.content = Some(kind);
+                result.more = fixture.more.map(str::to_string);
                 result.call = Some(2);
                 items.push(result);
             }
             let rows = layout(&items, View::Quiet, None);
             let Some(Row::Quiet { row, .. }) = rows.get(1) else {
-                panic!("{}: {rows:?}", fixture.name);
+                panic!("{name}: {rows:?}");
             };
-            assert_eq!(row.opens, fixture.opens, "{}", fixture.name);
-            if !fixture.opens {
-                continue;
-            }
-            let [opened] = row.opened.as_slice() else {
-                panic!("{}: {:?}", fixture.name, row.opened);
-            };
-            assert_eq!(opened.line, None, "{}", fixture.name);
-            assert_eq!(opened.outcome, fixture.outcome_shown, "{}", fixture.name);
-            // The body comes as the server made it, which the page draws.
-            assert_eq!(
-                items[1].act.as_ref().map(|act| &act.body),
-                Some(&fixture.act.body),
-                "{}",
-                fixture.name
-            );
-            let output = row
+            assert_eq!(row.words.text, fixture.words, "{name}");
+            assert_eq!(row.words.failed, fixture.failed, "{name}");
+            assert_eq!(row.opens, fixture.opens, "{name}");
+            assert!(!row.merged, "{name}");
+            let content = row
                 .calls
                 .iter()
                 .any(|row| matches!(row, Row::Item(3, Kind::Result)));
-            assert_eq!(output, fixture.output, "{}", fixture.name);
+            assert_eq!(content, fixture.content.is_some(), "{name}");
         }
     }
 
@@ -1320,7 +1305,8 @@ mod tests {
 
     /// Quiet says each call in a few words, as the terminal does. Reads of
     /// a file being edited join its edits, a test run that failed stands
-    /// alone with its output under it, and the agent's text ends a run.
+    /// alone with one ✗ and its output inside it, and the agent's text ends
+    /// a run.
     #[test]
     fn quiet_merges_calls_into_rows_of_a_few_words() {
         use crate::protocol::{Act, ActKind};
@@ -1358,7 +1344,7 @@ mod tests {
             },
         ];
         let rows = layout(&items, View::Quiet, None);
-        assert_eq!(ids(&rows), ["i1", "q2", "q5", "i6", "i7", "q8", "i9"]);
+        assert_eq!(ids(&rows), ["i1", "q2", "q5", "i7", "q8", "i9"]);
         let said = |row: &Row| match row {
             Row::Quiet { row, .. } => (row.words.clone(), ids(&row.calls)),
             other => panic!("{other:?}"),
@@ -1367,9 +1353,9 @@ mod tests {
         assert_eq!(words.text, "Made 1 edit to app.rs");
         assert_eq!(calls, ["i2", "i3", "i4"]);
         let (words, calls) = said(&rows[2]);
-        assert_eq!(words.text, "Ran cargo test");
-        assert_eq!(words.failed.as_deref(), Some("1 failed, 3 passed"));
-        assert_eq!(calls, ["i5"]);
+        assert_eq!(words.text, "Ran cargo test (1 failed, 3 passed)");
+        assert!(words.failed);
+        assert_eq!(calls, ["i5", "i6"]);
         // Images that a call's result brings later leave the rows as they
         // were, since they show under the row's line whatever row it is.
         let mut with_images = items.clone();

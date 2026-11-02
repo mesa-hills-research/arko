@@ -77,6 +77,53 @@ fn code_html(html: &mut String, code: &str) {
     escape(html, &code[at..]);
 }
 
+/// `code`'s lines as HTML, escaped, in the spans Arko highlighted it with,
+/// a span over a line break split at it. `None` when Arko sent no spans for
+/// it.
+pub fn code_lines_html(code: &str) -> Option<Vec<String>> {
+    let spans = CODE.with(|kept| kept.borrow().get(&code_hash(code)).cloned())?;
+    let mut lines = vec![String::new()];
+    let mut push = |text: &str, class: Option<&str>| {
+        for (n, part) in text.split('\n').enumerate() {
+            if n > 0 {
+                lines.push(String::new());
+            }
+            let Some(html) = lines.last_mut().filter(|_| !part.is_empty()) else {
+                continue;
+            };
+            match class {
+                Some(class) => {
+                    html.push_str("<span class=\"hl-");
+                    html.push_str(class);
+                    html.push_str("\">");
+                    escape(html, part);
+                    html.push_str("</span>");
+                }
+                None => escape(html, part),
+            }
+        }
+    };
+    let mut at = 0;
+    for &[start, end, name] in spans.iter() {
+        let (start, end) = (start as usize, end as usize);
+        let Some(name) = HIGHLIGHT_NAMES.get(name as usize) else {
+            continue;
+        };
+        if start < at
+            || end > code.len()
+            || !code.is_char_boundary(start)
+            || !code.is_char_boundary(end)
+        {
+            continue;
+        }
+        push(&code[at..start], None);
+        push(&code[start..end], Some(&name.replace('.', "-")));
+        at = end;
+    }
+    push(&code[at..], None);
+    Some(lines)
+}
+
 /// `text` in Markdown, as safe HTML.
 pub fn to_html(text: &str) -> String {
     let mut html = String::with_capacity(text.len() + text.len() / 4);

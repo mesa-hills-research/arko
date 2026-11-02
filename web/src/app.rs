@@ -121,6 +121,13 @@ pub struct Page {
     pub ask: crate::questions::Asking,
     /// The Quiet view's rows the reader opened, by their first call.
     pub quiet_open: RwSignal<HashSet<u64>>,
+    /// The calls whose content the reader opened or closed in Full, where
+    /// a command's shows from the start ([`full_open`](crate::transcript)).
+    pub flipped: RwSignal<HashSet<u64>>,
+    /// The calls the reader opened inside a Quiet row of several.
+    pub calls_open: RwSignal<HashSet<u64>>,
+    /// The contents the reader opened whole, by their result.
+    pub doors_open: RwSignal<HashSet<u64>>,
 }
 
 thread_local! {
@@ -252,6 +259,9 @@ impl Page {
             pinned: RwSignal::new(true),
             ask: crate::questions::Asking::new(),
             quiet_open: RwSignal::new(HashSet::new()),
+            flipped: RwSignal::new(HashSet::new()),
+            calls_open: RwSignal::new(HashSet::new()),
+            doors_open: RwSignal::new(HashSet::new()),
         };
         PAGE.with(|cell| cell.set(Some(page)));
         page
@@ -1028,6 +1038,10 @@ fn start_feed(page: Page) {
     page.feeds.update(|feeds| *feeds += 1);
     // Another feed's items have other ids.
     page.quiet_open.update(HashSet::clear);
+    page.flipped.update(HashSet::clear);
+    page.calls_open.update(HashSet::clear);
+    page.doors_open.update(HashSet::clear);
+    crate::contents::forget();
 }
 
 /// Gives a cell the item as Arko has it now, setting only what changed, and

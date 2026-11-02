@@ -30,6 +30,8 @@ pub struct Store {
     /// When each item came, in this device's time (ms).
     born: HashMap<u64, f64>,
     counts: [usize; 2],
+    /// Each call's content, its result, by the call.
+    contents: HashMap<u64, u64>,
 }
 
 impl Store {
@@ -81,6 +83,11 @@ impl Store {
             return Vec::new();
         }
         let lane = usize::from(item.agent != MAIN);
+        if item.kind == Kind::Result
+            && let Some(call) = item.call
+        {
+            self.contents.insert(call, item.id);
+        }
         self.grown.insert(item.id, now);
         self.born.insert(item.id, now);
         self.index.insert(item.id, self.items.len());
@@ -105,6 +112,14 @@ impl Store {
             self.reindex();
         }
         trimmed
+    }
+
+    /// The content of the call `id`, its result, while it's kept.
+    pub fn content_of(&self, id: u64) -> Option<u64> {
+        self.contents
+            .get(&id)
+            .copied()
+            .filter(|result| self.index.contains_key(result))
     }
 
     /// More text for the item `id`, come at `now`. False if it isn't kept.
@@ -262,6 +277,9 @@ pub mod tests {
             level: None,
             source: None,
             delivery: None,
+            content: None,
+            more: None,
+            language: None,
             status: None,
             outcome: None,
             act: None,
