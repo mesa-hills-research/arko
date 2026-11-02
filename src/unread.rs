@@ -176,6 +176,27 @@ pub(crate) fn load(notes: &[Unread]) -> (Vec<String>, Vec<arko_ai::Image>) {
     (texts, images)
 }
 
+/// Removes the images in the session's folder `session` that none of
+/// `notes` has, those of notes that went with a message. Reads and writes
+/// files.
+pub(crate) fn sweep<'a>(session: &Path, notes: impl IntoIterator<Item = &'a Unread>) {
+    let kept: std::collections::HashSet<&Path> = notes
+        .into_iter()
+        .flat_map(|note| note.images.iter().map(|file| file.path.as_path()))
+        .collect();
+    let Ok(files) = std::fs::read_dir(session.join(IMAGES_DIR)) else {
+        return;
+    };
+    for file in files.flatten() {
+        let path = file.path();
+        let name = file.file_name();
+        // (A file still being written has a name of its own.)
+        if !kept.contains(path.as_path()) && !name.to_string_lossy().starts_with('.') {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +232,21 @@ mod tests {
         let (texts, images) = load(&back);
         assert_eq!(texts, ["Look at this too.", "Plain."]);
         assert_eq!(images, vec![pixel(), pixel()]);
+    }
+
+    /// The images of notes that went are removed, and those of notes still
+    /// waiting stay, one image of both too.
+    #[test]
+    fn the_images_of_notes_that_went_are_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let other = arko_ai::Image::from_bytes(b"GIF89a....", "image/gif");
+        let went = keep(temp.path(), "went".into(), &[pixel(), other]);
+        let waits = keep(temp.path(), "waits".into(), &[pixel()]);
+        sweep(temp.path(), [&waits]);
+        assert!(waits.images[0].path.is_file());
+        assert!(!went.images[1].path.exists());
+        sweep(temp.path(), []);
+        assert!(!waits.images[0].path.exists());
     }
 
     /// An image that's gone by the next message doesn't go along, and the

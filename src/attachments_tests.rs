@@ -300,7 +300,7 @@ async fn files_sent_during_a_turn_go_with_its_note() {
 }
 
 /// An app's image sent during a turn goes with the next message when the
-/// agent didn't get to read its note.
+/// agent didn't get to read its note, and its saved copy goes once it did.
 #[tokio::test]
 async fn an_unread_notes_image_goes_with_the_next_message() {
     let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -309,6 +309,7 @@ async fn an_unread_notes_image_goes_with_the_next_message() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
     let feed = harness.feed.clone();
+    let session = harness.session.dir.clone();
     let kept = bodies.clone();
     let client = async move {
         sender.send(Input::Line("Start.".into())).unwrap();
@@ -349,4 +350,9 @@ async fn an_unread_notes_image_goes_with_the_next_message() {
         later.contains(&image),
         "the image goes with the next message"
     );
+    // Once it went, its file isn't kept.
+    let kept: Vec<_> = std::fs::read_dir(session.join("unread-images"))
+        .map(|files| files.flatten().map(|file| file.file_name()).collect())
+        .unwrap_or_default();
+    assert!(kept.is_empty(), "{kept:?}");
 }

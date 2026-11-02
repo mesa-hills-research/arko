@@ -4819,8 +4819,18 @@ impl Harness {
         if !self.unread.is_empty() {
             let unread = std::mem::take(&mut self.unread);
             self.feed.notes_sent(&typed_parts(&unread));
-            // Their images go too, before the message's own.
-            let (texts, images) = crate::blocking(|| crate::unread::load(&unread));
+            // Their images go too, before the message's own, and their files
+            // go once no note waiting in another conversation has them.
+            let (texts, images) = crate::blocking(|| {
+                let loaded = crate::unread::load(&unread);
+                let waiting = self
+                    .conversations
+                    .list
+                    .iter()
+                    .flat_map(|record| &record.unread);
+                crate::unread::sweep(&self.session.dir, waiting);
+                loaded
+            });
             self.pending_images.splice(0..0, images);
             parts.push(format!(
                 "# What I typed during your last turn, which you didn't get to read\n\n{}",
