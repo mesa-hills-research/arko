@@ -2,9 +2,10 @@
 //! Each goes with the user's next message in its conversation as the agent
 //! would have read it, its images too. The images are saved as files in
 //! the session's folder, so a conversation's record keeps their paths, not
-//! their bytes, and they outlast a restart. The images folder is opened as
-//! a [`Folder`], so nothing there is written, read or deleted through a
-//! link.
+//! their bytes, and they outlast a restart. Saving, loading and clearing
+//! open the images folder below the session's folder as a [`Folder`], so
+//! nothing there is written, read or deleted through a link, and a saved
+//! path is read only by its name, from that folder.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -28,8 +29,8 @@ const EXTENSIONS: [(&str, &str); 5] = [
 ];
 
 /// The images folder of the session's folder `session`, opened without
-/// following a link there. With `make`, one that isn't there is made, else
-/// it's `None`.
+/// following a link there, the one way saving, loading and clearing reach
+/// it. With `make`, one that isn't there is made, else it's `None`.
 fn images(session: &Path, make: bool) -> Result<Option<Folder>, String> {
     let session = Folder::base(session).map_err(|error| error.to_string())?;
     Ok(session.open(IMAGES_DIR, make)?.map(|(folder, _)| folder))
@@ -185,23 +186,37 @@ fn save(session: &Path, image: &arko_ai::Image) -> Result<ImageFile, String> {
     })
 }
 
-/// The bytes of the image at `path`, opened without following a link at
-/// its end. Anything but a regular file is refused.
-fn read_image(path: &Path) -> std::io::Result<Vec<u8>> {
-    let (Some(folder), Some(name)) = (path.parent(), path.file_name()) else {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
-    };
-    Folder::base(folder)?.read(name)
+/// The name of the session's image that a note's saved `path` names. It's
+/// one [`save`] gives, in an images folder. Only the name counts, so it's
+/// read from the session's own folder, wherever that was when it was saved.
+fn cached_name(path: &Path) -> Option<&OsStr> {
+    let name = path.file_name()?;
+    (path.parent()?.file_name()? == IMAGES_DIR && is_image_name(name)).then_some(name)
 }
 
 /// The texts of `notes` as the agent reads them, and their images, in
-/// order. A note whose image can't be read goes without its images, and its
-/// attachments block no longer says they follow. Reads files.
-pub(crate) fn load(notes: &[Unread]) -> (Vec<String>, Vec<arko_ai::Image>) {
+/// order, read from the session's folder `session`. A note whose image
+/// can't be read goes without its images, and its attachments block no
+/// longer says they follow. Reads files.
+pub(crate) fn load(session: &Path, notes: &[Unread]) -> (Vec<String>, Vec<arko_ai::Image>) {
+    let cache = if notes.iter().any(|note| !note.images.is_empty()) {
+        images(session, false)
+    } else {
+        Ok(None)
+    };
+    let read_image = |path: &Path| -> Result<Vec<u8>, String> {
+        let name = cached_name(path)
+            .ok_or_else(|| format!("{} isn't one of the session's images", path.display()))?;
+        match &cache {
+            Ok(Some(folder)) => folder.read(name).map_err(|error| error.to_string()),
+            Ok(None) => Err("the session has no images".into()),
+            Err(why) => Err(why.clone()),
+        }
+    };
     let mut texts = Vec::new();
     let mut images = Vec::new();
     for note in notes {
-        let read: Result<Vec<arko_ai::Image>, std::io::Error> = note
+        let read: Result<Vec<arko_ai::Image>, String> = note
             .images
             .iter()
             .map(|file| {
@@ -289,7 +304,7 @@ mod tests {
         // As an older Arko saved them.
         let older: Vec<Unread> = serde_json::from_str(r#"["Also the docs."]"#).unwrap();
         assert_eq!(older, vec![Unread::from("Also the docs.")]);
-        let (texts, images) = load(&back);
+        let (texts, images) = load(temp.path(), &back);
         assert_eq!(texts, ["Look at this too.", "Plain."]);
         assert_eq!(images, vec![pixel(), pixel()]);
     }
@@ -380,9 +395,63 @@ mod tests {
         let note = keep(temp.path(), "Look.".into(), &[pixel()]);
         std::fs::remove_file(&note.images[0].path).unwrap();
         std::os::unix::fs::symlink(&secret, &note.images[0].path).unwrap();
-        let (texts, images) = load(&[note]);
+        let (texts, images) = load(temp.path(), &[note]);
         assert!(images.is_empty());
         assert_eq!(texts, ["Look."]);
+    }
+
+    /// Loading never reads through an images folder swapped for a link.
+    #[cfg(unix)]
+    #[test]
+    fn loading_never_follows_a_linked_images_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let note = keep(temp.path(), "Look.".into(), &[pixel()]);
+        let name = note.images[0].path.file_name().unwrap().to_owned();
+        let images = temp.path().join(IMAGES_DIR);
+        std::fs::rename(&images, temp.path().join("moved")).unwrap();
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join(name), b"not the image").unwrap();
+        std::os::unix::fs::symlink(&outside, &images).unwrap();
+        let (texts, read) = load(temp.path(), &[note]);
+        assert!(read.is_empty());
+        assert_eq!(texts, ["Look."]);
+    }
+
+    /// A note's saved path is read only as an image of the session's
+    /// folder, so one that names a file elsewhere isn't read.
+    #[test]
+    fn a_path_outside_the_images_folder_isnt_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let named = format!("{}.png", "a".repeat(32));
+        let elsewhere = temp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join(&named), b"secret").unwrap();
+        std::fs::write(temp.path().join("id_ed25519"), b"secret").unwrap();
+        for path in [elsewhere.join(&named), temp.path().join("id_ed25519")] {
+            let note = Unread {
+                text: "Look.".into(),
+                images: vec![ImageFile {
+                    path,
+                    mime: "image/png".into(),
+                }],
+            };
+            let (_, read) = load(temp.path(), &[note]);
+            assert!(read.is_empty());
+        }
+        // The session's own image is read by its name, wherever its record
+        // says the session's folder was.
+        let note = keep(temp.path(), "Look.".into(), &[pixel()]);
+        let moved = Path::new("/moved/session").join(IMAGES_DIR);
+        let path = moved.join(note.images[0].path.file_name().unwrap());
+        let note = Unread {
+            images: vec![ImageFile {
+                path,
+                mime: "image/png".into(),
+            }],
+            ..note
+        };
+        assert_eq!(load(temp.path(), &[note]).1, vec![pixel()]);
     }
 
     /// An image that's gone by the next message doesn't go along, and the
@@ -393,7 +462,7 @@ mod tests {
         let text = "<attachments>\n<file name=\"bug.png\" type=\"image/png\" size=\"70 bytes\" bytes=\"70\" path=\"/w/bug.png\" shown=\"as an image after this message\"/>\n</attachments>\n\nLook.";
         let note = keep(temp.path(), text.into(), &[pixel()]);
         std::fs::remove_file(&note.images[0].path).unwrap();
-        let (texts, images) = load(&[note]);
+        let (texts, images) = load(temp.path(), &[note]);
         assert!(images.is_empty());
         assert!(!texts[0].contains("shown="), "{}", texts[0]);
         assert!(

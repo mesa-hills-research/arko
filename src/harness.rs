@@ -4822,7 +4822,7 @@ impl Harness {
             // Their images go too, before the message's own, and their files
             // go once no note waiting in another conversation has them.
             let (texts, images) = crate::blocking(|| {
-                let loaded = crate::unread::load(&unread);
+                let loaded = crate::unread::load(&self.session.dir, &unread);
                 let waiting = self
                     .conversations
                     .list

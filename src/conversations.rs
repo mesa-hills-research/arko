@@ -823,7 +823,7 @@ mod tests {
         let loaded = Conversations::load(dir.path()).unwrap();
         assert_eq!(loaded, conversations);
         // A note's image comes back from its file after the reload.
-        let (texts, images) = crate::unread::load(&loaded.list[0].unread);
+        let (texts, images) = crate::unread::load(dir.path(), &loaded.list[0].unread);
         assert_eq!(texts, ["also the docs", "and this"]);
         assert_eq!(images, vec![pixel]);
         let saved = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
