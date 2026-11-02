@@ -148,10 +148,3 @@ strip = true
 # The speech engine is far too slow to dictate with unoptimized.
 [profile.dev.package.telmo]
 opt-level = 3
-
-# The framework from /home/local-ubuntu/Desktop/arko-studio-work/wt/fw-edit-receipt (branch
-# edit-receipt) until arko_agents 0.8.0 and arko_workflows 0.9.0 are published.
-[patch.crates-io]
-arko_ai = { path = "/home/local-ubuntu/Desktop/arko-studio-work/wt/fw-edit-receipt/arko_ai" }
-arko_agents = { path = "/home/local-ubuntu/Desktop/arko-studio-work/wt/fw-edit-receipt/arko_agents" }
-arko_workflows = { path = "/home/local-ubuntu/Desktop/arko-studio-work/wt/fw-edit-receipt/arko_workflows" }
