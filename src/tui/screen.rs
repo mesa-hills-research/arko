@@ -2769,12 +2769,15 @@ mod tests {
         assert!(rows.iter().any(|row| row.contains("│ 7")), "{rows:#?}");
         // The keyboard reaches it too, and closes it again.
         app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
-        assert_eq!(app.transcript.focus, Some(3));
+        assert_eq!(
+            app.transcript.focus,
+            Some(transcript::Target::Inner { row: 2, item: 3 })
+        );
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let rows = screen(&mut app, 60, 20);
         assert!(!rows.iter().any(|row| row.contains("│ 7")), "{rows:#?}");
         app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.transcript.focus, Some(2));
+        assert_eq!(app.transcript.focus, Some(transcript::Target::Block(2)));
         // A double click on that line selects a word of it, as it does on
         // the output's own line.
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -2814,7 +2817,7 @@ mod tests {
         quiet_calls(&mut app);
         screen(&mut app, 70, 24);
         app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
-        assert_eq!(app.transcript.focus, Some(7));
+        assert_eq!(app.transcript.focus, Some(transcript::Target::Block(7)));
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let rows = screen(&mut app, 70, 24);
         let message = rows
@@ -2829,7 +2832,11 @@ mod tests {
         );
         app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.transcript.focus, Some(2), "the edits' row, by its read");
+        assert_eq!(
+            app.transcript.focus,
+            Some(transcript::Target::Block(2)),
+            "the edits' row, by its read"
+        );
         app.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         let rows = screen(&mut app, 70, 24);
         assert!(

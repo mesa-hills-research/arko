@@ -213,6 +213,16 @@ struct Pin {
     row: usize,
 }
 
+/// What the keyboard is on (Ctrl+G): a block that opens (a Quiet row, a
+/// call, a content, a thinking), by its key, or something inside an open
+/// Quiet row (a call, a content, a thinking), by the row's key and its item.
+/// A row's key is its first call's, so the row and that call are apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Block(u64),
+    Inner { row: u64, item: u64 },
+}
+
 /// Where a fold opens and closes, with the item whose fold it is, the block it
 /// shows in (an open Quiet row's, for an item inside it), and its line
 /// there. A click, the keyboard and a selection all find a fold by it.
@@ -410,9 +420,9 @@ pub struct Transcript {
     /// The Quiet view's order as last worked out, for a view and a
     /// generation. It's worked out again only when the items change.
     quiet_order: Option<(Filter, u64, Arc<Vec<Placed>>)>,
-    /// The row the keyboard is on (Ctrl+G), by its block's key. It shows in
-    /// the selection's colour, and the view keeps it in sight.
-    pub focus: Option<u64>,
+    /// The row the keyboard is on (Ctrl+G). It shows in the selection's
+    /// colour, and the view keeps it in sight.
+    pub focus: Option<Target>,
     /// The keyboard moved, so the next draw scrolls its row into sight.
     reveal: bool,
 }
@@ -1402,11 +1412,11 @@ impl Transcript {
     /// block's first line, or inside an open Quiet row the line that opens
     /// and closes a call's output or thinking (its last).
     fn focus_line(&self, block: &Block) -> Option<usize> {
-        let focus = self.focus?;
-        if block.key == focus {
-            return Some(usize::from(block.gap));
+        match self.focus? {
+            Target::Block(key) if key == block.key => Some(usize::from(block.gap)),
+            Target::Inner { row, item } if row == block.key => self.inner_line(block, item),
+            _ => None,
         }
-        self.inner_line(block, focus)
     }
 
     /// The line of `block`, an open Quiet row, that opens and closes the
@@ -2009,30 +2019,32 @@ impl Transcript {
 
     /// The blocks of `filter`'s view that open and close, by key. Those are Quiet
     /// rows, calls, contents and the agents' thinking.
-    fn openable(&mut self, filter: &Filter, theme: &Theme) -> Vec<u64> {
+    fn openable(&mut self, filter: &Filter, theme: &Theme) -> Vec<Target> {
         let width = self.drawn.area.width as usize;
         let mut keys = Vec::new();
         for block in self.blocks(filter, theme, width) {
             match &block.shown {
                 Shown::Quiet(row) if !row.opens => {}
                 Shown::Quiet(_) => {
-                    keys.push(block.key);
+                    keys.push(Target::Block(block.key));
                     // The calls, contents and thinking inside it, while it's
-                    // open. (Its first call has its key, which opens the
-                    // row.)
+                    // open.
                     if let Some(cached) = self.quiet_cache.get(&block.key) {
                         keys.extend(
                             cached
                                 .spans
                                 .iter()
                                 .map(|(id, _)| *id)
-                                .filter(|id| *id != block.key)
-                                .filter(|id| self.item(*id).is_some_and(|item| self.folds(item))),
+                                .filter(|id| self.item(*id).is_some_and(|item| self.folds(item)))
+                                .map(|item| Target::Inner {
+                                    row: block.key,
+                                    item,
+                                }),
                         );
                     }
                 }
                 Shown::Entry(index) if self.folds_in(&self.entries[*index].item, filter) => {
-                    keys.push(block.key)
+                    keys.push(Target::Block(block.key))
                 }
                 _ => {}
             }
@@ -2050,7 +2062,7 @@ impl Transcript {
         };
         let at = match self
             .focus
-            .and_then(|key| keys.iter().position(|k| *k == key))
+            .and_then(|focus| keys.iter().position(|key| *key == focus))
         {
             Some(at) => at.saturating_add_signed(by).min(last),
             None => last,
@@ -2063,10 +2075,29 @@ impl Transcript {
     /// Opens (`Some(true)`), closes (`Some(false)`) or toggles (`None`) the
     /// block the keyboard is on.
     pub fn open_focus(&mut self, open: Option<bool>, filter: &Filter, theme: &Theme) {
-        let Some(key) = self.focus else {
+        let Some(focus) = self.focus else {
             return;
         };
         self.reveal = true;
+        let key = match focus {
+            Target::Block(key) => key,
+            // A call or a thinking inside a Quiet row opens there, a
+            // content to its whole.
+            Target::Inner { item, .. } => {
+                if !self.item(item).is_some_and(|item| self.folds(item)) {
+                    return;
+                }
+                if let Some(entry) = self.find_mut(item) {
+                    if matches!(entry.item.kind, Kind::Thinking | Kind::Call) {
+                        entry.open_quiet = open.unwrap_or(!entry.open_quiet);
+                    } else {
+                        entry.open = open.unwrap_or(!entry.open);
+                    }
+                    entry.touch();
+                }
+                return;
+            }
+        };
         if self.quiet_row(key, filter, theme).is_some() {
             let now = self.quiet_open.contains(&key);
             if open.unwrap_or(!now) {
@@ -5551,6 +5582,50 @@ mod tests {
         assert_eq!(
             word(&plain[0], "fn main() {}").fg,
             Theme::terminal().text().fg
+        );
+    }
+
+    /// The keyboard reaches each call inside an open Quiet row of several,
+    /// its first one too, whose key is the row's, and opens it there.
+    #[test]
+    fn the_keyboard_opens_the_first_call_of_a_quiet_row() {
+        use crate::remote::{Act, ActKind};
+        let quiet = Filter::Main(View::Quiet);
+        let theme = Theme::terminal();
+        let mut t = Transcript::new();
+        for (call, path) in [(1, "a.rs"), (3, "b.rs")] {
+            let mut read = item(call, Kind::Call, path);
+            read.turn = Some(1);
+            read.status = Some(CallStatus::Ok);
+            read.act = Some(Act {
+                kind: ActKind::Read,
+                target: path.into(),
+                ..Act::default()
+            });
+            t.apply(Update::Item(read));
+            let mut lines = item(call + 1, Kind::Result, "1\tone");
+            lines.content = Some(ContentKind::Lines);
+            lines.call = Some(call);
+            lines.turn = Some(1);
+            t.apply(Update::Item(lines));
+        }
+        rows(&mut t, &quiet, 40, 6);
+        assert!(t.move_focus(0, &quiet, &theme));
+        assert_eq!(t.focus, Some(Target::Block(1)));
+        t.open_focus(Some(true), &quiet, &theme);
+        rows(&mut t, &quiet, 40, 6);
+        t.move_focus(1, &quiet, &theme);
+        assert_eq!(t.focus, Some(Target::Inner { row: 1, item: 1 }));
+        t.open_focus(None, &quiet, &theme);
+        assert_eq!(
+            rows(&mut t, &quiet, 40, 5),
+            [
+                "  ▾ Read a.rs and b.rs",
+                "  │ ▾ a.rs · ✓",
+                "  │   1  one",
+                "  │ ▸ b.rs · ✓",
+                ""
+            ]
         );
     }
 
