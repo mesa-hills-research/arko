@@ -1168,14 +1168,25 @@ struct Content {
 }
 
 impl Content {
-    /// `text` as a content of `kind`, without its blank lines at the end,
-    /// and `None` when it's blank.
+    /// `text` as a content of `kind`, and `None` when it says nothing. A
+    /// file's lines and a diff stay as they are, their blank lines and
+    /// spaces too. Text loses the blank lines it starts and ends with.
     fn new(kind: ContentKind, text: impl Into<String>, language: Option<String>) -> Option<Self> {
         let text = text.into();
-        let text = text.trim_end().trim_start_matches(['\n', '\r']);
-        (!text.is_empty()).then(|| Self {
+        let text = match kind {
+            ContentKind::Lines | ContentKind::Diff => text,
+            _ if text.trim().is_empty() => String::new(),
+            _ => {
+                let end = text.trim_end_matches(['\n', '\r']);
+                let start = end.len() - end.trim_start().len();
+                // (From the line the first that isn't blank starts.)
+                let start = end[..start].rfind('\n').map_or(0, |at| at + 1);
+                end[start..].to_string()
+            }
+        };
+        (!text.is_empty()).then_some(Self {
             kind,
-            text: text.to_string(),
+            text,
             language,
         })
     }
@@ -1234,6 +1245,9 @@ fn content(
                 .enumerate()
                 .map(|(at, line)| content::numbered(at + 1, line))
                 .collect();
+            if lines.is_empty() {
+                return Content::new(ContentKind::Muted, "Empty", None);
+            }
             Content::new(ContentKind::Lines, lines.join("\n"), language(path))
         }
         EDIT_FILE_TOOL_NAME => {
@@ -1827,6 +1841,58 @@ mod tests {
         assert_eq!(edit_diff("a\n", "b", "c", false), None);
         assert_eq!(edit_diff("a a\n", "a", "c", false), None);
         assert_eq!(bare_diff("a\nb", "c"), "-\ta\n-\tb\n+\tc");
+    }
+
+    /// A content keeps a file's lines as they are, a blank line and one of
+    /// spaces too, through its preview and its whole, and an empty file's
+    /// write says so as a read of one does.
+    #[test]
+    fn a_contents_file_lines_are_kept_as_they_are() {
+        let lines = |tool: &str, parameters: &[(&str, Value)], output: &str| {
+            let block = super::outcome(tool, &params(parameters), output)
+                .block
+                .unwrap();
+            (block.content.unwrap(), block.text)
+        };
+        let read = lines(
+            READ_FILE_TOOL_NAME,
+            &[("path", "a.rs".into())],
+            "1 | x  \n2 |   \n3 | \n[Lines 1-3 of 3.]",
+        );
+        assert_eq!(read, (ContentKind::Lines, "1\tx  \n2\t  \n3\t".to_string()));
+        assert_eq!(
+            content::line(ContentKind::Lines, read.1.lines().last().unwrap()),
+            content::Line::Numbered {
+                number: "3",
+                mark: content::Mark::None,
+                text: ""
+            }
+        );
+        let write = |text: &str| {
+            lines(
+                WRITE_FILE_TOOL_NAME,
+                &[("path", "a.rs".into()), ("content", text.into())],
+                "Wrote a.rs.",
+            )
+        };
+        assert_eq!(write("\n"), (ContentKind::Lines, "1\t".to_string()));
+        assert_eq!(
+            write("a\n\n"),
+            (ContentKind::Lines, "1\ta\n2\t".to_string())
+        );
+        assert_eq!(write(""), (ContentKind::Muted, "Empty".to_string()));
+        // An edit whose last line is blank.
+        let edit = outcome_after(
+            EDIT_FILE_TOOL_NAME,
+            &params(&[
+                ("path", "a.rs".into()),
+                ("old_string", "a".into()),
+                ("new_string", "b".into()),
+            ]),
+            "Edited a.rs at line 1:\n1 | b\n2 | ",
+            Some("a\n\n"),
+        );
+        assert_eq!(edit.block.unwrap().text, "-1\ta\n+1\tb\n 2\t");
     }
 
     /// A wait's content is the mail that came, each by its heading, from
