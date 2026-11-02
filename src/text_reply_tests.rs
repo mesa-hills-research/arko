@@ -529,6 +529,125 @@ async fn a_news_turn_with_nothing_for_the_user_ends_without_a_reply() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// Only a turn Arko starts for news, with nothing the user wrote in it, may
+/// end without a reply, and only where the main agent ends its turns with a
+/// reply in text and the session isn't -p's. What the user typed that the
+/// last turn didn't read, and images waiting to go, go with the turn's
+/// message, so a turn that brings them needs a reply.
+#[tokio::test]
+async fn only_a_turn_for_news_alone_may_end_without_a_reply() {
+    let server = ModelServer::start(Arc::new(|_, _| {
+        Box::pin(async { reply("m1", "Hello.") })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), true);
+    replying(&mut harness);
+    let news = [
+        Prompt::News { resent: false },
+        Prompt::Jobs(Vec::new()),
+        Prompt::Monitor(crate::openings::Opening::Alert, Vec::new()),
+    ];
+    for (index, prompt) in news.iter().enumerate() {
+        assert!(harness.reply_optional(prompt), "news turn {index}");
+    }
+    for (index, prompt) in [
+        Prompt::User("Hi.".into()),
+        Prompt::Unread,
+        Prompt::Answers,
+        Prompt::Recover,
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(!harness.reply_optional(prompt), "other turn {index}");
+    }
+    let news_alone = |harness: &Harness| news.iter().any(|prompt| harness.reply_optional(prompt));
+    harness.unread.push("Set the limit to five.".into());
+    assert!(!news_alone(&harness), "what the user typed");
+    harness.unread.clear();
+    harness.pending_images.push(arko_ai::Image::Url("https://example.com/a.png".into()));
+    assert!(!news_alone(&harness), "images waiting to go");
+    harness.pending_images.clear();
+    harness.one_shot = true;
+    assert!(!news_alone(&harness), "-p");
+    harness.one_shot = false;
+    harness.settings.text_replies = false;
+    assert!(!news_alone(&harness), "complete_task");
+}
+
+/// What the user typed during a turn that was stopped before the agent read
+/// it goes with the next message, here a turn for the workers' news. That
+/// turn needs a reply, so a response without one gets the note, and the
+/// agent answers.
+#[tokio::test]
+async fn a_note_a_stopped_turn_left_unread_gets_a_reply_in_the_news_turn() {
+    const NUDGE: &str = "Your response had no text and no tool call";
+    let requested = Arc::new(Notify::new());
+    let server = ModelServer::start(Arc::new({
+        let requested = requested.clone();
+        move |_, body: String| {
+            let requested = requested.clone();
+            Box::pin(async move {
+                if body.contains("Set the limit to five") {
+                    if body.contains(NUDGE) {
+                        reply("m2", "Set to five.")
+                    } else {
+                        reply("m1", "")
+                    }
+                } else {
+                    requested.notify_one();
+                    std::future::pending::<String>().await
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    replying(&mut harness);
+    let feed = harness.feed.clone();
+    let typing = tokio::spawn(async move {
+        requested.notified().await;
+        sender
+            .send(Input::Line("Set the limit to five".into()))
+            .unwrap();
+        until(|| {
+            feed.subscribe()
+                .0
+                .items
+                .iter()
+                .any(|item| item.text == "Set the limit to five" && item.pending)
+        })
+        .await;
+        sender.send(Input::Interrupt).unwrap();
+        sender
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(25),
+        harness.turn(Prompt::User("Start a long job.".into()), &mut inputs),
+    )
+    .await
+    .unwrap();
+    let _sender = typing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Stopped));
+    assert_eq!(harness.unread, ["Set the limit to five"]);
+
+    let end = tokio::time::timeout(
+        Duration::from_secs(25),
+        harness.turn(Prompt::News { resent: false }, &mut inputs),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert!(harness.unread.is_empty());
+    assert_eq!(summary(&harness), "Set to five.");
+    let Conversation::Answered(result) = &harness.conversation else {
+        panic!("the news turn wasn't answered");
+    };
+    assert!(!result.task().unwrap().reply_optional);
+}
+
 /// `/resume` shows the conversation's own last reply. A conversation whose
 /// only turn ended without a reply has none, and another conversation's
 /// reply doesn't stand in for it.

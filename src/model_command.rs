@@ -670,6 +670,7 @@ impl Harness {
             },
             indexes: &known,
             monitors: !self.one_shot,
+            quiet_news: agents::quiet_news(settings.text_replies, self.one_shot),
             ..AgentSettings::for_session(settings, setup)
         };
         Ok((

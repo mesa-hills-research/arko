@@ -547,10 +547,9 @@ impl Prompt {
         }
     }
 
-    /// Whether the turn may end without a reply. A turn Arko started for the
-    /// workers' news, a job or a monitor may, since the user hasn't written.
-    /// A turn that recovers keeps what its run was saved with.
-    fn reply_optional(&self) -> bool {
+    /// Whether Arko started the turn for news, the workers', a job's or a
+    /// monitor's.
+    fn is_news(&self) -> bool {
         matches!(
             self,
             Prompt::News { .. } | Prompt::Jobs(_) | Prompt::Monitor(..)
@@ -3725,6 +3724,18 @@ impl Harness {
         }
     }
 
+    /// Whether a turn for `prompt` may end without a reply. A turn Arko
+    /// starts for news may, in a session whose main agent is told so
+    /// ([`agents::quiet_news`]), unless its message brings what the user
+    /// wrote (what they typed that the last turn didn't read, or images
+    /// waiting to go). A turn that recovers keeps what its run was saved with.
+    fn reply_optional(&self, prompt: &Prompt) -> bool {
+        prompt.is_news()
+            && agents::quiet_news(self.settings.text_replies, self.one_shot)
+            && self.unread.is_empty()
+            && self.pending_images.is_empty()
+    }
+
     /// One turn. The message goes to the main agent, and its reply is
     /// printed.
     pub(crate) async fn turn(&mut self, prompt: Prompt, input: &mut Inputs) -> TurnEnd {
@@ -3773,9 +3784,8 @@ impl Harness {
         let resumes = !matches!(prompt, Prompt::Recover)
             && matches!(&self.conversation, Conversation::Stopped(run) if run.restart != Restart::Recover);
         let opening = prompt.opening();
-        // With -p, the last news turn's reply is the answer standard output
-        // gets.
-        let reply_optional = prompt.reply_optional() && !self.one_shot;
+        // (Before the message takes what the user wrote.)
+        let reply_optional = self.reply_optional(&prompt);
         let about = self.subjects(&prompt);
         if matches!(prompt, Prompt::User(_)) {
             self.user_present();
