@@ -35,6 +35,7 @@ mod agents;
 pub mod approvals;
 pub mod arko_dir;
 mod asking;
+mod attachments;
 mod billing;
 pub mod builtin_skills;
 mod cache_memory;

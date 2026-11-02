@@ -210,6 +210,9 @@ pub enum RefusalKind {
     /// The web page sent it from a view of another feed (Arko started
     /// again since the page loaded).
     Stale,
+    /// Its files can't go with it, such as files with a command, a file a
+    /// chat can't take, or one Arko no longer has.
+    Files,
 }
 
 /// What sending something again needs, which the user agrees to.
@@ -521,6 +524,37 @@ pub struct ImageData {
     /// Where the page gets it. The address holds the server's version, so a
     /// browser may keep it as long as the server runs.
     pub url: String,
+}
+
+/// What a file sent from the page is, from its first bytes. An image may
+/// go to the model, a text may go in the message, and every file is saved
+/// where the agent reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileKind {
+    Image,
+    Text,
+    File,
+}
+
+/// The answer to `POST /api/uploads`, the upload to send the file's bytes to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadCreated {
+    pub id: String,
+}
+
+/// How far an upload is (`PUT` and `GET /api/uploads/{id}`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadState {
+    /// The bytes Arko holds, from the start.
+    pub received: u64,
+    pub size: u64,
+    /// Arko holds the whole file.
+    #[serde(default)]
+    pub done: bool,
+    /// What the file is, once whole.
+    #[serde(default)]
+    pub kind: Option<FileKind>,
 }
 
 /// One of the main agent's questions, as a card and the status give it.
@@ -1360,7 +1394,7 @@ fn thousands(count: u64) -> String {
 }
 
 /// A file's size as people say it, such as `512 bytes`, `14 KB`, `1.2 MB`.
-fn size(bytes: u64) -> String {
+pub(crate) fn size(bytes: u64) -> String {
     match bytes {
         0..1024 => format!("{bytes} bytes"),
         1024..1_048_576 => format!("{} KB", (bytes as f64 / 1024.0).round() as u64),
