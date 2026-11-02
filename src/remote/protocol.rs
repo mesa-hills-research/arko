@@ -1029,8 +1029,8 @@ impl Approval {
 
     /// What its row says after its scope, meaning a profile's model and effort, a
     /// skill's description (or what an update changes, "changes SKILL.md
-    /// and 2 more files", and "loads into every new conversation" for one
-    /// with `auto_load`), a server's command, a worker's prices and the
+    /// and 2 more files", led by "loads into every new conversation" for
+    /// one with `auto_load`), a server's command, a worker's prices and the
     /// day's spend.
     pub fn summary(&self) -> String {
         match self {
@@ -1040,8 +1040,9 @@ impl Approval {
             },
             Approval::Skill(skill) => match (&skill.update, skill.auto_load) {
                 (Some(update), false) => format!("changes {}", update.short()),
+                // (The lasting effect first, since a narrow row cuts the end.)
                 (Some(update), true) => format!(
-                    "changes {}, loads into every new conversation",
+                    "loads into every new conversation, changes {}",
                     update.short()
                 ),
                 (None, true) => "loads into every new conversation".to_string(),

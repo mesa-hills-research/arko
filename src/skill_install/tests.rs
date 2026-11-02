@@ -1020,7 +1020,7 @@ async fn an_update_asks_to_turn_auto_load_on_and_not_to_turn_it_off() {
     );
     assert_eq!(
         approval.summary(),
-        "changes SKILL.md, loads into every new conversation"
+        "loads into every new conversation, changes SKILL.md"
     );
     assert!(
         cards[0]

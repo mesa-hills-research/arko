@@ -67,7 +67,8 @@ agent is told where. An agent's skill you filled with more than 1,000 files and 
 isn't updated. A
 `.arko`, `.arko/skills` or `skills` folder that is a link is refused, so a save can't land outside
 its place. The agent's `load_skill` finds the skill at once, and its skill list shows it from the
-next conversation. Workers started after the save get it unless it says `workers: false`.
+next conversation. A skill with `auto_load: true` loads into every conversation from the next one on
+instead. Workers started after the save get it unless it says `workers: false`.
 
 Arko records each save in `agent-added.json` in its folder, so `/skills` marks the skill "added by
 the agent" with the day, and `/skills NAME` says why and from where. The agent's `remove_skill` and

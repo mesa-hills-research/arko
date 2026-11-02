@@ -463,10 +463,14 @@ fn detail_lines(app: &App, request: &ApprovalRequest, width: usize) -> Vec<Line<
     };
     let approval = &request.approval;
     put(
-        vec![vec![Span::styled(
-            approval.title(),
-            theme.text().add_modifier(Modifier::BOLD),
-        )]],
+        wrap::wrap(
+            &[Span::styled(
+                approval.title(),
+                theme.text().add_modifier(Modifier::BOLD),
+            )],
+            room,
+            0,
+        ),
         &mut lines,
     );
     for detail in approval.details() {

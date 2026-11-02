@@ -41,7 +41,8 @@
 //! conversation, with `load_skill`, so its tool list never changes and its
 //! prompt cache holds. `load_skill` reads the skill folders at each call, so
 //! it loads a saved skill at once, and the skill list in the system prompt
-//! shows it from the next conversation.
+//! shows it from the next conversation. A skill with `auto_load` is in the
+//! system prompt from the next conversation instead.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -90,9 +91,9 @@ const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 const LOCK_FILE: &str = "skills.lock";
 
 /// What `add_skill` tells the agent of itself.
-const ADD_DESCRIPTION: &str = "Saves a skill that you and later conversations load with load_skill. Use it when instructions would help later conversations or workers, such as this project's release steps or a workaround for a tool. A SKILL.md opens with front matter that gives name, description (what it is for and when to load it, in one or two sentences) and, if needed, models. models lists the models whose agents see the skill in their skill list. An exact id such as claude-haiku-5-5 pins it to that release, which suits a workaround for one version's quirk. A short name or pattern such as haiku or gpt-6* follows the family across releases, which suits advice about a kind of model. Other agents can still load it by name. auto_load: true puts the whole skill in every new conversation, so give it only to instructions every conversation needs. The user always approves it. load_skill finds the skill at once, and the skill list shows it from the next conversation. Project skills go in the project's .arko/skills, which git ignores until the user turns off Keep agents' project files out of git in Arko's settings. To change a skill an agent saved, use edit_skill.";
+const ADD_DESCRIPTION: &str = "Saves a skill that you and later conversations load with load_skill. Use it when instructions would help later conversations or workers, such as this project's release steps or a workaround for a tool. A SKILL.md opens with front matter that gives name, description (what it is for and when to load it, in one or two sentences) and, if needed, models. models lists the models whose agents see the skill in their skill list. An exact id such as claude-haiku-5-5 pins it to that release, which suits a workaround for one version's quirk. A short name or pattern such as haiku or gpt-6* follows the family across releases, which suits advice about a kind of model. Other agents can still load it by name. load_skill finds the skill at once, and the skill list shows it from the next conversation. auto_load: true instead puts the whole skill in every conversation from the next one on, so give it only to instructions every conversation needs. The user always approves it. Project skills go in the project's .arko/skills, which git ignores until the user turns off Keep agents' project files out of git in Arko's settings. To change a skill an agent saved, use edit_skill.";
 
-const EDIT_DESCRIPTION: &str = "Updates a skill that you or another agent saved with add_skill, from a new version of it, in the scope it was saved in. Write the whole new version outside the skill folders, as for add_skill, and give it as the source. The user approves the update as they would the save, and sees what changes. An update with auto_load: true always asks. A name no agent saved a skill under is refused, and add_skill saves a new one. load_skill loads the new version at once.";
+const EDIT_DESCRIPTION: &str = "Updates a skill that you or another agent saved with add_skill, from a new version of it, in the scope it was saved in. Write the whole new version outside the skill folders, as for add_skill, and give it as the source. The user approves the update as they would the save, and sees what changes. A name no agent saved a skill under is refused, and add_skill saves a new one. load_skill loads the new version at once. With auto_load: true the update always asks, and the new version loads into every conversation from the next one on.";
 
 /// Whom a save asks, the session's approval tray.
 #[async_trait]

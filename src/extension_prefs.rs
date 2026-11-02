@@ -35,7 +35,7 @@ pub const CANCEL: &str = "Cancel";
 pub const ASK_MCP_OFF_LINE: &str = "Agents add MCP servers without asking.";
 
 pub const REVIEW_SKILLS_NAME: &str = "Review project skills";
-pub const REVIEW_SKILLS_ABOUT: &str = "Agents ask before they save a skill in the project too. Skills for every project and downloaded skills always ask. A skill folder an agent writes with its file tools or the shell loads as before, without asking.";
+pub const REVIEW_SKILLS_ABOUT: &str = "Agents ask before they save a skill in the project too. Skills for every project, downloaded skills and skills that load into every conversation always ask. A skill folder an agent writes with its file tools or the shell loads as before, without asking.";
 
 pub const KEEP_OUT_OF_GIT_NAME: &str = "Keep agents' project files out of git";
 pub const KEEP_OUT_OF_GIT_ABOUT: &str = "Skills, MCP servers and worker profiles that agents save in the project's .arko folder stay out of git. Off removes Arko's .gitignore from that folder.";
@@ -50,7 +50,8 @@ pub struct ExtensionPrefs {
     /// the next session starts the server without a question.
     pub ask_before_adding_mcp: bool,
     /// An agent also asks before it saves a skill in the project. Off by
-    /// default. A skill for every project and a downloaded skill always ask.
+    /// default. A skill for every project, a downloaded skill and one with
+    /// `auto_load: true` always ask.
     pub review_project_skills: bool,
 }
 
