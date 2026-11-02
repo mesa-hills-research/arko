@@ -426,15 +426,22 @@ button.cache { padding: 0; border: 0; background: none; }
 .call-line .outcome::before { content: "· "; color: var(--muted); }
 .call-line .ok { color: var(--success); }
 .call-line .failed { color: var(--error); }
-/* The spinner's drawing turns as a whole, about the centre of its own box,
-   which is the circle's centre, so wherever the line puts the box can't
-   move it, and the browser turns it without painting it again. It's two
-   arcs, half a turn apart, so the ink stays centred as it turns. */
-.call-line .running { display: inline-block; width: 12px; height: 12px; vertical-align: -1px; }
+/* The spinner is a square box that turns about its own centre, which is
+   the circle's, with its drawing still inside. Wherever the line puts the
+   box can't move that centre, and the browser turns the box without
+   painting it again. The box is a plain element, since Safari on the
+   iPhone turned the svg itself off centre, and nothing clips it. The
+   drawing is two arcs half a turn apart, so its ink stays centred. */
 .spinner {
-  transform-origin: 50% 50%;
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  vertical-align: -1px;
+  transform-box: border-box;
+  transform-origin: center;
   animation: spin 1.2s linear infinite;
 }
+.call-line .outcome:has(> .spinner) { overflow: visible; }
 .call-line .call-action { margin-left: 4px; font-family: var(--sans); }
 details.call > summary, details.thinking > summary, details.more > summary { cursor: pointer; list-style: none; }
 details.call > summary::-webkit-details-marker,

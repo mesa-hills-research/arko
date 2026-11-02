@@ -326,7 +326,7 @@ fn quiet_row(
                         })}
                         {move || words().note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
                         {move || words().running.then(|| view! {
-                            <span class="outcome"><span class="running"><Spinner /></span></span>
+                            <span class="outcome"><Spinner /></span>
                         })}
                         {actions}
                     </span>
@@ -581,7 +581,7 @@ fn call_row(cell: RowCell) -> AnyView {
             // As on the earlier page, the status and the outcome after the call.
             let outcome = match item.status {
                 Some(CallStatus::Running) => Some(
-                    view! { <span class="outcome"><span class="running"><Spinner /></span></span> }
+                    view! { <span class="outcome"><Spinner /></span> }
                         .into_any(),
                 ),
                 Some(status) => {

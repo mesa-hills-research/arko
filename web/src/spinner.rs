@@ -25,16 +25,19 @@ fn arcs() -> String {
     format!("{}{}", arc(0.0), arc(180.0))
 }
 
-/// The spinner. Its drawing turns as a whole about its own center, which is
-/// the circle's (`.spinner` in app.css), so where the line puts it doesn't
-/// move it, and the browser turns it without painting it again.
+/// The spinner, a square box that turns about its own center, which is the
+/// circle's (`.spinner` in app.css), with the drawing still inside it. The
+/// browser turns the box without painting it again. Safari on the iPhone
+/// turned the svg itself off center, so the box is a plain element.
 #[component]
 pub fn Spinner() -> impl IntoView {
     view! {
-        <svg class="spinner" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24"
-            fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <path d=arcs() />
-        </svg>
+        <span class="spinner">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24"
+                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d=arcs() />
+            </svg>
+        </span>
     }
 }
 
@@ -76,6 +79,17 @@ mod tests {
     #[test]
     fn a_single_arc_is_off_center() {
         assert!(off(&ink(0.0, 288.0)) > 0.9);
+    }
+
+    /// What turns is a plain box around the drawing, not the svg.
+    #[test]
+    fn a_box_around_the_drawing_turns() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let html = view! { <Spinner /> }.to_html();
+            assert!(html.contains("<span class=\"spinner\"><svg "), "{html}");
+            assert!(!html.contains("<svg class"), "{html}");
+        });
     }
 
     /// The path is two arcs of the circle, one from the right and one from
