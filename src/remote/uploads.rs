@@ -7,11 +7,12 @@
 //!
 //! The table is the one owner of every upload. An upload is Reserved (its
 //! slot and its bytes held against the limits), then Receiving, then
-//! Complete, then Claimed by a message, and leaves the table once sent or
-//! released. Every change of state happens under the table's lock, in a
-//! statement of its own, and no disk work happens under it. The admission
-//! of a new upload checks the uploads waiting and the bytes they still need
-//! against the disk's free space together with its insert.
+//! Complete, then Claimed by a message, and leaves the table once sent. One
+//! that is removed is Deleting until a task of its own has waited for its
+//! writes and deleted its files, and only then leaves the table, so a
+//! caller that stops waiting leaves nothing behind. Every change of state
+//! happens under the table's lock, in a statement of its own, and no disk
+//! work happens under it.
 //!
 //! What an upload holds is the length of its part file. A request that
 //! resumes says where it starts (the `Upload-Offset` header) and is refused
@@ -23,10 +24,11 @@
 //! the slot's gate, and each disk step runs on the runtime's blocking pool
 //! holding the gate, so a request cancelled mid-step leaves the step to
 //! finish, the file in its slot and the gate shut until the disk is done.
-//! The step that completes an upload also records it as Complete. A step
-//! that holds the gate may take the table's lock, and the table's lock is
-//! never held while a gate is awaited (a sweep only tries one), so the two
-//! never wait on each other.
+//! The step that completes an upload also records it as Complete, and the
+//! part file stays open until it has its name, so a step that fails leaves
+//! the upload to complete again. A step that holds the gate may take the
+//! table's lock, and the table's lock is never held while a gate is
+//! awaited (a sweep only tries one), so the two never wait on each other.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -103,6 +105,9 @@ enum State {
     Complete(FileRef, Kind),
     /// A message with the claim this number names is sending it.
     Claimed(FileRef, Kind, u64),
+    /// Its files are being removed, by a task of its own that takes it out
+    /// of the table once they're gone.
+    Deleting,
 }
 
 /// An upload as the table holds it.
@@ -125,6 +130,8 @@ pub(super) struct Uploads {
     workspace: PathBuf,
     root: PathBuf,
     table: Table,
+    /// Tells of an upload whose files are gone, out of the table.
+    deleted: Arc<tokio::sync::Notify>,
     /// Numbers the messages' claims.
     claims: AtomicU64,
     /// Reads the free space on a disk, as [`free_bytes`] does (a test
@@ -162,10 +169,11 @@ impl Uploads {
             workspace,
             root,
             table: Arc::new(Mutex::new(HashMap::new())),
+            deleted: Arc::new(tokio::sync::Notify::new()),
             claims: AtomicU64::new(1),
             free: free_bytes,
             #[cfg(test)]
-            disk: tests::Disk::default(),
+            disk: tests::DISK.with(std::cell::Cell::get),
         }
     }
 
@@ -180,10 +188,14 @@ impl Uploads {
         self
     }
 
-    /// The upload `id` and its state now, touched.
+    /// The upload `id` and its state now, touched. One being removed is
+    /// gone.
     fn touch(&self, id: &str) -> Result<(Arc<Upload>, State), Refused> {
         let mut table = lock(&self.table);
-        let entry = table.get_mut(id).ok_or_else(gone)?;
+        let entry = table
+            .get_mut(id)
+            .filter(|entry| !matches!(entry.state, State::Deleting))
+            .ok_or_else(gone)?;
         entry.touched = Instant::now();
         Ok((entry.upload.clone(), entry.state.clone()))
     }
@@ -214,16 +226,10 @@ impl Uploads {
             )));
         }
         self.remove_abandoned().await;
-        let (workspace, root, free) = (self.workspace.clone(), self.root.clone(), self.free);
-        let opened = tokio::task::spawn_blocking(move || {
-            let folder =
-                folder(&workspace, &root).map_err(|why| Refused::Unwritable(sentence(why)))?;
-            let left = free(folder.real());
-            Ok::<_, Refused>((folder, left))
-        })
-        .await;
-        let (folder, left) = match opened {
-            Ok(opened) => opened?,
+        let (workspace, root) = (self.workspace.clone(), self.root.clone());
+        let opened = tokio::task::spawn_blocking(move || folder(&workspace, &root)).await;
+        let folder = match opened {
+            Ok(opened) => opened.map_err(|why| Refused::Unwritable(sentence(why)))?,
             Err(error) => return Err(Refused::Failed(format!("Couldn’t save {name} ({error})."))),
         };
         let id = super::random_token(16);
@@ -235,25 +241,40 @@ impl Uploads {
             writer: Arc::new(tokio::sync::Mutex::new(None)),
             newest: watch::Sender::new(0),
         });
-        self.reserve(&id, &upload, left)?;
-        // (The step goes on if the request is cancelled, so the upload
-        // never stays Reserved.)
+        // (Taken before the upload is in the table, so a removal that finds
+        // it waits for its part file.)
+        let gate = upload.writer.clone().lock_owned().await;
+        self.admit(&id, &upload).await?;
+        // The step goes on if the request is cancelled, so the upload never
+        // stays Reserved.
         let (table, made) = (self.table.clone(), id.clone());
         let ready = upload.clone();
+        #[cfg(test)]
+        let disk = self.disk;
         let done = tokio::task::spawn_blocking(move || {
+            let mut slot = gate;
+            #[cfg(test)]
+            std::thread::sleep(disk.delay);
             let file = ready.folder.create_file(&ready.part);
-            let mut slot = ready.writer.blocking_lock();
             let mut table = lock(&table);
-            match file {
-                Ok(file) => {
+            let entry = table
+                .get_mut(&made)
+                .filter(|entry| Arc::ptr_eq(&entry.upload, &ready));
+            match (file, entry) {
+                (Ok(file), Some(entry)) if matches!(entry.state, State::Reserved) => {
                     *slot = Some(file);
-                    if let Some(entry) = table.get_mut(&made) {
-                        entry.state = State::Receiving;
-                    }
+                    entry.state = State::Receiving;
                     Ok(())
                 }
-                Err(error) => {
-                    table.remove(&made);
+                // (Its removal waits for this gate, then removes the file.)
+                (Ok(file), _) => {
+                    *slot = Some(file);
+                    Err(gone())
+                }
+                (Err(error), entry) => {
+                    if entry.is_some_and(|entry| matches!(entry.state, State::Reserved)) {
+                        table.remove(&made);
+                    }
                     Err(Refused::Unwritable(format!(
                         "Couldn’t write in {} ({}).",
                         ready.folder.path().display(),
@@ -267,7 +288,7 @@ impl Uploads {
             Ok(Ok(())) => Ok(id),
             Ok(Err(refused)) => Err(refused),
             Err(error) => {
-                lock(&self.table).remove(&id);
+                self.remove_where(|key, entry| key == id && matches!(entry.state, State::Reserved));
                 Err(Refused::Failed(format!(
                     "Couldn’t save {} ({error}).",
                     upload.name
@@ -277,10 +298,16 @@ impl Uploads {
     }
 
     /// Holds a slot among the uploads waiting and `upload`'s bytes, as
-    /// `id`, when the disk has `left` bytes free, or says why not. Both
-    /// checks and the insert are one step, so uploads started at once can't
-    /// pass the limits together.
-    fn reserve(&self, id: &str, upload: &Arc<Upload>, left: Option<u64>) -> Result<(), Refused> {
+    /// `id`, when the disk has room for them, or says why not. Both checks
+    /// and the insert are one step, so uploads started at once can't pass
+    /// the limits together.
+    async fn admit(&self, id: &str, upload: &Arc<Upload>) -> Result<(), Refused> {
+        let (free, real) = (self.free, upload.folder.real().to_path_buf());
+        let left = tokio::task::spawn_blocking(move || free(&real))
+            .await
+            .map_err(|error| {
+                Refused::Failed(format!("Couldn’t save {} ({error}).", upload.name))
+            })?;
         let mut table = lock(&self.table);
         if table.len() >= MAX_UNSENT {
             return Err(Refused::TooMany(format!(
@@ -328,7 +355,7 @@ impl Uploads {
             Some(State::Complete(_, kind) | State::Claimed(_, kind, _)) => {
                 return Ok(upload.state_now(upload.size, Some(kind)));
             }
-            Some(State::Reserved) | None => return Err(gone()),
+            Some(State::Reserved | State::Deleting) | None => return Err(gone()),
         }
         let (mut gate, held) = self.disk(gate, slot_length).await?;
         let mut received = held.map_err(|error| write_failed(&upload.name, &error))?;
@@ -460,8 +487,9 @@ impl Uploads {
 
     /// Saves the whole part file of the upload `id` under its name, or the
     /// first numbered one no file has, and records it as Complete, in one
-    /// disk step. If the upload was removed meanwhile, the step removes the
-    /// file it saved.
+    /// disk step. The part file stays open until it has its name, so a step
+    /// that fails leaves the upload to complete again. If the upload is
+    /// being removed meanwhile, the step removes the file it saved.
     async fn complete(
         &self,
         gate: OwnedMutexGuard<Option<File>>,
@@ -474,19 +502,26 @@ impl Uploads {
                 if let Some(file) = slot.as_mut() {
                     file.sync_all()?;
                 }
-                // (Closed before it's renamed.)
-                *slot = None;
                 let (file, kind) = saving.save()?;
-                let mut table = lock(&table);
-                match table.get_mut(&id) {
-                    Some(entry) if Arc::ptr_eq(&entry.upload, &saving) => {
-                        entry.state = State::Complete(file, kind);
-                        entry.reserved = 0;
-                        entry.touched = Instant::now();
-                        Ok(Some(kind))
+                *slot = None;
+                let removed = {
+                    let mut table = lock(&table);
+                    match table.get_mut(&id) {
+                        Some(entry)
+                            if Arc::ptr_eq(&entry.upload, &saving)
+                                && matches!(entry.state, State::Receiving) =>
+                        {
+                            entry.state = State::Complete(file, kind);
+                            entry.reserved = 0;
+                            entry.touched = Instant::now();
+                            None
+                        }
+                        _ => Some(file),
                     }
-                    _ => {
-                        drop(table);
+                };
+                match removed {
+                    None => Ok(Some(kind)),
+                    Some(file) => {
                         let _ = saving.folder.remove_file(&file.name);
                         Ok(None)
                     }
@@ -511,7 +546,7 @@ impl Uploads {
             Some(State::Complete(_, kind) | State::Claimed(_, kind, _)) => {
                 return Ok(upload.state_now(upload.size, Some(kind)));
             }
-            Some(State::Reserved) | None => return Err(gone()),
+            Some(State::Reserved | State::Deleting) | None => return Err(gone()),
         }
         let (_gate, held) = self.disk(gate, slot_length).await?;
         match held {
@@ -521,26 +556,113 @@ impl Uploads {
     }
 
     /// Removes the upload `id` and its file, unless a message is sending
-    /// it.
+    /// it, once no request is writing it. The removal runs as a task of its
+    /// own, so it ends whether the caller waits or not.
     pub(super) async fn remove(&self, id: &str) -> Result<(), Refused> {
-        let removed = {
+        let (upload, was) = {
             let mut table = lock(&self.table);
-            let claimed = match table.get(id) {
-                None => return Err(Refused::Gone("Arko no longer has this file.".into())),
-                Some(entry) => match &entry.state {
-                    State::Claimed(file, ..) => Some(file.name.clone()),
-                    _ => None,
-                },
+            let Some(entry) = table.get_mut(id) else {
+                return Err(Refused::Gone("Arko no longer has this file.".into()));
             };
-            if let Some(name) = claimed {
-                return Err(Refused::Claimed(format!("{name} is being sent.")));
+            match &entry.state {
+                State::Claimed(file, ..) => {
+                    return Err(Refused::Claimed(format!("{} is being sent.", file.name)));
+                }
+                State::Deleting => return Ok(()),
+                _ => (
+                    entry.upload.clone(),
+                    std::mem::replace(&mut entry.state, State::Deleting),
+                ),
             }
-            table.remove(id)
         };
-        if let Some(entry) = removed {
-            delete(entry).await;
-        }
+        let _ = self.discard(id.to_string(), upload, was).await;
         Ok(())
+    }
+
+    /// Marks the uploads `pick` chooses Deleting, in one step, and hands
+    /// each to a task of its own that removes it
+    /// ([`discard`](Self::discard)). One a message is sending, or one
+    /// already being removed, is never chosen.
+    fn remove_where(
+        &self,
+        mut pick: impl FnMut(&str, &Entry) -> bool,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
+        let marked: Vec<(String, Arc<Upload>, State)> = {
+            let mut table = lock(&self.table);
+            table
+                .iter_mut()
+                .filter(|(id, entry)| {
+                    !matches!(entry.state, State::Claimed(..) | State::Deleting) && pick(id, entry)
+                })
+                .map(|(id, entry)| {
+                    let was = std::mem::replace(&mut entry.state, State::Deleting);
+                    (id.clone(), entry.upload.clone(), was)
+                })
+                .collect()
+        };
+        marked
+            .into_iter()
+            .map(|(id, upload, was)| self.discard(id, upload, was))
+            .collect()
+    }
+
+    /// Removes the upload `id`, just marked Deleting from the state `was`,
+    /// in a task of its own. The task stops the upload's requests, waits
+    /// for the one writing it, deletes its files, and then takes it out of
+    /// the table. It goes on when its caller stops waiting.
+    fn discard(&self, id: String, upload: Arc<Upload>, was: State) -> tokio::task::JoinHandle<()> {
+        let (table, deleted) = (self.table.clone(), self.deleted.clone());
+        tokio::spawn(async move {
+            let _ = upload.take_over();
+            let gate = upload.writer.clone().lock_owned().await;
+            let removing = upload.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let mut gate = gate;
+                // (Closed before it's removed.)
+                *gate = None;
+                let saved = match was {
+                    State::Complete(file, _) => Some(file.name),
+                    _ => None,
+                };
+                for name in std::iter::once(removing.part.clone()).chain(saved) {
+                    if let Err(error) = removing.folder.remove_file(&name)
+                        && error.kind() != std::io::ErrorKind::NotFound
+                    {
+                        log::warn!("could not remove the upload {name} ({error})");
+                    }
+                }
+            })
+            .await;
+            {
+                let mut table = lock(&table);
+                if table
+                    .get(&id)
+                    .is_some_and(|entry| Arc::ptr_eq(&entry.upload, &upload))
+                {
+                    table.remove(&id);
+                }
+            }
+            deleted.notify_waiters();
+        })
+    }
+
+    /// Waits until no upload is being removed.
+    async fn deletions_end(&self) {
+        loop {
+            let deleted = self.deleted.notified();
+            tokio::pin!(deleted);
+            deleted.as_mut().enable();
+            let deleting = {
+                let table = lock(&self.table);
+                table
+                    .values()
+                    .any(|entry| matches!(entry.state, State::Deleting))
+            };
+            if !deleting {
+                return;
+            }
+            deleted.await;
+        }
     }
 
     /// Claims the uploads `ids` for a message, all or none. Each must be
@@ -584,8 +706,9 @@ impl Uploads {
         let mut seen = HashSet::new();
         let mut claimed = Vec::new();
         for id in ids {
+            let gone = || "Arko no longer has a file you attached. Attach it again.".to_string();
             let Some(entry) = table.get(id) else {
-                return Err("Arko no longer has a file you attached. Attach it again.".into());
+                return Err(gone());
             };
             if !seen.insert(id) {
                 return Err(format!("{} is attached twice.", entry.upload.name));
@@ -600,6 +723,7 @@ impl Uploads {
                 State::Reserved | State::Receiving => {
                     return Err(format!("{} isn’t uploaded yet.", entry.upload.name));
                 }
+                State::Deleting => return Err(gone()),
             }
         }
         for (id, (_, file, kind)) in ids.iter().zip(&claimed) {
@@ -634,43 +758,22 @@ impl Uploads {
     }
 
     /// Removes every upload not being sent, with its file, as the server
-    /// stops.
+    /// stops, and waits until the files of every upload being removed are
+    /// gone.
     pub(super) async fn remove_unsent(&self) {
-        let removed: Vec<Entry> = {
-            let mut table = lock(&self.table);
-            let ids: Vec<String> = table
-                .iter()
-                .filter(|(_, entry)| !matches!(entry.state, State::Claimed(..)))
-                .map(|(id, _)| id.clone())
-                .collect();
-            ids.iter().filter_map(|id| table.remove(id)).collect()
-        };
-        for entry in removed {
-            delete(entry).await;
-        }
+        let _removing = self.remove_where(|_, _| true);
+        self.deletions_end().await;
     }
 
     /// Removes the uploads no request touched for [`ABANDONED`], deciding
-    /// and removing in one step from each as it is then. One a message is
-    /// sending, or a request is writing, stays.
+    /// and marking in one step from each as it is then. One a request is
+    /// writing stays.
     async fn remove_abandoned(&self) {
         let now = Instant::now();
-        let removed: Vec<Entry> = {
-            let mut table = lock(&self.table);
-            let ids: Vec<String> = table
-                .iter()
-                .filter(|(_, entry)| {
-                    now.duration_since(entry.touched) > ABANDONED
-                        && !matches!(entry.state, State::Claimed(..))
-                        && entry.upload.writer.try_lock().is_ok()
-                })
-                .map(|(id, _)| id.clone())
-                .collect();
-            ids.iter().filter_map(|id| table.remove(id)).collect()
-        };
-        for entry in removed {
-            delete(entry).await;
-        }
+        let removing = self.remove_where(|_, entry| {
+            now.duration_since(entry.touched) > ABANDONED && entry.upload.writer.try_lock().is_ok()
+        });
+        futures_util::future::join_all(removing).await;
     }
 }
 
@@ -848,29 +951,6 @@ fn sentence(words: String) -> String {
     }
 }
 
-/// Removes an upload taken out of the table, once a request writing it has
-/// stopped: its part file, or its saved file when it was whole.
-async fn delete(entry: Entry) {
-    let Entry { upload, state, .. } = entry;
-    let _ = upload.take_over();
-    let gate = upload.writer.clone().lock_owned().await;
-    let _ = tokio::task::spawn_blocking(move || {
-        let mut gate = gate;
-        // (Closed before it's removed.)
-        *gate = None;
-        let name = match state {
-            State::Complete(file, _) | State::Claimed(file, ..) => file.name,
-            State::Reserved | State::Receiving => upload.part.clone(),
-        };
-        if let Err(error) = upload.folder.remove_file(&name)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            log::warn!("could not remove the upload {name} ({error})");
-        }
-    })
-    .await;
-}
-
 /// The project `workspace`'s attachments folder, made as the `.arko`
 /// folders of other project files are ([`crate::arko_dir::ensure_in`],
 /// which follows the setting in Arko's folder `root`), with a `.gitignore`
@@ -981,6 +1061,161 @@ pub(super) mod tests {
     pub(crate) struct Disk {
         pub delay: Duration,
         pub on_worker: bool,
+    }
+
+    thread_local! {
+        /// The disk of the uploads made on this thread, for a test of a
+        /// whole server.
+        pub(crate) static DISK: std::cell::Cell<Disk> = const {
+            std::cell::Cell::new(Disk {
+                delay: Duration::ZERO,
+                on_worker: false,
+            })
+        };
+    }
+
+    /// Uploads whose disk takes `ms` for each write and each part file made.
+    fn slow(store: Uploads, ms: u64) -> Arc<Uploads> {
+        Arc::new(Uploads {
+            disk: Disk {
+                delay: Duration::from_millis(ms),
+                on_worker: false,
+            },
+            ..store
+        })
+    }
+
+    /// The names in `work`'s attachments folder once they're `wanted`, or
+    /// after five seconds.
+    async fn names_once(work: &Path, wanted: &[&str]) -> Vec<String> {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            let now = names(work);
+            if now == wanted || Instant::now() > until {
+                return now;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// A removal whose caller goes while a write it waits for goes on (a
+    /// DELETE whose connection drops) still removes the part file once the
+    /// write ends, and the upload is gone from then on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_removal_whose_caller_goes_still_removes_the_part() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, work) = uploads(temp.path());
+        let store = slow(store, 500);
+        let id = store.create("video.mp4", 600_000).await.unwrap();
+        let writing = tokio::spawn({
+            let (store, id) = (store.clone(), id.clone());
+            async move { store.put(&id, 0, stalled(&data(300_000))).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let removing = tokio::spawn({
+            let (store, id) = (store.clone(), id.clone());
+            async move { store.remove(&id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        removing.abort();
+        let _ = removing.await;
+        assert!(matches!(store.state(&id).await, Err(Refused::Gone(_))));
+        let _ = tokio::time::timeout(Duration::from_secs(5), writing)
+            .await
+            .unwrap();
+        assert_eq!(names_once(&work, &[".gitignore"]).await, [".gitignore"]);
+    }
+
+    /// A stop whose caller goes while writes go on still removes every
+    /// unsent file once they end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stop_whose_caller_goes_still_removes_every_part() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, work) = uploads(temp.path());
+        let store = slow(store, 500);
+        let mut writing = Vec::new();
+        for name in ["a.mp4", "b.mp4"] {
+            let id = store.create(name, 600_000).await.unwrap();
+            writing.push(tokio::spawn({
+                let store = store.clone();
+                async move { store.put(&id, 0, stalled(&data(300_000))).await }
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let stopping = tokio::spawn({
+            let store = store.clone();
+            async move { store.remove_unsent().await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stopping.abort();
+        let _ = stopping.await;
+        for writing in writing {
+            let _ = tokio::time::timeout(Duration::from_secs(5), writing)
+                .await
+                .unwrap();
+        }
+        assert_eq!(names_once(&work, &[".gitignore"]).await, [".gitignore"]);
+    }
+
+    /// A sweep of old uploads dropped after its first step still removes
+    /// every one it chose.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sweep_dropped_midway_still_removes_every_old_upload() {
+        use futures_util::FutureExt as _;
+        let temp = tempfile::tempdir().unwrap();
+        let (store, work) = uploads(temp.path());
+        for name in ["a.bin", "b.bin", "c.bin"] {
+            let id = store.create(name, 1).await.unwrap();
+            store.put(&id, 0, whole(&[0])).await.unwrap();
+        }
+        for entry in lock(&store.table).values_mut() {
+            entry.touched = Instant::now() - ABANDONED - Duration::from_secs(1);
+        }
+        assert!(store.remove_abandoned().now_or_never().is_none());
+        assert_eq!(names_once(&work, &[".gitignore"]).await, [".gitignore"]);
+    }
+
+    /// A stop while an upload's part file is still being made removes the
+    /// file once it's made, and the upload is refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_stop_while_a_part_file_is_made_removes_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let (store, work) = uploads(temp.path());
+        let store = slow(store, 300);
+        let creating = tokio::spawn({
+            let store = store.clone();
+            async move { store.create("a.bin", 10).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        store.remove_unsent().await;
+        let created = creating.await.unwrap();
+        assert!(matches!(created, Err(Refused::Gone(_))), "{created:?}");
+        assert_eq!(names_once(&work, &[".gitignore"]).await, [".gitignore"]);
+    }
+
+    /// A save that fails (the folder can't be written for a moment) leaves
+    /// the upload whole and open, and it's saved when asked again.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_save_is_saved_when_asked_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let (store, work) = uploads(temp.path());
+        let bytes = data(300_000);
+        let id = store.create("video.mp4", 300_000).await.unwrap();
+        let folder = folder_of(&work);
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let saved = store.put(&id, 0, whole(&bytes)).await;
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // (Root may write anywhere.)
+        if saved.is_ok() {
+            return;
+        }
+        let state = store.state(&id).await.unwrap();
+        assert_eq!((state.received, state.done), (300_000, false));
+        assert!(store.put(&id, 300_000, whole(&[])).await.unwrap().done);
+        assert_eq!(std::fs::read(folder.join("video.mp4")).unwrap(), bytes);
+        assert_eq!(names(&work), [".gitignore", "video.mp4"]);
     }
 
     fn uploads(temp: &Path) -> (Uploads, PathBuf) {

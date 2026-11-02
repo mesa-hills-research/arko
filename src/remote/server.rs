@@ -450,7 +450,9 @@ impl Server {
     /// them. Those kept nowhere end with it.
     pub async fn stop(mut self) {
         let _ = self.stop.send(true);
-        self.uploads.remove_unsent().await;
+        // (Files still being written go once their writes end, without
+        // holding up the stop.)
+        let _ = tokio::time::timeout(Duration::from_secs(3), self.uploads.remove_unsent()).await;
         if let Some(mut task) = self.task.take()
             && tokio::time::timeout(Duration::from_secs(3), &mut task)
                 .await
@@ -4912,6 +4914,61 @@ mod tests {
         let verdict: Verdict = request.await.unwrap().json().await.unwrap();
         assert!(matches!(verdict, Verdict::Accepted { .. }));
         assert!(files[0].file.path.is_file(), "the message's video stays");
+    }
+
+    /// A DELETE whose connection drops while a write goes on still removes
+    /// the part file once the write ends.
+    #[tokio::test]
+    async fn a_delete_whose_connection_drops_still_removes_the_part() {
+        use super::super::uploads::tests::{DISK, Disk};
+        DISK.with(|disk| {
+            disk.set(Disk {
+                delay: Duration::from_millis(500),
+                on_worker: false,
+            })
+        });
+        let served = serve(&Feed::new("main"));
+        DISK.with(|disk| disk.set(Disk::default()));
+        let cookie = served.login().await;
+        let id = served.create_upload(&cookie, "video.mp4", 600_000).await;
+        let url = format!("{}/api/uploads/{id}", served.base);
+        let writing = tokio::spawn({
+            let (http, url, cookie) = (served.http.clone(), url.clone(), cookie.clone());
+            async move {
+                http.put(url)
+                    .header(header::COOKIE, cookie)
+                    .header("upload-offset", "0")
+                    .body(vec![1; 300_000])
+                    .send()
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let deleting = tokio::spawn({
+            let (http, url, cookie) = (served.http.clone(), url.clone(), cookie.clone());
+            async move { http.delete(url).header(header::COOKIE, cookie).send().await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        deleting.abort();
+        let _ = deleting.await;
+        let state = served
+            .get(&format!("/api/uploads/{id}"), Some(&cookie))
+            .await;
+        assert_eq!(state.status(), StatusCode::NOT_FOUND);
+        let _ = writing.await;
+        let until = Instant::now() + Duration::from_secs(5);
+        let left = loop {
+            let mut left: Vec<String> = std::fs::read_dir(served.attachments())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            left.sort();
+            if left == [".gitignore"] || Instant::now() > until {
+                break left;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(left, [".gitignore"]);
     }
 
     /// Two messages sent at once with one upload: only one of them takes
