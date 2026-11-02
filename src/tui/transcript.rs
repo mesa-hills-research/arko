@@ -4156,7 +4156,7 @@ mod tests {
     /// A thinking in an open Quiet row has its triangle in the bar's place,
     /// in the column of every fold's triangle, under the "Working…" spinner,
     /// and its label where every row's text starts. Open, its text is behind
-    /// the bar, under its label (r127).
+    /// the bar, under its label.
     #[test]
     fn a_thinking_in_an_open_quiet_row_keeps_the_markers_column() {
         use crate::remote::{Act, ActKind};

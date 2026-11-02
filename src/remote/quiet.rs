@@ -1037,9 +1037,9 @@ pub(crate) struct Fixture {
     pub opens: bool,
 }
 
-/// Calls of every kind, as the owner's examples have them (a plain tool's
-/// result, an edit's diff, a read of many lines, a monitor whose command
-/// the words cut, a message), and commands cut short or run in a folder,
+/// Calls of every kind (a plain tool's result, an edit's diff, a read of
+/// many lines, a monitor whose command the words cut, a message), and
+/// commands cut short or run in a folder,
 /// a failed and a refused command, searches, a wait, a worker start, an
 /// MCP call, a note, a moved call, and calls with nothing to show.
 #[cfg(test)]
@@ -2041,7 +2041,7 @@ mod tests {
     }
 
     /// No row splits, goes or takes another's calls as calls start, run,
-    /// end, fail, go on in the background or end out of order (r127).
+    /// end, fail, go on in the background or end out of order.
     #[test]
     fn rows_only_grow_at_the_end() {
         fn call(id: u64, act: &Act, status: CallStatus) -> Step<'_> {

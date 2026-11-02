@@ -5167,7 +5167,7 @@ mod tests {
     }
 
     /// A conversation says the same live and once restored from its saved
-    /// messages through `all_items` (r127). Live, the feed gets the calls'
+    /// messages through `all_items`. Live, the feed gets the calls'
     /// events, the agent's text and the worker's start and end, and restored,
     /// the same calls, text and the worker's report as mail. A wait that names
     /// no runs after its worker finished is among them. The comparison covers
