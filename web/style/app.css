@@ -829,6 +829,21 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .chip-file.failed .chip-meta { color: var(--error); }
 .chip-remove { width: 32px; min-height: 32px; border-radius: var(--r-inner); color: var(--muted); }
 
+/* A message's files, as chips in its bubble before its text, each a
+   download of its file, its name over its kind and size. An image's
+   thumbnail opens the viewer. */
+.bubble .sent { margin: 2px 0 6px; white-space: normal; }
+.bubble .sent.alone { margin-bottom: 0; }
+.sent .chip-file { padding-right: 12px; }
+.chip-open { flex: none; display: flex; padding: 0; border: 0; border-radius: var(--r-inner); background: none; cursor: zoom-in; }
+.chip-link { display: flex; flex-direction: column; min-width: 0; color: inherit; line-height: 1.3; text-decoration: none; }
+.sent .chip-name { max-width: 100%; text-overflow: ellipsis; }
+.sent .chip-meta { font-size: 12.5px; }
+a.chip-link { cursor: pointer; }
+@media (hover: hover) { a.chip-link:hover .chip-name { text-decoration: underline; text-underline-offset: 2px; } }
+.chip-file.removed .chip-name { color: var(--muted); }
+.viewer-head a.btn { color: inherit; }
+
 /* Over the box while files are dragged over the page. */
 .drop {
   position: absolute;

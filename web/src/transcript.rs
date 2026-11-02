@@ -7,6 +7,7 @@ use lucide_leptos::{ArrowDown, ChevronRight};
 
 use crate::app::{Page, RowCell, STORE, cell, feed, page, post, track_worker};
 use crate::copy::CopyButton;
+use crate::files::SentFiles;
 use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
@@ -567,12 +568,16 @@ fn item_row(id: u64, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
                     (!tags.is_empty()).then(|| tags.join(" · "))
                 })
             };
-            // Its images, then its words, and under it its tags and Copy.
+            // Its images and files, then its words, and under it its tags
+            // and Copy (when it has words).
+            let worded = move || !text.with(|text| text.trim().is_empty());
             view! {
-                <div class="bubble"><Thumbnails data=data />{move || text.get()}</div>
+                <div class="bubble"><Thumbnails data=data /><SentFiles data=data />{move || text.get()}</div>
                 <div class="actions">
                     {move || tags().map(|tags| view! { <span class="tag">{tags}</span> })}
-                    <CopyButton label="Copy message" text=text />
+                    <Show when=worded>
+                        <CopyButton label="Copy message" text=text />
+                    </Show>
                 </div>
             }
             .into_any()
