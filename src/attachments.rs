@@ -348,10 +348,12 @@ pub(crate) fn sanitize_name(name: &str) -> String {
     };
     let stem = safe.split('.').next().unwrap_or_default();
     const RESERVED: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    // (By bytes, since a stem's characters may be longer than one.)
     let numbered = |prefix: &str| {
+        let stem = stem.as_bytes();
         stem.len() == 4
-            && stem[..3].eq_ignore_ascii_case(prefix)
-            && stem.as_bytes()[3].is_ascii_digit()
+            && stem[..3].eq_ignore_ascii_case(prefix.as_bytes())
+            && stem[3].is_ascii_digit()
     };
     if RESERVED
         .iter()
@@ -593,6 +595,10 @@ mod tests {
             ("COM1.log", "COM1-file.log"),
             ("CONSOLE.txt", "CONSOLE.txt"),
             ("Café menü.pdf", "Café-menü.pdf"),
+            // Stems whose bytes and characters differ in number.
+            ("éé.txt", "éé.txt"),
+            ("Aé1.log", "Aé1.log"),
+            ("ÇOM1.txt", "ÇOM1.txt"),
         ];
         for (given, saved) in cases {
             assert_eq!(sanitize_name(given), saved, "{given:?}");
