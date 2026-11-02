@@ -426,22 +426,32 @@ button.cache { padding: 0; border: 0; background: none; }
 .call-line .outcome::before { content: "· "; color: var(--muted); }
 .call-line .ok { color: var(--success); }
 .call-line .failed { color: var(--error); }
-/* The spinner is a square box that turns about its own centre, which is
-   the circle's, with its drawing still inside. Wherever the line puts the
-   box can't move that centre, and the browser turns the box without
-   painting it again. The box is a plain element, since Safari on the
-   iPhone turned the svg itself off centre, and nothing clips it. The
-   drawing is two arcs half a turn apart, so its ink stays centred. */
+/* The spinner is a still square box with a ring inside, two arcs of a
+   third of a turn half a turn apart, so the ink stays centred. The arcs go
+   round by the angle of the ring's mask, which the browser paints each
+   frame, so they turn about the ring's centre whatever the line, the font
+   or the browser. (Turned by the compositor, the box went round off centre
+   in Safari on the iPhone.) The box has a layer of its own, so a frame
+   paints only the ring. */
+@property --turn { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 .spinner {
+  position: relative;
   display: inline-block;
   width: 12px;
   height: 12px;
   vertical-align: -1px;
-  transform-box: border-box;
-  transform-origin: center;
+  will-change: transform;
+}
+.spinner::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border: 1px solid;
+  border-radius: 50%;
+  -webkit-mask-image: conic-gradient(from var(--turn), #000 120deg, transparent 0 180deg, #000 0 300deg, transparent 0);
+  mask-image: conic-gradient(from var(--turn), #000 120deg, transparent 0 180deg, #000 0 300deg, transparent 0);
   animation: spin 1.2s linear infinite;
 }
-.call-line .outcome:has(> .spinner) { overflow: visible; }
 .call-line .call-action { margin-left: 4px; font-family: var(--sans); }
 details.call > summary, details.thinking > summary, details.more > summary { cursor: pointer; list-style: none; }
 details.call > summary::-webkit-details-marker,
@@ -579,7 +589,7 @@ details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
    position of p% puts the band's left edge p% of the label's other 40% in,
    so -200% puts it 0.8 of a label before the label and 300% 1.2 after. */
 @keyframes shine { to { -webkit-mask-position: 300% 0; mask-position: 300% 0; } }
-@keyframes spin { to { transform: rotate(1turn); } }
+@keyframes spin { to { --turn: 1turn; } }
 
 .row.turn, .row.conversation {
   margin: 16px 0 22px;
