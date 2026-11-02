@@ -507,6 +507,19 @@ pub(crate) enum TurnEnd {
     Exit,
 }
 
+/// A message of the user's sent in place of the one at `index` of the
+/// agent's conversation, edited or as it was (`Request::Edit`,
+/// `Request::Regenerate`).
+pub(crate) struct Resent {
+    pub(crate) index: usize,
+    /// Its words, as the transcript shows them.
+    pub(crate) text: String,
+    /// What the agent reads, its files' block before its words, when it
+    /// has files.
+    pub(crate) read: Option<String>,
+    pub(crate) files: Vec<crate::attachments::SentFile>,
+}
+
 /// What starts a turn.
 pub(crate) enum Prompt {
     /// The user's message.
@@ -621,7 +634,7 @@ pub(crate) struct Harness {
     pub(crate) reopen: bool,
     /// An edited message (or one sent again) waits to start a turn, cutting
     /// the conversation back to its index (`Request::Edit`).
-    pub(crate) edited: Option<(usize, String)>,
+    pub(crate) edited: Option<Resent>,
     /// The next turn cuts the conversation back to this message first.
     pub(crate) cut_back: Option<usize>,
     /// The handover report the conversation it cuts back to its first
@@ -1482,13 +1495,18 @@ impl Harness {
                         continue;
                     }
                     // An edited message, or one sent again.
-                    let Some((index, text)) = self.edited.take() else {
+                    let Some(resent) = self.edited.take() else {
                         continue;
                     };
-                    self.cut_back = Some(index);
+                    self.cut_back = Some(resent.index);
                     let shown = std::mem::take(&mut self.pending_refs);
+                    let Resent {
+                        text, read, files, ..
+                    } = resent;
                     self.feed
-                        .user_with(&text, Source::App, Delivery::Turn, shown);
+                        .user_with_files(&text, Source::App, Delivery::Turn, shown, files);
+                    // The agent reads its files' block before its words.
+                    self.labelled = read;
                     if let TurnEnd::Exit = self.turn(Prompt::User(text), input).await {
                         break;
                     }
@@ -2323,7 +2341,7 @@ impl Harness {
             .into_iter()
             .filter(|turn| {
                 turn.kind != arko_agents::UserTurnKind::ContextUpdate
-                    && remote::own_words(&turn.text) == words
+                    && remote::shown_words(&turn.text) == words
             })
             .collect();
         let turn = turns
@@ -2337,28 +2355,58 @@ impl Harness {
 
     /// The user's message `item` edited to `text`. The conversation is cut
     /// back to just before it, and `text` starts a turn in its place (in
-    /// `repl`). Refused, saying why, while a worker runs, and for a message
-    /// the conversation no longer has (one before a handover, or of
-    /// another conversation).
+    /// `repl`). Its files stay, as files the agent reads where they are, and
+    /// images go again only as the edit sends them. Refused, saying why,
+    /// while a worker runs, and for a message the conversation no longer has
+    /// (one before a handover, or of another conversation).
     fn edit(&mut self, item: u64, text: String) -> Result<(), String> {
         let text = text.trim().to_string();
-        if text.is_empty() {
-            return Err("The message is empty.".into());
-        }
         if command(&text).is_some() {
             return Err("A command can't take a message's place.".into());
         }
-        if let Some(crew) = &self.crew
-            && let Some(worker) = crew.running().first()
-        {
-            return Err(format!(
-                "{worker} is running. Wait for the workers or stop them first."
-            ));
-        }
+        self.workers_stopped()?;
         let index = self.message_at(item, "edited")?;
+        let (read, files) = self
+            .sent_at(index)
+            .and_then(|sent| crate::attachments::resent(&sent, &text, false))
+            .map_or((None, Vec::new()), |(read, files)| (Some(read), files));
+        if text.is_empty() && files.is_empty() {
+            return Err("The message is empty.".into());
+        }
+        self.resend(
+            item,
+            Resent {
+                index,
+                text,
+                read,
+                files,
+            },
+        );
+        Ok(())
+    }
+
+    /// Why a message can't be sent in place of another now, while a worker
+    /// runs.
+    fn workers_stopped(&self) -> Result<(), String> {
+        match self
+            .crew
+            .as_ref()
+            .and_then(|crew| crew.running().first().cloned())
+        {
+            Some(worker) => Err(format!(
+                "{worker} is running. Wait for the workers or stop them first."
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// The user's message `item` sent again as `resent`. The conversation
+    /// is cut back to just before it, and `resent` starts a turn in its
+    /// place (in `repl`).
+    fn resend(&mut self, item: u64, resent: Resent) {
         // The first message of a conversation that was handed over holds the
-        // report the agent goes on from. The edited one keeps it.
-        self.cut_report = (index == 0)
+        // report the agent goes on from. The new one keeps it.
+        self.cut_report = (resent.index == 0)
             .then(|| self.conversation_task())
             .flatten()
             .and_then(|task| task.handovers.last())
@@ -2366,8 +2414,17 @@ impl Harness {
         self.feed.truncate(item);
         // What the user typed during the turns cut goes with them.
         self.unread.clear();
-        self.edited = Some((index, text));
-        Ok(())
+        self.edited = Some(resent);
+    }
+
+    /// The user's message at `index` of the agent's conversation, as they
+    /// sent it, its files' block before its words ([`remote::as_sent`]).
+    fn sent_at(&self, index: usize) -> Option<String> {
+        let task = self.conversation_task()?;
+        task.user_turns()
+            .into_iter()
+            .find(|turn| turn.index == index)
+            .map(|turn| remote::as_sent(&turn.text).to_string())
     }
 
     /// Where the user's message `item` is in the agent's conversation now
@@ -2391,7 +2448,7 @@ impl Harness {
             task.user_turns().into_iter().any(|turn| {
                 turn.index == index
                     && turn.kind != arko_agents::UserTurnKind::ContextUpdate
-                    && remote::own_words(&turn.text) == words.trim()
+                    && remote::shown_words(&turn.text) == words.trim()
             })
         });
         if there { Ok(index) } else { Err(gone.into()) }
@@ -2555,15 +2612,17 @@ impl Harness {
         }
     }
 
-    /// The user's latest message sent again. Its turn's reply and what
-    /// followed are cut, and a new reply comes.
+    /// The user's latest message sent again, as the agent read it, its
+    /// files and images too. Its turn's reply and what followed are cut, and
+    /// a new reply comes.
     fn regenerate(&mut self) -> Result<(), String> {
         let Some(item) = self.feed.last_turn_message() else {
             return Err("There is no message to send again.".into());
         };
+        self.workers_stopped()?;
         let index = self.message_at(item.id, "sent again")?;
         // Its images go again, as the conversation has them.
-        let images: Vec<arko_ai::Image> = self
+        let mut images: Vec<arko_ai::Image> = self
             .conversation_task()
             .and_then(|task| task.conversation.messages.get(index))
             .map(|message| {
@@ -2575,7 +2634,25 @@ impl Harness {
                     .collect()
             })
             .unwrap_or_default();
-        self.edit(item.id, item.text)?;
+        let (read, files) = self
+            .sent_at(index)
+            .and_then(|sent| crate::attachments::resent(&sent, &item.text, true))
+            .map_or((None, Vec::new()), |(read, files)| (Some(read), files));
+        // With files, the images are its files' own, after any of the notes
+        // it carried, which don't go again.
+        if !files.is_empty() {
+            let own = files.iter().filter(|sent| sent.shown).count();
+            images = images.split_off(images.len().saturating_sub(own));
+        }
+        self.resend(
+            item.id,
+            Resent {
+                index,
+                text: item.text.clone(),
+                read,
+                files,
+            },
+        );
         self.pending_images = images;
         self.pending_refs = item.images;
         Ok(())

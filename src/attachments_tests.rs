@@ -427,3 +427,149 @@ async fn an_unread_notes_image_goes_with_the_next_message() {
         .unwrap_or_default();
     assert!(kept.is_empty(), "{kept:?}");
 }
+
+/// Asks the session `request` as an app does, and waits for its answer.
+async fn ask<T>(
+    requests: &mpsc::UnboundedSender<crate::engine::Request>,
+    request: impl FnOnce(tokio::sync::oneshot::Sender<Result<T, String>>) -> crate::engine::Request,
+) -> Result<T, String> {
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    requests.send(request(reply)).unwrap();
+    tokio::time::timeout(Duration::from_secs(20), answer)
+        .await
+        .expect("an answer in time")
+        .expect("an answer")
+}
+
+/// A turn whose message carried files keeps its place in the conversation,
+/// so it can be sent again, edited and branched from, live and once
+/// restored. Sent again, the model reads it as it did, its files' block and
+/// image too. Edited, its files stay as files the agent reads where they
+/// are, and the image goes no more. A message of files alone can be sent
+/// again too.
+#[tokio::test]
+async fn a_turn_with_files_can_be_sent_again_and_edited() {
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+    let server = keeping(&bodies, None).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    let (requests, asked) = mpsc::unbounded_channel();
+    inputs.requests = asked;
+    let feed = harness.feed.clone();
+    let actions = harness.remote_actions.clone();
+    let dir = temp.path().join("work").join(".arko").join("attachments");
+    let kept = bodies.clone();
+    let turns = |count: usize| {
+        let (feed, kept) = (feed.clone(), kept.clone());
+        move || lock(&kept).len() >= count && !feed.activity().working
+    };
+    let item = |text: &str| {
+        feed.subscribe()
+            .0
+            .items
+            .into_iter()
+            .rfind(|item| item.kind == crate::remote::Kind::User && item.text == text)
+            .unwrap()
+    };
+    let client = async {
+        let message = Action::Message {
+            text: "Look.".into(),
+            files: three_files(&dir),
+        };
+        page_send(&actions, message).await;
+        until(turns(1)).await;
+        let look = item("Look.");
+        assert_eq!(look.message_index, Some(0), "a turn with files keeps its place");
+        assert_eq!(
+            ask(&requests, |reply| crate::engine::Request::Regenerate { reply }).await,
+            Ok(())
+        );
+        until(turns(2)).await;
+        let again = item("Look.");
+        assert_eq!(again.files, look.files);
+        assert_eq!(again.message_index, Some(0));
+        let message = crate::ui::Message {
+            text: "Look again.".into(),
+            ..Default::default()
+        };
+        let edited = ask(&requests, |reply| crate::engine::Request::Edit {
+            item: again.id,
+            message,
+            reply,
+        })
+        .await;
+        assert_eq!(edited, Ok(()));
+        until(turns(3)).await;
+        let edited = item("Look again.");
+        assert_eq!(
+            edited
+                .files
+                .iter()
+                .map(|sent| (sent.file.name.as_str(), sent.shown))
+                .collect::<Vec<_>>(),
+            [("bug.png", false), ("notes.md", false), ("RPReplay.MP4", false)]
+        );
+        // A message of files alone.
+        let message = Action::Message {
+            text: String::new(),
+            files: vec![attached(&dir, "spec.pdf", Kind::File, "application/pdf", b"%PDF-1.7")],
+        };
+        page_send(&actions, message).await;
+        until(turns(4)).await;
+        assert_eq!(
+            ask(&requests, |reply| crate::engine::Request::Regenerate { reply }).await,
+            Ok(())
+        );
+        until(turns(5)).await;
+        sender.send(Input::Eof).unwrap();
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        futures_util::future::join(harness.repl(&mut inputs), client),
+    )
+    .await
+    .unwrap();
+    use base64::Engine as _;
+    let image = base64::engine::general_purpose::STANDARD.encode(one_pixel());
+    let bodies = lock(&bodies);
+    // (Each request holds the conversation so far, so the last message is
+    // the one sent.)
+    let last = |body: &str, wanted: &str| body.rfind(wanted);
+    let again = &bodies[1];
+    assert!(again.contains("The gap is 13 px."), "{again}");
+    assert!(again.contains("RPReplay.MP4"), "{again}");
+    assert!(again.contains("as an image after this message"), "{again}");
+    assert_eq!(again.matches(&image).count(), 1, "the image goes again, once");
+    assert_eq!(again.matches("The gap is 13 px.").count(), 1, "{again}");
+    let edited = &bodies[2];
+    assert!(last(edited, "Look again.") > last(edited, "RPReplay.MP4"), "{edited}");
+    assert!(!edited.contains("as an image after this message"), "{edited}");
+    assert!(!edited.contains(&image), "the edit sent no image");
+    assert!(edited.contains("The gap is 13 px."), "{edited}");
+    assert_eq!(bodies[4].matches("spec.pdf").count(), bodies[3].matches("spec.pdf").count());
+    // Restored, the turn has the same place, and passes the same check.
+    let Conversation::Answered(result) = &harness.conversation else {
+        panic!("answered");
+    };
+    let task = result.task().unwrap();
+    let restored = crate::remote::history(
+        &task.conversation.messages,
+        task.agent_config.tool_config.ends_task_with_text(),
+        &harness.images,
+    );
+    let pdf = restored
+        .iter()
+        .rfind(|item| item.kind == crate::remote::Kind::User)
+        .unwrap();
+    assert_eq!(pdf.files[0].file.name, "spec.pdf");
+    let index = pdf.message_index.unwrap();
+    let live = feed
+        .subscribe()
+        .0
+        .items
+        .into_iter()
+        .rfind(|item| item.kind == crate::remote::Kind::User)
+        .unwrap();
+    assert_eq!(live.message_index, Some(index));
+    assert_eq!(harness.message_at(live.id, "sent again"), Ok(index));
+}

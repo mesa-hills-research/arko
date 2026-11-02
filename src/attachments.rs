@@ -88,6 +88,23 @@ pub(crate) fn sent_files(text: &str) -> Option<(Vec<SentFile>, &str)> {
     Some((files, typed))
 }
 
+/// A message sent again in place of `sent` (a message as the user sent it)
+/// with the words `typed`. Gives what the agent reads (`sent`'s attachments
+/// block, then `typed`) and its files. Without `images`, the block no
+/// longer says images follow, so the agent reads them where they are.
+/// `None` when `sent` has no block.
+pub(crate) fn resent(sent: &str, typed: &str, images: bool) -> Option<(String, Vec<SentFile>)> {
+    let (mut entries, _) = split_block(sent)?;
+    if !images {
+        for entry in &mut entries {
+            entry.shown = false;
+        }
+    }
+    let read = with_block(&block(&entries), typed);
+    let (files, _) = sent_files(&read)?;
+    Some((read, files))
+}
+
 /// The user's `item` restored from what the agent read, as it was live. Its
 /// text loses the attachments block it starts with, its files come from the
 /// block, and its images are named as their files. (The last images are
@@ -1115,6 +1132,27 @@ mod tests {
         assert_eq!(lines("one\ntwo\n"), 2);
         assert_eq!(lines("one\ntwo"), 2);
         assert_eq!(lines(""), 0);
+    }
+
+    /// A message sent again reads as it did, its files' block and all, and
+    /// one edited keeps its files, whose images go no more.
+    #[test]
+    fn a_message_sent_again_reads_as_it_did() {
+        let files = vec![image("bug.png"), saved("RPReplay.MP4", "video/mp4")];
+        let routed = route(&model(true), false, "Look.", files).unwrap();
+        let read = with_block(&routed.block, "Look.");
+        assert_eq!(
+            resent(&read, "Look.", true).unwrap(),
+            (read.clone(), routed.files.clone())
+        );
+        let (edited, files) = resent(&read, "Look again.", false).unwrap();
+        assert!(
+            !edited.contains(SHOWN) && edited.ends_with("\n\nLook again."),
+            "{edited}"
+        );
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|sent| !sent.shown));
+        assert_eq!(resent("Look.", "Look.", true), None);
     }
 
     /// A file's line in the terminal's transcript is its path, the home

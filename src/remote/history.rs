@@ -381,6 +381,20 @@ pub(crate) fn own_words(text: &str) -> &str {
         .trim()
 }
 
+/// The user's message `text` as they sent it, meaning their own words
+/// ([`own_words`]) without Arko's labels about questions, with the
+/// attachments block their files went in, if any.
+pub(crate) fn as_sent(text: &str) -> &str {
+    unlabelled(own_words(text))
+}
+
+/// The words of the user's message `text` as the transcript shows them, as
+/// sent ([`as_sent`]) without its attachments block. A message's item has
+/// them, live and restored, so they name the message in its conversation.
+pub(crate) fn shown_words(text: &str) -> &str {
+    crate::attachments::typed(as_sent(text)).trim()
+}
+
 /// The heading of the section of a message that holds what the user typed
 /// during the turn before, which the agent didn't get to read. (Sessions
 /// saved before it was reworded have the heading without its end.)
