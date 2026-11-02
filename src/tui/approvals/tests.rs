@@ -69,6 +69,44 @@ fn with(requests: Vec<ApprovalRequest>) -> App {
     app
 }
 
+/// At 80 columns, an update that turns auto_load on says so in its row,
+/// ahead of what it changes, and its question wraps whole however long the
+/// skill's name.
+#[test]
+fn an_auto_loading_update_says_so_at_80_columns() {
+    let name = "project-release-and-documentation-checks-for-all-conversations";
+    let approval = Approval::Skill(SkillApproval {
+        name: name.into(),
+        scope: Scope::Project,
+        auto_load: true,
+        workers: true,
+        description: "Release steps.".into(),
+        update: Some(crate::approvals::SkillUpdate {
+            saved: "1 Nov".into(),
+            diff: "+ auto_load: true".into(),
+            added: vec!["scripts/check.sh".into(), "docs/release.md".into()],
+            ..Default::default()
+        }),
+        ..SkillApproval::default()
+    });
+    let mut app = with(vec![request("a1", approval)]);
+    let rows = screen(&mut app, 80, 40);
+    assert!(
+        rows.lines()
+            .any(|line| line.contains("this project  loads into every new")),
+        "{rows}"
+    );
+    alt_a(&mut app);
+    press(&mut app, KeyCode::Char('v'));
+    let rows = screen(&mut app, 80, 40);
+    assert!(
+        flat(&rows).contains(&format!(
+            "Update the skill {name} for this project and load it into every new conversation?"
+        )),
+        "{rows}"
+    );
+}
+
 fn three() -> App {
     with(vec![
         request("a1", skill()),

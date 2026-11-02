@@ -704,6 +704,10 @@ pub struct SkillApproval {
     /// Workers get it (its front matter has no `workers: false`).
     #[serde(default = "yes")]
     pub workers: bool,
+    /// It loads into every new conversation (its front matter has
+    /// `auto_load: true`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_load: bool,
     /// Its front matter's `models`, the models whose agents list it (empty
     /// for all).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1059,7 +1063,8 @@ impl Approval {
 
     /// What its row says after its scope, meaning a profile's model and effort, a
     /// skill's description (or what an update changes, "changes SKILL.md
-    /// and 2 more files"), a server's command, a worker's prices and the
+    /// and 2 more files", led by "loads into every new conversation" for
+    /// one with `auto_load`), a server's command, a worker's prices and the
     /// day's spend.
     pub fn summary(&self) -> String {
         match self {
@@ -1067,9 +1072,15 @@ impl Approval {
                 Some(effort) => format!("{} {effort}", profile.model),
                 None => profile.model.clone(),
             },
-            Approval::Skill(skill) => match &skill.update {
-                Some(update) => format!("changes {}", update.short()),
-                None => first_line(&skill.description),
+            Approval::Skill(skill) => match (&skill.update, skill.auto_load) {
+                (Some(update), false) => format!("changes {}", update.short()),
+                // (The lasting effect first, since a narrow row cuts the end.)
+                (Some(update), true) => format!(
+                    "loads into every new conversation, changes {}",
+                    update.short()
+                ),
+                (None, true) => "loads into every new conversation".to_string(),
+                (None, false) => first_line(&skill.description),
             },
             Approval::McpServer(server) => first_line(&server.command),
             Approval::WorkerBilling(billing) => {
@@ -1097,16 +1108,21 @@ impl Approval {
                 "Save the worker profile {} for {}?",
                 profile.name, profile.scope
             ),
-            Approval::Skill(skill) if skill.update.is_some() => {
-                format!(
-                    "Update the skill {} for {}?",
-                    skill.name,
-                    skill.scope.words()
-                )
-            }
-            Approval::Skill(skill) => {
-                format!("Save the skill {} for {}?", skill.name, skill.scope.words())
-            }
+            Approval::Skill(skill) => format!(
+                "{} the skill {} for {}{}?",
+                if skill.update.is_some() {
+                    "Update"
+                } else {
+                    "Save"
+                },
+                skill.name,
+                skill.scope.words(),
+                if skill.auto_load {
+                    " and load it into every new conversation"
+                } else {
+                    ""
+                }
+            ),
             Approval::McpServer(server) => format!(
                 "Add the MCP server {} for {}?",
                 server.name,

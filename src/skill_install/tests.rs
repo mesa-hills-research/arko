@@ -681,10 +681,6 @@ async fn a_skill_that_fails_a_check_is_refused_and_nothing_is_written() {
             "The name is 65 characters, and a skill's name is at most 64.",
         ),
         (
-            params("always", &draft("always", "auto_load: true\n", &[])),
-            "An agent's skill can't have auto_load: true, which would put it in every later system prompt. Take it out. The user can set it by hand.",
-        ),
-        (
             params("ponytail", &draft("ponytail", "", &[])),
             "ponytail is the name of a skill built into Arko. Choose another name.",
         ),
@@ -916,6 +912,140 @@ async fn with_no_one_to_ask_only_a_project_skill_without_review_is_saved() {
     fixture.add(params("notes", &source)).await.unwrap();
     assert!(fixture.project().join("notes/SKILL.md").is_file());
     assert!(fixture.cards().is_empty());
+}
+
+/// A skill with `auto_load: true` asks in any scope, even a project skill
+/// with Review project skills off, and its card says it loads into every
+/// new conversation. Approved, it is saved as given.
+#[tokio::test]
+async fn an_auto_loading_skill_always_asks_and_is_saved_as_given() {
+    let fixture = quiet();
+    let draft = write_skill(&fixture.drafts(), "always", "auto_load: true\n", &[]);
+    let result = fixture
+        .add(params("always", &draft.display().to_string()))
+        .await
+        .unwrap();
+    assert!(
+        result.starts_with("Saved the skill always for this project. It loads into every conversation from the next one on, and load_skill doesn't load it in this one."),
+        "{result}"
+    );
+    let cards = fixture.cards();
+    assert_eq!(cards.len(), 1);
+    assert!(cards[0].auto_load);
+    let approval = Approval::Skill(cards[0].clone());
+    assert_eq!(
+        approval.title(),
+        "Save the skill always for this project and load it into every new conversation?"
+    );
+    assert_eq!(approval.summary(), "loads into every new conversation");
+    assert_eq!(
+        std::fs::read_to_string(fixture.project().join("always/SKILL.md")).unwrap(),
+        skill_md("always", "auto_load: true\n")
+    );
+}
+
+/// An auto-loading skill the user turns down isn't saved, and the agent
+/// reads that auto_load was part of what they turned down.
+#[tokio::test]
+async fn an_auto_loading_skill_turned_down_isnt_saved() {
+    let fixture = fixture(true, Answer::Rejected { words: None }, Vec::new());
+    let draft = write_skill(&fixture.drafts(), "always", "auto_load: true\n", &[]);
+    let result = fixture
+        .add(params("always", &draft.display().to_string()))
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        "The user chose not to save the skill always for this project with auto_load: true, which would load it into every new conversation. Don't ask again, with auto_load or without, unless they want it."
+    );
+    assert_eq!(fixture.cards().len(), 1);
+    fixture.nothing_saved();
+}
+
+/// With no one to ask, a skill with `auto_load: true` is refused, as a save
+/// and as an update, and nothing changes.
+#[tokio::test]
+async fn with_no_one_to_ask_an_auto_loading_skill_is_refused() {
+    let fixture = fixture(false, Answer::Unanswered, Vec::new());
+    let refusal = "The user approves a skill with auto_load: true, since it loads into every new conversation, and no one can answer in this session. Take auto_load out, or tell the user what the skill would hold.";
+    let draft = write_skill(&fixture.drafts(), "notes", "auto_load: true\n", &[]);
+    let source = draft.display().to_string();
+    assert_eq!(
+        fixture.add(params("notes", &source)).await.unwrap_err(),
+        refusal
+    );
+    fixture.nothing_saved();
+    // An update that would turn it on.
+    std::fs::write(draft.join("SKILL.md"), skill_md("notes", "")).unwrap();
+    fixture.add(params("notes", &source)).await.unwrap();
+    std::fs::write(
+        draft.join("SKILL.md"),
+        skill_md("notes", "auto_load: true\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.edit(params("notes", &source)).await.unwrap_err(),
+        refusal
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.project().join("notes/SKILL.md")).unwrap(),
+        skill_md("notes", "")
+    );
+    assert!(fixture.cards().is_empty());
+}
+
+/// An update that turns auto_load on asks, as the save would, with what
+/// changes. One that turns it off asks only as any update does.
+#[tokio::test]
+async fn an_update_asks_to_turn_auto_load_on_and_not_to_turn_it_off() {
+    let fixture = quiet();
+    let draft = write_skill(&fixture.drafts(), "notes", "", &[]);
+    let source = draft.display().to_string();
+    fixture.add(params("notes", &source)).await.unwrap();
+    assert!(fixture.cards().is_empty());
+
+    let on = skill_md("notes", "auto_load: true\n");
+    std::fs::write(draft.join("SKILL.md"), &on).unwrap();
+    let result = fixture.edit(params("notes", &source)).await.unwrap();
+    assert!(
+        result.starts_with("Updated the skill notes for this project. Every conversation from the next one on loads the new version, and load_skill doesn't load it in this one."),
+        "{result}"
+    );
+    let cards = fixture.cards();
+    assert_eq!(cards.len(), 1);
+    let approval = Approval::Skill(cards[0].clone());
+    assert_eq!(
+        approval.title(),
+        "Update the skill notes for this project and load it into every new conversation?"
+    );
+    assert_eq!(
+        approval.summary(),
+        "loads into every new conversation, changes SKILL.md"
+    );
+    assert!(
+        cards[0]
+            .update
+            .as_ref()
+            .unwrap()
+            .diff
+            .contains("+ auto_load: true")
+    );
+    let saved = fixture.project().join("notes/SKILL.md");
+    assert_eq!(std::fs::read_to_string(&saved).unwrap(), on);
+
+    std::fs::write(draft.join("SKILL.md"), skill_md("notes", "")).unwrap();
+    let result = fixture.edit(params("notes", &source)).await.unwrap();
+    assert!(
+        result.starts_with(
+            "Updated the skill notes for this project. load_skill loads the new version now."
+        ),
+        "{result}"
+    );
+    assert_eq!(fixture.cards().len(), 1, "turning it off doesn't ask");
+    assert_eq!(
+        std::fs::read_to_string(&saved).unwrap(),
+        skill_md("notes", "")
+    );
 }
 
 /// A skill the user turns down, from a bundle, a URL or a folder, leaves
@@ -1458,6 +1588,7 @@ async fn an_edit_to_the_source_while_the_user_decides_isnt_saved() {
         }
         let card = approver.cards.lock().unwrap()[0].clone();
         assert_eq!(card.files[0].text.as_deref(), Some(skill.as_str()));
+        assert!(!card.auto_load);
         assert_eq!(card.files.len(), files.len());
         remove_saved(&fixture.root, &saved).unwrap();
     }
