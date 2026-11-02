@@ -6,13 +6,13 @@
 //! ([`crate::content`]).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::app::{get_json, page};
+use crate::app::{page, request};
 use crate::content::{self, Line, Mark};
 use crate::markdown;
 use crate::protocol::{ContentKind, ItemData, ResultData};
@@ -21,28 +21,104 @@ use crate::protocol::{ContentKind, ItemData, ResultData};
 /// again, as the terminal says it.
 const SHOW_LESS: &str = "↑ show the first lines only";
 
+/// The door of a content whose whole Arko no longer keeps.
+const GONE: &str = "No longer kept";
+
+/// The door of a content whose whole didn't come, which tries again.
+const FAILED: &str = "Couldn’t load the rest. Try again";
+
+/// The bytes of whole contents the page keeps, the latest asked for.
+const WHOLES_KEPT: usize = 8 * 1024 * 1024;
+
+/// The whole contents Arko gave, by their result's ID, in the order they
+/// came, within [`WHOLES_KEPT`].
+#[derive(Default)]
+struct Wholes {
+    texts: HashMap<u64, Rc<String>>,
+    order: VecDeque<u64>,
+    bytes: usize,
+}
+
+impl Wholes {
+    fn get(&self, id: u64) -> Option<Rc<String>> {
+        self.texts.get(&id).cloned()
+    }
+
+    /// Keeps the whole `text` of the result `id`, and lets go of the oldest
+    /// past the budget.
+    fn keep(&mut self, id: u64, text: String) {
+        self.let_go(id);
+        self.bytes += text.len();
+        self.texts.insert(id, Rc::new(text));
+        self.order.push_back(id);
+        while self.bytes > WHOLES_KEPT && self.order.len() > 1 {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(text) = self.texts.remove(&oldest) {
+                self.bytes -= text.len();
+            }
+        }
+    }
+
+    fn let_go(&mut self, id: u64) {
+        if let Some(text) = self.texts.remove(&id) {
+            self.bytes -= text.len();
+            self.order.retain(|kept| *kept != id);
+        }
+    }
+}
+
 thread_local! {
-    /// The whole contents Arko gave, by their result's ID.
-    static WHOLES: RefCell<HashMap<u64, Rc<String>>> = RefCell::new(HashMap::new());
+    static WHOLES: RefCell<Wholes> = RefCell::new(Wholes::default());
 }
 
 /// Forgets the whole contents, for another feed.
 pub fn forget() {
-    WHOLES.with(|wholes| wholes.borrow_mut().clear());
+    WHOLES.with(|wholes| *wholes.borrow_mut() = Wholes::default());
+}
+
+/// Lets go of the whole content of the item `id`, which the page no longer
+/// keeps.
+pub fn let_go(id: u64) {
+    WHOLES.with(|wholes| wholes.borrow_mut().let_go(id));
 }
 
 /// The whole content of the result `id`, once Arko gave it.
 fn whole(id: u64) -> Option<Rc<String>> {
-    WHOLES.with(|wholes| wholes.borrow().get(&id).cloned())
+    WHOLES.with(|wholes| wholes.borrow().get(id))
+}
+
+/// What a request for a whole content came to.
+#[derive(Debug, PartialEq)]
+enum Fetched {
+    Whole(ResultData),
+    /// Arko no longer keeps it.
+    Gone,
+    /// It didn't come (the connection, or Arko failed), which another try
+    /// may change.
+    Failed,
+}
+
+/// What Arko's `answer` to a request for a whole content (its status and
+/// body, or none when the request failed) says.
+fn fetched(answer: Option<(u16, String)>) -> Fetched {
+    match answer {
+        Some((200..=299, body)) => {
+            serde_json::from_str(&body).map_or(Fetched::Failed, Fetched::Whole)
+        }
+        Some((404, _)) => Fetched::Gone,
+        _ => Fetched::Failed,
+    }
 }
 
 /// The content of the result `data` (a `result` item), with its door.
 pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
     let page = page();
     let id = data.with_untracked(|item| item.id);
-    // A fetch that's under way, and one that found nothing.
+    // A fetch under way, and how the last one went.
     let asking = RwSignal::new(false);
-    let gone = RwSignal::new(false);
+    let state = RwSignal::new(None::<Fetched>);
     let open = move || page.doors_open.with(|open| open.contains(&id)) && whole(id).is_some();
     let lines = move || {
         let whole = open().then(|| whole(id)).flatten();
@@ -52,6 +128,7 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
             lines_view(kind, text)
         })
     };
+    let gone = move || state.with(|state| matches!(state, Some(Fetched::Gone)));
     let toggle = move |_| {
         if open() {
             page.doors_open.update(|open| {
@@ -65,38 +142,44 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
             });
             return;
         }
-        if asking.get_untracked() {
+        if asking.get_untracked() || gone() {
             return;
         }
         asking.set(true);
         spawn_local(async move {
-            let got: Option<ResultData> = get_json(&format!("/api/result/{id}"), None).await;
+            let asked = crate::app::feed();
+            let answer = request("GET", &format!("/api/result/{id}"), None).await;
             asking.set(false);
-            match got {
-                Some(result) => {
+            // (Another feed's item of that ID is another.)
+            if crate::app::feed() != asked {
+                return;
+            }
+            match fetched(answer) {
+                Fetched::Whole(result) => {
                     markdown::remember(&result.code);
-                    WHOLES.with(|wholes| {
-                        wholes.borrow_mut().insert(id, Rc::new(result.text));
-                    });
+                    WHOLES.with(|wholes| wholes.borrow_mut().keep(id, result.text));
+                    state.set(None);
                     page.doors_open.update(|open| {
                         open.insert(id);
                     });
                 }
-                None => gone.set(true),
+                other => state.set(Some(other)),
             }
         });
     };
     let door = move || {
         let more = data.with(|item| item.more.clone())?;
-        let label = if gone.get() {
-            "No longer kept".to_string()
+        let label = if gone() {
+            GONE.to_string()
         } else if open() {
             SHOW_LESS.to_string()
+        } else if state.with(|state| matches!(state, Some(Fetched::Failed))) {
+            FAILED.to_string()
         } else {
             more
         };
         Some(view! {
-            <button type="button" class="door" disabled=move || gone.get() on:click=toggle>
+            <button type="button" class="door" disabled=gone on:click=toggle>
                 {label}
             </button>
         })
@@ -151,5 +234,46 @@ fn lines_view(kind: ContentKind, text: &str) -> AnyView {
             let plain = kind == ContentKind::Plain;
             view! { <pre class="held" class:plain=plain>{text.to_string()}</pre> }.into_any()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Arko's answer says whether the whole came, is no longer kept (404),
+    /// or didn't come and may on another try.
+    #[test]
+    fn a_fetchs_answer_tells_gone_from_failed() {
+        let body = serde_json::json!({"text": "a\nb"}).to_string();
+        assert_eq!(
+            fetched(Some((200, body))),
+            Fetched::Whole(ResultData {
+                text: "a\nb".into(),
+                code: Vec::new()
+            })
+        );
+        assert_eq!(fetched(Some((404, String::new()))), Fetched::Gone);
+        for failed in [None, Some((500, String::new())), Some((200, "{".into()))] {
+            assert_eq!(fetched(failed), Fetched::Failed);
+        }
+    }
+
+    /// The page keeps the latest wholes within its budget, and lets go of
+    /// one whose item it no longer keeps.
+    #[test]
+    fn wholes_are_kept_within_a_budget_and_go_with_their_items() {
+        let mut wholes = Wholes::default();
+        let big = "x".repeat(WHOLES_KEPT / 3);
+        for id in 1..=4 {
+            wholes.keep(id, big.clone());
+        }
+        assert!(wholes.get(1).is_none());
+        assert!(wholes.get(4).is_some());
+        assert!(wholes.bytes <= WHOLES_KEPT);
+        wholes.let_go(4);
+        assert!(wholes.get(4).is_none());
+        assert_eq!(wholes.bytes, big.len() * 2);
+        assert_eq!(wholes.order.len(), 2);
     }
 }

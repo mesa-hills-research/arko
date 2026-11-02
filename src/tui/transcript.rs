@@ -2498,6 +2498,9 @@ fn theme_key(theme: &Theme) -> u64 {
 /// starts. A row's marker stands after it ([`SPINNER`]).
 const MARGIN: usize = 2;
 
+/// What a content's door says once its whole is no longer kept.
+const NO_LONGER_KEPT: &str = "No longer kept";
+
 /// The last line of a command's block that shows its whole output. A click
 /// on it shows the first lines again.
 const FOLD_CLOSE: &str = "↑ show the first lines only";
@@ -2723,6 +2726,12 @@ fn content_lines(item: &Item, theme: &Theme, width: usize, open: bool) -> Vec<Wr
                 .map(|line| Wrapped { bare: true, ..line }),
         );
     } else if let Some(more) = &item.more {
+        // (Its whole went, to keep the transcript's budget.)
+        let more = if item.whole.is_some() {
+            more.as_str()
+        } else {
+            NO_LONGER_KEPT
+        };
         out.extend(plain(more, theme.dim(), width));
     }
     out
@@ -5585,6 +5594,28 @@ mod tests {
         );
     }
 
+    /// A content whose whole is no longer kept says so where its door was,
+    /// and isn't a fold.
+    #[test]
+    fn a_content_no_longer_kept_says_so() {
+        let mut t = Transcript::new();
+        let mut call = item(1, Kind::Call, "$ seq 40");
+        call.status = Some(CallStatus::Ok);
+        call.act = Some(crate::remote::Act {
+            kind: ActKind::Command,
+            ..Default::default()
+        });
+        t.apply(Update::Item(call));
+        let mut output = item(2, Kind::Result, "1\n2");
+        output.content = Some(ContentKind::Plain);
+        output.more = Some("… 38 more lines".into());
+        output.call = Some(1);
+        t.apply(Update::Item(output));
+        let shown = rows(&mut t, &full(), 40, 4);
+        assert_eq!(shown[3], "  │ No longer kept", "{shown:?}");
+        assert!(!t.item(2).is_some_and(|item| t.folds(item)));
+    }
+
     /// The keyboard reaches each call inside an open Quiet row of several,
     /// its first one too, whose key is the row's, and opens it there.
     #[test]
@@ -5830,6 +5861,8 @@ mod tests {
             let mut result = item(2, Kind::Result, preview);
             result.content = Some(kind);
             result.more = fixture.more.map(str::to_string);
+            // (The whole, which the feed keeps when the preview leaves some out.)
+            result.whole = fixture.more.map(|_| Arc::from(preview));
             result.call = Some(1);
             result.turn = Some(1);
             items.push(result);
