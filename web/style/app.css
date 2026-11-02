@@ -524,10 +524,14 @@ details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
 .row.working + :is(.row.turn, .row.conversation) { margin-top: 12px; }
 .row:is(.turn, .conversation):has(+ :is(.row.thinking, .row.working)) { margin-bottom: 12px; }
 .row.thinking:last-child, .row.working:last-child { margin-bottom: -12px; }
-/* The mask and its text have the label's width, so their opposite
-   transforms cancel even when it wraps or is clipped. Both layers use
-   ordinary text with the same font. Only transforms move, since a moving
-   background repaints each frame and stalls WebKit in a long transcript. */
+/* A copy of the label in the text color lies on the label, with the
+   label's box and font, so it matches even when the label wraps or is
+   clipped. The copy stays put and only its mask, a band 60% of the label
+   wide, moves. The browser paints the mask from the label's box each frame,
+   so no compositor has to work out a layer's move, which Safari on the
+   iPhone got wrong when two layers moved against each other. The band has
+   a layer of its own, so a frame paints only the band and not the
+   transcript around it. */
 .shimmer-label {
   position: relative;
   display: inline-grid;
@@ -560,6 +564,9 @@ details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
   mask-size: 60% 100%;
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
+  -webkit-mask-position: -200% 0;
+  mask-position: -200% 0;
+  will-change: transform;
   animation: shine 2s linear infinite;
 }
 .shine-text {
@@ -567,11 +574,11 @@ details.thinking .thinking-text { margin: 4px 0 0 18px; font-style: italic; }
   inset: 0;
   width: 100%;
   color: var(--text);
-  animation: shine-text 2s linear infinite;
 }
-/* The 60% band's middle sweeps from half a label before to half after. */
-@keyframes shine { from { transform: translateX(-80%); } to { transform: translateX(120%); } }
-@keyframes shine-text { from { transform: translateX(80%); } to { transform: translateX(-120%); } }
+/* The band's middle sweeps from half a label before to half after. A
+   position of p% puts the band's left edge p% of the label's other 40% in,
+   so -200% puts it 0.8 of a label before the label and 300% 1.2 after. */
+@keyframes shine { to { -webkit-mask-position: 300% 0; mask-position: 300% 0; } }
 @keyframes spin { to { transform: rotate(1turn); } }
 
 .row.turn, .row.conversation {
