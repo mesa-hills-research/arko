@@ -43,6 +43,13 @@ The web page sends files with a message, saved in the project's `.arko/attachmen
 - The page's `ItemData.files` has them as `FileData`, with each file's name, type, size, lines and
   the `url` that downloads it.
 
+## Skill approvals
+
+`remote::SkillApproval` has `auto_load`, true when the skill would load into every new conversation.
+It defaults to false and is left out of the JSON when false, so build the struct with
+`..Default::default()`. An app that draws its own approval rows should show it, since `title()` and
+`summary()` already say the skill loads into every new conversation.
+
 ## A call's end
 
 `Act.ended` moved to `Item.ended` (and `ItemData.ended`). It is the ID the next item had when the
