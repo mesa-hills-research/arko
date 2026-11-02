@@ -334,9 +334,20 @@ pub fn session_set(name: &str, value: Option<&str>) {
 /// Sends a request, and gives its status and body, or none when Arko can't
 /// be reached.
 pub async fn request(method: &str, path: &str, body: Option<String>) -> Option<(u16, String)> {
+    request_with(method, path, body, None).await
+}
+
+/// [`request`], which `stop` can abort, as none when it does.
+pub async fn request_with(
+    method: &str,
+    path: &str,
+    body: Option<String>,
+    stop: Option<&web_sys::AbortSignal>,
+) -> Option<(u16, String)> {
     let init = RequestInit::new();
     init.set_method(method);
     init.set_credentials(RequestCredentials::SameOrigin);
+    init.set_signal(stop);
     if let Some(body) = body {
         let headers = web_sys::Headers::new().ok()?;
         headers.set("Content-Type", "application/json").ok()?;
@@ -393,7 +404,9 @@ async fn login(key: Option<String>) -> Login {
         return Login::Wrong;
     };
     let body = serde_json::json!({ "key": key }).to_string();
-    match request("POST", "/api/session", Some(body)).await {
+    let stop = deadline(DEADLINE_MS);
+    let signal = stop.as_ref().map(web_sys::AbortController::signal);
+    match request_with("POST", "/api/session", Some(body), signal.as_ref()).await {
         Some((204, _)) => {
             session_set(KEY, Some(&key));
             Login::Ok
@@ -406,6 +419,19 @@ async fn login(key: Option<String>) -> Login {
         Some(_) => Login::Wrong,
         None => Login::Offline,
     }
+}
+
+/// How long a short request may take before it's given up.
+pub const DEADLINE_MS: i32 = 20_000;
+
+/// What aborts a request once `ms` have passed.
+pub fn deadline(ms: i32) -> Option<web_sys::AbortController> {
+    let stop = web_sys::AbortController::new().ok()?;
+    let abort = stop.clone();
+    let late = Closure::once_into_js(move || abort.abort());
+    let _ =
+        window().set_timeout_with_callback_and_timeout_and_arguments_0(late.unchecked_ref(), ms);
+    Some(stop)
 }
 
 /// Trades the key for a session cookie again, after the one the page had

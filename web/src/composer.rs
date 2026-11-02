@@ -132,6 +132,7 @@ pub fn Composer() -> impl IntoView {
     });
     // The files attached, kept across a reload of the tab. Another feed's
     // uploads are no use, and a page shown again goes on with its uploads.
+    crate::attach::own_chips();
     crate::attach::restore();
     let attached = page.attached;
     Effect::new(move |_| {
@@ -295,8 +296,10 @@ pub fn Composer() -> impl IntoView {
             }
             None => serde_json::json!({ "text": text }),
         };
-        if !files.is_empty() {
-            body["files"] = files.into();
+        // (What it sends, so it removes those chips alone.)
+        let (sent_keys, ids): (Vec<u64>, Vec<String>) = files.into_iter().unzip();
+        if !ids.is_empty() {
+            body["files"] = ids.into();
         }
         spawn_local(async move {
             let outcome = send_to_arko("/api/message", body, &sender).await;
@@ -310,7 +313,7 @@ pub fn Composer() -> impl IntoView {
                     // unless the box holds another meanwhile.
                     ask.attached
                         .update(|attached| attached.retain(|id| !answers.contains(id)));
-                    crate::attach::sent();
+                    crate::attach::sent(&sent_keys);
                     if draft_now().as_ref() == Some(&sent) {
                         area.set_value("");
                         expanded.set(false);

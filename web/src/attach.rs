@@ -8,13 +8,17 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use leptos::prelude::*;
+use leptos::reactive::owner::Owner;
 use leptos::task::spawn_local;
 use lucide_leptos::{Paperclip, X};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 
-use crate::app::{feed, of_feed, page, relogin, request, session_get, session_set};
+use crate::app::{
+    DEADLINE_MS, deadline, feed, of_feed, page, relogin, request, request_with, session_get,
+    session_set,
+};
 use crate::composer::gloo_wait;
 use crate::protocol::{UploadCreated, UploadState, size};
 
@@ -79,15 +83,61 @@ thread_local! {
     static WAKES: Cell<u32> = const { Cell::new(0) };
     /// What keeps the screen on, while it's held.
     static AWAKE: RefCell<Option<wasm_bindgen::JsValue>> = const { RefCell::new(None) };
+    /// The request each chip's upload makes now, by chip.
+    static ATTEMPTS: RefCell<HashMap<u64, Attempt>> = RefCell::new(HashMap::new());
+    /// What owns the chips' signals, the message box's, which lasts as long
+    /// as the page.
+    static OWNER: RefCell<Option<Owner>> = const { RefCell::new(None) };
 }
 
-/// The chips' uploads, done, in the order attached, or `None` while one
-/// isn't done (or there are none to send). Send waits for them.
-pub fn ready(chips: &[Chip]) -> Option<Vec<String>> {
+/// Makes the chips' signals the message box's from now on. Signals made
+/// while a file is picked would otherwise belong to the Attach button,
+/// which a worker's view takes away, and they'd go with it.
+pub fn own_chips() {
+    OWNER.with(|owner| *owner.borrow_mut() = Owner::current());
+}
+
+/// A chip's signals for `state` and `id`, and its feed, owned by the
+/// message box ([`own_chips`]).
+fn chip_signals(
+    state: Upload,
+    id: Option<String>,
+    feed: Option<u64>,
+) -> (
+    RwSignal<Upload>,
+    RwSignal<Option<String>>,
+    RwSignal<Option<u64>>,
+) {
+    let make = || (RwSignal::new(state), RwSignal::new(id), RwSignal::new(feed));
+    OWNER.with(|owner| match &*owner.borrow() {
+        Some(owner) => owner.with(make),
+        None => make(),
+    })
+}
+
+/// A request of a chip's upload, which removing the chip, a change of feed
+/// or the page showing again can stop.
+struct Attempt {
+    stop: Box<dyn Fn()>,
+    /// When its bytes last moved, or it began.
+    moved: std::rc::Rc<Cell<f64>>,
+}
+
+/// Stops the request the chip `key`'s upload makes now, if any. It ends as
+/// broken off.
+fn stop_attempt(key: u64) {
+    if let Some(attempt) = ATTEMPTS.with(|attempts| attempts.borrow_mut().remove(&key)) {
+        (attempt.stop)();
+    }
+}
+
+/// The chips' keys and uploads, done, in the order attached, or `None` while
+/// one isn't done. Send waits for them, and sends these.
+pub fn ready(chips: &[Chip]) -> Option<Vec<(u64, String)>> {
     chips
         .iter()
         .map(|chip| match chip.state.get() {
-            Upload::Done => chip.id.get(),
+            Upload::Done => chip.id.get().map(|id| (chip.key, id)),
             _ => None,
         })
         .collect()
@@ -135,14 +185,15 @@ pub fn attach(files: Vec<web_sys::File>) {
             .starts_with("image/")
             .then(|| web_sys::Url::create_object_url_with_blob(&file).ok())
             .flatten();
+        let (state, id, feed) = chip_signals(Upload::Waiting, None, None);
         let chip = Chip {
             key,
             name: file.name(),
             bytes: file.size() as u64,
             preview,
-            feed: RwSignal::new(None),
-            state: RwSignal::new(Upload::Waiting),
-            id: RwSignal::new(None),
+            feed,
+            state,
+            id,
         };
         FILES.with(|files| files.borrow_mut().insert(key, file));
         chips.update(|chips| chips.push(chip));
@@ -167,6 +218,7 @@ pub fn remove(key: u64, sent: bool) {
         return;
     };
     chips.update(|chips| chips.retain(|chip| chip.key != key));
+    stop_attempt(key);
     forget(&chip);
     if !sent && let Some(id) = chip.id.get_untracked() {
         spawn_local(async move {
@@ -176,13 +228,11 @@ pub fn remove(key: u64, sent: bool) {
     save();
 }
 
-/// The chips went with a message, so they leave the box.
-pub fn sent() {
-    let keys: Vec<u64> = page()
-        .attached
-        .with_untracked(|chips| chips.iter().map(|chip| chip.key).collect());
+/// The chips `keys` went with a message, so they leave the box. Those
+/// attached since stay.
+pub fn sent(keys: &[u64]) {
     for key in keys {
-        remove(key, true);
+        remove(*key, true);
     }
 }
 
@@ -222,10 +272,14 @@ fn still_attached(chip: &Chip) -> bool {
     page()
         .attached
         .with_untracked(|chips| chips.iter().any(|kept| kept.key == chip.key))
-        && chip
-            .feed
-            .get_untracked()
-            .is_none_or(|taken| feed() == Some(taken))
+}
+
+/// Whether the upload of `chip` is the Arko's the page shows now, or has
+/// none yet.
+fn this_feeds(chip: &Chip) -> bool {
+    chip.feed
+        .get_untracked()
+        .is_none_or(|taken| feed() == Some(taken))
 }
 
 fn percent(done: u64, of: u64) -> u8 {
@@ -242,6 +296,9 @@ enum Came {
     Broke,
     /// Arko refused it, for these words.
     Refused(String),
+    /// Another Arko took it, as the page came to show a restarted one
+    /// meanwhile, so it starts over.
+    Moved,
 }
 
 /// Uploads `chip`'s file, trying again for a while as long as it breaks
@@ -263,6 +320,13 @@ async fn upload(chip: Chip) {
         if !still_attached(&chip) {
             return;
         }
+        // An upload of an Arko since restarted starts over in the one
+        // shown now.
+        if !this_feeds(&chip) {
+            chip.id.set(None);
+            chip.feed.set(None);
+            (offset, most, ask, tries, failing_since) = (0, None, false, 0, None);
+        }
         let shown = match failing_since {
             None => Upload::Sending(percent(offset, chip.bytes)),
             Some(_) => Upload::Retrying(percent(offset, chip.bytes)),
@@ -271,7 +335,7 @@ async fn upload(chip: Chip) {
         let asked = ask;
         let came = match chip.id.get_untracked() {
             None => create(&chip).await,
-            Some(id) if asked => state(&id).await,
+            Some(id) if asked => state(chip.key, &id).await,
             Some(id) => put(&id, &file, offset, &chip).await,
         };
         let held = match came {
@@ -283,6 +347,12 @@ async fn upload(chip: Chip) {
                 remove(chip.key, false);
                 page().error.set(Some(words));
                 return;
+            }
+            Came::Moved => {
+                chip.id.set(None);
+                chip.feed.set(None);
+                (offset, most, ask, tries, failing_since) = (0, None, false, 0, None);
+                continue;
             }
             Came::Holds { received, .. } => Some((received, true)),
             Came::Elsewhere(received) => Some((received, false)),
@@ -328,13 +398,46 @@ async fn wait_or_wake(ms: i32) {
     }
 }
 
-/// The page showed again, so an upload waiting to try again tries now,
-/// and the screen is held again.
+/// The page showed again, so an upload waiting to try again tries now, a
+/// request with nothing moving for a while (its connection may have died
+/// with the page hidden) starts again, and the screen is held again.
 pub fn shown_again() {
     WAKES.with(|wakes| wakes.set(wakes.get() + 1));
+    let now = js_sys::Date::now();
+    let stalled: Vec<u64> = ATTEMPTS.with(|attempts| {
+        attempts
+            .borrow()
+            .iter()
+            .filter(|(_, attempt)| now - attempt.moved.get() > 3000.0)
+            .map(|(key, _)| *key)
+            .collect()
+    });
+    for key in stalled {
+        stop_attempt(key);
+    }
     if RUNNING.with(Cell::get) {
         hold_screen(true);
     }
+}
+
+/// `method` `path` with `body`, as the chip `key`'s upload asks it, given
+/// up after [`DEADLINE_MS`] or when the chip's request is stopped.
+async fn chip_request(
+    key: u64,
+    method: &str,
+    path: &str,
+    body: Option<String>,
+) -> Option<(u16, String)> {
+    let stop = deadline(DEADLINE_MS)?;
+    let abort = stop.clone();
+    let attempt = Attempt {
+        stop: Box::new(move || abort.abort()),
+        moved: std::rc::Rc::new(Cell::new(js_sys::Date::now())),
+    };
+    ATTEMPTS.with(|attempts| attempts.borrow_mut().insert(key, attempt));
+    let answer = request_with(method, path, body, Some(&stop.signal())).await;
+    ATTEMPTS.with(|attempts| attempts.borrow_mut().remove(&key));
+    answer
 }
 
 #[derive(Deserialize)]
@@ -370,14 +473,20 @@ fn came_of(status: u16, text: &str) -> Came {
     }
 }
 
-/// Asks Arko for an upload of `chip`'s file.
+/// Asks Arko for an upload of `chip`'s file. The upload is the Arko's the
+/// page showed when it asked, and an answer that comes once the page shows
+/// another starts it over.
 async fn create(chip: &Chip) -> Came {
     let asked = feed();
     let body = of_feed(
         serde_json::json!({ "name": chip.name, "size": chip.bytes }),
         asked,
     );
-    let Some((status, text)) = request("POST", "/api/uploads", Some(body.to_string())).await else {
+    let answer = chip_request(chip.key, "POST", "/api/uploads", Some(body.to_string())).await;
+    if feed() != asked {
+        return Came::Moved;
+    }
+    let Some((status, text)) = answer else {
         return Came::Broke;
     };
     if status == 401 {
@@ -401,9 +510,10 @@ async fn create(chip: &Chip) -> Came {
     }
 }
 
-/// How far the upload `id` is, once a request still writing it stopped.
-async fn state(id: &str) -> Came {
-    match request("GET", &format!("/api/uploads/{id}"), None).await {
+/// How far the upload `id` of the chip `key` is, once a request still
+/// writing it stopped.
+async fn state(key: u64, id: &str) -> Came {
+    match chip_request(key, "GET", &format!("/api/uploads/{id}"), None).await {
         Some((401, _)) => {
             relogin().await;
             Came::Broke
@@ -452,6 +562,16 @@ async fn put(id: &str, file: &web_sys::File, offset: u64, chip: &Chip) -> Came {
     if request.send_with_opt_blob(Some(&body)).is_err() {
         return Came::Broke;
     }
+    let attempt = {
+        let request = request.clone();
+        Attempt {
+            stop: Box::new(move || {
+                let _ = request.abort();
+            }),
+            moved: last.clone(),
+        }
+    };
+    ATTEMPTS.with(|attempts| attempts.borrow_mut().insert(chip.key, attempt));
     // (Stops a request whose connection stays open with nothing moving.)
     let finished = std::rc::Rc::new(Cell::new(false));
     {
@@ -466,6 +586,7 @@ async fn put(id: &str, file: &web_sys::File, offset: u64, chip: &Chip) -> Came {
         });
     }
     let _ = wasm_bindgen_futures::JsFuture::from(ended).await;
+    ATTEMPTS.with(|attempts| attempts.borrow_mut().remove(&chip.key));
     finished.set(true);
     drop(progress);
     let status = request.status().unwrap_or(0);
@@ -566,17 +687,20 @@ pub fn restore() {
     let (done, cut): (Vec<Kept>, Vec<Kept>) = kept.into_iter().partition(|kept| kept.done);
     let chips: Vec<Chip> = done
         .into_iter()
-        .map(|kept| Chip {
-            key: NEXT.with(|next| {
-                next.set(next.get() + 1);
-                next.get()
-            }),
-            name: kept.name,
-            bytes: kept.bytes,
-            preview: None,
-            feed: RwSignal::new(kept.feed),
-            state: RwSignal::new(Upload::Done),
-            id: RwSignal::new(Some(kept.id)),
+        .map(|kept| {
+            let (state, id, feed) = chip_signals(Upload::Done, Some(kept.id), kept.feed);
+            Chip {
+                key: NEXT.with(|next| {
+                    next.set(next.get() + 1);
+                    next.get()
+                }),
+                name: kept.name,
+                bytes: kept.bytes,
+                preview: None,
+                feed,
+                state,
+                id,
+            }
         })
         .collect();
     page().attached.set(chips);
@@ -594,34 +718,46 @@ pub fn restore() {
     save();
 }
 
-/// Another Arko knows nothing of the chips' uploads, so they leave, and the
-/// error line says so.
+/// Another Arko knows nothing of the chips' uploads. A chip whose file the
+/// page still has starts its upload over in the Arko shown now, and one
+/// kept from before a reload leaves, which the error line says.
 pub fn feed_changed() {
     // (Before the first feed comes, the chips' feed is still to be seen.)
     let Some(now) = feed() else {
         return;
     };
-    let now = Some(now);
-    let gone: Vec<u64> = page().attached.with_untracked(|chips| {
-        chips
-            .iter()
-            .filter(|chip| {
-                chip.feed
-                    .get_untracked()
-                    .is_some_and(|taken| Some(taken) != now)
-            })
-            .map(|chip| chip.key)
-            .collect()
+    let chips = page().attached.get_untracked();
+    let (again, gone) = moved_chips(&chips, now, |key| {
+        FILES.with(|files| files.borrow().contains_key(&key))
     });
-    if gone.is_empty() {
-        return;
+    for chip in chips.iter().filter(|chip| again.contains(&chip.key)) {
+        stop_attempt(chip.key);
+        chip.id.set(None);
+        chip.feed.set(None);
+        chip.state.set(Upload::Waiting);
     }
     for key in &gone {
         remove(*key, true);
     }
-    page()
-        .error
-        .set(Some("Arko restarted, so attach your files again.".into()));
+    if !gone.is_empty() {
+        page()
+            .error
+            .set(Some("Arko restarted, so attach your files again.".into()));
+    }
+    if !again.is_empty() {
+        run();
+    }
+}
+
+/// Of `chips`, those whose uploads another Arko than the feed `now`'s took:
+/// those whose files `has_file` says the page has, to upload again, and the
+/// others, to remove.
+fn moved_chips(chips: &[Chip], now: u64, has_file: impl Fn(u64) -> bool) -> (Vec<u64>, Vec<u64>) {
+    chips
+        .iter()
+        .filter(|chip| chip.feed.get_untracked().is_some_and(|taken| taken != now))
+        .map(|chip| chip.key)
+        .partition(|key| has_file(*key))
 }
 
 /// The Attach button, which opens the device's file picker. The picker's
@@ -800,14 +936,42 @@ mod tests {
             id: RwSignal::new(None),
         };
         page.attached.set(vec![chip.clone()]);
-        assert!(still_attached(&chip));
+        assert!(still_attached(&chip) && this_feeds(&chip));
         crate::app::STORE.with(|store| store.borrow_mut().feed = Some(0xab));
-        assert!(still_attached(&chip), "the feed came after the file");
+        assert!(this_feeds(&chip), "the feed came after the file");
         chip.feed.set(Some(0xab));
-        assert!(still_attached(&chip));
+        assert!(this_feeds(&chip));
         crate::app::STORE.with(|store| store.borrow_mut().feed = Some(0xcd));
-        assert!(!still_attached(&chip), "another Arko");
+        assert!(!this_feeds(&chip), "another Arko");
+        assert!(still_attached(&chip), "it starts over rather than leave");
         crate::app::STORE.with(|store| store.borrow_mut().feed = None);
+        page.attached.set(Vec::new());
+        assert!(!still_attached(&chip));
+    }
+
+    /// Uploads another Arko took start over where the page still has their
+    /// files, and leave otherwise.
+    #[test]
+    fn uploads_of_a_restarted_arko_start_over_or_leave() {
+        let _page = crate::testing::page();
+        let chip = |key, feed: Option<u64>| Chip {
+            key,
+            name: "a".into(),
+            bytes: 1,
+            preview: None,
+            feed: RwSignal::new(feed),
+            state: RwSignal::new(Upload::Done),
+            id: RwSignal::new(Some(format!("u{key}"))),
+        };
+        let chips = [
+            chip(1, Some(0xab)),
+            chip(2, Some(0xab)),
+            chip(3, Some(0xcd)),
+            chip(4, None),
+        ];
+        let (again, gone) = moved_chips(&chips, 0xcd, |key| key == 1);
+        assert_eq!(again, [1]);
+        assert_eq!(gone, [2]);
     }
 
     #[test]
@@ -828,7 +992,7 @@ mod tests {
                 chip(Upload::Done, Some("u1")),
                 chip(Upload::Done, Some("u2"))
             ]),
-            Some(vec!["u1".to_string(), "u2".to_string()])
+            Some(vec![(1, "u1".to_string()), (1, "u2".to_string())])
         );
         assert_eq!(
             ready(&[
