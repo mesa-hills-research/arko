@@ -2382,6 +2382,14 @@ impl Feed {
         state.edits.insert(call, text.into());
     }
 
+    /// Holds the feed for `time`, as a busy writer does, for tests of what
+    /// waits for it.
+    #[cfg(test)]
+    pub(crate) fn hold(&self, time: Duration) {
+        let _state = self.lock();
+        std::thread::sleep(time);
+    }
+
     /// The main transcript's item `id`, while it is kept.
     pub fn main_item(&self, id: u64) -> Option<Item> {
         self.lock().main.find(id).map(|item| item.clone())

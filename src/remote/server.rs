@@ -1769,7 +1769,8 @@ async fn stop_job(
 
 /// `GET /api/result/{id}` gives the whole content of a call's result (a
 /// `result` item whose preview leaves some out), with its code highlighted,
-/// while Arko keeps it.
+/// while Arko keeps it. It waits for the feed and highlights off the
+/// server's threads, which go on meanwhile.
 async fn result(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): Peer,
@@ -1779,14 +1780,32 @@ async fn result(
     if let Err(refusal) = app.authorize(&headers, peer.ip()) {
         return refusal.into_response();
     }
-    let Some((whole, kind, language)) = id.parse().ok().and_then(|id| app.feed.content(id)) else {
+    let Ok(id) = id.parse::<u64>() else {
         return (StatusCode::NOT_FOUND, error_body("no longer kept")).into_response();
     };
-    axum::Json(super::protocol::ResultData {
-        code: highlight::content_code(kind, &whole, language.as_deref()),
-        text: whole.to_string(),
+    let feed = app.feed.clone();
+    let made = tokio::task::spawn_blocking(move || {
+        let (whole, kind, language) = feed.content(id)?;
+        let result = super::protocol::ResultData {
+            code: highlight::content_code(kind, &whole, language.as_deref()),
+            text: whole.to_string(),
+        };
+        serde_json::to_vec(&result).ok()
     })
-    .into_response()
+    .await;
+    match made {
+        Ok(Some(body)) => (
+            [(header::CONTENT_TYPE, "application/json")],
+            Bytes::from(body),
+        )
+            .into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, error_body("no longer kept")).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error_body("the content couldn't be made"),
+        )
+            .into_response(),
+    }
 }
 
 /// `GET /api/images/{id}` gives the bytes of an image an item shows, while Arko
@@ -3172,6 +3191,76 @@ mod tests {
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         tokio::time::sleep(Duration::from_millis(1100)).await;
         served.login().await;
+    }
+
+    /// A request for a call's whole content waits for the feed and does its
+    /// highlighting off the server's own threads, so the server goes on
+    /// meanwhile, even on one thread with the feed held.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_whole_content_is_made_off_the_servers_threads() {
+        use arko_agents::AgentEvent;
+        use arko_workflows::WorkflowEvent;
+        let feed = Feed::new("main");
+        let event = |event: AgentEvent| WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: "main".into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event,
+        };
+        let call = uuid::Uuid::new_v4();
+        let read = AgentEvent::ToolCallFormatted {
+            tool_call_id: call,
+            tool_name: "read_file".into(),
+            parameters: [("path".to_string(), "a.rs".into())].into(),
+        };
+        feed.event(&event(read), None);
+        let lines: Vec<String> = (1..=40).map(|n| format!("{n} | let x{n} = {n};")).collect();
+        let result = AgentEvent::ToolResult {
+            tool_call_id: call,
+            tool_name: "read_file".into(),
+            output: lines.join("\n"),
+        };
+        feed.event(&event(result), None);
+        let id = feed
+            .subscribe()
+            .0
+            .items
+            .iter()
+            .find(|item| item.more.is_some())
+            .unwrap()
+            .id;
+        let served = serve(&feed);
+        let cookie = served.login().await;
+        // The longest the server's thread went without a turn.
+        let gap = Arc::new(Mutex::new(Duration::ZERO));
+        let ticker = tokio::spawn({
+            let gap = gap.clone();
+            async move {
+                let mut last = std::time::Instant::now();
+                loop {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    let now = std::time::Instant::now();
+                    let mut gap = gap.lock().unwrap();
+                    *gap = (*gap).max(now - last);
+                    last = now;
+                }
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let held = feed.clone();
+        let holder = std::thread::spawn(move || held.hold(Duration::from_millis(400)));
+        std::thread::sleep(Duration::from_millis(20));
+        let response = served
+            .get(&format!("/api/result/{id}"), Some(&cookie))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let whole: super::super::protocol::ResultData = response.json().await.unwrap();
+        assert_eq!(whole.text.lines().count(), 40);
+        holder.join().unwrap();
+        ticker.abort();
+        let gap = *gap.lock().unwrap();
+        assert!(gap < Duration::from_millis(200), "{gap:?}");
     }
 
     /// The stream starts with the history and the status, then sends what
