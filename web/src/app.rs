@@ -121,6 +121,8 @@ pub struct Page {
     pub ask: crate::questions::Asking,
     /// The Quiet view's rows the reader opened, by their first call.
     pub quiet_open: RwSignal<HashSet<u64>>,
+    /// The files attached to the message box.
+    pub attached: RwSignal<Vec<crate::attach::Chip>>,
 }
 
 thread_local! {
@@ -252,6 +254,7 @@ impl Page {
             pinned: RwSignal::new(true),
             ask: crate::questions::Asking::new(),
             quiet_open: RwSignal::new(HashSet::new()),
+            attached: RwSignal::new(Vec::new()),
         };
         PAGE.with(|cell| cell.set(Some(page)));
         page
@@ -402,6 +405,20 @@ async fn login(key: Option<String>) -> Login {
         }
         Some(_) => Login::Wrong,
         None => Login::Offline,
+    }
+}
+
+/// Trades the key for a session cookie again, after the one the page had
+/// ended, and locks the page when the key no longer works. Returns whether
+/// the page is in.
+pub(crate) async fn relogin() -> bool {
+    match login(None).await {
+        Login::Ok => true,
+        Login::Offline => false,
+        result => {
+            lock(page(), result);
+            false
+        }
     }
 }
 
@@ -576,7 +593,7 @@ impl Sender {
 
 /// `body`, sent from the feed `feed`, which Arko refuses when it isn't its
 /// own.
-fn of_feed(mut body: serde_json::Value, feed: Option<u64>) -> serde_json::Value {
+pub(crate) fn of_feed(mut body: serde_json::Value, feed: Option<u64>) -> serde_json::Value {
     if let Some(feed) = feed {
         body["feed"] = format!("{feed:016x}").into();
     }

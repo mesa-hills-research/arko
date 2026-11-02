@@ -31,7 +31,7 @@
    --outer (its radius) and --inset (its padding plus its border), and its
    children use --r-inner. It is set on the parents because a custom property
    with var() in it resolves where it is declared. */
-:is(.menu, .select-pop, .slash, dialog.viewer, .field) {
+:is(.menu, .select-pop, .slash, dialog.viewer, .field, .chip-file) {
   --r-inner: max(0px, calc(var(--outer) - var(--inset)));
 }
 
@@ -739,6 +739,54 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .expand { display: none; width: 30px; min-height: 30px; margin: 4px 5px 4px 0; border-radius: var(--r-full); color: var(--muted); }
 @media (hover: hover) and (pointer: fine) {
   .expand.shown { display: inline-flex; }
+}
+
+/* The Attach button, a 40 px circle like Send, holds the file picker's
+   input over itself, unseen, so a tap opens the picker without a script. */
+.compose .attach { position: relative; flex: 0 0 40px; width: 40px; height: 40px; min-height: 0; padding: 0; border-radius: 50%; color: var(--muted); }
+.attach .picker { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; }
+.attach:focus-within { outline: 2px solid var(--ring); outline-offset: 2px; }
+.attach .picker:focus-visible { outline: 0; }
+
+/* The files attached, as chips above the box, each a row of its
+   thumbnail (an image's), its name, its size or how its upload goes, and
+   Remove. */
+.attached { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; padding: 0; list-style: none; }
+.chip-file {
+  --outer: var(--r-md);
+  --inset: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 40px;
+  padding: 3px 3px 3px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--outer);
+  background: var(--surface);
+  font-size: 14px;
+}
+.chip-file:has(.chip-thumb) { padding-left: 3px; }
+.chip-thumb { flex: none; width: 32px; height: 32px; border-radius: var(--r-inner); object-fit: cover; }
+.chip-name { min-width: 0; overflow: hidden; white-space: nowrap; }
+.chip-meta { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chip-file.failed { border-color: var(--error); }
+.chip-file.failed .chip-meta { color: var(--error); }
+.chip-remove { width: 32px; min-height: 32px; border-radius: var(--r-inner); color: var(--muted); }
+
+/* Over the box while files are dragged over the page. */
+.drop {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--ring);
+  border-radius: 20px;
+  background: var(--surface);
+  font-size: 14px;
+  pointer-events: none;
 }
 
 .compose .send { flex: 0 0 40px; width: 40px; height: 40px; min-height: 0; padding: 0; border-radius: 50%; }

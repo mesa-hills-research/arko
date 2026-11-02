@@ -6,6 +6,7 @@
 
 mod app;
 mod approvals;
+mod attach;
 mod chrome;
 mod composer;
 mod copy;
