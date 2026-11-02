@@ -1,12 +1,17 @@
 //! The words a dictation favours, meaning those of its session that a speech model
 //! would otherwise misspell, such as identifiers, file names, project names
 //! and the session's models. Every front end gives a recording its list
-//! with [`favour_session_words`], which builds it with [`session_words`]
+//! with [`favour_session_words`], which builds it ([`favoured_words`])
 //! on a thread of its own, so they all favour the same words.
 //!
 //! Building it reads a bounded part of everything, meaning the newest part of the
 //! transcript (the main transcript's before the workers'), the listings of
 //! the workspace and of the skill and profile folders, and small manifests.
+//!
+//! Every list also starts with Arko's own names ([`OWN_NAMES`]) and holds the
+//! words learned across sessions, which are the user's earlier messages
+//! (`history.txt`) and any words an app gives
+//! ([`favour_session_words_with`]), shared with the session's by turns.
 //!
 //! Words that can't be said, such as keys, tokens, hashes and IDs, are
 //! always left out. With the `leave_out_secrets` setting, so are the values
@@ -24,6 +29,7 @@ use super::Dictation;
 use super::settings::Settings;
 use crate::builtin_skills::BuiltinSkills;
 use crate::details::Details;
+use crate::history;
 use crate::profiles::Roots;
 use crate::remote::{Feed, Item, Kind};
 use crate::shell::SHELL_TOOL_NAME;
@@ -31,6 +37,18 @@ use crate::shell::SHELL_TOOL_NAME;
 /// The most words a list holds, the size Telmo's accuracy was measured
 /// with.
 pub const MAX_WORDS: usize = 300;
+
+/// Names that always go in, since a new session gives no reason to prefer their spelling.
+const OWN_NAMES: [&str; 8] = [
+    "Arko",
+    "Arko Studio",
+    "Telmo",
+    "Mesquite",
+    "GPUI",
+    "GPUI Kit",
+    "Capta",
+    "Mesa Hills Research",
+];
 
 /// Characters past which a word is taken for noise (a long path, a key), not
 /// something said.
@@ -65,17 +83,29 @@ pub struct SessionWord {
     pub code: bool,
 }
 
-/// Gives `dictation` the words of the session `feed` and `details` describe
-/// ([`session_words`]), built on a thread of their own, unless the settings
-/// in Arko's folder `root` turn session words off. The recording goes on
-/// meanwhile and favours them from the next utterance, or from the first
-/// when they come before it. A dictation that ended or was cancelled drops
-/// them.
+/// Gives `dictation` the words to favour ([`favoured_words`]), built on a
+/// thread of their own, unless the settings in Arko's folder `root` turn
+/// session words off. The recording goes on meanwhile and favours them
+/// from the next utterance, or from the first when they come before it. A
+/// dictation that ended or was cancelled drops them.
 pub fn favour_session_words(
     dictation: &Dictation,
     root: &Path,
     feed: &Feed,
     details: &Arc<Details>,
+) {
+    favour_session_words_with(dictation, root, feed, details, Vec::new);
+}
+
+/// As [`favour_session_words`], also favouring the words `learned` gives,
+/// such as an app's user dictionary or its learned spellings, best first.
+/// It runs on the thread that builds the words, only when they're wanted.
+pub fn favour_session_words_with(
+    dictation: &Dictation,
+    root: &Path,
+    feed: &Feed,
+    details: &Arc<Details>,
+    learned: impl FnOnce() -> Vec<String> + Send + 'static,
 ) {
     let words = dictation.words_sender();
     let (root, feed, details) = (root.to_path_buf(), feed.clone(), details.clone());
@@ -85,9 +115,90 @@ pub fn favour_session_words(
         .spawn(move || {
             let settings = Settings::load(&root);
             if words.wanted() && settings.session_words {
-                words.send(session_words(&feed, &details, &settings));
+                words.send(favoured_words(
+                    &root,
+                    &feed,
+                    &details,
+                    &settings,
+                    &learned(),
+                ));
             }
         });
+}
+
+/// [`OWN_NAMES`], then the session's words ([`session_words`]) and the ones
+/// learned across sessions, which are the user's earlier messages and the
+/// `learned` words an app gives, taken by turns, best first, at most
+/// [`MAX_WORDS`]. Each gets half of what the names leave, and a source
+/// with fewer words leaves its share to the other, so a fresh session is
+/// filled from what was learned and neither crowds out the other.
+fn favoured_words(
+    root: &Path,
+    feed: &Feed,
+    details: &Details,
+    settings: &Settings,
+    learned: &[String],
+) -> Vec<SessionWord> {
+    let session = session_words(feed, details, settings);
+    merge(session, learned_words(root, settings, learned))
+}
+
+/// The words used across sessions, best first. They are the `learned` words,
+/// in the order given, and then the distinctive words of the user's earlier
+/// messages in `history.txt` in `root`, read from its newest
+/// [`TRANSCRIPT_BYTES`] as the transcript's tail is (so recent and repeated
+/// ones count most). Both follow the session's rules for what can be said and
+/// for secrets.
+fn learned_words(root: &Path, settings: &Settings, learned: &[String]) -> Vec<SessionWord> {
+    let mut tail = Tail::default();
+    let entries = history::recent_entries(&history::path_in(root), TRANSCRIPT_BYTES as u64);
+    for entry in entries.iter().rev() {
+        if !tail.take(&Item::new(Kind::User, entry.as_str())) {
+            break;
+        }
+    }
+    let secrets = settings.leave_out_secrets;
+    let given = learned
+        .iter()
+        .filter(|word| sayable(word) && !(secrets && !secrets::secret_ranges(word).is_empty()))
+        .map(|word| SessionWord {
+            text: word.clone(),
+            code: true,
+        });
+    given
+        .chain(rank(&tail, Path::new(""), &[], &[], secrets))
+        .collect()
+}
+
+/// [`OWN_NAMES`] and then the words of `session` and `learned` by turns, to
+/// [`MAX_WORDS`]. A turn ends when a word is added, so a word already in, in
+/// any case, costs its source nothing, and a folder called `arko` doesn't
+/// bring in a second spelling of Arko.
+pub(super) fn merge(session: Vec<SessionWord>, learned: Vec<SessionWord>) -> Vec<SessionWord> {
+    let mut words: Vec<SessionWord> = OWN_NAMES
+        .iter()
+        .map(|name| SessionWord {
+            text: (*name).into(),
+            code: false,
+        })
+        .collect();
+    let mut sources = [session.into_iter(), learned.into_iter()];
+    let mut out = [false; 2];
+    let mut turn = 0;
+    while words.len() < MAX_WORDS && !(out[0] && out[1]) {
+        if !out[turn] {
+            let new = sources[turn].find(|word| {
+                let lower = word.text.to_lowercase();
+                !words.iter().any(|have| have.text.to_lowercase() == lower)
+            });
+            match new {
+                Some(word) => words.push(word),
+                None => out[turn] = true,
+            }
+        }
+        turn = 1 - turn;
+    }
+    words
 }
 
 /// The words of the session `feed` and `details` describe, best first, at
@@ -844,6 +955,7 @@ fn profile_names(roots: &Roots) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history::History;
 
     /// The tail of `items`, oldest first, as a feed gives it.
     fn tail(items: &[Item]) -> Tail {
@@ -877,6 +989,185 @@ mod tests {
         let mut item = Item::new(Kind::Call, text).detail(detail);
         item.tool = Some(tool.into());
         item
+    }
+
+    fn word(text: &str) -> SessionWord {
+        SessionWord {
+            text: text.into(),
+            code: false,
+        }
+    }
+
+    fn numbered(prefix: &str, count: usize) -> Vec<SessionWord> {
+        (0..count).map(|n| word(&format!("{prefix}{n}"))).collect()
+    }
+
+    #[test]
+    fn the_own_names_are_in_the_list_of_an_empty_session() {
+        let words = merge(Vec::new(), Vec::new());
+        assert_eq!(texts(&words), OWN_NAMES);
+        assert!(words.iter().all(|word| !word.code));
+    }
+
+    /// The names come first, and each source keeps half of what's left at
+    /// the cap, its best words first.
+    #[test]
+    fn the_own_names_and_each_source_share_the_cap() {
+        let words = merge(
+            numbered("Session", MAX_WORDS),
+            numbered("Learned", MAX_WORDS),
+        );
+        let found = texts(&words);
+        assert_eq!(found.len(), MAX_WORDS);
+        assert_eq!(found[..OWN_NAMES.len()], OWN_NAMES);
+        let share = (MAX_WORDS - OWN_NAMES.len()) / 2;
+        for (prefix, best) in [
+            ("Session", &numbered("Session", share)),
+            ("Learned", &numbered("Learned", share)),
+        ] {
+            let kept: Vec<_> = found
+                .iter()
+                .filter(|word| word.starts_with(prefix))
+                .collect();
+            assert_eq!(kept.len(), share, "{prefix}");
+            assert!(best.iter().all(|word| found.contains(&word.text.as_str())));
+        }
+    }
+
+    /// A source with fewer words leaves its share to the other.
+    #[test]
+    fn a_short_source_leaves_its_share_to_the_other() {
+        let words = merge(Vec::new(), numbered("Learned", MAX_WORDS * 2));
+        assert_eq!(words.len(), MAX_WORDS);
+        let words = merge(numbered("Session", MAX_WORDS * 2), numbered("Learned", 3));
+        let found = texts(&words);
+        assert_eq!(found.len(), MAX_WORDS);
+        assert!(found.contains(&"Learned2") && found.contains(&"Session200"));
+    }
+
+    /// A name or word in two places comes once, whatever its case, and the
+    /// name's spelling stays.
+    #[test]
+    fn a_word_in_two_places_comes_once_and_the_names_spelling_wins() {
+        let words = merge(
+            vec![word("arko"), word("Granite"), word("ARKO STUDIO")],
+            vec![word("Granite"), word("Capta")],
+        );
+        let found = texts(&words);
+        assert_eq!(found[OWN_NAMES.len()..], ["Granite"]);
+        assert_eq!(found[..OWN_NAMES.len()], OWN_NAMES);
+    }
+
+    /// Duplicates of the names cost a source no turn, so both keep half.
+    #[test]
+    fn duplicates_dont_spend_a_sources_share() {
+        let mut session: Vec<SessionWord> = OWN_NAMES
+            .iter()
+            .map(|name| word(&name.to_lowercase()))
+            .collect();
+        session.extend(numbered("Session", MAX_WORDS));
+        let words = merge(session, numbered("Learned", MAX_WORDS));
+        let found = texts(&words);
+        let share = (MAX_WORDS - OWN_NAMES.len()) / 2;
+        for prefix in ["Session", "Learned"] {
+            let kept = found.iter().filter(|word| word.starts_with(prefix)).count();
+            assert_eq!(kept, share, "{prefix}");
+        }
+    }
+
+    /// An app's words keep the order it gave them, to the cap.
+    #[test]
+    fn an_apps_words_keep_their_order() {
+        let root = tempfile::tempdir().unwrap();
+        let given: Vec<String> = ["ZebraModule", "AlphaModule"]
+            .into_iter()
+            .map(String::from)
+            .chain((0..MAX_WORDS).map(|n| format!("Dictionary{n}x")))
+            .collect();
+        let learned = learned_words(root.path(), &Settings::default(), &given);
+        assert_eq!(texts(&learned)[..2], ["ZebraModule", "AlphaModule"]);
+        let words = merge(Vec::new(), learned);
+        let found = texts(&words);
+        assert_eq!(found.len(), MAX_WORDS);
+        assert_eq!(
+            found[OWN_NAMES.len()..OWN_NAMES.len() + 3],
+            ["ZebraModule", "AlphaModule", "Dictionary0x"]
+        );
+        let kept = MAX_WORDS - OWN_NAMES.len();
+        assert_eq!(
+            found.last(),
+            Some(&format!("Dictionary{}x", kept - 3).as_str())
+        );
+    }
+
+    /// Only the newest part of a large history is read.
+    #[test]
+    fn only_the_newest_history_is_read() {
+        let root = tempfile::tempdir().unwrap();
+        let path = history::path_in(root.path());
+        let old = format!(
+            "Ask about the Oldrenderer and the Oldrenderer again. {}\n",
+            "word ".repeat(2000)
+        );
+        let recent = "Ask about the Newrenderer and the Newrenderer again.\n";
+        let text = format!(
+            "#V2\n{}{recent}",
+            old.repeat(TRANSCRIPT_BYTES / old.len() + 2)
+        );
+        std::fs::write(&path, text).unwrap();
+        let words = learned_words(root.path(), &Settings::default(), &[]);
+        let found = texts(&words);
+        assert!(found.contains(&"Newrenderer"), "{found:?}");
+        // The read part is the file's last bytes, whole records of them.
+        let read = history::recent_entries(&path, TRANSCRIPT_BYTES as u64);
+        assert!(read.len() < TRANSCRIPT_BYTES / old.len() + 2);
+        assert_eq!(read.last().map(String::as_str), Some(recent.trim_end()));
+    }
+
+    #[test]
+    fn earlier_messages_and_an_apps_words_are_learned() {
+        let root = tempfile::tempdir().unwrap();
+        let mut history = History::load(Some(history::path_in(root.path())));
+        for message in [
+            "Ask about the Zephyrine renderer. Zephyrine is slow, and the Zephyrine cache too.",
+            "Set PASSWORD=HunterTwo, then check ReadMe.md.",
+            "Later, the Quokka module and the Quokka tests.",
+        ] {
+            history.add(message);
+        }
+        let learned = |secrets, extra: &[String]| {
+            let settings = Settings {
+                leave_out_secrets: secrets,
+                ..Settings::default()
+            };
+            learned_words(root.path(), &settings, extra)
+        };
+        let words = learned(
+            false,
+            &["Bramblewick".into(), "xK9mQ2pL7vZt4Rw8Nc3Y".into()],
+        );
+        let found = texts(&words);
+        for name in [
+            "Zephyrine",
+            "Quokka",
+            "ReadMe.md",
+            "HunterTwo",
+            "Bramblewick",
+        ] {
+            assert!(found.contains(&name), "{name}: {found:?}");
+        }
+        // A key-like word can't be said, and common words aren't names.
+        assert!(!found.contains(&"xK9mQ2pL7vZt4Rw8Nc3Y"), "{found:?}");
+        assert!(!found.contains(&"Later"), "{found:?}");
+        let secretless = learned(true, &[]);
+        let found = texts(&secretless);
+        assert!(
+            !found.contains(&"HunterTwo") && found.contains(&"ReadMe.md"),
+            "{found:?}"
+        );
+        // No history yet.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(learned_words(empty.path(), &Settings::default(), &[]).is_empty());
     }
 
     #[test]

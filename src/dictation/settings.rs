@@ -23,8 +23,9 @@ pub struct Settings {
     pub idle_minutes: u64,
     /// `ask` before downloading a missing model, or `automatic`.
     pub download: String,
-    /// Favour the session's words, such as its names, identifiers and file
-    /// names ([`session_words`](super::session_words())).
+    /// Favour Arko's own names, the session's words (its names, identifiers
+    /// and file names, [`session_words`](super::session_words())) and the
+    /// words of the user's earlier messages. Off favours nothing.
     pub session_words: bool,
     /// Leave out of the session's words the values that context marks as
     /// secret, such as what follows `PASSWORD=` or `--token`.
