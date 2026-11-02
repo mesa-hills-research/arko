@@ -54,6 +54,10 @@ const WORKER_BUDGET: Budget = Budget {
     bytes: 2 * 1024 * 1024,
     wholes: 4 * 1024 * 1024,
 };
+/// The largest file whose text the feed keeps while an edit of it runs.
+const EDIT_KEPT: usize = 4 * 1024 * 1024;
+/// The most edits the feed keeps a file's text for at once.
+const EDITS_WAITING: usize = 64;
 /// The latest calls whose items the images their tools return find.
 const CALL_ITEMS: usize = 512;
 /// The images kept for calls whose items haven't come yet.
@@ -1389,6 +1393,9 @@ struct State {
     runs: HashMap<Uuid, String>,
     /// Calls waiting for their results, by call.
     calls: HashMap<Uuid, Call>,
+    /// The text of the file each edit (`edit_file`) changes, as it was when
+    /// the edit started, by call, until its result comes.
+    edits: HashMap<Uuid, Arc<str>>,
     /// Where each agent's output stood as its latest model request went
     /// out. What its response streams goes if the response fails.
     requests: HashMap<String, Streamed>,
@@ -1933,6 +1940,7 @@ impl Feed {
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
+            state.edits.remove(&id);
             self.settle(
                 state,
                 &id,
@@ -2091,7 +2099,9 @@ impl Feed {
                     Some(call) => (call.message.take(), std::mem::take(&mut call.parameters)),
                     None => (None, HashMap::new()),
                 };
-                let outcome = render::outcome(tool_name, &parameters, output);
+                let before = state.edits.remove(tool_call_id);
+                let outcome =
+                    render::outcome_after(tool_name, &parameters, output, before.as_deref());
                 self.settle(&mut state, tool_call_id, outcome);
                 // The worker that got a message shows it in its own
                 // transcript (a message to the lead is its call's line).
@@ -2109,6 +2119,7 @@ impl Feed {
                 let why = reason.as_deref().unwrap_or_default().trim();
                 // A stop cancels the calls that run ("The task was
                 // cancelled while this call was running").
+                state.edits.remove(tool_call_id);
                 let message = if why.contains("cancelled") {
                     super::quiet::STOPPED.to_string()
                 } else if why == arko_agents::claude_code::HELD_FOR_COMPACTION {
@@ -2127,6 +2138,7 @@ impl Feed {
                 ..
             } => match tool_call_id {
                 Some(id) if state.calls.contains_key(id) => {
+                    state.edits.remove(id);
                     self.settle(&mut state, id, Outcome::failed(error_message));
                 }
                 _ => {
@@ -2351,6 +2363,23 @@ impl Feed {
         self.publish(state, Update::Remove { id });
         item.pending = false;
         self.push(state, item);
+    }
+
+    /// The edit `call` (`edit_file`) of `file` starts, whose text the feed
+    /// keeps until the call's result comes, to show the edit's diff from
+    /// what the file had. A file larger than [`EDIT_KEPT`] isn't kept, and
+    /// its diff shows the edit's old and new text.
+    pub(crate) fn edit_starts(&self, call: Uuid, file: &std::path::Path) {
+        let small = std::fs::metadata(file).is_ok_and(|meta| meta.len() <= EDIT_KEPT as u64);
+        let Some(text) = small.then(|| std::fs::read_to_string(file).ok()).flatten() else {
+            return;
+        };
+        let mut state = self.lock();
+        // (Edits whose results never came, of a run that went away.)
+        if state.edits.len() >= EDITS_WAITING {
+            state.edits.clear();
+        }
+        state.edits.insert(call, text.into());
     }
 
     /// The main transcript's item `id`, while it is kept.

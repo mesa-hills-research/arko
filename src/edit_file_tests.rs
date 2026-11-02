@@ -198,3 +198,111 @@ async fn a_session_saved_with_apply_diff_resumes_with_it() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+
+/// An edit's diff in the transcript is the edit that ran: the whole lines
+/// it changed as the file had them before and has them after, numbered,
+/// with the lines around them. That holds for a deletion inside a line, a
+/// replacement whose text the line has twice, a line break the edit adds or
+/// takes away, a file with CRLF line breaks, tabs and wide characters, a
+/// whole line deleted, and every match of an edit of all of them. A failed
+/// edit shows why it failed and no diff.
+#[tokio::test]
+async fn an_edits_diff_is_the_edit_that_ran() {
+    // Each edit: its file, the file's text, and the call's parameters.
+    let edits: Vec<(&str, &str, serde_json::Value)> = vec![
+        ("a.txt", "abcde\n", serde_json::json!({"old_string": "bc", "new_string": ""})),
+        ("b.txt", "x ax\n", serde_json::json!({"old_string": "ax", "new_string": "x"})),
+        (
+            "c.txt",
+            "prefix foo\nsuffix\n",
+            serde_json::json!({"old_string": "foo\n", "new_string": "bar"}),
+        ),
+        (
+            "d.txt",
+            "prefix foosuffix\n",
+            serde_json::json!({"old_string": "foo", "new_string": "bar\n"}),
+        ),
+        ("e.txt", "a\r\nb\r\nc\r\n", serde_json::json!({"old_string": "b", "new_string": "B"})),
+        (
+            "f.txt",
+            "\tlet 名前 = 1;\n",
+            serde_json::json!({"old_string": "1", "new_string": "2"}),
+        ),
+        ("g.txt", "a\nb\nc\n", serde_json::json!({"old_string": "b\n", "new_string": ""})),
+        ("h.txt", "a\n", serde_json::json!({"old_string": "zzz", "new_string": "y"})),
+        (
+            "i.txt",
+            "x\n1\n2\n3\n4\n5\n6\n7\nx\n",
+            serde_json::json!({"old_string": "x", "new_string": "y", "replace_all": true}),
+        ),
+    ];
+    let expected: [Option<&str>; 9] = [
+        Some("-1\tabcde\n+1\tade"),
+        Some("-1\tx ax\n+1\tx x"),
+        Some("-1\tprefix foo\n-2\tsuffix\n+1\tprefix barsuffix"),
+        Some("-1\tprefix foosuffix\n+1\tprefix bar\n+2\tsuffix"),
+        Some(" 1\ta\n-2\tb\n+2\tB\n 3\tc"),
+        Some("-1\t\tlet 名前 = 1;\n+1\t\tlet 名前 = 2;"),
+        Some(" 1\ta\n-2\tb\n 2\tc"),
+        None,
+        Some("-1\tx\n+1\ty\n 2\t1\n 3\t2\n 4\t3\n…\n 6\t5\n 7\t6\n 8\t7\n-9\tx\n+9\ty"),
+    ];
+    let calls: Vec<(String, serde_json::Value)> = edits
+        .iter()
+        .map(|(file, _, parameters)| {
+            let mut parameters = parameters.clone();
+            parameters["path"] = (*file).into();
+            (file.to_string(), parameters)
+        })
+        .collect();
+    let server = ModelServer::start(Arc::new(move |_, body: String| {
+        let calls = calls.clone();
+        Box::pin(async move {
+            // The next edit, after the results of those before it.
+            let done = (1..=calls.len())
+                .take_while(|n| body.contains(&format!("call_e{n}\"")))
+                .count();
+            match calls.get(done) {
+                Some((_, parameters)) => tool_call(
+                    &format!("e{}", done + 1),
+                    EDIT_FILE_TOOL_NAME,
+                    parameters.clone(),
+                ),
+                None => complete("done", "Edited."),
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    harness.open(false).unwrap();
+    for (file, text, _) in &edits {
+        std::fs::write(harness.settings.workspace.join(file), text).unwrap();
+    }
+    let end = harness
+        .turn(Prompt::User("Edit the files.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    let items = harness.feed.subscribe().0.items;
+    let edit_calls: Vec<&remote::Item> = items
+        .iter()
+        .filter(|item| item.tool.as_deref() == Some(EDIT_FILE_TOOL_NAME))
+        .collect();
+    assert_eq!(edit_calls.len(), edits.len());
+    for ((call, expected), (file, ..)) in edit_calls.iter().zip(expected).zip(&edits) {
+        let block = items.iter().find(|item| item.call == Some(call.id));
+        match expected {
+            Some(diff) => {
+                let block = block.unwrap_or_else(|| panic!("{file}: no diff"));
+                assert_eq!(block.content, Some(remote::ContentKind::Diff), "{file}");
+                assert_eq!(block.text, diff, "{file}");
+            }
+            None => {
+                assert_eq!(call.status, Some(remote::CallStatus::Failed), "{file}");
+                let block = block.unwrap_or_else(|| panic!("{file}: no reason"));
+                assert_eq!(block.content, Some(remote::ContentKind::Muted), "{file}");
+            }
+        }
+    }
+    harness.crew.as_ref().unwrap().shutdown().await;
+}

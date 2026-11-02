@@ -1014,6 +1014,8 @@ pub(crate) struct Fixture {
     pub parameters: &'static str,
     /// Its result, or why it failed when `status` is failed.
     pub output: &'static str,
+    /// For an edit, its file's text as the edit started.
+    pub before: Option<&'static str>,
     /// Its act, once its result came.
     pub act: Act,
     /// Its Full line, and the detail Full shows under it.
@@ -1059,6 +1061,7 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
         tool,
         parameters,
         output,
+        before: None,
         act,
         full,
         full_detail: None,
@@ -1099,15 +1102,18 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
         },
         Fixture {
             outcome: "1 edit",
+            before: Some(
+                "fn branched(&self, index: usize) -> Message {\n    let branch = &self.branches[index];\n    Message {\n        text: branch.text.clone(),\n        summary: branch.summary.clone(),\n        message_index: None,\n        at: branch.at,\n    }\n}\n",
+            ),
             content: Some((
                 Diff,
-                " 99\t    Message {\n 100\t        text: branch.text.clone(),\n 101\t        summary: branch.summary.clone(),\n-102\t        message_index: None,\n+102\t        message_index: Some(index),\n 103\t        at: branch.at,\n 104\t    }\n 105\t}",
+                " 3\t    Message {\n 4\t        text: branch.text.clone(),\n 5\t        summary: branch.summary.clone(),\n-6\t        message_index: None,\n+6\t        message_index: Some(index),\n 7\t        at: branch.at,\n 8\t    }\n 9\t}",
             )),
             ..fixture(
                 "an edit",
                 "edit_file",
                 r#"{"path": "src/engine.rs", "old_string": "message_index: None,", "new_string": "message_index: Some(index),"}"#,
-                "Edited src/engine.rs at line 102:\n99 |     Message {\n100 |         text: branch.text.clone(),\n101 |         summary: branch.summary.clone(),\n102 |         message_index: Some(index),\n103 |         at: branch.at,\n104 |     }\n105 | }",
+                "Edited src/engine.rs at line 6:\n3 |     Message {\n4 |         text: branch.text.clone(),\n5 |         summary: branch.summary.clone(),\n6 |         message_index: Some(index),\n7 |         at: branch.at,\n8 |     }\n9 | }",
                 act(ActKind::Edit, "src/engine.rs"),
                 "edit src/engine.rs",
                 "Made 1 edit to engine.rs",

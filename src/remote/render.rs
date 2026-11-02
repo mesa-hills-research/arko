@@ -1002,6 +1002,17 @@ const OUTCOME_CHARS: usize = 60;
 /// brief, with its content, and the whole of it for an app's view of the
 /// call.
 pub fn outcome(tool: &str, parameters: &Parameters, output: &str) -> Outcome {
+    outcome_after(tool, parameters, output, None)
+}
+
+/// [`outcome`], where an edit's file had the text `before` as the edit
+/// started, which its diff is made from.
+pub(crate) fn outcome_after(
+    tool: &str,
+    parameters: &Parameters,
+    output: &str,
+    before: Option<&str>,
+) -> Outcome {
     let job = moved_job(output);
     if tool != SHELL_TOOL_NAME
         && let Some(job) = job
@@ -1026,7 +1037,7 @@ pub fn outcome(tool: &str, parameters: &Parameters, output: &str) -> Outcome {
         outcome.output = Some(output.into());
     }
     if outcome.block.is_none() && tool != SHELL_TOOL_NAME {
-        outcome.block = content(tool, parameters, output).map(Content::block);
+        outcome.block = content(tool, parameters, output, before).map(Content::block);
     }
     outcome
 }
@@ -1196,7 +1207,12 @@ fn language(path: &str) -> Option<String> {
 /// The content of a call of `tool` with `parameters` that ended well with
 /// the result `output`, in the form that fits the tool (a command's is its
 /// output, [`command_outcome`]).
-fn content(tool: &str, parameters: &Parameters, output: &str) -> Option<Content> {
+fn content(
+    tool: &str,
+    parameters: &Parameters,
+    output: &str,
+    before: Option<&str>,
+) -> Option<Content> {
     let given = |name: &str| text(parameters, name);
     let result = |kind: ContentKind| Content::new(kind, output, None);
     match tool {
@@ -1221,11 +1237,14 @@ fn content(tool: &str, parameters: &Parameters, output: &str) -> Option<Content>
             Content::new(ContentKind::Lines, lines.join("\n"), language(path))
         }
         EDIT_FILE_TOOL_NAME => {
-            let diff = edit_diff(given("old_string"), given("new_string"), output);
+            let (old, new) = (given("old_string"), given("new_string"));
+            let diff = before
+                .and_then(|before| edit_diff(before, old, new, flag(parameters, "replace_all")))
+                .unwrap_or_else(|| bare_diff(old, new));
             Content::new(ContentKind::Diff, diff, language(given("path")))
         }
         "Edit" => {
-            let diff = edit_diff(given("old_string"), given("new_string"), "");
+            let diff = bare_diff(given("old_string"), given("new_string"));
             Content::new(ContentKind::Diff, diff, language(given("file_path")))
         }
         "MultiEdit" => {
@@ -1235,7 +1254,7 @@ fn content(tool: &str, parameters: &Parameters, output: &str) -> Option<Content>
                 .flatten()
                 .map(|edit| {
                     let part = |name: &str| edit.get(name).and_then(Value::as_str).unwrap_or("");
-                    edit_diff(part("old_string"), part("new_string"), "")
+                    bare_diff(part("old_string"), part("new_string"))
                 })
                 .collect();
             Content::new(
@@ -1331,99 +1350,114 @@ fn read_lines(output: &str, claude_code: bool) -> Option<String> {
     numbered.then(|| lines.join("\n"))
 }
 
-/// The diff of an edit that replaced `old` with `new`, with the lines of
-/// the file around it that its result `output` shows (`edit_file`'s
-/// "Edited a.rs at lines 3-5:" and the lines numbered as `read_file` numbers
-/// them). The removed lines have their numbers in the file before the edit
-/// and the others theirs after it. An edit whose result shows no lines
-/// (one that replaced every match, or Claude Code's) is its old and new
-/// lines without numbers.
-fn edit_diff(old: &str, new: &str, output: &str) -> String {
+/// The lines around each change of an edit that its diff shows.
+const DIFF_CONTEXT: usize = 3;
+
+/// The diff of an edit of the file whose text was `before`, which replaced
+/// `old` with `new` (every match, with `all`) as `edit_file` does: the whole
+/// lines it changed, removed as the file had them and added as it has them
+/// now, numbered so, with the lines around them. `None` when `old` isn't in
+/// the text as the tool finds it (once, or with `all` at least once), which
+/// means the file changed since.
+fn edit_diff(before: &str, old: &str, new: &str, all: bool) -> Option<String> {
     use content::Mark;
-    let bare = || {
-        let removed = old
-            .lines()
-            .map(|line| content::diff_line(Mark::Removed, None, line));
-        let added = new
-            .lines()
-            .map(|line| content::diff_line(Mark::Added, None, line));
-        removed.chain(added).collect::<Vec<_>>().join("\n")
-    };
-    let mut lines = output.lines();
-    let Some(range) = lines
-        .next()
-        .and_then(|first| first.strip_prefix("Edited "))
-        .and_then(|rest| rest.rsplit_once(" at line"))
-        .map(|(_, range)| range.trim_start_matches('s').trim().trim_end_matches(':'))
-    else {
-        return bare();
-    };
-    let Some(first) = range
-        .split('-')
-        .next()
-        .and_then(|n| n.trim().parse::<usize>().ok())
-    else {
-        return bare();
-    };
-    // The file's lines it shows, by number.
-    let shown: Vec<(usize, &str)> = lines
-        .filter_map(|line| {
-            let (number, text) = line.split_once(" | ")?;
-            Some((number.parse().ok()?, text))
-        })
-        .collect();
-    let at = |number: usize| {
-        shown
-            .iter()
-            .find(|(n, _)| *n == number)
-            .map(|(_, text)| *text)
-    };
-    // (One line break at the end of either names no line of its own.)
-    let new_core = new.strip_suffix('\n').unwrap_or(new);
-    let old_core = old.strip_suffix('\n').unwrap_or(old);
-    // The new lines as the file has them, and the old ones they replaced,
-    // whole lines both.
-    let (removed, added): (Vec<String>, Vec<String>) = if new.is_empty() {
-        (old.lines().map(str::to_string).collect(), Vec::new())
-    } else {
-        let count = new_core.split('\n').count();
-        let span: Option<Vec<&str>> = (first..first + count).map(at).collect();
-        match span {
-            Some(span) => {
-                let after = span.join("\n");
-                match after.find(new_core) {
-                    Some(start) => {
-                        let before = format!(
-                            "{}{old_core}{}",
-                            &after[..start],
-                            &after[start + new_core.len()..]
-                        );
-                        (
-                            before.split('\n').map(str::to_string).collect(),
-                            span.iter().map(|line| line.to_string()).collect(),
-                        )
-                    }
-                    None => return bare(),
-                }
-            }
-            None => return bare(),
+    // As the tool matches, past a byte-order mark and with LF line breaks.
+    let lf = |text: &str| text.replace("\r\n", "\n");
+    let before = lf(before.strip_prefix('\u{feff}').unwrap_or(before));
+    let (old, new) = (lf(old), lf(new));
+    if old.is_empty() {
+        return None;
+    }
+    let found: Vec<usize> = before.match_indices(&old).map(|(at, _)| at).collect();
+    if found.is_empty() || (!all && found.len() > 1) {
+        return None;
+    }
+    let mut after = String::with_capacity(before.len());
+    let mut starts = Vec::with_capacity(found.len());
+    let mut rest = 0;
+    for at in &found {
+        after.push_str(&before[rest..*at]);
+        starts.push(after.len());
+        after.push_str(&new);
+        rest = at + old.len();
+    }
+    after.push_str(&before[rest..]);
+    let lines = |text: &str| -> Vec<String> {
+        let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+        if text.ends_with('\n') || text.is_empty() {
+            lines.pop();
         }
+        lines
     };
-    let last = first + added.len();
-    let mut diff: Vec<String> = Vec::new();
-    for (number, text) in shown.iter().filter(|(n, _)| *n < first) {
-        diff.push(content::diff_line(Mark::Kept, Some(*number), text));
+    let (was, is) = (lines(&before), lines(&after));
+    let line_of = |text: &str, at: usize| text[..at].matches('\n').count();
+    // Each change as the whole lines it spans, before and after: from the
+    // line it starts on to the line the text after it goes on in.
+    let mut changes: Vec<(usize, usize, usize, usize)> = Vec::new();
+    for (at, start) in found.iter().zip(&starts) {
+        let b = (line_of(&before, *at), line_of(&before, at + old.len()) + 1);
+        let a = (
+            line_of(&after, *start),
+            line_of(&after, start + new.len()) + 1,
+        );
+        let change = (b.0, b.1.min(was.len()), a.0, a.1.min(is.len()));
+        // (Two matches in one line are one change of it.)
+        match changes.last_mut() {
+            Some(last) if change.0 < last.1 => (last.1, last.3) = (change.1, change.3),
+            _ => changes.push(change),
+        }
     }
-    for (at, text) in removed.iter().enumerate() {
-        diff.push(content::diff_line(Mark::Removed, Some(first + at), text));
+    let mut out: Vec<String> = Vec::new();
+    // The lines of the file now that show, up to here.
+    let mut shown = 0;
+    for (at, &(b0, b1, a0, a1)) in changes.iter().enumerate() {
+        // Without the lines at its ends that it leaves as they were, unless
+        // it changed only where a line ends.
+        let (mut b, mut a) = ((b0, b1), (a0, a1));
+        while b.0 < b.1 && a.0 < a.1 && was[b.0] == is[a.0] {
+            (b.0, a.0) = (b.0 + 1, a.0 + 1);
+        }
+        while b.1 > b.0 && a.1 > a.0 && was[b.1 - 1] == is[a.1 - 1] {
+            (b.1, a.1) = (b.1 - 1, a.1 - 1);
+        }
+        if b.0 == b.1 && a.0 == a.1 {
+            (b, a) = ((b0, b1), (a0, a1));
+        }
+        let from = a.0.saturating_sub(DIFF_CONTEXT).max(shown);
+        if from > shown && !out.is_empty() {
+            out.push("…".to_string());
+        }
+        // Lines from the line `from` on, numbered so, with `mark`.
+        let numbered = |lines: &[String], from: usize, mark: Mark| -> Vec<String> {
+            lines
+                .iter()
+                .enumerate()
+                .map(|(at, line)| content::diff_line(mark, Some(from + at + 1), line))
+                .collect()
+        };
+        out.extend(numbered(&is[from..a.0], from, Mark::Kept));
+        out.extend(numbered(&was[b.0..b.1], b.0, Mark::Removed));
+        out.extend(numbered(&is[a.0..a.1], a.0, Mark::Added));
+        let next = changes.get(at + 1).map_or(is.len(), |change| change.2);
+        let to = (a.1 + DIFF_CONTEXT).min(next).min(is.len()).max(a.1);
+        out.extend(numbered(&is[a.1..to], a.1, Mark::Kept));
+        shown = to;
     }
-    for (at, text) in added.iter().enumerate() {
-        diff.push(content::diff_line(Mark::Added, Some(first + at), text));
-    }
-    for (number, text) in shown.iter().filter(|(n, _)| *n >= last) {
-        diff.push(content::diff_line(Mark::Kept, Some(*number), text));
-    }
-    diff.join("\n")
+    Some(out.join("\n"))
+}
+
+/// The diff of an edit whose file's text isn't known (a restored session,
+/// Claude Code's edits, a file too large to keep), which is its old text
+/// removed and its new text added, without numbers.
+fn bare_diff(old: &str, new: &str) -> String {
+    use content::Mark;
+    let removed = old
+        .lines()
+        .map(|line| content::diff_line(Mark::Removed, None, line));
+    let added = new
+        .lines()
+        .map(|line| content::diff_line(Mark::Added, None, line));
+    removed.chain(added).collect::<Vec<_>>().join("\n")
 }
 
 /// What came while a wait waited, from its result, as the user reads it:
@@ -1729,7 +1763,7 @@ mod tests {
             {
                 Outcome::failed(fixture.output)
             } else {
-                super::outcome(fixture.tool, &parameters, fixture.output)
+                outcome_after(fixture.tool, &parameters, fixture.output, fixture.before)
             };
             // (Its result comes before the item 2.)
             item.settle(outcome.status, outcome.text.clone(), &outcome.settled, 2);
@@ -1762,29 +1796,37 @@ mod tests {
         }
     }
 
-    /// An edit's diff has the lines around it the result shows, kept, the
-    /// old lines, removed, numbered as the file had them, and the new ones,
-    /// added, numbered as it has them now. An edit inside a line shows
-    /// that line whole, and a deletion has no added lines.
+    /// An edit's diff is made from the file's text before it: the whole
+    /// lines it changed, removed as they were and added as they are, with
+    /// three lines around them, and a line between the changes of an edit
+    /// of every match that are apart. Without that text it is the edit's
+    /// old and new text, unnumbered.
     #[test]
-    fn an_edits_diff_shows_whole_lines_around_it() {
-        let output = "Edited a.rs at lines 3-4:\n1 | one\n2 | two\n3 | new a\n4 | new b\n5 | five";
+    fn an_edits_diff_is_made_from_the_files_text_before_it() {
+        let before = "1\n2\n3\n4\nold\n6\n7\n8\n9\n";
         assert_eq!(
-            edit_diff("old", "new a\nnew b", output),
-            " 1\tone\n 2\ttwo\n-3\told\n+3\tnew a\n+4\tnew b\n 5\tfive"
+            edit_diff(before, "old", "new a\nnew b", false).as_deref(),
+            Some(" 2\t2\n 3\t3\n 4\t4\n-5\told\n+5\tnew a\n+6\tnew b\n 7\t6\n 8\t7\n 9\t8")
         );
-        let output = "Edited a.rs at line 2:\n1 | fn a() {\n2 |     let x = Some(1);\n3 | }";
+        // Inside a line, the line whole.
         assert_eq!(
-            edit_diff("None", "Some(1)", output),
-            " 1\tfn a() {\n-2\t    let x = None;\n+2\t    let x = Some(1);\n 3\t}"
+            edit_diff("fn a() {\n    let x = None;\n}\n", "None", "Some(1)", false).as_deref(),
+            Some(" 1\tfn a() {\n-2\t    let x = None;\n+2\t    let x = Some(1);\n 3\t}")
         );
-        let output = "Edited a.rs at line 2:\n1 | one\n2 | three";
+        // Twice in a line with every match, one change of it.
         assert_eq!(
-            edit_diff("two\n", "", output),
-            " 1\tone\n-2\ttwo\n 2\tthree"
+            edit_diff("a x x\n", "x", "y", true).as_deref(),
+            Some("-1\ta x x\n+1\ta y y")
         );
-        // Without the file's lines (every match, Claude Code's edit).
-        assert_eq!(edit_diff("a\nb", "c", ""), "-\ta\n-\tb\n+\tc");
+        // A final blank line is a line.
+        assert_eq!(
+            edit_diff("a\n\n", "a", "b", false).as_deref(),
+            Some("-1\ta\n+1\tb\n 2\t")
+        );
+        // Not there, or there twice without every match: the file changed.
+        assert_eq!(edit_diff("a\n", "b", "c", false), None);
+        assert_eq!(edit_diff("a a\n", "a", "c", false), None);
+        assert_eq!(bare_diff("a\nb", "c"), "-\ta\n-\tb\n+\tc");
     }
 
     /// A wait's content is the mail that came, each by its heading, from
