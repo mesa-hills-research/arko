@@ -624,9 +624,10 @@ pub fn replies_text(text_replies: bool) -> &'static str {
 /// typed, where the agent answers it. Text it writes only in its thinking may
 /// never reach the user, and the rule that says so in its instructions is far
 /// from the note. The agent answers with `message_user`, also when the note
-/// cut a wait short. An agent without it (a session saved when a main agent
-/// that replies in text had none) answers in text beside its next call. A
-/// chat has no calls to answer beside, and so no hint.
+/// cut a wait short, or in its reply when its turn ends anyway. An agent
+/// without it (a session saved when a main agent that replies in text had
+/// none) answers in text beside its next call. A chat has no calls to
+/// answer beside, and so no hint.
 pub fn operator_note_hint(config: &AgentConfig) -> Option<&'static str> {
     let tools = &config.tool_config;
     if tools.chat {
@@ -637,7 +638,7 @@ pub fn operator_note_hint(config: &AgentConfig) -> Option<&'static str> {
         .any(|name| name == crate::message::MESSAGE_USER)
     {
         Some(
-            "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above with `message_user` first, even if they cut a wait short, then carry on with your work.",
+            "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above with `message_user`, even if they cut a wait short, or in your reply if your turn is ending anyway.",
         )
     } else {
         Some(
@@ -773,8 +774,8 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "# Your task\n\
          Make reasonable choices yourself, and say which in your report. If something blocks you, report what and why.\n\n\
          # The lead\n\
-         The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation. The user may also write to you directly: their messages reach you the same way, marked as from the user, and you treat them as the lead's. The lead sees only your messages to it and your report, never your thinking or the text beside your calls, so an answer meant for the lead goes in one of those. Text written only in your thinking may never reach anyone, and a long wait is where that is most likely.\n\n\
-         Your two ways to message reach different people. `message_agent` to `lead` reaches only your lead, so progress, findings and questions about your task go there. `message_user` reaches only the user, never the lead, so keep it for answering the user when they write to you and for what they must know now. Never answer anyone only in your thinking.\n",
+         The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation. The user may also write to you directly: their messages reach you the same way, marked as from the user, and you treat them as the lead's.\n\n\
+         `message_user` reaches only the user, who reads it in your own view. Use it to answer the user when they write to you, and for what they must know now. Progress, findings and questions about your task go to the lead with `message_agent` (to `lead`), the only way the lead hears from you besides your report. Text written only in your thinking may never reach anyone, and a long wait is where that is most likely.\n",
     );
     instructions.push_str(&tool_instructions(settings, true));
     if settings.extra_rules.for_model(settings.worker)
@@ -848,7 +849,7 @@ fn main_instructions(settings: &AgentSettings) -> String {
         "# How this conversation works\n\
          {turns}\n\n\
          When a step doesn't need the user, keep going. End the turn to ask only when you can't continue without them, or before something destructive or hard to undo that they didn't ask for: deleting data they may want, force-pushing, publishing, or changing things outside the working directory.\n\n\
-         The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work.{waiting} Use `message_user` too for anything they must know before you finish. The user may not see your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. So every answer, question or progress note meant for them goes in what you write (your text, `message_user` or your reply). Text written only in your thinking may never reach them, and a long wait is where that is most likely. {ending}\n\n\
+         The user can type while you work. What they type reaches you as a note from the operator: take it into account in the work you're doing. When a note asks you something or needs an answer before you finish (a question, \"progress?\"), answer it with `message_user` and carry on with your work, or in your reply if your turn is ending anyway.{waiting} Use `message_user` too for anything they must know before you finish. Never repeat in your reply, or beside a call, what a message already said. The user may not see your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary. Text beside your calls reaches them too, but text meant for them can slip into your thinking, so an answer to them goes in `message_user` or your reply. {ending}\n\n\
          When you need the user to decide something (a choice between approaches with real trade-offs, missing information only they have), ask with `ask_user`, with choices and the default you'd go with when they help. It waits for the answer. Never write or delete files, spend money, start workers, or follow a preference, design or scope on the strength of your default while a question about it is open. Pass `wait: false` only when you have work no answer could change, such as reading and investigating. The answers then reach you as a note, and you do only that work until they come. Close questions that no longer matter with `close_questions`. A message of the user's may answer your questions (it starts with \"(This message answers q3.)\") or end with those still open (\"(Still open: q5.)\"). If they can't be asked (Arko runs without a terminal), it says so, and you decide.\n\n\
          {kept_notes}\n"
     )
@@ -2009,7 +2010,8 @@ mod tests {
         assert!(summary.contains("the only thing it sees of your work"));
         assert!(summary.contains("file paths and line numbers"));
         assert!(!worker.instructions.contains("complete_task"));
-        assert!(!worker.instructions.contains("message_agent"));
+        // Named once, as the way to the lead.
+        assert_eq!(worker.instructions.matches("message_agent").count(), 1);
     }
 
     /// The extra rules go to agents on small models, each agent by its own
@@ -2292,9 +2294,11 @@ mod tests {
     }
 
     /// Both ways of replying tell the lead that the user may not see its
-    /// thinking, so an answer to a note goes in `message_user`, and that a
-    /// long wait is where text written only in thinking is most likely lost.
-    /// A lead in Claude Code once answered notes in its thinking alone.
+    /// thinking, and that text beside its calls reaches them but can slip
+    /// into thinking, so an answer goes in `message_user` or the reply, the
+    /// reply when the turn ends anyway. A lead in Claude Code once answered
+    /// notes in its thinking alone, even with no text beside its call. Leads
+    /// also sent a message and then repeated it in their reply.
     #[test]
     fn the_lead_is_told_its_thinking_may_not_reach_the_user() {
         let opus = model("opus", false);
@@ -2304,12 +2308,15 @@ mod tests {
         })
         .unwrap();
         let never = "The user may not see your thinking. In Claude Code (cc: models) and on the ChatGPT login they see none of it, and through the providers' APIs at most a summary.";
-        let goes = "goes in what you write (your text, `message_user` or your reply). Text written only in your thinking may never reach them, and a long wait is where that is most likely.";
-        assert!(replying.instructions.contains(never));
-        assert!(replying.instructions.contains(goes));
+        let goes = "Text beside your calls reaches them too, but text meant for them can slip into your thinking, so an answer to them goes in `message_user` or your reply.";
+        let ending = "answer it with `message_user` and carry on with your work, or in your reply if your turn is ending anyway.";
+        let repeat = "Never repeat in your reply, or beside a call, what a message already said.";
         let calling = main_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
-        assert!(calling.instructions.contains(never));
-        assert!(calling.instructions.contains(goes));
+        for config in [&replying, &calling] {
+            for said in [never, goes, ending, repeat] {
+                assert_eq!(config.instructions.matches(said).count(), 1, "{said}");
+            }
+        }
         // Workers answer the lead, which sees their messages and reports.
         let worker = worker_config(&AgentSettings::for_test(&opus, &opus)).unwrap();
         assert!(
@@ -2317,9 +2324,11 @@ mod tests {
                 .instructions
                 .contains("The user may not see your thinking")
         );
-        assert!(worker.instructions.contains(
-            "The lead sees only your messages to it and your report, never your thinking"
-        ));
+        assert!(
+            worker
+                .instructions
+                .contains("the only way the lead hears from you besides your report")
+        );
         assert!(worker.instructions.contains(
             "Text written only in your thinking may never reach anyone, and a long wait is where that is most likely."
         ));
@@ -2438,9 +2447,11 @@ mod tests {
     }
 
     /// A worker's instructions say, where they speak of the lead, that
-    /// `message_agent` reaches the lead and `message_user` the user. A worker
-    /// once answered the user in its thinking alone, which the user never
-    /// saw, and another sent progress meant for its lead to the user.
+    /// `message_user` reaches only the user, in the worker's own view, and
+    /// that progress, findings and questions go to the lead with
+    /// `message_agent`. A worker once answered the user in its thinking
+    /// alone, which the user never saw, and another sent progress meant for
+    /// its lead to the user.
     #[test]
     fn a_worker_answers_the_user_with_message_user() {
         let opus = model("opus", false);
@@ -2453,7 +2464,7 @@ mod tests {
                 .any(|name| name == crate::message::MESSAGE_USER)
         );
         let instructions = &worker.instructions;
-        let said = "Your two ways to message reach different people. `message_agent` to `lead` reaches only your lead, so progress, findings and questions about your task go there. `message_user` reaches only the user, never the lead, so keep it for answering the user when they write to you and for what they must know now. Never answer anyone only in your thinking.";
+        let said = "`message_user` reaches only the user, who reads it in your own view. Use it to answer the user when they write to you, and for what they must know now. Progress, findings and questions about your task go to the lead with `message_agent` (to `lead`), the only way the lead hears from you besides your report. Text written only in your thinking may never reach anyone, and a long wait is where that is most likely.";
         let at = instructions.find(said).expect("the paragraph");
         assert!(instructions.find("# The lead\n").unwrap() < at);
         assert!(at < instructions.find("# Tools\n").unwrap());

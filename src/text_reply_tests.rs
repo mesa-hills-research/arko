@@ -643,7 +643,7 @@ fn without_message_user(config: &arko_agents::AgentConfig) -> arko_agents::Agent
 /// What a context update with a note from the user ends with, for an agent
 /// that has `message_user` (with text replies or without), and for one saved
 /// with text replies before it had it.
-const TOOL_HINT: &str = "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above with `message_user` first, even if they cut a wait short, then carry on with your work.";
+const TOOL_HINT: &str = "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above with `message_user`, even if they cut a wait short, or in your reply if your turn is ending anyway.";
 const TEXT_HINT: &str = "Text you write only in your thinking may never reach the user, and a long wait is where that is most likely. Answer a question in the notes above in the text you write beside your next tool call.";
 
 /// A model that notes a message at once, except "List the files.", where it
