@@ -29,7 +29,7 @@ pub(crate) struct Builtin {
 }
 
 /// The built-in skills, in the order they are listed.
-pub(crate) const BUILTIN: [Builtin; 3] = [
+pub(crate) const BUILTIN: [Builtin; 4] = [
     Builtin {
         name: "user-facing-prose",
         text: include_str!("builtin_skills/user-facing-prose/SKILL.md"),
@@ -43,6 +43,11 @@ pub(crate) const BUILTIN: [Builtin; 3] = [
     Builtin {
         name: "ponytail",
         text: include_str!("builtin_skills/ponytail/SKILL.md"),
+        pre_loaded: false,
+    },
+    Builtin {
+        name: "arko-taste",
+        text: include_str!("builtin_skills/arko-taste/SKILL.md"),
         pre_loaded: false,
     },
 ];
@@ -334,6 +339,7 @@ mod tests {
                 && BUILTIN[1]
                     .text
                     .contains("\n# Repository documentation style\n")
+                && BUILTIN[3].text.contains("\n# Taste\n")
         );
     }
 
@@ -427,7 +433,12 @@ mod tests {
         assert!(!none.is_all());
         assert_eq!(
             none.left_out(),
-            ["user-facing-prose", "repo-docs-style", "ponytail"]
+            [
+                "user-facing-prose",
+                "repo-docs-style",
+                "ponytail",
+                "arko-taste"
+            ]
         );
         assert!(!none.gives("repo-docs-style"));
         let (one, _) = BuiltinSkills::new(
@@ -457,7 +468,7 @@ mod tests {
         assert_eq!(
             warnings,
             [
-                "--no-builtin-skill names `repo-doc-style`, which isn't a built-in skill (they are user-facing-prose, repo-docs-style, and ponytail), so Arko skips it"
+                "--no-builtin-skill names `repo-doc-style`, which isn't a built-in skill (they are user-facing-prose, repo-docs-style, ponytail, and arko-taste), so Arko skips it"
             ]
         );
     }

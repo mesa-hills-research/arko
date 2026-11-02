@@ -816,7 +816,8 @@ mod tests {
                 "off",
                 "user-facing-prose",
                 "repo-docs-style",
-                "ponytail"
+                "ponytail",
+                "arko-taste"
             ]
         );
         assert_eq!(

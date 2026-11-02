@@ -2114,7 +2114,7 @@ mod tests {
                 off: vec!["user-facing-prose".into()]
             }
         );
-        assert_eq!(seam.details.skills().unwrap().builtin_off.len(), 3);
+        assert_eq!(seam.details.skills().unwrap().builtin_off.len(), 4);
         quit(seam, ended).await;
         let options = Options {
             builtin_skills: Some(true),

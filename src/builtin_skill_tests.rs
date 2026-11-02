@@ -99,7 +99,7 @@ async fn the_built_in_skills_are_offered_and_load_by_name() {
     )
     .await;
     assert_eq!(bodies.len(), 2);
-    for name in ["user-facing-prose", "repo-docs-style", "ponytail"] {
+    for name in ["user-facing-prose", "repo-docs-style", "ponytail", "arko-taste"] {
         assert!(bodies[0].contains(&format!("**{name}**")), "{name}");
     }
     assert!(
@@ -212,6 +212,7 @@ async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {
             ),
             ("review", false, None),
             ("ponytail", true, None),
+            ("arko-taste", true, None),
         ]
     );
     assert_eq!(facts.skills[1].path, Some(folder.join("review")));
@@ -233,7 +234,8 @@ async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {
         [
             ("user-facing-prose", true, false),
             ("repo-docs-style", true, false),
-            ("ponytail", true, false)
+            ("ponytail", true, false),
+            ("arko-taste", true, false)
         ]
     );
     assert!(facts.skills.iter().all(|skill: &SkillFacts| {
@@ -292,15 +294,16 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     let text = printed.0.lock().unwrap().join("\n");
     let lines: Vec<&str> = text.lines().collect();
     // By name, the names in a column of their own, and no line over the width.
-    let names = ["always-on", "ponytail", "repo-docs-style", "wide"];
+    let names = ["always-on", "arko-taste", "ponytail", "repo-docs-style", "wide"];
     for (line, name) in lines.iter().zip(names) {
         assert!(line.starts_with(&format!("{name:<15}  ")), "{text}");
     }
     assert!(lines.iter().all(|line| line.width() <= 160), "{text}");
-    // Each says where it is, in a column of its own (the built-in one that
-    // it is built in), and nothing says what replaces what.
+    // Each says where it is, in a column of its own (the built-in ones that
+    // they are built in), and nothing says what replaces what.
     let places = [
         format!("{}, always loaded", always.display()),
+        "built in".to_string(),
         "built in".to_string(),
         folder.join("repo-docs-style").display().to_string(),
         wide.display().to_string(),
@@ -312,15 +315,16 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     // A description is whole or cut with an ellipsis, wide characters too.
     assert!(lines[0].contains("  My always-on skill. "), "{text}");
     assert!(lines[1].contains("…  built in"), "{text}");
-    assert!(lines[2].contains("  My repo-docs-style skill. "), "{text}");
-    assert!(lines[3].contains("…  "), "{text}");
-    assert!(!lines[3].contains(&"日本語".repeat(34)), "{text}");
+    assert!(lines[2].contains("…  built in"), "{text}");
+    assert!(lines[3].contains("  My repo-docs-style skill. "), "{text}");
+    assert!(lines[4].contains("…  "), "{text}");
+    assert!(!lines[4].contains(&"日本語".repeat(34)), "{text}");
     assert_eq!(
-        lines[4],
+        lines[5],
         "Built-in skills left out (user-facing-prose).",
         "{text}"
     );
-    assert_eq!(lines.len(), 5, "{text}");
+    assert_eq!(lines.len(), 6, "{text}");
     // Of the four skills, the three in the folder are the user's own.
     assert_eq!(harness.header(None).tools, ["3 skills"]);
 
@@ -332,7 +336,7 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     let lines: Vec<&str> = text.lines().collect();
     assert!(lines.iter().all(|line| line.width() <= 78), "{text}");
     assert!(lines[0].ends_with("  …/skills/always-on, always loaded"), "{text}");
-    assert_eq!(lines.len(), 5, "{text}");
+    assert_eq!(lines.len(), 6, "{text}");
 
     printed.0.lock().unwrap().clear();
     harness.settings.builtin_skills = BuiltinSkills {
@@ -345,7 +349,9 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     let text = printed.0.lock().unwrap().join("\n");
     assert!(text.starts_with("No skills."), "{text}");
     assert!(
-        text.contains("Built-in skills left out (user-facing-prose, repo-docs-style, ponytail)."),
+        text.contains(
+            "Built-in skills left out (user-facing-prose, repo-docs-style, ponytail, arko-taste)."
+        ),
         "{text}"
     );
     assert!(harness.header(None).tools.is_empty());
@@ -400,7 +406,7 @@ async fn a_saved_conversation_resumes_after_the_built_in_skills_changed() {
     };
     configure(&mut harness, one, Vec::new());
     let skills = harness.main_config.skills_config.as_mut().unwrap();
-    assert_eq!(skills.embedded.len(), 2);
+    assert_eq!(skills.embedded.len(), 3);
     skills.embedded[0] = arko_agents::EmbeddedSkill::new(
         "user-facing-prose",
         "---\nname: user-facing-prose\ndescription: Reworded for a later Arko.\n---\n\nNew text.\n",
@@ -461,31 +467,40 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
     assert_eq!(last_said(&harness.feed), "Built-in skills are now on.");
     assert_eq!(
         given(&harness.main_config),
-        ["user-facing-prose", "repo-docs-style", "ponytail"]
+        ["user-facing-prose", "repo-docs-style", "ponytail", "arko-taste"]
     );
     assert!(harness.live_command("/builtin-skills repo-docs-style off", Source::Terminal));
     assert_eq!(last_said(&harness.feed), "repo-docs-style is now off.");
     assert_eq!(
         given(&harness.main_config),
-        ["user-facing-prose", "ponytail"]
+        ["user-facing-prose", "ponytail", "arko-taste"]
     );
     assert_eq!(
         given(&harness.worker_config),
-        ["user-facing-prose", "ponytail"]
+        ["user-facing-prose", "ponytail", "arko-taste"]
     );
     assert!(harness.live_command("/builtin-skills", Source::Terminal));
     assert!(
         last_said(&harness.feed).starts_with(
-            "Built-in skills are on, so the agents get user-facing-prose and ponytail. repo-docs-style is left out. /builtin-skills"
-        )
+            "Built-in skills are on, so the agents get user-facing-prose, ponytail, and arko-taste. repo-docs-style is left out. /builtin-skills"
+        ),
+        "{}",
+        last_said(&harness.feed)
     );
     assert!(harness.live_command("/builtin-skills ponytail off", Source::Terminal));
     assert_eq!(last_said(&harness.feed), "ponytail is now off.");
-    assert_eq!(given(&harness.main_config), ["user-facing-prose"]);
+    assert_eq!(
+        given(&harness.main_config),
+        ["user-facing-prose", "arko-taste"]
+    );
     assert!(harness.live_command("/builtin-skills", Source::Terminal));
-    assert!(last_said(&harness.feed).starts_with(
-        "Built-in skills are on, so the agents get user-facing-prose. repo-docs-style and ponytail are left out."
-    ));
+    assert!(
+        last_said(&harness.feed).starts_with(
+            "Built-in skills are on, so the agents get user-facing-prose and arko-taste. repo-docs-style and ponytail are left out."
+        ),
+        "{}",
+        last_said(&harness.feed)
+    );
     let saved = harness.session.load_settings().unwrap().builtin_skills;
     assert_eq!(saved, harness.settings.builtin_skills);
     assert_eq!(saved.off, ["repo-docs-style", "ponytail"]);
@@ -501,7 +516,8 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
         [
             ("user-facing-prose", true),
             ("repo-docs-style", false),
-            ("ponytail", false)
+            ("ponytail", false),
+            ("arko-taste", true)
         ]
     );
     assert!(harness.live_command("/builtin-skills repo-docs-style off", Source::Terminal));
@@ -528,7 +544,7 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
     for (bad, said) in [
         (
             "repo-doc-style off",
-            "repo-doc-style isn't a built-in skill. They are user-facing-prose, repo-docs-style, and ponytail.",
+            "repo-doc-style isn't a built-in skill. They are user-facing-prose, repo-docs-style, ponytail, and arko-taste.",
         ),
         (
             "maybe",
