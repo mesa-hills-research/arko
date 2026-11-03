@@ -885,8 +885,21 @@ a.chip-link { cursor: pointer; }
   pointer-events: none;
 }
 
-.compose .send { flex: 0 0 40px; width: 40px; height: 40px; min-height: 0; padding: 0; border-radius: 50%; }
-.compose .stop { height: 40px; min-height: 0; padding: 0 14px 0 12px; border-radius: 20px; }
+/* Send, and Stop in its place while a turn runs and the box is empty. Both
+   are 40 px circles in one cell, so either shows without moving anything,
+   and they cross-fade. */
+.send-slot { display: grid; flex: none; }
+.send-slot > .btn {
+  grid-area: 1 / 1;
+  width: 40px;
+  height: 40px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 50%;
+  transition: opacity 0.15s, visibility 0s 0.15s;
+}
+.send-slot > .btn:not(.shown) { opacity: 0; visibility: hidden; pointer-events: none; }
+.send-slot > .btn.shown { transition: opacity 0.15s; }
 .stop svg { fill: currentColor; }
 
 /* The command menu opens above the box. */

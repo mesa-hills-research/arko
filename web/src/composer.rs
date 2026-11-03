@@ -51,6 +51,10 @@ struct Draft {
 /// moment. Send works again meanwhile.
 const STILL_SENDING: &str = "Still sending. Your text is kept.";
 
+/// How long Send keeps its place after a send empties the box, so a second
+/// tap can't land on Stop, in ms.
+const SEND_HOLDS_MS: i32 = 1000;
+
 /// Arko's question before a message continues a worker whose prompt cache
 /// expired, with its words, and the message it was asked for.
 #[derive(Debug, Clone)]
@@ -202,6 +206,16 @@ pub fn Composer() -> impl IntoView {
         page.status.with(|status| status.working)
             && page.connection.get() == crate::words::Connection::Live
     };
+    // The sends that emptied the box in the last SEND_HOLDS_MS.
+    let recent_sends = RwSignal::new(0u32);
+    // Stop takes Send's place while a turn runs and the box holds nothing to
+    // send.
+    let stop_shown = move || {
+        working()
+            && empty.get()
+            && (page.worker.get().is_some() || attached.with(Vec::is_empty))
+            && recent_sends.get() == 0
+    };
     // The old model writes its report for a switch, so a message to the main
     // agent waits in the box. (A command, and a message to a worker, go.)
     let reporting =
@@ -265,6 +279,17 @@ pub fn Composer() -> impl IntoView {
         use wasm_bindgen::JsCast;
         let _ = window().request_animation_frame(frame.unchecked_ref());
     });
+    // Empties the box once its message went. Send keeps its place a moment.
+    let clear_sent = move |area: &HtmlTextAreaElement| {
+        area.set_value("");
+        expanded.set(false);
+        resize();
+        recent_sends.update(|count| *count += 1);
+        spawn_local(async move {
+            gloo_wait(SEND_HOLDS_MS).await;
+            recent_sends.try_update(|count| *count -= 1);
+        });
+    };
 
     let send = move || {
         let Some(area) = input.get_untracked() else {
@@ -315,9 +340,7 @@ pub fn Composer() -> impl IntoView {
                         .update(|attached| attached.retain(|id| !answers.contains(id)));
                     crate::attach::sent(&sent_keys);
                     if draft_now().as_ref() == Some(&sent) {
-                        area.set_value("");
-                        expanded.set(false);
-                        resize();
+                        clear_sent(&area);
                     }
                     // What one sends is what one wants to see next.
                     scroll::jump_to_latest();
@@ -351,9 +374,7 @@ pub fn Composer() -> impl IntoView {
                 return;
             }
             if sender.take(outcome) == Some(Posted::Taken) && draft_now() == Some(asked.draft) {
-                area.set_value("");
-                expanded.set(false);
-                resize();
+                clear_sent(&area);
                 scroll::jump_to_latest();
             }
             sending.set(false);
@@ -543,31 +564,64 @@ pub fn Composer() -> impl IntoView {
                             </Show>
                         </button>
                     </div>
-                    <Show when=working>
-                        <button type="button" class="btn stop" title=move || if reporting() { "Skip the report" } else { "Stop the turn" } disabled=move || stopping.get() on:click=stop>
-                            <Square size=14 />
-                            <span>"Stop"</span>
-                        </button>
-                    </Show>
-                    <button
-                        type="submit"
-                        class="btn primary icon send"
-                        aria-label=move || if replying() != 0 { "Answer" } else { "Send" }
-                        title=move || match (files_ready().is_none(), replying() != 0) {
+                    <SendSlot
+                        stop_shown=stop_shown
+                        stop_title=move || if reporting() { "Skip the report" } else { "Stop the turn" }
+                        stopping=stopping
+                        on_stop=stop
+                        send_label=move || if replying() != 0 { "Answer" } else { "Send" }
+                        send_title=move || match (files_ready().is_none(), replying() != 0) {
                             (true, _) => "Waiting for uploads",
                             (false, true) => "Answer",
                             (false, false) => "Send",
                         }
-                        disabled=move || match files_ready() {
+                        send_disabled=move || match files_ready() {
                             None => true,
                             Some(files) => (empty.get() && files.is_empty()) || sending.get(),
                         }
-                    >
-                        <ArrowUp size=20 />
-                    </button>
+                    />
                 </form>
             </div>
         </footer>
+    }
+}
+
+/// Send, and Stop in its place while `stop_shown`. Both stay in the one slot
+/// and only one shows, so a turn that starts or ends moves nothing.
+#[component]
+fn SendSlot(
+    #[prop(into)] stop_shown: Signal<bool>,
+    #[prop(into)] stop_title: Signal<&'static str>,
+    #[prop(into)] stopping: Signal<bool>,
+    on_stop: impl FnMut(leptos::ev::MouseEvent) + 'static,
+    #[prop(into)] send_label: Signal<&'static str>,
+    #[prop(into)] send_title: Signal<&'static str>,
+    #[prop(into)] send_disabled: Signal<bool>,
+) -> impl IntoView {
+    view! {
+        <div class="send-slot">
+            <button
+                type="submit"
+                class="btn primary icon send"
+                class:shown=move || !stop_shown.get()
+                aria-label=send_label
+                title=send_title
+                disabled=send_disabled
+            >
+                <ArrowUp size=20 />
+            </button>
+            <button
+                type="button"
+                class="btn icon stop"
+                class:shown=stop_shown
+                aria-label="Stop"
+                title=stop_title
+                disabled=stopping
+                on:click=on_stop
+            >
+                <Square size=14 />
+            </button>
+        </div>
     }
 }
 
@@ -674,7 +728,7 @@ pub async fn gloo_wait(ms: i32) {
 ///
 /// Where the browser has `field-sizing`, it sizes the box at every layout,
 /// so text drawn without an input event (iOS's inline predictions) or a
-/// narrower box (Stop showing, a rotation) still fits, and this only notes
+/// narrower box (a rotation) still fits, and this only notes
 /// whether the text is past the cap.
 fn fit(area: &HtmlTextAreaElement, tall: RwSignal<bool>, expanded: bool) {
     // (Sizing shrinks the box for a moment, which would scroll the
@@ -724,6 +778,59 @@ mod tests {
         });
         assert_eq!(note_of(Some(1), "gpt"), "billed per token");
         assert_eq!(note_of(Some(2), "gpt"), "");
+    }
+
+    /// Send and Stop are both always in the one slot, whichever shows, so a
+    /// turn that starts or ends changes nothing around them. Stop keeps its
+    /// name, and Send stays the form's submit button.
+    #[test]
+    fn stop_takes_sends_place_in_one_slot() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let stop_shown = RwSignal::new(false);
+            let render = || {
+                view! {
+                    <SendSlot
+                        stop_shown=stop_shown
+                        stop_title=|| "Stop the turn"
+                        stopping=|| false
+                        on_stop=|_| {}
+                        send_label=|| "Send"
+                        send_title=|| "Send"
+                        send_disabled=|| false
+                    />
+                }
+                .to_html()
+            };
+            for stop in [false, true] {
+                stop_shown.set(stop);
+                let html = render();
+                assert!(
+                    html.starts_with("<div class=\"send-slot\"><button type=\"submit\""),
+                    "{html}"
+                );
+                assert_eq!(html.matches("<button").count(), 2, "{html}");
+                assert!(
+                    html.contains("aria-label=\"Stop\" title=\"Stop the turn\""),
+                    "{html}"
+                );
+                assert_eq!(
+                    html.contains("class=\"btn primary icon send shown\""),
+                    !stop,
+                    "{html}"
+                );
+                assert_eq!(
+                    html.contains("class=\"btn icon stop shown\""),
+                    stop,
+                    "{html}"
+                );
+            }
+        });
+        // The slot holds both in one 40 px cell, and only the one shown is seen.
+        let css = include_str!("../style/app.css");
+        assert!(css.contains(".send-slot { display: grid; flex: none; }"));
+        assert!(css.contains("  grid-area: 1 / 1;\n  width: 40px;\n  height: 40px;"));
+        assert!(css.contains(".send-slot > .btn:not(.shown) { opacity: 0; visibility: hidden;"));
     }
 
     fn draft(text: &str, to: Option<&str>) -> Draft {

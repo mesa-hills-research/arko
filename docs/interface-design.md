@@ -324,6 +324,7 @@ the default). The terminal has no switch for it. Nothing needs motion to be unde
 | Mouse wheel (Windows, Linux, Android) | A critically damped spring, about 0.2 s. Apple systems keep their own momentum |
 | Moving to the background, done, failed | The row changes in place, with no motion |
 | Menus, popovers, the Latest button | A fade of 150 ms |
+| Send and Stop trading places on the web page | A cross-fade of 150 ms |
 | Copied | The copy icon cross-fades to a check in `--success` (120 ms), which holds for a second, then fades back |
 | The context ring | Its value changes smoothly |
 | Sheets and panels | Appear without sliding, since a glide would lay out the transcript again every frame |
@@ -344,7 +345,8 @@ Phones in landscape (height up to 500 px) get a 40 px header and a message field
 The web page uses the dynamic viewport height, and its field grows to six lines before it scrolls.
 
 - What's primary is reachable without hunting. The message field, Send, Stop and the waiting
-  question are always in view.
+  question are always in view. On the web page Stop takes Send's place while a turn runs and the
+  message box is empty, so the field never moves.
 - Dense lists stay calm. Rows keep stable columns, numbers align right in tabular figures, and
   only unusual states take color.
 - Only the region that overflows scrolls. A scrollbar sits at that region's edge. On Windows,
