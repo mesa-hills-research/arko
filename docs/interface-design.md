@@ -183,10 +183,10 @@ radius) and `--inset` (its padding plus border), and its children take `--r-inne
 clip children to a rounded parent, so every fill inside a rounded border needs its own radius.
 
 No cards inside cards, and shadows only on what sits above other content. The composer's subtle
-shadow sets it apart from the transcript. Selection is a fill on the item itself, never a bar at
-its side. A segmented selector is a window-colored track with a border and the chosen option in
-grey with a soft outline. The web page's view switch has no track, plain options and the chosen
-one outlined in `--outline` on `--muted-bg`.
+shadow sets it apart from the transcript, and on the web page a line along its top does. Selection
+is a fill on the item itself, never a bar at its side. A segmented selector is a window-colored
+track with a border and the chosen option in grey with a soft outline. The web page's view switch
+has no track, plain options and the chosen one outlined in `--outline` on `--muted-bg`.
 
 Borders are 1 px hairlines in `--line`. A region's boundary belongs to one side only.
 

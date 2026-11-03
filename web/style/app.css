@@ -763,6 +763,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .bottom {
   flex: none;
   padding: 8px 0 max(10px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
   background: var(--bg);
 }
 
