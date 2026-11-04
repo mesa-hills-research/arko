@@ -101,6 +101,15 @@ pub(crate) fn play(path: &str) -> Feed {
                 let chunk = AgentEvent::AssistantResponseChunk(step.text.clone());
                 feed.event(&event(chunk), None);
             }
+            "thinking" => {
+                let chunk = AgentEvent::ReasoningChunk(step.text.clone());
+                feed.event(&event(chunk), None);
+            }
+            // A message the user sends while the agent works, which waits
+            // for the agent to read it.
+            "note" => {
+                feed.note(&step.text, Source::Terminal, 1, Vec::new());
+            }
             "worker_start" => feed.worker(&step.worker, &step.text, WorkerChange::Started),
             "worker_text" => {
                 let chunk = AgentEvent::AssistantResponseChunk(step.text.clone());

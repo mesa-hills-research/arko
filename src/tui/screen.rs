@@ -821,7 +821,9 @@ mod tests {
     /// columns, in the folder `ARKO_RENDERINGS` names (`remote::scenario`):
     /// Full, Quiet closed, Quiet with every row open, Messages, Messages with
     /// each turn's count open, and the own view (Full) of the worker r3 when
-    /// the session has it.
+    /// the session has it. Each view's `-bottom` file is the foot of a
+    /// screen 20 rows tall before anything opens, where the space around
+    /// the Working line and the messages waiting to be read shows.
     #[test]
     #[ignore]
     fn renderings() {
@@ -850,6 +852,10 @@ mod tests {
                 }
                 app.watching = Some(worker.to_string());
             }
+            // The bottom of a screen 20 rows tall, as it shows before
+            // anything opens, its blank rows too.
+            let (rows, _) = screen_html(&mut app, 100, 20);
+            std::fs::write(format!("{out}/terminal-{name}-bottom.txt"), rows.join("\n")).unwrap();
             if open {
                 app.transcript.open_for_renderings(view);
             }

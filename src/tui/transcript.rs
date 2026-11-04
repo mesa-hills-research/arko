@@ -1379,9 +1379,19 @@ impl Transcript {
     /// that's every row, in a row of several its first call with something
     /// to show and every call that failed, and a worker's reports and
     /// messages. In Full it's the first read and the first edit, besides
-    /// the commands. In Messages it's each turn's count.
+    /// the commands. In both, every thinking is open. In Messages it's each
+    /// turn's count.
     #[cfg(test)]
     pub(crate) fn open_for_renderings(&mut self, view: View) {
+        if view != View::Messages {
+            for entry in &mut self.entries {
+                if entry.item.kind == Kind::Thinking {
+                    entry.open = true;
+                    entry.open_quiet = true;
+                    entry.touch();
+                }
+            }
+        }
         if view == View::Messages {
             let (counts, _) = self.counted(&Filter::Main(view));
             self.counts_open
