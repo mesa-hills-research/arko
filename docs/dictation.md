@@ -41,9 +41,13 @@ Cleanup takes hesitations, repeats and false starts out of what you dictate in E
 
 With `medium` and `full`, what you say stays dimmed until you pause, then goes into the box
 cleaned. The model of `full` goes in `models/cleanup/disfluency-tagger/model.pack` in Arko's
-folder, and stays in memory beside the speech model for as long. Cleanup only deletes words, and
-the session's words always stay. It applies when the language is English or the system names
-none.
+folder, and stays in memory beside the speech model for as long.
+
+Cleanup only deletes words, and the session's words always stay. So do the words dictation needs
+that look like fillers or repeats, such as a spoken symbol and the words beside it ("dash dash
+force"), a unit after a number ("5 mm"), a filler talked about as a word ("strip the ums") and
+list items that share their first word ("better tests, better docs"). Cleanup applies when the
+language is English or the system names none.
 
 ## The speech model
 

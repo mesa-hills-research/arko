@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use speech::disfluency::Tagger;
+use speech::disfluency::{Guards, Tagger};
 use speech::model::ModelType;
 use speech::stream::{Event, StreamConfig, Streamer};
 use speech::{Fillers, Model, Options, SpecialWords};
@@ -475,15 +475,17 @@ fn load_tagger(root: &Path, slot: &mut Option<Arc<Tagger>>) -> Result<(), String
 }
 
 /// The list every pass starts from, which leaves out what `cleanup` takes
-/// out, full cleanup with `tagger`.
+/// out, full cleanup with `tagger`. Every level keeps what Telmo's guards
+/// protect, such as a spoken symbol or a unit after a number.
 fn cleaned(cleanup: Cleanup, tagger: Option<Arc<Tagger>>) -> SpecialWords {
     let mut list = SpecialWords::new();
     match cleanup {
-        Cleanup::Off => {}
+        Cleanup::Off => return list,
         Cleanup::Light => list.set_fillers(Fillers::for_language("en")),
         Cleanup::Medium => list.set_disfluencies(Some(Arc::new(Tagger::hand_written()))),
         Cleanup::Full => list.set_disfluencies(tagger),
     }
+    list.set_guards(Guards::for_language("en"));
     list
 }
 

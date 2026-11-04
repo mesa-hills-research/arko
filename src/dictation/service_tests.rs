@@ -369,6 +369,10 @@ fn the_list_leaves_out_what_the_cleanup_takes_out() {
     assert_eq!(list.words().collect::<Vec<_>>(), ["Telmo"]);
     // Medium's tagger is built in.
     assert!(cleaned(Cleanup::Medium, None).disfluencies().is_some());
+    // Every level keeps what the guards protect.
+    for level in [Cleanup::Light, Cleanup::Medium, Cleanup::Full] {
+        assert_eq!(cleaned(level, None).guards(), Guards::for_language("en"));
+    }
 }
 
 /// Full cleanup whose tagger is missing or can't load fails at once, before
