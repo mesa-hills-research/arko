@@ -73,7 +73,10 @@ turn's Quiet rows in place. The three views share one model of a row.
   below it. A row's words change in place while calls join it, and only the last row of a run takes
   new calls.
 - Every marker (a fold's ▸ or ▾, ✉, ·) stands in one column, the column of the Working spinner, in
-  every view and on every surface, a thinking inside an open row included.
+  every view and on every surface.
+- In the terminal a thinking opens and closes from its label, its triangle or its text, and open, a
+  blank row sets it apart from what follows. Inside an open row it stands behind the row's line, as
+  the calls do.
 - Working… is the one loading indicator of a turn, with the status bar's Working. It has as much
   space below it as above, and so does a thinking row. In the terminal it has no blank row among the
   agent's calls, and one on each side after what was said or above a message waiting to be read. The

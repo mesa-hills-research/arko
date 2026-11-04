@@ -394,8 +394,9 @@ pub struct App {
     docked_press: Option<DockPress>,
     /// The last click, as when, where, and how many in a row.
     last_click: Option<(Instant, u16, u16, u8)>,
-    /// The block whose fold the last click opened or closed.
-    folded: Option<u64>,
+    /// The block whose fold the last click opened or closed, and the place
+    /// in the text it clicked.
+    folded: Option<(u64, super::transcript::Point)>,
     /// Where the agent list was drawn, and its rows, for the mouse.
     pub list_drawn: (ratatui::layout::Rect, Vec<ListRow>),
     /// How many workers the agent list is scrolled past, and the farthest
@@ -2655,14 +2656,10 @@ impl App {
                 // A double click on a fold's line selects a word of it, and the
                 // fold its first click opened or closed goes back.
                 if count == 2
-                    && let Some(key) = folded
-                    && let Some(fold) = self.transcript.toggle(key, y, &filter, &theme)
+                    && let Some((key, clicked)) = folded
+                    && self.transcript.toggle(key, y, &filter, &theme).is_some()
                 {
-                    point = super::transcript::Point {
-                        key: fold.block,
-                        line: fold.line,
-                        ..point
-                    };
+                    point = clicked;
                 }
                 let span = match count {
                     2 => self.transcript.word_at(point, &filter, &theme),
@@ -2847,8 +2844,9 @@ impl App {
         }
         let (filter, theme) = (self.filter(), self.theme.clone());
         if let Some(fold) = self.transcript.fold_at(at.x, at.y, &filter, &theme) {
+            let clicked = self.transcript.point_at(at.x, at.y);
             self.transcript.toggle(fold.item, at.y, &filter, &theme);
-            self.folded = Some(fold.item);
+            self.folded = clicked.map(|clicked| (fold.item, clicked));
             return;
         }
         if let Some(item) = self.transcript.item(key)

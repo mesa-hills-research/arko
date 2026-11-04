@@ -985,6 +985,9 @@ impl Transcript {
         let (counts, opened) = self.counted(filter);
         let as_quiet = filter.in_view(View::Quiet);
         let mut last_group: Option<Group> = blocks.first().map(|_| Group::Prose);
+        // An open thinking's text has a blank line under it, so what comes
+        // next reads apart from it.
+        let mut after_thought = false;
         let now = chrono::Utc::now().timestamp_millis();
         let quiet = filter.view() == View::Quiet;
         let placed: Arc<Vec<Placed>> = if quiet || !opened.is_empty() {
@@ -1049,10 +1052,13 @@ impl Transcript {
             };
             // A command's output that comes in lines reads as one block.
             let output = matches!(&shown, Shown::Entry(_)) && item.kind == Kind::Output;
+            let thought = matches!(&shown, Shown::Entry(_)) && item.kind == Kind::Thinking;
             let gap = match last_group {
                 None => false,
                 Some(Group::Output) if output => false,
-                Some(last) => !(last == Group::Activity && group == Group::Activity),
+                Some(last) => {
+                    after_thought || !(last == Group::Activity && group == Group::Activity)
+                }
             };
             last_group = Some(group);
             let lines = match &shown {
@@ -1150,6 +1156,8 @@ impl Transcript {
                 }
                 _ => 1,
             };
+            // (Folded, a thinking is one line.)
+            after_thought = thought && lines > 1;
             blocks.push(Block {
                 key: self.entries[index].item.id,
                 shown,
@@ -1180,9 +1188,10 @@ impl Transcript {
             // is a paragraph of its own, a blank line on each side. So it is
             // before the agent's first call of the turn, under the calls of
             // its workers or the card of one that started from the queue,
-            // as it is under the user's message. The notes it stands above
-            // (they wait at the end) set it apart below with their own blank
-            // line, so it has one above too.
+            // as it is under the user's message. An open thinking's text sets
+            // it apart as text does. The notes it stands above (they wait at
+            // the end) set it apart below with their own blank line, so it has
+            // one above too.
             let notes_below = at < blocks.len();
             let among_calls = at
                 .checked_sub(1)
@@ -1190,7 +1199,12 @@ impl Transcript {
                 && self
                     .under_way(filter)
                     .is_some_and(|(agent, since)| self.calls_begun(agent, since));
-            let apart = at > 0 && (notes_below || !among_calls);
+            let thought = at.checked_sub(1).is_some_and(|last| {
+                blocks[last].lines > 1
+                    && matches!(blocks[last].shown, Shown::Entry(index)
+                        if self.entries[index].item.kind == Kind::Thinking)
+            });
+            let apart = at > 0 && (notes_below || !among_calls || thought);
             blocks.insert(
                 at,
                 Block {
@@ -1439,8 +1453,7 @@ impl Transcript {
     /// its calls hold behind a bar under them. A row of one call shows the
     /// call's detail and content. A row of several shows each call's Full
     /// line, which opens to the call's detail and content under it. A
-    /// thinking after them has its triangle in the bar's place, in the
-    /// column every fold's triangle stands in, and its text behind the bar.
+    /// thinking among them stands behind the bar as a call's line does.
     fn quiet_lines(
         &self,
         row: &QuietRow,
@@ -1518,15 +1531,21 @@ impl Transcript {
                         folds: true,
                         status: None,
                     };
-                    // Its line as a row's, the triangle where the bar goes, and
-                    // its text behind the bar, under the label.
-                    let mut thought =
-                        entry_lines(item, theme, width.saturating_sub(MARGIN), true, look)
-                            .into_iter();
+                    // Behind the bar, as the calls are, its triangle where a
+                    // call's is and its text under the label. Open, a blank
+                    // line sets it apart from the call after it.
+                    let thought =
+                        entry_lines(item, theme, width.saturating_sub(MARGIN), true, look);
                     let start = lines.len();
-                    lines.extend(thought.next());
-                    lines.extend(thought.map(|line| outdented(line, MARGIN).decorated(bar())));
+                    lines.extend(
+                        thought
+                            .into_iter()
+                            .map(|line| outdented(line, MARGIN).decorated(bar())),
+                    );
                     spans.push((item.id, start..lines.len()));
+                    if entry.open_quiet && row.members.last() != Some(member) {
+                        lines.push(Wrapped::line(Vec::new()).decorated(bar()));
+                    }
                     continue;
                 }
                 _ => {}
@@ -1543,7 +1562,7 @@ impl Transcript {
 
     /// The line of `block` the keyboard is on, if it's there. That is a
     /// block's first line, or inside an open Quiet row the line that opens
-    /// and closes a call's output or thinking (its last).
+    /// and closes a call, a thinking or a content ([`Self::inner_line`]).
     fn focus_line(&self, block: &Block) -> Option<usize> {
         match self.focus? {
             Target::Block(key) if key == block.key => Some(usize::from(block.gap)),
@@ -1553,14 +1572,16 @@ impl Transcript {
     }
 
     /// The line of `block`, an open Quiet row, that opens and closes the
-    /// call, the content or the thinking `id` inside it (a call's line, the
-    /// last line of the others).
+    /// call, the content or the thinking `id` inside it (the first line of
+    /// a call or a thinking, the last of a content).
     fn inner_line(&self, block: &Block, id: u64) -> Option<usize> {
         let Shown::Quiet(_) = block.shown else {
             return None;
         };
         let cached = self.quiet_cache.get(&block.key)?;
-        let call = self.item(id).is_some_and(|item| item.kind == Kind::Call);
+        let call = self
+            .item(id)
+            .is_some_and(|item| matches!(item.kind, Kind::Call | Kind::Thinking));
         cached
             .spans
             .iter()
@@ -2010,8 +2031,8 @@ impl Transcript {
     }
 
     /// The fold at the screen's `x`, `y`, namely a Quiet row's line, a call's
-    /// line, a content's door, the last line of an agent's thinking, and the
-    /// same lines of those inside an open Quiet row.
+    /// line, a content's door, any line of an agent's thinking, and the same
+    /// lines of those inside an open Quiet row.
     pub fn fold_at(&mut self, x: u16, y: u16, filter: &Filter, theme: &Theme) -> Option<Fold> {
         let row = self.drawn.row_at(x, y)?;
         let width = self.drawn.area.width as usize;
@@ -2022,16 +2043,29 @@ impl Transcript {
                 quiet.opens.then_some(row.key)
             }
             Shown::Quiet(_) => self.quiet_cache.get(&row.key).and_then(|cached| {
+                let gap = usize::from(block.gap);
                 cached
                     .spans
                     .iter()
+                    .find(|(id, lines)| {
+                        let thinking = self
+                            .item(*id)
+                            .is_some_and(|item| item.kind == Kind::Thinking);
+                        if thinking {
+                            row.line
+                                .checked_sub(gap)
+                                .is_some_and(|at| lines.contains(&at))
+                        } else {
+                            self.inner_line(block, *id) == Some(row.line)
+                        }
+                    })
                     .map(|(id, _)| *id)
-                    .find(|id| self.inner_line(block, *id) == Some(row.line))
                     .filter(|id| self.item(*id).is_some_and(|item| self.folds(item)))
             }),
             Shown::Entry(index) if self.folds_in(&self.entries[*index].item, filter) => {
+                let thinking = self.entries[*index].item.kind == Kind::Thinking;
                 let line = self.fold_line(block, *index, filter, theme, width);
-                (row.line == line).then_some(row.key)
+                (thinking || row.line == line).then_some(row.key)
             }
             _ => None,
         };
@@ -2073,7 +2107,8 @@ impl Transcript {
     }
 
     /// The line of the entry `index`'s block in `filter`'s view that opens
-    /// and closes it, a call's line or a worker's row's, else its last.
+    /// and closes it, the first of a call, a thinking or a worker's row,
+    /// else its last.
     fn fold_line(
         &self,
         block: &Block,
@@ -2083,15 +2118,18 @@ impl Transcript {
         width: usize,
     ) -> usize {
         let item = &self.entries[index].item;
-        if item.kind == Kind::Call || self.status_row(item, filter).is_some() {
+        if matches!(item.kind, Kind::Call | Kind::Thinking)
+            || self.status_row(item, filter).is_some()
+        {
             usize::from(block.gap)
         } else {
             self.block_rows(block, theme, width).len().saturating_sub(1)
         }
     }
 
-    /// Opens or closes the fold of the item `item`, its line held on the
-    /// screen's row `y` at the next draw. Returns where that line is.
+    /// Opens or closes the fold of the item `item`, its line held where it
+    /// is drawn, or else on the screen's row `y`, at the next draw. Returns
+    /// where that line is.
     pub fn toggle(&mut self, item: u64, y: u16, filter: &Filter, theme: &Theme) -> Option<Fold> {
         // A Quiet row, unless the line is inside it, on its first call.
         let gap = self.quiet_row(item, filter, theme);
@@ -2100,6 +2138,14 @@ impl Transcript {
                 .checked_sub(self.drawn.area.y as usize)
                 .and_then(|at| self.drawn.rows.get(at).copied().flatten());
             drawn.is_none_or(|at| at.key != item || at.line == usize::from(gap))
+        });
+        let inner = gap.is_some() && !row;
+        // (A click on a thinking's text folds it, and its label stays put.)
+        let shown_at = self.fold(item, inner, filter, theme).and_then(|fold| {
+            self.drawn
+                .rows
+                .iter()
+                .position(|at| at.is_some_and(|at| (at.key, at.line) == (fold.block, fold.line)))
         });
         if row {
             if !self.quiet_open.remove(&item) {
@@ -2125,11 +2171,11 @@ impl Transcript {
             }
             entry.touch();
         }
-        let fold = self.fold(item, gap.is_some() && !row, filter, theme)?;
+        let fold = self.fold(item, inner, filter, theme)?;
         self.pin = Some(Pin {
             key: fold.block,
             line: fold.line,
-            row: y.saturating_sub(self.drawn.area.y) as usize,
+            row: shown_at.unwrap_or(y.saturating_sub(self.drawn.area.y) as usize),
         });
         Some(fold)
     }
@@ -2656,10 +2702,6 @@ const SPINNER: usize = MARGIN;
 /// The column of the word after the spinner, where the text of every row
 /// with a marker starts.
 const LABEL: usize = SPINNER + 2;
-
-/// The last line of an agent's thinking shown whole. A click on it folds
-/// it to its first line again.
-const THINKING_CLOSE: &str = "↑ show the first line only";
 
 /// How an item's lines look beyond the item itself.
 #[derive(Clone, Copy, Default)]
@@ -3305,14 +3347,10 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
                 line.skip = label + separator_width;
                 return vec![line];
             }
+            // Open, the label, then the text, and a click on either folds it.
             let mut heading = Wrapped::line(spans);
             heading.bare = true;
-            let mut body = markdown::render(&item.text, style, theme, marked);
-            body.extend(
-                plain(THINKING_CLOSE, theme.dim(), marked)
-                    .into_iter()
-                    .map(|line| Wrapped { bare: true, ..line }),
-            );
+            let body = markdown::render(&item.text, style, theme, marked);
             let mut out = vec![heading];
             out.extend(body.into_iter().map(|line| line.decorated(hang())));
             out
@@ -4282,8 +4320,9 @@ mod tests {
 
     /// An agent's thinking is one quiet line, its label and its first
     /// line, in Full and Quiet and in its worker's own view, and none in
-    /// Messages. Its line opens it whole, ending with the line that folds it
-    /// again. With `--show-thinking` it starts whole.
+    /// Messages. Its line opens it whole, and a click on its label or its
+    /// text folds it again, its label staying where it is. With
+    /// `--show-thinking` it starts whole.
     #[test]
     fn thinking_is_one_line_that_opens_whole() {
         let theme = Theme::terminal();
@@ -4313,44 +4352,43 @@ mod tests {
             rows(&mut t, &Filter::Worker("r1".into(), View::Full), 40, 1),
             ["  ▸ Thought · Where is the parser?"]
         );
-        // Its line opens it, and the last line folds it again.
-        rows(&mut t, &full(), 40, 8);
-        assert_eq!(
-            t.fold_at(4, 0, &full(), &theme).map(|fold| fold.item),
-            Some(1)
-        );
-        t.toggle(1, 0, &full(), &theme);
-        t.follow();
-        let open = rows(&mut t, &full(), 40, 7);
-        assert_eq!(
-            open[..5],
-            [
-                "  ▾ Thought for 12s",
-                "    Planning",
-                "    Read the tests first.",
-                "    ↑ show the first line only",
-                "",
-            ]
-        );
-        assert_eq!(
-            t.fold_at(4, 3, &full(), &theme).map(|fold| fold.item),
-            Some(1)
-        );
-        assert_eq!(t.fold_at(4, 1, &full(), &theme), None, "not its text");
-        t.toggle(1, 3, &full(), &theme);
-        t.follow();
-        assert_eq!(rows(&mut t, &full(), 40, 3), folded);
+        // Its line opens it, and its label or any line of its text folds it
+        // again.
+        let open = [
+            "  ▾ Thought for 12s",
+            "    Planning",
+            "    Read the tests first.",
+            "",
+            "  Running them.",
+        ];
+        for line in [0, 1, 2] {
+            rows(&mut t, &full(), 40, 8);
+            assert_eq!(
+                t.fold_at(4, 0, &full(), &theme).map(|fold| fold.item),
+                Some(1)
+            );
+            t.toggle(1, 0, &full(), &theme);
+            assert_eq!(rows(&mut t, &full(), 40, 8)[..5], open);
+            assert_eq!(
+                t.fold_at(10, line, &full(), &theme).map(|fold| fold.item),
+                Some(1),
+                "{line}"
+            );
+            t.toggle(1, line, &full(), &theme);
+            assert_eq!(rows(&mut t, &full(), 40, 8)[..3], folded, "{line}");
+        }
+        assert_eq!(t.fold_at(4, 2, &full(), &theme), None, "not the text after");
 
         let mut shown = Transcript::new();
         shown.set_open_thinking(true);
         shown.apply(Update::Item(item(1, Kind::Thinking, "All of it.")));
+        let mut call = item(2, Kind::Call, "$ ls");
+        call.status = Some(CallStatus::Ok);
+        shown.apply(Update::Item(call));
         assert_eq!(
-            rows(&mut shown, &full(), 40, 3),
-            [
-                "  ▾ Thought",
-                "    All of it.",
-                "    ↑ show the first line only"
-            ]
+            rows(&mut shown, &full(), 40, 4),
+            ["  ▾ Thought", "    All of it.", "", "    $ ls · ✓"],
+            "a blank line apart from the call after it"
         );
     }
 
@@ -4423,12 +4461,12 @@ mod tests {
         }
     }
 
-    /// A thinking in an open Quiet row has its triangle in the bar's place,
-    /// in the column of every fold's triangle, under the "Working…" spinner,
-    /// and its label where every row's text starts. Open, its text is behind
-    /// the bar, under its label.
+    /// A thinking in an open Quiet row stands behind the row's bar, as the
+    /// calls do, its triangle where a call's stands, so the bar runs on
+    /// unbroken. Open, its text is under its label, and a blank line sets it
+    /// apart from the call after it. A click on its text folds it.
     #[test]
-    fn a_thinking_in_an_open_quiet_row_keeps_the_markers_column() {
+    fn a_thinking_in_an_open_quiet_row_stays_behind_the_bar() {
         use crate::remote::{Act, ActKind};
         let quiet = Filter::Main(View::Quiet);
         let theme = Theme::terminal();
@@ -4453,26 +4491,33 @@ mod tests {
         rows(&mut t, &quiet, 40, 8);
         t.toggle(1, 0, &quiet, &theme);
         t.toggle(2, 2, &quiet, &theme);
+        let open = [
+            "  ▾ Read a.rs and b.rs",
+            "  │   a.rs · ✓ 3 lines",
+            "  │ ▾ Thought",
+            "  │   Which one?",
+            "  │",
+            "  │   b.rs · ✓ 3 lines",
+        ];
+        let shown = rows(&mut t, &quiet, 40, 8);
+        assert_eq!(shown[..6], open);
+        let at = |row: &str, column: usize| row.chars().nth(column);
+        for row in &shown[1..6] {
+            assert_eq!(at(row, SPINNER), Some('│'), "{row:?}");
+        }
+        assert_eq!(at(&shown[2], LABEL), Some('▾'));
+        // A click on its text folds it.
+        assert_eq!(
+            t.fold_at(10, 3, &quiet, &theme).map(|fold| fold.item),
+            Some(2)
+        );
+        t.toggle(2, 3, &quiet, &theme);
         let shown = rows(&mut t, &quiet, 40, 8);
         assert_eq!(
-            shown[..6],
-            [
-                "  ▾ Read a.rs and b.rs",
-                "  │   a.rs · ✓ 3 lines",
-                "  ▾ Thought",
-                "  │   Which one?",
-                "  │   ↑ show the first line only",
-                "  │   b.rs · ✓ 3 lines",
-            ]
+            shown[..4],
+            [open[0], open[1], "  │ ▸ Thought", open[5]],
+            "{shown:?}"
         );
-        let at = |row: &str, column: usize| row.chars().nth(column);
-        for row in &shown[..6] {
-            assert!(matches!(at(row, SPINNER), Some('▾' | '│')), "{row:?}");
-        }
-        for row in [&shown[0], &shown[2]] {
-            assert_eq!(at(row, LABEL - 1), Some(' '), "{row:?}");
-            assert_ne!(at(row, LABEL), Some(' '), "{row:?}");
-        }
     }
 
     /// The thinking that streams has its spinner in the "Working…" line's
@@ -4535,7 +4580,7 @@ mod tests {
         let row = thinking(&shown);
         assert_eq!(shown[row], "  ▾ Thought for 12s", "{shown:?}");
         assert_eq!(columns(&shown[row], 'T'), working, "{shown:?}");
-        let close = shown.iter().position(|row| row.contains('↑')).unwrap() as u16;
+        let close = row as u16;
         assert_eq!(
             t.fold_at(SPINNER as u16, close, &full(), &theme)
                 .map(|fold| fold.item),
@@ -4585,11 +4630,7 @@ mod tests {
         t.follow();
         assert_eq!(
             rows(&mut t, &quiet, 40, 6)[..3],
-            [
-                "  ▾ Thought for 2m",
-                "    Where to start?",
-                "    ↑ show the first line only"
-            ]
+            ["  ▾ Thought for 2m", "    Where to start?", ""]
         );
         assert_eq!(rows(&mut t, &full(), 40, 6)[0], "  ▾ Thought for 2m");
         t.toggle(1, 0, &quiet, &theme);
@@ -4779,11 +4820,7 @@ mod tests {
         t.follow();
         assert_eq!(
             rows(&mut t, &quiet, 40, 6)[..3],
-            [
-                "  ▾ Thought",
-                "    Where to start?",
-                "    ↑ show the first line only"
-            ]
+            ["  ▾ Thought", "    Where to start?", ""]
         );
         assert_eq!(
             rows(&mut t, &full, 40, 3)[..1],
@@ -4909,13 +4946,9 @@ mod tests {
         t.apply(Update::Worker(worker("r1", WorkerState::Running)));
         t.apply(Update::Item(item(1, Kind::Thinking, "Plan.").agent("r1")));
         let own = Filter::Worker("r1".into(), View::Full);
-        let shown = rows(&mut t, &own, 40, 6);
+        let shown = rows(&mut t, &own, 40, 5);
         assert_eq!(after_spinner(&shown[2]), Some(" Thinking"), "{shown:?}");
-        assert_eq!(
-            shown[3..],
-            ["    Plan.", "    ↑ show the first line only", ""],
-            "nothing below it"
-        );
+        assert_eq!(shown[3..], ["    Plan.", ""], "nothing below it");
         assert!(t.drawn.moving);
         t.apply(Update::Item(
             item(2, Kind::Text, "Done planning.").agent("r1"),
@@ -6239,7 +6272,8 @@ mod tests {
                 ""
             ]
         );
-        // The thinking between its calls shows as Quiet shows it.
+        // The thinking between its calls shows as Quiet shows it, behind the
+        // bar.
         let mut thinking = item(2, Kind::Thinking, "Which one?");
         thinking.turn = Some(1);
         assert_eq!(
@@ -6254,7 +6288,7 @@ mod tests {
             [
                 "  ▾ Read a.rs and b.rs",
                 "  │   a.rs · ✓ 3 lines",
-                "  ▸ Thought",
+                "  │ ▸ Thought",
                 "  │   b.rs · ✓ 4 lines",
                 ""
             ]

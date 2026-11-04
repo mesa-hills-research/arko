@@ -3558,6 +3558,56 @@ mod tests {
         );
     }
 
+    /// A click on a thinking's label opens it, and a click on its label or
+    /// a line of its text closes it, its label staying on its row. A double
+    /// click on a word of its text copies the word and leaves it open.
+    #[test]
+    fn a_click_on_a_thinkings_label_or_text_folds_it() {
+        use crate::tui::app::Effect;
+        use crossterm::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        for (id, kind, text) in [
+            (1, Kind::Thinking, "Read the parser first.\nThen the tests."),
+            (2, Kind::Reply, "Done."),
+        ] {
+            let mut item = Item::new(kind, text);
+            item.id = id;
+            app.update(Update::Item(item), Activity::default);
+        }
+        let left = MouseButton::Left;
+        let click = |app: &mut App, x: u16, y: u16| {
+            mouse(app, MouseEventKind::Down(left), x, y);
+            mouse(app, MouseEventKind::Up(left), x, y);
+            screen(app, 40, 12)
+        };
+        let rows = screen(&mut app, 40, 12);
+        let label = rows.iter().position(|row| row.contains("Thought")).unwrap();
+        let (label_y, text_y) = (label as u16, label as u16 + 1);
+        let open = |rows: &[String]| {
+            rows[label] == "  ▾ Thought" && rows[label + 1] == "    Read the parser first."
+        };
+        // Its label opens it, and its label or a line of its text closes it,
+        // the label staying on its row.
+        for y in [label_y, text_y] {
+            assert!(open(&click(&mut app, 4, label_y)), "{y}");
+            let rows = click(&mut app, 10, y);
+            assert!(rows[label].starts_with("  ▸ Thought · "), "{y} {rows:#?}");
+        }
+        // A double click on a word of its text copies the word and leaves it
+        // open.
+        click(&mut app, 4, label_y);
+        click(&mut app, 15, text_y);
+        let rows = click(&mut app, 15, text_y);
+        assert!(open(&rows), "{rows:#?}");
+        assert_eq!(
+            app.take_effects(),
+            [Effect::Copy {
+                text: "parser".into(),
+                what: "6 characters".into(),
+            }]
+        );
+    }
+
     /// A click on a command's "more lines" opens its whole output, and a
     /// click on the line that ends it closes it. The line clicked stays
     /// under the mouse. A drag, a double click and a triple click select
