@@ -367,6 +367,8 @@ fn the_list_leaves_out_what_the_cleanup_takes_out() {
     let list = special_words(&base, &[word]);
     assert_eq!(list.fillers(), Fillers::for_language("en"));
     assert_eq!(list.words().collect::<Vec<_>>(), ["Telmo"]);
+    // Medium's tagger is built in.
+    assert!(cleaned(Cleanup::Medium, None).disfluencies().is_some());
 }
 
 /// Full cleanup whose tagger is missing or can't load fails at once, before
@@ -473,10 +475,38 @@ fn dictated_pieces(
     }
 }
 
-/// With full cleanup, the clip's one utterance settles whole when it ends,
-/// and the session's words stay. It runs only with the pack and the clip
-/// ([`granite_and_clip`]) and `ARKO_TEST_CLEANUP_PACK` naming the tagger's
-/// pack.
+/// The clip dictated in Arko's folder `root`, whose one utterance settles
+/// whole when it ends, with the session's words kept.
+fn settles_whole(root: &tempfile::TempDir, source: &Source) {
+    let service = DictationService::downloading_from(root.path(), NO_SERVER);
+    let words = [SessionWord {
+        text: "Hamburgh".into(),
+        code: false,
+    }];
+    let pieces = dictated_pieces(&service, source, &words);
+    let first = pieces[0].to_lowercase();
+    assert!(
+        first.contains("i saw") && first.contains("thirty feet in length"),
+        "{pieces:?}"
+    );
+    assert!(first.contains("hamburgh"), "{pieces:?}");
+}
+
+/// With medium cleanup, which needs no pack of its own, an utterance
+/// settles whole when it ends. It runs with the clip and the pack
+/// ([`granite_and_clip`]).
+#[test]
+fn medium_cleanup_settles_an_utterance_once_it_ends() {
+    let settings = r#"{"model": "granite", "cleanup": "medium", "language": "en"}"#;
+    let Some((root, source)) = granite_and_clip(settings) else {
+        return;
+    };
+    settles_whole(&root, &source);
+}
+
+/// With full cleanup, an utterance settles whole when it ends. It runs only
+/// with the pack and the clip ([`granite_and_clip`]) and
+/// `ARKO_TEST_CLEANUP_PACK` naming the tagger's pack.
 #[test]
 fn full_cleanup_settles_an_utterance_once_it_ends() {
     let settings = r#"{"model": "granite", "cleanup": "full", "language": "en"}"#;
@@ -493,18 +523,7 @@ fn full_cleanup_settles_an_utterance_once_it_ends() {
     std::os::unix::fs::symlink(&tagger, dir.join(PACK_FILE)).unwrap();
     #[cfg(not(unix))]
     std::fs::copy(&tagger, dir.join(PACK_FILE)).unwrap();
-    let service = DictationService::downloading_from(root.path(), NO_SERVER);
-    let words = [SessionWord {
-        text: "Hamburgh".into(),
-        code: false,
-    }];
-    let pieces = dictated_pieces(&service, &source, &words);
-    let first = pieces[0].to_lowercase();
-    assert!(
-        first.contains("i saw") && first.contains("thirty feet in length"),
-        "{pieces:?}"
-    );
-    assert!(first.contains("hamburgh"), "{pieces:?}");
+    settles_whole(&root, &source);
 }
 
 /// The session's words reach the streamer. Given the clip's "Hamburg" in

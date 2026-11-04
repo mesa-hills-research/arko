@@ -57,21 +57,25 @@ pub enum Cleanup {
     /// Hesitations such as um and uh, and stutters such as "the the".
     Light,
     /// Also repeats, false starts and openers such as "So" or "I mean",
-    /// with a tagger whose model is kept in Arko's folder
-    /// ([`tagger_dir`](super::models::tagger_dir)). Each utterance's words
-    /// stay tentative until it ends.
+    /// with Telmo's hand-written tagger. Each utterance's words stay
+    /// tentative until it ends.
+    Medium,
+    /// The same as [`Medium`](Cleanup::Medium), caught more often, with a
+    /// trained tagger whose model is kept in Arko's folder
+    /// ([`tagger_dir`](super::models::tagger_dir)).
     Full,
 }
 
 impl Cleanup {
     /// Every level, from the least taken out.
-    pub const ALL: [Cleanup; 3] = [Cleanup::Off, Cleanup::Light, Cleanup::Full];
+    pub const ALL: [Cleanup; 4] = [Cleanup::Off, Cleanup::Light, Cleanup::Medium, Cleanup::Full];
 
     /// Its name in `dictation.json`.
     pub fn name(self) -> &'static str {
         match self {
             Cleanup::Off => "off",
             Cleanup::Light => "light",
+            Cleanup::Medium => "medium",
             Cleanup::Full => "full",
         }
     }

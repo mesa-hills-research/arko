@@ -481,6 +481,7 @@ fn cleaned(cleanup: Cleanup, tagger: Option<Arc<Tagger>>) -> SpecialWords {
     match cleanup {
         Cleanup::Off => {}
         Cleanup::Light => list.set_fillers(Fillers::for_language("en")),
+        Cleanup::Medium => list.set_disfluencies(Some(Arc::new(Tagger::hand_written()))),
         Cleanup::Full => list.set_disfluencies(tagger),
     }
     list
