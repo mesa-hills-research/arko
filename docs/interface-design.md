@@ -82,8 +82,9 @@ turn's Quiet rows in place. The three views share one model of a row.
   the calls do.
 - Working… is the one loading indicator of a turn, with the status bar's Working. It has as much
   space below it as above, and so does a thinking row. In the terminal it has no blank row among the
-  agent's calls, and one on each side after what was said or above a message waiting to be read. The
-  page keeps the line's room at the end while a call or a thinking shows that the agent works.
+  agent's calls, and one on each side after what was said or above a message waiting to be read. Such
+  a message has a blank row above it and one below it, before the status line. The page keeps the
+  line's room at the end while a call or a thinking shows that the agent works.
 - A tag never sits between a message's rows. A message that fits on one row has its tag ("pending",
   "queued", "from the web page") at the right of that row. One that wraps has the tag on a row of
   its own under the last.

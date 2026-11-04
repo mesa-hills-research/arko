@@ -1216,6 +1216,13 @@ impl Transcript {
                 },
             );
         }
+        // The notes the agent hasn't read wait at the end, with a blank line
+        // below them, before the status line, as there is above them.
+        if let Some(last) = blocks.last_mut()
+            && matches!(last.shown, Shown::Entry(index) if self.entries[index].item.pending)
+        {
+            last.tail = true;
+        }
         blocks
     }
 
@@ -5266,7 +5273,8 @@ mod tests {
     }
 
     /// "Working…" stands where the agent's output comes next, above a
-    /// note the agent hasn't read, which waits at the end.
+    /// note the agent hasn't read, which waits at the end. The note has a
+    /// blank line above it and one below it, before the status line.
     #[test]
     fn working_stands_above_a_note_waiting_to_be_read() {
         let mut t = Transcript::new();
@@ -5279,13 +5287,17 @@ mod tests {
         note.pending = true;
         t.apply(Update::Item(note));
         // The note's blank line sets it apart below, so it has one above too.
-        let shown = rows(&mut t, &full(), 40, 5);
+        let note = format!("▎ Use tabs.{}pending", " ".repeat(22));
+        let shown = rows(&mut t, &full(), 40, 6);
         assert_eq!(shown[..2], ["· $ make · ✓", ""]);
         assert!(is_working(&shown[2]), "{shown:?}");
-        assert_eq!(
-            shown[3..],
-            ["", &format!("▎ Use tabs.{}pending", " ".repeat(22))]
-        );
+        assert_eq!(shown[3..], ["", note.as_str(), ""]);
+        // While a call runs, with no Working line, the same.
+        let mut call = item(3, Kind::Call, "$ make test");
+        call.status = Some(CallStatus::Running);
+        t.apply(Update::Item(call));
+        let shown = rows(&mut t, &full(), 40, 5);
+        assert_eq!(shown[1..], ["· $ make test …", "", note.as_str(), ""]);
     }
 
     /// In a worker's own view, "Working…" says the worker waits on its
