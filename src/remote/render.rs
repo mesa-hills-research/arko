@@ -1137,6 +1137,8 @@ fn brief(tool: &str, output: &str) -> Outcome {
             }
             outcome
         }
+        // (Its text is its content, so the line needs no words of it.)
+        LOAD_SKILL_TOOL_NAME if skill_text(output).is_some() => Outcome::ok(""),
         crew::MESSAGE_AGENT if output.starts_with("Sent") => Outcome::ok("sent"),
         // Its result is the mail that came ("[mail 2] r1 ... finished ..."),
         // worded for the agent that waited ("An update for you arrived"), so
@@ -1283,7 +1285,11 @@ fn content(
             let hits = crate::index::read_search_hits(output)?;
             Content::new(ContentKind::Plain, hits.join("\n"), None)
         }
-        LOAD_SKILL_TOOL_NAME | "monitor_start" | "terminal_start" => None,
+        LOAD_SKILL_TOOL_NAME => match skill_text(output) {
+            Some(skill) => Content::new(ContentKind::Plain, skill, None),
+            None => result(ContentKind::Muted),
+        },
+        "monitor_start" | "terminal_start" => None,
         crew::MESSAGE_AGENT => Content::new(ContentKind::Plain, given("message").trim(), None),
         // (Nothing came, which its row says.)
         crew::WAIT_FOR_AGENTS if came(output) == Came::default() => None,
@@ -1315,6 +1321,19 @@ fn content(
             None => result(ContentKind::Muted),
         },
     }
+}
+
+/// The text of the skill a call of load_skill loaded, without the lines that
+/// mark its start and end for the agent. `None` when it loaded none.
+// shortcut: reads the lines load_skill writes around a skill, until the
+// framework gives a tool's result as data.
+fn skill_text(output: &str) -> Option<&str> {
+    let (begin, rest) = output.split_once('\n')?;
+    if !begin.starts_with("--- BEGIN SKILL") {
+        return None;
+    }
+    let end = rest.rfind("--- END SKILL")?;
+    Some(&rest[..end])
 }
 
 /// An MCP call's `arguments`, then its result.
@@ -1883,6 +1902,41 @@ mod tests {
             Some(&edited("a\n\n", "a", "b", false)),
         );
         assert_eq!(edit.block.unwrap().text, "-1\ta\n+1\tb\n 2\t");
+    }
+
+    /// A skill's load opens to the skill's text, its first lines and the
+    /// rest behind its door, with its line saying nothing more. One that
+    /// loaded nothing opens to why.
+    #[test]
+    fn a_skill_load_opens_to_the_skill() {
+        let name = [("name", Value::from("style"))];
+        let skill: String = (1..=20).map(|n| format!("Rule {n}.\n")).collect();
+        let loaded = super::outcome(
+            LOAD_SKILL_TOOL_NAME,
+            &params(&name),
+            &format!(
+                "--- BEGIN SKILL: style ---\n{skill}--- END SKILL: style ---\n\nThis skill has additional resources that can be loaded individually:\n- a.md"
+            ),
+        );
+        assert_eq!((loaded.status, loaded.text), (CallStatus::Ok, None));
+        let block = loaded.block.unwrap();
+        assert_eq!(block.content, Some(ContentKind::Plain));
+        assert_eq!(block.text.lines().next(), Some("Rule 1."));
+        assert_eq!(block.text.lines().count(), content::PREVIEW_LINES);
+        assert_eq!(block.whole.as_deref(), Some(skill.trim_end()));
+        let missing = super::outcome(
+            LOAD_SKILL_TOOL_NAME,
+            &params(&name),
+            "Skill 'style' not found. Available skills:\n- review",
+        );
+        let block = missing.block.unwrap();
+        assert_eq!(
+            (block.content, block.text.as_str()),
+            (
+                Some(ContentKind::Muted),
+                "Skill 'style' not found. Available skills:\n- review"
+            )
+        );
     }
 
     /// A wait's content is the mail that came, each by its heading, from

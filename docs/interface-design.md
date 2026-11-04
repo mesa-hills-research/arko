@@ -55,7 +55,7 @@ turn's Quiet rows in place. The three views share one model of a row.
 | Note | The note's text |
 | MCP call | The arguments, then the result |
 | Monitor, terminal | One muted line with what the words left out (the whole command, its settings) |
-| Skill | Nothing |
+| Skill | The skill's text |
 | Any other tool | Its result, muted |
 
 - Detail is the exception, and it is one muted line. Where the words cut something the reader may
