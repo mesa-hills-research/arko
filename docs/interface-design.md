@@ -74,8 +74,10 @@ turn's Quiet rows in place. The three views share one model of a row.
   new calls.
 - Every marker (a fold's ▸ or ▾, ✉, ·) stands in one column, the column of the Working spinner, in
   every view and on every surface, a thinking inside an open row included.
-- Working… keeps a blank row above it, whatever comes before, and it is the one loading indicator of
-  a turn, with the status bar's Working. A thinking row has the same space above it.
+- Working… is the one loading indicator of a turn, with the status bar's Working. It has as much
+  space below it as above, and so does a thinking row. In the terminal it has no blank row among the
+  agent's calls, and one on each side after what was said or above a message waiting to be read. The
+  page keeps the line's room at the end while a call or a thinking shows that the agent works.
 - A tag never sits between a message's rows. A message that fits on one row has its tag ("pending",
   "queued", "from the web page") at the right of that row. One that wraps has the tag on a row of
   its own under the last.
