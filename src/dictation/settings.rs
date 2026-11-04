@@ -1,6 +1,7 @@
 //! Dictation's settings, in `dictation.json` in Arko's folder. They're read
 //! at each recording, so a change any front end makes applies to the next
-//! one. Every field may be left out.
+//! one. Every field may be left out. A front end changes the cleanup with
+//! [`set_cleanup`].
 
 use std::path::Path;
 use std::time::Duration;
@@ -29,6 +30,9 @@ pub struct Settings {
     /// Leave out of the session's words the values that context marks as
     /// secret, such as what follows `PASSWORD=` or `--token`.
     pub leave_out_secrets: bool,
+    /// What to take out of English speech, a [`Cleanup`]'s name. A name it
+    /// doesn't know means none, and leaves the other settings as they are.
+    pub cleanup: String,
 }
 
 impl Default for Settings {
@@ -40,8 +44,59 @@ impl Default for Settings {
             download: "ask".into(),
             session_words: true,
             leave_out_secrets: false,
+            cleanup: Cleanup::Off.name().into(),
         }
     }
+}
+
+/// What dictation takes out of English speech.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Cleanup {
+    /// Nothing.
+    Off,
+    /// Hesitations such as um and uh, and stutters such as "the the".
+    Light,
+}
+
+impl Cleanup {
+    /// Every level, from the least taken out.
+    pub const ALL: [Cleanup; 2] = [Cleanup::Off, Cleanup::Light];
+
+    /// Its name in `dictation.json`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Cleanup::Off => "off",
+            Cleanup::Light => "light",
+        }
+    }
+
+    /// The level `name` names, if any.
+    pub fn named(name: &str) -> Option<Cleanup> {
+        Cleanup::ALL.into_iter().find(|level| level.name() == name)
+    }
+}
+
+/// Sets `cleanup` in the settings in Arko's folder `root`, keeping the
+/// file's other fields. A file that isn't a JSON object stays as it is, and
+/// the error says so.
+pub fn set_cleanup(root: &Path, cleanup: Cleanup) -> std::io::Result<()> {
+    let path = root.join(FILE);
+    let mut fields = match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text)
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{FILE} isn't valid JSON"),
+                )
+            })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(error) => return Err(error),
+    };
+    fields.insert("cleanup".into(), cleanup.name().into());
+    let mut text = serde_json::to_string_pretty(&fields)?;
+    text.push('\n');
+    std::fs::create_dir_all(root)?;
+    crate::session::write_whole(&path, text.as_bytes())
 }
 
 impl Settings {
@@ -60,6 +115,12 @@ impl Settings {
 
     pub fn downloads_without_asking(&self) -> bool {
         self.download == "automatic"
+    }
+
+    /// The cleanup the settings choose, [`Cleanup::Off`] for a name it
+    /// doesn't know.
+    pub fn cleanup(&self) -> Cleanup {
+        Cleanup::named(&self.cleanup).unwrap_or(Cleanup::Off)
     }
 
     /// The language to choose the model by, meaning the setting's, else the
@@ -104,6 +165,51 @@ mod tests {
             serde_json::from_str(r#"{"session_words": false, "leave_out_secrets": true}"#).unwrap();
         assert!(!settings.session_words);
         assert!(settings.leave_out_secrets);
+    }
+
+    #[test]
+    fn cleanup_is_off_unless_the_settings_name_a_level() {
+        assert_eq!(Settings::default().cleanup(), Cleanup::Off);
+        for level in Cleanup::ALL {
+            let text = format!(r#"{{"cleanup": "{}"}}"#, level.name());
+            let settings: Settings = serde_json::from_str(&text).unwrap();
+            assert_eq!(settings.cleanup(), level);
+        }
+        // A level this version doesn't know keeps the other settings.
+        let settings: Settings =
+            serde_json::from_str(r#"{"cleanup": "thorough", "model": "parakeet"}"#).unwrap();
+        assert_eq!(settings.cleanup(), Cleanup::Off);
+        assert_eq!(settings.model, "parakeet");
+    }
+
+    #[test]
+    fn setting_the_cleanup_keeps_the_other_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let read = || -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(root.path().join(FILE)).unwrap()).unwrap()
+        };
+        // A missing file is made.
+        set_cleanup(root.path(), Cleanup::Light).unwrap();
+        assert_eq!(read(), serde_json::json!({"cleanup": "light"}));
+        std::fs::write(
+            root.path().join(FILE),
+            r#"{"model": "parakeet", "later": [1, 2], "cleanup": "light"}"#,
+        )
+        .unwrap();
+        set_cleanup(root.path(), Cleanup::Off).unwrap();
+        assert_eq!(
+            read(),
+            serde_json::json!({"model": "parakeet", "later": [1, 2], "cleanup": "off"})
+        );
+        assert_eq!(Settings::load(root.path()).cleanup(), Cleanup::Off);
+        // A file that isn't JSON is left for its owner to mend.
+        std::fs::write(root.path().join(FILE), "{\"model\": ").unwrap();
+        let error = set_cleanup(root.path(), Cleanup::Light).unwrap_err();
+        assert_eq!(error.to_string(), "dictation.json isn't valid JSON");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(FILE)).unwrap(),
+            "{\"model\": "
+        );
     }
 
     #[test]

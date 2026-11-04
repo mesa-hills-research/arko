@@ -12,12 +12,12 @@ use std::time::{Duration, Instant};
 
 use speech::model::ModelType;
 use speech::stream::{Event, StreamConfig, Streamer};
-use speech::{Model, Options, SpecialWords};
+use speech::{Fillers, Model, Options, SpecialWords};
 
 use super::capture::{self, Capture};
 use super::download;
 use super::models::{Family, SpeechModel};
-use super::settings::Settings;
+use super::settings::{Cleanup, Settings};
 use super::{
     DictationError, DictationEvent, DictationOptions, DictationUpdate, Preparing, SessionWord,
     Sink, Source,
@@ -58,6 +58,8 @@ struct Job {
     idle: Duration,
     /// The settings favour the session's words, when they come.
     session_words: bool,
+    /// What to take out of the speech, for its language.
+    cleanup: Cleanup,
 }
 
 enum Message {
@@ -176,6 +178,7 @@ impl DictationService {
             sink,
             idle: settings.idle(),
             session_words: settings.session_words,
+            cleanup: cleanup(&settings),
         };
         let dictation = Dictation {
             id,
@@ -202,6 +205,17 @@ fn choose(settings: &Settings) -> &'static SpeechModel {
     match family {
         ModelType::Parakeet => &super::models::PARAKEET,
         ModelType::Granite => &super::models::GRANITE,
+    }
+}
+
+/// The cleanup `settings` choose for the language spoken. Telmo's cleanup is
+/// for English, so another language gets none. A language neither the
+/// settings nor the system name counts as English, as the model choice
+/// takes Granite then.
+fn cleanup(settings: &Settings) -> Cleanup {
+    match settings.language() {
+        Some(code) if Fillers::for_language(&code).is_none() => Cleanup::Off,
+        _ => settings.cleanup(),
     }
 }
 
@@ -407,12 +421,32 @@ fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
         return;
     }
     send(DictationEvent::Listening);
-    listen(&job.audio, &intake, model, job.session_words, &mut send);
+    let base = cleaned(job.cleanup);
+    listen(
+        &job.audio,
+        &intake,
+        model,
+        job.session_words,
+        &base,
+        &mut send,
+    );
 }
 
-/// The words in Telmo's list, best first. Those it refuses are left out.
-fn special_words(words: &[SessionWord]) -> SpecialWords {
+/// The list every pass starts from, which leaves out what `cleanup` takes
+/// out.
+fn cleaned(cleanup: Cleanup) -> SpecialWords {
     let mut list = SpecialWords::new();
+    match cleanup {
+        Cleanup::Off => {}
+        Cleanup::Light => list.set_fillers(Fillers::for_language("en")),
+    }
+    list
+}
+
+/// `base` with the words added, best first. Those Telmo refuses are left
+/// out.
+fn special_words(base: &SpecialWords, words: &[SessionWord]) -> SpecialWords {
+    let mut list = base.clone();
     for word in words {
         let _ = if word.code {
             list.add_code_word(&word.text)
@@ -433,18 +467,19 @@ fn wait_for(next_pass: Option<Instant>, now: Instant) -> Duration {
 }
 
 /// Takes the audio, running passes as Telmo's `Stream` does, until the
-/// dictation finishes, fails or is cancelled. The passes favour the words
-/// that come, if the settings favour the session's words
-/// (`session_words`).
+/// dictation finishes, fails or is cancelled. The passes use the list
+/// `base`, with the words that come if the settings favour the session's
+/// words (`session_words`).
 fn listen(
     audio: &mpsc::Receiver<Message>,
     intake: &Intake,
     model: Arc<Model>,
     session_words: bool,
+    base: &SpecialWords,
     send: &mut dyn FnMut(DictationEvent),
 ) {
     let mut streamer: Option<Streamer> = None;
-    let mut words = SpecialWords::new();
+    let mut words = base.clone();
     let mut shown = Shown::default();
     let mut lag = Lag::default();
     let mut next_pass: Option<Instant> = None;
@@ -479,7 +514,7 @@ fn listen(
                     lag.took(samples.len() as f64 / f64::from(rate.max(1)), &events);
                 }
                 Ok(Message::Words(given)) if session_words => {
-                    words = special_words(&given);
+                    words = special_words(base, &given);
                     if let Some(streamer) = &mut streamer {
                         streamer.set_special_words(&words);
                     }

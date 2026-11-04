@@ -27,6 +27,19 @@ IDs, are always left out. The recording starts at once, and the words apply as s
 ready. A word said differently from how it's written, such as "engine x" for nginx, still comes out
 as the model hears it.
 
+## Cleanup
+
+Cleanup takes hesitations and stutters out of what you dictate in English. Set `cleanup` in
+`dictation.json`, or Cleanup in Arko Studio's Settings › Input.
+
+| Level | What goes |
+|---|---|
+| `off` | Nothing, the default |
+| `light` | Hesitations such as um and uh, and stutters such as "the the" |
+
+Cleanup only deletes words, and the session's words always stay. It applies when the language is
+English or the system names none.
+
 ## The speech model
 
 The first recording asks before it downloads a model from Hugging Face. Arko checks the download,
@@ -66,6 +79,7 @@ left out.
 | `download` | `ask` before downloading a missing model, or `automatic` |
 | `session_words` | `true` to favour the [session's words](#session-words), or `false` |
 | `leave_out_secrets` | `true` to leave secrets out of the session's words, `false` by default |
+| `cleanup` | `off` or `light`, for what [cleanup](#cleanup) takes out |
 
 `leave_out_secrets` leaves out the values that context marks as secret and keeps the names. Those
 are what follows a password, key or token name (`API_KEY=…`, `password: …`, `--token …`), an

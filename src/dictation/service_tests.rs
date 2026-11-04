@@ -316,21 +316,57 @@ fn the_words_telmo_refuses_are_left_out() {
         text: text.into(),
         code,
     };
-    let list = special_words(&[
-        word("DictationOptions", true),
-        // Two letters or digits are kept in code only.
-        word("r5", true),
-        word("ab", false),
-        word("Sol", false),
-        word("Sol", false),
-        word("日本語", true),
-        word("one two three four five six", false),
-        word("Cargo.toml", true),
-    ]);
+    let list = special_words(
+        &SpecialWords::new(),
+        &[
+            word("DictationOptions", true),
+            // Two letters or digits are kept in code only.
+            word("r5", true),
+            word("ab", false),
+            word("Sol", false),
+            word("Sol", false),
+            word("日本語", true),
+            word("one two three four five six", false),
+            word("Cargo.toml", true),
+        ],
+    );
     assert_eq!(
         list.words().collect::<Vec<_>>(),
         ["DictationOptions", "r5", "Sol", "Cargo.toml"]
     );
+}
+
+/// Telmo's cleanup is for English, so the settings' level applies to
+/// English and nothing to another language.
+#[test]
+fn cleanup_is_for_english() {
+    let settings = |text: &str| -> Settings { serde_json::from_str(text).unwrap() };
+    let fillers = |language: &str| {
+        cleanup(&settings(&format!(
+            r#"{{"cleanup": "light", "language": "{language}"}}"#
+        )))
+    };
+    assert_eq!(fillers("en"), Cleanup::Light);
+    assert_eq!(fillers("en_GB"), Cleanup::Light);
+    assert_eq!(fillers("fr"), Cleanup::Off);
+    assert_eq!(fillers("pt-BR"), Cleanup::Off);
+    assert_eq!(cleanup(&settings(r#"{"language": "en"}"#)), Cleanup::Off);
+}
+
+/// Each level's list leaves out what it takes out, and keeps doing so once
+/// the session's words are added to it.
+#[test]
+fn the_list_leaves_out_what_the_cleanup_takes_out() {
+    assert_eq!(cleaned(Cleanup::Off), SpecialWords::new());
+    let base = cleaned(Cleanup::Light);
+    assert_eq!(base.fillers(), Fillers::for_language("en"));
+    let word = SessionWord {
+        text: "Telmo".into(),
+        code: false,
+    };
+    let list = special_words(&base, &[word]);
+    assert_eq!(list.fillers(), Fillers::for_language("en"));
+    assert_eq!(list.words().collect::<Vec<_>>(), ["Telmo"]);
 }
 
 /// Arko's folder with `dictation.json` holding `settings` and Granite
@@ -395,9 +431,9 @@ fn dictated(service: &DictationService, source: &Source, words: &[SessionWord]) 
 }
 
 /// The session's words reach the streamer. Given the clip's "Hamburg" in
-/// another spelling, the words come out in it, and not once the settings
-/// turn session words off, which the service checks whatever a front end
-/// sends. It runs with the clip and the pack, as
+/// another spelling, the words come out in it, also while fillers are left
+/// out, and not once the settings turn session words off, which the service
+/// checks whatever a front end sends. It runs with the clip and the pack, as
 /// [`a_wav_file_is_dictated_end_to_end`] does.
 #[test]
 fn the_session_words_reach_the_streamer() {
@@ -409,6 +445,14 @@ fn the_session_words_reach_the_streamer() {
         text: "Hamburgh".into(),
         code: false,
     }];
+    let text = dictated(&service, &source, &words);
+    assert!(text.contains("Hamburgh"), "{text:?}");
+    // Leaving out fillers keeps the words.
+    std::fs::write(
+        root.path().join(super::super::settings::FILE),
+        r#"{"model": "granite", "cleanup": "light"}"#,
+    )
+    .unwrap();
     let text = dictated(&service, &source, &words);
     assert!(text.contains("Hamburgh"), "{text:?}");
     std::fs::write(
