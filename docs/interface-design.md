@@ -66,14 +66,17 @@ turn's Quiet rows in place. The three views share one model of a row.
   content. Two levels at most, the row, then the call, then content.
 - Status and controls live on the row's line only. Stop, Move to background, the timer and the
   spinner appear once per call, whatever is open.
-- A row with no content and no detail has no triangle. Long content shows its first 16 lines and
-  one line that says how much more there is ("… 97 more lines"), which opens the rest. That line is
-  muted text on every surface.
+- A row with no content and no detail has no triangle (in the terminal, a dot in its place). Long
+  content shows its first 16 lines and one line that says how much more there is ("… 97 more
+  lines"), which opens the rest. That line is muted text on every surface.
 - A row never moves. It keeps its place, its calls and its height once shown, and opening it adds
   below it. A row's words change in place while calls join it, and only the last row of a run takes
   new calls.
-- Every marker (a fold's ▸ or ▾, ✉, ·) stands in one column, the column of the Working spinner, in
-  every view and on every surface.
+- Every marker (a fold's ▸ or ▾, the user's bar, ✉, ·) stands in one column in every view. On the
+  page and in Studio it is the column of the Working spinner. In the terminal it is the left edge,
+  where a call's content hangs on a rail under its marker, so the calls and the user's messages make
+  a column of their own. The agent's text, its thinking's triangle and the Working spinner start two
+  columns in.
 - In the terminal a thinking opens and closes from its label, its triangle or its text, and open, a
   blank row sets it apart from what follows. Inside an open row it stands behind the row's line, as
   the calls do.
@@ -441,3 +444,4 @@ and the names of things. These differences come from the medium.
 | A row's secondary actions | On hover or focus | On hover or focus, always on touch | None |
 | Panels | Docked from 1200 px, sheets below | Sheets at every width | In place |
 | Reduced motion | System or Settings | System | None |
+| Row markers | Under the Working spinner | Under the Working spinner | At the left edge, two columns before the agent's text |

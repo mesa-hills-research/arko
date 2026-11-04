@@ -1481,13 +1481,8 @@ impl Transcript {
         if fold != Some(true) {
             return (lines, spans);
         }
-        let bar = || {
-            Span::styled(
-                format!("{}{}", " ".repeat(SPINNER), glyphs::render("│ ")),
-                theme.dim(),
-            )
-        };
-        let inner = width.saturating_sub(LABEL).max(1);
+        let bar = || Span::styled(glyphs::render("│ ").into_owned(), theme.dim());
+        let inner = width.saturating_sub(MARGIN).max(1);
         // Whether the content of the call before shows, and how far in.
         let (mut shown, mut indent) = (true, 0);
         for member in &row.members {
@@ -1508,7 +1503,7 @@ impl Transcript {
                         folds.then_some(shown),
                         true,
                     );
-                    rows.extend(line.into_iter().map(|line| outdented(line, MARGIN)));
+                    rows.extend(line);
                     if shown && let Some(detail) = &item.detail {
                         let detail = detail_lines(detail, theme, inner - indent);
                         rows.extend(indented(detail, indent));
@@ -1962,8 +1957,8 @@ impl Transcript {
             // (The spinner goes in the margin as it is drawn.)
             Shown::Working => {
                 let label = glyphs::render(self.working_label()).into_owned();
-                // The spinner stands in the column of the rail a command's
-                // output hangs from, under it, and the word after it.
+                // The spinner stands where the agent's text starts, and the
+                // word after it.
                 let mut line = Wrapped::line(vec![
                     Span::raw(" ".repeat(LABEL)),
                     Span::styled(label, theme.dim().add_modifier(Modifier::BOLD)),
@@ -2687,8 +2682,9 @@ fn theme_key(theme: &Theme) -> u64 {
     hasher.finish()
 }
 
-/// The left margin every line has, two columns, where the agent's text
-/// starts. A row's marker stands after it ([`SPINNER`]).
+/// The left margin every line has, two columns, where the agent's text and
+/// the text of every row with a marker start. The marker stands in it
+/// ([`marker`]).
 const MARGIN: usize = 2;
 
 /// What a content's door says once its whole is no longer kept.
@@ -2704,13 +2700,11 @@ const THOUGHT: &str = "Thought";
 
 /// The line that says the agent works, while it waits on its model.
 const WORKING: &str = "Working…";
-/// The column of the spinner on the "Working…" line, and of every row's
-/// marker ([`marker`]), such as a fold's triangle, the user's bar or ✉.
-/// It is the column of the rail a call's content hangs from (`railed`),
-/// and of the bar of an open Quiet row, so they run into it.
+/// The column of the spinner on the "Working…" line and of a thinking's
+/// triangle, where the agent's text starts.
 const SPINNER: usize = MARGIN;
-/// The column of the word after the spinner, where the text of every row
-/// with a marker starts.
+/// The column of the word after the spinner, where a thinking's label and
+/// text start.
 const LABEL: usize = SPINNER + 2;
 
 /// How an item's lines look beyond the item itself.
@@ -2733,7 +2727,7 @@ struct Look<'a> {
 
 /// A Quiet row's line, with its words, how it failed, how its job goes, and
 /// how long it has run, after ▸ (▾ while `fold` is open). A row without a
-/// fold has a blank in the marker's place. (Its calls are the agent's whose
+/// fold has a dot in the marker's place. (Its calls are the agent's whose
 /// transcript it is, so it names no worker.)
 fn quiet_line(
     words: &quiet::Words,
@@ -2744,7 +2738,7 @@ fn quiet_line(
 ) -> Vec<Wrapped> {
     // (A failed row's ✗ stands in its last column, two from its words.)
     let room = if words.failed { 3 } else { 0 };
-    let inner = width.saturating_sub(LABEL + room).max(1);
+    let inner = width.saturating_sub(MARGIN + room).max(1);
     let spans = quiet_spans(words, theme, clock);
     let mut lines = wrap::prefixed(
         wrap::wrap_lines(&spans, inner, 2),
@@ -2752,11 +2746,11 @@ fn quiet_line(
             match fold {
                 Some(true) => "▾",
                 Some(false) => "▸",
-                None => " ",
+                None => "·",
             },
             theme.dim(),
         ),
-        Span::raw(" ".repeat(LABEL)),
+        Span::raw(" ".repeat(MARGIN)),
     );
     if words.failed {
         cross_at_right(&mut lines, theme, width);
@@ -2993,20 +2987,27 @@ fn detail_lines(detail: &str, theme: &Theme, width: usize) -> Vec<Wrapped> {
 /// `lines` behind the bar that hangs from the marker's column, the rail of
 /// a call's content in the Full view.
 fn railed(lines: Vec<Wrapped>, theme: &Theme) -> Vec<Wrapped> {
-    let side = Span::styled(
-        format!("{}{}", " ".repeat(SPINNER), glyphs::render("│ ")),
-        theme.dim(),
-    );
+    let side = Span::styled(glyphs::render("│ ").into_owned(), theme.dim());
     lines
         .into_iter()
         .map(|line| line.decorated(side.clone()))
         .collect()
 }
 
-/// A row's marker (a fold's triangle, ✉, ·) in the spinner's column, and
-/// the space up to the label's column, where the row's text starts.
+/// A row's marker (a call's fold triangle, the user's bar, ✉, ·) at the
+/// screen's left edge, and the space up to the margin, where the row's text
+/// starts. So the calls and the user's messages make a column of their own
+/// beside what the agent says and thinks.
 fn marker(symbol: &str, style: Style) -> Span<'static> {
     let symbol = glyphs::render(symbol).into_owned();
+    let pad = MARGIN.saturating_sub(text_width(&symbol));
+    Span::styled(format!("{symbol}{}", " ".repeat(pad)), style)
+}
+
+/// A thinking's fold triangle in the spinner's column, where its spinner
+/// turns while it streams, and the space up to its label.
+fn thinking_marker(open: bool, style: Style) -> Span<'static> {
+    let symbol = glyphs::render(if open { "▾" } else { "▸" }).into_owned();
     let pad = (LABEL - SPINNER).saturating_sub(text_width(&symbol));
     Span::styled(
         format!("{}{symbol}{}", " ".repeat(SPINNER), " ".repeat(pad)),
@@ -3030,7 +3031,7 @@ fn status_lines(
     // (A failed row's ✗ stands in its last column, two from its words.)
     let room = if words.failed { 3 } else { 0 };
     let symbol = match (look.folds, look.open) {
-        (false, _) => " ",
+        (false, _) => "·",
         (true, false) => "▸",
         (true, true) => "▾",
     };
@@ -3040,9 +3041,9 @@ fn status_lines(
     )];
     spans.extend(quiet_spans(&words, theme, look.clock));
     let mut lines = wrap::prefixed(
-        wrap::wrap_lines(&spans, width.saturating_sub(LABEL + room).max(1), 2),
+        wrap::wrap_lines(&spans, width.saturating_sub(MARGIN + room).max(1), 2),
         marker(symbol, theme.dim()),
-        Span::raw(" ".repeat(LABEL)),
+        Span::raw(" ".repeat(MARGIN)),
     );
     if words.failed {
         cross_at_right(&mut lines, theme, width);
@@ -3052,7 +3053,7 @@ fn status_lines(
             &item.text,
             theme.text(),
             theme,
-            width.saturating_sub(LABEL).max(1),
+            width.saturating_sub(MARGIN).max(1),
         );
         lines.extend(railed(body, theme));
     }
@@ -3060,11 +3061,12 @@ fn status_lines(
 }
 
 /// A call's line as the Full view says it, the call as written and how it
-/// went, at `width`, after its fold's triangle (`fold`, open or not) or a
-/// blank for a call with nothing to show. `own` is set in its worker's own
-/// view, where a worker's lines don't name it. A call that runs shows how
-/// long it has run (`clock`) and that it runs, unless its line is in a
-/// Quiet row (`in_row`), whose own line shows that.
+/// went, at `width`, after its fold's triangle (`fold`, open or not) or,
+/// for a call with nothing to show, a dot (a blank inside a Quiet row,
+/// whose bar marks it). `own` is set in its worker's own view, where a
+/// worker's lines don't name it. A call that runs shows how long it has run
+/// (`clock`) and that it runs, unless its line is in a Quiet row
+/// (`in_row`), whose own line shows that.
 fn call_line(
     item: &Item,
     theme: &Theme,
@@ -3074,7 +3076,7 @@ fn call_line(
     fold: Option<bool>,
     in_row: bool,
 ) -> Vec<Wrapped> {
-    let marked = width.saturating_sub(LABEL).max(1);
+    let marked = width.saturating_sub(MARGIN).max(1);
     let mut spans = Vec::new();
     if !(item.is_main() || own) {
         spans.push(Span::styled(
@@ -3115,7 +3117,8 @@ fn call_line(
         }
     }
     let symbol = match fold {
-        None => " ",
+        None if in_row => " ",
+        None => "·",
         Some(false) => "▸",
         Some(true) => "▾",
     };
@@ -3123,7 +3126,7 @@ fn call_line(
     wrap::prefixed(
         wrap::wrap_lines(&spans, marked, 2),
         marker(symbol, marker_style),
-        Span::raw(" ".repeat(LABEL)),
+        Span::raw(" ".repeat(MARGIN)),
     )
 }
 
@@ -3142,12 +3145,10 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
     if let Some(row) = status {
         return status_lines(item, row, theme, width, look);
     }
-    // The agent's text starts at the margin. A row with a marker has it in
-    // the spinner's column and its text at the label's.
+    // The agent's text starts at the margin, and so does the text of a row
+    // with a marker, which stands at the left edge.
     let inner = width.saturating_sub(MARGIN).max(1);
-    let marked = width.saturating_sub(LABEL).max(1);
     let blank = || Span::raw(" ".repeat(MARGIN));
-    let hang = || Span::raw(" ".repeat(LABEL));
     let mark = |symbol: &str, style: Style| marker(symbol, style);
     let worker_prefix = |item: &Item| -> Vec<Span<'static>> {
         if item.is_main() || own {
@@ -3169,15 +3170,15 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
             };
             let mut lines = match item.text.is_empty() && !item.files.is_empty() {
                 true => Vec::new(),
-                false => plain(&item.text, style, marked),
+                false => plain(&item.text, style, inner),
             };
             // The files it carried, a dim line each.
             for sent in &item.files {
-                lines.extend(plain(&sent.file.line(), theme.dim(), marked));
+                lines.extend(plain(&sent.file.line(), theme.dim(), inner));
             }
             if let Some(tag) = user_tag(item) {
                 // (Not the user's text, so a copy leaves it out.)
-                let tag = cut_end(&tag, marked);
+                let tag = cut_end(&tag, inner);
                 let tag_width = text_width(&tag);
                 let style = theme.dim().add_modifier(Modifier::ITALIC);
                 // At the right of the first row, two columns from its text,
@@ -3186,16 +3187,14 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
                 // under the last.
                 let wraps = lines.iter().any(|line| line.join != Join::Break);
                 match lines.first_mut() {
-                    Some(first)
-                        if !wraps && spans_width(&first.spans) + 2 + tag_width <= marked =>
-                    {
-                        let tail = marked - spans_width(&first.spans);
+                    Some(first) if !wraps && spans_width(&first.spans) + 2 + tag_width <= inner => {
+                        let tail = inner - spans_width(&first.spans);
                         let gap = " ".repeat(tail - tag_width);
                         first.spans.push(Span::styled(format!("{gap}{tag}"), style));
                         first.tail += tail;
                     }
                     _ => {
-                        let gap = " ".repeat(marked.saturating_sub(tag_width));
+                        let gap = " ".repeat(inner.saturating_sub(tag_width));
                         let mut line =
                             Wrapped::line(vec![Span::styled(format!("{gap}{tag}"), style)]);
                         line.bare = true;
@@ -3239,8 +3238,8 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
                     theme.dim().add_modifier(Modifier::BOLD),
                 )]));
             }
-            lines.extend(markdown::render(&item.text, theme.text(), theme, marked));
-            wrap::prefixed(lines, mark("✉", theme.dim()), hang())
+            lines.extend(markdown::render(&item.text, theme.text(), theme, inner));
+            wrap::prefixed(lines, mark("✉", theme.dim()), blank())
         }
         Kind::Question => {
             // One quiet line while its questions are open (the answer panel
@@ -3252,21 +3251,18 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
                     "Arko asked".to_string(),
                     theme.dim(),
                 )])];
-                lines.extend(markdown::render(&item.text, theme.text(), theme, marked));
-                return wrap::prefixed(lines, mark("?", theme.accent()), hang());
+                lines.extend(markdown::render(&item.text, theme.text(), theme, inner));
+                return wrap::prefixed(lines, mark("?", theme.accent()), blank());
             };
             if questions.iter().any(|question| !question.state.is_open()) {
                 return record_lines(&item.text, questions, theme, width);
             }
-            let lines: Vec<Wrapped> = wrap::wrap(
-                &[Span::styled(rendered(&item.text), theme.dim())],
-                marked,
-                0,
-            )
-            .into_iter()
-            .map(Wrapped::line)
-            .collect();
-            wrap::prefixed(lines, mark("?", theme.accent()), hang())
+            let lines: Vec<Wrapped> =
+                wrap::wrap(&[Span::styled(rendered(&item.text), theme.dim())], inner, 0)
+                    .into_iter()
+                    .map(Wrapped::line)
+                    .collect();
+            wrap::prefixed(lines, mark("?", theme.accent()), blank())
         }
         Kind::Call => {
             // A call that has something to show opens to it, its detail
@@ -3277,11 +3273,11 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
                 && open
                 && let Some(detail) = &item.detail
             {
-                lines.extend(railed(detail_lines(detail, theme, marked), theme));
+                lines.extend(railed(detail_lines(detail, theme, inner), theme));
             }
             lines
         }
-        Kind::Result => railed(content_lines(item, theme, marked, open), theme),
+        Kind::Result => railed(content_lines(item, theme, inner, open), theme),
         Kind::Notice => {
             let (symbol, style) = match item.level {
                 Some(Level::Error) => ("✗", theme.error()),
@@ -3291,9 +3287,9 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
             let mut spans = worker_prefix(item);
             spans.push(Span::styled(rendered(&item.text), style));
             wrap::prefixed(
-                wrap::wrap_lines(&spans, marked, 0),
+                wrap::wrap_lines(&spans, inner, 0),
                 mark(symbol, style),
-                hang(),
+                blank(),
             )
         }
         Kind::Turn | Kind::Conversation => {
@@ -3313,7 +3309,7 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
             let style = theme.dim();
             // The fold's triangle stands in the spinner's cell, so the
             // label stays put when the thinking stops.
-            let mut spans = vec![mark(if open { "▾" } else { "▸" }, theme.dim())];
+            let mut spans = vec![thinking_marker(open, theme.dim())];
             spans.extend(worker_prefix(item));
             let label = match clock {
                 None => THINKING.to_string(),
@@ -3357,12 +3353,15 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
                 line.skip = label + separator_width;
                 return vec![line];
             }
-            // Open, the label, then the text, and a click on either folds it.
+            // Open, the label, then the text under it, and a click on either
+            // folds it.
             let mut heading = Wrapped::line(spans);
             heading.bare = true;
-            let body = markdown::render(&item.text, style, theme, marked);
+            let body =
+                markdown::render(&item.text, style, theme, width.saturating_sub(LABEL).max(1));
             let mut out = vec![heading];
-            out.extend(body.into_iter().map(|line| line.decorated(hang())));
+            let hang = Span::raw(" ".repeat(LABEL));
+            out.extend(body.into_iter().map(|line| line.decorated(hang.clone())));
             out
         }
         // Drawn from the worker's summary.
@@ -3923,7 +3922,7 @@ mod tests {
         questions[1].question = "Push now?".into();
         card.questions = Some(questions.clone());
         t.apply(Update::Item(card.clone()));
-        assert_eq!(rows(&mut t, &full(), 40, 1), ["  ? Arko asked 2 questions"]);
+        assert_eq!(rows(&mut t, &full(), 40, 1), ["? Arko asked 2 questions"]);
         questions[0].state = QuestionState::Answered {
             answer: "Spaces".into(),
         };
@@ -3974,11 +3973,11 @@ mod tests {
         t.apply(Update::Item(message));
         assert_eq!(
             rows(&mut t, &full(), 40, 2),
-            ["    message r1: Also the docs. · ✓ sent", ""]
+            ["· message r1: Also the docs. · ✓ sent", ""]
         );
         assert_eq!(
             rows(&mut t, &Filter::Worker("r1".into(), View::Full), 40, 2),
-            ["  ✉ main to r1", "    Also the docs."]
+            ["✉ main to r1", "  Also the docs."]
         );
     }
 
@@ -3995,13 +3994,13 @@ mod tests {
         for view in View::ALL {
             assert_eq!(
                 rows(&mut t, &Filter::Main(view), 40, 2),
-                ["  ▎ Fix it", ""],
+                ["▎ Fix it", ""],
                 "{view:?}"
             );
         }
         assert_eq!(
             rows(&mut t, &Filter::Worker("r3".into(), View::Full), 40, 3),
-            ["  Looking.", "", "  ✉ Found it."]
+            ["  Looking.", "", "✉ Found it."]
         );
     }
 
@@ -4054,10 +4053,10 @@ mod tests {
             assert_eq!(
                 rows(&mut t, &filter, 40, 5),
                 [
-                    "  ▎ Fix it",
+                    "▎ Fix it",
                     "",
-                    "  ▸ r3 messaged the lead",
-                    "  ▸ r3 reported",
+                    "▸ r3 messaged the lead",
+                    "▸ r3 reported",
                     ""
                 ],
                 "{view:?}"
@@ -4067,12 +4066,12 @@ mod tests {
             assert_eq!(
                 rows(&mut t, &filter, 40, 6),
                 [
-                    "  ▎ Fix it",
+                    "▎ Fix it",
                     "",
-                    "  ▾ r3 messaged the lead",
-                    "  │ Halfway.",
-                    "  ▾ r3 reported",
-                    "  │ Fixed it."
+                    "▾ r3 messaged the lead",
+                    "│ Halfway.",
+                    "▾ r3 reported",
+                    "│ Fixed it."
                 ],
                 "{view:?}"
             );
@@ -4115,7 +4114,7 @@ mod tests {
         t.apply(Update::Item(call.clone()));
         assert_eq!(
             rows(&mut t, &main, 40, 3)[2],
-            "    r1 messaging the lead …",
+            "· r1 messaging the lead …",
             "no fold while it runs"
         );
         call.status = Some(CallStatus::Ok);
@@ -4127,19 +4126,19 @@ mod tests {
         said.more = Some("… 24 more lines".into());
         said.whole = Some(lines.join("\n").into());
         t.apply(Update::Item(said));
-        assert_eq!(rows(&mut t, &main, 40, 3)[2], "  ▸ r1 messaged the lead");
+        assert_eq!(rows(&mut t, &main, 40, 3)[2], "▸ r1 messaged the lead");
         t.toggle(2, 2, &main, &theme);
         t.follow();
         let shown = rows(&mut t, &main, 40, 20);
-        assert_eq!(shown[2], "  ▾ r1 messaged the lead", "{shown:?}");
-        assert_eq!(shown[3], "  │ Line 1");
-        assert_eq!(shown[18], "  │ Line 16");
-        assert_eq!(shown[19], "  │ … 24 more lines", "its door, not all 40");
+        assert_eq!(shown[2], "▾ r1 messaged the lead", "{shown:?}");
+        assert_eq!(shown[3], "│ Line 1");
+        assert_eq!(shown[18], "│ Line 16");
+        assert_eq!(shown[19], "│ … 24 more lines", "its door, not all 40");
         // Its door opens the rest.
         t.toggle(3, 19, &main, &theme);
         t.follow();
         let shown = rows(&mut t, &main, 40, 50);
-        assert!(shown.iter().any(|row| row == "  │ Line 40"), "{shown:?}");
+        assert!(shown.iter().any(|row| row == "│ Line 40"), "{shown:?}");
         // Once its whole is no longer kept, its door says so.
         t.toggle(3, 0, &main, &theme);
         if let Some(entry) = t.find_mut(3) {
@@ -4147,7 +4146,7 @@ mod tests {
             entry.touch();
         }
         let shown = rows(&mut t, &main, 40, 20);
-        assert_eq!(shown[19], "  │ No longer kept", "{shown:?}");
+        assert_eq!(shown[19], "│ No longer kept", "{shown:?}");
         t.toggle(2, 2, &main, &theme);
 
         // One that failed, and one a stop cut short.
@@ -4167,10 +4166,10 @@ mod tests {
         let shown = rows(&mut t, &main, 60, 5);
         let at = shown
             .iter()
-            .position(|row| row.starts_with("  ▸ r1 couldn’t message the lead"))
+            .position(|row| row.starts_with("▸ r1 couldn’t message the lead"))
             .unwrap_or_else(|| panic!("{shown:?}"));
         assert!(shown[at].ends_with("✗"), "{shown:?}");
-        assert_eq!(shown[at + 1], "    r1 couldn’t message the lead · stopped");
+        assert_eq!(shown[at + 1], "· r1 couldn’t message the lead · stopped");
         t.toggle(4, at as u16, &main, &theme);
         rows(&mut t, &main, 60, 6);
         t.follow();
@@ -4178,7 +4177,7 @@ mod tests {
         assert!(
             shown
                 .iter()
-                .any(|row| row == "  │ Couldn't deliver the message."),
+                .any(|row| row == "│ Couldn't deliver the message."),
             "{shown:?}"
         );
 
@@ -4191,13 +4190,10 @@ mod tests {
         let lead = Filter::Worker("r1".into(), View::Full);
         let shown = rows(&mut t, &lead, 40, 12);
         assert!(
-            shown.iter().any(|row| row == "    r2 messaged the lead"),
+            shown.iter().any(|row| row == "· r2 messaged the lead"),
             "{shown:?}"
         );
-        assert!(
-            shown.iter().any(|row| row == "  ▸ r2 reported"),
-            "{shown:?}"
-        );
+        assert!(shown.iter().any(|row| row == "▸ r2 reported"), "{shown:?}");
         assert!(
             !shown.iter().any(|row| row.contains("r1 messaged")),
             "{shown:?}"
@@ -4220,14 +4216,14 @@ mod tests {
         for view in View::ALL {
             assert_eq!(
                 rows(&mut t, &Filter::Main(view), 50, 2),
-                ["  ▎ Fix it", ""],
+                ["▎ Fix it", ""],
                 "{view:?}"
             );
         }
         assert_eq!(
             rows(&mut t, &Filter::Worker("r1".into(), View::Full), 50, 2),
             [
-                format!("  ▎ Use tabs.{}from the web page", " ".repeat(20)),
+                format!("▎ Use tabs.{}from the web page", " ".repeat(22)),
                 String::new(),
             ]
         );
@@ -4249,16 +4245,16 @@ mod tests {
         call.at -= 900;
         t.apply(Update::Item(call.clone()));
         let own = Filter::Worker("r1".into(), View::Full);
-        assert_eq!(rows(&mut t, &own, 40, 1)[0], "    $ sleep 30 …");
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "· $ sleep 30 …");
         std::thread::sleep(std::time::Duration::from_millis(150));
-        assert_eq!(rows(&mut t, &own, 40, 1)[0], "    $ sleep 30 · 1s …");
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "· $ sleep 30 · 1s …");
         call.at -= 2 * 60_000;
         t.apply(Update::Change(call.clone()));
-        assert_eq!(rows(&mut t, &own, 40, 1)[0], "    $ sleep 30 · 2m …");
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "· $ sleep 30 · 2m …");
         call.status = Some(CallStatus::Ok);
         call.outcome = Some("30.0 s".into());
         t.apply(Update::Change(call));
-        assert_eq!(rows(&mut t, &own, 40, 1)[0], "    $ sleep 30 · ✓ 30.0 s");
+        assert_eq!(rows(&mut t, &own, 40, 1)[0], "· $ sleep 30 · ✓ 30.0 s");
     }
 
     /// A call's outcome is on its line. A command's output is its content,
@@ -4277,7 +4273,7 @@ mod tests {
             ..Default::default()
         });
         t.apply(Update::Item(call.clone()));
-        assert_eq!(rows(&mut t, &full(), 40, 3)[2], "    $ cargo test …");
+        assert_eq!(rows(&mut t, &full(), 40, 3)[2], "· $ cargo test …");
         call.status = Some(CallStatus::Ok);
         call.outcome = Some("12 passed".into());
         t.apply(Update::Change(call));
@@ -4290,10 +4286,10 @@ mod tests {
         assert_eq!(
             rows(&mut t, &full(), 40, 8),
             [
-                "  ▎ Run the tests",
+                "▎ Run the tests",
                 "",
-                "  ▾ $ cargo test · ✓ 12 passed",
-                "  │ running 12 tests",
+                "▾ $ cargo test · ✓ 12 passed",
+                "│ running 12 tests",
                 "",
                 "  All 12 pass.",
                 "",
@@ -4318,9 +4314,9 @@ mod tests {
         let shown = rows(&mut t, &Filter::Main(View::Messages), 30, 8);
         let at = |text: &str| shown.iter().position(|row| row.starts_with(text));
         let (first, rule, next) = (
-            at("  ▎ Count the pears"),
+            at("▎ Count the pears"),
             at("  ── New conversation ──"),
-            at("  ▎ Now the apples"),
+            at("▎ Now the apples"),
         );
         assert!(first < rule && rule < next && first.is_some(), "{shown:?}");
         t.apply(Update::Truncate { from: 2 });
@@ -4397,7 +4393,7 @@ mod tests {
         shown.apply(Update::Item(call));
         assert_eq!(
             rows(&mut shown, &full(), 40, 4),
-            ["  ▾ Thought", "    All of it.", "", "    $ ls · ✓"],
+            ["  ▾ Thought", "    All of it.", "", "· $ ls · ✓"],
             "a blank line apart from the call after it"
         );
     }
@@ -4411,19 +4407,20 @@ mod tests {
         spins.then(|| &row[first.len_utf8()..])
     }
 
-    /// Whether `row` is the "Working…" line, with its spinner in the column of
-    /// the rail a command's output hangs from, then the word.
+    /// Whether `row` is the "Working…" line, with its spinner where the
+    /// agent's text starts, then the word.
     fn is_working(row: &str) -> bool {
         after_spinner(row) == Some(" Working…")
     }
 
-    /// Every row with a marker (a fold's triangle, the user's bar, ✉, ·) has
-    /// it in the column of the "Working…" line's spinner, and its text
-    /// where that line's word starts, in every view. Its other lines start
-    /// there too. The agent's text, which has no marker, starts at the
-    /// marker's column.
+    /// Every row's marker (the user's bar, a call's triangle, ✉, a notice's
+    /// dot) stands at the left edge, and its text at the margin, where the
+    /// agent's text starts, so the calls and the user's messages make a
+    /// column of their own. A thinking's triangle stands in the "Working…"
+    /// line's spinner column, at the margin, and its label where that line's
+    /// word starts. In every view.
     #[test]
-    fn markers_stand_under_the_working_spinner() {
+    fn markers_stand_in_the_gutter() {
         use crate::remote::{Act, ActKind};
         let mut t = Transcript::new();
         let mut user = item(1, Kind::User, "Fix it");
@@ -4453,21 +4450,20 @@ mod tests {
             for row in shown.iter().filter(|row| !row.trim().is_empty()) {
                 let chars: Vec<char> = row.chars().collect();
                 let at = |column: usize| chars.get(column).copied().unwrap_or(' ');
-                assert!(
-                    (0..SPINNER).all(|column| at(column) == ' '),
-                    "{view:?} {row:?}"
-                );
-                if row.trim_start() == "Looking." {
+                if is_working(row) || row.contains("Thought") {
+                    assert_ne!(at(SPINNER), ' ', "{view:?} {row:?}");
+                    assert_eq!(at(SPINNER + 1), ' ', "{view:?} {row:?}");
+                    assert_ne!(at(LABEL), ' ', "{view:?} {row:?}");
                     continue;
                 }
-                assert!(
-                    (SPINNER + 1..LABEL).all(|column| at(column) == ' '),
-                    "{view:?} {row:?}"
-                );
-                assert_ne!(at(LABEL), ' ', "{view:?} {row:?}");
-                marked += usize::from(at(SPINNER) != ' ');
+                // A marker, or none for the agent's text and a row's other
+                // lines, then the text at the margin.
+                marked += usize::from(at(0) != ' ');
+                assert_eq!(at(1), ' ', "{view:?} {row:?}");
+                assert_ne!(at(MARGIN), ' ', "{view:?} {row:?}");
             }
-            assert!(marked >= 3, "{view:?} {shown:?}");
+            // (The user's bar and the call's, and in Full and Quiet the notice's.)
+            assert!(marked >= 2, "{view:?} {shown:?}");
         }
     }
 
@@ -4502,20 +4498,20 @@ mod tests {
         t.toggle(1, 0, &quiet, &theme);
         t.toggle(2, 2, &quiet, &theme);
         let open = [
-            "  ▾ Read a.rs and b.rs",
-            "  │   a.rs · ✓ 3 lines",
-            "  │ ▾ Thought",
-            "  │   Which one?",
-            "  │",
-            "  │   b.rs · ✓ 3 lines",
+            "▾ Read a.rs and b.rs",
+            "│   a.rs · ✓ 3 lines",
+            "│ ▾ Thought",
+            "│   Which one?",
+            "│",
+            "│   b.rs · ✓ 3 lines",
         ];
         let shown = rows(&mut t, &quiet, 40, 8);
         assert_eq!(shown[..6], open);
         let at = |row: &str, column: usize| row.chars().nth(column);
         for row in &shown[1..6] {
-            assert_eq!(at(row, SPINNER), Some('│'), "{row:?}");
+            assert_eq!(at(row, 0), Some('│'), "{row:?}");
         }
-        assert_eq!(at(&shown[2], LABEL), Some('▾'));
+        assert_eq!(at(&shown[2], MARGIN), Some('▾'));
         // A click on its text folds it.
         assert_eq!(
             t.fold_at(10, 3, &quiet, &theme).map(|fold| fold.item),
@@ -4525,7 +4521,7 @@ mod tests {
         let shown = rows(&mut t, &quiet, 40, 8);
         assert_eq!(
             shown[..4],
-            [open[0], open[1], "  │ ▸ Thought", open[5]],
+            [open[0], open[1], "│ ▸ Thought", open[5]],
             "{shown:?}"
         );
     }
@@ -4690,35 +4686,35 @@ mod tests {
             t.apply(Update::Item(update));
         }
         let closed = [
-            "  ▎ Fix the parser",
+            "▎ Fix the parser",
             "",
-            "  ▸ 3 tool calls",
+            "▸ 3 tool calls",
             "",
             "  Found it.",
             "",
             "  Fixed.",
             "",
-            "  ▎ Thanks",
+            "▎ Thanks",
             "",
-            "  ▸ 1 tool call",
+            "▸ 1 tool call",
         ];
         assert_eq!(rows(&mut t, &messages, 40, 11), closed);
         // A screen too short for the turn, its count on the top row.
         rows(&mut t, &messages, 40, 8);
         t.scroll(-1);
         let shown = rows(&mut t, &messages, 40, 8);
-        assert_eq!(shown[0], "  ▸ 3 tool calls", "{shown:?}");
+        assert_eq!(shown[0], "▸ 3 tool calls", "{shown:?}");
         t.toggle_count(COUNT_KEY | 2, 0);
         let shown = rows(&mut t, &messages, 40, 8);
         assert_eq!(
             shown[..7],
             [
-                "  ▾ 3 tool calls",
-                "  ▸ Read a.rs and b.rs",
+                "▾ 3 tool calls",
+                "▸ Read a.rs and b.rs",
                 "",
                 "  Found it.",
                 "",
-                "    Read c.rs",
+                "· Read c.rs",
                 "",
             ],
             "the turn's rows under its count, the count on its row"
@@ -4734,7 +4730,7 @@ mod tests {
         let shown = rows(&mut t, &messages, 40, 12);
         assert_eq!(
             shown[shown.len() - 2..],
-            ["  ▾ 1 tool call", "    Read d.rs"],
+            ["▾ 1 tool call", "· Read d.rs"],
             "{shown:?}"
         );
         assert_eq!(
@@ -4783,13 +4779,13 @@ mod tests {
         t.apply(Update::Item(thinking));
         t.working = Some(0);
         let shown = rows(&mut t, &quiet, 40, 4);
-        assert_eq!(shown[0], "  ▸ Read a.rs", "{shown:?}");
+        assert_eq!(shown[0], "▸ Read a.rs", "{shown:?}");
         assert_eq!(after_spinner(&shown[1]), Some(" Thinking"), "{shown:?}");
         assert!(t.drawn.moving);
         // The row's first line stays where it was when the next read joins.
         t.apply(Update::Item(read(3, "b.rs")));
         let shown = rows(&mut t, &quiet, 40, 4);
-        assert_eq!(shown[0], "  ▸ Read a.rs and b.rs", "{shown:?}");
+        assert_eq!(shown[0], "▸ Read a.rs and b.rs", "{shown:?}");
         assert!(is_working(&shown[1]), "{shown:?}");
     }
 
@@ -4856,11 +4852,11 @@ mod tests {
         let mut user = item(1, Kind::User, "Fix the tests");
         user.delivery = Some(Delivery::Turn);
         t.apply(Update::Item(user));
-        assert_eq!(last(&mut t, View::Full), "  ▎ Fix the tests", "idle");
+        assert_eq!(last(&mut t, View::Full), "▎ Fix the tests", "idle");
         t.working = Some(0);
         // A blank line on each side of it, after what was said.
         let shown = rows(&mut t, &full(), 40, 4);
-        assert_eq!(shown[..2], ["  ▎ Fix the tests", ""]);
+        assert_eq!(shown[..2], ["▎ Fix the tests", ""]);
         assert!(is_working(&shown[2]), "{shown:?}");
         assert_eq!(shown[3], "");
 
@@ -4879,7 +4875,7 @@ mod tests {
         let mut call = item(3, Kind::Call, "$ cargo test");
         call.status = Some(CallStatus::Running);
         t.apply(Update::Item(call.clone()));
-        assert_eq!(last(&mut t, View::Full), "    $ cargo test …");
+        assert_eq!(last(&mut t, View::Full), "· $ cargo test …");
         call.status = Some(CallStatus::Ok);
         t.apply(Update::Change(call));
         let shown = rows(&mut t, &full(), 40, 5);
@@ -4887,17 +4883,18 @@ mod tests {
             shown[2], "  ▸ Thought · Where to start?",
             "it no longer moves"
         );
-        assert_eq!(shown[3], "    $ cargo test · ✓", "no blank line before it");
+        assert_eq!(shown[3], "· $ cargo test · ✓", "no blank line before it");
         assert!(is_working(&shown[4]), "{shown:?}");
         assert!(is_working(&last(&mut t, View::Quiet)));
         assert!(is_working(&last(&mut t, View::Messages)));
-        // Under the output's rail, its spinner in the rail's column.
+        // Under the output's rail, which hangs from the call's marker at the
+        // left edge, its spinner where the agent's text starts.
         t.apply(Update::Item(item(4, Kind::Result, "12 passed")));
         let shown = rows(&mut t, &full(), 40, 6);
         let rail = shown
             .iter()
             .find_map(|row| row.chars().position(|c| c == '│'));
-        assert_eq!(rail, Some(SPINNER), "{shown:?}");
+        assert_eq!(rail, Some(0), "{shown:?}");
         assert!(shown.last().is_some_and(|row| is_working(row)), "{shown:?}");
 
         // Two calls side by side, and while one runs, it shows the agent works.
@@ -4910,7 +4907,7 @@ mod tests {
         for call in &calls {
             t.apply(Update::Item(call.clone()));
         }
-        assert_eq!(last(&mut t, View::Full), "    read b.rs · ✓");
+        assert_eq!(last(&mut t, View::Full), "· read b.rs · ✓");
         calls[0].status = Some(CallStatus::Ok);
         t.apply(Update::Change(calls[0].clone()));
         assert!(is_working(&last(&mut t, View::Full)));
@@ -5129,9 +5126,9 @@ mod tests {
         assert_eq!(
             shown(&lines),
             [
-                "  ▎ Look.",
-                "  ▎ /w/.arko/attachments/bug.png · 70 bytes",
-                "  ▎ /w/.arko/attachments/RPReplay.MP4 · 46.0 MB",
+                "▎ Look.",
+                "▎ /w/.arko/attachments/bug.png · 70 bytes",
+                "▎ /w/.arko/attachments/RPReplay.MP4 · 46.0 MB",
             ]
         );
         assert_eq!(lines[1].spans.last().unwrap().style, theme.dim());
@@ -5156,20 +5153,20 @@ mod tests {
     #[test]
     fn a_message_without_room_beside_its_tag_has_it_on_a_row_under_it() {
         let theme = Theme::terminal();
-        let under = format!("  ▎ {}pending", " ".repeat(11));
+        let under = format!("▎ {}pending", " ".repeat(11));
         for (text, rows) in [
             // Exactly two spaces before the tag.
-            ("123456789", vec!["  ▎ 123456789  pending".to_string()]),
+            ("123456789", vec!["▎ 123456789  pending".to_string()]),
             // One space isn't enough.
             (
                 "1234567890",
-                vec!["  ▎ 1234567890".to_string(), under.clone()],
+                vec!["▎ 1234567890".to_string(), under.clone()],
             ),
             (
                 "One two three four five six",
                 vec![
-                    "  ▎ One two three four".to_string(),
-                    "  ▎ five six".to_string(),
+                    "▎ One two three four".to_string(),
+                    "▎ five six".to_string(),
                     under.clone(),
                 ],
             ),
@@ -5177,13 +5174,13 @@ mod tests {
             let mut user = item(1, Kind::User, text);
             user.delivery = Some(Delivery::Note);
             user.pending = true;
-            let lines = entry_lines(&user, &theme, 22, false, Look::default());
+            let lines = entry_lines(&user, &theme, 20, false, Look::default());
             assert_eq!(shown(&lines), rows, "{text}");
             assert_eq!(lines.last().unwrap().bare, rows.len() > 1, "{text}");
             assert_eq!(
                 copied(
                     lines.iter().enumerate().map(|(n, line)| ((0, n), line)),
-                    ((0, 0, 0), (0, lines.len() - 1, 21)),
+                    ((0, 0, 0), (0, lines.len() - 1, 19)),
                 )
                 .as_deref(),
                 Some(text)
@@ -5219,12 +5216,12 @@ mod tests {
             (Delivery::Queued, false, Some(Source::App)),
         ];
         for width in [5, 12, 24, 30, 40, 60, 80, 120] {
-            let inner = width - LABEL;
+            let inner = width - MARGIN;
             for text in texts {
                 // The message's rows without a tag.
                 let alone: Vec<String> = plain(text, Style::default(), inner)
                     .iter()
-                    .map(|line| format!("  ▎ {}", shown(std::slice::from_ref(line))[0]))
+                    .map(|line| format!("▎ {}", shown(std::slice::from_ref(line))[0]))
                     .collect();
                 let wraps = alone.len() > text.split('\n').count();
                 for (delivery, pending, source) in tags {
@@ -5283,11 +5280,11 @@ mod tests {
         t.apply(Update::Item(note));
         // The note's blank line sets it apart below, so it has one above too.
         let shown = rows(&mut t, &full(), 40, 5);
-        assert_eq!(shown[..2], ["    $ make · ✓", ""]);
+        assert_eq!(shown[..2], ["· $ make · ✓", ""]);
         assert!(is_working(&shown[2]), "{shown:?}");
         assert_eq!(
             shown[3..],
-            ["", &format!("  ▎ Use tabs.{}pending", " ".repeat(20))]
+            ["", &format!("▎ Use tabs.{}pending", " ".repeat(22))]
         );
     }
 
@@ -5422,7 +5419,7 @@ mod tests {
                 .position(|row| row.contains("Keep the old name."));
             let colours = note.map(|y| {
                 let at = |x: usize| buffer[(x as u16, y as u16)].fg;
-                (at(SPINNER), at(LABEL))
+                (at(0), at(MARGIN))
             });
             (rows, colours)
         };
@@ -5436,7 +5433,7 @@ mod tests {
             [
                 "  It turned out to be a kit fix, so that went to the kit.",
                 "",
-                &format!("  ▎ Keep the old name.{}pending", " ".repeat(31)),
+                &format!("▎ Keep the old name.{}pending", " ".repeat(33)),
             ]
         );
         assert_eq!(colours, Some((theme.dim, theme.dim)));
@@ -5455,7 +5452,7 @@ mod tests {
             [
                 "  It turned out to be a kit fix, so that went to the kit.",
                 "",
-                "  ▎ Keep the old name.",
+                "▎ Keep the old name.",
                 "",
                 "  Renamed it back.",
             ]
@@ -5790,7 +5787,7 @@ mod tests {
         assert!(
             messages
                 .iter()
-                .any(|r| r.contains("  ▸ 2 tool calls · 1 failed")),
+                .any(|r| r.contains("▸ 2 tool calls · 1 failed")),
             "{messages:?}"
         );
         assert!(!messages.iter().any(|r| r.contains("read a.rs")));
@@ -5800,7 +5797,7 @@ mod tests {
         assert!(!worker.iter().any(|r| r.contains("Fix it")));
         // Its own view doesn't name it on its calls.
         assert!(
-            worker.iter().any(|r| r.starts_with("    cargo test")),
+            worker.iter().any(|r| r.starts_with("· cargo test")),
             "{worker:?}"
         );
         // A turn of text and notices only has no counter.
@@ -5856,7 +5853,7 @@ mod tests {
         let before = rows(&mut t, &quiet, 50, 4);
         assert_eq!(
             before[..2],
-            ["  ▸ Ran rg x · running cargo build …", "    Read a.rs"]
+            ["▸ Ran rg x · running cargo build …", "· Read a.rs"]
         );
         rows(&mut t, &Filter::Main(View::Full), 50, 4);
         assert_eq!(rows(&mut t, &quiet, 50, 4), before);
@@ -5868,10 +5865,7 @@ mod tests {
             CallStatus::Ok,
         )));
         let after = rows(&mut t, &quiet, 50, 4);
-        assert_eq!(
-            after[..2],
-            ["  ▸ Ran 2 commands (rg, cargo)", "    Read a.rs"]
-        );
+        assert_eq!(after[..2], ["▸ Ran 2 commands (rg, cargo)", "· Read a.rs"]);
         let count = |rows: &[String]| rows.iter().filter(|row| !row.is_empty()).count();
         assert_eq!(count(&before), count(&after));
         rows(&mut t, &Filter::Main(View::Full), 50, 4);
@@ -5970,9 +5964,9 @@ mod tests {
             shown[..3],
             [
                 // (The row's line says it runs.)
-                "  ▾ Made 1 edit to a.rs …",
-                "  │   edit a.rs · ✓",
-                "  │   read a.rs"
+                "▾ Made 1 edit to a.rs …",
+                "│   edit a.rs · ✓",
+                "│   read a.rs"
             ],
             "{shown:?}"
         );
@@ -5983,9 +5977,9 @@ mod tests {
         assert_eq!(
             shown[..4],
             [
-                "  ▾ Made 1 edit to a.rs",
-                "  │   edit a.rs · ✓",
-                "  │   read a.rs · ✓ 12 lines",
+                "▾ Made 1 edit to a.rs",
+                "│   edit a.rs · ✓",
+                "│   read a.rs · ✓ 12 lines",
                 ""
             ],
             "{shown:?}"
@@ -6071,7 +6065,7 @@ mod tests {
         output.call = Some(1);
         t.apply(Update::Item(output));
         let shown = rows(&mut t, &full(), 40, 4);
-        assert_eq!(shown[3], "  │ No longer kept", "{shown:?}");
+        assert_eq!(shown[3], "│ No longer kept", "{shown:?}");
         assert!(!t.item(2).is_some_and(|item| t.folds(item)));
     }
 
@@ -6110,10 +6104,10 @@ mod tests {
         assert_eq!(
             rows(&mut t, &quiet, 40, 5),
             [
-                "  ▾ Read a.rs and b.rs",
-                "  │ ▾ a.rs · ✓",
-                "  │   1  one",
-                "  │ ▸ b.rs · ✓",
+                "▾ Read a.rs and b.rs",
+                "│ ▾ a.rs · ✓",
+                "│   1  one",
+                "│ ▸ b.rs · ✓",
                 ""
             ]
         );
@@ -6151,17 +6145,17 @@ mod tests {
         rows(&mut t, &quiet, 40, 6);
         t.toggle(1, 0, &quiet, &theme);
         let open = rows(&mut t, &quiet, 40, 6);
-        assert_eq!(open[..3], ["  ▾ Read a.rs", "  │ 1  one", "  │ 2  two"]);
+        assert_eq!(open[..3], ["▾ Read a.rs", "│ 1  one", "│ 2  two"]);
         t.apply(Update::Item(read(3, "b.rs")));
         let shown = rows(&mut t, &quiet, 40, 6);
         assert_eq!(
             shown[..4],
-            ["  ▾ Read a.rs", "  │ 1  one", "  │ 2  two", "    Read b.rs"]
+            ["▾ Read a.rs", "│ 1  one", "│ 2  two", "· Read b.rs"]
         );
         // Closed again, it still keeps its calls.
         t.toggle(1, 0, &quiet, &theme);
         let closed = rows(&mut t, &quiet, 40, 6);
-        assert_eq!(closed[..2], ["  ▸ Read a.rs", "    Read b.rs"]);
+        assert_eq!(closed[..2], ["▸ Read a.rs", "· Read b.rs"]);
     }
 
     /// A failure ends its Quiet row, which keeps its ✗, and the command
@@ -6191,11 +6185,11 @@ mod tests {
         }
         let shown = rows(&mut t, &Filter::Main(View::Quiet), 50, 3);
         assert!(
-            shown[0].starts_with("  ▸ Ran 2 commands (rg, cargo)"),
+            shown[0].starts_with("▸ Ran 2 commands (rg, cargo)"),
             "{shown:?}"
         );
         assert!(shown[0].ends_with('✗'), "{shown:?}");
-        assert_eq!(shown[1], "    Ran sed -i x", "{shown:?}");
+        assert_eq!(shown[1], "· Ran sed -i x", "{shown:?}");
     }
 
     /// An open Quiet row shows what its calls hold behind a bar under its
@@ -6239,9 +6233,9 @@ mod tests {
         assert_eq!(
             opened(vec![build(), output(2, 1, "Compiling arko\nFinished")], 5),
             [
-                "  ▾ Ran cargo build",
-                "  │ Compiling arko",
-                "  │ Finished",
+                "▾ Ran cargo build",
+                "│ Compiling arko",
+                "│ Finished",
                 "",
                 ""
             ]
@@ -6255,9 +6249,9 @@ mod tests {
         assert_eq!(
             opened(two.clone(), 5),
             [
-                "  ▾ Ran 2 commands (cargo, rg)",
-                "  │ ▸ cargo build · ✓ 2.0 s",
-                "  │ ▸ rg x · ✓ 0.1 s",
+                "▾ Ran 2 commands (cargo, rg)",
+                "│ ▸ cargo build · ✓ 2.0 s",
+                "│ ▸ rg x · ✓ 0.1 s",
                 "",
                 ""
             ]
@@ -6274,11 +6268,11 @@ mod tests {
         assert_eq!(
             rows(&mut t, &quiet, 40, 6),
             [
-                "  ▾ Ran 2 commands (cargo, rg)",
-                "  │ ▾ cargo build · ✓ 2.0 s",
-                "  │   Compiling arko",
-                "  │   Finished",
-                "  │ ▸ rg x · ✓ 0.1 s",
+                "▾ Ran 2 commands (cargo, rg)",
+                "│ ▾ cargo build · ✓ 2.0 s",
+                "│   Compiling arko",
+                "│   Finished",
+                "│ ▸ rg x · ✓ 0.1 s",
                 ""
             ]
         );
@@ -6296,10 +6290,10 @@ mod tests {
                 5
             ),
             [
-                "  ▾ Read a.rs and b.rs",
-                "  │   a.rs · ✓ 3 lines",
-                "  │ ▸ Thought",
-                "  │   b.rs · ✓ 4 lines",
+                "▾ Read a.rs and b.rs",
+                "│   a.rs · ✓ 3 lines",
+                "│ ▸ Thought",
+                "│   b.rs · ✓ 4 lines",
                 ""
             ]
         );
@@ -6342,13 +6336,13 @@ mod tests {
             },
             content::Line::Plain(text) => text.to_string(),
         };
-        format!("  │ {shown}").trim_end().to_string()
+        format!("│ {shown}").trim_end().to_string()
     }
 
     /// Each of the shared fixtures, alone in its Quiet row, says what it did
     /// with one ✗ at the row's right when it failed, and opens to its detail
     /// and its content right under its line, with the door to the rest. A
-    /// row with nothing to show has no fold. In Full its line opens to the
+    /// row with nothing to show has a dot for a fold. In Full its line opens to the
     /// same content, a command's open from the start.
     #[test]
     fn quiet_rows_open_to_the_fixtures_contents() {
@@ -6369,25 +6363,25 @@ mod tests {
             let open = rows(&mut t, &quiet, 220, 40);
             if !fixture.opens {
                 assert_eq!(open, closed, "{name}");
-                assert!(closed[0].starts_with("    "), "{name}: {closed:?}");
+                assert!(closed[0].starts_with("· "), "{name}: {closed:?}");
                 continue;
             }
-            assert!(closed[0].starts_with("  ▸ "), "{name}: {closed:?}");
-            assert!(open[0].starts_with("  ▾ "), "{name}: {open:?}");
+            assert!(closed[0].starts_with("▸ "), "{name}: {closed:?}");
+            assert!(open[0].starts_with("▾ "), "{name}: {open:?}");
             let end = open.iter().position(String::is_empty).unwrap_or(open.len());
             let mut expected: Vec<String> = fixture
                 .act
                 .detail
                 .split('\n')
                 .filter(|_| !fixture.act.detail.is_empty())
-                .map(|line| format!("  │ {line}"))
+                .map(|line| format!("│ {line}"))
                 .collect();
             if let Some((kind, preview)) = fixture.content {
                 expected.push(first_content_row(kind, preview));
             }
             assert_eq!(open[1..=expected.len()], expected, "{name}: {open:?}");
             if let Some(more) = fixture.more {
-                assert_eq!(open[end - 1], format!("  │ {more}"), "{name}");
+                assert_eq!(open[end - 1], format!("│ {more}"), "{name}");
             }
             // Full, where the call's line opens to the same content.
             let full = Filter::Main(View::Full);
@@ -6395,12 +6389,12 @@ mod tests {
             let command = fixture.act.kind == crate::remote::ActKind::Command;
             match fixture.content {
                 Some((kind, preview)) if command => {
-                    assert!(lines[0].starts_with("  ▾ "), "{name}: {lines:?}");
+                    assert!(lines[0].starts_with("▾ "), "{name}: {lines:?}");
                     assert!(lines.contains(&first_content_row(kind, preview)), "{name}");
                 }
-                Some(_) => assert!(lines[0].starts_with("  ▸ "), "{name}: {lines:?}"),
+                Some(_) => assert!(lines[0].starts_with("▸ "), "{name}: {lines:?}"),
                 None if fixture.full_detail.is_none() => {
-                    assert!(lines[0].starts_with("    "), "{name}: {lines:?}");
+                    assert!(lines[0].starts_with("· "), "{name}: {lines:?}");
                 }
                 None => {}
             }
@@ -6531,7 +6525,7 @@ mod tests {
             "On it.",
             "Found it.",
             "Fixed.",
-            "  ▸ 2 tool calls",
+            "▸ 2 tool calls",
         ] {
             assert!(has(&messages, text), "{text}: {messages:?}");
         }
@@ -6607,7 +6601,7 @@ mod tests {
         assert_eq!(count(&full, "r1 Fix flaky test · 3 tool calls"), 1);
         let messages = rows(&mut t, &Filter::Main(View::Messages), 70, 12);
         assert!(
-            messages.iter().any(|r| r.contains("  ▸ 4 tool calls")),
+            messages.iter().any(|r| r.contains("▸ 4 tool calls")),
             "{messages:?}"
         );
         // The worker's own view keeps its lines of the workers it started.
@@ -6785,7 +6779,7 @@ mod tests {
         t.apply(Update::Item(failed));
         for view in View::ALL {
             let main = rows(&mut t, &Filter::Main(view), 70, 4);
-            assert_eq!(main[..2], ["  ▎ Review it", ""], "{view:?}");
+            assert_eq!(main[..2], ["▎ Review it", ""], "{view:?}");
             assert!(
                 !main
                     .iter()

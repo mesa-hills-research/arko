@@ -2659,12 +2659,12 @@ mod tests {
         // (A failed row shows one ✗ at its right.)
         let test = &rows[edits + 1];
         assert!(
-            test.starts_with("  ▸ Ran cargo test (1 failed, 3 passed) ")
+            test.starts_with("▸ Ran cargo test (1 failed, 3 passed) ")
                 && test.ends_with('✗')
                 && test.chars().count() == 70,
             "{rows:#?}"
         );
-        assert_eq!(rows[edits + 2], "  ▸ Messaged r3", "{rows:#?}");
+        assert_eq!(rows[edits + 2], "▸ Messaged r3", "{rows:#?}");
         assert!(!rows.iter().any(|row| row.contains("read src/app.rs")));
         // Its line opens it, and the same line closes it.
         let left = MouseButton::Left;
@@ -2675,9 +2675,9 @@ mod tests {
         assert_eq!(
             open[edits + 1..edits + 4],
             [
-                "  │   read src/app.rs · ✓",
-                "  │   edit src/app.rs · ✓",
-                "  │   edit src/app.rs · ✓",
+                "│   read src/app.rs · ✓",
+                "│   edit src/app.rs · ✓",
+                "│   edit src/app.rs · ✓",
             ],
             "{open:#?}"
         );
@@ -3649,8 +3649,8 @@ mod tests {
         screen(&mut app, 40, 13);
         app.transcript.scroll(-4);
         let rows = screen(&mut app, 40, 13);
-        assert_eq!(rows[0], "  │ line 1");
-        assert_eq!(rows[4], "  │ … 6 more lines");
+        assert_eq!(rows[0], "│ line 1");
+        assert_eq!(rows[4], "│ … 6 more lines");
         let left = MouseButton::Left;
         let click = |app: &mut App, x: u16| {
             mouse(app, MouseEventKind::Down(left), x, 4);
@@ -3661,39 +3661,39 @@ mod tests {
         assert_eq!(
             rows[..6],
             [
-                "  │ line 7",
-                "  │ line 8",
-                "  │ line 9",
-                "  │ line 10",
-                "  │ ↑ show the first lines only",
+                "│ line 7",
+                "│ line 8",
+                "│ line 9",
+                "│ line 10",
+                "│ ↑ show the first lines only",
                 "",
             ]
         );
         // (Elsewhere on the line, since the same cell again would be a double
         // click.)
         let rows = click(&mut app, 14);
-        assert_eq!(rows[0], "  │ line 1");
-        assert_eq!(rows[4], "  │ … 6 more lines");
+        assert_eq!(rows[0], "│ line 1");
+        assert_eq!(rows[4], "│ … 6 more lines");
         assert!(app.take_effects().is_empty());
         let copy = |text: &str, what: &str| Effect::Copy {
             text: text.into(),
             what: what.into(),
         };
         // A drag over it copies.
-        mouse(&mut app, MouseEventKind::Down(left), 4, 4);
-        mouse(&mut app, MouseEventKind::Drag(left), 7, 4);
-        mouse(&mut app, MouseEventKind::Up(left), 7, 4);
-        assert_eq!(screen(&mut app, 40, 13)[4], "  │ … 6 more lines");
+        mouse(&mut app, MouseEventKind::Down(left), 2, 4);
+        mouse(&mut app, MouseEventKind::Drag(left), 5, 4);
+        mouse(&mut app, MouseEventKind::Up(left), 5, 4);
+        assert_eq!(screen(&mut app, 40, 13)[4], "│ … 6 more lines");
         assert_eq!(app.take_effects(), [copy("… 6", "3 characters")]);
         // A double click copies a word, then a triple click (on another
         // cell) the line. (Frames are drawn between the clicks.)
-        click(&mut app, 9);
-        let rows = click(&mut app, 9);
-        assert_eq!(rows[4], "  │ … 6 more lines");
+        click(&mut app, 7);
+        let rows = click(&mut app, 7);
+        assert_eq!(rows[4], "│ … 6 more lines");
         for _ in 0..3 {
-            click(&mut app, 10);
+            click(&mut app, 8);
         }
-        assert_eq!(screen(&mut app, 40, 13)[4], "  │ … 6 more lines");
+        assert_eq!(screen(&mut app, 40, 13)[4], "│ … 6 more lines");
         assert_eq!(
             app.take_effects(),
             [
