@@ -33,7 +33,8 @@ override in `Cargo.lock`, so regenerate the lock without the override before com
 
 The tests that run the real speech model skip unless `ARKO_TEST_SPEECH_PACK` names Granite
 Speech's int8 pack and `ARKO_TEST_SPEECH_WAV` a LibriSpeech clip (`260-123286-0018`), and the full
-install test needs `ARKO_TEST_GRANITE_DIR`, a folder of Granite Speech's files.
+install test needs `ARKO_TEST_GRANITE_DIR`, a folder of Granite Speech's files. The full cleanup
+test also needs `ARKO_TEST_CLEANUP_PACK`, the disfluency tagger's pack.
 
 ```bash
 cargo test --features dictation

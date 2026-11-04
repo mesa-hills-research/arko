@@ -1,7 +1,7 @@
 //! The service is one thread per process that runs the speech engine, one
 //! dictation at a time. It loads the model on the first recording, keeps it
 //! while recordings follow, and drops it after the idle time the settings
-//! give.
+//! give. Full cleanup's tagger loads and leaves memory the same way.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -10,13 +10,14 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use speech::disfluency::Tagger;
 use speech::model::ModelType;
 use speech::stream::{Event, StreamConfig, Streamer};
 use speech::{Fillers, Model, Options, SpecialWords};
 
 use super::capture::{self, Capture};
 use super::download;
-use super::models::{Family, SpeechModel};
+use super::models::{self, Family, PACK_FILE, SpeechModel};
 use super::settings::{Cleanup, Settings};
 use super::{
     DictationError, DictationEvent, DictationOptions, DictationUpdate, Preparing, SessionWord,
@@ -318,6 +319,7 @@ impl Drop for Dictation {
 /// none came for the idle time.
 fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
     let mut loaded: Option<Loaded> = None;
+    let mut tagger: Option<Arc<Tagger>> = None;
     let mut idle = Settings::default().idle();
     loop {
         let job = if loaded.is_some() {
@@ -325,6 +327,7 @@ fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
                 Ok(job) => job,
                 Err(RecvTimeoutError::Timeout) => {
                     loaded = None;
+                    tagger = None;
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -340,8 +343,12 @@ fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
         // (The full-screen view's panic hook leaves this thread's panics to
         // it, and to the engine's own threads, which it rethrows here.)
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(root, base, &mut job, &mut loaded)
+            run(root, base, &mut job, &mut loaded, &mut tagger)
         }));
+        // The tagger never stays in memory without the model.
+        if ran.is_err() || loaded.is_none() {
+            tagger = None;
+        }
         if ran.is_err() {
             loaded = None;
             if !job.intake.is_cancelled() {
@@ -356,9 +363,15 @@ fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
     }
 }
 
-/// One dictation, with the model made ready, then the audio until it ends.
-/// Nothing is sent once it's cancelled.
-fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
+/// One dictation, with the tagger and the model made ready, then the audio
+/// until it ends. Nothing is sent once it's cancelled.
+fn run(
+    root: &Path,
+    base: &str,
+    job: &mut Job,
+    loaded: &mut Option<Loaded>,
+    tagger: &mut Option<Arc<Tagger>>,
+) {
     let id = job.id;
     let intake = job.intake.clone();
     let sink = &mut job.sink;
@@ -367,6 +380,15 @@ fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
             sink(DictationUpdate { id, event });
         }
     };
+    // The tagger first, so a missing one fails before any download.
+    if job.cleanup == Cleanup::Full {
+        if let Err(why) = load_tagger(root, tagger) {
+            send(DictationEvent::Failed(why));
+            return;
+        }
+    } else {
+        *tagger = None;
+    }
     let pack = job.model.pack(root);
     if !pack.is_file() {
         // Each megabyte once.
@@ -421,7 +443,7 @@ fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
         return;
     }
     send(DictationEvent::Listening);
-    let base = cleaned(job.cleanup);
+    let base = cleaned(job.cleanup, tagger.clone());
     listen(
         &job.audio,
         &intake,
@@ -432,13 +454,34 @@ fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
     );
 }
 
+/// Full cleanup's tagger, in `slot` once loaded from Arko's folder `root`,
+/// or the sentence to show when it can't load.
+fn load_tagger(root: &Path, slot: &mut Option<Arc<Tagger>>) -> Result<(), String> {
+    if slot.is_some() {
+        return Ok(());
+    }
+    let dir = models::tagger_dir(root);
+    let pack = dir.join(PACK_FILE);
+    if !pack.is_file() {
+        return Err(format!(
+            "Full cleanup needs its model in {}.",
+            dir.display()
+        ));
+    }
+    let tagger = Tagger::load(&pack, &Options::default())
+        .map_err(|error| format!("Couldn't load the cleanup model ({error})."))?;
+    *slot = Some(Arc::new(tagger));
+    Ok(())
+}
+
 /// The list every pass starts from, which leaves out what `cleanup` takes
-/// out.
-fn cleaned(cleanup: Cleanup) -> SpecialWords {
+/// out, full cleanup with `tagger`.
+fn cleaned(cleanup: Cleanup, tagger: Option<Arc<Tagger>>) -> SpecialWords {
     let mut list = SpecialWords::new();
     match cleanup {
         Cleanup::Off => {}
         Cleanup::Light => list.set_fillers(Fillers::for_language("en")),
+        Cleanup::Full => list.set_disfluencies(tagger),
     }
     list
 }

@@ -29,16 +29,19 @@ as the model hears it.
 
 ## Cleanup
 
-Cleanup takes hesitations and stutters out of what you dictate in English. Set `cleanup` in
-`dictation.json`, or Cleanup in Arko Studio's Settings › Input.
+Cleanup takes hesitations, repeats and false starts out of what you dictate in English. Set
+`cleanup` in `dictation.json`, or Cleanup in Arko Studio's Settings › Input.
 
 | Level | What goes |
 |---|---|
 | `off` | Nothing, the default |
 | `light` | Hesitations such as um and uh, and stutters such as "the the" |
+| `full` | Also repeats, false starts and openers such as "So" or "I mean", with a 158 MB model |
 
-Cleanup only deletes words, and the session's words always stay. It applies when the language is
-English or the system names none.
+With `full`, what you say stays dimmed until you pause, then goes into the box cleaned. Its model
+goes in `models/cleanup/disfluency-tagger/model.pack` in Arko's folder, and stays in memory beside
+the speech model for as long. Cleanup only deletes words, and the session's words always stay. It
+applies when the language is English or the system names none.
 
 ## The speech model
 
@@ -79,7 +82,7 @@ left out.
 | `download` | `ask` before downloading a missing model, or `automatic` |
 | `session_words` | `true` to favour the [session's words](#session-words), or `false` |
 | `leave_out_secrets` | `true` to leave secrets out of the session's words, `false` by default |
-| `cleanup` | `off` or `light`, for what [cleanup](#cleanup) takes out |
+| `cleanup` | `off`, `light` or `full`, for what [cleanup](#cleanup) takes out |
 
 `leave_out_secrets` leaves out the values that context marks as secret and keeps the names. Those
 are what follows a password, key or token name (`API_KEY=…`, `password: …`, `--token …`), an

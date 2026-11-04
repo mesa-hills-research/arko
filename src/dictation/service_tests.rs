@@ -357,8 +357,8 @@ fn cleanup_is_for_english() {
 /// the session's words are added to it.
 #[test]
 fn the_list_leaves_out_what_the_cleanup_takes_out() {
-    assert_eq!(cleaned(Cleanup::Off), SpecialWords::new());
-    let base = cleaned(Cleanup::Light);
+    assert_eq!(cleaned(Cleanup::Off, None), SpecialWords::new());
+    let base = cleaned(Cleanup::Light, None);
     assert_eq!(base.fillers(), Fillers::for_language("en"));
     let word = SessionWord {
         text: "Telmo".into(),
@@ -367,6 +367,38 @@ fn the_list_leaves_out_what_the_cleanup_takes_out() {
     let list = special_words(&base, &[word]);
     assert_eq!(list.fillers(), Fillers::for_language("en"));
     assert_eq!(list.words().collect::<Vec<_>>(), ["Telmo"]);
+}
+
+/// Full cleanup whose tagger is missing or can't load fails at once, before
+/// the speech model downloads.
+#[test]
+fn full_cleanup_fails_first_without_its_tagger() {
+    let root = root_with(r#"{"model": "granite", "cleanup": "full", "language": "en"}"#);
+    let service = DictationService::downloading_from(root.path(), NO_SERVER);
+    let failed = || {
+        let (sink, updates) = sink();
+        let _dictation = service
+            .open(DictationOptions { download: true }, sink)
+            .unwrap();
+        updates.recv_timeout(Duration::from_secs(10)).unwrap().event
+    };
+    let dir = models::tagger_dir(root.path());
+    assert_eq!(
+        failed(),
+        DictationEvent::Failed(format!(
+            "Full cleanup needs its model in {}.",
+            dir.display()
+        ))
+    );
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(PACK_FILE), "not a pack").unwrap();
+    let DictationEvent::Failed(why) = failed() else {
+        panic!("a tagger that can't load was used");
+    };
+    assert!(
+        why.starts_with("Couldn't load the cleanup model ("),
+        "{why}"
+    );
 }
 
 /// Arko's folder with `dictation.json` holding `settings` and Granite
@@ -394,6 +426,15 @@ fn granite_and_clip(settings: &str) -> Option<(tempfile::TempDir, Source)> {
 /// The words settled when the clip is dictated through `service`, given
 /// `words` to favour as a front end gives them, once the dictation opened.
 fn dictated(service: &DictationService, source: &Source, words: &[SessionWord]) -> String {
+    dictated_pieces(service, source, words).concat()
+}
+
+/// The words settled as [`dictated`] gives them, each event's on its own.
+fn dictated_pieces(
+    service: &DictationService,
+    source: &Source,
+    words: &[SessionWord],
+) -> Vec<String> {
     let (sink, updates) = sink();
     let mut dictation = service.open(DictationOptions::default(), sink).unwrap();
     dictation.words_sender().send(words.to_vec());
@@ -411,11 +452,12 @@ fn dictated(service: &DictationService, source: &Source, words: &[SessionWord]) 
         }
     }
     let capture = dictation.record(source).unwrap();
-    let mut settled = String::new();
+    let mut pieces: Vec<String> = Vec::new();
     // The clip is 5.7 s, then silence ends the utterance.
-    while !settled.contains("length") {
+    while !pieces.concat().contains("length") {
         match next() {
-            DictationEvent::Text { settled: words, .. } => settled.push_str(&words),
+            DictationEvent::Text { settled, .. } if settled.is_empty() => {}
+            DictationEvent::Text { settled, .. } => pieces.push(settled),
             other => panic!("{other:?} while listening"),
         }
     }
@@ -423,11 +465,46 @@ fn dictated(service: &DictationService, source: &Source, words: &[SessionWord]) 
     dictation.finish();
     loop {
         match next() {
-            DictationEvent::Text { settled: words, .. } => settled.push_str(&words),
-            DictationEvent::Done => return settled,
+            DictationEvent::Text { settled, .. } if settled.is_empty() => {}
+            DictationEvent::Text { settled, .. } => pieces.push(settled),
+            DictationEvent::Done => return pieces,
             other => panic!("{other:?} while finishing"),
         }
     }
+}
+
+/// With full cleanup, the clip's one utterance settles whole when it ends,
+/// and the session's words stay. It runs only with the pack and the clip
+/// ([`granite_and_clip`]) and `ARKO_TEST_CLEANUP_PACK` naming the tagger's
+/// pack.
+#[test]
+fn full_cleanup_settles_an_utterance_once_it_ends() {
+    let settings = r#"{"model": "granite", "cleanup": "full", "language": "en"}"#;
+    let Some(tagger) = std::env::var_os("ARKO_TEST_CLEANUP_PACK") else {
+        eprintln!("skipped: ARKO_TEST_CLEANUP_PACK isn't set");
+        return;
+    };
+    let Some((root, source)) = granite_and_clip(settings) else {
+        return;
+    };
+    let dir = models::tagger_dir(root.path());
+    std::fs::create_dir_all(&dir).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&tagger, dir.join(PACK_FILE)).unwrap();
+    #[cfg(not(unix))]
+    std::fs::copy(&tagger, dir.join(PACK_FILE)).unwrap();
+    let service = DictationService::downloading_from(root.path(), NO_SERVER);
+    let words = [SessionWord {
+        text: "Hamburgh".into(),
+        code: false,
+    }];
+    let pieces = dictated_pieces(&service, &source, &words);
+    let first = pieces[0].to_lowercase();
+    assert!(
+        first.contains("i saw") && first.contains("thirty feet in length"),
+        "{pieces:?}"
+    );
+    assert!(first.contains("hamburgh"), "{pieces:?}");
 }
 
 /// The session's words reach the streamer. Given the clip's "Hamburg" in
