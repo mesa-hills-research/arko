@@ -2065,6 +2065,7 @@ impl Feed {
                     item.images = images;
                 }
                 let line = item.text.clone();
+                let to_user = item.is_to_user();
                 let id = self.push(&mut state, item.agent(agent.clone()));
                 state
                     .call_items
@@ -2086,7 +2087,11 @@ impl Feed {
                 }
                 if !main && let Some(worker) = state.worker(&agent) {
                     worker.summary.tool_calls += 1;
-                    worker.summary.last = Some(render::cut(&line, 100));
+                    // A message to the user is for the worker's own view, so
+                    // the lists beside its name keep the call before it.
+                    if !to_user {
+                        worker.summary.last = Some(render::cut(&line, 100));
+                    }
                     self.worker_changed(&mut state, &agent, false);
                 }
             }
@@ -5632,6 +5637,46 @@ mod tests {
         );
         let r2 = feed.workers().into_iter().find(|w| w.id == "r2").unwrap();
         assert_eq!(r2.last.as_deref(), Some("waiting for workers"));
+    }
+
+    /// A worker's message to the user is for its own view, so it isn't the
+    /// line the agent lists show beside the worker's name, which stays the
+    /// call before it. The message is still the worker's item, and counts as
+    /// a call.
+    #[test]
+    fn a_workers_message_to_the_user_isnt_what_it_did_last() {
+        let feed = Feed::new("main");
+        feed.worker("r1", "Fix it", WorkerChange::Started);
+        let call = |tool: &str, parameters: serde_json::Value| {
+            feed.event(
+                &event(
+                    "worker",
+                    AgentEvent::ToolCallFormatted {
+                        tool_call_id: Uuid::new_v4(),
+                        tool_name: tool.into(),
+                        parameters: serde_json::from_value(parameters).unwrap(),
+                    },
+                ),
+                Some("r1"),
+            );
+        };
+        let last = || feed.workers()[0].last.clone();
+        call("read_file", serde_json::json!({"path": "src/a.rs"}));
+        assert_eq!(last().as_deref(), Some("read src/a.rs"));
+        call(
+            crate::message::MESSAGE_USER,
+            serde_json::json!({"message": "Tabs it is."}),
+        );
+        assert_eq!(last().as_deref(), Some("read src/a.rs"));
+        assert_eq!(feed.workers()[0].tool_calls, 2);
+        let message = items(&feed)
+            .into_iter()
+            .find(|item| item.text == "Tabs it is.")
+            .unwrap();
+        assert_eq!((message.agent.as_str(), message.is_to_user()), ("r1", true));
+        // Its next call is what it did last again.
+        call("read_file", serde_json::json!({"path": "src/b.rs"}));
+        assert_eq!(last().as_deref(), Some("read src/b.rs"));
     }
 
     /// A text item goes on with its own agent's chunks, whatever the other
