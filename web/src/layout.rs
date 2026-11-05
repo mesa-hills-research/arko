@@ -156,8 +156,8 @@ fn shown_in_messages(item: &ItemData) -> bool {
 
 /// `items` with each note the agent hasn't read yet at the end of its
 /// conversation, below the agent's output, which goes on above it.
-fn pending_last(items: &[ItemData]) -> Vec<&ItemData> {
-    let mut out = Vec::with_capacity(items.len());
+fn pending_last<'a>(items: impl IntoIterator<Item = &'a ItemData>) -> Vec<&'a ItemData> {
+    let mut out = Vec::new();
     let mut waiting = Vec::new();
     for item in items {
         if item.pending {
@@ -232,7 +232,23 @@ pub fn layout_sealed(
     // agent unless a worker started it.
     let viewed = worker.unwrap_or(MAIN);
     let lead_of = |agent: &str| leads.get(agent).map_or(MAIN, String::as_str);
-    let items = pending_last(all);
+    // A worker of the agent shows as its reports and its messages to it, its
+    // lead, so only those of the workers' many items are looked at here.
+    let worker_row = |item: &ItemData| {
+        quiet::WorkerRow::of(
+            item.kind,
+            item.act.as_ref(),
+            item.status,
+            item.outcome.as_deref(),
+            viewed,
+        )
+        .is_some()
+            && lead_of(&item.agent) == viewed
+    };
+    let items = pending_last(
+        all.iter()
+            .filter(|item| item.agent == viewed || worker_row(item)),
+    );
     // A result shows under its call, which other items may have followed
     // by the time it came.
     let mut results: HashMap<u64, Vec<u64>> = HashMap::new();
@@ -262,24 +278,12 @@ pub fn layout_sealed(
         // the agent shows as its reports and its messages to it, its lead,
         // each a row that opens to its words. Its text, its calls, its
         // conversation with the user and its workers are its own view's.
-        let (place, with_results) = if item.agent == viewed {
-            (place(view, item), true)
-        } else if lead_of(&item.agent) == viewed
-            && quiet::WorkerRow::of(
-                item.kind,
-                item.act.as_ref(),
-                item.status,
-                item.outcome.as_deref(),
-                viewed,
-            )
-            .is_some()
-        {
+        if item.agent != viewed {
             turn_shown = true;
             rows.push(Row::Status(item.id));
             continue;
-        } else {
-            (Place::Hidden, false)
-        };
+        }
+        let place = place(view, item);
         if let Place::Count = place {
             turn_shown = true;
             let at = *counts.entry(item.turn).or_insert_with(|| {
@@ -302,7 +306,7 @@ pub fn layout_sealed(
                 }
             }
         }
-        let place = if with_results && opened.contains(&item.turn) {
+        let place = if opened.contains(&item.turn) {
             self::place(View::Quiet, item)
         } else {
             place
@@ -316,10 +320,8 @@ pub fn layout_sealed(
             Place::Row => {
                 turn_shown = true;
                 rows.push(Row::Item(item.id, item.kind));
-                if with_results {
-                    for &result in results.get(&item.id).into_iter().flatten() {
-                        rows.push(Row::Item(result, Kind::Result));
-                    }
+                for &result in results.get(&item.id).into_iter().flatten() {
+                    rows.push(Row::Item(result, Kind::Result));
                 }
             }
             Place::Hidden | Place::Count => {}
@@ -892,6 +894,28 @@ mod tests {
             ids(&layout(&items, View::Full, None)),
             ["i1", "i3", "i2", "i4", "i5"]
         );
+    }
+
+    /// Another agent's conversation isn't the viewed agent's, so its note
+    /// waits at the end of its own.
+    #[test]
+    fn a_note_waits_past_another_agents_conversation() {
+        let mut note = item(2, Kind::User, MAIN, "also this");
+        note.pending = true;
+        note.delivery = Some(Delivery::Note);
+        let items = vec![
+            item(1, Kind::User, MAIN, "start"),
+            note,
+            item(3, Kind::Conversation, "r1", "New conversation"),
+            item(4, Kind::Text, MAIN, "working on it"),
+        ];
+        for view in [View::Full, View::Quiet] {
+            assert_eq!(
+                ids(&layout(&items, view, None)),
+                ["i1", "i4", "i2"],
+                "{view:?}"
+            );
+        }
     }
 
     /// The Working row shows while the agent waits on its model, and its
