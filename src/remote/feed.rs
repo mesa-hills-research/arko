@@ -285,8 +285,8 @@ impl Item {
     }
 
     /// Whether it is an agent's message to the user (`message_user`). A
-    /// worker's shows in its own transcript and in the main one, which
-    /// names the worker. (A message a worker got has its sender in `from`.)
+    /// worker's shows in its own transcript only. (A message a worker got
+    /// has its sender in `from`.)
     pub fn is_to_user(&self) -> bool {
         self.kind == Kind::Message && self.from.is_none()
     }

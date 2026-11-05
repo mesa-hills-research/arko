@@ -222,7 +222,8 @@ pub type Refuse = Arc<dyn Fn(&arko_ai::Model) -> Option<String> + Send + Sync>;
 /// What opens the user's message to a worker in the worker's mail. Like the
 /// main agent's notes (see `agents::operator_note_hint`) it says text written
 /// only in thinking may never reach the user, and the worker answers with
-/// `message_user`, which shows in its own view and in the main transcript.
+/// `message_user`, which shows in its own view on the screen and the web
+/// page, and as “rN to you” at the line prompt.
 /// A worker saved before workers had `message_user` lacks it until its next
 /// handover, and Arko can't tell which tools a saved run has, so such a
 /// worker is told to tell its lead instead.
