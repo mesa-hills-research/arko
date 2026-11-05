@@ -111,18 +111,30 @@ impl OnItsWay {
         }
     }
 
-    /// What the box holds once the text comes back while it holds `now`,
-    /// which is the text with anything typed since on a line after it.
-    /// None once the text came back already.
-    fn back_into(&mut self, now: &str) -> Option<String> {
-        if std::mem::replace(&mut self.back, true) {
-            return None;
-        }
-        Some(if now.is_empty() {
+    /// The text, with anything typed since (`now`) on a line after it.
+    fn before(&self, now: &str) -> String {
+        if now.is_empty() {
             self.draft.text.clone()
         } else {
             format!("{}\n{now}", self.draft.text)
-        })
+        }
+    }
+
+    /// What the box holds once the text comes back while it holds `now`.
+    /// None once the text came back already.
+    fn back_into(&mut self, now: &str) -> Option<String> {
+        (!std::mem::replace(&mut self.back, true)).then(|| self.before(now))
+    }
+
+    /// The draft a reload brings back once Arko answered, while the box holds
+    /// `now`. A message Arko took is no draft any more, whatever view shows.
+    /// One it didn't take is, until it's back in the box.
+    fn draft_after(&self, taken: bool, now: &str) -> String {
+        if taken || self.back {
+            now.to_string()
+        } else {
+            self.before(now)
+        }
     }
 
     /// Whether the box empties again once Arko takes the message while the
@@ -442,7 +454,8 @@ pub fn Composer() -> impl IntoView {
         }
         spawn_local(async move {
             let outcome = send_to_arko("/api/message", body, &sender).await;
-            if outcome.posted != Posted::Taken {
+            let taken = outcome.posted == Posted::Taken;
+            if !taken {
                 way.borrow_mut().words = outcome.words.clone();
                 put_back(&way);
             } else if parked.with_value(|parked| {
@@ -473,7 +486,6 @@ pub fn Composer() -> impl IntoView {
                         // (The box emptied at the tap, a while ago.)
                         hold_send();
                     }
-                    session_set(DRAFT, Some(&area.value()));
                     // What one sends is what one wants to see next.
                     scroll::jump_to_latest();
                 }
@@ -482,6 +494,7 @@ pub fn Composer() -> impl IntoView {
                 // Kept, or no longer the page's, so the box has it back.
                 _ => {}
             }
+            session_set(DRAFT, Some(&way.borrow().draft_after(taken, &area.value())));
             sending.set(false);
             refresh_menu();
         });
@@ -1002,6 +1015,22 @@ mod tests {
         assert!(
             ContinueAsk::new("Words.".into(), sent.clone(), &draft(&now, Some("r5"))).is_some()
         );
+    }
+
+    /// A message Arko took is no draft for a reload, also when another view
+    /// showed as it went. One it didn't take is, until it's back in the box.
+    #[test]
+    fn a_reload_brings_back_only_a_text_that_didnt_go() {
+        let mut way = OnItsWay::new(draft("Fix it", Some("r5")), MessageSwitch::default());
+        // Taken while the main view showed, its box empty or holding more.
+        assert_eq!(way.draft_after(true, ""), "");
+        assert_eq!(way.draft_after(true, "Hello"), "Hello");
+        // Refused while another view showed, so it waits for its own.
+        assert_eq!(way.draft_after(false, ""), "Fix it");
+        assert_eq!(way.draft_after(false, "Hello"), "Fix it\nHello");
+        // Back in the box, the box is the draft.
+        assert_eq!(way.back_into("").as_deref(), Some("Fix it"));
+        assert_eq!(way.draft_after(false, "Fix it"), "Fix it");
     }
 
     /// Stop stays off Send's place while a send waits for Arko's answer, and
