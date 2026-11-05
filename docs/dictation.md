@@ -40,16 +40,21 @@ Cleanup takes hesitations, repeats and false starts out of what you dictate in E
 | `full` | The same as `medium`, caught more often, with a 158 MB model |
 
 With `medium` and `full`, what you say stays dimmed until you pause, then goes into the box
-cleaned. The first recording with `full` asks before it downloads its model, as for the speech
-model, and keeps it in `models/cleanup/disfluency-tagger/` in Arko's folder. It stays in memory
-beside the speech model for as long.
+cleaned.
 
 Cleanup deletes words and mends the punctuation and capitals they leave, joining sentences a
-pause split ("a release. Build." becomes "a release build"). The session's words always stay. So do the words dictation needs
-that look like fillers or repeats, such as a spoken symbol and the words beside it ("dash dash
-force"), a unit after a number ("5 mm"), a filler talked about as a word ("strip the ums") and
-list items that share their first word ("better tests, better docs"). Cleanup applies when the
-language is English or the system names none.
+pause split ("a release. Build." becomes "a release build"). The session's words always stay. So
+do the words dictation needs that look like fillers or repeats, such as a spoken symbol and the
+words beside it ("dash dash force"), a unit after a number ("5 mm"), a filler talked about as a
+word ("strip the ums") and list items that share their first word ("better tests, better docs").
+Cleanup applies when the language is English or the system names none.
+
+The model of `full` is Telmo's disfluency tagger (MIT or Apache 2.0), fine-tuned from Ettin
+encoder 68M on the AMI Meeting Corpus (CC BY 4.0). The first recording with `full` asks before it
+downloads the model from Telmo's releases on GitHub, as for the speech model, and keeps it in
+`models/cleanup/disfluency-tagger-1/` in Arko's folder, with a `NOTICE.txt` that credits its
+sources. It stays in memory beside the speech model for as long. To remove it, delete
+`models/cleanup`.
 
 ## The speech model
 
@@ -87,7 +92,7 @@ left out.
 | `model` | `automatic` (by the language), `granite` or `parakeet` |
 | `language` | The language you speak, such as `fr` or `pt-BR`, in place of the system's |
 | `idle_minutes` | How long the model stays in memory after a recording |
-| `download` | `ask` before downloading a missing model, the speech model or full cleanup's, or `automatic` |
+| `download` | `ask` before downloading a missing model (the speech model or full cleanup's), or `automatic` |
 | `session_words` | `true` to favour the [session's words](#session-words), or `false` |
 | `leave_out_secrets` | `true` to leave secrets out of the session's words, `false` by default |
 | `cleanup` | `off`, `light`, `medium` or `full`, for what [cleanup](#cleanup) takes out |

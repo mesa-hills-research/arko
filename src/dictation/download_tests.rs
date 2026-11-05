@@ -671,8 +671,10 @@ fn the_cleanup_pack_downloads_and_goes_in_place() {
     );
     assert_eq!(
         std::fs::read_to_string(dir.join("NOTICE.txt")).unwrap(),
-        speech::disfluency::PACK_NOTICE
+        tagger_notice(&url)
     );
+    assert!(tagger_notice(&url).starts_with(speech::disfluency::PACK_NOTICE));
+    assert!(tagger_notice(&url).ends_with(" release.\n"));
     assert!(!dir.join(DOWNLOAD_DIR).exists());
     let step = |done| Preparing::Downloading {
         model: ModelKind::Cleanup,
@@ -703,4 +705,20 @@ fn a_damaged_cleanup_pack_is_deleted() {
     let dir = models::tagger_dir(root.path());
     assert!(!models::tagger_pack(root.path()).exists());
     assert!(!dir.join(DOWNLOAD_DIR).join(file.name).exists());
+}
+
+/// The tagger's folder is named after the release Telmo pins, so a new pin
+/// downloads into a folder of its own instead of finding the old pack.
+#[test]
+fn the_tagger_folder_follows_the_pinned_release() {
+    let name = speech::disfluency::PACK_DOWNLOAD.name;
+    assert!(
+        name.starts_with(&format!("{}-", models::TAGGER_RELEASE)),
+        "{name}"
+    );
+    let url = speech::disfluency::PACK_DOWNLOAD.url;
+    assert!(
+        url.contains(&format!("/download/{}/", models::TAGGER_RELEASE)),
+        "{url}"
+    );
 }

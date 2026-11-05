@@ -118,10 +118,12 @@ pub const PACK_FILE: &str = "model.pack";
 /// Where full cleanup's tagger is kept, in Arko's folder `root`, with its
 /// pack ([`PACK_FILE`]).
 pub fn tagger_dir(root: &Path) -> PathBuf {
-    root.join("models")
-        .join("cleanup")
-        .join("disfluency-tagger")
+    root.join("models").join("cleanup").join(TAGGER_RELEASE)
 }
+
+/// The release of full cleanup's tagger that Arko downloads, which names
+/// its folder, so a later release goes in a folder of its own.
+pub const TAGGER_RELEASE: &str = "disfluency-tagger-1";
 
 /// Full cleanup's pack, in Arko's folder `root`.
 pub fn tagger_pack(root: &Path) -> PathBuf {
@@ -239,7 +241,7 @@ mod tests {
         );
         assert_eq!(
             tagger_dir(root),
-            root.join("models/cleanup/disfluency-tagger")
+            root.join("models/cleanup/disfluency-tagger-1")
         );
     }
 

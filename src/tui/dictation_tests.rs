@@ -7,14 +7,14 @@ use ratatui::backend::TestBackend;
 use super::*;
 use crate::dictation::models::GRANITE;
 use crate::dictation::{Download, ModelKind};
+use crate::tui::app::tests::app;
+use crate::ui::Input;
 
 /// Granite Speech isn't downloaded.
 const GRANITE_MISSING: Download = Download {
     speech: Some(&GRANITE),
     cleanup: None,
 };
-use crate::tui::app::tests::app;
-use crate::ui::Input;
 
 fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     app.key(KeyEvent::new(code, modifiers));
@@ -345,10 +345,10 @@ fn the_question_names_the_cleanup_model() {
         "{rows}"
     );
     assert!(
-        rows.contains("Full cleanup runs on this computer"),
+        rows.contains("Full cleanup adds a model of its own (158 MB download,"),
         "{rows}"
     );
-    assert!(rows.contains("own (158 MB download)."), "{rows}");
+    assert!(rows.contains("MIT or Apache 2.0)."), "{rows}");
 }
 
 /// Failures are notices in the transcript, which outlast the status line,

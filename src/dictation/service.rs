@@ -533,7 +533,8 @@ fn load_tagger(root: &Path, slot: &mut Option<Arc<Tagger>>) -> Result<(), String
     let tagger =
         Tagger::load(&models::tagger_pack(root), &Options::default()).map_err(|error| {
             format!(
-                "Couldn't load the cleanup model ({error}). Delete {} to download it again.",
+                "Couldn't load the cleanup model ({}). Delete {} to download it again.",
+                error.to_string().trim_end_matches('.'),
                 models::tagger_dir(root).display()
             )
         })?;

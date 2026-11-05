@@ -89,6 +89,7 @@ impl Preparing {
 
 /// Which of dictation's models a download brings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ModelKind {
     Speech,
     /// Full cleanup's model.
@@ -130,7 +131,7 @@ impl Download {
     pub fn offer(&self) -> String {
         let cleanup = self.cleanup.map(|bytes| {
             format!(
-                "Full cleanup runs on this computer with a model of its own ({} MB download).",
+                "Full cleanup adds a model of its own ({} MB download, MIT or Apache 2.0).",
                 models::megabytes(bytes)
             )
         });
@@ -343,7 +344,7 @@ mod tests {
         assert_eq!(
             both.offer(),
             format!(
-                "{} Full cleanup runs on this computer with a model of its own (158 MB download).",
+                "{} Full cleanup adds a model of its own (158 MB download, MIT or Apache 2.0).",
                 models::GRANITE.offer()
             )
         );

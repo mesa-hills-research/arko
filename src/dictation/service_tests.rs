@@ -499,15 +499,14 @@ fn dictated_pieces(
     }
 }
 
-/// The clip dictated in Arko's folder `root`, whose one utterance settles
-/// whole when it ends, with the session's words kept.
-fn settles_whole(root: &tempfile::TempDir, source: &Source) {
-    let service = DictationService::downloading_from(root.path(), NO_SERVER);
+/// The clip dictated through `service`, whose one utterance settles whole
+/// when it ends, with the session's words kept.
+fn settles_whole(service: &DictationService, source: &Source) {
     let words = [SessionWord {
         text: "Hamburgh".into(),
         code: false,
     }];
-    let pieces = dictated_pieces(&service, source, &words);
+    let pieces = dictated_pieces(service, source, &words);
     let first = pieces[0].to_lowercase();
     assert!(
         first.contains("i saw") && first.contains("thirty feet in length"),
@@ -525,7 +524,10 @@ fn medium_cleanup_settles_an_utterance_once_it_ends() {
     let Some((root, source)) = granite_and_clip(settings) else {
         return;
     };
-    settles_whole(&root, &source);
+    settles_whole(
+        &DictationService::downloading_from(root.path(), NO_SERVER),
+        &source,
+    );
 }
 
 /// With full cleanup, an utterance settles whole when it ends. It runs only
@@ -547,7 +549,39 @@ fn full_cleanup_settles_an_utterance_once_it_ends() {
     std::os::unix::fs::symlink(&tagger, dir.join(PACK_FILE)).unwrap();
     #[cfg(not(unix))]
     std::fs::copy(&tagger, dir.join(PACK_FILE)).unwrap();
-    settles_whole(&root, &source);
+    settles_whole(
+        &DictationService::downloading_from(root.path(), NO_SERVER),
+        &source,
+    );
+}
+
+/// Full cleanup's tagger leaves memory when a recording uses another level,
+/// and loads again for the next with full cleanup. It runs as
+/// [`full_cleanup_settles_an_utterance_once_it_ends`] does.
+#[test]
+fn the_tagger_loads_again_after_another_level() {
+    let full = r#"{"model": "granite", "cleanup": "full", "language": "en"}"#;
+    let Some(tagger) = std::env::var_os("ARKO_TEST_CLEANUP_PACK") else {
+        eprintln!("skipped: ARKO_TEST_CLEANUP_PACK isn't set");
+        return;
+    };
+    let Some((root, source)) = granite_and_clip(full) else {
+        return;
+    };
+    let pack = models::tagger_pack(root.path());
+    std::fs::create_dir_all(pack.parent().unwrap()).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&tagger, &pack).unwrap();
+    #[cfg(not(unix))]
+    std::fs::copy(&tagger, &pack).unwrap();
+    let service = DictationService::downloading_from(root.path(), NO_SERVER);
+    let settings = root.path().join(super::super::settings::FILE);
+    settles_whole(&service, &source);
+    std::fs::write(&settings, r#"{"model": "granite", "cleanup": "off"}"#).unwrap();
+    let text = dictated(&service, &source, &[]).to_lowercase();
+    assert!(text.contains("thirty feet in length"), "{text:?}");
+    std::fs::write(&settings, full).unwrap();
+    settles_whole(&service, &source);
 }
 
 /// The session's words reach the streamer. Given the clip's "Hamburg" in

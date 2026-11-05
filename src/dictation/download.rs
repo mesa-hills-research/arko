@@ -208,13 +208,27 @@ pub(super) fn install_tagger(
             "The downloaded cleanup model was damaged, so Arko deleted it. Start dictation again to download it again.".into(),
         ));
     }
-    // The notice first, because the pack is what makes the model installed.
-    fs::write(dir.join("NOTICE.txt"), speech::disfluency::PACK_NOTICE).map_err(unsaved)?;
+    // Whole on disk before it counts as installed, and the notice first,
+    // because the pack is what makes the model installed.
+    fs::File::open(&path)
+        .and_then(|written| written.sync_all())
+        .map_err(unsaved)?;
+    fs::write(dir.join("NOTICE.txt"), tagger_notice(url)).map_err(unsaved)?;
     fs::rename(&path, &pack).map_err(unsaved)?;
     if let Err(error) = fs::remove_dir_all(&downloads) {
         log::warn!("couldn't delete {} ({error})", downloads.display());
     }
     Ok(())
+}
+
+/// `NOTICE.txt` beside full cleanup's pack, which says what it's made of and
+/// where Arko got it.
+fn tagger_notice(url: &str) -> String {
+    format!(
+        "{}\n\nArko downloaded it from {url}, Telmo's {} release.\n",
+        speech::disfluency::PACK_NOTICE,
+        models::TAGGER_RELEASE
+    )
 }
 
 /// A runtime and an HTTP client for a download from `origin`.
