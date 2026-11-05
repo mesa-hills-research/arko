@@ -146,30 +146,38 @@ fn laid_out(
     worker: RwSignal<Option<String>>,
 ) -> Memo<(Option<u64>, Vec<Row>)> {
     let page = page();
+    // The workers that workers started, by their leads, which change far
+    // less often than the workers' summaries do.
+    let leads = Memo::new(move |_| {
+        page.workers.track();
+        STORE.with(|store| {
+            store
+                .borrow()
+                .workers
+                .values()
+                .filter_map(|worker| Some((worker.id.clone(), worker.parent.clone()?)))
+                .collect::<HashMap<String, String>>()
+        })
+    });
     Memo::new(move |_| {
         version.track();
-        page.workers.track();
         let view = view.get();
         let worker = worker.get();
         let counts_open = page.counts_open.get();
-        page.quiet_sealed.with(|sealed| {
-            STORE.with(|store| {
-                let store = store.borrow();
-                // The workers that workers started, by their leads.
-                let leads: HashMap<String, String> = store
-                    .workers
-                    .values()
-                    .filter_map(|worker| Some((worker.id.clone(), worker.parent.clone()?)))
-                    .collect();
-                let rows = layout::layout_sealed(
-                    &store.items,
-                    view,
-                    worker.as_deref(),
-                    sealed,
-                    &leads,
-                    &counts_open,
-                );
-                (store.feed, rows)
+        leads.with(|leads| {
+            page.quiet_sealed.with(|sealed| {
+                STORE.with(|store| {
+                    let store = store.borrow();
+                    let rows = layout::layout_sealed(
+                        &store.items,
+                        view,
+                        worker.as_deref(),
+                        sealed,
+                        leads,
+                        &counts_open,
+                    );
+                    (store.feed, rows)
+                })
             })
         })
     })
@@ -1345,6 +1353,44 @@ mod tests {
             let after = keys();
             assert_eq!(after[0], before[0]);
             assert_ne!(after[1], before[1]);
+        });
+    }
+
+    /// A worker's report shows in its lead's view, so it moves to the view of
+    /// the worker that turns out to have started it. A summary that names no
+    /// other lead leaves the rows as they were.
+    #[test]
+    fn a_report_follows_its_workers_lead() {
+        use crate::app::{take_reset, tests::reset_of};
+        use crate::store::tests::{item, worker};
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let rows = laid_out(page.version, page.view, page.worker);
+            let keys = move || rows.with(|(_, rows)| rows.iter().map(Row::key).collect::<Vec<_>>());
+            let items = vec![
+                item(1, Kind::User, MAIN, "go"),
+                item(2, Kind::Reply, "r2", "Counted."),
+            ];
+            take_reset(
+                page,
+                reset_of(1, items, vec![worker("r1"), worker("r2")]),
+                0.0,
+            );
+            assert_eq!(keys(), ["i1", "s2"]);
+            let changed = |parent: Option<&str>| {
+                let summary = crate::protocol::WorkerData {
+                    parent: parent.map(str::to_string),
+                    tool_calls: 3,
+                    ..worker("r2")
+                };
+                STORE.with(|store| store.borrow_mut().worker(summary));
+                page.workers.update(|version| *version += 1);
+            };
+            changed(None);
+            assert_eq!(keys(), ["i1", "s2"]);
+            changed(Some("r1"));
+            assert_eq!(keys(), ["i1"]);
         });
     }
 
