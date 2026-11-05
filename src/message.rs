@@ -1,8 +1,8 @@
 //! `message_user` lets an agent answer the user while it works, without ending
 //! its turn or its task. The event printer shows the message as the call is
 //! made (see `ui`), in order with the agent's other output, and names the
-//! worker that sent it. The workers have it too, to answer what the user
-//! writes to them directly.
+//! worker that sent it. The workers have it too, to reply to what the user
+//! writes to them directly, and read a description of their own.
 
 use std::collections::HashMap;
 
@@ -18,15 +18,30 @@ pub const MESSAGE_USER: &str = "message_user";
 /// The text parameter.
 pub const MESSAGE_PARAM: &str = "message";
 
+/// What the main agent's `message_user` says of itself.
+const MAIN_DESCRIPTION: &str = "Shows the user a message now, without stopping your work.";
+
+/// What a worker's says. A worker's instructions say when to use it and when
+/// to write to its lead instead.
+const WORKER_DESCRIPTION: &str = "Replies to the user who wrote to you directly. They read it in your own view, and your lead never sees it.";
+
 #[derive(Debug)]
-pub struct MessageUser;
+pub struct MessageUser {
+    /// Whether a worker has it (and reads the worker's description).
+    pub worker: bool,
+}
 
 #[async_trait]
 impl Tool for MessageUser {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: MESSAGE_USER.to_string(),
-            description: "Shows the user a message now, without stopping your work.".to_string(),
+            description: if self.worker {
+                WORKER_DESCRIPTION
+            } else {
+                MAIN_DESCRIPTION
+            }
+            .to_string(),
             output_based_example: None,
             parameters: vec![ToolParameterDefinition {
                 name: MESSAGE_PARAM.to_string(),
@@ -66,10 +81,30 @@ mod tests {
 
     #[test]
     fn the_tool_takes_one_message() {
-        let definition = MessageUser.definition();
-        assert_eq!(definition.name, MESSAGE_USER);
-        assert_eq!(definition.parameters.len(), 1);
-        assert!(definition.parameters[0].required);
-        assert!(definition.parallel_safe);
+        for worker in [false, true] {
+            let definition = MessageUser { worker }.definition();
+            assert_eq!(definition.name, MESSAGE_USER);
+            assert_eq!(definition.parameters.len(), 1);
+            assert!(definition.parameters[0].required);
+            assert!(definition.parallel_safe);
+        }
+    }
+
+    /// A worker's description says it replies to a user who wrote to the
+    /// worker, whose lead never sees the reply. A worker once sent the user a
+    /// progress note every few minutes. The main agent's keeps saying that it
+    /// shows a message.
+    #[test]
+    fn a_worker_reads_a_description_of_its_own() {
+        let main = MessageUser { worker: false }.definition().description;
+        let worker = MessageUser { worker: true }.definition().description;
+        assert_eq!(
+            main,
+            "Shows the user a message now, without stopping your work."
+        );
+        assert_ne!(worker, main);
+        assert!(worker.contains("who wrote to you directly"), "{worker}");
+        assert!(worker.contains("your lead never sees it"), "{worker}");
+        assert!(!main.contains("your lead"), "{main}");
     }
 }

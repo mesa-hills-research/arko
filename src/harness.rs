@@ -855,7 +855,7 @@ impl Harness {
                 .contains(&tool.name())
         };
         let mut own: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(message::MessageUser),
+            Arc::new(message::MessageUser { worker: false }),
             Arc::new(kept_notes::KeepNote {
                 notes: self.kept.clone(),
                 crew: self.crew.clone(),
@@ -917,7 +917,7 @@ impl Harness {
             }
             // A worker answers the user who writes to it (a worker saved
             // before workers had it isn't offered it).
-            builder = builder.agent_tool(WORKER, Arc::new(message::MessageUser));
+            builder = builder.agent_tool(WORKER, Arc::new(message::MessageUser { worker: true }));
             builder = builder.resume_only_agent_tool(WORKER, self.mcp.worker_tool(access.clone()));
             // A worker's call of a server's own tool also needs a server
             // workers may reach.

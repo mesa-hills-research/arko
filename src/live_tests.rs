@@ -59,6 +59,17 @@ fn body(bodies: &Bodies, with: &str, without: &str) -> String {
         .clone()
 }
 
+/// What the request `body` told the model that `tool` does.
+fn description_of(body: &str, tool: &str) -> String {
+    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+    body["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|found| found["name"] == tool))
+        .and_then(|found| found["description"].as_str())
+        .unwrap_or_else(|| panic!("no description of {tool}"))
+        .to_string()
+}
+
 const ON_NOTE: &str = "The user turned on outside access";
 const OFF_NOTE: &str = "The user turned off outside access";
 /// The start of the command guard's refusals.
@@ -2111,6 +2122,17 @@ async fn a_message_to_a_running_worker_reaches_it_at_its_next_step() {
         worker.contains("The user sent you a message directly. Answer them with `message_user`, or tell your lead if you don't have that tool. Never answer only in your thinking, which may never reach them:\\n  Use tabs."),
         "{worker}"
     );
+    // The worker's `message_user` is for replying to the user and the
+    // lead's shows a message, each as offered to its model.
+    let lead_asks = body(&bodies, "", "You are agent run r1");
+    let worker_asks = body(&bodies, "You are agent run r1", "");
+    assert_eq!(
+        description_of(&lead_asks, crate::message::MESSAGE_USER),
+        "Shows the user a message now, without stopping your work."
+    );
+    let described = description_of(&worker_asks, crate::message::MESSAGE_USER);
+    assert!(described.contains("who wrote to you directly"), "{described}");
+    assert!(described.contains("your lead never sees it"), "{described}");
     // Its answer went through.
     let answered = body(&bodies, "call_w2", "");
     assert!(
