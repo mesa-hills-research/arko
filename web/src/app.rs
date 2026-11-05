@@ -13,6 +13,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{EventSource, MessageEvent, RequestCredentials, RequestInit};
 
 use crate::layout::View;
+use crate::opened::Opened;
 use crate::protocol::{
     Append, CodeData, CommandData, ImageData, ItemData, JobSummary, Kind, ModelsData, Removed,
     StatusData, WorkerData,
@@ -120,7 +121,7 @@ pub struct Page {
     /// The agent's questions as the page shows them.
     pub ask: crate::questions::Asking,
     /// The Quiet view's rows the reader opened, by their first call.
-    pub quiet_open: RwSignal<HashSet<u64>>,
+    pub quiet_open: Opened,
     /// The files attached to the message box.
     pub attached: RwSignal<Vec<crate::attach::Chip>>,
     /// The Quiet view's rows of one call the reader opened, by that call,
@@ -131,11 +132,11 @@ pub struct Page {
     pub counts_open: RwSignal<HashSet<u64>>,
     /// The calls whose content the reader opened or closed in Full, where
     /// a command's shows from the start ([`full_open`](crate::transcript)).
-    pub flipped: RwSignal<HashSet<u64>>,
+    pub flipped: Opened,
     /// The calls the reader opened inside a Quiet row of several.
-    pub calls_open: RwSignal<HashSet<u64>>,
+    pub calls_open: Opened,
     /// The contents the reader opened whole, by their result.
-    pub doors_open: RwSignal<HashSet<u64>>,
+    pub doors_open: Opened,
 }
 
 thread_local! {
@@ -269,13 +270,13 @@ impl Page {
             grown: RwSignal::new(HashSet::new()),
             pinned: RwSignal::new(true),
             ask: crate::questions::Asking::new(),
-            quiet_open: RwSignal::new(HashSet::new()),
+            quiet_open: Opened::new(),
             attached: RwSignal::new(Vec::new()),
             quiet_sealed: RwSignal::new(HashSet::new()),
             counts_open: RwSignal::new(HashSet::new()),
-            flipped: RwSignal::new(HashSet::new()),
-            calls_open: RwSignal::new(HashSet::new()),
-            doors_open: RwSignal::new(HashSet::new()),
+            flipped: Opened::new(),
+            calls_open: Opened::new(),
+            doors_open: Opened::new(),
         };
         PAGE.with(|cell| cell.set(Some(page)));
         page
@@ -338,6 +339,27 @@ fn contents_changed(calls: impl IntoIterator<Item = u64>) {
 fn content_gone(id: u64, call: Option<u64>) {
     contents_changed(std::iter::once(id).chain(call));
     CONTENT_CHANGED.with(|triggers| triggers.borrow_mut().remove(&id));
+}
+
+/// The page let go of the item `id` (the result of `call`, if it's one),
+/// and of what it kept of its rows.
+fn let_go(page: Page, id: u64, call: Option<u64>) {
+    streaming_forget(id);
+    crate::contents::let_go(id);
+    content_gone(id, call);
+    forget_opened(page, id);
+}
+
+/// What the reader opened of the item `id`, which the page let go of.
+fn forget_opened(page: Page, id: u64) {
+    for opened in [
+        page.quiet_open,
+        page.flipped,
+        page.calls_open,
+        page.doors_open,
+    ] {
+        opened.forget(id);
+    }
 }
 
 /// Every item came again (a `reset`), so every content may have changed.
@@ -1070,7 +1092,10 @@ pub(crate) fn take_reset(page: Page, reset: Reset, now: f64) -> bool {
         bad,
     } = reset;
     let switched = STORE.with(|store| store.borrow_mut().reset(feed, items, workers, jobs, now));
-    STORE.with(|store| reset_cells(&store.borrow().items, &new_code, switched));
+    let gone = STORE.with(|store| reset_cells(&store.borrow().items, &new_code, switched));
+    for id in gone {
+        forget_opened(page, id);
+    }
     if switched {
         start_feed(page);
     }
@@ -1097,7 +1122,7 @@ pub(crate) fn take_reset(page: Page, reset: Reset, now: f64) -> bool {
 /// gets a cell. Items of another feed (`switched`) are others whatever their
 /// IDs, so each gets a cell of its own. `new_code` holds the items whose
 /// code blocks' spans came new.
-fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>, switched: bool) {
+fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>, switched: bool) -> Vec<u64> {
     let mut kept = CELLS.with(|cells| std::mem::take(&mut *cells.borrow_mut()));
     if switched {
         for (id, _) in kept.drain() {
@@ -1119,11 +1144,13 @@ fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>, switched: bool) {
         })
         .collect();
     // The items the history let go of.
-    for id in kept.into_keys() {
+    let gone: Vec<u64> = kept.into_keys().collect();
+    for &id in &gone {
         streaming_forget(id);
         crate::contents::let_go(id);
     }
     CELLS.with(|all| *all.borrow_mut() = cells);
+    gone
 }
 
 /// The stream started another feed (Arko started again). The page lets go
@@ -1139,12 +1166,12 @@ fn start_feed(page: Page) {
     page.commands.set(None);
     page.feeds.update(|feeds| *feeds += 1);
     // Another feed's items have other ids.
-    page.quiet_open.update(HashSet::clear);
+    page.quiet_open.clear();
     page.quiet_sealed.update(HashSet::clear);
     page.counts_open.update(HashSet::clear);
-    page.flipped.update(HashSet::clear);
-    page.calls_open.update(HashSet::clear);
-    page.doors_open.update(HashSet::clear);
+    page.flipped.clear();
+    page.calls_open.clear();
+    page.doors_open.clear();
     crate::contents::forget();
     crate::files::forget();
 }
@@ -1212,9 +1239,7 @@ pub(crate) fn take_item(page: Page, item: ItemData, code: bool, now: f64) {
                     .collect()
             });
             for (id, call) in gone {
-                streaming_forget(id);
-                crate::contents::let_go(id);
-                content_gone(id, call);
+                let_go(page, id, call);
             }
             // (As the store links a result to its call.)
             if item.kind == Kind::Result
@@ -1298,9 +1323,7 @@ fn on_remove(page: Page, data: &str) -> Result<(), String> {
         let call = CELLS
             .with(|cells| cells.borrow_mut().remove(&removed.id))
             .and_then(|cell| cell.data.with_untracked(|data| data.call));
-        streaming_forget(removed.id);
-        crate::contents::let_go(removed.id);
-        content_gone(removed.id, call);
+        let_go(page, removed.id, call);
         page.version.update(|version| *version += 1);
     }
     Ok(())
@@ -1464,6 +1487,40 @@ pub(crate) mod tests {
             take_reset(page, reset_of(0xa, Vec::new(), Vec::new()), 0.0);
             assert_eq!(content.get(), None);
             assert!(CONTENT_CHANGED.with(|triggers| triggers.borrow().is_empty()));
+        });
+    }
+
+    /// A call the page lets go of at its cap takes with it what the page
+    /// kept for its rows, what was opened of it and its content's trigger.
+    #[test]
+    fn a_trimmed_call_leaves_nothing_behind() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let call = item(1, Kind::Call, MAIN, "cat a.rs");
+            take_reset(page, reset_of(0xa, vec![call], Vec::new()), 0.0);
+            let sets = [
+                page.quiet_open,
+                page.flipped,
+                page.calls_open,
+                page.doors_open,
+            ];
+            // Its rows follow its content and whether it's open, and it is.
+            let followed = Memo::new(move |_| {
+                content_of(1);
+                sets.iter().filter(|opened| opened.contains(1)).count()
+            });
+            followed.get();
+            for opened in sets {
+                opened.set(1, true);
+            }
+            assert_eq!(followed.get(), 4);
+            for id in 2..=crate::store::BUDGET as u64 + 1 {
+                take_item(page, item(id, Kind::Text, MAIN, "More."), false, 0.0);
+            }
+            assert!(cell(1).is_none());
+            assert!(sets.iter().all(|opened| !opened.keeps(1)));
+            assert!(!CONTENT_CHANGED.with(|triggers| triggers.borrow().contains_key(&1)));
         });
     }
 

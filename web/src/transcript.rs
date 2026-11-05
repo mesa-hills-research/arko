@@ -165,7 +165,9 @@ fn laid_out(
         let worker = worker.get();
         let counts_open = page.counts_open.get();
         leads.with(|leads| {
-            page.quiet_sealed.with(|sealed| {
+            // (A row sealed as it opens holds one call already, so the seal
+            // changes only where later calls go, and their layout reads it.)
+            page.quiet_sealed.with_untracked(|sealed| {
                 STORE.with(|store| {
                     let store = store.borrow();
                     let rows = layout::layout_sealed(
@@ -301,7 +303,7 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
     });
     let data = RwSignal::from(&shared);
     let opens = move || data.with(|row| row.opens);
-    let open = move || opens() && page.quiet_open.with(|open| open.contains(&id));
+    let open = move || opens() && page.quiet_open.contains(id);
     let words = move || data.with(|row| row.words.clone());
     // The row's calls, by ID.
     let members = move || {
@@ -388,12 +390,7 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                         if !opens() {
                             return;
                         }
-                        let opening = page.quiet_open.with_untracked(|open| !open.contains(&id));
-                        page.quiet_open.update(|open| {
-                            if !open.remove(&id) {
-                                open.insert(id);
-                            }
-                        });
+                        let opening = page.quiet_open.toggle(id);
                         // A row of one call the reader opened keeps its form.
                         if opening && !data.with_untracked(|row| row.merged) {
                             page.quiet_sealed.update(|sealed| {
@@ -444,7 +441,7 @@ fn quiet_member(
     let merged = move || quiet.with(|row| row.merged);
     let has_content = !results.is_empty();
     let folds = move || has_content || data.with(|item| item.detail.is_some());
-    let open = move || !merged() || page.calls_open.with(|open| open.contains(&id));
+    let open = move || !merged() || page.calls_open.contains(id);
     // What it holds, its detail and its content.
     let contents: Vec<RwSignal<ItemData>> = results
         .iter()
@@ -485,11 +482,9 @@ fn quiet_member(
             };
             view! {
                 <button type="button" class="member-line" disabled=move || !folds()
-                    on:click=move |_| page.calls_open.update(|open| {
-                        if !open.remove(&id) {
-                            open.insert(id);
-                        }
-                    })>
+                    on:click=move |_| {
+                        page.calls_open.toggle(id);
+                    }>
                     {call_line(data, mark, true)}
                 </button>
             }
@@ -825,7 +820,7 @@ fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
 /// Whether a call shows its content in Full, which a command does from the
 /// start, as the reader left it.
 fn full_open(page: Page, id: u64, command: bool) -> bool {
-    command != page.flipped.with(|flipped| flipped.contains(&id))
+    command != page.flipped.contains(id)
 }
 
 /// Whether `item` is a command's call, whose content shows in Full from the
@@ -938,11 +933,7 @@ fn call_row(cell: RowCell) -> AnyView {
                 on:click=move |event| {
                     event.prevent_default();
                     if folds() {
-                        page.flipped.update(|flipped| {
-                            if !flipped.remove(&id) {
-                                flipped.insert(id);
-                            }
-                        });
+                        page.flipped.toggle(id);
                     }
                 }
             >

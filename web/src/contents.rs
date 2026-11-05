@@ -119,7 +119,7 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
     // A fetch under way, and how the last one went.
     let asking = RwSignal::new(false);
     let state = RwSignal::new(None::<Fetched>);
-    let open = move || page.doors_open.with(|open| open.contains(&id)) && whole(id).is_some();
+    let open = move || page.doors_open.contains(id) && whole(id).is_some();
     let lines = move || {
         let whole = open().then(|| whole(id)).flatten();
         data.with(|item| {
@@ -131,15 +131,11 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
     let gone = move || state.with(|state| matches!(state, Some(Fetched::Gone)));
     let toggle = move |_| {
         if open() {
-            page.doors_open.update(|open| {
-                open.remove(&id);
-            });
+            page.doors_open.set(id, false);
             return;
         }
         if whole(id).is_some() {
-            page.doors_open.update(|open| {
-                open.insert(id);
-            });
+            page.doors_open.set(id, true);
             return;
         }
         if asking.get_untracked() || gone() {
@@ -159,9 +155,7 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
                     markdown::remember(&result.code);
                     WHOLES.with(|wholes| wholes.borrow_mut().keep(id, result.text));
                     state.set(None);
-                    page.doors_open.update(|open| {
-                        open.insert(id);
-                    });
+                    page.doors_open.set(id, true);
                 }
                 other => state.set(Some(other)),
             }
