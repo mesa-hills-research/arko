@@ -155,6 +155,9 @@ thread_local! {
     /// Each worker's own trigger, pulled when its summary changes, for the
     /// views of that one worker.
     static WORKER_CHANGED: RefCell<HashMap<String, ArcTrigger>> = RefCell::new(HashMap::new());
+    /// Each call's own trigger, pulled when its content (its result) comes
+    /// or goes, for the rows of that one call.
+    static CONTENT_CHANGED: RefCell<HashMap<u64, ArcTrigger>> = RefCell::new(HashMap::new());
 }
 
 /// Whether the item `id` is the text that streams now, for a row of it,
@@ -298,6 +301,51 @@ pub fn feed() -> Option<u64> {
 /// The signals of the item `id`, while it's kept.
 pub fn cell(id: u64) -> Option<Cell> {
     CELLS.with(|cells| cells.borrow().get(&id).cloned())
+}
+
+/// The content of the call `id` (its result), while both are kept,
+/// followed by the caller for that call alone.
+pub fn content_of(id: u64) -> Option<u64> {
+    if !CELLS.with(|cells| cells.borrow().contains_key(&id)) {
+        return None;
+    }
+    CONTENT_CHANGED.with(|triggers| {
+        triggers
+            .borrow_mut()
+            .entry(id)
+            .or_insert_with(ArcTrigger::new)
+            .track();
+    });
+    STORE.with(|store| store.borrow().content_of(id))
+}
+
+/// The content of each of the calls `calls` came or went.
+fn contents_changed(calls: impl IntoIterator<Item = u64>) {
+    let triggers: Vec<ArcTrigger> = CONTENT_CHANGED.with(|triggers| {
+        let triggers = triggers.borrow();
+        calls
+            .into_iter()
+            .filter_map(|call| triggers.get(&call).cloned())
+            .collect()
+    });
+    for trigger in triggers {
+        trigger.notify();
+    }
+}
+
+/// The page let go of the item `id`, a call or the result of `call`, and
+/// so of the link between them.
+fn content_gone(id: u64, call: Option<u64>) {
+    contents_changed(std::iter::once(id).chain(call));
+    CONTENT_CHANGED.with(|triggers| triggers.borrow_mut().remove(&id));
+}
+
+/// Every item came again (a `reset`), so every content may have changed.
+fn contents_all_changed() {
+    let triggers = CONTENT_CHANGED.with(|triggers| std::mem::take(&mut *triggers.borrow_mut()));
+    for trigger in triggers.into_values() {
+        trigger.notify();
+    }
 }
 
 /// Calls `listen` with each item that comes, until the page closes (the
@@ -1039,6 +1087,7 @@ pub(crate) fn take_reset(page: Page, reset: Reset, now: f64) -> bool {
     page.workers.update(|version| *version += 1);
     page.jobs.update(|version| *version += 1);
     workers_all_changed();
+    contents_all_changed();
     switched
 }
 
@@ -1128,24 +1177,51 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
     {
         page.skew.set(Some(sample));
     }
-    let now = js_sys::Date::now();
+    take_item(page, item.clone(), !code.is_empty(), js_sys::Date::now());
+    HEARD.with(|heard| {
+        for listen in heard.borrow().iter() {
+            listen(&item);
+        }
+    });
+    crate::scroll::follow();
+    Ok(())
+}
+
+/// The page takes the item `item`, come at `now`, new or again (its code
+/// blocks' spans came new with `code`), and lays out the rows again.
+pub(crate) fn take_item(page: Page, item: ItemData, code: bool, now: f64) {
     let known = cell(item.id);
     match known {
         Some(cell) => {
-            refresh(&cell, item.clone(), !code.is_empty());
+            refresh(&cell, item.clone(), code);
             STORE.with(|store| store.borrow_mut().change(item.clone(), now));
         }
         None => {
             let trimmed = STORE.with(|store| store.borrow_mut().add(item.clone(), now));
-            CELLS.with(|cells| {
+            let gone: Vec<(u64, Option<u64>)> = CELLS.with(|cells| {
                 let mut cells = cells.borrow_mut();
                 cells.insert(item.id, new_cell(&item));
-                for id in trimmed {
-                    cells.remove(&id);
-                    streaming_forget(id);
-                    crate::contents::let_go(id);
-                }
+                trimmed
+                    .into_iter()
+                    .map(|id| {
+                        let call = cells
+                            .remove(&id)
+                            .and_then(|cell| cell.data.with_untracked(|data| data.call));
+                        (id, call)
+                    })
+                    .collect()
             });
+            for (id, call) in gone {
+                streaming_forget(id);
+                crate::contents::let_go(id);
+                content_gone(id, call);
+            }
+            // (As the store links a result to its call.)
+            if item.kind == Kind::Result
+                && let Some(call) = item.call
+            {
+                contents_changed([call]);
+            }
         }
     }
     if matches!(item.kind, Kind::Text | Kind::Thinking) {
@@ -1154,13 +1230,6 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
         page.streaming.set(None);
     }
     page.version.update(|version| *version += 1);
-    HEARD.with(|heard| {
-        for listen in heard.borrow().iter() {
-            listen(&item);
-        }
-    });
-    crate::scroll::follow();
-    Ok(())
 }
 
 fn on_append(page: Page, data: &str) -> Result<(), String> {
@@ -1226,9 +1295,12 @@ fn on_code(_page: Page, data: &str) -> Result<(), String> {
 fn on_remove(page: Page, data: &str) -> Result<(), String> {
     let removed: Removed = parse(data)?;
     if STORE.with(|store| store.borrow_mut().remove(removed.id)) {
-        CELLS.with(|cells| cells.borrow_mut().remove(&removed.id));
+        let call = CELLS
+            .with(|cells| cells.borrow_mut().remove(&removed.id))
+            .and_then(|cell| cell.data.with_untracked(|data| data.call));
         streaming_forget(removed.id);
         crate::contents::let_go(removed.id);
+        content_gone(removed.id, call);
         page.version.update(|version| *version += 1);
     }
     Ok(())
@@ -1345,6 +1417,53 @@ pub(crate) mod tests {
             worker_changed("r0");
             shown.get();
             assert_eq!(runs.load(Ordering::Relaxed), before + 1);
+        });
+    }
+
+    /// A call's row follows its own content alone. It hears its result come
+    /// and go, and not the items that come for other rows, which a long
+    /// transcript's thousand calls would each hear again.
+    #[test]
+    fn a_call_hears_its_own_content_alone() {
+        let owner = Owner::new();
+        owner.with(|| {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let page = crate::testing::page();
+            let calls = vec![
+                item(1, Kind::Call, MAIN, "cat a.rs"),
+                item(2, Kind::Call, MAIN, "cat b.rs"),
+            ];
+            take_reset(page, reset_of(0xa, calls, Vec::new()), 0.0);
+            let runs = Arc::new(AtomicUsize::new(0));
+            let content = Memo::new({
+                let runs = runs.clone();
+                move |_| {
+                    runs.fetch_add(1, Ordering::Relaxed);
+                    content_of(1)
+                }
+            });
+            assert_eq!(content.get(), None);
+            let result = |id, call| {
+                let mut result = item(id, Kind::Result, MAIN, "fn main() {}");
+                result.call = Some(call);
+                result
+            };
+            take_item(page, item(3, Kind::Text, MAIN, "Reading."), false, 0.0);
+            take_item(page, result(4, 2), false, 0.0);
+            assert_eq!(content.get(), None);
+            assert_eq!(runs.load(Ordering::Relaxed), 1);
+
+            take_item(page, result(5, 1), false, 0.0);
+            assert_eq!(content.get(), Some(5));
+            on_remove(page, r#"{"id": 5}"#).unwrap();
+            assert_eq!(content.get(), None);
+            assert_eq!(runs.load(Ordering::Relaxed), 3);
+
+            // A call the page let go of follows nothing.
+            take_reset(page, reset_of(0xa, Vec::new(), Vec::new()), 0.0);
+            assert_eq!(content.get(), None);
+            assert!(CONTENT_CHANGED.with(|triggers| triggers.borrow().is_empty()));
         });
     }
 

@@ -720,14 +720,13 @@ fn kind_class(kind: Kind) -> &'static str {
 /// Markdown and the message as its call's content has it, once there are
 /// any.
 fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
-    let page = page();
     let data = cell.data;
     let agent = data.with_untracked(|item| item.agent.clone());
     // The worker's lead, whose view it shows in.
     let lead = {
         let agent = agent.clone();
         move || {
-            page.workers.track();
+            track_worker(&agent);
             STORE.with(|store| {
                 store
                     .borrow()
@@ -752,17 +751,14 @@ fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
         })
     });
     // The message's content, once its result came.
-    let content = move || {
-        page.version.track();
-        let result = STORE.with(|store| store.borrow().content_of(id))?;
-        Some(crate::app::cell(result)?.for_row().data)
-    };
+    let result = Memo::new(move |_| crate::app::content_of(id));
+    let content = move || Some(crate::app::cell(result.get()?)?.for_row().data);
     let report = move || matches!(row.get(), Some((crate::quiet::WorkerRow::Reported, _)));
     let opens = move || {
         if report() {
             cell.text.with(|text| !text.trim().is_empty())
         } else {
-            content().is_some()
+            result.get().is_some()
         }
     };
     let words = move || {
@@ -840,7 +836,7 @@ fn is_command(item: &ItemData) -> bool {
 /// has one, so the many settled calls of a long session follow neither.
 fn call_line(
     data: RwSignal<ItemData>,
-    mark: impl Fn() -> &'static str + Send + Sync + 'static,
+    mark: impl Fn() -> &'static str + Clone + Send + Sync + 'static,
     in_row: bool,
 ) -> impl IntoView {
     let page = page();
@@ -859,7 +855,9 @@ fn call_line(
     });
     move || {
         data.with(|item| {
-            let who = (item.agent != MAIN && page.worker.get().is_none()).then(|| item.agent.clone());
+            let who = (item.agent != MAIN && page.worker.get_untracked().is_none())
+                .then(|| item.agent.clone());
+            let mark = mark.clone();
             let outcome = match item.status {
                 Some(CallStatus::Running) if in_row => None,
                 Some(CallStatus::Running) => Some(
@@ -884,7 +882,7 @@ fn call_line(
             };
             view! {
                 <span class="call-line">
-                    <span class="mark">{mark()}</span>
+                    <span class="mark">{mark}</span>
                     {who.map(|who| view! { <span class="who">{who}</span> })}
                     <span class="what" title=item.text.clone()>{item.text.clone()}</span>
                     {outcome}
@@ -909,12 +907,12 @@ fn call_row(cell: RowCell) -> AnyView {
     let page = page();
     let data = cell.data;
     let (id, command) = data.with_untracked(|item| (item.id, is_command(item)));
-    // (A worker's call in the main view shows without its content.)
+    let content = Memo::new(move |_| crate::app::content_of(id).is_some());
+    // (A worker's call in the main view shows without its content. A row
+    // is drawn for one view.)
     let folds = move || {
-        page.version.track();
-        let own = data.with(|item| item.agent == MAIN) || page.worker.get().is_some();
-        data.with(|item| item.detail.is_some())
-            || (own && STORE.with(|store| store.borrow().content_of(id).is_some()))
+        let own = data.with(|item| item.agent == MAIN) || page.worker.get_untracked().is_some();
+        data.with(|item| item.detail.is_some()) || (own && content.get())
     };
     let open = move || folds() && full_open(page, id, command);
     // (Its triangle turns as it opens.)
