@@ -774,8 +774,8 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         "# Your task\n\
          Make reasonable choices yourself, and say which in your report. If something blocks you, report what and why.\n\n\
          # The lead\n\
-         The lead's messages reach you as workflow context updates from your lead: take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation. The user may also write to you directly: their messages reach you the same way, marked as from the user, and you treat them as the lead's.\n\n\
-         `message_user` reaches only the user, who reads it in your own view. Use it to answer the user when they write to you, and for what they must know now. Never repeat its words beside a call or in your report. Progress, findings and questions about your task go to the lead with `message_agent` (to `lead`), the only way the lead hears from you besides your report. Text written only in your thinking may never reach anyone, and a long wait is where that is most likely.\n",
+         The lead's messages reach you as workflow context updates from your lead. Take them into account. A message that arrives as you finish comes back to you, and you report again. After your report, the lead may send you follow-up work, which continues this conversation. The user may also write to you directly. Their messages reach you the same way, marked as from the user, and you treat them as the lead's.\n\n\
+         Use `message_user` only to reply to the user after they write to you directly. Send everything else to your lead with `message_agent` (to `lead`), which is how it hears from you before your report. Send it key progress, a question that needs its answer, a blocker or a result, and leave out routine steps such as \"reading the files now\". Text written only in your thinking may never reach anyone, and a long wait is where that is most likely.\n",
     );
     instructions.push_str(&tool_instructions(settings, true));
     if settings.extra_rules.for_model(settings.worker)
@@ -1992,6 +1992,7 @@ mod tests {
                     "reads it at its next step",
                     "start several in one response",
                     "doesn't see this conversation",
+                    "your lead never sees it",
                 ] {
                     assert!(
                         !config.instructions.contains(told_by_a_tool),
@@ -2327,7 +2328,7 @@ mod tests {
         assert!(
             worker
                 .instructions
-                .contains("the only way the lead hears from you besides your report")
+                .contains("which is how it hears from you before your report")
         );
         assert!(worker.instructions.contains(
             "Text written only in your thinking may never reach anyone, and a long wait is where that is most likely."
@@ -2447,11 +2448,11 @@ mod tests {
     }
 
     /// A worker's instructions say, where they speak of the lead, that
-    /// `message_user` reaches only the user, in the worker's own view, that
-    /// its words aren't repeated beside a call or in the report, and that
-    /// progress, findings and questions go to the lead with `message_agent`. A worker once answered the user in its thinking
-    /// alone, which the user never saw, and another sent progress meant for
-    /// its lead to the user.
+    /// `message_user` is for replying to a user who wrote to the worker, and
+    /// that everything else goes to the lead with `message_agent`, for key
+    /// progress, questions, blockers and results.
+    /// Workers once sent routine steps to the user, which Claude Code's
+    /// reminders that the user hadn't heard from them had asked for.
     #[test]
     fn a_worker_answers_the_user_with_message_user() {
         let opus = model("opus", false);
@@ -2464,7 +2465,7 @@ mod tests {
                 .any(|name| name == crate::message::MESSAGE_USER)
         );
         let instructions = &worker.instructions;
-        let said = "`message_user` reaches only the user, who reads it in your own view. Use it to answer the user when they write to you, and for what they must know now. Never repeat its words beside a call or in your report. Progress, findings and questions about your task go to the lead with `message_agent` (to `lead`), the only way the lead hears from you besides your report. Text written only in your thinking may never reach anyone, and a long wait is where that is most likely.";
+        let said = "Use `message_user` only to reply to the user after they write to you directly. Send everything else to your lead with `message_agent` (to `lead`), which is how it hears from you before your report. Send it key progress, a question that needs its answer, a blocker or a result, and leave out routine steps such as \"reading the files now\". Text written only in your thinking may never reach anyone, and a long wait is where that is most likely.";
         let at = instructions.find(said).expect("the paragraph");
         assert!(instructions.find("# The lead\n").unwrap() < at);
         assert!(at < instructions.find("# Tools\n").unwrap());
