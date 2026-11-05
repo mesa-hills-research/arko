@@ -2,7 +2,9 @@
 //! ([`crate::attach`]), and the agent's questions and the approval tray
 //! above it.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -12,6 +14,7 @@ use web_sys::HtmlTextAreaElement;
 use crate::app::{
     DRAFT, Posted, Sender, get_json, page, post, send as send_to_arko, session_get, session_set,
 };
+use crate::protocol::MessageSwitch;
 use crate::scroll;
 use crate::slash::{self, Menu};
 
@@ -86,6 +89,56 @@ impl ContinueAsk {
     }
 }
 
+/// A message on its way, which emptied the box, with the approval tray's
+/// switch as it was then, and whether its text came back (Arko was slow to
+/// answer, or didn't take it).
+#[derive(Debug, Clone)]
+struct OnItsWay {
+    draft: Draft,
+    switch: MessageSwitch,
+    back: bool,
+    /// What the error line said of it while another view showed.
+    words: Option<String>,
+}
+
+impl OnItsWay {
+    fn new(draft: Draft, switch: MessageSwitch) -> Self {
+        Self {
+            draft,
+            switch,
+            back: false,
+            words: None,
+        }
+    }
+
+    /// What the box holds once the text comes back while it holds `now`,
+    /// which is the text with anything typed since on a line after it.
+    /// None once the text came back already.
+    fn back_into(&mut self, now: &str) -> Option<String> {
+        if std::mem::replace(&mut self.back, true) {
+            return None;
+        }
+        Some(if now.is_empty() {
+            self.draft.text.clone()
+        } else {
+            format!("{}\n{now}", self.draft.text)
+        })
+    }
+
+    /// Whether the box empties again once Arko takes the message while the
+    /// box holds `now`, as it does when the text came back unchanged.
+    fn empties_when_taken(&self, now: &Draft) -> bool {
+        self.back && *now == self.draft
+    }
+}
+
+/// Whether Stop takes Send's place, which it does while a turn runs and the
+/// box holds nothing to send, unless a send emptied the box a moment ago or
+/// still waits for Arko's answer.
+fn shows_stop(working: bool, nothing_to_send: bool, recent_sends: u32, sending: bool) -> bool {
+    working && nothing_to_send && recent_sends == 0 && !sending
+}
+
 #[component]
 pub fn Composer() -> impl IntoView {
     let page = page();
@@ -103,8 +156,9 @@ pub fn Composer() -> impl IntoView {
     // The latest send, which owns the box. What becomes of an earlier one
     // leaves it as it is.
     let latest = RwSignal::new(0u64);
-    // A send of its own, which says so while its answer is long in coming.
-    let begin_send = move || {
+    // A send of its own, which says so while its answer is long in coming,
+    // and then calls `slow`.
+    let begin_send = move |slow: Box<dyn FnOnce()>| {
         let sender = Sender::from_view();
         latest.set(sender.id());
         sending.set(true);
@@ -113,6 +167,7 @@ pub fn Composer() -> impl IntoView {
             gloo_wait(5000).await;
             if latest.try_get_untracked() == Some(waiting.id()) && sending.get_untracked() {
                 sending.set(false);
+                slow();
                 waiting.say(Some(STILL_SENDING.into()));
             }
         });
@@ -139,9 +194,14 @@ pub fn Composer() -> impl IntoView {
     crate::attach::own_chips();
     crate::attach::restore();
     let attached = page.attached;
+    // Whether an approval answer takes the box's words, kept here so a text
+    // that comes back keeps what the tray made of it. Each feed's tray
+    // starts over.
+    let switch = RwSignal::new(MessageSwitch::default());
     Effect::new(move |_| {
         page.feeds.track();
         crate::attach::feed_changed();
+        switch.set(MessageSwitch::default());
     });
     let _shown = window_event_listener(leptos::ev::visibilitychange, |_| {
         if document().visibility_state() == web_sys::VisibilityState::Visible {
@@ -211,10 +271,12 @@ pub fn Composer() -> impl IntoView {
     // Stop takes Send's place while a turn runs and the box holds nothing to
     // send.
     let stop_shown = move || {
-        working()
-            && empty.get()
-            && (page.worker.get().is_some() || attached.with(Vec::is_empty))
-            && recent_sends.get() == 0
+        shows_stop(
+            working(),
+            empty.get() && (page.worker.get().is_some() || attached.with(Vec::is_empty)),
+            recent_sends.get(),
+            sending.get(),
+        )
     };
     // The old model writes its report for a switch, so a message to the main
     // agent waits in the box. (A command, and a message to a worker, go.)
@@ -279,17 +341,53 @@ pub fn Composer() -> impl IntoView {
         use wasm_bindgen::JsCast;
         let _ = window().request_animation_frame(frame.unchecked_ref());
     });
-    // Empties the box once its message went. Send keeps its place a moment.
-    let clear_sent = move |area: &HtmlTextAreaElement| {
-        area.set_value("");
-        expanded.set(false);
-        resize();
+    // Send keeps its place a moment, so a second tap can't land on Stop.
+    let hold_send = move || {
         recent_sends.update(|count| *count += 1);
         spawn_local(async move {
             gloo_wait(SEND_HOLDS_MS).await;
             recent_sends.try_update(|count| *count -= 1);
         });
     };
+    // Empties the box for a message that went.
+    let clear_sent = move |area: &HtmlTextAreaElement| {
+        area.set_value("");
+        expanded.set(false);
+        resize();
+        hold_send();
+    };
+    // A text sent from another view, which comes back once that view shows.
+    let parked = StoredValue::new_local(None::<Rc<RefCell<OnItsWay>>>);
+    // Puts the text of the message `way` back in the box, with the tray's
+    // switch as it was at the send, in the view it was sent from.
+    let put_back = move |way: &Rc<RefCell<OnItsWay>>| {
+        if page.worker.get_untracked() != way.borrow().draft.to {
+            parked.set_value(Some(way.clone()));
+            return;
+        }
+        let Some(area) = input.get_untracked() else {
+            return;
+        };
+        let mut way = way.borrow_mut();
+        if let Some(text) = way.back_into(&area.value()) {
+            area.set_value(&text);
+            resize();
+            switch.update(|switch| switch.restored(&way.switch, true));
+        }
+    };
+    Effect::new(move |_| {
+        let shown = page.worker.get();
+        let Some(way) = parked.get_value() else {
+            return;
+        };
+        if way.borrow().draft.to == shown {
+            parked.set_value(None);
+            put_back(&way);
+            if let Some(words) = way.borrow().words.clone() {
+                page.error.set(Some(words));
+            }
+        }
+    });
 
     let send = move || {
         let Some(area) = input.get_untracked() else {
@@ -302,11 +400,27 @@ pub fn Composer() -> impl IntoView {
         if (text.trim().is_empty() && files.is_empty()) || sending.get_untracked() {
             return;
         }
-        let sender = begin_send();
         let sent = Draft {
             text: text.clone(),
             to: page.worker.get_untracked(),
         };
+        // The box empties at once, as the message is on its way. Its text
+        // comes back while Arko is slow to answer, and when Arko doesn't
+        // take it. Until Arko takes it, it's the draft a reload gets back.
+        let way = Rc::new(RefCell::new(OnItsWay::new(
+            sent.clone(),
+            switch.get_untracked(),
+        )));
+        clear_sent(&area);
+        session_set(DRAFT, Some(&text));
+        menu.set(None);
+        let sender = begin_send(Box::new({
+            let way = way.clone();
+            move || {
+                way.borrow_mut().words = Some(STILL_SENDING.into());
+                put_back(&way);
+            }
+        }));
         // In a worker's view, it goes to that worker. With questions
         // attached, it answers them (and while the agent waits on a
         // question, a message answers it).
@@ -328,6 +442,16 @@ pub fn Composer() -> impl IntoView {
         }
         spawn_local(async move {
             let outcome = send_to_arko("/api/message", body, &sender).await;
+            if outcome.posted != Posted::Taken {
+                way.borrow_mut().words = outcome.words.clone();
+                put_back(&way);
+            } else if parked.with_value(|parked| {
+                parked
+                    .as_ref()
+                    .is_some_and(|parked| Rc::ptr_eq(parked, &way))
+            }) {
+                parked.set_value(None);
+            }
             // A later send owns the box now.
             if latest.try_get_untracked() != Some(sender.id()) {
                 return;
@@ -335,19 +459,27 @@ pub fn Composer() -> impl IntoView {
             match sender.take(outcome) {
                 Some(Posted::Taken) => {
                     // The questions it answered, its files, and the text
-                    // unless the box holds another meanwhile.
+                    // that came back meanwhile, unless the box holds another.
                     ask.attached
                         .update(|attached| attached.retain(|id| !answers.contains(id)));
                     crate::attach::sent(&sent_keys);
-                    if draft_now().as_ref() == Some(&sent) {
+                    let now = draft_now();
+                    if now
+                        .as_ref()
+                        .is_some_and(|now| way.borrow().empties_when_taken(now))
+                    {
                         clear_sent(&area);
+                    } else if !way.borrow().back {
+                        // (The box emptied at the tap, a while ago.)
+                        hold_send();
                     }
+                    session_set(DRAFT, Some(&area.value()));
                     // What one sends is what one wants to see next.
                     scroll::jump_to_latest();
                 }
                 Some(Posted::Confirm(why)) => continue_asked
                     .set(draft_now().and_then(|now| ContinueAsk::new(why, sent, &now))),
-                // Kept, or no longer the page's, so the box keeps it.
+                // Kept, or no longer the page's, so the box has it back.
                 _ => {}
             }
             sending.set(false);
@@ -365,7 +497,7 @@ pub fn Composer() -> impl IntoView {
         let Some(body) = draft_now().and_then(|now| asked.confirmed(&now)) else {
             return;
         };
-        let sender = begin_send();
+        let sender = begin_send(Box::new(|| {}));
         spawn_local(async move {
             let outcome = send_to_arko("/api/message", body, &sender).await;
             // (A later send owns the box now, and what was typed meanwhile
@@ -468,7 +600,7 @@ pub fn Composer() -> impl IntoView {
                 // the last one gave too.
                 {move || {
                     page.feeds.track();
-                    view! { <crate::approvals::Tray draft=draft /> }
+                    view! { <crate::approvals::Tray draft=draft switch=switch /> }
                 }}
                 <Show when=move || page.worker.get().is_none()>
                     <crate::attach::Chips />
@@ -838,6 +970,49 @@ mod tests {
             text: text.into(),
             to: to.map(str::to_string),
         }
+    }
+
+    /// A send's text comes back once, as it was into an empty box, and before
+    /// what was typed since, on a line of its own. A text that came back
+    /// goes again once Arko takes it, unless it was changed meanwhile.
+    #[test]
+    fn a_sent_text_comes_back_once_and_goes_once_taken() {
+        let sent = draft("Fix it", Some("r5"));
+        let way = || OnItsWay::new(sent.clone(), MessageSwitch::default());
+        // Refused, into an empty box.
+        let mut refused = way();
+        assert_eq!(refused.back_into("").as_deref(), Some("Fix it"));
+        // Refused after the reader typed more.
+        assert_eq!(
+            way().back_into("and also").as_deref(),
+            Some("Fix it\nand also")
+        );
+        // Slow, then refused, so it comes back once.
+        let mut slow = way();
+        assert_eq!(slow.back_into("").as_deref(), Some("Fix it"));
+        assert_eq!(slow.back_into("Fix it"), None);
+        // Slow, then taken, so the box empties if it's as it came back.
+        assert!(slow.empties_when_taken(&sent));
+        assert!(!slow.empties_when_taken(&draft("Fix it now", Some("r5"))));
+        // Taken without coming back, so what's typed since stays.
+        assert!(!way().empties_when_taken(&sent));
+        // Arko asks first, and the text comes back before Continue compares.
+        let mut asked = way();
+        let now = asked.back_into("").unwrap();
+        assert!(
+            ContinueAsk::new("Words.".into(), sent.clone(), &draft(&now, Some("r5"))).is_some()
+        );
+    }
+
+    /// Stop stays off Send's place while a send waits for Arko's answer, and
+    /// a moment after one emptied the box.
+    #[test]
+    fn stop_waits_for_a_sends_answer() {
+        assert!(shows_stop(true, true, 0, false));
+        assert!(!shows_stop(true, true, 0, true));
+        assert!(!shows_stop(true, true, 1, false));
+        assert!(!shows_stop(true, false, 0, false));
+        assert!(!shows_stop(false, true, 0, false));
     }
 
     /// Arko's question stands for the message it was asked about. Once the

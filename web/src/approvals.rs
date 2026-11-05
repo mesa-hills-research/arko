@@ -230,12 +230,16 @@ fn flip(set: RwSignal<HashSet<String>>, id: &str) {
     });
 }
 
-/// The tray, while requests wait.
+/// The tray, while requests wait. `switch` says whether an answer takes the
+/// box's words (`draft`), which the box keeps across a send that comes back.
 #[component]
-pub fn Tray(draft: RwSignal<String>) -> impl IntoView {
+pub fn Tray(draft: RwSignal<String>, switch: RwSignal<MessageSwitch>) -> impl IntoView {
     let page = page();
     let requests = Memo::new(move |_| page.status.with(|status| status.approvals.clone()));
-    let rows = Rows::new();
+    let rows = Rows {
+        message: switch,
+        ..Rows::new()
+    };
     let list: NodeRef<leptos::html::Ul> = NodeRef::new();
     let observer = StoredValue::new_local(
         None::<(
