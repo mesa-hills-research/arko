@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// The file, in Arko's folder.
 pub const FILE: &str = "dictation.json";
@@ -30,9 +30,19 @@ pub struct Settings {
     /// Leave out of the session's words the values that context marks as
     /// secret, such as what follows `PASSWORD=` or `--token`.
     pub leave_out_secrets: bool,
-    /// What to take out of English speech, a [`Cleanup`]'s name. A name it
+    /// What to take out of English speech, a [`Cleanup`]'s name. A value it
     /// doesn't know means none, and leaves the other settings as they are.
+    #[serde(deserialize_with = "any_value_as_name")]
     pub cleanup: String,
+}
+
+/// A string as it is, and any other JSON value as an empty name, so a
+/// wrong value fails only its own field.
+fn any_value_as_name<'de, D: Deserializer<'de>>(value: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(value)? {
+        serde_json::Value::String(name) => name,
+        _ => String::new(),
+    })
 }
 
 impl Default for Settings {
@@ -80,9 +90,11 @@ impl Cleanup {
         }
     }
 
-    /// The level `name` names, if any.
+    /// The level `name` names in any case, if any.
     pub fn named(name: &str) -> Option<Cleanup> {
-        Cleanup::ALL.into_iter().find(|level| level.name() == name)
+        Cleanup::ALL
+            .into_iter()
+            .find(|level| level.name().eq_ignore_ascii_case(name))
     }
 }
 
@@ -96,7 +108,7 @@ pub fn set_cleanup(root: &Path, cleanup: Cleanup) -> std::io::Result<()> {
             .map_err(|_| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("{FILE} isn't valid JSON"),
+                    format!("{FILE} isn't a JSON object"),
                 )
             })?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
@@ -185,11 +197,17 @@ mod tests {
             let settings: Settings = serde_json::from_str(&text).unwrap();
             assert_eq!(settings.cleanup(), level);
         }
-        // A level this version doesn't know keeps the other settings.
-        let settings: Settings =
-            serde_json::from_str(r#"{"cleanup": "thorough", "model": "parakeet"}"#).unwrap();
-        assert_eq!(settings.cleanup(), Cleanup::Off);
-        assert_eq!(settings.model, "parakeet");
+        // A level this version doesn't know, or a value that isn't a name,
+        // keeps the other settings.
+        for cleanup in [r#""thorough""#, "true", "null", "3", "[]"] {
+            let text = format!(r#"{{"cleanup": {cleanup}, "model": "parakeet"}}"#);
+            let settings: Settings = serde_json::from_str(&text).unwrap();
+            assert_eq!(settings.cleanup(), Cleanup::Off, "{cleanup}");
+            assert_eq!(settings.model, "parakeet");
+        }
+        // A name in capitals, as a menu spells it, counts.
+        let settings: Settings = serde_json::from_str(r#"{"cleanup": "Full"}"#).unwrap();
+        assert_eq!(settings.cleanup(), Cleanup::Full);
     }
 
     #[test]
@@ -215,7 +233,7 @@ mod tests {
         // A file that isn't JSON is left for its owner to mend.
         std::fs::write(root.path().join(FILE), "{\"model\": ").unwrap();
         let error = set_cleanup(root.path(), Cleanup::Light).unwrap_err();
-        assert_eq!(error.to_string(), "dictation.json isn't valid JSON");
+        assert_eq!(error.to_string(), "dictation.json isn't a JSON object");
         assert_eq!(
             std::fs::read_to_string(root.path().join(FILE)).unwrap(),
             "{\"model\": "
