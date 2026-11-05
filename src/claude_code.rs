@@ -27,6 +27,9 @@ use arko_ai::providers::claude_code::NO_SELF_UPDATE;
 /// use.
 const API_KEY: &str = "ANTHROPIC_API_KEY";
 
+/// The variable that turns Claude Code's silent-turn reminder on or off.
+const SILENT_TURN_REMINDER: &str = "CLAUDE_CODE_SILENT_TURN_REMINDER";
+
 /// How long `claude auth status` may take.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -38,6 +41,19 @@ pub fn settings() -> ClaudeCodeSettings {
         env: BTreeMap::from([(API_KEY.to_string(), String::new())]),
         ..ClaudeCodeSettings::default()
     }
+}
+
+/// `settings` for a worker, with Claude Code's reminder that the user hasn't
+/// heard from the agent in a while turned off. The user doesn't read a worker
+/// unless they write to it, but a worker took the reminder as a request for a
+/// progress note and sent it with `message_user`. Its lead hears from it
+/// when it chooses, with `message_agent`. Claude Code reads `0` as off.
+pub fn worker_settings(settings: &ClaudeCodeSettings) -> ClaudeCodeSettings {
+    let mut settings = settings.clone();
+    settings
+        .env
+        .insert(SILENT_TURN_REMINDER.to_string(), "0".to_string());
+    settings
 }
 
 /// Why Claude Code can't run.

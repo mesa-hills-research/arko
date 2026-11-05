@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::billing::WorkerBilling;
 use crate::builtin_skills::BuiltinSkills;
+use crate::claude_code;
 use crate::crew;
 use crate::index;
 use crate::providers::{self, OpenAiAuth};
@@ -748,7 +749,7 @@ pub(crate) fn worker_setup(
         llm_config: worker.llm_config(thinking_text)?,
         claude_code: worker
             .in_claude_code()
-            .then(|| providers.claude_code.clone()),
+            .then(|| claude_code::worker_settings(&providers.claude_code)),
         handover: Some(handover(
             worker,
             worker.handover_at.unwrap_or(handover_at),
@@ -816,7 +817,9 @@ pub fn worker_config(settings: &AgentSettings) -> Result<AgentConfig, String> {
         builder = builder.skills_config(skills);
     }
     if settings.worker.in_claude_code() {
-        builder = builder.claude_code(settings.providers.claude_code.clone());
+        builder = builder.claude_code(claude_code::worker_settings(
+            &settings.providers.claude_code,
+        ));
     }
     builder.build().map_err(|error| error.to_string())
 }
@@ -1351,6 +1354,34 @@ mod tests {
                 .claude_code
                 .is_some()
         );
+    }
+
+    /// Claude Code reminds an agent that the user hasn't heard from it in a
+    /// while. A worker's user is its lead, who reads `message_agent`, and
+    /// workers took the reminder as a request for a note to the user. It is
+    /// off for the workers, in the configuration and in the setup a run
+    /// starts with, and the main agent keeps it.
+    #[test]
+    fn claude_code_workers_get_no_silent_turn_reminder() {
+        const REMINDER: &str = "CLAUDE_CODE_SILENT_TURN_REMINDER";
+        let opus = model("cc:opus", false);
+        let with = AgentSettings::for_test(&opus, &opus);
+        let main = main_config(&with).unwrap();
+        let worker = worker_config(&with).unwrap();
+        let main_env = &main.claude_code.as_ref().unwrap().env;
+        let worker_env = &worker.claude_code.as_ref().unwrap().env;
+        assert!(!main_env.contains_key(REMINDER), "{main_env:?}");
+        assert_eq!(worker_env[REMINDER], "0");
+        // The rest of the settings are the main agent's.
+        let mut rest = worker_env.clone();
+        rest.remove(REMINDER);
+        assert_eq!(&rest, main_env);
+        let started = worker_setup(&opus, with.providers, true, 200_000, true).unwrap();
+        assert_eq!(started.claude_code.unwrap().env[REMINDER], "0");
+        // A model on another provider has no Claude Code settings to add to.
+        let api = model("opus", false);
+        let setup = worker_setup(&api, with.providers, true, 200_000, true).unwrap();
+        assert!(setup.claude_code.is_none());
     }
 
     /// Agents in Claude Code compact at the handover size by default, and
