@@ -6,6 +6,13 @@ use ratatui::backend::TestBackend;
 
 use super::*;
 use crate::dictation::models::GRANITE;
+use crate::dictation::{Download, ModelKind};
+
+/// Granite Speech isn't downloaded.
+const GRANITE_MISSING: Download = Download {
+    speech: Some(&GRANITE),
+    cleanup: None,
+};
 use crate::tui::app::tests::app;
 use crate::ui::Input;
 
@@ -217,7 +224,7 @@ fn a_missing_model_asks_before_it_downloads() {
     let mut app = app();
     ctrl_r(&mut app);
     dictates(&mut app);
-    app.dictation_refused(DictationError::NeedsDownload(&GRANITE));
+    app.dictation_refused(DictationError::NeedsDownload(GRANITE_MISSING));
     assert!(app.recording.is_none());
     let rows = screen(&mut app, 80, 24).join("\n");
     assert!(rows.contains("Download a speech model?"), "{rows}");
@@ -232,7 +239,7 @@ fn a_missing_model_asks_before_it_downloads() {
     key(&mut app, KeyCode::Enter);
     assert!(app.overlay.is_none() && app.take_effects().is_empty());
     // Download starts the recording again, with the download.
-    app.dictation_refused(DictationError::NeedsDownload(&GRANITE));
+    app.dictation_refused(DictationError::NeedsDownload(GRANITE_MISSING));
     key(&mut app, KeyCode::Enter);
     assert!(app.overlay.is_none());
     assert_eq!(dictates(&mut app), [Dictate::Open { download: true }]);
@@ -251,6 +258,7 @@ fn a_download_runs_beside_the_box() {
     app.dictation_opened(3);
     dictates(&mut app);
     let step = Preparing::Downloading {
+        model: ModelKind::Speech,
         done: 412_000_000,
         total: 948_011_281,
     };
@@ -286,6 +294,7 @@ fn a_finished_download_waits_for_ctrl_r() {
     app.dictation_opened(4);
     dictates(&mut app);
     let step = Preparing::Downloading {
+        model: ModelKind::Speech,
         done: 0,
         total: 948_011_281,
     };
@@ -299,7 +308,47 @@ fn a_finished_download_waits_for_ctrl_r() {
     }
     assert_eq!(dictates(&mut app), [Dictate::Cancel]);
     assert!(app.recording.is_none());
-    assert_eq!(app.hint(), Some(MODEL_READY));
+    assert_eq!(
+        app.hint(),
+        Some("Speech model downloaded. Press Ctrl+R to dictate.")
+    );
+    // Full cleanup's model alone says so.
+    ctrl_r(&mut app);
+    app.dictation_opened(5);
+    dictates(&mut app);
+    let step = Preparing::Downloading {
+        model: ModelKind::Cleanup,
+        done: 0,
+        total: 157_673_903,
+    };
+    event(&mut app, 5, DictationEvent::Preparing(step));
+    event(&mut app, 5, DictationEvent::Listening);
+    assert_eq!(
+        app.hint(),
+        Some("Cleanup model downloaded. Press Ctrl+R to dictate.")
+    );
+}
+
+/// The question names full cleanup's model when it downloads too.
+#[test]
+fn the_question_names_the_cleanup_model() {
+    let mut app = app();
+    ctrl_r(&mut app);
+    dictates(&mut app);
+    app.dictation_refused(DictationError::NeedsDownload(Download {
+        cleanup: Some(157_673_903),
+        ..GRANITE_MISSING
+    }));
+    let rows = screen(&mut app, 80, 24).join("\n");
+    assert!(
+        rows.contains("Download the speech and cleanup models?"),
+        "{rows}"
+    );
+    assert!(
+        rows.contains("Full cleanup runs on this computer"),
+        "{rows}"
+    );
+    assert!(rows.contains("own (158 MB download)."), "{rows}");
 }
 
 /// Failures are notices in the transcript, which outlast the status line,

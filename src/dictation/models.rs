@@ -123,6 +123,11 @@ pub fn tagger_dir(root: &Path) -> PathBuf {
         .join("disfluency-tagger")
 }
 
+/// Full cleanup's pack, in Arko's folder `root`.
+pub fn tagger_pack(root: &Path) -> PathBuf {
+    tagger_dir(root).join(PACK_FILE)
+}
+
 /// Megabytes, rounded, as the download question gives sizes.
 pub fn megabytes(bytes: u64) -> u64 {
     (bytes + 500_000) / 1_000_000

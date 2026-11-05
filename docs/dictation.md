@@ -40,8 +40,9 @@ Cleanup takes hesitations, repeats and false starts out of what you dictate in E
 | `full` | The same as `medium`, caught more often, with a 158 MB model |
 
 With `medium` and `full`, what you say stays dimmed until you pause, then goes into the box
-cleaned. The model of `full` goes in `models/cleanup/disfluency-tagger/model.pack` in Arko's
-folder, and stays in memory beside the speech model for as long.
+cleaned. The first recording with `full` asks before it downloads its model, as for the speech
+model, and keeps it in `models/cleanup/disfluency-tagger/` in Arko's folder. It stays in memory
+beside the speech model for as long.
 
 Cleanup only deletes words, and the session's words always stay. So do the words dictation needs
 that look like fillers or repeats, such as a spoken symbol and the words beside it ("dash dash
@@ -85,7 +86,7 @@ left out.
 | `model` | `automatic` (by the language), `granite` or `parakeet` |
 | `language` | The language you speak, such as `fr` or `pt-BR`, in place of the system's |
 | `idle_minutes` | How long the model stays in memory after a recording |
-| `download` | `ask` before downloading a missing model, or `automatic` |
+| `download` | `ask` before downloading a missing model, the speech model or full cleanup's, or `automatic` |
 | `session_words` | `true` to favour the [session's words](#session-words), or `false` |
 | `leave_out_secrets` | `true` to leave secrets out of the session's words, `false` by default |
 | `cleanup` | `off`, `light`, `medium` or `full`, for what [cleanup](#cleanup) takes out |

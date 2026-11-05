@@ -55,14 +55,19 @@ pub enum DictationEvent {
     Failed(String),
 }
 
-/// A step of making the model ready.
+/// A step of making the models ready.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preparing {
-    /// Bytes of the model's files downloaded so far, of `total`.
-    Downloading { done: u64, total: u64 },
-    /// Checking the download and converting it to the engine's pack.
+    /// Bytes of `model`'s files downloaded so far, of `total`.
+    Downloading {
+        model: ModelKind,
+        done: u64,
+        total: u64,
+    },
+    /// Checking the speech model's download and converting it to the
+    /// engine's pack.
     Packing,
-    /// Loading the pack into memory.
+    /// Loading the speech model into memory.
     Loading,
 }
 
@@ -70,14 +75,97 @@ impl Preparing {
     /// The step in a few words, as a status line shows it.
     pub fn label(&self) -> String {
         match self {
-            Preparing::Downloading { done, total } => format!(
-                "Downloading speech model ({} of {} MB)",
+            Preparing::Downloading { model, done, total } => format!(
+                "Downloading {} ({} of {} MB)",
+                model.name(),
                 done / 1_000_000,
                 models::megabytes(*total)
             ),
             Preparing::Packing => "Preparing speech model".into(),
             Preparing::Loading => "Loading speech model".into(),
         }
+    }
+}
+
+/// Which of dictation's models a download brings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelKind {
+    Speech,
+    /// Full cleanup's model.
+    Cleanup,
+}
+
+impl ModelKind {
+    /// Its name in a sentence.
+    pub fn name(self) -> &'static str {
+        match self {
+            ModelKind::Speech => "speech model",
+            ModelKind::Cleanup => "cleanup model",
+        }
+    }
+}
+
+/// What a recording downloads before it starts, which the user is asked
+/// about first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Download {
+    /// The speech model, when it isn't downloaded yet.
+    pub speech: Option<&'static SpeechModel>,
+    /// The bytes of full cleanup's model, when it's chosen and isn't
+    /// downloaded yet.
+    pub cleanup: Option<u64>,
+}
+
+impl Download {
+    /// The question's title.
+    pub fn title(&self) -> &'static str {
+        match (self.speech, self.cleanup) {
+            (Some(_), Some(_)) => "Download the speech and cleanup models?",
+            (None, Some(_)) => "Download the cleanup model?",
+            _ => "Download a speech model?",
+        }
+    }
+
+    /// What the question says of the models.
+    pub fn offer(&self) -> String {
+        let cleanup = self.cleanup.map(|bytes| {
+            format!(
+                "Full cleanup runs on this computer with a model of its own ({} MB download).",
+                models::megabytes(bytes)
+            )
+        });
+        let speech = self.speech.map(SpeechModel::offer);
+        speech
+            .into_iter()
+            .chain(cleanup)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The step the download starts on. Full cleanup's model comes first.
+    pub fn first_step(&self) -> Preparing {
+        match (self.cleanup, self.speech) {
+            (Some(bytes), _) => Preparing::Downloading {
+                model: ModelKind::Cleanup,
+                done: 0,
+                total: bytes,
+            },
+            (None, speech) => Preparing::Downloading {
+                model: ModelKind::Speech,
+                done: 0,
+                total: speech.map_or(0, SpeechModel::download_bytes),
+            },
+        }
+    }
+}
+
+/// What a front end says once a recording's downloads are done, given which
+/// models came.
+pub fn downloaded(speech: bool, cleanup: bool) -> &'static str {
+    match (speech, cleanup) {
+        (true, true) => "Speech and cleanup models downloaded.",
+        (false, true) => "Cleanup model downloaded.",
+        _ => "Speech model downloaded.",
     }
 }
 
@@ -95,9 +183,9 @@ pub type Sink = Box<dyn FnMut(DictationUpdate) + Send>;
 /// What [`DictationService::open`] needs to know.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DictationOptions {
-    /// The user agreed to download the model now, if it's missing. Without
-    /// it a missing model is [`DictationError::NeedsDownload`], unless the
-    /// settings download it without asking.
+    /// The user agreed to download the models now, if they're missing.
+    /// Without it a missing model is [`DictationError::NeedsDownload`],
+    /// unless the settings download without asking.
     pub download: bool,
 }
 
@@ -108,8 +196,8 @@ pub enum DictationError {
     Unavailable,
     /// Another dictation is running in this process.
     Busy,
-    /// The model isn't downloaded yet, and the user should be asked first.
-    NeedsDownload(&'static SpeechModel),
+    /// A model isn't downloaded yet, and the user should be asked first.
+    NeedsDownload(Download),
     /// The service's thread is gone.
     Stopped,
 }
@@ -119,9 +207,15 @@ impl std::fmt::Display for DictationError {
         match self {
             DictationError::Unavailable => f.write_str("This build of Arko has no dictation."),
             DictationError::Busy => f.write_str("Dictation is already running in another window."),
-            DictationError::NeedsDownload(model) => {
-                write!(f, "{} isn't downloaded yet.", model.title)
-            }
+            DictationError::NeedsDownload(download) => match download.speech {
+                Some(model) if download.cleanup.is_some() => write!(
+                    f,
+                    "{} and full cleanup's model aren't downloaded yet.",
+                    model.title
+                ),
+                Some(model) => write!(f, "{} isn't downloaded yet.", model.title),
+                None => f.write_str("Full cleanup's model isn't downloaded yet."),
+            },
             DictationError::Stopped => {
                 f.write_str("Dictation stopped working. Restart Arko to use it again.")
             }
@@ -164,8 +258,8 @@ pub fn over_ssh() -> bool {
     std::env::var_os("SSH_CONNECTION").is_some_and(|value| !value.is_empty())
 }
 
-/// The download question's title and buttons.
-pub const DOWNLOAD_TITLE: &str = "Download a speech model?";
+/// The download question's buttons. Its title and text are the
+/// [`Download`]'s.
 pub const DOWNLOAD: &str = "Download";
 pub const CANCEL: &str = "Cancel";
 
@@ -176,10 +270,17 @@ mod tests {
     #[test]
     fn preparing_steps_read_as_the_status_line_shows_them() {
         let step = Preparing::Downloading {
+            model: ModelKind::Speech,
             done: 412_345_678,
             total: 948_011_281,
         };
         assert_eq!(step.label(), "Downloading speech model (412 of 948 MB)");
+        let step = Preparing::Downloading {
+            model: ModelKind::Cleanup,
+            done: 12_000_000,
+            total: 157_673_903,
+        };
+        assert_eq!(step.label(), "Downloading cleanup model (12 of 158 MB)");
         assert_eq!(Preparing::Packing.label(), "Preparing speech model");
         assert_eq!(Preparing::Loading.label(), "Loading speech model");
     }
@@ -190,9 +291,79 @@ mod tests {
             DictationError::Busy.to_string(),
             "Dictation is already running in another window."
         );
+        let speech = Download {
+            speech: Some(&models::GRANITE),
+            cleanup: None,
+        };
         assert_eq!(
-            DictationError::NeedsDownload(&models::GRANITE).to_string(),
+            DictationError::NeedsDownload(speech).to_string(),
             "Granite Speech 5.0 isn't downloaded yet."
+        );
+        let cleanup = Download {
+            speech: None,
+            cleanup: Some(157_673_903),
+        };
+        assert_eq!(
+            DictationError::NeedsDownload(cleanup).to_string(),
+            "Full cleanup's model isn't downloaded yet."
+        );
+        let both = Download {
+            cleanup: Some(157_673_903),
+            ..speech
+        };
+        assert_eq!(
+            DictationError::NeedsDownload(both).to_string(),
+            "Granite Speech 5.0 and full cleanup's model aren't downloaded yet."
+        );
+    }
+
+    /// The question names each model a recording downloads, and the
+    /// download starts on the cleanup model's.
+    #[test]
+    fn the_question_names_what_downloads() {
+        let speech = Download {
+            speech: Some(&models::GRANITE),
+            cleanup: None,
+        };
+        assert_eq!(speech.title(), "Download a speech model?");
+        assert_eq!(speech.offer(), models::GRANITE.offer());
+        assert_eq!(
+            speech.first_step(),
+            Preparing::Downloading {
+                model: ModelKind::Speech,
+                done: 0,
+                total: models::GRANITE.download_bytes()
+            }
+        );
+        let both = Download {
+            cleanup: Some(157_673_903),
+            ..speech
+        };
+        assert_eq!(both.title(), "Download the speech and cleanup models?");
+        assert_eq!(
+            both.offer(),
+            format!(
+                "{} Full cleanup runs on this computer with a model of its own (158 MB download).",
+                models::GRANITE.offer()
+            )
+        );
+        assert_eq!(
+            both.first_step(),
+            Preparing::Downloading {
+                model: ModelKind::Cleanup,
+                done: 0,
+                total: 157_673_903
+            }
+        );
+        let cleanup = Download {
+            speech: None,
+            ..both
+        };
+        assert_eq!(cleanup.title(), "Download the cleanup model?");
+        assert_eq!(downloaded(false, true), "Cleanup model downloaded.");
+        assert_eq!(
+            downloaded(true, true),
+            "Speech and cleanup models downloaded."
         );
     }
 }

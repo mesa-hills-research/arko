@@ -52,7 +52,7 @@ pub enum Overlay {
     /// Dictation's first recording asks before it downloads `model`.
     /// `choice` is the button on (0: Download, 1: Cancel).
     Download {
-        model: &'static crate::dictation::SpeechModel,
+        download: crate::dictation::Download,
         choice: usize,
     },
 }
@@ -228,24 +228,26 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
         Overlay::Resume(picker) => super::resume_picker::draw(frame, &app.theme, area, picker),
         Overlay::Quit { choice, dont_ask } => quit(frame, app, area, *choice, *dont_ask),
         Overlay::AskOff { choice, .. } => ask_off(frame, app, area, *choice),
-        Overlay::Download { model, choice } => download(frame, app, area, model, *choice),
+        Overlay::Download { download, choice } => {
+            self::download(frame, app, area, download, *choice)
+        }
     }
 }
 
-/// The question before dictation downloads its model. It shows which model, its
-/// sizes and licence, and Download or Cancel.
+/// The question before dictation downloads its models. It shows which models,
+/// their sizes and licences, and Download or Cancel.
 fn download(
     frame: &mut Frame,
     app: &App,
     area: Rect,
-    model: &crate::dictation::SpeechModel,
+    download: &crate::dictation::Download,
     choice: usize,
 ) {
     let theme = &app.theme;
     let width = 60.min(area.width.saturating_sub(4)).max(20);
     let inner = width.saturating_sub(4) as usize;
     let mut lines: Vec<Line<'static>> =
-        wrap::wrap(&[Span::styled(model.offer(), theme.text())], inner, 0)
+        wrap::wrap(&[Span::styled(download.offer(), theme.text())], inner, 0)
             .into_iter()
             .map(Line::from)
             .collect();
@@ -268,7 +270,7 @@ fn download(
     lines.push(Line::from(buttons));
     let height = (lines.len() as u16 + 4).min(area.height);
     let rect = centred(area, width, height);
-    let inner_rect = frame_box(frame, rect, theme, crate::dictation::DOWNLOAD_TITLE);
+    let inner_rect = frame_box(frame, rect, theme, download.title());
     let body = Rect::new(
         inner_rect.x + 1,
         inner_rect.y + 1,

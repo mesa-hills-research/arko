@@ -1899,7 +1899,7 @@ impl App {
             // another have started, the session asks again. No leaves the
             // choice unsaved, so the next quit asks again.
             // Esc is Cancel, and either button goes back to the settings.
-            Overlay::Download { model, choice } => self.download_key(key, model, choice),
+            Overlay::Download { download, choice } => self.download_key(key, download, choice),
             Overlay::AskOff { row, choice } => match key.code {
                 _ if close => Some(Overlay::Settings { row, picker: None }),
                 KeyCode::Left

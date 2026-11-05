@@ -15,7 +15,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::app::{App, Effect};
 use super::overlay::Overlay;
 use crate::dictation::{
-    self, DictationError, DictationEvent, DictationUpdate, Preparing, SpeechModel,
+    self, DictationError, DictationEvent, DictationUpdate, Download, ModelKind, Preparing,
 };
 use crate::remote::Level;
 
@@ -56,9 +56,9 @@ pub struct Recording {
     pub phase: Phase,
     /// Some of its words went into the box.
     wrote: bool,
-    /// The model was downloaded first, which takes minutes, so the microphone
-    /// doesn't open by surprise once it's done.
-    downloaded: bool,
+    /// The models downloaded first, speech and cleanup, which takes
+    /// minutes, so the microphone doesn't open by surprise once it's done.
+    downloaded: (bool, bool),
 }
 
 impl Recording {
@@ -89,7 +89,7 @@ impl App {
             id: None,
             phase: Phase::Starting,
             wrote: false,
-            downloaded: false,
+            downloaded: (false, false),
         });
         self.effects_push(Effect::Dictate(Dictate::Open { download }));
         if dictation::over_ssh() {
@@ -108,8 +108,11 @@ impl App {
     pub fn dictation_refused(&mut self, error: DictationError) {
         self.recording = None;
         match error {
-            DictationError::NeedsDownload(model) => {
-                self.overlay = Some(Overlay::Download { model, choice: 0 })
+            DictationError::NeedsDownload(download) => {
+                self.overlay = Some(Overlay::Download {
+                    download,
+                    choice: 0,
+                })
             }
             DictationError::Busy | DictationError::Unavailable => {
                 self.effects_push(Effect::Notice(Level::Warn, error.to_string()))
@@ -139,14 +142,29 @@ impl App {
         }
         match update.event {
             DictationEvent::Preparing(step) => {
-                if let Some(recording) = &mut self.recording {
-                    recording.downloaded |= matches!(step, Preparing::Downloading { .. });
+                if let (Some(recording), Preparing::Downloading { model, .. }) =
+                    (&mut self.recording, step)
+                {
+                    match model {
+                        ModelKind::Speech => recording.downloaded.0 = true,
+                        ModelKind::Cleanup => recording.downloaded.1 = true,
+                    }
                 }
                 self.set_phase(Phase::Preparing(step));
             }
-            DictationEvent::Listening if self.recording.as_ref().is_some_and(|r| r.downloaded) => {
+            DictationEvent::Listening
+                if self
+                    .recording
+                    .as_ref()
+                    .is_some_and(|r| r.downloaded != (false, false)) =>
+            {
+                let (speech, cleanup) = self
+                    .recording
+                    .as_ref()
+                    .map(|r| r.downloaded)
+                    .unwrap_or_default();
                 self.end_recording();
-                self.say(MODEL_READY);
+                self.say(ready(speech, cleanup));
                 self.effects_push(Effect::Dictate(Dictate::Cancel));
             }
             DictationEvent::Listening => {
@@ -248,14 +266,14 @@ impl App {
     pub(super) fn download_key(
         &mut self,
         key: KeyEvent,
-        model: &'static SpeechModel,
+        download: Download,
         choice: usize,
     ) -> Option<Overlay> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
                 Some(Overlay::Download {
-                    model,
+                    download,
                     choice: 1 - choice.min(1),
                 })
             }
@@ -265,13 +283,19 @@ impl App {
             }
             KeyCode::Enter | KeyCode::Esc => None,
             KeyCode::Char('c') if ctrl => None,
-            _ => Some(Overlay::Download { model, choice }),
+            _ => Some(Overlay::Download { download, choice }),
         }
     }
 }
 
-/// What the status line says once a download is done.
-const MODEL_READY: &str = "Speech model downloaded. Press Ctrl+R to dictate.";
+/// What the status line says once the downloads of the speech model and
+/// the cleanup model, as they came, are done.
+fn ready(speech: bool, cleanup: bool) -> String {
+    format!(
+        "{} Press Ctrl+R to dictate.",
+        dictation::downloaded(speech, cleanup)
+    )
+}
 
 /// The status line's words start in lower case, as its others do.
 fn lowercase(label: &str) -> String {

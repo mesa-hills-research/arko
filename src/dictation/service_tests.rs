@@ -5,7 +5,7 @@
 use std::sync::mpsc::Receiver;
 
 use super::*;
-use crate::dictation::models::GRANITE;
+use crate::dictation::models::{GRANITE, PACK_FILE};
 
 /// Arko's folder with `dictation.json` holding `settings`.
 fn root_with(settings: &str) -> tempfile::TempDir {
@@ -35,7 +35,12 @@ fn a_missing_model_asks_before_it_downloads() {
     let Err(error) = service.open(DictationOptions::default(), sink) else {
         panic!("opened without the model");
     };
-    assert_eq!(error, DictationError::NeedsDownload(&GRANITE));
+    let missing = Download {
+        speech: Some(&GRANITE),
+        cleanup: None,
+    };
+    assert_eq!(error, DictationError::NeedsDownload(missing));
+    assert_eq!(service.missing(), Some(missing));
 }
 
 #[test]
@@ -375,12 +380,26 @@ fn the_list_leaves_out_what_the_cleanup_takes_out() {
     }
 }
 
-/// Full cleanup whose tagger is missing or can't load fails at once, before
-/// the speech model downloads.
+/// Full cleanup's missing tagger is asked about with the speech model, and
+/// downloads first. A tagger that can't load fails before the speech model
+/// downloads.
 #[test]
-fn full_cleanup_fails_first_without_its_tagger() {
+fn full_cleanup_asks_for_its_tagger_and_fails_first_without_it() {
     let root = root_with(r#"{"model": "granite", "cleanup": "full", "language": "en"}"#);
     let service = DictationService::downloading_from(root.path(), NO_SERVER);
+    let missing = Download {
+        speech: Some(&GRANITE),
+        cleanup: Some(download::TAGGER.bytes),
+    };
+    assert_eq!(service.missing(), Some(missing));
+    let Err(error) = service.open(DictationOptions::default(), sink().0) else {
+        panic!("opened without the models");
+    };
+    assert_eq!(error, DictationError::NeedsDownload(missing));
+    // Another language needs no tagger.
+    let french = root_with(r#"{"model": "granite", "cleanup": "full", "language": "fr"}"#);
+    let speech_only = DictationService::downloading_from(french.path(), NO_SERVER).missing();
+    assert_eq!(speech_only.map(|download| download.cleanup), Some(None));
     let failed = || {
         let (sink, updates) = sink();
         let _dictation = service
@@ -388,14 +407,11 @@ fn full_cleanup_fails_first_without_its_tagger() {
             .unwrap();
         updates.recv_timeout(Duration::from_secs(10)).unwrap().event
     };
-    let dir = models::tagger_dir(root.path());
     assert_eq!(
         failed(),
-        DictationEvent::Failed(format!(
-            "Full cleanup needs its model in {}.",
-            dir.display()
-        ))
+        DictationEvent::Failed("Couldn't download the cleanup model (couldn't reach GitHub). Start dictation again to resume.".into())
     );
+    let dir = models::tagger_dir(root.path());
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(PACK_FILE), "not a pack").unwrap();
     let DictationEvent::Failed(why) = failed() else {
