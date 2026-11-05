@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use speech::disfluency::{Guards, PACK_DOWNLOAD, Tagger};
+use speech::disfluency::{Guards, PACK_DOWNLOAD, Punctuation, Tagger};
 use speech::model::ModelType;
 use speech::stream::{Event, StreamConfig, Streamer};
 use speech::{Fillers, Model, Options, SpecialWords};
@@ -543,7 +543,9 @@ fn load_tagger(root: &Path, slot: &mut Option<Arc<Tagger>>) -> Result<(), String
 
 /// The list every pass starts from, which leaves out what `cleanup` takes
 /// out, full cleanup with `tagger`. Every level keeps what Telmo's guards
-/// protect, such as a spoken symbol or a unit after a number.
+/// protect, such as a spoken symbol or a unit after a number, and tidies
+/// the punctuation and capitals the words that went leave, joining more
+/// sentences a pause split ("a release. Build." is "a release build").
 fn cleaned(cleanup: Cleanup, tagger: Option<Arc<Tagger>>) -> SpecialWords {
     let mut list = SpecialWords::new();
     match cleanup {
@@ -553,6 +555,7 @@ fn cleaned(cleanup: Cleanup, tagger: Option<Arc<Tagger>>) -> SpecialWords {
         Cleanup::Full => list.set_disfluencies(tagger),
     }
     list.set_guards(Guards::for_language("en"));
+    list.set_punctuation(Punctuation::for_language("en").map(Punctuation::joining_more));
     list
 }
 

@@ -6,6 +6,7 @@ use std::sync::mpsc::Receiver;
 
 use super::*;
 use crate::dictation::models::{GRANITE, PACK_FILE};
+use speech::disfluency::Punctuation;
 
 /// Arko's folder with `dictation.json` holding `settings`.
 fn root_with(settings: &str) -> tempfile::TempDir {
@@ -374,9 +375,12 @@ fn the_list_leaves_out_what_the_cleanup_takes_out() {
     assert_eq!(list.words().collect::<Vec<_>>(), ["Telmo"]);
     // Medium's tagger is built in.
     assert!(cleaned(Cleanup::Medium, None).disfluencies().is_some());
-    // Every level keeps what the guards protect.
+    // Every level keeps what the guards protect, and tidies the
+    // punctuation.
+    let punctuation = Punctuation::for_language("en").map(Punctuation::joining_more);
     for level in [Cleanup::Light, Cleanup::Medium, Cleanup::Full] {
         assert_eq!(cleaned(level, None).guards(), Guards::for_language("en"));
+        assert_eq!(cleaned(level, None).punctuation(), punctuation);
     }
 }
 
