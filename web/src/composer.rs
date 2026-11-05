@@ -208,12 +208,11 @@ pub fn Composer() -> impl IntoView {
     let attached = page.attached;
     // Whether an approval answer takes the box's words, kept here so a text
     // that comes back keeps what the tray made of it. Each feed's tray
-    // starts over.
+    // starts it over.
     let switch = RwSignal::new(MessageSwitch::default());
     Effect::new(move |_| {
         page.feeds.track();
         crate::attach::feed_changed();
-        switch.set(MessageSwitch::default());
     });
     let _shown = window_event_listener(leptos::ev::visibilitychange, |_| {
         if document().visibility_state() == web_sys::VisibilityState::Visible {

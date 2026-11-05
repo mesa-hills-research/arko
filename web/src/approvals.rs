@@ -50,6 +50,16 @@ impl Rows {
         }
     }
 
+    /// The rows of a new tray (each feed has its own), which starts `switch`
+    /// over before any of its effects reads it.
+    fn starting(message: RwSignal<MessageSwitch>) -> Self {
+        message.set(MessageSwitch::default());
+        Self {
+            message,
+            ..Self::new()
+        }
+    }
+
     fn requests_changed(self, ids: &HashSet<String>, has_text: bool) {
         self.shown.update(|shown| shown.retain(ids));
         self.message
@@ -236,10 +246,7 @@ fn flip(set: RwSignal<HashSet<String>>, id: &str) {
 pub fn Tray(draft: RwSignal<String>, switch: RwSignal<MessageSwitch>) -> impl IntoView {
     let page = page();
     let requests = Memo::new(move |_| page.status.with(|status| status.approvals.clone()));
-    let rows = Rows {
-        message: switch,
-        ..Rows::new()
-    };
+    let rows = Rows::starting(switch);
     let list: NodeRef<leptos::html::Ul> = NodeRef::new();
     let observer = StoredValue::new_local(
         None::<(
@@ -578,6 +585,25 @@ mod tests {
                 &requests.iter().map(|request| request.id.clone()).collect(),
                 1000,
             )
+        });
+    }
+
+    /// A new feed's tray starts the box's switch over before it follows the
+    /// requests, so a message typed after them goes with the answer.
+    #[test]
+    fn a_new_tray_starts_the_switch_over() {
+        Owner::new().with(|| {
+            let switch = RwSignal::new(MessageSwitch::default());
+            switch.update(|switch| {
+                switch.requests(HashSet::from(["a1".into()]), true);
+                switch.flip();
+            });
+            assert!(switch.with_untracked(MessageSwitch::includes));
+            let rows = Rows::starting(switch);
+            assert_eq!(switch.get_untracked(), MessageSwitch::default());
+            follow(rows, &requests(&["b1"]), false);
+            rows.message.update(|message| message.edited(true));
+            assert!(rows.includes_message());
         });
     }
 
