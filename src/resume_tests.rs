@@ -706,6 +706,43 @@ async fn a_message_after_a_cut_off_turn_reaches_the_agent_with_its_images() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// A conversation whose run failed stays the one the next message goes
+/// to when the workflow is built again, so that message goes on in it
+/// rather than in a new entry of `/resume`'s list.
+#[tokio::test]
+async fn a_failed_conversation_stays_current_when_the_workflow_is_rebuilt() {
+    // (A reply without a call fails a turn that ends with one.)
+    let server = ModelServer::start(Arc::new(|_, body: String| {
+        Box::pin(async move {
+            if body.contains("Again.") {
+                complete("m2", "Done.")
+            } else {
+                crate::mock_model::reply("m1", "Noted.")
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let end = harness.turn(Prompt::User("Hi.".into()), &mut inputs).await;
+    assert!(matches!(end, TurnEnd::Failed));
+    assert!(matches!(harness.conversation, Conversation::New));
+    assert_eq!(harness.conversations.current, Some(0));
+    assert!(harness.session.latest_checkpoint().is_some());
+    harness.reopen_workflow().unwrap();
+    assert_eq!(
+        harness.conversations.current,
+        Some(0),
+        "the failed conversation was left"
+    );
+    let end = harness
+        .turn(Prompt::User("Again.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(harness.conversations.list.len(), 1);
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// The JSON files under `dir`, at any depth.
 fn json_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();

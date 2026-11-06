@@ -2729,8 +2729,10 @@ impl Harness {
     /// configurations now (between turns). The conversations go on where
     /// they are.
     fn reopen_workflow(&mut self) -> Result<(), String> {
-        // As it is now, because `/new` may have left the conversation it was in.
-        let new = matches!(self.conversation, Conversation::New);
+        // As it is now, because `/new` may have left the conversation it was
+        // in. (A conversation whose run failed stays current, so the next
+        // message starts it over in its place.)
+        let new = self.conversations.current.is_none();
         self.save_conversations();
         self.open(self.session.latest_checkpoint().is_some())?;
         if new {
