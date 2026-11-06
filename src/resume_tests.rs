@@ -579,7 +579,9 @@ async fn a_conversation_resumed_is_told_when_no_notes_are_left() {
 
 /// A conversation's saved task is read when the conversation is opened or
 /// gone back to. One that can't be read fails the session's open, as when
-/// every task was read on open, and `/resume` to it says so.
+/// every task was read on open, and `/resume` to it says so. An open that
+/// fails leaves the session on the workflow it had, with its status, and
+/// with the workers' start hook choosing and checking each new worker.
 #[tokio::test]
 async fn a_conversation_whose_task_cant_be_read_says_so() {
     let temp = tempfile::tempdir().unwrap();
@@ -628,9 +630,19 @@ async fn a_conversation_whose_task_cant_be_read_says_so() {
     harness.conversation = conversation_of(harness.workflow(), pears_run);
 
     // The current one's is read on open.
+    let before = harness.workflow().clone();
     std::fs::remove_file(pears).unwrap();
     let error = harness.open(true).err().unwrap();
     assert!(error.contains("task file"), "{error}");
+    let crew = harness.crew.clone().unwrap();
+    assert!(crew.attached(), "the start hook was left detached");
+    let shown = lock(&harness.gauges.workflow).clone().unwrap();
+    assert!(
+        Arc::ptr_eq(&shown, &before),
+        "the status shows the workflow that failed"
+    );
+    assert!(Arc::ptr_eq(harness.workflow(), &before));
+    crew.shutdown().await;
 }
 
 /// The JSON files under `dir`, at any depth.

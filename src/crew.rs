@@ -1381,6 +1381,19 @@ impl Crew {
         self.models.lock().unwrap().attached = false;
     }
 
+    /// The workflow it was attached to before [`detach`](Self::detach) goes
+    /// on, because the one being built failed, so the start hook's calls
+    /// are starts again.
+    pub fn reattach(&self) {
+        self.models.lock().unwrap().attached = true;
+    }
+
+    /// Whether the start hook's calls are starts.
+    #[cfg(test)]
+    pub(crate) fn attached(&self) -> bool {
+        self.models.lock().unwrap().attached
+    }
+
     /// Records the model of each worker run that has no record yet (runs
     /// of Arko before records existed), as it started, so that it keeps it
     /// once new workers start on another. Called as that changes. Returns
