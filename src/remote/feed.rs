@@ -1385,14 +1385,17 @@ struct State {
     hide_thinking: bool,
     /// The provider's refusal of reasoning summaries was told.
     thinking_refused: bool,
-    activity: Activity,
+    /// Where the main agent's turn is, which the clients read as the
+    /// activity ([`State::activity`]).
+    phase: TurnPhase,
+    /// The question card the main agent waits on, for the activity.
+    question: Option<Question>,
     /// The main agent's questions.
     questions: crate::questions::Book,
     /// The approval tray's requests.
     approvals: crate::approvals::Queue,
+    /// The latest turn, which new items join. It only grows.
     turn: Option<u64>,
-    /// The user's message started the turn `turn`, which hasn't begun yet.
-    turn_opened: bool,
     /// Names of the runs that came without a label, by run.
     runs: HashMap<Uuid, String>,
     /// Calls waiting for their results, by call.
@@ -1423,13 +1426,58 @@ struct State {
     /// The text of each agent's latest `ServiceWarning`, which the error that
     /// follows it doesn't repeat.
     warned: HashMap<String, String>,
-    /// The notice that the turn is stopping, until it has stopped.
-    stopping: Option<u64>,
     /// How many updates have gone out ([`Feed::publish`]).
     seq: u64,
 }
 
+/// Where the main agent's turn is, as the clients show it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum TurnPhase {
+    /// No turn runs.
+    #[default]
+    Idle,
+    /// The user's message opened turn `State::turn`, which hasn't begun.
+    Opened,
+    /// A turn runs, since `since` (Unix milliseconds). `stopping` is the
+    /// warning that the user stopped it, until it has stopped.
+    Running { since: i64, stopping: Option<u64> },
+    /// The old model writes its report for a switch, since `since`.
+    Reporting { since: i64 },
+}
+
+/// What moves the main agent's turn ([`Feed::turn_event`]).
+#[derive(Debug, Clone, Copy)]
+enum TurnEvent<'a> {
+    /// The user's message opens a turn, which begins later.
+    Opened,
+    Started,
+    /// The user stopped the turn, with this warning.
+    Stopping(&'a str),
+    /// The turn stopped, and its warning says this now.
+    Stopped(&'a str),
+    /// The turn ended, with what it took and the plan's usage.
+    Ended(&'a str, Option<&'a str>),
+    ReportStarted,
+    ReportEnded,
+}
+
 impl State {
+    /// The activity the clients read, from where the turn is and the
+    /// question the agent waits on.
+    fn activity(&self) -> Activity {
+        let (since, reporting) = match self.phase {
+            TurnPhase::Idle | TurnPhase::Opened => (None, false),
+            TurnPhase::Running { since, .. } => (Some(since), false),
+            TurnPhase::Reporting { since } => (Some(since), true),
+        };
+        Activity {
+            working: since.is_some(),
+            question: self.question.clone(),
+            since,
+            reporting,
+        }
+    }
+
     /// The question card the transcript shows for all of `asked`, run
     /// `run`'s questions, if they share one.
     fn card_shown(&self, run: Uuid, asked: &[crate::questions::AskedQuestion]) -> Option<u64> {
@@ -1705,14 +1753,14 @@ impl Feed {
             items,
             workers: state.workers.iter().map(|w| w.summary.clone()).collect(),
             jobs: state.jobs.clone(),
-            activity: state.activity.clone(),
+            activity: state.activity(),
             feed: self.inner.id,
             seq: state.seq,
         }
     }
 
     pub fn activity(&self) -> Activity {
-        self.lock().activity.clone()
+        self.lock().activity()
     }
 
     /// How long each worker has run, by its ID, now, to keep with the
@@ -1957,12 +2005,87 @@ impl Feed {
         }
     }
 
-    fn set_activity(&self, change: impl FnOnce(&mut Activity)) {
-        let mut state = self.lock();
-        let before = state.activity.clone();
-        change(&mut state.activity);
-        if state.activity != before {
-            self.publish(&mut state, Update::Activity);
+    /// Moves the main agent's turn on by `event`, and tells the clients
+    /// when their activity changed. Every move of the turn is here.
+    fn turn_event(&self, state: &mut State, event: TurnEvent<'_>) {
+        use TurnPhase::{Idle, Opened, Reporting, Running};
+        let before = state.activity();
+        let now = now_ms();
+        let next_turn =
+            |state: &mut State| state.turn = Some(state.turn.map_or(1, |turn| turn + 1));
+        match (state.phase, event) {
+            (Idle, TurnEvent::Opened) => {
+                next_turn(state);
+                state.phase = Opened;
+            }
+            (Opened, TurnEvent::Opened) => next_turn(state),
+            // (The harness sends a message during a turn or a report as a
+            // note, so it joins them.)
+            (Running { .. } | Reporting { .. }, TurnEvent::Opened) => {}
+            (Opened, TurnEvent::Started) => {
+                state.phase = Running {
+                    since: now,
+                    stopping: None,
+                }
+            }
+            (Idle | Running { .. } | Reporting { .. }, TurnEvent::Started) => {
+                // (A turn begun again without its end stopped nothing.)
+                self.take_back_stop(state);
+                next_turn(state);
+                state.phase = Running {
+                    since: now,
+                    stopping: None,
+                };
+            }
+            (
+                Running {
+                    since,
+                    stopping: None,
+                },
+                TurnEvent::Stopping(text),
+            ) => {
+                let id = self.push_stopping(state, text);
+                state.phase = Running {
+                    since,
+                    stopping: Some(id),
+                };
+            }
+            // Only a turn that runs stops, and it says so once.
+            (_, TurnEvent::Stopping(_)) => {}
+            (
+                Running {
+                    since,
+                    stopping: Some(id),
+                },
+                TurnEvent::Stopped(text),
+            ) => {
+                state.phase = Running {
+                    since,
+                    stopping: None,
+                };
+                self.say_stopped(state, Some(id), text);
+            }
+            (_, TurnEvent::Stopped(text)) => self.say_stopped(state, None, text),
+            (_, TurnEvent::Ended(summary, plan_usage)) => {
+                // A stop that never took (the reply came first, or the turn
+                // failed) ends with the turn.
+                self.take_back_stop(state);
+                self.interrupt_calls(state, MAIN_AGENT);
+                // The plan's usage is the detail, so the page can keep it whole
+                // on a line of its own.
+                let mut item = Item::new(Kind::Turn, summary);
+                item.detail = plan_usage.map(str::to_string);
+                self.push(state, item);
+                state.phase = Idle;
+            }
+            (Idle | Opened, TurnEvent::ReportStarted) => state.phase = Reporting { since: now },
+            // (A report is written only between turns, one at a time.)
+            (Running { .. } | Reporting { .. }, TurnEvent::ReportStarted) => {}
+            (Reporting { .. }, TurnEvent::ReportEnded) => state.phase = Idle,
+            (Idle | Opened | Running { .. }, TurnEvent::ReportEnded) => {}
+        }
+        if state.activity() != before {
+            self.publish(state, Update::Activity);
         }
     }
 
@@ -2300,8 +2423,7 @@ impl Feed {
         item.files = files;
         let mut state = self.lock();
         if delivery == Delivery::Turn {
-            state.turn = Some(state.turn.map_or(1, |turn| turn + 1));
-            state.turn_opened = true;
+            self.turn_event(&mut state, TurnEvent::Opened);
         }
         self.push(&mut state, item)
     }
@@ -2939,46 +3061,78 @@ impl Feed {
     }
 
     /// The user stopped the main agent's turn, with a warning that says so,
-    /// which [`turn_stopped`](Self::turn_stopped) changes in its place.
+    /// which [`turn_stopped`](Self::turn_stopped) changes in its place. Only
+    /// a turn that runs stops, and it says so once.
     pub fn turn_stopping(&self, text: &str) {
         let text = text.trim();
         if text.is_empty() {
             return;
         }
-        let mut state = self.lock();
-        let item = Item::new(Kind::Notice, text).level(Level::Warn);
-        // The model may still send some of its response, and it goes on in the
-        // text it was in, above this line, as the turn ends.
-        let open = state.open_text.get(&item.agent).copied();
-        let agent = item.agent.clone();
-        let id = self.push(&mut state, item);
-        if let Some(open) = open {
-            state.open_text.insert(agent, open);
-        }
-        state.stopping = Some(id);
+        self.turn_event(&mut self.lock(), TurnEvent::Stopping(text));
     }
 
     /// The turn stopped. The warning that it was stopping says `text` now,
     /// in its place, or a new one does once it's gone.
     pub fn turn_stopped(&self, text: &str) {
-        let text = text.trim();
-        let mut state = self.lock();
-        if let Some(id) = state.stopping.take()
+        self.turn_event(&mut self.lock(), TurnEvent::Stopped(text.trim()));
+    }
+
+    /// Whether the user stopped the turn and it hasn't ended yet.
+    pub(crate) fn turn_is_stopping(&self) -> bool {
+        matches!(
+            self.lock().phase,
+            TurnPhase::Running {
+                stopping: Some(_),
+                ..
+            }
+        )
+    }
+
+    /// The warning that the turn is stopping, item `text`, below the text
+    /// the model may still add to as the turn ends.
+    fn push_stopping(&self, state: &mut State, text: &str) -> u64 {
+        let item = Item::new(Kind::Notice, text).level(Level::Warn);
+        let open = state.open_text.get(&item.agent).copied();
+        let agent = item.agent.clone();
+        let id = self.push(state, item);
+        if let Some(open) = open {
+            state.open_text.insert(agent, open);
+        }
+        id
+    }
+
+    /// The warning `stopping` says the turn stopped (`text`) in its place,
+    /// or a new one does when there's none, or it's gone.
+    fn say_stopped(&self, state: &mut State, stopping: Option<u64>, text: &str) {
+        if let Some(id) = stopping
             && let Some(item) = state.main.find(id)
         {
             let before = item.size();
             item.text = text.to_string();
             let item = item.clone();
             state.main.bytes = (state.main.bytes + item.size()).saturating_sub(before);
-            self.publish(&mut state, Update::Change(item));
+            self.publish(state, Update::Change(item));
             return;
         }
-        self.push(&mut state, Item::new(Kind::Notice, text).level(Level::Warn));
+        self.push(state, Item::new(Kind::Notice, text).level(Level::Warn));
     }
 
-    /// Whether the user stopped the turn and it hasn't ended yet.
-    pub(crate) fn turn_is_stopping(&self) -> bool {
-        self.lock().stopping.is_some()
+    /// The warning that the turn is stopping goes, because the turn ended
+    /// another way (its reply came first, or it failed).
+    fn take_back_stop(&self, state: &mut State) {
+        if let TurnPhase::Running {
+            since,
+            stopping: Some(id),
+        } = state.phase
+        {
+            state.phase = TurnPhase::Running {
+                since,
+                stopping: None,
+            };
+            if state.main.remove(id).is_some() {
+                self.publish(state, Update::Remove { id });
+            }
+        }
     }
 
     /// A command's output.
@@ -3030,31 +3184,21 @@ impl Feed {
 
     /// A turn of the main agent begins, and the items from here on are its.
     pub fn turn_started(&self) {
-        {
-            let mut state = self.lock();
-            state.warned.remove(MAIN_AGENT);
-            state.stopping = None;
-            if state.turn_opened {
-                state.turn_opened = false;
-            } else {
-                state.turn = Some(state.turn.map_or(1, |turn| turn + 1));
-            }
-        }
-        self.set_activity(|activity| {
-            activity.working = true;
-            activity.since = Some(now_ms());
-        });
+        let mut state = self.lock();
+        state.warned.remove(MAIN_AGENT);
+        self.turn_event(&mut state, TurnEvent::Started);
     }
 
     /// The main agent works on a report for a new conversation (`true`), or
     /// it is done. The clients show it working meanwhile, and their stop
     /// skips it.
     pub(crate) fn reporting(&self, working: bool) {
-        self.set_activity(|activity| {
-            activity.working = working;
-            activity.reporting = working;
-            activity.since = working.then(now_ms);
-        });
+        let event = if working {
+            TurnEvent::ReportStarted
+        } else {
+            TurnEvent::ReportEnded
+        };
+        self.turn_event(&mut self.lock(), event);
         if !working {
             self.question_activity();
         }
@@ -3062,20 +3206,7 @@ impl Feed {
 
     /// The turn ended, and `summary` is what it took (time, cost, context).
     pub fn turn_ended(&self, summary: &str, plan_usage: Option<&str>) {
-        {
-            let mut state = self.lock();
-            state.turn_opened = false;
-            self.interrupt_calls(&mut state, MAIN_AGENT);
-            // The plan's usage is the detail, so the page can keep it whole
-            // on a line of its own.
-            let mut item = Item::new(Kind::Turn, summary);
-            item.detail = plan_usage.map(str::to_string);
-            self.push(&mut state, item);
-        }
-        self.set_activity(|activity| {
-            activity.working = false;
-            activity.since = None;
-        });
+        self.turn_event(&mut self.lock(), TurnEvent::Ended(summary, plan_usage));
         self.question_activity();
     }
 
@@ -3391,7 +3522,12 @@ impl Feed {
                         .join("\n"),
                 })
         };
-        self.set_activity(|activity| activity.question = latest);
+        let mut state = self.lock();
+        let before = state.activity();
+        state.question = latest;
+        if state.activity() != before {
+            self.publish(&mut state, Update::Activity);
+        }
     }
 
     // ----- approvals -----
@@ -6332,6 +6468,85 @@ mod tests {
         );
     }
 
+    /// The texts of the feed's notices, in order.
+    fn notice_texts(feed: &Feed) -> Vec<String> {
+        feed.subscribe()
+            .0
+            .items
+            .into_iter()
+            .filter(|item| item.kind == Kind::Notice)
+            .map(|item| item.text)
+            .collect()
+    }
+
+    /// A turn that ends before it stops (its reply came first) takes back
+    /// the warning that it was stopping, and no longer counts as stopping.
+    #[test]
+    fn a_turn_that_ends_before_it_stops_takes_its_warning_back() {
+        let feed = Feed::new("main");
+        feed.turn_started();
+        feed.turn_stopping("  Stopping the turn…");
+        let warning = feed.subscribe().0.items.last().unwrap().id;
+        let (_, mut updates) = feed.subscribe();
+        feed.reply("Done.");
+        feed.turn_ended("2 s", None);
+        assert!(!feed.turn_is_stopping());
+        assert_eq!(notice_texts(&feed), Vec::<String>::new());
+        let mut removed = false;
+        while let Ok(update) = updates.try_recv() {
+            removed |= matches!(update, Update::Remove { id } if id == warning);
+        }
+        assert!(removed, "the clients weren't told the warning went");
+    }
+
+    /// A second stop of the same turn keeps its one warning, which says the
+    /// turn stopped once it has.
+    #[test]
+    fn a_second_stop_keeps_one_warning() {
+        let feed = Feed::new("main");
+        feed.turn_started();
+        feed.turn_stopping("  Stopping the turn…");
+        feed.turn_stopping("  Stopping the turn…");
+        feed.turn_stopped("Stopped the turn.");
+        assert_eq!(notice_texts(&feed), ["Stopped the turn."]);
+    }
+
+    /// A stop while no turn runs says nothing and doesn't count.
+    #[test]
+    fn a_stop_with_no_turn_is_ignored() {
+        let feed = Feed::new("main");
+        feed.turn_stopping("  Stopping the turn…");
+        assert!(!feed.turn_is_stopping());
+        assert_eq!(notice_texts(&feed), Vec::<String>::new());
+    }
+
+    /// The activity follows the turn. A report, written only between
+    /// turns, neither starts nor ends a turn that runs, and a stop while
+    /// it's written is the report's own.
+    #[test]
+    fn the_activity_follows_the_turn() {
+        let feed = Feed::new("main");
+        assert_eq!(feed.activity(), Activity::default());
+        feed.user("Hello.", Source::Terminal, Delivery::Turn);
+        assert_eq!(feed.activity(), Activity::default());
+        feed.turn_started();
+        let turn = feed.activity();
+        assert!(turn.working && turn.since.is_some() && !turn.reporting);
+        feed.reporting(true);
+        feed.reporting(false);
+        assert_eq!(feed.activity(), turn);
+        feed.turn_ended("1 s", None);
+        assert_eq!(feed.activity(), Activity::default());
+        feed.reporting(true);
+        let report = feed.activity();
+        assert!(report.working && report.since.is_some() && report.reporting);
+        feed.turn_stopping("  Stopping the turn…");
+        assert!(!feed.turn_is_stopping());
+        assert_eq!(notice_texts(&feed), Vec::<String>::new());
+        feed.reporting(false);
+        assert_eq!(feed.activity(), Activity::default());
+    }
+
     fn asked(id: &str, question: &str) -> crate::questions::AskedQuestion {
         crate::questions::AskedQuestion {
             id: id.into(),
@@ -7735,7 +7950,12 @@ mod tests {
         for change in [
             (|state: &mut State| state.main.items.back_mut().unwrap().text.push('!'))
                 as fn(&mut State),
-            |state: &mut State| state.activity.working = true,
+            |state: &mut State| {
+                state.phase = TurnPhase::Running {
+                    since: 0,
+                    stopping: None,
+                }
+            },
         ] {
             let feed = Feed::new("main");
             let (start, mut updates) = feed.subscribe();

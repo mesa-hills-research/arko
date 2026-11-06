@@ -57,6 +57,27 @@ pub enum Overlay {
     },
 }
 
+impl Overlay {
+    /// Whether it covers the whole screen, the approval tray's rows too,
+    /// which then can't be read. The others cover the transcript alone.
+    pub fn covers_tray(&self) -> bool {
+        match self {
+            // (Its codes need the height.)
+            Overlay::Remote { .. } => true,
+            Overlay::Help { .. }
+            | Overlay::Settings { .. }
+            | Overlay::Model(_)
+            | Overlay::Keys(_)
+            | Overlay::OpenRouter(_)
+            | Overlay::Names(_)
+            | Overlay::Resume(_)
+            | Overlay::Quit { .. }
+            | Overlay::AskOff { .. }
+            | Overlay::Download { .. } => false,
+        }
+    }
+}
+
 /// A setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsRow {
@@ -209,18 +230,20 @@ pub(super) fn put(frame: &mut Frame, area: Rect, lines: &[Line<'static>], scroll
 }
 
 /// Draws the overlay open, over `area` (the transcript's), or over the
-/// whole `screen` for the web page's code, which needs the height.
+/// whole `screen` for one that covers the approval tray too
+/// ([`Overlay::covers_tray`]).
 pub fn draw(frame: &mut Frame, app: &App, area: Rect, screen: Rect) {
     let Some(overlay) = &app.overlay else {
         return;
     };
+    let area = if overlay.covers_tray() { screen } else { area };
     match overlay {
         Overlay::Help { scroll } => help(frame, app, area, *scroll),
         Overlay::Settings { row, picker } => match picker {
             Some(picker) => theme_picker(frame, app, area, picker),
             None => settings(frame, app, area, *row),
         },
-        Overlay::Remote { link, since } => page(frame, app, screen, *link, *since),
+        Overlay::Remote { link, since } => page(frame, app, area, *link, *since),
         Overlay::Model(picker) => super::model_picker::draw(frame, &app.theme, area, picker),
         Overlay::Keys(menu) => super::keys_menu::draw(frame, &app.theme, area, menu),
         Overlay::OpenRouter(menu) => super::openrouter_menu::draw(frame, &app.theme, area, menu),

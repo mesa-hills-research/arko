@@ -261,6 +261,20 @@ pub fn list_rows(
     ListWindow { rows, scroll, most }
 }
 
+/// What the main agent is doing, as the status line and the window's title
+/// say it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentState {
+    /// A request waits in the approval tray (it may be a worker's).
+    Approving,
+    /// The agent waits for the answer to its question.
+    Asking,
+    /// A turn runs, or the old model writes its report for a switch.
+    Working { stopping: bool },
+    /// No turn runs. `open` says questions are open that it doesn't wait on.
+    Idle { open: bool },
+}
+
 /// Since when the main agent works (Unix milliseconds), unless it waits
 /// for the user's answer (`waits` means not on its model).
 fn agent_works_since(activity: &Activity, waits: bool) -> Option<i64> {
@@ -687,7 +701,8 @@ impl App {
     }
 
     /// What `check`, a check of the ways of naming, found. The menu shows it,
-    /// if that check is the one it waits for.
+    /// if that check is the one it waits for, also while the menu waits
+    /// behind the answer panel.
     pub fn names_checked(&mut self, check: &Cancel, missing: Vec<(Way, Option<String>)>) {
         // Only the check the menu open now asked for. One made for a menu
         // that closed, and reached the loop before the new one opened, isn't
@@ -695,7 +710,9 @@ impl App {
         if self.names_check.as_ref() != Some(check) {
             return;
         }
-        if let Some(Overlay::Names(menu)) = &mut self.overlay {
+        if let (Some(Overlay::Names(menu)), _) | (_, Some(Overlay::Names(menu))) =
+            (&mut self.overlay, &mut self.panel.behind)
+        {
             menu.checked(missing);
         }
     }
@@ -737,8 +754,7 @@ impl App {
     }
 
     pub(super) fn take_box(&mut self) -> (String, Option<crate::remote::protocol::MessageSwitch>) {
-        self.sync_message();
-        let message = Some(self.tray.message.clone());
+        let message = Some(self.message_switch().clone());
         (self.editor.take(), message)
     }
 
@@ -768,8 +784,8 @@ impl App {
                 if self.editor.is_empty() {
                     self.editor.set(typed);
                     if let Some(previous) = message {
-                        self.editor.take_emptied();
-                        self.tray.message.restored(previous, self.editor.has_text());
+                        let has_text = self.editor.has_text();
+                        self.message_switch().restored(previous, has_text);
                     }
                     if self.panel.attached.is_empty() {
                         self.panel.attached = answers.clone();
@@ -2156,6 +2172,12 @@ impl App {
                 }
                 SettingsRow::Mouse => {
                     self.mouse = !self.mouse;
+                    if !self.mouse {
+                        // No release comes while the mouse is off.
+                        self.transcript.release();
+                        self.press = None;
+                        self.docked_press = None;
+                    }
                     self.prefs.mouse = Some(self.mouse);
                     self.prefs.save(self.info.prefs.as_deref());
                     self.effects.push(Effect::Mouse(self.mouse));
@@ -2564,6 +2586,16 @@ impl App {
 
     // ----- the mouse -----
 
+    /// The terminal window got or lost the focus. A drag doesn't go on
+    /// without it, and its release may never come. The press stays, so a
+    /// release that does come still copies what the drag highlighted.
+    pub fn focus_changed(&mut self, focused: bool) {
+        self.focused = focused;
+        if !focused {
+            self.transcript.release();
+        }
+    }
+
     /// The mouse. The wheel scrolls, and a drag over the transcript, or over
     /// the text of the answer panel, highlights
     /// text, copied when the button is let go (a double click a word, a
@@ -2877,16 +2909,31 @@ impl App {
             .map(|(text, _)| text.as_str())
     }
 
+    /// What the main agent is doing. An approval waiting comes first, as
+    /// the user must act on it, then a question it waits on.
+    pub fn agent_state(&self) -> AgentState {
+        if !self.approvals().is_empty() {
+            AgentState::Approving
+        } else if self.agent_waits() {
+            AgentState::Asking
+        } else if self.activity.working {
+            AgentState::Working {
+                stopping: self.stopping,
+            }
+        } else {
+            AgentState::Idle {
+                open: !self.open_questions().is_empty(),
+            }
+        }
+    }
+
     /// The terminal's title, the state and the folder.
     pub fn title(&self) -> String {
-        let state = if self.agent_waits() {
-            "asks you"
-        } else if self.activity.working {
-            "working"
-        } else if !self.open_questions().is_empty() {
-            "asks you"
-        } else {
-            "idle"
+        let state = match self.agent_state() {
+            AgentState::Approving => "needs approval",
+            AgentState::Asking | AgentState::Idle { open: true } => "asks you",
+            AgentState::Working { .. } => "working",
+            AgentState::Idle { open: false } => "idle",
         };
         crate::glyphs::render(&format!("Arko · {state} · {}", self.info.workspace)).into_owned()
     }
@@ -5051,6 +5098,69 @@ pub(super) mod tests {
             panic!("no menu")
         };
         assert_eq!(menu.missing.as_ref().map(Vec::len), Some(1));
+    }
+
+    /// Losing the focus mid-drag lets the transcript follow the bottom
+    /// again, as the terminal may never report the release.
+    #[test]
+    fn losing_the_focus_mid_drag_lets_the_view_follow() {
+        use ratatui::{buffer::Buffer, layout::Rect};
+        let mut app = app();
+        let line = |id: u64| {
+            let mut item = Item::new(Kind::Output, format!("line {id}"));
+            item.id = id;
+            item
+        };
+        for id in 1..=5 {
+            app.transcript.apply(crate::remote::Update::Item(line(id)));
+        }
+        let area = Rect::new(0, 0, 20, 4);
+        let filter = Filter::Main(View::Full);
+        let theme = Theme::terminal();
+        let rows = |app: &mut App| -> Vec<String> {
+            let mut buffer = Buffer::empty(area);
+            app.transcript.draw(&mut buffer, area, &filter, &theme);
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buffer[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect()
+        };
+        rows(&mut app);
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.focus_changed(false);
+        rows(&mut app);
+        app.transcript.apply(crate::remote::Update::Item(line(6)));
+        assert_eq!(rows(&mut app)[3], "  line 6");
+    }
+
+    /// What a check of the ways finds while the names menu waits behind
+    /// the answer panel shows in the menu once the panel closes.
+    #[test]
+    fn a_names_check_that_ends_behind_the_panel_shows_when_it_closes() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app();
+        app.info.root = Some(temp.path().to_path_buf());
+        app.open_names();
+        let check = app.names_check().unwrap();
+        app.set_reading(asking());
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
+        assert!(app.panel.open && app.overlay.is_none());
+        app.names_checked(&check, names_menu::tests::missing());
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        let Some(Overlay::Names(menu)) = &app.overlay else {
+            panic!("the menu didn't come back")
+        };
+        assert_eq!(menu.missing, Some(names_menu::tests::missing()));
     }
 
     /// The session's models, as it publishes them, with luna for both agents,

@@ -19,9 +19,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Clear;
 
-use super::app::{App, Effect};
+use super::app::{AgentState, App, Effect};
 use super::markdown;
-use super::overlay::hints;
+use super::overlay::{Overlay, hints};
 use super::theme::Theme;
 use super::transcript::cut_end;
 use super::wrap;
@@ -51,7 +51,8 @@ pub struct Tray {
     pub scroll: usize,
     /// The requests the bell rang for.
     pub rung: HashSet<String>,
-    pub(super) message: MessageSwitch,
+    /// Read through [`App::message_switch`], which brings it up to date.
+    message: MessageSwitch,
     shown: ShownApprovals,
     clock: Option<Instant>,
     redraw_at: Option<Instant>,
@@ -76,7 +77,10 @@ impl App {
     /// Whether the main agent waits for the user, for an answer to its
     /// question, or for an approval.
     pub fn waits_for_user(&self) -> bool {
-        self.agent_waits() || !self.approvals().is_empty()
+        matches!(
+            self.agent_state(),
+            AgentState::Approving | AgentState::Asking
+        )
     }
 
     /// The place of the row the cursor is on.
@@ -226,6 +230,12 @@ impl App {
         self.tray.shown.visible(&HashSet::new(), now);
         self.tray.rows_fit = Some(false);
         self.tray.redraw_at = None;
+    }
+
+    /// The message switch, up to date with the box.
+    pub(super) fn message_switch(&mut self) -> &mut MessageSwitch {
+        self.sync_message();
+        &mut self.tray.message
     }
 
     pub(super) fn sync_message(&mut self) {
@@ -620,7 +630,9 @@ pub fn draw_tray(frame: &mut Frame, app: &mut App, above: Rect) -> u16 {
         })
         .collect();
     app.tray.rows_fit = Some(!visible.is_empty());
-    if !app.focused || matches!(app.overlay, Some(super::overlay::Overlay::Remote { .. })) {
+    // (Rows behind a covering overlay, or in a window without the focus,
+    // aren't read.)
+    if !app.focused || app.overlay.as_ref().is_some_and(Overlay::covers_tray) {
         visible.clear();
     }
     app.tray.shown.visible(&visible, now);

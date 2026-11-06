@@ -3548,6 +3548,7 @@ mod tests {
 
         // A turn stopped while the request waits ends the wait, and the
         // request leaves the tray.
+        feed.turn_started();
         let starting = start_on(&crew, &base, "opus");
         asked(&feed).await;
         feed.turn_stopping("Stopping the turn…");
@@ -3558,7 +3559,7 @@ mod tests {
             .unwrap_err();
         assert!(why.starts_with("No answer came"), "{why}");
         assert!(feed.approvals().is_empty());
-        feed.turn_started();
+        feed.turn_ended("1 s", None);
 
         // Allowed for the session, so it starts, and so do the next ones, with
         // no request, also in the session opened again.
@@ -3577,6 +3578,25 @@ mod tests {
             assert_eq!(start_on(&again, &base, plan).await.unwrap(), Ok(()));
         }
         assert!(feed.approvals().is_empty() && more.approvals().is_empty());
+    }
+
+    /// A turn that ended before its stop took (its reply came first)
+    /// doesn't end a later wait for the user's approval of a worker billed
+    /// per token.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_approval_after_a_turn_that_ended_while_stopping_waits_for_the_user() {
+        let temp = tempfile::tempdir().unwrap();
+        let (session, root) = (temp.path().join("session"), temp.path().join("arko"));
+        let (crew, base, feed) =
+            billed_crew(&session, &root, billing::WorkerBilling::Ask, None, true);
+        feed.turn_started();
+        feed.turn_stopping("Stopping the turn…");
+        feed.turn_ended("1 s", None);
+        let starting = start_on(&crew, &base, "opus");
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(!starting.is_finished(), "the wait ended without an answer");
+        answer(&feed, &asked(&feed).await, true, false, None);
+        assert_eq!(starting.await.unwrap(), Ok(()));
     }
 
     /// Plans only refuses a worker billed per token and names the plan

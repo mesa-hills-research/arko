@@ -133,7 +133,7 @@ impl RandomSession {
     /// Makes one more of the session's calls on the feed, or lets some
     /// time pass, and says which.
     pub fn step(&mut self) -> &'static str {
-        match self.rng.below(108) {
+        let did = match self.rng.below(108) {
             0..=17 => self.text(Kind::Text),
             18..=24 => self.text(Kind::Thinking),
             25..=34 => self.call(),
@@ -161,7 +161,13 @@ impl RandomSession {
             95 => self.restore(),
             96..=99 => self.long_text(),
             _ => self.time(),
-        }
+        };
+        // A stop lasts only as long as its turn.
+        assert!(
+            self.working || !self.feed.turn_is_stopping(),
+            "stopping with no turn, after {did}"
+        );
+        did
     }
 
     /// Up to 0.4 seconds pass.
