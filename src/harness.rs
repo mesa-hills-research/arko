@@ -1945,11 +1945,13 @@ impl Harness {
                 },
             )
         };
-        let server = match served {
+        // On another port, the new page shows before the old one stops, so
+        // someone can answer approvals all along.
+        let (server, replaced) = match served {
             Some(old) if same_port => {
                 self.stop_remote().await;
                 match start(self, bind, earlier) {
-                    Ok(server) => server,
+                    Ok(server) => (server, None),
                     Err(error) => {
                         let again = remote::Bind {
                             ip: old.ip(),
@@ -1969,16 +1971,15 @@ impl Harness {
                     }
                 }
             }
-            _ => {
-                let server = start(self, bind, earlier)?;
-                self.stop_remote().await;
-                server
-            }
+            _ => (start(self, bind, earlier)?, self.remote.take()),
         };
         self.remote_bind = Some((bind, server.addr().port()));
         let page = self.show_page(&server, &key);
         self.announce_remote(server.addr(), &key);
         self.remote = Some(server);
+        if let Some(replaced) = replaced {
+            replaced.stop().await;
+        }
         Ok(page)
     }
 
