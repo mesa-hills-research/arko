@@ -240,7 +240,7 @@ pub(crate) fn index_facts(indexes: &index::Indexes) -> Vec<IndexFacts> {
                 built: manifest.last_build.as_ref().and_then(|build| build.at),
                 files: manifest.last_build.as_ref().map(|build| build.files),
                 embeddings,
-                last_error: manifest.last_error,
+                last_error: manifest.build_error.or(manifest.embed_error),
                 name: manifest.name,
                 root: manifest.root,
             })

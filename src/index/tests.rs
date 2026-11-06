@@ -331,6 +331,23 @@ fn manifests_round_trip_and_bad_ones_are_skipped() {
     assert!(store::scan(&temp.path().join("missing")).is_empty());
 }
 
+/// A manifest from before build and embedding errors were kept apart reads
+/// its error as the last build's.
+#[test]
+fn an_older_manifests_error_reads_as_the_last_builds() {
+    let temp = tempfile::tempdir().unwrap();
+    write(
+        &temp.path().join(store::MANIFEST_FILE),
+        r#"{"root": "/home/ada/proj", "last_error": "build failed (the disk is full)"}"#,
+    );
+    let manifest = store::load_manifest(temp.path()).unwrap();
+    assert_eq!(
+        manifest.build_error.as_deref(),
+        Some("build failed (the disk is full)")
+    );
+    assert_eq!(manifest.embed_error, None);
+}
+
 #[test]
 fn layout_paths_are_separate() {
     let layout = Layout::new(PathBuf::from("/d/indexes/proj-code-0123456789"));
@@ -775,7 +792,7 @@ fn dense_and_hybrid_search_with_the_test_embedder() {
     assert!(indexes.spent().0 >= summary.tokens);
     let manifest = store::load_manifest(&outcome.layout.dir).unwrap();
     assert_eq!(manifest.embed_tokens, summary.tokens);
-    assert!(manifest.last_build.is_some() && manifest.last_error.is_none());
+    assert!(manifest.last_build.is_some() && manifest.build_error.is_none());
 
     for (mode, expected) in [
         (Some(ModeArg::Semantic), Mode::Dense),
@@ -943,6 +960,36 @@ fn an_embedding_thread_that_panics_lets_the_next_run_start() {
         docs > outcome.record.chunks && done == docs
     });
     fixture.shutdown(&indexes);
+}
+
+/// An embedding run that failed neither rebuilds the index when a watcher
+/// starts nor loses its error.
+#[test]
+fn a_failed_embedding_run_neither_rebuilds_nor_hides_its_error() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let first = fixture.open(&root, Backend::Hash, false, fast(false));
+    let outcome = first.create_blocking(&create_args(&root, None)).unwrap();
+    fixture.shutdown(&first);
+    let mut manifest = store::load_manifest(&outcome.layout.dir).unwrap();
+    manifest.embed_error = Some("embedding failed (Voyage said 429)".into());
+    store::save_manifest(&outcome.layout.dir, &manifest).unwrap();
+    let built = manifest.last_build.clone().unwrap().at;
+    let watching = fixture.open(&root, Backend::Hash, true, fast(false));
+    wait_for("the watcher", || {
+        matches!(
+            watching.live_state(&outcome.layout).0,
+            WatchState::Watching { .. }
+        )
+    });
+    // Three of the test timing's quiet periods, after which a rebuild is due.
+    std::thread::sleep(Duration::from_millis(600));
+    let manifest = store::load_manifest(&outcome.layout.dir).unwrap();
+    assert_eq!(manifest.last_build.unwrap().at, built, "it was rebuilt");
+    let reports = watching.status_blocking(Some("proj"), &root).unwrap();
+    let text = tools::format_status(&reports, None);
+    assert!(text.contains("Voyage said 429"), "{text}");
+    fixture.shutdown(&watching);
 }
 
 // ----- freshness -----

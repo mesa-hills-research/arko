@@ -927,12 +927,12 @@ impl Indexes {
             Ok(record) => {
                 self.update_manifest(&entry.layout, |m| {
                     m.last_build = Some(record.clone());
-                    m.last_error = None;
+                    m.build_error = None;
                 });
             }
             Err(error) => {
                 self.update_manifest(&entry.layout, |m| {
-                    m.last_error = Some(format!("build failed ({error})"));
+                    m.build_error = Some(format!("build failed ({error})"));
                 });
             }
         }
@@ -1066,14 +1066,9 @@ impl Indexes {
                         if !stats.superseded && !stats.stopped {
                             m.cap_reached = stats.cap_reached;
                         }
-                        if m.last_error
-                            .as_deref()
-                            .is_some_and(|error| error.starts_with("embedding"))
-                        {
-                            m.last_error = None;
-                        }
+                        m.embed_error = None;
                     }
-                    Err(error) => m.last_error = Some(format!("embedding failed ({error})")),
+                    Err(error) => m.embed_error = Some(format!("embedding failed ({error})")),
                 }
             });
         }
@@ -1322,7 +1317,7 @@ impl Indexes {
                             live.watch = WatchState::Watching { polling };
                             live.delivered = 0;
                             live.covered = 0;
-                            if !built || manifest.last_error.is_some() {
+                            if !built || manifest.build_error.is_some() {
                                 live.dirty = true;
                             }
                         }
@@ -1484,7 +1479,7 @@ impl Indexes {
             }
             Err(OpenError::Failed(error)) => {
                 log::warn!("index: {}: watcher: {error}", manifest.name);
-                if built && manifest.last_error.is_none() {
+                if built && manifest.build_error.is_none() {
                     Ok(None)
                 } else {
                     self.build_locked(entry, manifest, Caller::Interactive)
@@ -1499,7 +1494,7 @@ impl Indexes {
                     }
                 }
                 let last = monitor::drain(changes.as_mut())?;
-                let record = if last.is_some() || !built || manifest.last_error.is_some() {
+                let record = if last.is_some() || !built || manifest.build_error.is_some() {
                     Some(self.build_locked(entry, manifest, Caller::Interactive)?)
                 } else {
                     None
@@ -2011,7 +2006,8 @@ impl Indexes {
             .as_ref()
             .and_then(|manifest| manifest.created)
             .or(Some(Utc::now()));
-        manifest.last_error = None;
+        manifest.build_error = None;
+        manifest.embed_error = None;
         manifest.cap_reached = false;
         {
             let _guard = lock(&self.manifests);
