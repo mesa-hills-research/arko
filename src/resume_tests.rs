@@ -645,6 +645,67 @@ async fn a_conversation_whose_task_cant_be_read_says_so() {
     crew.shutdown().await;
 }
 
+/// A message sent after a turn that Arko stopped in the middle of goes to
+/// the agent with its images, once that turn has gone on where it was
+/// saved.
+#[tokio::test]
+async fn a_message_after_a_cut_off_turn_reaches_the_agent_with_its_images() {
+    let bodies: Bodies = Arc::default();
+    let seen = bodies.clone();
+    let server = ModelServer::start(Arc::new(move |index, body: String| {
+        seen.lock().unwrap().push(body.clone());
+        Box::pin(async move {
+            // (The turn Arko stops in the middle of gets no reply.)
+            if index == 1 {
+                std::future::pending::<()>().await;
+            }
+            if body.contains("What is in the picture?") {
+                complete("m3", "A pear.")
+            } else {
+                complete(&format!("m{index}"), "Noted.")
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    harness
+        .turn(Prompt::User("Apples are red.".into()), &mut inputs)
+        .await;
+    // Arko stops while the next turn waits for the model, and opens again.
+    tokio::select! {
+        _ = harness.turn(Prompt::User("Pears are green.".into()), &mut inputs) => {
+            panic!("the turn ended");
+        }
+        () = until(|| bodies.lock().unwrap().len() == 2) => {}
+    }
+    harness.workflow().checkpoint().await.unwrap();
+    harness.open(true).unwrap();
+    assert!(matches!(
+        &harness.conversation,
+        Conversation::Stopped(run) if run.restart == Restart::Recover
+    ));
+    harness
+        .attach(vec![ui::Attachment {
+            bytes: Arc::from(&b"pixels"[..]),
+            mime: "image/png".into(),
+            name: None,
+        }])
+        .unwrap();
+    let end = harness
+        .turn(Prompt::User("What is in the picture?".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    let asked = request_with(&bodies, "What is in the picture?");
+    // (The image's bytes, as the request carries them.)
+    assert!(
+        asked.contains("cGl4ZWxz"),
+        "the message went without its image"
+    );
+    assert_eq!(summary(&harness), "A pear.");
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// The JSON files under `dir`, at any depth.
 fn json_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();

@@ -3878,14 +3878,35 @@ impl Harness {
     pub(crate) async fn turn(&mut self, prompt: Prompt, input: &mut Inputs) -> TurnEnd {
         let answers_turn = matches!(prompt, Prompt::Answers);
         // A turn Arko stopped in the middle of (a crash) goes on where it
-        // was saved, without a message. The message follows it.
+        // was saved, without a message. The message follows it, with its
+        // images, which a recovery doesn't take.
         if !matches!(prompt, Prompt::Recover)
             && self.cut_back.is_none()
             && let Conversation::Stopped(run) = &self.conversation
             && matches!(run.restart, Restart::Recover)
-            && let TurnEnd::Exit = Box::pin(self.turn(Prompt::Recover, input)).await
         {
-            return TurnEnd::Exit;
+            let images = std::mem::take(&mut self.pending_images);
+            let recovered = Box::pin(self.turn(Prompt::Recover, input)).await;
+            self.pending_images = images;
+            if let TurnEnd::Exit = recovered {
+                return TurnEnd::Exit;
+            }
+            // A turn that still couldn't go on takes no message either, so
+            // the message waits for the next one.
+            if let Conversation::Stopped(run) = &self.conversation
+                && matches!(run.restart, Restart::Recover)
+            {
+                if let Prompt::User(text) = &prompt {
+                    let read = self.labelled.take().unwrap_or_else(|| text.clone());
+                    let images = std::mem::take(&mut self.pending_images);
+                    self.keep_unread(vec![(read, images)], true);
+                    self.say(
+                        Level::Info,
+                        "  (the interrupted turn couldn't go on, so your message goes with your next one)",
+                    );
+                }
+                return recovered;
+            }
         }
         self.exit_warned = false;
         self.jobs_shown.clear();
