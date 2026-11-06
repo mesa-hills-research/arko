@@ -1018,9 +1018,6 @@ impl Indexes {
             .map_err(|error| error.to_string())?
             .ok_or("the index has no embeddings (it was built lexical only)")?;
         let stop = stop.unwrap_or_default();
-        if self.stopping() {
-            stop.stop("Arko is exiting");
-        }
         let embedder = self
             .backend()
             .embedder(&info.embedder, &self.handle, Some(stop.clone()))?;
@@ -1037,6 +1034,11 @@ impl Indexes {
             }
         };
         lock(&entry.runs).push(stop.clone());
+        // Checked once the run is listed, so an exit that began earlier is
+        // seen here, and one that begins later finds the run in the list.
+        if self.stopping() {
+            stop.stop("Arko is exiting");
+        }
         let dense = DenseBuild::new(embedder.as_ref())
             .with_max_tokens(Some(cap))
             .with_progress(&on_progress)
