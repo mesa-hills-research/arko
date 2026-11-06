@@ -758,10 +758,12 @@ impl Transcript {
         self.anchor.is_none()
     }
 
-    /// Follows the bottom again.
+    /// Follows the bottom again, also during a drag, whose release the
+    /// terminal may never report.
     pub fn follow(&mut self) {
         self.anchor = None;
         self.pending_scroll = 0;
+        self.hold = false;
     }
 
     /// Scrolls by `lines` (up when negative) at the next draw.
@@ -5724,6 +5726,24 @@ mod tests {
         t.release();
         t.follow();
         assert_eq!(rows(&mut t, &filter, 20, 4)[3], "  line 6");
+    }
+
+    /// A drag whose release never came (the terminal lost it) doesn't stop
+    /// End from following the bottom.
+    #[test]
+    fn end_follows_again_after_a_drag_whose_release_never_came() {
+        let mut t = Transcript::new();
+        for id in 1..=5 {
+            t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+        }
+        let filter = full();
+        rows(&mut t, &filter, 20, 4);
+        t.hold();
+        t.follow();
+        rows(&mut t, &filter, 20, 4);
+        t.apply(Update::Item(item(6, Kind::Output, "line 6")));
+        assert_eq!(rows(&mut t, &filter, 20, 4)[3], "  line 6");
+        assert!(t.following());
     }
 
     /// Old items leaving the history don't shift the screen.

@@ -1155,8 +1155,8 @@ fn handle(
                     app.mouse(mouse);
                 }
             }
-            Event::FocusGained => app.focused = true,
-            Event::FocusLost => app.focused = false,
+            Event::FocusGained => app.focus_changed(true),
+            Event::FocusLost => app.focus_changed(false),
             Event::Resize(..) => app.resized = true,
         }
     }

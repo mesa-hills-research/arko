@@ -2170,6 +2170,12 @@ impl App {
                 }
                 SettingsRow::Mouse => {
                     self.mouse = !self.mouse;
+                    if !self.mouse {
+                        // No release comes while the mouse is off.
+                        self.transcript.release();
+                        self.press = None;
+                        self.docked_press = None;
+                    }
                     self.prefs.mouse = Some(self.mouse);
                     self.prefs.save(self.info.prefs.as_deref());
                     self.effects.push(Effect::Mouse(self.mouse));
@@ -2577,6 +2583,16 @@ impl App {
     }
 
     // ----- the mouse -----
+
+    /// The terminal window got or lost the focus. A drag doesn't go on
+    /// without it, and its release may never come. The press stays, so a
+    /// release that does come still copies what the drag highlighted.
+    pub fn focus_changed(&mut self, focused: bool) {
+        self.focused = focused;
+        if !focused {
+            self.transcript.release();
+        }
+    }
 
     /// The mouse. The wheel scrolls, and a drag over the transcript, or over
     /// the text of the answer panel, highlights
@@ -5080,6 +5096,49 @@ pub(super) mod tests {
             panic!("no menu")
         };
         assert_eq!(menu.missing.as_ref().map(Vec::len), Some(1));
+    }
+
+    /// Losing the focus mid-drag lets the transcript follow the bottom
+    /// again, as the terminal may never report the release.
+    #[test]
+    fn losing_the_focus_mid_drag_lets_the_view_follow() {
+        use ratatui::{buffer::Buffer, layout::Rect};
+        let mut app = app();
+        let line = |id: u64| {
+            let mut item = Item::new(Kind::Output, format!("line {id}"));
+            item.id = id;
+            item
+        };
+        for id in 1..=5 {
+            app.transcript.apply(crate::remote::Update::Item(line(id)));
+        }
+        let area = Rect::new(0, 0, 20, 4);
+        let filter = Filter::Main(View::Full);
+        let theme = Theme::terminal();
+        let rows = |app: &mut App| -> Vec<String> {
+            let mut buffer = Buffer::empty(area);
+            app.transcript.draw(&mut buffer, area, &filter, &theme);
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buffer[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect()
+        };
+        rows(&mut app);
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        app.focus_changed(false);
+        rows(&mut app);
+        app.transcript.apply(crate::remote::Update::Item(line(6)));
+        assert_eq!(rows(&mut app)[3], "  line 6");
     }
 
     /// The session's models, as it publishes them, with luna for both agents,
