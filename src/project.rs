@@ -15,7 +15,6 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Conversation;
 use crate::remote::{Level, Source};
 
 /// The files, in the order the agents get them.
@@ -286,7 +285,7 @@ impl crate::Harness {
         self.settings.project_instructions = files;
         self.project_changed();
         let mut text = self.project_setting();
-        if !matches!(self.conversation, Conversation::New) {
+        if self.conversation_under_way() {
             text.push_str(
                 " The conversation under way keeps what it got, and the next one gets the change.",
             );

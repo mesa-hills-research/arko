@@ -490,6 +490,7 @@ pub(crate) fn unoffered_with(
 }
 
 /// Where the conversation with the main agent stands.
+#[derive(Clone)]
 pub(crate) enum Conversation {
     /// The next message starts a conversation.
     New,
@@ -3998,7 +3999,9 @@ impl Harness {
         if let (Some(run), Some(jobs)) = (self.conversation_run(), self.background.manager()) {
             jobs.set_prompt_cache_expiry(run, None);
         }
-        let conversation = std::mem::replace(&mut self.conversation, Conversation::New);
+        // (The session keeps where the conversation stands while the turn's
+        // task has its own.)
+        let conversation = self.conversation.clone();
         // Where this turn's message goes in the conversation.
         let at = cut.unwrap_or(match &conversation {
             Conversation::New => 0,

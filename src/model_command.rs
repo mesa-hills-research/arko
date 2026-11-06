@@ -461,12 +461,17 @@ impl Harness {
     /// model then. (A checkpoint, a turn that ran or runs.)
     pub(crate) fn conversation_started(&self) -> bool {
         self.session.latest_checkpoint().is_some()
-            || !matches!(self.conversation, Conversation::New)
-            || self.feed.activity().working
+            || self.conversation_under_way()
             || self
                 .workflow
                 .as_ref()
                 .is_some_and(|workflow| !workflow.context().agent_results.read().is_empty())
+    }
+
+    /// Whether a conversation is under way, meaning one that has run, or
+    /// one whose first turn runs now.
+    pub(crate) fn conversation_under_way(&self) -> bool {
+        !matches!(self.conversation, Conversation::New) || self.feed.activity().working
     }
 
     /// The workers' model, as `/model worker` says it.
