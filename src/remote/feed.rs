@@ -2939,13 +2939,17 @@ impl Feed {
     }
 
     /// The user stopped the main agent's turn, with a warning that says so,
-    /// which [`turn_stopped`](Self::turn_stopped) changes in its place.
+    /// which [`turn_stopped`](Self::turn_stopped) changes in its place. Only
+    /// a turn that runs stops, and it says so once.
     pub fn turn_stopping(&self, text: &str) {
         let text = text.trim();
         if text.is_empty() {
             return;
         }
         let mut state = self.lock();
+        if !state.activity.working || state.activity.reporting || state.stopping.is_some() {
+            return;
+        }
         let item = Item::new(Kind::Notice, text).level(Level::Warn);
         // The model may still send some of its response, and it goes on in the
         // text it was in, above this line, as the turn ends.
@@ -2979,6 +2983,16 @@ impl Feed {
     /// Whether the user stopped the turn and it hasn't ended yet.
     pub(crate) fn turn_is_stopping(&self) -> bool {
         self.lock().stopping.is_some()
+    }
+
+    /// The warning that the turn is stopping goes, because the turn ended
+    /// another way (its reply came first, or it failed).
+    fn take_back_stop(&self, state: &mut State) {
+        if let Some(id) = state.stopping.take()
+            && state.main.remove(id).is_some()
+        {
+            self.publish(state, Update::Remove { id });
+        }
     }
 
     /// A command's output.
@@ -3033,7 +3047,7 @@ impl Feed {
         {
             let mut state = self.lock();
             state.warned.remove(MAIN_AGENT);
-            state.stopping = None;
+            self.take_back_stop(&mut state);
             if state.turn_opened {
                 state.turn_opened = false;
             } else {
@@ -3065,6 +3079,9 @@ impl Feed {
         {
             let mut state = self.lock();
             state.turn_opened = false;
+            // A stop that never took (the reply came first, or the turn
+            // failed) ends with the turn.
+            self.take_back_stop(&mut state);
             self.interrupt_calls(&mut state, MAIN_AGENT);
             // The plan's usage is the detail, so the page can keep it whole
             // on a line of its own.
@@ -6330,6 +6347,58 @@ mod tests {
                 (Kind::Notice, "Stopped the turn.")
             ]
         );
+    }
+
+    /// The texts of the feed's notices, in order.
+    fn notice_texts(feed: &Feed) -> Vec<String> {
+        feed.subscribe()
+            .0
+            .items
+            .into_iter()
+            .filter(|item| item.kind == Kind::Notice)
+            .map(|item| item.text)
+            .collect()
+    }
+
+    /// A turn that ends before it stops (its reply came first) takes back
+    /// the warning that it was stopping, and no longer counts as stopping.
+    #[test]
+    fn a_turn_that_ends_before_it_stops_takes_its_warning_back() {
+        let feed = Feed::new("main");
+        feed.turn_started();
+        feed.turn_stopping("  Stopping the turn…");
+        let warning = feed.subscribe().0.items.last().unwrap().id;
+        let (_, mut updates) = feed.subscribe();
+        feed.reply("Done.");
+        feed.turn_ended("2 s", None);
+        assert!(!feed.turn_is_stopping());
+        assert_eq!(notice_texts(&feed), Vec::<String>::new());
+        let mut removed = false;
+        while let Ok(update) = updates.try_recv() {
+            removed |= matches!(update, Update::Remove { id } if id == warning);
+        }
+        assert!(removed, "the clients weren't told the warning went");
+    }
+
+    /// A second stop of the same turn keeps its one warning, which says the
+    /// turn stopped once it has.
+    #[test]
+    fn a_second_stop_keeps_one_warning() {
+        let feed = Feed::new("main");
+        feed.turn_started();
+        feed.turn_stopping("  Stopping the turn…");
+        feed.turn_stopping("  Stopping the turn…");
+        feed.turn_stopped("Stopped the turn.");
+        assert_eq!(notice_texts(&feed), ["Stopped the turn."]);
+    }
+
+    /// A stop while no turn runs says nothing and doesn't count.
+    #[test]
+    fn a_stop_with_no_turn_is_ignored() {
+        let feed = Feed::new("main");
+        feed.turn_stopping("  Stopping the turn…");
+        assert!(!feed.turn_is_stopping());
+        assert_eq!(notice_texts(&feed), Vec::<String>::new());
     }
 
     fn asked(id: &str, question: &str) -> crate::questions::AskedQuestion {
