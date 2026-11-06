@@ -882,10 +882,15 @@ impl Indexes {
         layout: &Layout,
         change: impl FnOnce(&mut Manifest),
     ) -> Option<Manifest> {
-        let _guard = lock(&MANIFESTS);
-        let mut manifest = store::load_manifest(&layout.dir).ok()?;
-        change(&mut manifest);
-        if let Err(error) = store::save_manifest(&layout.dir, &manifest) {
+        let (manifest, saved) = {
+            let _guard = lock(&MANIFESTS);
+            let mut manifest = store::load_manifest(&layout.dir).ok()?;
+            change(&mut manifest);
+            let saved = store::save_manifest(&layout.dir, &manifest);
+            (manifest, saved)
+        };
+        // Logged once the lock is free, since every session's updates wait on it.
+        if let Err(error) = saved {
             log::warn!("index: {error}");
         }
         Some(manifest)
