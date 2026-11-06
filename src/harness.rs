@@ -4018,11 +4018,20 @@ impl Harness {
         // Lines typed without a terminal, each its own turn later, with the
         // message as the agent reads it.
         let mut queued: Vec<(String, String)> = Vec::new();
-        let mut stopping = false;
+        let mut stop = TurnStop::NotAsked;
+        // (Its ticks run only while a stop waits for the run it stops.)
+        let mut stop_again = tokio::time::interval(STOP_AGAIN);
+        stop_again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut exit = false;
         let outcome = loop {
             tokio::select! {
                 outcome = &mut call => break outcome,
+                _ = stop_again.tick(), if stop == TurnStop::Wanted => {
+                    if self.stop_main(&workflow) {
+                        stop = TurnStop::Stopping;
+                    }
+                    continue;
+                }
                 (event, mut reply) = input.next_event(false) => {
                     // A stop, a quit and the like are accepted as they are
                     // read.
@@ -4073,22 +4082,22 @@ impl Harness {
                             continue;
                         }
                         Event::Input(Some(Input::Interrupt)) | Event::Remote(Action::Stop) => {
-                            if stopping {
+                            if stop == TurnStop::Stopping {
                                 self.output.line(&self.output.dim("  (the agents are stopping, in up to 10 s)"));
                             } else {
-                                stopping = self.stop(&workflow);
+                                stop = self.stop(&workflow, stop);
                             }
                             continue;
                         }
                         Event::Input(Some(Input::Eof) | None) => {
                             exit = true;
-                            stopping |= self.stop(&workflow);
+                            stop = self.stop(&workflow, stop);
                             continue;
                         }
                         Event::Input(Some(Input::Quit(agreed))) => {
                             if self.mirrored(|harness| harness.may_exit(agreed)) {
                                 exit = true;
-                                stopping |= self.stop(&workflow);
+                                stop = self.stop(&workflow, stop);
                             }
                             continue;
                         }
@@ -4110,7 +4119,7 @@ impl Harness {
                                 .await
                             {
                                 exit = true;
-                                stopping |= self.stop(&workflow);
+                                stop = self.stop(&workflow, stop);
                             }
                             continue;
                         }
@@ -4265,7 +4274,9 @@ impl Harness {
                 self.retitle(retitle);
                 TurnEnd::Answered
             }
-            Err(WorkflowError::AgentStopped { .. } | WorkflowError::Cancelled) if stopping => {
+            Err(WorkflowError::AgentStopped { .. } | WorkflowError::Cancelled)
+                if stop == TurnStop::Stopping =>
+            {
                 self.output.echo(&self.output.warn(STOPPED));
                 self.feed.turn_stopped(STOPPED);
                 self.keep_unread(unread_notes(&notes, &workflow), false);
@@ -5126,19 +5137,37 @@ impl Harness {
         self.unread.extend(kept);
     }
 
-    pub(crate) fn stop(&self, workflow: &Workflow) -> bool {
-        let running = self.crew.as_ref().map_or(0, |crew| crew.running().len());
-        let text = if running == 0 {
-            "  Stopping the turn…".to_string()
+    /// The user stops the turn, whose stop is `stop` so far. The warning
+    /// goes up the first time, and the main agent's runs are stopped until
+    /// one's stop begins.
+    pub(crate) fn stop(&self, workflow: &Workflow, stop: TurnStop) -> TurnStop {
+        if stop == TurnStop::Stopping {
+            return stop;
+        }
+        if stop == TurnStop::NotAsked {
+            let running = self.crew.as_ref().map_or(0, |crew| crew.running().len());
+            let text = if running == 0 {
+                "  Stopping the turn…".to_string()
+            } else {
+                format!(
+                    "  Stopping the turn… (the workers go on, and /stop-workers stops {})",
+                    if running == 1 { "it" } else { "them" }
+                )
+            };
+            self.output.echo(&self.output.warn(&text));
+            // (The clients show "Stopped the turn." in its place once it has.)
+            self.feed.turn_stopping(&text);
+        }
+        if self.stop_main(workflow) {
+            TurnStop::Stopping
         } else {
-            format!(
-                "  Stopping the turn… (the workers go on, and /stop-workers stops {})",
-                if running == 1 { "it" } else { "them" }
-            )
-        };
-        self.output.echo(&self.output.warn(&text));
-        // (The clients show "Stopped the turn." in its place once it has.)
-        self.feed.turn_stopping(&text);
+            TurnStop::Wanted
+        }
+    }
+
+    /// Stops the main agent's runs. Whether any run's stop began, which none
+    /// does before the turn's run has started.
+    fn stop_main(&self, workflow: &Workflow) -> bool {
         workflow
             .stop_agent(
                 MAIN,
@@ -5381,6 +5410,21 @@ pub(crate) const NOTHING_TO_MOVE: &str = "Nothing is running that can move to th
 
 /// What a turn the user stopped says once it has.
 const STOPPED: &str = "Stopped the turn.";
+
+/// Where the user's stop of the turn running is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TurnStop {
+    /// None was asked.
+    NotAsked,
+    /// Asked before the main agent's run started, so it's asked again every
+    /// [`STOP_AGAIN`] until the run's stop begins or the turn ends.
+    Wanted,
+    /// The run's stop began.
+    Stopping,
+}
+
+/// How often a stop asked before the turn's run started is asked again.
+const STOP_AGAIN: Duration = Duration::from_millis(100);
 
 /// How the main agent's message names its background jobs that stopped with
 /// the last Arko, the jobs' lines following.
@@ -7601,6 +7645,77 @@ pub(crate) mod tests {
         assert!(matches!(end, TurnEnd::Answered));
         assert_eq!(summary(&harness), "Received the surviving worker's report.");
         harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// The feed's notices about stopping the turn, in order.
+    fn stop_notices(harness: &Harness) -> Vec<String> {
+        harness
+            .feed
+            .subscribe()
+            .0
+            .items
+            .into_iter()
+            .filter(|item| item.kind == remote::Kind::Notice && item.text.contains("Stopp"))
+            .map(|item| item.text)
+            .collect()
+    }
+
+    /// Ctrl-C read before the main agent's run started stops the run once
+    /// it has, and the turn shows one line, that it stopped.
+    #[tokio::test]
+    async fn a_stop_before_the_run_starts_stops_it_once_it_does() {
+        use crate::mock_model::ModelServer;
+        // The model never answers, so only the stop ends the turn.
+        let server =
+            ModelServer::start(Arc::new(|_, _| Box::pin(std::future::pending::<String>()))).await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        // Typed before the turn reads anything. On this runtime's one
+        // thread, the run the turn spawns hasn't started when it's read.
+        sender.send(Input::Interrupt).unwrap();
+        let end = tokio::time::timeout(
+            Duration::from_secs(10),
+            harness.turn(Prompt::User("Hello.".into()), &mut inputs),
+        )
+        .await
+        .expect("the turn went on after the stop");
+        assert!(matches!(end, TurnEnd::Stopped));
+        assert!(!harness.feed.turn_is_stopping());
+        assert_eq!(stop_notices(&harness), ["Stopped the turn."]);
+    }
+
+    /// Ctrl-C, then Ctrl-D while the turn stops, shows one line about the
+    /// stop, which says the turn stopped.
+    #[tokio::test]
+    async fn quitting_while_the_turn_stops_says_it_stopped_once() {
+        use crate::mock_model::ModelServer;
+        let asked = Arc::new(tokio::sync::Notify::new());
+        let ready = asked.clone();
+        let server = ModelServer::start(Arc::new(move |_, _| {
+            let ready = ready.clone();
+            Box::pin(async move {
+                ready.notify_one();
+                std::future::pending::<String>().await
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        let keys = tokio::spawn(async move {
+            asked.notified().await;
+            sender.send(Input::Interrupt).unwrap();
+            sender.send(Input::Eof).unwrap();
+            sender
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(10),
+            harness.turn(Prompt::User("Hello.".into()), &mut inputs),
+        )
+        .await
+        .expect("the turn stopped");
+        let _sender = keys.await.unwrap();
+        assert!(matches!(end, TurnEnd::Exit));
+        assert_eq!(stop_notices(&harness), ["Stopped the turn."]);
     }
 
     #[tokio::test]
