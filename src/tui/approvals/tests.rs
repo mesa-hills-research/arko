@@ -816,3 +816,17 @@ fn the_tray_follows_its_requests() {
         Some("No approvals wait")
     );
 }
+
+/// The window's title says an approval waits, as the status line does,
+/// whether or not a turn runs.
+#[test]
+fn the_title_says_when_an_approval_waits() {
+    let mut app = with(vec![request("a1", skill())]);
+    assert_eq!(app.title(), "Arko · needs approval · work");
+    app.set_activity(crate::remote::Activity {
+        working: true,
+        since: Some(0),
+        ..Default::default()
+    });
+    assert_eq!(app.title(), "Arko · needs approval · work");
+}

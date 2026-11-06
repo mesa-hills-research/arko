@@ -19,7 +19,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Clear;
 
-use super::app::{App, Effect};
+use super::app::{AgentState, App, Effect};
 use super::markdown;
 use super::overlay::hints;
 use super::theme::Theme;
@@ -76,7 +76,10 @@ impl App {
     /// Whether the main agent waits for the user, for an answer to its
     /// question, or for an approval.
     pub fn waits_for_user(&self) -> bool {
-        self.agent_waits() || !self.approvals().is_empty()
+        matches!(
+            self.agent_state(),
+            AgentState::Approving | AgentState::Asking
+        )
     }
 
     /// The place of the row the cursor is on.

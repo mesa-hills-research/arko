@@ -261,6 +261,20 @@ pub fn list_rows(
     ListWindow { rows, scroll, most }
 }
 
+/// What the main agent is doing, as the status line and the window's title
+/// say it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentState {
+    /// A request waits in the approval tray (it may be a worker's).
+    Approving,
+    /// The agent waits for the answer to its question.
+    Asking,
+    /// A turn runs, or the old model writes its report for a switch.
+    Working { stopping: bool },
+    /// No turn runs. `open` says questions are open that it doesn't wait on.
+    Idle { open: bool },
+}
+
 /// Since when the main agent works (Unix milliseconds), unless it waits
 /// for the user's answer (`waits` means not on its model).
 fn agent_works_since(activity: &Activity, waits: bool) -> Option<i64> {
@@ -2877,16 +2891,31 @@ impl App {
             .map(|(text, _)| text.as_str())
     }
 
+    /// What the main agent is doing. An approval waiting comes first, as
+    /// the user must act on it, then a question it waits on.
+    pub fn agent_state(&self) -> AgentState {
+        if !self.approvals().is_empty() {
+            AgentState::Approving
+        } else if self.agent_waits() {
+            AgentState::Asking
+        } else if self.activity.working {
+            AgentState::Working {
+                stopping: self.stopping,
+            }
+        } else {
+            AgentState::Idle {
+                open: !self.open_questions().is_empty(),
+            }
+        }
+    }
+
     /// The terminal's title, the state and the folder.
     pub fn title(&self) -> String {
-        let state = if self.agent_waits() {
-            "asks you"
-        } else if self.activity.working {
-            "working"
-        } else if !self.open_questions().is_empty() {
-            "asks you"
-        } else {
-            "idle"
+        let state = match self.agent_state() {
+            AgentState::Approving => "needs approval",
+            AgentState::Asking | AgentState::Idle { open: true } => "asks you",
+            AgentState::Working { .. } => "working",
+            AgentState::Idle { open: false } => "idle",
         };
         crate::glyphs::render(&format!("Arko · {state} · {}", self.info.workspace)).into_owned()
     }

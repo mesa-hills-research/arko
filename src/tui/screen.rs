@@ -10,7 +10,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::app::{App, ListRow};
+use super::app::{AgentState, App, ListRow};
 use super::cache;
 use super::overlay::{self, hints};
 use super::theme::Theme;
@@ -480,14 +480,15 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let worker_state = watched
         .as_ref()
         .map(|watched| watched.state(theme, &dot, chrono::Utc::now().timestamp_millis()));
-    if app.waits_for_user() {
+    let agent = app.agent_state();
+    if let AgentState::Approving | AgentState::Asking = agent {
         // (A worker's view leaves the main agent's question open, and the
         // box answers it.)
-        let asks = match (watched.is_some(), app.approvals().is_empty()) {
-            (true, false) => "main needs approval",
-            (false, false) => "needs approval",
-            (true, true) => "main asks you",
-            (false, true) => "asks you",
+        let asks = match (watched.is_some(), agent == AgentState::Approving) {
+            (true, true) => "main needs approval",
+            (false, true) => "needs approval",
+            (true, false) => "main asks you",
+            (false, false) => "asks you",
         };
         left.push(Span::styled(format!("{dot} {asks}"), theme.accent()));
         if let Some(state) = worker_state.filter(|state| !state.is_empty()) {
@@ -496,12 +497,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         }
     } else if let Some(state) = worker_state {
         left.extend(state);
-    } else if app.activity.working {
+    } else if let AgentState::Working { stopping } = agent {
         let time = app
             .working_since
             .map(|since| clock(since.elapsed().as_secs()))
             .unwrap_or_default();
-        let word = if app.stopping { "stopping" } else { "working" };
+        let word = if stopping { "stopping" } else { "working" };
         left.push(Span::styled(format!("{dot} {word}"), theme.accent()));
         left.push(Span::styled(format!(" {time}"), theme.dim()));
     } else if let Some(turn) = app.last_turn {
