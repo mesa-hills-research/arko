@@ -39,6 +39,11 @@ use super::embed::{self, Backend};
 use super::monitor::{self, OpenError};
 use super::store::{self, BuildRecord, Kind, Layout, Manifest, Rules};
 
+/// Serializes manifest updates in this process. An app runs several sessions
+/// in one process, each with its own [`Indexes`] over the same folder, and
+/// their updates would otherwise undo each other's and share a temporary file.
+static MANIFESTS: Mutex<()> = Mutex::new(());
+
 /// Receives progress lines of background work (the CLI prints them, and Arko logs them).
 pub type Events = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -50,6 +55,10 @@ pub const FRESHEN_EMBED_TOKENS: u64 = 200_000;
 pub const MAX_LIMIT: usize = 50;
 /// Results by default.
 pub const DEFAULT_LIMIT: usize = 10;
+/// Why a watcher thread ended when it panicked (the log has the panic).
+const PANICKED_WATCHER: &str = "an unexpected error, which the log shows";
+/// The last background run's line when its thread panicked.
+const PANICKED_EMBEDDING: &str = "Embedding stopped on an unexpected error, which the log shows";
 
 /// When monitoring and freshening act.
 #[derive(Clone, Debug)]
@@ -109,8 +118,11 @@ pub enum WatchState {
     /// of this one tries again every [`Timing::busy_retry`], and a status taken
     /// without one probes the lock.
     Elsewhere,
-    /// The watcher failed, and the thread retries.
-    Failed(String),
+    /// The watcher failed, and the thread opens it again soon.
+    Retrying(String),
+    /// The watcher thread ended on an error (or couldn't start), and the next
+    /// search starts another.
+    Stopped(String),
 }
 
 impl WatchState {
@@ -121,7 +133,8 @@ impl WatchState {
             WatchState::Watching { polling: false } => "watching (inotify)".into(),
             WatchState::Watching { polling: true } => "watching (polling)".into(),
             WatchState::Elsewhere => "watched by another Arko process".into(),
-            WatchState::Failed(error) => format!("watcher failed ({error})"),
+            WatchState::Retrying(error) => format!("watcher failed ({error}), trying again"),
+            WatchState::Stopped(error) => format!("watcher stopped ({error})"),
         }
     }
     pub fn active(&self) -> bool {
@@ -410,8 +423,6 @@ pub struct Indexes {
     timing: Timing,
     events: Option<Events>,
     entries: Mutex<HashMap<String, Arc<Entry>>>,
-    /// Serializes manifest updates in this process.
-    manifests: Mutex<()>,
     spent: Mutex<(u64, f64)>,
     stopping: AtomicBool,
 }
@@ -477,7 +488,6 @@ impl Indexes {
             timing,
             events,
             entries: Mutex::new(HashMap::new()),
-            manifests: Mutex::new(()),
             spent: Mutex::new((0, 0.0)),
             stopping: AtomicBool::new(false),
         });
@@ -872,10 +882,15 @@ impl Indexes {
         layout: &Layout,
         change: impl FnOnce(&mut Manifest),
     ) -> Option<Manifest> {
-        let _guard = lock(&self.manifests);
-        let mut manifest = store::load_manifest(&layout.dir).ok()?;
-        change(&mut manifest);
-        if let Err(error) = store::save_manifest(&layout.dir, &manifest) {
+        let (manifest, saved) = {
+            let _guard = lock(&MANIFESTS);
+            let mut manifest = store::load_manifest(&layout.dir).ok()?;
+            change(&mut manifest);
+            let saved = store::save_manifest(&layout.dir, &manifest);
+            (manifest, saved)
+        };
+        // Logged once the lock is free, since every session's updates wait on it.
+        if let Err(error) = saved {
             log::warn!("index: {error}");
         }
         Some(manifest)
@@ -919,12 +934,12 @@ impl Indexes {
             Ok(record) => {
                 self.update_manifest(&entry.layout, |m| {
                     m.last_build = Some(record.clone());
-                    m.last_error = None;
+                    m.build_error = None;
                 });
             }
             Err(error) => {
                 self.update_manifest(&entry.layout, |m| {
-                    m.last_error = Some(format!("build failed ({error})"));
+                    m.build_error = Some(format!("build failed ({error})"));
                 });
             }
         }
@@ -1014,9 +1029,6 @@ impl Indexes {
             .map_err(|error| error.to_string())?
             .ok_or("the index has no embeddings (it was built lexical only)")?;
         let stop = stop.unwrap_or_default();
-        if self.stopping() {
-            stop.stop("Arko is exiting");
-        }
         let embedder = self
             .backend()
             .embedder(&info.embedder, &self.handle, Some(stop.clone()))?;
@@ -1033,6 +1045,11 @@ impl Indexes {
             }
         };
         lock(&entry.runs).push(stop.clone());
+        // Checked once the run is listed, so an exit that began earlier is
+        // seen here, and one that begins later finds the run in the list.
+        if self.stopping() {
+            stop.stop("Arko is exiting");
+        }
         let dense = DenseBuild::new(embedder.as_ref())
             .with_max_tokens(Some(cap))
             .with_progress(&on_progress)
@@ -1056,14 +1073,9 @@ impl Indexes {
                         if !stats.superseded && !stats.stopped {
                             m.cap_reached = stats.cap_reached;
                         }
-                        if m.last_error
-                            .as_deref()
-                            .is_some_and(|error| error.starts_with("embedding"))
-                        {
-                            m.last_error = None;
-                        }
+                        m.embed_error = None;
                     }
-                    Err(error) => m.last_error = Some(format!("embedding failed ({error})")),
+                    Err(error) => m.embed_error = Some(format!("embedding failed ({error})")),
                 }
             });
         }
@@ -1139,10 +1151,21 @@ impl Indexes {
         slot.explicit = explicit;
         let this = Arc::clone(self);
         let worker = Arc::clone(entry);
-        match std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("arko-index-embed".into())
-            .spawn(move || this.embed_loop(&worker))
-        {
+            .spawn(move || {
+                // The panic hook logs a panic. The slot is freed so that the
+                // next request starts a run.
+                let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    this.embed_loop(&worker)
+                }));
+                if ran.is_err() {
+                    let mut slot = lock(&worker.embed);
+                    slot.running = false;
+                    slot.last = Some(PANICKED_EMBEDDING.into());
+                }
+            });
+        match spawned {
             Ok(thread) => {
                 slot.thread = Some(thread);
                 true
@@ -1227,13 +1250,23 @@ impl Indexes {
         let this = Arc::clone(self);
         let worker = Arc::clone(entry);
         let flag = Arc::clone(&stop);
-        match std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("arko-index-watch".into())
-            .spawn(move || this.watch_loop(&worker, &flag))
-        {
+            .spawn(move || {
+                // The panic hook logs a panic. The loop's watcher, and its
+                // lock, dropped as it unwound, so once the state stops saying
+                // watching, the next search reconciles and starts a watcher.
+                let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    this.watch_loop(&worker, &flag)
+                }));
+                if ran.is_err() {
+                    lock(&worker.live).watch = WatchState::Stopped(PANICKED_WATCHER.into());
+                }
+            });
+        match spawned {
             Ok(thread) => *watcher = Some(WatchThread { stop, thread }),
             Err(error) => {
-                lock(&entry.live).watch = WatchState::Failed(error.to_string());
+                lock(&entry.live).watch = WatchState::Stopped(error.to_string());
             }
         }
     }
@@ -1261,7 +1294,7 @@ impl Indexes {
             let manifest = match store::load_manifest(&entry.layout.dir) {
                 Ok(manifest) => manifest,
                 Err(error) => {
-                    lock(&entry.live).watch = WatchState::Failed(error.clone());
+                    lock(&entry.live).watch = WatchState::Stopped(error.clone());
                     self.event(&format!("Stopped watching {name} ({error})"));
                     return;
                 }
@@ -1291,7 +1324,7 @@ impl Indexes {
                             live.watch = WatchState::Watching { polling };
                             live.delivered = 0;
                             live.covered = 0;
-                            if !built || manifest.last_error.is_some() {
+                            if !built || manifest.build_error.is_some() {
                                 live.dirty = true;
                             }
                         }
@@ -1323,7 +1356,7 @@ impl Indexes {
                     }
                     Err(OpenError::Failed(error)) => {
                         self.event(&format!("The watcher of {name} failed ({error})"));
-                        lock(&entry.live).watch = WatchState::Failed(error);
+                        lock(&entry.live).watch = WatchState::Retrying(error);
                         reopen_at = Instant::now() + Duration::from_secs(30);
                         continue;
                     }
@@ -1358,7 +1391,7 @@ impl Indexes {
                         self.event(&format!(
                             "The watcher of {name} failed ({error}), so it reopens"
                         ));
-                        lock(&entry.live).watch = WatchState::Failed(error);
+                        lock(&entry.live).watch = WatchState::Retrying(error);
                         changes = None;
                         reopen_at = Instant::now() + Duration::from_secs(5);
                         continue;
@@ -1408,10 +1441,9 @@ impl Indexes {
                 }
             }
         }
-        let mut live = lock(&entry.live);
-        if live.watch.active() || live.watch == WatchState::Elsewhere {
-            live.watch = WatchState::Off;
-        }
+        // Asked to stop, so this process no longer watches it, whatever the
+        // last attempt said.
+        lock(&entry.live).watch = WatchState::Off;
     }
 
     /// Brings an index no watcher of this process keeps current up to date. It opens
@@ -1454,7 +1486,7 @@ impl Indexes {
             }
             Err(OpenError::Failed(error)) => {
                 log::warn!("index: {}: watcher: {error}", manifest.name);
-                if built && manifest.last_error.is_none() {
+                if built && manifest.build_error.is_none() {
                     Ok(None)
                 } else {
                     self.build_locked(entry, manifest, Caller::Interactive)
@@ -1469,7 +1501,7 @@ impl Indexes {
                     }
                 }
                 let last = monitor::drain(changes.as_mut())?;
-                let record = if last.is_some() || !built || manifest.last_error.is_some() {
+                let record = if last.is_some() || !built || manifest.build_error.is_some() {
                     Some(self.build_locked(entry, manifest, Caller::Interactive)?)
                 } else {
                     None
@@ -1964,29 +1996,30 @@ impl Indexes {
                 run.stop("the index no longer embeds");
             }
         }
-        let mut manifest = existing.clone().unwrap_or_default();
-        manifest.version = store::MANIFEST_VERSION;
-        manifest.name = name;
-        manifest.root = root.clone();
-        manifest.kind = kind;
-        manifest.model = self.backend().model_for(kind);
-        manifest.embed = embed;
-        manifest.rules = rules;
-        manifest.monitor = args.monitor;
-        manifest.max_embed_tokens = args
-            .max_embed_tokens
-            .or(existing.as_ref().map(|manifest| manifest.max_embed_tokens))
-            .unwrap_or(store::DEFAULT_MAX_EMBED_TOKENS);
-        manifest.created = existing
-            .as_ref()
-            .and_then(|manifest| manifest.created)
-            .or(Some(Utc::now()));
-        manifest.last_error = None;
-        manifest.cap_reached = false;
-        {
-            let _guard = lock(&self.manifests);
+        let model = self.backend().model_for(kind);
+        let manifest = {
+            let _guard = lock(&MANIFESTS);
+            // Read again, since another session may have saved a build or
+            // what an embedding run spent since the read above, which stay.
+            let mut manifest = store::load_manifest(&layout.dir).unwrap_or_default();
+            manifest.version = store::MANIFEST_VERSION;
+            manifest.name = name;
+            manifest.root = root.clone();
+            manifest.kind = kind;
+            manifest.model = model;
+            manifest.embed = embed;
+            manifest.rules = rules;
+            manifest.monitor = args.monitor;
+            if let Some(cap) = args.max_embed_tokens {
+                manifest.max_embed_tokens = cap;
+            }
+            manifest.created = manifest.created.or(Some(Utc::now()));
+            manifest.build_error = None;
+            manifest.embed_error = None;
+            manifest.cap_reached = false;
             store::save_manifest(&layout.dir, &manifest)?;
-        }
+            manifest
+        };
         let mut notes = Vec::new();
         let built = {
             let _guard = lock(&entry.build_lock);
@@ -2413,3 +2446,7 @@ pub fn describe_dense(info: &DenseIndexInfo) -> &'static str {
         EmbedState::CapReached => "incomplete (a run stopped at its cap)",
     }
 }
+
+#[cfg(test)]
+#[path = "engine_tests.rs"]
+mod tests;

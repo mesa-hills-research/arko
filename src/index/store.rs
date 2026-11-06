@@ -164,8 +164,13 @@ pub struct Manifest {
     pub max_embed_tokens: u64,
     pub created: Option<DateTime<Utc>>,
     pub last_build: Option<BuildRecord>,
-    /// The last build's or embedding run's error, cleared by a success.
-    pub last_error: Option<String>,
+    /// Why the last build failed, cleared by a successful one. While it's
+    /// set, a watcher or a search rebuilds the index. (Earlier versions kept
+    /// it in `last_error`, which held an embedding run's error too.)
+    #[serde(alias = "last_error")]
+    pub build_error: Option<String>,
+    /// Why the last embedding run failed, cleared by a successful one.
+    pub embed_error: Option<String>,
     /// Embedding tokens spent on this index, all time (as Voyage billed them).
     pub embed_tokens: u64,
     /// Their cost in dollars.
@@ -190,7 +195,8 @@ impl Default for Manifest {
             max_embed_tokens: DEFAULT_MAX_EMBED_TOKENS,
             created: None,
             last_build: None,
-            last_error: None,
+            build_error: None,
+            embed_error: None,
             embed_tokens: 0,
             embed_cost: 0.0,
             cap_reached: false,
@@ -289,7 +295,9 @@ pub fn load_manifest(dir: &Path) -> Result<Manifest, String> {
     Ok(manifest)
 }
 
-/// Replaces a manifest atomically (a temporary file renamed over it).
+/// Replaces a manifest atomically (a temporary file renamed over it). The
+/// file is named by the process, so writers in one process take turns
+/// (the engine's manifest lock).
 pub fn save_manifest(dir: &Path, manifest: &Manifest) -> Result<(), String> {
     std::fs::create_dir_all(dir)
         .map_err(|error| format!("could not create {} ({error})", dir.display()))?;

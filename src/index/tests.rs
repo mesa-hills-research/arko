@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use arko_agents::{TaskContext, ToolRecovery};
@@ -17,8 +18,8 @@ use super::census::{self, Census, Class};
 use super::cli::{IndexCommand, run_command_with};
 use super::embed::{self, Backend};
 use super::engine::{
-    Action, CreateArgs, CreateOutcome, EmbedPlan, Hit, Indexes, ModeArg, SearchArgs, SearchOutput,
-    Timing, WatchState, monitor_words,
+    Action, CreateArgs, CreateOutcome, EmbedPlan, Events, Hit, Indexes, ModeArg, SearchArgs,
+    SearchOutput, Timing, WatchState, monitor_words,
 };
 use super::store::{self, Kind, Layout, Manifest, Rules};
 use super::tools::{self, TOOL_NAMES};
@@ -159,9 +160,40 @@ impl Fixture {
         indexes
     }
 
+    /// [`open`](Self::open) with the test embedder, whose progress lines go
+    /// to `events`.
+    fn open_with_events(&self, workspace: &Path, monitor: bool, events: Events) -> Arc<Indexes> {
+        let _guard = self.runtime.enter();
+        let indexes = Indexes::open_with(
+            &self.data(),
+            workspace,
+            Backend::Hash,
+            monitor,
+            fast(false),
+            Some(events),
+        )
+        .unwrap();
+        indexes.watch_related();
+        indexes
+    }
+
     fn shutdown(&self, indexes: &Indexes) {
         self.runtime.block_on(indexes.shutdown());
     }
+}
+
+/// Progress lines that panic at the first one starting with `prefix`, and
+/// whether that happened. A line is how a test reaches inside a background
+/// thread.
+fn panicking_once_on(prefix: &'static str) -> (Events, Arc<AtomicBool>) {
+    let panicked = Arc::new(AtomicBool::new(false));
+    let flag = panicked.clone();
+    let events: Events = Arc::new(move |line: &str| {
+        if line.starts_with(prefix) && !flag.swap(true, Ordering::SeqCst) {
+            panic!("a test panic at {line:?}");
+        }
+    });
+    (events, panicked)
 }
 
 fn create_args(path: &Path, kind: Option<Kind>) -> CreateArgs {
@@ -297,6 +329,23 @@ fn manifests_round_trip_and_bad_ones_are_skipped() {
     assert_eq!(ok, vec!["newer".to_string(), "proj".to_string()]);
     assert_eq!(scanned.iter().filter(|s| s.manifest.is_err()).count(), 2);
     assert!(store::scan(&temp.path().join("missing")).is_empty());
+}
+
+/// A manifest from before build and embedding errors were kept apart reads
+/// its error as the last build's.
+#[test]
+fn an_older_manifests_error_reads_as_the_last_builds() {
+    let temp = tempfile::tempdir().unwrap();
+    write(
+        &temp.path().join(store::MANIFEST_FILE),
+        r#"{"root": "/home/ada/proj", "last_error": "build failed (the disk is full)"}"#,
+    );
+    let manifest = store::load_manifest(temp.path()).unwrap();
+    assert_eq!(
+        manifest.build_error.as_deref(),
+        Some("build failed (the disk is full)")
+    );
+    assert_eq!(manifest.embed_error, None);
 }
 
 #[test]
@@ -743,7 +792,7 @@ fn dense_and_hybrid_search_with_the_test_embedder() {
     assert!(indexes.spent().0 >= summary.tokens);
     let manifest = store::load_manifest(&outcome.layout.dir).unwrap();
     assert_eq!(manifest.embed_tokens, summary.tokens);
-    assert!(manifest.last_build.is_some() && manifest.last_error.is_none());
+    assert!(manifest.last_build.is_some() && manifest.build_error.is_none());
 
     for (mode, expected) in [
         (Some(ModeArg::Semantic), Mode::Dense),
@@ -873,6 +922,74 @@ fn a_token_cap_stops_embedding_and_pauses_automatic_runs() {
             .cap_reached
     );
     fixture.shutdown(&indexes);
+}
+
+/// An embedding thread that panics frees its slot, so the next request runs.
+#[test]
+fn an_embedding_thread_that_panics_lets_the_next_run_start() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let (events, panicked) = panicking_once_on("proj embedded ");
+    let indexes = fixture.open_with_events(&root, false, events);
+    let args = CreateArgs {
+        wait: false,
+        ..create_args(&root, Some(Kind::Code))
+    };
+    let outcome = indexes.create_blocking(&args).unwrap();
+    assert!(
+        matches!(outcome.embedding, EmbedPlan::Background),
+        "{:?}",
+        outcome.embedding
+    );
+    let running_here =
+        || indexes.status_blocking(Some("proj"), &root).unwrap()[0].embed_running_here;
+    wait_for("the embedding thread to panic", || {
+        panicked.load(Ordering::SeqCst)
+    });
+    wait_for("the slot to say no run is in progress", || !running_here());
+    write(
+        &root.join("src/more.rs"),
+        "/// One more helper.\npub fn one_more() {}\n",
+    );
+    let text = indexes
+        .manage_blocking("proj", &Action::Rebuild, &root)
+        .unwrap();
+    assert!(text.contains("in the background"), "{text}");
+    wait_for("the next run", || {
+        let (done, docs) = embedded(&indexes, &root);
+        docs > outcome.record.chunks && done == docs
+    });
+    fixture.shutdown(&indexes);
+}
+
+/// An embedding run that failed neither rebuilds the index when a watcher
+/// starts nor loses its error.
+#[test]
+fn a_failed_embedding_run_neither_rebuilds_nor_hides_its_error() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let first = fixture.open(&root, Backend::Hash, false, fast(false));
+    let outcome = first.create_blocking(&create_args(&root, None)).unwrap();
+    fixture.shutdown(&first);
+    let mut manifest = store::load_manifest(&outcome.layout.dir).unwrap();
+    manifest.embed_error = Some("embedding failed (Voyage said 429)".into());
+    store::save_manifest(&outcome.layout.dir, &manifest).unwrap();
+    let built = manifest.last_build.clone().unwrap().at;
+    let watching = fixture.open(&root, Backend::Hash, true, fast(false));
+    wait_for("the watcher", || {
+        matches!(
+            watching.live_state(&outcome.layout).0,
+            WatchState::Watching { .. }
+        )
+    });
+    // Three of the test timing's quiet periods, after which a rebuild is due.
+    std::thread::sleep(Duration::from_millis(600));
+    let manifest = store::load_manifest(&outcome.layout.dir).unwrap();
+    assert_eq!(manifest.last_build.unwrap().at, built, "it was rebuilt");
+    let reports = watching.status_blocking(Some("proj"), &root).unwrap();
+    let text = tools::format_status(&reports, None);
+    assert!(text.contains("Voyage said 429"), "{text}");
+    fixture.shutdown(&watching);
 }
 
 // ----- freshness -----
@@ -1060,6 +1177,76 @@ fn watching_reconciles_changes_made_while_arko_was_not_running() {
         .unwrap();
     assert_eq!(hit_files(&output)[0], "src/offline.rs", "{output:?}");
     fixture.shutdown(&second);
+}
+
+/// A watcher thread that panics stops reading as watched, and the next search
+/// brings the index up to date and starts a new watcher.
+#[test]
+fn a_watcher_that_panics_is_replaced_by_the_next_search() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let (events, panicked) = panicking_once_on("Watching ");
+    let indexes = fixture.open_with_events(&root, true, events);
+    let outcome = indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let layout = outcome.layout.clone();
+    wait_for("the watcher to panic", || panicked.load(Ordering::SeqCst));
+    wait_for("the index to stop reading as watched", || {
+        !indexes.watch_state(&layout).active()
+    });
+    write(
+        &root.join("src/after.rs"),
+        "pub fn written_after_the_panic() {}\n",
+    );
+    let output = indexes
+        .search_blocking(&search_args(
+            &root,
+            "written_after_the_panic",
+            Some(ModeArg::Lexical),
+        ))
+        .unwrap();
+    assert_eq!(
+        hit_files(&output).first().map(String::as_str),
+        Some("src/after.rs"),
+        "{output:?}"
+    );
+    wait_for("a new watcher", || {
+        matches!(indexes.live_state(&layout).0, WatchState::Watching { .. })
+    });
+    fixture.shutdown(&indexes);
+}
+
+/// A watcher whose state can't be opened fails and tries again, and once
+/// monitoring is off it reads off.
+#[test]
+fn a_failing_watcher_retries_and_stops_as_off() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let indexes = fixture.open(&root, Backend::Hash, true, fast(true));
+    let args = CreateArgs {
+        monitor: false,
+        ..create_args(&root, None)
+    };
+    let outcome = indexes.create_blocking(&args).unwrap();
+    // The polling watcher's state directory becomes a file, so opening it fails.
+    std::fs::remove_dir_all(outcome.layout.watch()).unwrap();
+    std::fs::write(outcome.layout.watch(), "not a directory").unwrap();
+    indexes
+        .manage_blocking("proj", &Action::Monitor(true), &root)
+        .unwrap();
+    wait_for("the watcher to fail", || {
+        matches!(
+            indexes.live_state(&outcome.layout).0,
+            WatchState::Retrying(_)
+        )
+    });
+    let reports = indexes.status_blocking(Some("proj"), &root).unwrap();
+    let text = tools::format_status(&reports, None);
+    assert!(text.contains("), trying again"), "{text}");
+    indexes
+        .manage_blocking("proj", &Action::Monitor(false), &root)
+        .unwrap();
+    assert_eq!(indexes.live_state(&outcome.layout).0, WatchState::Off);
+    fixture.shutdown(&indexes);
 }
 
 /// An index made in fin's data folder (Arko's name before) opens, searches
@@ -1615,6 +1802,48 @@ fn status_survives_unreadable_manifests() {
     let text = tools::format_status(&reports, None);
     assert!(text.starts_with("broken — unreadable"), "{text}");
     fixture.shutdown(&indexes);
+}
+
+/// Two sessions in one process (an app runs several) update one index's
+/// manifest at once, and neither undoes the other's change.
+#[test]
+fn two_sessions_in_one_process_keep_each_others_manifest_changes() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let first = fixture.open(&root, Backend::Hash, false, fast(false));
+    let args = CreateArgs {
+        monitor: false,
+        embed: Some(false),
+        ..create_args(&root, None)
+    };
+    let outcome = first.create_blocking(&args).unwrap();
+    let second = fixture.open(&root, Backend::Hash, false, fast(false));
+    // The second session rebuilds again and again, and each build is saved in
+    // the manifest.
+    let done = Arc::new(AtomicBool::new(false));
+    let rebuilding = {
+        let (second, root, done) = (second.clone(), root.clone(), done.clone());
+        std::thread::spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                let _ = second.manage_blocking("proj", &Action::Rebuild, &root);
+            }
+        })
+    };
+    // Meanwhile the first turns monitoring on and off, and checks each time
+    // that its change holds.
+    let mut undone = 0;
+    for turn in 0..300 {
+        let on = turn % 2 == 0;
+        let _ = first.manage_blocking("proj", &Action::Monitor(on), &root);
+        std::thread::sleep(Duration::from_millis(5));
+        let manifest = store::load_manifest(&outcome.layout.dir);
+        undone += usize::from(!manifest.is_ok_and(|manifest| manifest.monitor == on));
+    }
+    done.store(true, Ordering::SeqCst);
+    rebuilding.join().unwrap();
+    assert_eq!(undone, 0, "changes lost or unreadable");
+    fixture.shutdown(&first);
+    fixture.shutdown(&second);
 }
 
 // ----- the CLI -----

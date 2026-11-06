@@ -822,7 +822,10 @@ pub fn format_status(reports: &[IndexReport], spent: Option<(u64, f64)>) -> Stri
         }
         out.push_str(&monitor);
         out.push('\n');
-        if let Some(error) = &manifest.last_error {
+        for error in [&manifest.build_error, &manifest.embed_error]
+            .into_iter()
+            .flatten()
+        {
             out.push_str(&format!("  last error: {error}\n"));
         }
     }
