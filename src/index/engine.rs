@@ -113,8 +113,11 @@ pub enum WatchState {
     /// of this one tries again every [`Timing::busy_retry`], and a status taken
     /// without one probes the lock.
     Elsewhere,
-    /// The watcher failed, and the thread retries.
-    Failed(String),
+    /// The watcher failed, and the thread opens it again soon.
+    Retrying(String),
+    /// The watcher thread ended on an error (or couldn't start), and the next
+    /// search starts another.
+    Stopped(String),
 }
 
 impl WatchState {
@@ -125,7 +128,8 @@ impl WatchState {
             WatchState::Watching { polling: false } => "watching (inotify)".into(),
             WatchState::Watching { polling: true } => "watching (polling)".into(),
             WatchState::Elsewhere => "watched by another Arko process".into(),
-            WatchState::Failed(error) => format!("watcher failed ({error})"),
+            WatchState::Retrying(error) => format!("watcher failed ({error}), trying again"),
+            WatchState::Stopped(error) => format!("watcher stopped ({error})"),
         }
     }
     pub fn active(&self) -> bool {
@@ -1254,13 +1258,13 @@ impl Indexes {
                     this.watch_loop(&worker, &flag)
                 }));
                 if ran.is_err() {
-                    lock(&worker.live).watch = WatchState::Failed(PANICKED_WATCHER.into());
+                    lock(&worker.live).watch = WatchState::Stopped(PANICKED_WATCHER.into());
                 }
             });
         match spawned {
             Ok(thread) => *watcher = Some(WatchThread { stop, thread }),
             Err(error) => {
-                lock(&entry.live).watch = WatchState::Failed(error.to_string());
+                lock(&entry.live).watch = WatchState::Stopped(error.to_string());
             }
         }
     }
@@ -1288,7 +1292,7 @@ impl Indexes {
             let manifest = match store::load_manifest(&entry.layout.dir) {
                 Ok(manifest) => manifest,
                 Err(error) => {
-                    lock(&entry.live).watch = WatchState::Failed(error.clone());
+                    lock(&entry.live).watch = WatchState::Stopped(error.clone());
                     self.event(&format!("Stopped watching {name} ({error})"));
                     return;
                 }
@@ -1350,7 +1354,7 @@ impl Indexes {
                     }
                     Err(OpenError::Failed(error)) => {
                         self.event(&format!("The watcher of {name} failed ({error})"));
-                        lock(&entry.live).watch = WatchState::Failed(error);
+                        lock(&entry.live).watch = WatchState::Retrying(error);
                         reopen_at = Instant::now() + Duration::from_secs(30);
                         continue;
                     }
@@ -1385,7 +1389,7 @@ impl Indexes {
                         self.event(&format!(
                             "The watcher of {name} failed ({error}), so it reopens"
                         ));
-                        lock(&entry.live).watch = WatchState::Failed(error);
+                        lock(&entry.live).watch = WatchState::Retrying(error);
                         changes = None;
                         reopen_at = Instant::now() + Duration::from_secs(5);
                         continue;
@@ -1435,10 +1439,9 @@ impl Indexes {
                 }
             }
         }
-        let mut live = lock(&entry.live);
-        if live.watch.active() || live.watch == WatchState::Elsewhere {
-            live.watch = WatchState::Off;
-        }
+        // Asked to stop, so this process no longer watches it, whatever the
+        // last attempt said.
+        lock(&entry.live).watch = WatchState::Off;
     }
 
     /// Brings an index no watcher of this process keeps current up to date. It opens

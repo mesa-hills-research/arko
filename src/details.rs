@@ -150,7 +150,8 @@ pub enum IndexWatch {
     Here,
     /// Another Arko watches it.
     Elsewhere,
-    /// This Arko's watcher failed, for the reason given, and tries again.
+    /// This Arko's watcher failed, for the reason given. It tries again soon,
+    /// or, when its thread stopped, once the index is next searched.
     Failed(String),
 }
 
@@ -210,7 +211,9 @@ pub(crate) fn index_facts(indexes: &index::Indexes) -> Vec<IndexFacts> {
                     IndexWatch::Here
                 }
                 index::WatchState::Elsewhere => IndexWatch::Elsewhere,
-                index::WatchState::Failed(why) => IndexWatch::Failed(why),
+                index::WatchState::Retrying(why) | index::WatchState::Stopped(why) => {
+                    IndexWatch::Failed(why)
+                }
             };
             let embeddings = manifest.embed.then(|| {
                 let dense = report.dense.as_ref();

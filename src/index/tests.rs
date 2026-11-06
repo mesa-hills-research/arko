@@ -1168,6 +1168,40 @@ fn a_watcher_that_panics_is_replaced_by_the_next_search() {
     fixture.shutdown(&indexes);
 }
 
+/// A watcher whose state can't be opened fails and tries again, and once
+/// monitoring is off it reads off.
+#[test]
+fn a_failing_watcher_retries_and_stops_as_off() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let indexes = fixture.open(&root, Backend::Hash, true, fast(true));
+    let args = CreateArgs {
+        monitor: false,
+        ..create_args(&root, None)
+    };
+    let outcome = indexes.create_blocking(&args).unwrap();
+    // The polling watcher's state directory becomes a file, so opening it fails.
+    std::fs::remove_dir_all(outcome.layout.watch()).unwrap();
+    std::fs::write(outcome.layout.watch(), "not a directory").unwrap();
+    indexes
+        .manage_blocking("proj", &Action::Monitor(true), &root)
+        .unwrap();
+    wait_for("the watcher to fail", || {
+        matches!(
+            indexes.live_state(&outcome.layout).0,
+            WatchState::Retrying(_)
+        )
+    });
+    let reports = indexes.status_blocking(Some("proj"), &root).unwrap();
+    let text = tools::format_status(&reports, None);
+    assert!(text.contains("), trying again"), "{text}");
+    indexes
+        .manage_blocking("proj", &Action::Monitor(false), &root)
+        .unwrap();
+    assert_eq!(indexes.live_state(&outcome.layout).0, WatchState::Off);
+    fixture.shutdown(&indexes);
+}
+
 /// An index made in fin's data folder (Arko's name before) opens, searches
 /// and keeps current after the folder moves to Arko's, because nothing saved in it
 /// names the data folder.
