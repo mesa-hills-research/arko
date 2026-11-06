@@ -209,8 +209,11 @@ pub(super) fn install_tagger(
         ));
     }
     // Whole on disk before it counts as installed, and the notice first,
-    // because the pack is what makes the model installed.
-    fs::File::open(&path)
+    // because the pack is what makes the model installed. Windows flushes a
+    // file only through a handle that may write to it.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
         .and_then(|written| written.sync_all())
         .map_err(unsaved)?;
     fs::write(dir.join("NOTICE.txt"), tagger_notice(url)).map_err(unsaved)?;
