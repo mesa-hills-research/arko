@@ -39,6 +39,11 @@ use super::embed::{self, Backend};
 use super::monitor::{self, OpenError};
 use super::store::{self, BuildRecord, Kind, Layout, Manifest, Rules};
 
+/// Serializes manifest updates in this process. An app runs several sessions
+/// in one process, each with its own [`Indexes`] over the same folder, and
+/// their updates would otherwise undo each other's and share a temporary file.
+static MANIFESTS: Mutex<()> = Mutex::new(());
+
 /// Receives progress lines of background work (the CLI prints them, and Arko logs them).
 pub type Events = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -418,8 +423,6 @@ pub struct Indexes {
     timing: Timing,
     events: Option<Events>,
     entries: Mutex<HashMap<String, Arc<Entry>>>,
-    /// Serializes manifest updates in this process.
-    manifests: Mutex<()>,
     spent: Mutex<(u64, f64)>,
     stopping: AtomicBool,
 }
@@ -485,7 +488,6 @@ impl Indexes {
             timing,
             events,
             entries: Mutex::new(HashMap::new()),
-            manifests: Mutex::new(()),
             spent: Mutex::new((0, 0.0)),
             stopping: AtomicBool::new(false),
         });
@@ -880,7 +882,7 @@ impl Indexes {
         layout: &Layout,
         change: impl FnOnce(&mut Manifest),
     ) -> Option<Manifest> {
-        let _guard = lock(&self.manifests);
+        let _guard = lock(&MANIFESTS);
         let mut manifest = store::load_manifest(&layout.dir).ok()?;
         change(&mut manifest);
         if let Err(error) = store::save_manifest(&layout.dir, &manifest) {
@@ -2010,7 +2012,7 @@ impl Indexes {
         manifest.embed_error = None;
         manifest.cap_reached = false;
         {
-            let _guard = lock(&self.manifests);
+            let _guard = lock(&MANIFESTS);
             store::save_manifest(&layout.dir, &manifest)?;
         }
         let mut notes = Vec::new();

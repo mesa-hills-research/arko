@@ -295,7 +295,9 @@ pub fn load_manifest(dir: &Path) -> Result<Manifest, String> {
     Ok(manifest)
 }
 
-/// Replaces a manifest atomically (a temporary file renamed over it).
+/// Replaces a manifest atomically (a temporary file renamed over it). The
+/// file is named by the process, so writers in one process take turns
+/// (the engine's manifest lock).
 pub fn save_manifest(dir: &Path, manifest: &Manifest) -> Result<(), String> {
     std::fs::create_dir_all(dir)
         .map_err(|error| format!("could not create {} ({error})", dir.display()))?;

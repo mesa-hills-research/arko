@@ -1804,6 +1804,48 @@ fn status_survives_unreadable_manifests() {
     fixture.shutdown(&indexes);
 }
 
+/// Two sessions in one process (an app runs several) update one index's
+/// manifest at once, and neither undoes the other's change.
+#[test]
+fn two_sessions_in_one_process_keep_each_others_manifest_changes() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let first = fixture.open(&root, Backend::Hash, false, fast(false));
+    let args = CreateArgs {
+        monitor: false,
+        embed: Some(false),
+        ..create_args(&root, None)
+    };
+    let outcome = first.create_blocking(&args).unwrap();
+    let second = fixture.open(&root, Backend::Hash, false, fast(false));
+    // The second session rebuilds again and again, and each build is saved in
+    // the manifest.
+    let done = Arc::new(AtomicBool::new(false));
+    let rebuilding = {
+        let (second, root, done) = (second.clone(), root.clone(), done.clone());
+        std::thread::spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                let _ = second.manage_blocking("proj", &Action::Rebuild, &root);
+            }
+        })
+    };
+    // Meanwhile the first turns monitoring on and off, and checks each time
+    // that its change holds.
+    let mut undone = 0;
+    for turn in 0..300 {
+        let on = turn % 2 == 0;
+        let _ = first.manage_blocking("proj", &Action::Monitor(on), &root);
+        std::thread::sleep(Duration::from_millis(5));
+        let manifest = store::load_manifest(&outcome.layout.dir);
+        undone += usize::from(!manifest.is_ok_and(|manifest| manifest.monitor == on));
+    }
+    done.store(true, Ordering::SeqCst);
+    rebuilding.join().unwrap();
+    assert_eq!(undone, 0, "changes lost or unreadable");
+    fixture.shutdown(&first);
+    fixture.shutdown(&second);
+}
+
 // ----- the CLI -----
 
 #[derive(Parser)]
