@@ -763,6 +763,60 @@ mod tests {
         }
     }
 
+    /// Every way of emptying the box is seen, so the approval tray's switch
+    /// can tell a message begun since from a draft written before.
+    #[test]
+    fn every_way_of_emptying_the_box_is_seen() {
+        type Emptying = fn(&mut Editor);
+        let ways: Vec<(&str, Emptying)> = vec![
+            ("Backspace", |e| {
+                while e.cursor() > 0 {
+                    e.backspace();
+                }
+            }),
+            ("Delete", |e| {
+                e.home();
+                while e.delete() {}
+            }),
+            ("Ctrl+U", Editor::kill_start),
+            ("Ctrl+W", Editor::kill_word),
+            ("Ctrl+K", |e| {
+                e.home();
+                e.kill_end();
+            }),
+            ("Alt+D", |e| {
+                e.home();
+                e.kill_word_forward();
+            }),
+            ("a range taken out", |e| e.remove(0, 4)),
+            ("a send", |e| {
+                e.take();
+            }),
+            ("clearing", Editor::clear),
+            ("setting nothing", |e| e.set("")),
+            ("the history, back to an empty draft", |e| {
+                e.take();
+                e.history_back();
+                e.take_emptied();
+                e.history_forward();
+            }),
+            ("dictated words taken out", |e| {
+                e.clear();
+                e.insert_dictated("word");
+                e.take_emptied();
+                e.remove_dictated();
+            }),
+        ];
+        for (way, empty) in ways {
+            let mut e = editor();
+            typed(&mut e, "word");
+            e.take_emptied();
+            empty(&mut e);
+            assert!(!e.has_text(), "{way} left text");
+            assert!(e.take_emptied(), "{way} wasn't seen");
+        }
+    }
+
     /// A recording's words are followed through edits, and only they are
     /// taken out. Text typed before them moves them, text typed inside one
     /// splits it, and part of one deleted leaves the rest.

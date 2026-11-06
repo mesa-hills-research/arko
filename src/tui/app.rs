@@ -754,8 +754,7 @@ impl App {
     }
 
     pub(super) fn take_box(&mut self) -> (String, Option<crate::remote::protocol::MessageSwitch>) {
-        self.sync_message();
-        let message = Some(self.tray.message.clone());
+        let message = Some(self.message_switch().clone());
         (self.editor.take(), message)
     }
 
@@ -785,8 +784,8 @@ impl App {
                 if self.editor.is_empty() {
                     self.editor.set(typed);
                     if let Some(previous) = message {
-                        self.editor.take_emptied();
-                        self.tray.message.restored(previous, self.editor.has_text());
+                        let has_text = self.editor.has_text();
+                        self.message_switch().restored(previous, has_text);
                     }
                     if self.panel.attached.is_empty() {
                         self.panel.attached = answers.clone();

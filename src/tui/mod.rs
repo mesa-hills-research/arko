@@ -1267,6 +1267,7 @@ mod tests {
         assert!(enter.is_none() && burst.is_some());
         assert!(app.take_effects().is_empty());
         burst = None;
+        let switch = app.message_switch().clone();
         // Typed, one key at a time, so the Enter waits, then sends when
         // nothing follows (the loop's timer).
         handle(&mut app, vec![key(KeyCode::Enter)], &mut enter, &mut burst);
@@ -1291,7 +1292,7 @@ mod tests {
                     "one\ntwo",
                     Vec::new()
                 )
-                .with_message(Some(app.tray.message.clone()))
+                .with_message(Some(switch))
             )]
         );
         // An Enter a key follows at once was a paste's.

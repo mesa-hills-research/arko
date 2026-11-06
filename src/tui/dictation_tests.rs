@@ -135,6 +135,7 @@ fn enter_stops_the_words_stay_to_edit_and_enter_again_sends() {
     assert_eq!(app.editor.text(), "Hello world.");
     key(&mut app, KeyCode::Backspace);
     key(&mut app, KeyCode::Char('!'));
+    let switch = app.message_switch().clone();
     key(&mut app, KeyCode::Enter);
     assert_eq!(
         app.take_effects(),
@@ -144,7 +145,7 @@ fn enter_stops_the_words_stay_to_edit_and_enter_again_sends() {
                 "Hello world!",
                 Vec::new()
             )
-            .with_message(Some(app.tray.message.clone()))
+            .with_message(Some(switch))
         )]
     );
 }
@@ -264,12 +265,13 @@ fn a_download_runs_beside_the_box() {
     for c in "hi".chars() {
         key(&mut app, KeyCode::Char(c));
     }
+    let switch = app.message_switch().clone();
     key(&mut app, KeyCode::Enter);
     assert_eq!(
         app.take_effects(),
         [Effect::Send(
             crate::tui::app::Sending::of_box(Input::Line("hi".into()), "hi", Vec::new())
-                .with_message(Some(app.tray.message.clone()))
+                .with_message(Some(switch))
         )]
     );
     ctrl_r(&mut app);
