@@ -1991,30 +1991,30 @@ impl Indexes {
                 run.stop("the index no longer embeds");
             }
         }
-        let mut manifest = existing.clone().unwrap_or_default();
-        manifest.version = store::MANIFEST_VERSION;
-        manifest.name = name;
-        manifest.root = root.clone();
-        manifest.kind = kind;
-        manifest.model = self.backend().model_for(kind);
-        manifest.embed = embed;
-        manifest.rules = rules;
-        manifest.monitor = args.monitor;
-        manifest.max_embed_tokens = args
-            .max_embed_tokens
-            .or(existing.as_ref().map(|manifest| manifest.max_embed_tokens))
-            .unwrap_or(store::DEFAULT_MAX_EMBED_TOKENS);
-        manifest.created = existing
-            .as_ref()
-            .and_then(|manifest| manifest.created)
-            .or(Some(Utc::now()));
-        manifest.build_error = None;
-        manifest.embed_error = None;
-        manifest.cap_reached = false;
-        {
+        let model = self.backend().model_for(kind);
+        let manifest = {
             let _guard = lock(&MANIFESTS);
+            // Read again, since another session may have saved a build or
+            // what an embedding run spent since the read above, which stay.
+            let mut manifest = store::load_manifest(&layout.dir).unwrap_or_default();
+            manifest.version = store::MANIFEST_VERSION;
+            manifest.name = name;
+            manifest.root = root.clone();
+            manifest.kind = kind;
+            manifest.model = model;
+            manifest.embed = embed;
+            manifest.rules = rules;
+            manifest.monitor = args.monitor;
+            if let Some(cap) = args.max_embed_tokens {
+                manifest.max_embed_tokens = cap;
+            }
+            manifest.created = manifest.created.or(Some(Utc::now()));
+            manifest.build_error = None;
+            manifest.embed_error = None;
+            manifest.cap_reached = false;
             store::save_manifest(&layout.dir, &manifest)?;
-        }
+            manifest
+        };
         let mut notes = Vec::new();
         let built = {
             let _guard = lock(&entry.build_lock);
@@ -2441,3 +2441,7 @@ pub fn describe_dense(info: &DenseIndexInfo) -> &'static str {
         EmbedState::CapReached => "incomplete (a run stopped at its cap)",
     }
 }
+
+#[cfg(test)]
+#[path = "engine_tests.rs"]
+mod tests;
