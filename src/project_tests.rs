@@ -238,6 +238,59 @@ async fn the_main_agent_gets_them_once_per_conversation() {
     assert_eq!(user_messages(&last(&bodies))[0], "Plain.");
 }
 
+/// Typed while a turn runs, `/project-instructions` says that the
+/// conversation under way keeps what it got, in its first turn and in a
+/// later one.
+#[tokio::test]
+async fn during_a_turn_the_conversation_under_way_keeps_what_it_got() {
+    const KEEPS: &str =
+        "The conversation under way keeps what it got, and the next one gets the change.";
+    let hold = Arc::new(tokio::sync::Notify::new());
+    let held = hold.clone();
+    let server = ModelServer::start(Arc::new(move |index, _| {
+        let held = held.clone();
+        Box::pin(async move {
+            held.notified().await;
+            complete(&format!("m{index}"), "Noted.")
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    with_files(&mut harness, Some("Use tabs.\n"), Some("Use spaces."));
+    for (turn, choice) in ["both", "one"].into_iter().enumerate() {
+        let feed = harness.feed.clone();
+        let typed = {
+            let (sender, hold) = (sender.clone(), hold.clone());
+            async move {
+                until(|| feed.activity().working).await;
+                sender
+                    .send(Input::Line(format!("/project-instructions {choice}")))
+                    .unwrap();
+                let said = format!("Project instructions are set to {choice},");
+                until(|| {
+                    texts(&feed, "output")
+                        .iter()
+                        .any(|text| text.starts_with(&said))
+                })
+                .await;
+                hold.notify_one();
+            }
+        };
+        let (end, ()) = tokio::join!(
+            harness.turn(Prompt::User("Go on.".into()), &mut inputs),
+            typed
+        );
+        assert!(matches!(end, TurnEnd::Answered));
+        let kept = texts(&harness.feed, "output")
+            .iter()
+            .filter(|text| text.ends_with(KEEPS))
+            .count();
+        assert_eq!(kept, turn + 1, "in turn {}", turn + 1);
+    }
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// `/project-instructions` says what the agents get from the working
 /// directory and how often, and changes it at any time. The session and
 /// the clients have the change. It says what it takes when given anything

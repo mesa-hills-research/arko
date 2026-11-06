@@ -579,7 +579,9 @@ async fn a_conversation_resumed_is_told_when_no_notes_are_left() {
 
 /// A conversation's saved task is read when the conversation is opened or
 /// gone back to. One that can't be read fails the session's open, as when
-/// every task was read on open, and `/resume` to it says so.
+/// every task was read on open, and `/resume` to it says so. An open that
+/// fails leaves the session on the workflow it had, with its status, and
+/// with the workers' start hook choosing and checking each new worker.
 #[tokio::test]
 async fn a_conversation_whose_task_cant_be_read_says_so() {
     let temp = tempfile::tempdir().unwrap();
@@ -628,9 +630,209 @@ async fn a_conversation_whose_task_cant_be_read_says_so() {
     harness.conversation = conversation_of(harness.workflow(), pears_run);
 
     // The current one's is read on open.
+    let before = harness.workflow().clone();
     std::fs::remove_file(pears).unwrap();
     let error = harness.open(true).err().unwrap();
     assert!(error.contains("task file"), "{error}");
+    let crew = harness.crew.clone().unwrap();
+    assert!(crew.attached(), "the start hook was left detached");
+    let shown = lock(&harness.gauges.workflow).clone().unwrap();
+    assert!(
+        Arc::ptr_eq(&shown, &before),
+        "the status shows the workflow that failed"
+    );
+    assert!(Arc::ptr_eq(harness.workflow(), &before));
+    crew.shutdown().await;
+}
+
+/// A message sent after a turn that Arko stopped in the middle of goes to
+/// the agent with its images, once that turn has gone on where it was
+/// saved.
+#[tokio::test]
+async fn a_message_after_a_cut_off_turn_reaches_the_agent_with_its_images() {
+    let bodies: Bodies = Arc::default();
+    let seen = bodies.clone();
+    let server = ModelServer::start(Arc::new(move |index, body: String| {
+        seen.lock().unwrap().push(body.clone());
+        Box::pin(async move {
+            // (The turn Arko stops in the middle of gets no reply.)
+            if index == 1 {
+                std::future::pending::<()>().await;
+            }
+            if body.contains("What is in the picture?") {
+                complete("m3", "A pear.")
+            } else {
+                complete(&format!("m{index}"), "Noted.")
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    harness
+        .turn(Prompt::User("Apples are red.".into()), &mut inputs)
+        .await;
+    // Arko stops while the next turn waits for the model, and opens again.
+    tokio::select! {
+        _ = harness.turn(Prompt::User("Pears are green.".into()), &mut inputs) => {
+            panic!("the turn ended");
+        }
+        () = until(|| bodies.lock().unwrap().len() == 2) => {}
+    }
+    harness.workflow().checkpoint().await.unwrap();
+    harness.open(true).unwrap();
+    assert!(matches!(
+        &harness.conversation,
+        Conversation::Stopped(run) if run.restart == Restart::Recover
+    ));
+    harness
+        .attach(vec![ui::Attachment {
+            bytes: Arc::from(&b"pixels"[..]),
+            mime: "image/png".into(),
+            name: None,
+        }])
+        .unwrap();
+    let end = harness
+        .turn(Prompt::User("What is in the picture?".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    let asked = request_with(&bodies, "What is in the picture?");
+    // (The image's bytes, as the request carries them.)
+    assert!(
+        asked.contains("cGl4ZWxz"),
+        "the message went without its image"
+    );
+    assert_eq!(summary(&harness), "A pear.");
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A request the provider refuses, which no retry gets past.
+fn refused_request() -> String {
+    let body = r#"{"error":{"message":"The request failed","type":"invalid_request_error"}}"#;
+    format!(
+        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+/// A message sent while an interrupted turn still can't go on waits, with
+/// its images, through another turn that can't, and reaches the agent
+/// once, after the turn has gone on.
+#[tokio::test]
+async fn a_message_waits_while_an_interrupted_turn_cant_go_on() {
+    // The message as the agent reads it.
+    const READ: &str = "What is in the picture? (as labelled)";
+    let bodies: Bodies = Arc::default();
+    let seen = bodies.clone();
+    let server = ModelServer::start(Arc::new(move |index, body: String| {
+        seen.lock().unwrap().push(body);
+        Box::pin(async move {
+            // (The first turn and the next two times it goes on.)
+            if index < 3 {
+                refused_request()
+            } else {
+                complete(&format!("m{index}"), "Done.")
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    // (A run whose request fails ends interrupted, without a retry.)
+    harness.main_config.llm_error_policy =
+        arko_agents::LLMErrorPolicy::RetryThenInformAgent { max_attempts: 1 };
+    harness.open(false).unwrap();
+    let end = harness
+        .turn(Prompt::User("Start.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Failed));
+    assert!(matches!(
+        &harness.conversation,
+        Conversation::Stopped(run) if run.restart == Restart::Recover
+    ));
+
+    // The turn still can't go on, so the message waits, as the agent
+    // reads it and with its image.
+    harness
+        .attach(vec![ui::Attachment {
+            bytes: Arc::from(&b"pixels"[..]),
+            mime: "image/png".into(),
+            name: None,
+        }])
+        .unwrap();
+    harness.labelled = Some(READ.into());
+    let end = harness
+        .turn(Prompt::User("What is in the picture?".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Failed));
+    assert_eq!(harness.unread.len(), 1, "the message was lost");
+    let waiting = crate::unread::load_each(&harness.session.dir, &harness.unread);
+    assert_eq!(waiting[0].0, READ);
+    assert_eq!(waiting[0].1.len(), 1, "its image was lost");
+    assert!(harness.pending_images.is_empty());
+    assert!(harness.labelled.is_none());
+    // A turn for what waits keeps it while the turn still can't go on.
+    let end = harness.turn(Prompt::Unread, &mut inputs).await;
+    assert!(matches!(end, TurnEnd::Failed));
+    assert_eq!(harness.unread.len(), 1);
+
+    // Once the turn goes on, what waited reaches the agent once, with its
+    // image, and then the next message.
+    let end = harness
+        .turn(Prompt::User("Next.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    assert!(harness.unread.is_empty());
+    let sent = bodies.lock().unwrap().clone();
+    assert_eq!(sent.len(), 6, "{sent:#?}");
+    // (The image's bytes, as a request carries them.)
+    for body in &sent[..4] {
+        assert!(!body.contains(READ));
+        assert!(!body.contains("cGl4ZWxz"));
+    }
+    assert_eq!(sent[4].matches(READ).count(), 1);
+    assert_eq!(sent[4].matches("cGl4ZWxz").count(), 1);
+    assert!(!sent[4].contains("Next."));
+    assert_eq!(sent[5].matches(READ).count(), 1);
+    assert!(sent[5].contains("Next."));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A conversation whose run failed stays the one the next message goes
+/// to when the workflow is built again, so that message goes on in it
+/// rather than in a new entry of `/resume`'s list.
+#[tokio::test]
+async fn a_failed_conversation_stays_current_when_the_workflow_is_rebuilt() {
+    // (A reply without a call fails a turn that ends with one.)
+    let server = ModelServer::start(Arc::new(|_, body: String| {
+        Box::pin(async move {
+            if body.contains("Again.") {
+                complete("m2", "Done.")
+            } else {
+                crate::mock_model::reply("m1", "Noted.")
+            }
+        })
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let end = harness.turn(Prompt::User("Hi.".into()), &mut inputs).await;
+    assert!(matches!(end, TurnEnd::Failed));
+    assert!(matches!(harness.conversation, Conversation::New));
+    assert_eq!(harness.conversations.current, Some(0));
+    assert!(harness.session.latest_checkpoint().is_some());
+    harness.reopen_workflow().unwrap();
+    assert_eq!(
+        harness.conversations.current,
+        Some(0),
+        "the failed conversation was left"
+    );
+    let end = harness
+        .turn(Prompt::User("Again.".into()), &mut inputs)
+        .await;
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(harness.conversations.list.len(), 1);
+    harness.crew.as_ref().unwrap().shutdown().await;
 }
 
 /// The JSON files under `dir`, at any depth.

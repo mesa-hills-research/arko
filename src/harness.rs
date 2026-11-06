@@ -490,6 +490,7 @@ pub(crate) fn unoffered_with(
 }
 
 /// Where the conversation with the main agent stands.
+#[derive(Clone)]
 pub(crate) enum Conversation {
     /// The next message starts a conversation.
     New,
@@ -768,6 +769,7 @@ impl Harness {
         // (`keep_saved_configs`). In a session that switched between Chat
         // and Agent, a saved conversation of the other mode takes the
         // session's on its next message (`reconfigure`).
+        let mut unoffered = self.unoffered.clone();
         if let Some(saved) = &saved {
             // (A conversation of the other mode takes the session's on its
             // next message, so nothing to say of it.)
@@ -778,7 +780,7 @@ impl Harness {
             if main_resumes && self.settings.mode == Mode::Agent {
                 fresh.insert(0, (MAIN, &self.main_config));
             }
-            self.unoffered = unoffered_with(saved, &fresh, self.settings.nested_start);
+            unoffered = unoffered_with(saved, &fresh, self.settings.nested_start);
         }
         let name = saved.as_ref().map_or(WORKFLOW_NAME, |saved| &saved.name);
         let main_config = self.main_config.clone();
@@ -894,7 +896,7 @@ impl Harness {
                 });
         if legacy {
             self.crew = None;
-            self.unoffered = Some(match self.unoffered.take() {
+            unoffered = Some(match unoffered.take() {
                 Some(note) => format!("{note}\n{}", crew::LEGACY_NOTICE),
                 None => crew::LEGACY_NOTICE.into(),
             });
@@ -1049,7 +1051,32 @@ impl Harness {
                 crew.detach();
             }
         }
-        let workflow = Arc::new(builder.build().map_err(|error| error.to_string())?);
+        // A rebuild that fails leaves the session on the workflow it has,
+        // whose start hook goes on choosing and checking new workers.
+        let failed = |harness: &Self, error: String| {
+            if harness.workflow.is_some()
+                && let Some(crew) = &harness.crew
+            {
+                crew.reattach();
+            }
+            Err(error)
+        };
+        let workflow = match builder.build() {
+            Ok(workflow) => Arc::new(workflow),
+            Err(error) => return failed(self, error.to_string()),
+        };
+        // The conversation the session goes on in. Its task is read now,
+        // before anything moves to the new workflow, so a task file of it
+        // that can't be read fails the open, as it did when a resume read
+        // every task.
+        let conversations = self.conversations_on_open(&workflow, resume);
+        let lead = conversations.current_run();
+        if let Some(latest) = lead.and_then(|run| workflow.agent_result(run))
+            && let Err(error) = latest.task()
+        {
+            return failed(self, error.to_string());
+        }
+        self.unoffered = unoffered;
         // New conversations start on the configuration it was built with.
         self.main_reconfigured = false;
         self.earlier.attach(&workflow);
@@ -1084,12 +1111,9 @@ impl Harness {
             old.abort();
         }
         // The conversation the session was in goes on.
-        self.open_conversations(&workflow, resume);
-        let lead = self.conversations.current_run();
-        // Its task is read now, so a task file of it that can't be read fails
-        // the open, as it did when a resume read every task.
-        if let Some(latest) = lead.and_then(|run| workflow.agent_result(run)) {
-            latest.task().map_err(|error| error.to_string())?;
+        self.conversations = conversations;
+        if resume {
+            self.save_conversations();
         }
         self.conversation = conversation_of(&workflow, lead);
         {
@@ -1921,11 +1945,13 @@ impl Harness {
                 },
             )
         };
-        let server = match served {
+        // On another port, the new page shows before the old one stops, so
+        // someone can answer approvals all along.
+        let (server, replaced) = match served {
             Some(old) if same_port => {
                 self.stop_remote().await;
                 match start(self, bind, earlier) {
-                    Ok(server) => server,
+                    Ok(server) => (server, None),
                     Err(error) => {
                         let again = remote::Bind {
                             ip: old.ip(),
@@ -1945,16 +1971,15 @@ impl Harness {
                     }
                 }
             }
-            _ => {
-                let server = start(self, bind, earlier)?;
-                self.stop_remote().await;
-                server
-            }
+            _ => (start(self, bind, earlier)?, self.remote.take()),
         };
         self.remote_bind = Some((bind, server.addr().port()));
         let page = self.show_page(&server, &key);
         self.announce_remote(server.addr(), &key);
         self.remote = Some(server);
+        if let Some(replaced) = replaced {
+            replaced.stop().await;
+        }
         Ok(page)
     }
 
@@ -2705,8 +2730,10 @@ impl Harness {
     /// configurations now (between turns). The conversations go on where
     /// they are.
     fn reopen_workflow(&mut self) -> Result<(), String> {
-        // As it is now, because `/new` may have left the conversation it was in.
-        let new = matches!(self.conversation, Conversation::New);
+        // As it is now, because `/new` may have left the conversation it was
+        // in. (A conversation whose run failed stays current, so the next
+        // message starts it over in its place.)
+        let new = self.conversations.current.is_none();
         self.save_conversations();
         self.open(self.session.latest_checkpoint().is_some())?;
         if new {
@@ -3855,14 +3882,35 @@ impl Harness {
     pub(crate) async fn turn(&mut self, prompt: Prompt, input: &mut Inputs) -> TurnEnd {
         let answers_turn = matches!(prompt, Prompt::Answers);
         // A turn Arko stopped in the middle of (a crash) goes on where it
-        // was saved, without a message. The message follows it.
+        // was saved, without a message. The message follows it, with its
+        // images, which a recovery doesn't take.
         if !matches!(prompt, Prompt::Recover)
             && self.cut_back.is_none()
             && let Conversation::Stopped(run) = &self.conversation
             && matches!(run.restart, Restart::Recover)
-            && let TurnEnd::Exit = Box::pin(self.turn(Prompt::Recover, input)).await
         {
-            return TurnEnd::Exit;
+            let images = std::mem::take(&mut self.pending_images);
+            let recovered = Box::pin(self.turn(Prompt::Recover, input)).await;
+            self.pending_images = images;
+            if let TurnEnd::Exit = recovered {
+                return TurnEnd::Exit;
+            }
+            // A turn that still couldn't go on takes no message either, so
+            // the message waits for the next one.
+            if let Conversation::Stopped(run) = &self.conversation
+                && matches!(run.restart, Restart::Recover)
+            {
+                if let Prompt::User(text) = &prompt {
+                    let read = self.labelled.take().unwrap_or_else(|| text.clone());
+                    let images = std::mem::take(&mut self.pending_images);
+                    self.keep_unread(vec![(read, images)], true);
+                    self.say(
+                        Level::Info,
+                        "  (the interrupted turn couldn't go on, so your message goes with your next one)",
+                    );
+                }
+                return recovered;
+            }
         }
         self.exit_warned = false;
         self.jobs_shown.clear();
@@ -3954,7 +4002,9 @@ impl Harness {
         if let (Some(run), Some(jobs)) = (self.conversation_run(), self.background.manager()) {
             jobs.set_prompt_cache_expiry(run, None);
         }
-        let conversation = std::mem::replace(&mut self.conversation, Conversation::New);
+        // (The session keeps where the conversation stands while the turn's
+        // task has its own.)
+        let conversation = self.conversation.clone();
         // Where this turn's message goes in the conversation.
         let at = cut.unwrap_or(match &conversation {
             Conversation::New => 0,

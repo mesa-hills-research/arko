@@ -1237,6 +1237,50 @@ async fn the_web_page_answers_approvals_while_it_is_served() {
     assert!(!approvals.can_answer());
 }
 
+/// A page moved to another port is someone to answer approvals all the
+/// way, with no moment between the old page and the new one when no one
+/// is.
+#[tokio::test]
+async fn the_web_page_answers_approvals_as_it_moves_to_another_port() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), false);
+    let approvals = harness.asker.approvals.clone();
+    let local = |port| remote::Bind {
+        ip: std::net::Ipv4Addr::LOCALHOST.into(),
+        port: Some(port),
+    };
+    harness.start_remote(local(0)).await;
+    let old = harness.remote.as_ref().unwrap().addr().port();
+    // (A port free now, for the page to move to.)
+    let free = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let moving = Arc::new(AtomicBool::new(true));
+    let watch = {
+        let (approvals, moving) = (approvals.clone(), moving.clone());
+        std::thread::spawn(move || {
+            let mut unanswerable = false;
+            while moving.load(Ordering::SeqCst) {
+                unanswerable |= !approvals.can_answer();
+            }
+            unanswerable
+        })
+    };
+    let page = harness.serve_page(local(free)).await.unwrap();
+    moving.store(false, Ordering::SeqCst);
+    assert!(
+        !watch.join().unwrap(),
+        "no one could answer approvals as the page moved"
+    );
+    assert_eq!(page.addr.port(), free);
+    assert_ne!(free, old);
+    assert!(approvals.can_answer());
+    harness.stop_remote().await;
+}
+
 /// The page's sessions are kept in the session's folder, so a page started
 /// again lets a browser in without the key, and `/remote off` ends them.
 #[tokio::test]

@@ -853,3 +853,59 @@ async fn a_note_and_its_images_the_board_refuses_are_said_in_the_verdict() {
     .unwrap();
     harness.crew.as_ref().unwrap().shutdown().await;
 }
+
+/// A message refused as too long to send as an answer takes its images
+/// with it, so the next send, a plain line too, carries none.
+#[tokio::test]
+async fn a_refused_answer_leaves_no_images_for_the_next_send() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+    harness.main_config.llm_config.model.supports_image_input = true;
+    let run = uuid::Uuid::new_v4();
+    harness.feed.questions_run(Some(run));
+    ask_later(&mut harness, run, "q1", "Tabs or spaces?");
+    let long = Input::Message(ui::Message {
+        text: "x".repeat(crate::questions::MAX_ANSWER_NOTE_BYTES),
+        answers: vec!["q1".into()],
+        images: vec![ui::Attachment {
+            bytes: Arc::from(&b"pixels"[..]),
+            mime: "image/png".into(),
+            name: None,
+        }],
+        ..Default::default()
+    });
+    let (reply, verdict) = oneshot::channel();
+    let reply = crate::sending::Reply::to(Some(reply));
+    let Read::Sent(sent) = harness
+        .read_sent(Event::Input(Some(long)), reply, &mut inputs, Phase::Idle)
+        .await
+    else {
+        panic!("a send");
+    };
+    assert!(harness.admit(sent, Phase::Idle).is_none());
+    assert_eq!(
+        refused(&verdict.await.unwrap()),
+        Some(&RefusalKind::TooLong)
+    );
+    let line = Event::Input(Some(Input::Line("Hello.".into())));
+    let Read::Sent(sent) = harness
+        .read_sent(
+            line,
+            crate::sending::Reply::default(),
+            &mut inputs,
+            Phase::Idle,
+        )
+        .await
+    else {
+        panic!("a send");
+    };
+    assert!(matches!(
+        harness.admit(sent, Phase::Idle),
+        Some(Admitted::Message { .. })
+    ));
+    assert!(
+        harness.pending_images.is_empty(),
+        "the refused message's images stayed"
+    );
+    assert!(harness.pending_refs.is_empty());
+}

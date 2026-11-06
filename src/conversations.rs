@@ -372,23 +372,19 @@ pub fn resume_argument(text: &str) -> Option<&str> {
 }
 
 impl Harness {
-    /// The record as the session opens. A new session's is empty, and a
-    /// resumed one's is read from its folder (or worked out from its runs)
-    /// and takes in the runs it lacks (a turn Arko stopped in the middle of
-    /// started one).
-    pub(crate) fn open_conversations(&mut self, workflow: &Workflow, resume: bool) {
-        self.conversations = if resume {
-            let runs = main_runs(workflow);
-            let mut conversations = Conversations::load(&self.session.dir)
-                .unwrap_or_else(|| Conversations::derive(&runs));
-            conversations.take_in(&runs);
-            conversations
-        } else {
-            Conversations::default()
-        };
-        if resume {
-            self.save_conversations();
+    /// The record as the session opens on `workflow`. A new session's is
+    /// empty, and a resumed one's is read from its folder (or worked out
+    /// from its runs) and takes in the runs it lacks (a turn Arko stopped
+    /// in the middle of started one).
+    pub(crate) fn conversations_on_open(&self, workflow: &Workflow, resume: bool) -> Conversations {
+        if !resume {
+            return Conversations::default();
         }
+        let runs = main_runs(workflow);
+        let mut conversations =
+            Conversations::load(&self.session.dir).unwrap_or_else(|| Conversations::derive(&runs));
+        conversations.take_in(&runs);
+        conversations
     }
 
     /// After a turn, the record takes in the run it started, if it started
