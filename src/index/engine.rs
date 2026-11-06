@@ -50,6 +50,10 @@ pub const FRESHEN_EMBED_TOKENS: u64 = 200_000;
 pub const MAX_LIMIT: usize = 50;
 /// Results by default.
 pub const DEFAULT_LIMIT: usize = 10;
+/// Why a watcher thread ended when it panicked (the log has the panic).
+const PANICKED_WATCHER: &str = "an unexpected error, which the log shows";
+/// The last background run's line when its thread panicked.
+const PANICKED_EMBEDDING: &str = "Embedding stopped on an unexpected error, which the log shows";
 
 /// When monitoring and freshening act.
 #[derive(Clone, Debug)]
@@ -1139,10 +1143,21 @@ impl Indexes {
         slot.explicit = explicit;
         let this = Arc::clone(self);
         let worker = Arc::clone(entry);
-        match std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("arko-index-embed".into())
-            .spawn(move || this.embed_loop(&worker))
-        {
+            .spawn(move || {
+                // The panic hook logs a panic. The slot is freed so that the
+                // next request starts a run.
+                let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    this.embed_loop(&worker)
+                }));
+                if ran.is_err() {
+                    let mut slot = lock(&worker.embed);
+                    slot.running = false;
+                    slot.last = Some(PANICKED_EMBEDDING.into());
+                }
+            });
+        match spawned {
             Ok(thread) => {
                 slot.thread = Some(thread);
                 true
@@ -1227,10 +1242,20 @@ impl Indexes {
         let this = Arc::clone(self);
         let worker = Arc::clone(entry);
         let flag = Arc::clone(&stop);
-        match std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("arko-index-watch".into())
-            .spawn(move || this.watch_loop(&worker, &flag))
-        {
+            .spawn(move || {
+                // The panic hook logs a panic. The loop's watcher, and its
+                // lock, dropped as it unwound, so once the state stops saying
+                // watching, the next search reconciles and starts a watcher.
+                let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    this.watch_loop(&worker, &flag)
+                }));
+                if ran.is_err() {
+                    lock(&worker.live).watch = WatchState::Failed(PANICKED_WATCHER.into());
+                }
+            });
+        match spawned {
             Ok(thread) => *watcher = Some(WatchThread { stop, thread }),
             Err(error) => {
                 lock(&entry.live).watch = WatchState::Failed(error.to_string());

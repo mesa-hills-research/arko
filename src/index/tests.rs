@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use arko_agents::{TaskContext, ToolRecovery};
@@ -17,8 +18,8 @@ use super::census::{self, Census, Class};
 use super::cli::{IndexCommand, run_command_with};
 use super::embed::{self, Backend};
 use super::engine::{
-    Action, CreateArgs, CreateOutcome, EmbedPlan, Hit, Indexes, ModeArg, SearchArgs, SearchOutput,
-    Timing, WatchState, monitor_words,
+    Action, CreateArgs, CreateOutcome, EmbedPlan, Events, Hit, Indexes, ModeArg, SearchArgs,
+    SearchOutput, Timing, WatchState, monitor_words,
 };
 use super::store::{self, Kind, Layout, Manifest, Rules};
 use super::tools::{self, TOOL_NAMES};
@@ -159,9 +160,40 @@ impl Fixture {
         indexes
     }
 
+    /// [`open`](Self::open) with the test embedder, whose progress lines go
+    /// to `events`.
+    fn open_with_events(&self, workspace: &Path, monitor: bool, events: Events) -> Arc<Indexes> {
+        let _guard = self.runtime.enter();
+        let indexes = Indexes::open_with(
+            &self.data(),
+            workspace,
+            Backend::Hash,
+            monitor,
+            fast(false),
+            Some(events),
+        )
+        .unwrap();
+        indexes.watch_related();
+        indexes
+    }
+
     fn shutdown(&self, indexes: &Indexes) {
         self.runtime.block_on(indexes.shutdown());
     }
+}
+
+/// Progress lines that panic at the first one starting with `prefix`, and
+/// whether that happened. A line is how a test reaches inside a background
+/// thread.
+fn panicking_once_on(prefix: &'static str) -> (Events, Arc<AtomicBool>) {
+    let panicked = Arc::new(AtomicBool::new(false));
+    let flag = panicked.clone();
+    let events: Events = Arc::new(move |line: &str| {
+        if line.starts_with(prefix) && !flag.swap(true, Ordering::SeqCst) {
+            panic!("a test panic at {line:?}");
+        }
+    });
+    (events, panicked)
 }
 
 fn create_args(path: &Path, kind: Option<Kind>) -> CreateArgs {
@@ -875,6 +907,44 @@ fn a_token_cap_stops_embedding_and_pauses_automatic_runs() {
     fixture.shutdown(&indexes);
 }
 
+/// An embedding thread that panics frees its slot, so the next request runs.
+#[test]
+fn an_embedding_thread_that_panics_lets_the_next_run_start() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let (events, panicked) = panicking_once_on("proj embedded ");
+    let indexes = fixture.open_with_events(&root, false, events);
+    let args = CreateArgs {
+        wait: false,
+        ..create_args(&root, Some(Kind::Code))
+    };
+    let outcome = indexes.create_blocking(&args).unwrap();
+    assert!(
+        matches!(outcome.embedding, EmbedPlan::Background),
+        "{:?}",
+        outcome.embedding
+    );
+    let running_here =
+        || indexes.status_blocking(Some("proj"), &root).unwrap()[0].embed_running_here;
+    wait_for("the embedding thread to panic", || {
+        panicked.load(Ordering::SeqCst)
+    });
+    wait_for("the slot to say no run is in progress", || !running_here());
+    write(
+        &root.join("src/more.rs"),
+        "/// One more helper.\npub fn one_more() {}\n",
+    );
+    let text = indexes
+        .manage_blocking("proj", &Action::Rebuild, &root)
+        .unwrap();
+    assert!(text.contains("in the background"), "{text}");
+    wait_for("the next run", || {
+        let (done, docs) = embedded(&indexes, &root);
+        docs > outcome.record.chunks && done == docs
+    });
+    fixture.shutdown(&indexes);
+}
+
 // ----- freshness -----
 
 #[test]
@@ -1060,6 +1130,42 @@ fn watching_reconciles_changes_made_while_arko_was_not_running() {
         .unwrap();
     assert_eq!(hit_files(&output)[0], "src/offline.rs", "{output:?}");
     fixture.shutdown(&second);
+}
+
+/// A watcher thread that panics stops reading as watched, and the next search
+/// brings the index up to date and starts a new watcher.
+#[test]
+fn a_watcher_that_panics_is_replaced_by_the_next_search() {
+    let fixture = Fixture::new();
+    let root = fixture.code_project();
+    let (events, panicked) = panicking_once_on("Watching ");
+    let indexes = fixture.open_with_events(&root, true, events);
+    let outcome = indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let layout = outcome.layout.clone();
+    wait_for("the watcher to panic", || panicked.load(Ordering::SeqCst));
+    wait_for("the index to stop reading as watched", || {
+        !indexes.watch_state(&layout).active()
+    });
+    write(
+        &root.join("src/after.rs"),
+        "pub fn written_after_the_panic() {}\n",
+    );
+    let output = indexes
+        .search_blocking(&search_args(
+            &root,
+            "written_after_the_panic",
+            Some(ModeArg::Lexical),
+        ))
+        .unwrap();
+    assert_eq!(
+        hit_files(&output).first().map(String::as_str),
+        Some("src/after.rs"),
+        "{output:?}"
+    );
+    wait_for("a new watcher", || {
+        matches!(indexes.live_state(&layout).0, WatchState::Watching { .. })
+    });
+    fixture.shutdown(&indexes);
 }
 
 /// An index made in fin's data folder (Arko's name before) opens, searches
