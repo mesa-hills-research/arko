@@ -701,7 +701,8 @@ impl App {
     }
 
     /// What `check`, a check of the ways of naming, found. The menu shows it,
-    /// if that check is the one it waits for.
+    /// if that check is the one it waits for, also while the menu waits
+    /// behind the answer panel.
     pub fn names_checked(&mut self, check: &Cancel, missing: Vec<(Way, Option<String>)>) {
         // Only the check the menu open now asked for. One made for a menu
         // that closed, and reached the loop before the new one opened, isn't
@@ -709,7 +710,9 @@ impl App {
         if self.names_check.as_ref() != Some(check) {
             return;
         }
-        if let Some(Overlay::Names(menu)) = &mut self.overlay {
+        if let (Some(Overlay::Names(menu)), _) | (_, Some(Overlay::Names(menu))) =
+            (&mut self.overlay, &mut self.panel.behind)
+        {
             menu.checked(missing);
         }
     }
@@ -5139,6 +5142,26 @@ pub(super) mod tests {
         rows(&mut app);
         app.transcript.apply(crate::remote::Update::Item(line(6)));
         assert_eq!(rows(&mut app)[3], "  line 6");
+    }
+
+    /// What a check of the ways finds while the names menu waits behind
+    /// the answer panel shows in the menu once the panel closes.
+    #[test]
+    fn a_names_check_that_ends_behind_the_panel_shows_when_it_closes() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut app = app();
+        app.info.root = Some(temp.path().to_path_buf());
+        app.open_names();
+        let check = app.names_check().unwrap();
+        app.set_reading(asking());
+        press(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
+        assert!(app.panel.open && app.overlay.is_none());
+        app.names_checked(&check, names_menu::tests::missing());
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        let Some(Overlay::Names(menu)) = &app.overlay else {
+            panic!("the menu didn't come back")
+        };
+        assert_eq!(menu.missing, Some(names_menu::tests::missing()));
     }
 
     /// The session's models, as it publishes them, with luna for both agents,
