@@ -5682,18 +5682,15 @@ pub(crate) mod tests {
             (all.builtin_skills, all.builtin_skills_off),
             (Some(false), None)
         );
-        let both = [
-            "repo-docs-style".to_string(),
-            "user-facing-prose".to_string(),
-        ];
+        let both = ["ponytail".to_string(), "prose".to_string()];
         for words in [
             vec![
                 "--no-builtin-skill",
-                "repo-docs-style",
+                "ponytail",
                 "--no-builtin-skill",
-                "user-facing-prose",
+                "prose",
             ],
-            vec!["--no-builtin-skill=repo-docs-style,user-facing-prose"],
+            vec!["--no-builtin-skill=ponytail,prose"],
         ] {
             let some = parse(&words).unwrap().options().unwrap();
             assert_eq!(some.builtin_skills, None);
@@ -5703,14 +5700,17 @@ pub(crate) mod tests {
                 "{words:?}"
             );
         }
-        let error = parse(&["--no-builtin-skill", "repo-doc-style"])
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("repo-doc-style"), "{error}");
-        assert!(
-            error.contains("user-facing-prose") && error.contains("repo-docs-style"),
-            "{error}"
-        );
+        // A typo, and a name an older version had.
+        for unknown in ["pros", "user-facing-prose"] {
+            let error = parse(&["--no-builtin-skill", unknown])
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(unknown), "{error}");
+            assert!(
+                error.contains("prose") && error.contains("arko-taste"),
+                "{error}"
+            );
+        }
     }
 
     /// The flags become the session's options, meaning which session, each pair of

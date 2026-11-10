@@ -76,16 +76,16 @@ your `/skills remove NAME` remove only such a skill, without asking. Delete your
 
 ## Built-in skills
 
-Arko has four skills built in, so no files are needed.
+Arko has three skills built in, so no files are needed.
 
-| Skill | Load it for |
+| Skill | For |
 |---|---|
-| `user-facing-prose` | Any text a person reads, such as UI text, messages, errors, docs and commit messages |
-| `repo-docs-style` | READMEs, docs pages, design notes and changelogs |
+| `prose` | Everything the agents write, from UI text and messages to READMEs, docs and commit messages |
 | `ponytail` | Any coding task, and running workers |
 | `arko-taste` | Anything a person sees in an interface, designed, built or reviewed against twelve checks |
 
-The agents load them on demand like any other skill, and `/skills` lists them as built in.
+`prose` is always in the agents' instructions. They load the others on demand like any other
+skill, and `/skills` lists them all as built in.
 
 ### Replace one
 
@@ -97,14 +97,14 @@ folder.
 | Leave out | Every new session | One session |
 |---|---|---|
 | All | `ARKO_BUILTIN_SKILLS=0` | `--no-builtin-skills` |
-| Some | `ARKO_BUILTIN_SKILLS_OFF=repo-docs-style` | `--no-builtin-skill repo-docs-style` |
+| Some | `ARKO_BUILTIN_SKILLS_OFF=prose` | `--no-builtin-skill prose` |
 
 The settings go in the environment or in a `.env` file. Separate several names with commas, and
 quote the list in a `.env` file if it has spaces. A flag beats the setting.
 
-`/builtin-skills on` or `off` changes all of them as you go, and `/builtin-skills repo-docs-style off`
-one. Both are rows in `/settings` and on the web page. Before the conversation starts the change
-reaches the agents. After that the conversation going on keeps its skills, and new workers and new
+`/builtin-skills on` or `off` changes all of them as you go, and `/builtin-skills prose off` one.
+Both are rows in `/settings` and on the web page. Before the conversation starts the change reaches
+the agents. After that the conversation going on keeps its skills, and new workers and new
 conversations get the change.
 
 The session keeps its choice. Resuming with a flag changes it for the conversations that start

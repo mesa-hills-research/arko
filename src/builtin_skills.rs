@@ -1,5 +1,5 @@
-//! The skills built into Arko, general advice on writing, held in the
-//! program so no file is needed. They are listed with the skills of the
+//! The skills built into Arko, general advice on writing, coding and
+//! interfaces, held in the program so no file is needed. They are listed with the skills of the
 //! skill folders, a skill of the same name in those folders replaces one, and
 //! `ARKO_BUILTIN_SKILLS`, `ARKO_BUILTIN_SKILLS_OFF`, their flags and
 //! `/builtin-skills` leave them out (see `BuiltinSkills`). An app reads their
@@ -29,16 +29,11 @@ pub(crate) struct Builtin {
 }
 
 /// The built-in skills, in the order they are listed.
-pub(crate) const BUILTIN: [Builtin; 4] = [
+pub(crate) const BUILTIN: [Builtin; 3] = [
     Builtin {
-        name: "user-facing-prose",
-        text: include_str!("builtin_skills/user-facing-prose/SKILL.md"),
-        pre_loaded: false,
-    },
-    Builtin {
-        name: "repo-docs-style",
-        text: include_str!("builtin_skills/repo-docs-style/SKILL.md"),
-        pre_loaded: false,
+        name: "prose",
+        text: include_str!("builtin_skills/prose/SKILL.md"),
+        pre_loaded: true,
     },
     Builtin {
         name: "ponytail",
@@ -214,7 +209,7 @@ impl Harness {
             }
             _ => {
                 return Err(
-                    "/builtin-skills takes on or off, or a built-in skill's name and on or off, such as /builtin-skills repo-docs-style off."
+                    "/builtin-skills takes on or off, or a built-in skill's name and on or off, such as /builtin-skills prose off."
                         .to_string(),
                 );
             }
@@ -335,11 +330,9 @@ mod tests {
             assert!(!skill.text.contains("auto_load"), "the table decides");
         }
         assert!(
-            BUILTIN[0].text.contains("\n# User-facing prose\n")
-                && BUILTIN[1]
-                    .text
-                    .contains("\n# Repository documentation style\n")
-                && BUILTIN[3].text.contains("\n# Taste\n")
+            BUILTIN[0].text.contains("\n# Prose\n")
+                && BUILTIN[1].text.contains("\n# Ponytail\n")
+                && BUILTIN[2].text.contains("\n# Taste\n")
         );
     }
 
@@ -352,8 +345,8 @@ mod tests {
         ));
         assert!(ponytail.ends_with("complains about over-engineering."));
         assert!(!ponytail.contains('\n'));
-        let one_line = find("repo-docs-style").unwrap().description();
-        assert!(one_line.starts_with("Rules for repository documentation"));
+        let one_line = find("prose").unwrap().description();
+        assert!(one_line.starts_with("How to write anything someone reads"));
     }
 
     /// The texts teach plain prose, and are written in it. Their examples
@@ -386,13 +379,18 @@ mod tests {
         }
     }
 
-    /// Both skills load on demand now. A skill with `pre_loaded` set has its
-    /// whole text in the instructions, as the skill system does for
-    /// `auto_load: true`.
+    /// `prose` is pre-loaded and the others load on demand. A skill with
+    /// `pre_loaded` set has its whole text in the instructions, as the skill
+    /// system does for `auto_load: true`.
     #[test]
     fn a_pre_loaded_skill_is_in_the_instructions_and_the_others_load_on_demand() {
         use arko_agents::{EmbeddedSkill, SkillManager, SkillsConfig};
-        assert!(BUILTIN.iter().all(|skill| !skill.pre_loaded));
+        let pre_loaded: Vec<&str> = BUILTIN
+            .iter()
+            .filter(|skill| skill.pre_loaded)
+            .map(|skill| skill.name)
+            .collect();
+        assert_eq!(pre_loaded, ["prose"]);
         let text = "---\nname: x\ndescription: An x.\n---\n\nDo x.\n";
         let skill = |name: &'static str, pre_loaded| Builtin {
             name,
@@ -431,28 +429,13 @@ mod tests {
         let (none, warnings) = BuiltinSkills::new(true, &[], "x");
         assert!(warnings.is_empty());
         assert!(!none.is_all());
-        assert_eq!(
-            none.left_out(),
-            [
-                "user-facing-prose",
-                "repo-docs-style",
-                "ponytail",
-                "arko-taste"
-            ]
-        );
-        assert!(!none.gives("repo-docs-style"));
-        let (one, _) = BuiltinSkills::new(
-            false,
-            &[
-                " repo-docs-style".into(),
-                "repo-docs-style".into(),
-                "".into(),
-            ],
-            "x",
-        );
-        assert_eq!(one.off, ["repo-docs-style"]);
-        assert_eq!(one.left_out(), ["repo-docs-style"]);
-        assert!(one.gives("user-facing-prose") && !one.gives("repo-docs-style"));
+        assert_eq!(none.left_out(), ["prose", "ponytail", "arko-taste"]);
+        assert!(!none.gives("prose"));
+        let (one, _) =
+            BuiltinSkills::new(false, &[" prose".into(), "prose".into(), "".into()], "x");
+        assert_eq!(one.off, ["prose"]);
+        assert_eq!(one.left_out(), ["prose"]);
+        assert!(one.gives("ponytail") && !one.gives("prose"));
     }
 
     /// A name no built-in skill has is skipped, with a warning that says
@@ -461,14 +444,14 @@ mod tests {
     fn a_name_that_is_not_a_built_in_skill_is_skipped_with_a_warning() {
         let (typo, warnings) = BuiltinSkills::new(
             false,
-            &["repo-doc-style".into(), "user-facing-prose".into()],
+            &["pros".into(), "ponytail".into()],
             "--no-builtin-skill",
         );
-        assert_eq!(typo.off, ["user-facing-prose"]);
+        assert_eq!(typo.off, ["ponytail"]);
         assert_eq!(
             warnings,
             [
-                "--no-builtin-skill names `repo-doc-style`, which isn't a built-in skill (they are user-facing-prose, repo-docs-style, ponytail, and arko-taste), so Arko skips it"
+                "--no-builtin-skill names `pros`, which isn't a built-in skill (they are prose, ponytail, and arko-taste), so Arko skips it"
             ]
         );
     }
@@ -479,11 +462,12 @@ mod tests {
             serde_json::to_string(&BuiltinSkills::default()).unwrap(),
             "{}"
         );
+        // A name no skill has now, such as one an older version had, is
+        // passed over.
         let kept: BuiltinSkills =
-            serde_json::from_str(r#"{"off":["repo-docs-style","gone"]}"#).unwrap();
-        assert!(kept.gives("user-facing-prose") && !kept.gives("repo-docs-style"));
-        // A name no skill has now is passed over.
-        assert_eq!(kept.left_out(), ["repo-docs-style"]);
+            serde_json::from_str(r#"{"off":["ponytail","user-facing-prose"]}"#).unwrap();
+        assert!(kept.gives("prose") && !kept.gives("ponytail"));
+        assert_eq!(kept.left_out(), ["ponytail"]);
         let none: BuiltinSkills = serde_json::from_str(r#"{"none":true}"#).unwrap();
         assert!(none.given().next().is_none());
     }
