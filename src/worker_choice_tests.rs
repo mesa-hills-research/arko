@@ -990,11 +990,11 @@ async fn a_worker_started_after_a_skills_change_has_the_new_skills() {
             .iter()
             .find(|(who, _, _, body)| who != "main" && user_texts(body)[0].contains(task))
             .unwrap();
-        body.contains("**repo-docs-style**")
+        body.contains("**ponytail**")
     };
     assert!(harness.live_command("/builtin-skills on", Source::Terminal));
     start_worker(&mut harness, &mut inputs, "Start before the change.").await;
-    assert!(harness.live_command("/builtin-skills repo-docs-style off", Source::Terminal));
+    assert!(harness.live_command("/builtin-skills ponytail off", Source::Terminal));
     start_worker(&mut harness, &mut inputs, "Start after the change.").await;
     assert!(listed("Start before the change."));
     assert!(!listed("Start after the change."));

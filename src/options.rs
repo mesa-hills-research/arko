@@ -90,8 +90,8 @@ pub struct Options {
     /// `ARKO_BUILTIN_SKILLS` says (on unless it is 0). With `Some(false)`
     /// they get none. A resumed session takes it for its new conversations.
     pub builtin_skills: Option<bool>,
-    /// The built-in skills to leave out, by name (`user-facing-prose`,
-    /// `repo-docs-style`, see [`builtin_skills::names`](crate::builtin_skills::names)),
+    /// The built-in skills to leave out, by name (`prose`, `ponytail`, see
+    /// [`builtin_skills::names`](crate::builtin_skills::names)),
     /// by default as `ARKO_BUILTIN_SKILLS_OFF` says. A name that isn't a
     /// built-in skill is skipped with a warning. A resumed session takes it
     /// for its new conversations.

@@ -1000,7 +1000,7 @@ mod tests {
         assert_eq!(crate::models::billing(&keyed, "cc:opus"), None);
     }
 
-    /// Claude Mythos 5.1 shows the access it needs on the row under its
+    /// Claude Mythos 5.2 shows the access it needs on the row under its
     /// name, and the models without a note follow one another.
     #[test]
     fn mythos_shows_the_access_it_needs_under_its_name() {
@@ -1020,12 +1020,12 @@ mod tests {
                 .position(|row| row.contains(text))
                 .unwrap_or_else(|| panic!("no {text:?} in {rows:#?}"))
         };
-        let mythos = row("cc:claude-mythos-5-1");
+        let mythos = row("cc:claude-mythos-5-2");
         let note = &rows[mythos + 1];
         assert!(note.contains(providers::MYTHOS_ACCESS), "{rows:#?}");
         assert!(
             note.find(providers::MYTHOS_ACCESS).unwrap()
-                > rows[mythos].find("cc:claude-mythos-5-1").unwrap(),
+                > rows[mythos].find("cc:claude-mythos-5-2").unwrap(),
             "{rows:#?}"
         );
         assert_eq!(row("cc:claude-haiku-5-5") + 1, mythos, "{rows:#?}");

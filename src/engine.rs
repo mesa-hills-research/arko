@@ -2042,31 +2042,25 @@ mod tests {
         // A `.env` file sets the default of a new session.
         std::fs::write(
             project.join(".env"),
-            "ARKO_BUILTIN_SKILLS_OFF=\"repo-docs-style, user-facing-prose\"\n",
+            "ARKO_BUILTIN_SKILLS_OFF=\"ponytail, prose\"\n",
         )
         .unwrap();
         let (seam, ended) = open(SessionChoice::New, Options::default()).await;
         let seam = seam.unwrap();
-        assert_eq!(
-            choice(&seam.session.id),
-            off(&["repo-docs-style", "user-facing-prose"])
-        );
+        assert_eq!(choice(&seam.session.id), off(&["ponytail", "prose"]));
         assert_eq!(
             seam.details.skills().unwrap().builtin_off,
-            ["user-facing-prose", "repo-docs-style"]
+            ["prose", "ponytail"]
         );
         quit(seam, ended).await;
         std::fs::write(
             project.join(".env"),
-            "ARKO_BUILTIN_SKILLS_OFF=repo-docs-style,user-facing-prose\n",
+            "ARKO_BUILTIN_SKILLS_OFF=ponytail,prose\n",
         )
         .unwrap();
         let (seam, ended) = open(SessionChoice::New, Options::default()).await;
         let seam = seam.unwrap();
-        assert_eq!(
-            choice(&seam.session.id),
-            off(&["repo-docs-style", "user-facing-prose"])
-        );
+        assert_eq!(choice(&seam.session.id), off(&["ponytail", "prose"]));
         quit(seam, ended).await;
         std::fs::write(project.join(".env"), "ARKO_BUILTIN_SKILLS=0\n").unwrap();
         let (seam, ended) = open(SessionChoice::New, Options::default()).await;
@@ -2080,26 +2074,26 @@ mod tests {
         // The options come before the file.
         let options = Options {
             builtin_skills: Some(true),
-            builtin_skills_off: Some(vec!["repo-docs-style".into()]),
+            builtin_skills_off: Some(vec!["ponytail".into()]),
             ..Options::default()
         };
         let (seam, ended) = open(SessionChoice::New, options).await;
         let seam = seam.unwrap();
         let id = seam.session.id.clone();
-        assert_eq!(choice(&id), off(&["repo-docs-style"]));
+        assert_eq!(choice(&id), off(&["ponytail"]));
         quit(seam, ended).await;
         // A resume without options keeps the session's, even when the file
         // says otherwise.
         let (seam, ended) = open(SessionChoice::Resume(id.clone()), Options::default()).await;
-        assert_eq!(choice(&id), off(&["repo-docs-style"]));
+        assert_eq!(choice(&id), off(&["ponytail"]));
         quit(seam.unwrap(), ended).await;
         // With options, it changes what they name.
         let options = Options {
-            builtin_skills_off: Some(vec!["user-facing-prose".into()]),
+            builtin_skills_off: Some(vec!["prose".into()]),
             ..Options::default()
         };
         let (seam, ended) = open(SessionChoice::Resume(id.clone()), options).await;
-        assert_eq!(choice(&id), off(&["user-facing-prose"]));
+        assert_eq!(choice(&id), off(&["prose"]));
         quit(seam.unwrap(), ended).await;
         let options = Options {
             builtin_skills: Some(false),
@@ -2111,10 +2105,10 @@ mod tests {
             choice(&id),
             BuiltinSkills {
                 none: true,
-                off: vec!["user-facing-prose".into()]
+                off: vec!["prose".into()]
             }
         );
-        assert_eq!(seam.details.skills().unwrap().builtin_off.len(), 4);
+        assert_eq!(seam.details.skills().unwrap().builtin_off.len(), 3);
         quit(seam, ended).await;
         let options = Options {
             builtin_skills: Some(true),
@@ -2124,6 +2118,16 @@ mod tests {
         let (seam, ended) = open(SessionChoice::Resume(id.clone()), options).await;
         assert_eq!(choice(&id), BuiltinSkills::default());
         quit(seam.unwrap(), ended).await;
+        // A session saved with a name an older version had opens, and leaves
+        // out the skills it names that are still built in.
+        let session = Session::open(&root, &id).unwrap();
+        let mut settings = session.load_settings().unwrap();
+        settings.builtin_skills = off(&["user-facing-prose", "ponytail"]);
+        session.save_settings(&settings).unwrap();
+        let (seam, ended) = open(SessionChoice::Resume(id.clone()), Options::default()).await;
+        let seam = seam.unwrap();
+        assert_eq!(seam.details.skills().unwrap().builtin_off, ["ponytail"]);
+        quit(seam, ended).await;
     }
 
     /// A name that isn't a built-in skill is skipped with a warning, and the
@@ -2158,7 +2162,11 @@ mod tests {
                 model: Some("luna".into()),
                 openai_auth: Some(OpenAiAuth::ApiKey),
                 cache_1h: Some(false),
-                builtin_skills_off: Some(vec!["repo-doc-style".into(), "user-facing-prose".into()]),
+                builtin_skills_off: Some(vec![
+                    "pros".into(),
+                    "user-facing-prose".into(),
+                    "prose".into(),
+                ]),
                 client: Some(GivenClient(Arc::new(server.client()))),
                 ..Options::default()
             },
@@ -2173,14 +2181,17 @@ mod tests {
             .unwrap()
             .load_settings()
             .unwrap();
-        assert_eq!(saved.builtin_skills.off, ["user-facing-prose"]);
+        assert_eq!(saved.builtin_skills.off, ["prose"]);
         let heard = crate::lock(&hearing.0).clone();
-        assert!(
-            heard.iter().any(|note| note.starts_with(
-                "builtin_skills_off names `repo-doc-style`, which isn't a built-in skill"
-            )),
-            "{heard:?}"
-        );
+        // A typo, and a name an older version had.
+        for unknown in ["pros", "user-facing-prose"] {
+            assert!(
+                heard.iter().any(|note| note.starts_with(&format!(
+                    "builtin_skills_off names `{unknown}`, which isn't a built-in skill"
+                ))),
+                "{heard:?}"
+            );
+        }
         quit(seam, running.ended).await;
     }
 

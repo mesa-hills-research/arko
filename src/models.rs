@@ -61,7 +61,7 @@ pub fn last_effort(root: &std::path::Path, name: &str) -> Option<String> {
 
 /// What the picker says beside the model `name` (as `/model` takes it),
 /// when there is something to know before choosing it, such as the access
-/// Claude Mythos 5.1 needs.
+/// Claude Mythos needs.
 pub fn note(name: &str) -> Option<&'static str> {
     providers::model_note(name)
 }

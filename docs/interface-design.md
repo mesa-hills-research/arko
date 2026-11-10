@@ -420,8 +420,8 @@ The web page uses the dynamic viewport height, and its field grows to six lines 
 
 ## Text
 
-Everything a user reads takes the fewest words that keep the meaning, as the built-in
-`user-facing-prose` skill asks.
+Everything a user reads takes the fewest words that keep the meaning, as the built-in `prose` skill
+asks.
 
 - Labels are a word or two and don't repeat their surroundings.
 - A state is named only when it's unusual, in one word where one fits ("Pending", "Failed").

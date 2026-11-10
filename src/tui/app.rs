@@ -4863,10 +4863,7 @@ pub(super) mod tests {
         };
         let mut reading = app.reading.clone();
         reading.settings.builtin_skills = true;
-        reading.settings.builtin_skill_list = vec![
-            skill("user-facing-prose", true),
-            skill("repo-docs-style", false),
-        ];
+        reading.settings.builtin_skill_list = vec![skill("prose", true), skill("ponytail", false)];
         app.set_reading(reading);
         let rows = app.settings_rows();
         let all = rows
@@ -4882,8 +4879,8 @@ pub(super) mod tests {
         assert_eq!(all, files + 1, "after the project's instructions");
         for (row, expected) in [
             (all, "/builtin-skills off"),
-            (all + 1, "/builtin-skills user-facing-prose off"),
-            (all + 2, "/builtin-skills repo-docs-style on"),
+            (all + 1, "/builtin-skills prose off"),
+            (all + 2, "/builtin-skills ponytail on"),
         ] {
             app.overlay = Some(Overlay::Settings { row, picker: None });
             press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -5497,7 +5494,7 @@ pub(super) mod tests {
         type_text(&mut app, "fable");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(
-            matches!(&picker(&app).step, model_picker::Step::Typing { error: Some(error), .. } if error == "claude-fable-5-1 needs ANTHROPIC_API_KEY. /keys adds API keys.")
+            matches!(&picker(&app).step, model_picker::Step::Typing { error: Some(error), .. } if error == "claude-fable-5-2 needs ANTHROPIC_API_KEY. /keys adds API keys.")
         );
         for _ in 0..5 {
             press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);

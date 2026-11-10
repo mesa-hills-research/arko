@@ -1343,7 +1343,7 @@ mod tests {
             main.instructions
         );
         let worker = worker_config(&with).unwrap();
-        assert_eq!(worker.llm_config.model.id, "claude-fable-5-1");
+        assert_eq!(worker.llm_config.model.id, "claude-fable-5-2");
 
         let api = model("opus", false);
         let config = main_config(&AgentSettings::for_test(&api, &opus)).unwrap();
@@ -1473,6 +1473,8 @@ mod tests {
         let opus = model("opus", true);
         let fable = model("fable", true);
         assert!(main_config(&AgentSettings::for_test(&opus, &opus)).is_ok());
+        assert!(main_config(&AgentSettings::for_test(&fable, &fable)).is_ok());
+        let fable = model("claude-fable-5-1", true);
         let error = main_config(&AgentSettings::for_test(&fable, &fable)).unwrap_err();
         assert!(error.contains("has no fast mode"), "{error}");
         let sol = model("sol", true);
