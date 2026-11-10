@@ -5387,7 +5387,7 @@ pub(super) mod tests {
         type_text(&mut app, "fable");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(
-            matches!(&picker(&app).step, model_picker::Step::Typing { error: Some(error), .. } if error == "claude-fable-5-1 needs ANTHROPIC_API_KEY. /keys adds API keys.")
+            matches!(&picker(&app).step, model_picker::Step::Typing { error: Some(error), .. } if error == "claude-fable-5-2 needs ANTHROPIC_API_KEY. /keys adds API keys.")
         );
         for _ in 0..5 {
             press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);

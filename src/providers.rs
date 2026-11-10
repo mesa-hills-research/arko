@@ -48,10 +48,10 @@ const CLAUDE_CODE_LONG: &str = "claude-code:";
 /// Short names for the models people use most.
 pub const ALIASES: [(&str, &str); 11] = [
     ("opus", "claude-opus-5-5"),
-    ("fable", "claude-fable-5-1"),
+    ("fable", "claude-fable-5-2"),
     ("sonnet", "claude-sonnet-5-5"),
     ("haiku", "claude-haiku-5-5"),
-    ("mythos", "claude-mythos-5-1"),
+    ("mythos", "claude-mythos-5-2"),
     ("sol", "gpt-6.1-sol"),
     ("astra", "gpt-6-astra"),
     ("terra", "gpt-6.1-terra"),
@@ -80,6 +80,7 @@ pub const OPENROUTER_EQUIVALENTS: &[(&str, &str)] = &[
     ("claude-opus-4-6", "anthropic/claude-opus-4.6"),
     ("claude-opus-4-5-20251101", "anthropic/claude-opus-4.5"),
     ("claude-opus-4-1-20250805", "anthropic/claude-opus-4.1"),
+    ("claude-fable-5-2", "anthropic/claude-fable-5.2"),
     ("claude-fable-5-1", "anthropic/claude-fable-5.1"),
     ("claude-fable-5", "anthropic/claude-fable-5"),
     ("claude-sonnet-5-5", "anthropic/claude-sonnet-5.5"),
@@ -141,7 +142,7 @@ pub const OPENROUTER_EQUIVALENTS: &[(&str, &str)] = &[
 /// The models [`ALIASES`] names that OpenRouter doesn't serve, so that every
 /// alias has a row in [`OPENROUTER_EQUIVALENTS`] or a place here.
 #[cfg_attr(not(test), allow(dead_code))]
-pub const NOT_ON_OPENROUTER: [&str; 1] = ["claude-mythos-5-1"];
+pub const NOT_ON_OPENROUTER: [&str; 1] = ["claude-mythos-5-2"];
 
 /// The registry ID of the model `slug` (without the `openrouter:` prefix)
 /// names on OpenRouter, by [`OPENROUTER_EQUIVALENTS`]. The slug must equal a
@@ -187,7 +188,7 @@ pub fn resolve_model(name: &str) -> Result<Model, String> {
     {
         let model = registered(rest).map_err(|_| {
             format!(
-                "`{name}` names no Claude model. Claude Code runs Claude models, such as cc:opus (claude-opus-5-5) or cc:fable (claude-fable-5-1){}",
+                "`{name}` names no Claude model. Claude Code runs Claude models, such as cc:opus (claude-opus-5-5) or cc:fable (claude-fable-5-2){}",
                 suggestion(rest).map(|close| format!(". Did you mean cc:{close}?")).unwrap_or_default()
             )
         })?;
@@ -439,7 +440,7 @@ pub fn generation(
         Provider::Anthropic | Provider::ClaudeCode => {
             if fast && !model.supports_anthropic_fast_mode() {
                 return Err(format!(
-                    "{} has no fast mode. Anthropic offers it on Claude Opus 5.5, Opus 5 and Opus 4.8",
+                    "{} has no fast mode. Anthropic offers it on Claude Fable 5.2, Mythos 5.2, Opus 5.5, Opus 5 and Opus 4.8",
                     model_name(model)
                 ));
             }
@@ -964,7 +965,7 @@ pub struct ModelGroup {
     pub models: Vec<(String, &'static str)>,
 }
 
-/// What the picker says beside Claude Mythos 5.1, on any route.
+/// What the picker says beside Claude Mythos, on any route.
 pub const MYTHOS_ACCESS: &str = "Needs access through Anthropic's Cyber Verification Program";
 
 /// Claude Code's words when the API turns down the model it asked for,
@@ -975,18 +976,21 @@ const CLAUDE_CODE_NO_ACCESS: &str = "you may not have access to it";
 
 /// What the model picker says beside the model `name` (as `/model` takes
 /// it), when there is something to know before choosing it. Claude Mythos
-/// 5.1 is open only to organizations Anthropic has verified.
+/// is open only to organizations Anthropic has verified.
 pub fn model_note(name: &str) -> Option<&'static str> {
     let model = resolve_model(name).ok()?;
-    model.is_mythos_5_1().then_some(MYTHOS_ACCESS)
+    (model.is_mythos_5_2() || model.is_mythos_5_1()).then_some(MYTHOS_ACCESS)
 }
 
 /// A failed request's error `message`, with why the model may be refused
-/// added where the message shows it, as when Claude Code turned down Claude Mythos
-/// 5.1, which needs access through Anthropic's Cyber Verification Program.
+/// added where the message shows it, as when Claude Code turned down Claude Mythos,
+/// which needs access through Anthropic's Cyber Verification Program.
 pub fn explain_error(message: &str) -> std::borrow::Cow<'_, str> {
     if message.contains("claude-mythos") && message.contains(CLAUDE_CODE_NO_ACCESS) {
-        format!("{message} Claude Mythos 5.1 needs access through Anthropic's Cyber Verification Program.").into()
+        format!(
+            "{message} Claude Mythos needs access through Anthropic's Cyber Verification Program."
+        )
+        .into()
     } else {
         message.into()
     }
@@ -1023,10 +1027,10 @@ pub fn model_menu(
             "cc:claude-opus-5-5",
             &[
                 ("cc:claude-opus-5-5", "cc:opus"),
-                ("cc:claude-fable-5-1", "cc:fable"),
+                ("cc:claude-fable-5-2", "cc:fable"),
                 ("cc:claude-sonnet-5-5", "cc:sonnet"),
                 ("cc:claude-haiku-5-5", "cc:haiku"),
-                ("cc:claude-mythos-5-1", "cc:mythos"),
+                ("cc:claude-mythos-5-2", "cc:mythos"),
             ],
         ),
         (
@@ -1034,10 +1038,10 @@ pub fn model_menu(
             "claude-opus-5-5",
             &[
                 ("claude-opus-5-5", "opus"),
-                ("claude-fable-5-1", "fable"),
+                ("claude-fable-5-2", "fable"),
                 ("claude-sonnet-5-5", "sonnet"),
                 ("claude-haiku-5-5", "haiku"),
-                ("claude-mythos-5-1", "mythos"),
+                ("claude-mythos-5-2", "mythos"),
             ],
         ),
         (
@@ -2266,7 +2270,8 @@ mod tests {
     fn names_are_ids_aliases_or_a_prefixed_route() {
         for (name, provider, saved) in [
             ("opus", Provider::Anthropic, "claude-opus-5-5"),
-            ("Fable", Provider::Anthropic, "claude-fable-5-1"),
+            ("Fable", Provider::Anthropic, "claude-fable-5-2"),
+            ("claude-fable-5-1", Provider::Anthropic, "claude-fable-5-1"),
             ("sol", Provider::OpenAI, "gpt-6.1-sol"),
             ("Terra", Provider::OpenAI, "gpt-6.1-terra"),
             ("gpt-6.1-terra", Provider::OpenAI, "gpt-6.1-terra"),
@@ -2285,11 +2290,11 @@ mod tests {
                 "openrouter:openai/gpt-6-luna:floor",
             ),
             ("cc:opus", Provider::ClaudeCode, "cc:claude-opus-5-5"),
-            ("cc:fable", Provider::ClaudeCode, "cc:claude-fable-5-1"),
+            ("cc:fable", Provider::ClaudeCode, "cc:claude-fable-5-2"),
             ("haiku", Provider::Anthropic, "claude-haiku-5-5"),
-            ("mythos", Provider::Anthropic, "claude-mythos-5-1"),
+            ("mythos", Provider::Anthropic, "claude-mythos-5-2"),
             ("cc:haiku", Provider::ClaudeCode, "cc:claude-haiku-5-5"),
-            ("cc:mythos", Provider::ClaudeCode, "cc:claude-mythos-5-1"),
+            ("cc:mythos", Provider::ClaudeCode, "cc:claude-mythos-5-2"),
             (
                 "claude-code:claude-opus-5-5",
                 Provider::ClaudeCode,
@@ -2380,25 +2385,20 @@ mod tests {
             generation(&resolve_model(name).unwrap(), effort, fast, cache_1h, false)
         };
         // Claude, by API key or in Claude Code, with adaptive thinking at the
-        // effort, fast mode on Opus, the 1-hour cache by API key only.
-        for name in ["opus", "cc:opus"] {
-            let opus = config(name, Effort::Xhigh, true, true).unwrap();
+        // effort, fast mode on Opus and Fable 5.2 but not Fable 5.1, the 1-hour
+        // cache by API key only.
+        for name in ["opus", "cc:opus", "fable", "cc:fable"] {
+            let claude = config(name, Effort::Xhigh, true, true).unwrap();
             assert!(matches!(
-                opus.reasoning,
+                claude.reasoning,
                 Some(ReasoningConfig::AnthropicAdaptive {
                     effort: Some(arko_ai::AnthropicReasoningEffort::XHigh)
                 })
             ));
-            assert_eq!(opus.anthropic_fast_mode, Some(true));
-            assert!(
-                config(
-                    name.replace("opus", "fable").as_str(),
-                    Effort::High,
-                    true,
-                    false
-                )
-                .is_err()
-            );
+            assert_eq!(claude.anthropic_fast_mode, Some(true));
+        }
+        for name in ["claude-fable-5-1", "cc:claude-fable-5-1"] {
+            assert!(config(name, Effort::High, true, false).is_err());
         }
         assert_eq!(
             config("opus", Effort::High, false, true)
@@ -3805,7 +3805,7 @@ mod tests {
     }
 
     /// Claude Code and the Anthropic API offer the same Claude models, Haiku
-    /// 5.5 and Mythos 5.1 among them, and only Mythos comes with a note,
+    /// 5.5 and Mythos 5.2 among them, and only Mythos comes with a note,
     /// since it needs access first.
     #[test]
     fn claude_code_and_the_api_offer_the_same_claude_models() {
@@ -3825,22 +3825,23 @@ mod tests {
         let on_api: Vec<&str> = api.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(on_cc, on_api);
         assert!(cc.contains(&("cc:claude-haiku-5-5".to_string(), "cc:haiku")));
-        assert!(cc.contains(&("cc:claude-mythos-5-1".to_string(), "cc:mythos")));
+        assert!(cc.contains(&("cc:claude-mythos-5-2".to_string(), "cc:mythos")));
         assert!(api.contains(&("claude-haiku-5-5".to_string(), "haiku")));
-        assert!(api.contains(&("claude-mythos-5-1".to_string(), "mythos")));
+        assert!(api.contains(&("claude-mythos-5-2".to_string(), "mythos")));
         for (name, alias) in cc.iter().chain(&api) {
             let note = model_note(name);
             assert_eq!(note, model_note(alias), "{alias}");
             assert_eq!(
                 note.is_some(),
-                name.ends_with("claude-mythos-5-1"),
+                name.ends_with("claude-mythos-5-2"),
                 "{name}"
             );
         }
         assert_eq!(model_note("cc:mythos"), Some(MYTHOS_ACCESS));
+        assert_eq!(model_note("claude-mythos-5-1"), Some(MYTHOS_ACCESS));
     }
 
-    /// Claude Code's refusal of Claude Mythos 5.1 says what access it needs.
+    /// Claude Code's refusal of Claude Mythos says what access it needs.
     /// Other errors, also the same refusal of another model, stay as they
     /// are.
     #[test]
@@ -3850,7 +3851,7 @@ mod tests {
         assert!(explained.starts_with(refused), "{explained}");
         assert!(
             explained.ends_with(
-                "Claude Mythos 5.1 needs access through Anthropic's Cyber Verification Program."
+                "Claude Mythos needs access through Anthropic's Cyber Verification Program."
             ),
             "{explained}"
         );
