@@ -43,6 +43,9 @@ remote = [
     "dep:mesquite_swift", "dep:mesquite_toml", "dep:mesquite_typescript", "dep:mesquite_yaml",
     "dep:pulldown-cmark",
 ]
+# In the full-screen view, Ctrl+S and /snapshot save the screen as text in
+# snapshots/ in Arko's folder, for testing a build before release.
+dbg-snapshot = ["tui"]
 # `arko::testing` (a local model server and the client for it,
 # `Options::client`), for tests only, also those of an app built on the
 # library. Not for builds that ship.

@@ -513,6 +513,11 @@ pub const KEYS: &[(&str, &str)] = &[
     ("Ctrl+C", "stop the turn, else clear the box"),
     ("Ctrl+D", "quit, when the box is empty (as /exit)"),
     ("Ctrl+L", "draw the screen again"),
+    #[cfg(feature = "dbg-snapshot")]
+    (
+        "Ctrl+S",
+        "save the screen as text in Arko's snapshots folder, for debugging (/snapshot adds a note)",
+    ),
     ("Drag", "select text, and it is copied when you let go"),
     (
         "Double-click",

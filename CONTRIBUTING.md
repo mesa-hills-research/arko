@@ -44,3 +44,27 @@ cargo test --features dictation
 The remote web page is written in Rust with Leptos, in `web/`. Its built files are in
 `src/remote/page/`, so building Arko needs no web tools. After changing the page, rebuild it with
 `web/build.sh` and commit the output with the change. [web/README.md](web/README.md) says how.
+
+## Debug snapshots
+
+A build with the `dbg-snapshot` feature saves the full-screen view as text, so a report about the
+screen can point at exact characters.
+
+```bash
+cargo install --path . --features dbg-snapshot
+```
+
+Ctrl+S saves the frame on the screen, whatever is open, and changes nothing else. `/snapshot NOTE`
+saves the frame drawn once the command has run, with the note. Each snapshot goes in a folder of
+its own in `snapshots/` in Arko's folder (`ARKO_HOME`, else `arko` in your data directory), named
+for the local time, such as `20261110-143022`. On Unix, `snapshots/latest` links to the newest.
+The transcript says where it went, and the folder's path is copied.
+
+- `screen.txt` has one line per row at the terminal's full width, each cell as drawn, without
+  colours. A wide character shows once.
+- `meta.json` has Arko's version and build, the executable and when it was modified, the
+  terminal's size, `TERM` and `TERM_PROGRAM`, the theme, the view, the overlay open, what has the
+  keys, the cursor in the input box, the transcript's scroll position, the session, the note and
+  the time.
+
+The tests of the feature run with `cargo test --features dbg-snapshot`.

@@ -758,6 +758,13 @@ impl Transcript {
         self.anchor.is_none()
     }
 
+    /// The key of the block at the top of the screen and how many of its
+    /// lines are above it, unless the transcript follows the bottom.
+    #[cfg(feature = "dbg-snapshot")]
+    pub fn reading_position(&self) -> Option<(u64, usize)> {
+        self.anchor.map(|anchor| (anchor.key, anchor.offset))
+    }
+
     /// Follows the bottom again, also during a drag, whose release the
     /// terminal may never report.
     pub fn follow(&mut self) {

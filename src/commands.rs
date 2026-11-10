@@ -114,6 +114,12 @@ pub const COMMANDS: &[Command] = &[
         "how much of the work the transcript shows",
     ),
     Command::screen("/copy", "", "copy the agent's last reply"),
+    #[cfg(feature = "dbg-snapshot")]
+    Command::screen(
+        "/snapshot",
+        "[NOTE]",
+        "save the screen as text in Arko's snapshots folder, with a note, for debugging (Ctrl+S saves it as it is)",
+    ),
     Command {
         name: "/dictate",
         args: "",
@@ -972,6 +978,8 @@ mod tests {
             names(matching("/s", true)),
             [
                 "/stop-workers",
+                #[cfg(feature = "dbg-snapshot")]
+                "/snapshot",
                 "/settings",
                 "/skills",
                 "/session",
