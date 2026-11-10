@@ -37,7 +37,7 @@ pub(crate) struct Args {
     /// astra, terra, luna, gemini, flash), openrouter:<slug> for a model on
     /// OpenRouter (openrouter:anthropic/claude-opus-5.5), or cc:<model> for
     /// a Claude model in your installed Claude Code, on your Claude plan
-    /// (cc:opus, cc:fable, cc:haiku). Claude Mythos 5.1 (mythos) needs access
+    /// (cc:opus, cc:fable, cc:haiku). Claude Mythos 5.2 (mythos) needs access
     /// through Anthropic's Cyber Verification Program. By default, the model of the last session you started
     /// (with its workers' model, when that differed) while its credential
     /// is there, else one by the credentials there are, cc:opus with Claude
