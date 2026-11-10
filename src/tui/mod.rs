@@ -19,6 +19,8 @@ mod approvals;
 mod backend;
 mod cache;
 mod clipboard;
+#[cfg(feature = "dbg-snapshot")]
+mod dbg_snapshot;
 mod dictation;
 mod input;
 mod keys_menu;
@@ -927,6 +929,22 @@ async fn run(
                             }
                         });
                     }
+                    #[cfg(feature = "dbg-snapshot")]
+                    Effect::Snapshot(snapshot) => {
+                        let root = setup.root.clone();
+                        let saved = dbg_snapshot::save_off_thread(root, *snapshot).await;
+                        app.snapshot_saved(saved);
+                    }
+                    #[cfg(feature = "dbg-snapshot")]
+                    Effect::SnapshotNextFrame(note) => {
+                        // Drawn now, also while the terminal hasn't taken
+                        // the last frame, so the saved one is this frame.
+                        draw(&mut terminal, &mut app);
+                        let snapshot = app.snapshot(&note);
+                        let root = setup.root.clone();
+                        let saved = dbg_snapshot::save_off_thread(root, snapshot).await;
+                        app.snapshot_saved(saved);
+                    }
                 }
                 draw_now = true;
             }
@@ -1198,8 +1216,37 @@ fn draw_when_written(
 /// so it doesn't flicker.
 fn draw(terminal: &mut Terminal<CursorBackend<Writer>>, app: &mut App) {
     let _ = queue!(terminal.backend_mut(), BeginSynchronizedUpdate);
+    #[cfg(not(feature = "dbg-snapshot"))]
     let _ = terminal.draw(|frame| screen::draw(frame, app));
+    // Kept for Ctrl+S, which saves the frame on the screen without drawing.
+    #[cfg(feature = "dbg-snapshot")]
+    if let Ok(drawn) = terminal.draw(|frame| screen::draw(frame, app)) {
+        app.drawn_frame.clone_from(drawn.buffer);
+    }
     let _ = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
+}
+
+/// The lines a buffer shows, one per row at its full width, with a wide
+/// character's second cell left out, as the terminal shows them.
+#[cfg(any(all(test, unix), feature = "dbg-snapshot"))]
+fn buffer_lines(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+    let area = buffer.area;
+    (area.top()..area.bottom())
+        .map(|y| {
+            let mut line = String::new();
+            let mut skip = 0;
+            for x in area.left()..area.right() {
+                let symbol = buffer[(x, y)].symbol();
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                skip = unicode_width::UnicodeWidthStr::width(symbol).saturating_sub(1);
+                line.push_str(symbol);
+            }
+            line
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1661,29 +1708,6 @@ mod tests {
         fn lines(&self) -> Vec<String> {
             self.rows.iter().map(|row| row.concat()).collect()
         }
-    }
-
-    /// The lines a buffer shows, with a wide character's second cell left
-    /// out, as [`Grid::lines`] has them.
-    #[cfg(unix)]
-    fn buffer_lines(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
-        let area = buffer.area;
-        (area.top()..area.bottom())
-            .map(|y| {
-                let mut line = String::new();
-                let mut skip = 0;
-                for x in area.left()..area.right() {
-                    let symbol = buffer[(x, y)].symbol();
-                    if skip > 0 {
-                        skip -= 1;
-                        continue;
-                    }
-                    skip = unicode_width::UnicodeWidthStr::width(symbol).saturating_sub(1);
-                    line.push_str(symbol);
-                }
-                line
-            })
-            .collect()
     }
 
     /// While the terminal doesn't read, the view takes keys and the feed's

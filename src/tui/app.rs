@@ -120,6 +120,13 @@ pub enum Effect {
     /// A notice in the transcript, for what must outlast the status line's
     /// hint (a failure).
     Notice(crate::remote::Level, String),
+    /// Save this debug snapshot of the frame on the screen (Ctrl+S).
+    #[cfg(feature = "dbg-snapshot")]
+    Snapshot(Box<super::dbg_snapshot::Snapshot>),
+    /// Draw a frame, then save a debug snapshot of it with this note
+    /// (`/snapshot`).
+    #[cfg(feature = "dbg-snapshot")]
+    SnapshotNextFrame(String),
 }
 
 /// A check that its asker can end, set to stop it.
@@ -446,6 +453,9 @@ pub struct App {
     openrouter_seen: u64,
     /// The recording `/dictate` or Ctrl+R started, until it ends.
     pub recording: Option<super::dictation::Recording>,
+    /// The frame drawn last, which Ctrl+S saves.
+    #[cfg(feature = "dbg-snapshot")]
+    pub drawn_frame: ratatui::buffer::Buffer,
 }
 
 /// The argument being typed on a command line, and what it may be.
@@ -540,6 +550,8 @@ impl App {
             model_names: Default::default(),
             openrouter_seen: crate::openrouter::generation(),
             recording: None,
+            #[cfg(feature = "dbg-snapshot")]
+            drawn_frame: Default::default(),
         }
     }
 
@@ -1084,6 +1096,12 @@ impl App {
         // Windows reports releases too.
         if key.kind == KeyEventKind::Release {
             return;
+        }
+        // Saves the frame on the screen before anything takes the key.
+        #[cfg(feature = "dbg-snapshot")]
+        if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            let snapshot = Box::new(self.snapshot(""));
+            return self.effects.push(Effect::Snapshot(snapshot));
         }
         // A key press clears what the mouse highlighted.
         self.transcript.selection = None;
@@ -1785,6 +1803,10 @@ impl App {
                 }
                 None => self.say("No reply to copy yet"),
             },
+            #[cfg(feature = "dbg-snapshot")]
+            "/snapshot" => self
+                .effects
+                .push(Effect::SnapshotNextFrame(rest.to_string())),
             "/view" => match View::parse(rest) {
                 Some(view) => self.set_view(view),
                 None if rest.is_empty() => self.cycle_view(),
