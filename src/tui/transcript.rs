@@ -1463,6 +1463,28 @@ impl Transcript {
         }
     }
 
+    /// Opens every fold, including a worker's rows, for step renderings.
+    #[cfg(test)]
+    pub(crate) fn open_all_for_renderings(&mut self, view: View, worker: Option<&str>) {
+        self.open_for_renderings(view);
+        for entry in &mut self.entries {
+            entry.open = true;
+            entry.open_quiet = true;
+            entry.touch();
+        }
+        let filter = match worker {
+            Some(worker) => Filter::Worker(worker.to_string(), view),
+            None => Filter::Main(view),
+        };
+        let placed = self.quiet_placed(&filter, &HashMap::new(), &HashSet::new());
+        for row in placed {
+            if let Placed::Quiet(row) = row {
+                self.quiet_open.insert(self.entries[row.members[0]].item.id);
+            }
+        }
+        self.generation += 1;
+    }
+
     /// How long the call of a Quiet row that runs has run.
     fn quiet_clock(&self, row: &QuietRow, now: i64) -> Option<String> {
         if !row.words.running {
