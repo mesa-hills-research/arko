@@ -9,11 +9,39 @@ Write the way a person explains something to a colleague beside them, in the few
 
 ## The fewest words
 
-- Cut what the layout, the context or the reader's own action already says. A label is a word or two and doesn't describe itself, so a button in a dialog titled "Delete profile" says "Delete". A state is named only when it's unusual, in one word where one fits ("Pending", "Failed").
+- Cut what the layout, the context or the reader's own action already says, as the context review below shows. A label is a word or two and doesn't describe itself. A state is named only when it's unusual, in one word where one fits ("Pending", "Failed").
 - Call things what the interface calls them, in the words of the menu item or button the text refers to.
 - Choose the shorter word when both are right. Drop openings, closings, hedges, "Successfully", and any sentence that restates the one before.
 - Cut for the reader, not for the count. Keep every fact that removes doubt. An error still says what happened and what to do ("Couldn't share the page. Port 8765 is in use."). Shorter is never clipped or telegraphic.
 - One idea per sentence. Two short sentences beat one joined with a colon or a semicolon.
+
+## Context review
+
+Every piece of text sits somewhere, and its surroundings already say a lot. A window's title, an icon, a control's label, its place on the screen, the key the person just pressed and the conventions every user knows all carry meaning. Before you write, work out what they already tell the reader. Write only what's left, and that is often nothing.
+
+1. Say in one plain sentence what the text would tell the reader.
+2. Hold each part of it against the context. Does the title say it, or the icon, the control's own label, the action the person just took, or a convention (Esc pauses, an X closes, a gear opens settings)?
+3. Cut every part the context covers. What remains is the minimum, and the minimum may be no text at all.
+4. Read what's left in place, next to everything else on the screen, as the person will meet it.
+
+A game pauses when the player presses Esc and shows a menu with Resume, Settings and Quit. The habit is to stack lines above it, such as "PAUSED", "The mission goes on" and "Resume recaptures the mouse". The player just pressed Esc and watched the game stop, and a menu with Resume says so again. "The mission goes on" is mood, and every player expects the mouse back when they resume. The menu needs its buttons and nothing more.
+
+An icon in a status bar opens the workers panel. A tooltip that lists every running worker repeats the panel and goes stale as workers come and go. "Show workers" says what a click does, and the panel shows the rest.
+
+A dialog titled "Delete profile" needs a button that says "Delete", not "Delete profile" or "Yes, delete this profile".
+
+Text that fails the review usually does one of these.
+
+- It names the state the person just caused, such as "Paused" in a pause menu or "Saved" after Save.
+- It explains a control that its label or icon already explains.
+- A tooltip repeats the label, or lists what the control opens instead of saying what it does.
+- It describes the mechanism instead of the effect ("recaptures the mouse").
+- It adds mood or reassurance ("The mission goes on", "You're all set!").
+- A heading sits over a single item, or a label repeats its section's title.
+
+Some things the context can't carry, and they stay. Keep a consequence the person can't see ("Its 12 sessions are deleted too"), a state that's unusual, why something failed and what to do next, and the accessible name of an icon-only control, which a screen reader needs even when the icon is clear to everyone who sees it.
+
+The same review applies beyond the interface. A terminal message follows the command the person just typed, a commit message sits above its diff, and a docs page sits under its title. Each says only what those leave out.
 
 ## The tells of a model
 
@@ -53,5 +81,6 @@ A commit message says what changed and why for any user of the project. "Autocom
 1. Search the text for `: ` and `;`, comments included, and rewrite each one that isn't an allowed case.
 2. Search for "Note", "Tip", "Warning", "Important", bold-lead bullets, names, dates and words about how the project was made ("swarm", "agent", "maintainer", "verified").
 3. Find every "not", "doesn't", "never" and "no". Keep each only where a reader would otherwise get it wrong.
-4. In a repo, check that the README is still an overview, that someone new to the project would see it as meant for them, and that no file is there only because of how the project was made.
-5. Read it aloud in your head. Does it sound like a person? Cut once more.
+4. Look at each piece of text in place on its screen. Cut what the title, the icons, the controls or the person's last action already say.
+5. In a repo, check that the README is still an overview, that someone new to the project would see it as meant for them, and that no file is there only because of how the project was made.
+6. Read it aloud in your head. Does it sound like a person? Cut once more.
