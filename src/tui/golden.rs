@@ -1,5 +1,6 @@
 //! A drawn screen as text, with its colours and attributes, for the goldens in
-//! `tests/screens/` and the frame recordings. The lines of a frame are:
+//! `tests/screens/`, the frame recordings and dbg-snapshot's `screen.styled`.
+//! The lines of a frame are:
 //!
 //! ```text
 //! size 80 24
@@ -25,15 +26,15 @@
 
 use std::fmt::Write;
 
-use tuiframe::Frame;
 use tuiframe::buffer::{Buffer, CellRef};
-use tuiframe::caps::ColorDepth;
 use tuiframe::layout::Position;
 use tuiframe::style::{Color, Modifier};
-use tuiframe::testing::TestTerminal;
+#[cfg(test)]
+use tuiframe::{Frame, caps::ColorDepth, testing::TestTerminal};
 
 /// A terminal in memory for the view's tests, `width` by `height` cells,
 /// which shows 24-bit colour as the view's themes paint.
+#[cfg(test)]
 pub(super) fn terminal(width: u16, height: u16) -> TestTerminal {
     let terminal = TestTerminal::new(width, height);
     let mut caps = terminal.capabilities().clone();
@@ -43,6 +44,7 @@ pub(super) fn terminal(width: u16, height: u16) -> TestTerminal {
 
 /// The rows a `width` by `height` terminal shows once `draw` drew a frame,
 /// without their trailing spaces.
+#[cfg(test)]
 pub(super) fn rows(width: u16, height: u16, draw: impl FnOnce(&mut Frame<'_>)) -> Vec<String> {
     let mut terminal = terminal(width, height);
     terminal.draw(draw).unwrap();
@@ -51,6 +53,7 @@ pub(super) fn rows(width: u16, height: u16, draw: impl FnOnce(&mut Frame<'_>)) -
 
 /// The rows and the cells a `width` by `height` terminal shows once `draw`
 /// drew a frame, the cells as the frame drew them.
+#[cfg(test)]
 pub(super) fn drawn(
     width: u16,
     height: u16,
@@ -63,6 +66,7 @@ pub(super) fn drawn(
 
 /// The frame `draw` draws on `terminal`, in the golden format, with the
 /// cursor where the terminal shows it.
+#[cfg(test)]
 pub(super) fn frame(terminal: &mut TestTerminal, draw: impl FnOnce(&mut Frame<'_>)) -> String {
     let buffer = terminal.draw(draw).unwrap().buffer().clone();
     let cursor = terminal.cursor().map(|cursor| cursor.position);

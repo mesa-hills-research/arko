@@ -451,7 +451,7 @@ pub struct App {
     pub recording: Option<super::dictation::Recording>,
     /// The frame drawn last, which Ctrl+S saves.
     #[cfg(feature = "dbg-snapshot")]
-    pub drawn_frame: tuiframe::buffer::Buffer,
+    pub drawn_frame: super::dbg_snapshot::Drawn,
 }
 
 /// The argument being typed on a command line, and what it may be.
@@ -546,7 +546,7 @@ impl App {
             openrouter_seen: crate::openrouter::generation(),
             recording: None,
             #[cfg(feature = "dbg-snapshot")]
-            drawn_frame: tuiframe::Buffer::empty(tuiframe::Rect::ZERO),
+            drawn_frame: super::dbg_snapshot::Drawn::default(),
         }
     }
 

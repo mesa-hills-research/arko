@@ -24,7 +24,7 @@ mod clipboard;
 #[cfg(feature = "dbg-snapshot")]
 mod dbg_snapshot;
 mod dictation;
-#[cfg(test)]
+#[cfg(any(test, feature = "dbg-snapshot"))]
 mod golden;
 mod input;
 #[cfg(test)]
@@ -982,7 +982,7 @@ fn draw(terminal: &mut Terminal, app: &mut App) -> bool {
         // Kept for Ctrl+S, which saves the frame on the screen without drawing.
         #[cfg(feature = "dbg-snapshot")]
         Ok(Drawn::Written(drawn)) => {
-            app.drawn_frame.clone_from(drawn.buffer());
+            app.drawn_frame.keep(&drawn);
             true
         }
         // (A terminal that takes no more output ends the loop at its next
