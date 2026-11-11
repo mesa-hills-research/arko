@@ -688,6 +688,42 @@ fn the_cleanup_pack_downloads_and_goes_in_place() {
     assert_eq!(server.requests().len(), 1);
 }
 
+/// A whole pack an earlier try downloaded but didn't put in place goes in
+/// place without downloading it again. On Windows the install flushes it
+/// through a handle that may write to it, which Windows requires.
+#[test]
+fn a_whole_cleanup_pack_from_an_earlier_try_goes_in_place() {
+    let (server, file, served) = served_pack(None);
+    let root = tempfile::tempdir().unwrap();
+    let downloads = models::tagger_dir(root.path()).join(DOWNLOAD_DIR);
+    std::fs::create_dir_all(&downloads).unwrap();
+    std::fs::copy(served.path().join(file.name), downloads.join(file.name)).unwrap();
+    let url = format!("{}/{}", server.base, file.name);
+    let mut steps = Vec::new();
+    install_tagger(
+        root.path(),
+        &url,
+        &file,
+        &mut |step| steps.push(step),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(models::tagger_pack(root.path())).unwrap(),
+        weights()
+    );
+    assert!(server.requests().is_empty());
+    assert!(!downloads.exists());
+    assert_eq!(
+        steps.last(),
+        Some(&Preparing::Downloading {
+            model: ModelKind::Cleanup,
+            done: file.bytes,
+            total: file.bytes,
+        })
+    );
+}
+
 /// A cleanup pack that isn't the one pinned is deleted, and nothing goes in
 /// place.
 #[test]
