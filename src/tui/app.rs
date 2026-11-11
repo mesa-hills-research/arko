@@ -416,6 +416,8 @@ pub struct App {
     folded: Option<(u64, super::transcript::Point)>,
     /// Where the agent list was drawn, and its rows, for the mouse.
     pub list_drawn: (tuiframe::layout::Rect, Vec<ListRow>),
+    /// Where the status line was drawn, which its timer redraws alone.
+    pub status_drawn: Option<tuiframe::layout::Rect>,
     /// How many workers the agent list is scrolled past, and the farthest
     /// it scrolls, as last drawn.
     list_scroll: (usize, usize),
@@ -527,6 +529,7 @@ impl App {
             input_width: 80,
             list_focus: None,
             list_drawn: Default::default(),
+            status_drawn: None,
             list_scroll: (0, 0),
             list_followed: None,
             list_wheeled: false,

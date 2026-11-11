@@ -442,6 +442,9 @@ async fn run(
     // Something changed, drawn at the next frame. Keys draw at once.
     let mut dirty = false;
     let mut draw_now = true;
+    // The animation's clock moved the spinner, the highlight and the status
+    // line's timer, which a frame draws alone while nothing else changed.
+    let mut ticked = false;
     let mut title = String::new();
     // The terminal hasn't taken the last frame, so the next waits for it.
     let mut held = false;
@@ -510,11 +513,18 @@ async fn run(
             }
             break;
         }
-        if draw_now {
+        if !held && (draw_now || ticked) {
             watchdog.stage("drawing");
-            held = !draw_when_written(&mut terminal, &mut app, &mut title);
-            draw_now = false;
-            dirty = false;
+            let drawn = if draw_now || dirty {
+                draw_when_written(&mut terminal, &mut app, &mut title)
+            } else {
+                draw_moving(&mut terminal, &mut app, &mut title)
+            };
+            // (A frame the terminal holds is drawn once it took the last.)
+            held = !drawn;
+            if drawn {
+                (draw_now, dirty, ticked) = (false, false, false);
+            }
         }
         let enter_at = enter.unwrap_or_else(Instant::now);
         let preview_at = app.preview_due();
@@ -586,9 +596,9 @@ async fn run(
                 }
                 draw_now = true;
             }
-            _ = frames.tick(), if dirty => draw_now = true,
-            () = terminal.written(), if held => draw_now = true,
-            _ = animation.tick(), if app.transcript.drawn.moving => draw_now = true,
+            _ = frames.tick(), if dirty && !held => draw_now = true,
+            () = terminal.written(), if held => held = false,
+            _ = animation.tick(), if !app.transcript.drawn.moving.is_empty() && !held => ticked = true,
             _ = clock.tick() => {
                 watchdog.stage("reading the status");
                 let reading = setup.meter.read();
@@ -985,6 +995,28 @@ fn draw(terminal: &mut Terminal, app: &mut App) -> bool {
     match terminal.draw(|frame| screen::draw(frame, app)) {
         Ok(Drawn::Held) => false,
         // Kept for Ctrl+S, which saves the frame on the screen without drawing.
+        #[cfg(feature = "dbg-snapshot")]
+        Ok(Drawn::Written(drawn)) => {
+            app.drawn_frame.keep(&drawn);
+            true
+        }
+        // (A terminal that takes no more output ends the loop at its next
+        // turn.)
+        _ => true,
+    }
+}
+
+/// Draws over the last frame only what the animation's clock moves
+/// ([`screen::moving`]), where nothing else changed, and the whole frame
+/// where that can't be drawn alone or the terminal needs a whole one.
+/// Whether it was drawn.
+fn draw_moving(terminal: &mut Terminal, app: &mut App, title: &mut String) -> bool {
+    let Some(regions) = screen::moving(app) else {
+        return draw_when_written(terminal, app, title);
+    };
+    match terminal.draw_regions(&regions, |frame| screen::draw_moving(frame, app)) {
+        Ok(Drawn::Held) => false,
+        Ok(Drawn::FullFrameDue) => draw_when_written(terminal, app, title),
         #[cfg(feature = "dbg-snapshot")]
         Ok(Drawn::Written(drawn)) => {
             app.drawn_frame.keep(&drawn);

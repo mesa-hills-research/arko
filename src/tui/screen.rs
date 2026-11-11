@@ -9,9 +9,11 @@ use tuiframe::Frame;
 use tuiframe::layout::{Position, Rect};
 use tuiframe::style::{Modifier, Style};
 use tuiframe::text::{Line, Span};
+use tuiframe::widgets::Clear;
 
 use super::app::{AgentState, App, ListRow};
 use super::cache;
+use super::motion;
 use super::overlay::{self, hints};
 use super::theme::Theme;
 use super::transcript::{self, View};
@@ -35,6 +37,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.buffer_mut().set_style(area, theme.base());
     if area.height < 6 || area.width < 16 {
         app.approvals_hidden();
+        // (Nothing moves on it.)
+        app.transcript.drawn.moving.clear();
+        app.status_drawn = None;
         return;
     }
 
@@ -74,7 +79,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.list_drawn = Default::default();
     }
     let status_y = input_area.y - 1;
-    draw_status(frame, app, Rect::new(area.x, status_y, area.width, 1));
+    let status = Rect::new(area.x, status_y, area.width, 1);
+    draw_status(frame, app, status);
+    app.status_drawn = Some(status);
     let rule_y = status_y - 1;
     frame
         .buffer_mut()
@@ -101,6 +108,45 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .draw(frame.buffer_mut(), transcript, &filter, &theme);
     overlay::draw(frame, app, transcript, area);
     app.after_draw();
+}
+
+/// What moves while nothing else on the screen changes, as the last frame
+/// drew it, namely the spinner and the highlight of each moving line in the
+/// transcript, and the status line, whose timer counts. `None` where they
+/// can't be drawn alone, because an overlay may cover them, or the "new
+/// lines" marker sits on one.
+pub fn moving(app: &App) -> Option<Vec<Rect>> {
+    if app.overlay.is_some() {
+        return None;
+    }
+    let drawn = &app.transcript.drawn;
+    let mut regions: Vec<Rect> = drawn
+        .moving
+        .iter()
+        .map(|line| line.area().intersection(drawn.area))
+        .collect();
+    if let Some(marker) = drawn.marker
+        && regions.iter().any(|region| region.intersects(marker))
+    {
+        return None;
+    }
+    regions.push(app.status_drawn?);
+    Some(regions)
+}
+
+/// Draws over the last frame what [`moving`] gives, as a whole frame draws
+/// it.
+pub fn draw_moving(frame: &mut Frame, app: &App) {
+    let theme = &app.theme;
+    let ms = motion::clock();
+    for line in &app.transcript.drawn.moving {
+        motion::paint(frame.buffer_mut(), line.at, line.width, theme, ms);
+    }
+    if let Some(area) = app.status_drawn {
+        frame.render_widget(Clear, area);
+        frame.buffer_mut().set_style(area, theme.base());
+        draw_status(frame, app, area);
+    }
 }
 
 /// A rule `width` columns wide, as the input box and the status line have.
@@ -3049,7 +3095,8 @@ mod tests {
     }
 
     /// Not a test. It measures how long a frame of a long transcript takes while
-    /// Working… or the thinking that streams moves on it, and how much of a
+    /// Working… or the thinking that streams moves on it, drawn whole and as
+    /// the animation draws it (what moves alone), by turns, and how much of a
     /// core the frames take at ten a second. Run it with
     /// `cargo test --lib animation_cost -- --ignored --nocapture`, and
     /// with `--release` for a release build's numbers.
@@ -3139,37 +3186,54 @@ mod tests {
         // A terminal of 120 by 40 in memory, which reads each frame's escape
         // codes as a terminal would (its time is in the frame's).
         let mut terminal = golden::terminal(120, 40);
-        // Draws a frame, and returns how many bytes it wrote.
-        let mut frame = |app: &mut App| {
+        // Draws a frame, whole or (`alone`) what moves alone, and returns how
+        // many bytes it wrote.
+        let mut frame = |app: &mut App, alone: bool| {
+            if alone && let Some(regions) = moving(app) {
+                let drawn = terminal.draw_regions(&regions, |frame| draw_moving(frame, app));
+                if let tuiframe::Drawn::Written(drawn) = drawn.unwrap() {
+                    return drawn.stats().bytes;
+                }
+            }
             let drawn = terminal.draw(|frame| draw(frame, app)).unwrap();
             drawn.stats().bytes
         };
         let mut measure = |app: &mut App, what: &str| {
             // The first frame fills the lines' caches.
-            frame(app);
-            assert!(app.transcript.drawn.moving, "{what} moves");
-            let mut times: Vec<Duration> = (0..300)
-                .map(|_| {
-                    let start = Instant::now();
-                    frame(app);
-                    start.elapsed()
-                })
-                .collect();
-            times.sort();
-            let mean = times.iter().sum::<Duration>() / times.len() as u32;
-            // Ten frames a second for three seconds, as the screen draws
-            // them, to find the share of a core they take.
-            let (wall, used) = (Instant::now(), cpu());
-            let mut written = 0;
-            for tick in 1..=30 {
-                written += frame(app);
-                std::thread::sleep(
-                    (wall + Duration::from_millis(100 * tick))
-                        .saturating_duration_since(Instant::now()),
-                );
+            frame(app, false);
+            assert!(!app.transcript.drawn.moving.is_empty(), "{what} moves");
+            assert!(moving(app).is_some(), "{what} moves alone");
+            // Whole frames and frames of what moves, 30 of each by turns.
+            let mut times: [Vec<Duration>; 2] = Default::default();
+            for _ in 0..10 {
+                for (alone, times) in [false, true].into_iter().zip(times.iter_mut()) {
+                    for _ in 0..30 {
+                        let start = Instant::now();
+                        frame(app, alone);
+                        times.push(start.elapsed());
+                    }
+                }
             }
-            let share = (cpu() - used).as_secs_f64() / wall.elapsed().as_secs_f64();
-            // Of a frame, the transcript's part.
+            // Ten frames a second for three seconds, as the screen draws
+            // them, to find the share of a core they take. The animation
+            // draws what moves alone, and the clock draws the whole frame
+            // twice a second while the agent works.
+            let mut at_ten = |whole: fn(u32) -> bool| {
+                let (wall, used) = (Instant::now(), cpu());
+                let mut written = 0;
+                for tick in 1..=30 {
+                    written += frame(app, !whole(tick));
+                    std::thread::sleep(
+                        (wall + Duration::from_millis(100 * u64::from(tick)))
+                            .saturating_duration_since(Instant::now()),
+                    );
+                }
+                let share = (cpu() - used).as_secs_f64() / wall.elapsed().as_secs_f64();
+                (share, written / 30)
+            };
+            let before = at_ten(|_| true);
+            let after = at_ten(|tick| tick % 5 == 0);
+            // Of a whole frame, the transcript's part.
             let area = Rect::new(0, 0, 120, 30);
             let mut buffer = tuiframe::buffer::Buffer::empty(area);
             let (filter, theme) = (app.filter(), app.theme.clone());
@@ -3178,13 +3242,23 @@ mod tests {
                 app.transcript.draw(&mut buffer, area, &filter, &theme);
             }
             let transcript = start.elapsed() / 300;
-            println!(
-                "{what}: a frame {mean:.2?} on average ({transcript:.2?} of it the transcript), {:.2?} at the median, {:.2?} at most, {} bytes to the terminal; {:.1}% of a core at 10 frames a second",
-                times[times.len() / 2],
-                times[times.len() - 1],
-                written / 30,
-                share * 100.0,
-            );
+            for (alone, times) in [false, true].into_iter().zip(times.iter_mut()) {
+                times.sort();
+                let mean = times.iter().sum::<Duration>() / times.len() as u32;
+                let (share, written) = if alone { after } else { before };
+                println!(
+                    "{what}, {}: a frame {mean:.2?} on average, {:.2?} at the median, {:.2?} at most; {written} bytes a frame and {:.1}% of a core at 10 frames a second{}",
+                    if alone { "what moves alone" } else { "whole" },
+                    times[times.len() / 2],
+                    times[times.len() - 1],
+                    share * 100.0,
+                    if alone {
+                        String::from(", with a whole frame every 500 ms")
+                    } else {
+                        format!(" ({transcript:.2?} of a frame the transcript)")
+                    },
+                );
+            }
         };
         measure(&mut app, "Working… on 4000 items");
         let mut thinking = Item::new(Kind::Thinking, "**Checking the docs**\nThe README first.");
@@ -3202,7 +3276,7 @@ mod tests {
         let mut app = app();
         let working = |rows: &[String]| rows.iter().any(|row| row.ends_with(" Working…"));
         assert!(!working(&screen(&mut app, 50, 10)));
-        assert!(!app.transcript.drawn.moving);
+        assert!(app.transcript.drawn.moving.is_empty());
         let mut activity = Activity {
             reporting: false,
             working: true,
@@ -3212,7 +3286,7 @@ mod tests {
         app.set_activity(activity.clone());
         let rows = screen(&mut app, 50, 10);
         assert!(working(&rows), "{rows:?}");
-        assert!(app.transcript.drawn.moving);
+        assert!(!app.transcript.drawn.moving.is_empty());
         activity.question = Some(Question {
             id: 1,
             text: "Tabs or spaces?".into(),
@@ -3224,7 +3298,59 @@ mod tests {
         app.set_activity(activity);
         let rows = screen(&mut app, 50, 10);
         assert!(!working(&rows), "{rows:?}");
-        assert!(!app.transcript.drawn.moving);
+        assert!(app.transcript.drawn.moving.is_empty());
+    }
+
+    /// A frame of what moves alone (the spinner, the highlight over
+    /// "Working…" and the status line's timer) leaves the screen as a whole
+    /// frame at that moment draws it, in the default theme and in the
+    /// terminal's own colours. Under an overlay it isn't drawn alone.
+    #[test]
+    fn what_moves_alone_draws_as_a_whole_frame_would() {
+        use crate::tui::theme::Theme;
+        use std::time::{Duration, Instant};
+        for terminal_theme in [false, true] {
+            let mut app = app();
+            if terminal_theme {
+                app.theme = Theme::terminal();
+            }
+            app.set_activity(Activity {
+                reporting: false,
+                working: true,
+                since: Some(0),
+                question: None,
+            });
+            // (Halfway through a second, so a draw doesn't cross into the next.)
+            let since = |secs: u64| Some(Instant::now() - Duration::from_millis(secs * 1000 + 500));
+            app.working_since = since(64);
+            crate::tui::motion::CHOSEN.set(Some(1_000));
+            let mut terminal = golden::terminal(60, 12);
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            for (ms, secs) in [(1_100, 64), (1_350, 65), (2_000, 65), (2_650, 66)] {
+                crate::tui::motion::CHOSEN.set(Some(ms));
+                app.working_since = since(secs);
+                let regions = moving(&app).expect("it moves alone");
+                let drawn = terminal
+                    .draw_regions(&regions, |frame| draw_moving(frame, &app))
+                    .unwrap();
+                let tuiframe::Drawn::Written(drawn) = drawn else {
+                    panic!("{drawn:?}");
+                };
+                let alone = drawn.buffer().clone();
+                let (rows, whole) = golden::drawn(60, 12, |frame| draw(frame, &mut app));
+                assert_eq!(alone, whole, "at {ms} ms");
+                assert_eq!(terminal.screen().rows(), rows, "at {ms} ms");
+                let status = rows.iter().find(|row| row.contains("working")).unwrap();
+                assert!(
+                    status.contains(&format!("working 1m0{}s", secs - 60)),
+                    "{status}"
+                );
+            }
+            crate::tui::motion::CHOSEN.set(None);
+            app.overlay = Some(crate::tui::overlay::Overlay::Help { scroll: 0 });
+            screen(&mut app, 60, 12);
+            assert_eq!(moving(&app), None);
+        }
     }
 
     #[test]

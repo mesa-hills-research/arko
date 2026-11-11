@@ -372,8 +372,24 @@ pub struct Drawn {
     pub marker: Option<Rect>,
     /// The keys of the counted turns' lines.
     counters: Vec<u64>,
-    /// Something on the screen moves, so it is drawn again at the next frame.
-    pub moving: bool,
+    /// The lines on the screen that move, drawn again at the next frame.
+    pub moving: Vec<Moving>,
+}
+
+/// A line that moves, its spinner at `at` and the highlight over the word
+/// of `width` columns after it ([`motion::paint`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Moving {
+    pub at: (u16, u16),
+    pub width: usize,
+}
+
+impl Moving {
+    /// The cells it paints.
+    pub fn area(&self) -> Rect {
+        let width = u16::try_from(self.width.saturating_add(2)).unwrap_or(u16::MAX);
+        Rect::new(self.at.0, self.at.1, width, 1)
+    }
 }
 
 impl Drawn {
@@ -1787,7 +1803,7 @@ impl Transcript {
             .saturating_sub(1);
         let mut y = 0usize;
         let mut skip = top.saturating_sub(starts.get(first).copied().unwrap_or(0));
-        let mut moving = false;
+        let mut moving = Vec::new();
         let ms = motion::clock();
         for (index, block) in blocks.iter().enumerate().skip(first) {
             if y >= height {
@@ -1829,17 +1845,22 @@ impl Transcript {
                     && self.motion.thinking == Some(self.entries[entry].item.id)
                     && line == usize::from(block.gap)
                 {
-                    let x = area.x + SPINNER as u16;
-                    motion::paint(buffer, (x, row), text_width(THINKING), theme, ms);
-                    moving = true;
+                    let line = Moving {
+                        at: (area.x + SPINNER as u16, row),
+                        width: text_width(THINKING),
+                    };
+                    motion::paint(buffer, line.at, line.width, theme, ms);
+                    moving.push(line);
                 }
                 if block.shown == Shown::Working {
                     // (Not text, so the mouse finds the line above it.)
                     if line == usize::from(block.gap) {
-                        let label = text_width(&glyphs::render(self.working_label()));
-                        let x = area.x + SPINNER as u16;
-                        motion::paint(buffer, (x, row), label, theme, ms);
-                        moving = true;
+                        let line = Moving {
+                            at: (area.x + SPINNER as u16, row),
+                            width: text_width(&glyphs::render(self.working_label())),
+                        };
+                        motion::paint(buffer, line.at, line.width, theme, ms);
+                        moving.push(line);
                     }
                 } else {
                     rows[y] = Some(RowRef {
@@ -4804,7 +4825,7 @@ mod tests {
         let shown = rows(&mut t, &quiet, 40, 4);
         assert_eq!(shown[0], "▸ Read a.rs", "{shown:?}");
         assert_eq!(after_spinner(&shown[1]), Some(" Thinking"), "{shown:?}");
-        assert!(t.drawn.moving);
+        assert!(!t.drawn.moving.is_empty());
         // The row's first line stays where it was when the next read joins.
         t.apply(Update::Item(read(3, "b.rs")));
         let shown = rows(&mut t, &quiet, 40, 4);
@@ -4892,7 +4913,7 @@ mod tests {
             Some(" Thinking · Where to start?"),
             "{thinking:?}"
         );
-        assert!(t.drawn.moving);
+        assert!(!t.drawn.moving.is_empty());
         assert!(is_working(&last(&mut t, View::Messages)));
         // A call runs, then ends, so the model has its result.
         let mut call = item(3, Kind::Call, "$ cargo test");
@@ -4979,19 +5000,19 @@ mod tests {
         let shown = rows(&mut t, &own, 40, 5);
         assert_eq!(after_spinner(&shown[2]), Some(" Thinking"), "{shown:?}");
         assert_eq!(shown[3..], ["    Plan.", ""], "nothing below it");
-        assert!(t.drawn.moving);
+        assert!(!t.drawn.moving.is_empty());
         t.apply(Update::Item(
             item(2, Kind::Text, "Done planning.").agent("r1"),
         ));
         let shown = rows(&mut t, &own, 40, 9);
         assert_eq!(shown[2], "  ▾ Thought", "{shown:?}");
-        assert!(!t.drawn.moving);
+        assert!(t.drawn.moving.is_empty());
         t.apply(Update::Item(item(3, Kind::Thinking, "More.").agent("r1")));
         rows(&mut t, &own, 40, 12);
-        assert!(t.drawn.moving);
+        assert!(!t.drawn.moving.is_empty());
         t.apply(Update::Worker(worker("r1", WorkerState::Finished)));
         let shown = rows(&mut t, &own, 40, 12);
-        assert!(!t.drawn.moving, "{shown:?}");
+        assert!(t.drawn.moving.is_empty(), "{shown:?}");
     }
 
     /// Text the agent writes beside a `wait_for_agents` call, and a message
