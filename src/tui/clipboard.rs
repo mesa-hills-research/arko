@@ -32,12 +32,17 @@ use std::sync::Mutex;
 pub enum Copied {
     /// The system clipboard has it.
     System,
-    /// Only the terminal was asked (OSC 52). Over SSH, or without a
+    /// Only the terminal can take it (OSC 52). Over SSH, or without a
     /// display, this machine's clipboard isn't the user's.
     Terminal,
     /// Nothing could take it, and this is what would fix that.
     Failed(String),
 }
+
+/// What the status line says when only the terminal could have taken a copy
+/// and it isn't known to take one.
+pub const NOT_SENT: &str =
+    "Couldn't copy, because this terminal isn't known to take copies (OSC 52)";
 
 /// The clipboard, kept from the first copy to the end of the run.
 static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);

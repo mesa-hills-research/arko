@@ -306,7 +306,8 @@ fn install_panic_hook() {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let opening = OPENING.with(std::cell::Cell::get);
-            if !gives_back(std::thread::current().name(), opening) {
+            let writer = tuiframe::is_writer_thread();
+            if !gives_back(std::thread::current().name(), opening, writer) {
                 log::error!("{info}");
                 return;
             }
@@ -316,17 +317,14 @@ fn install_panic_hook() {
     });
 }
 
-/// The name of the thread of tuiframe's writer.
-const WRITER: &str = "tuiframe-writer";
-
 /// Whether a panic on the thread named `thread` ends the view, so that it
 /// gives the terminal back. The view's thread's, the main thread's (whose
 /// panic ends the process), the thread opening the view while it does
-/// (`opening`), and the writer's, which can't give the terminal back itself.
-/// A session's task, whose panic tokio catches, or dictation's thread, which
-/// recovers from its own, leave the view as it is.
-fn gives_back(thread: Option<&str>, opening: bool) -> bool {
-    matches!(thread, Some(THREAD | "main" | WRITER)) || opening
+/// (`opening`), and tuiframe's writer's (`writer`), which can't give the
+/// terminal back itself. A session's task, whose panic tokio catches, or
+/// dictation's thread, which recovers from its own, leave the view as it is.
+fn gives_back(thread: Option<&str>, opening: bool, writer: bool) -> bool {
+    matches!(thread, Some(THREAD | "main")) || opening || writer
 }
 
 thread_local! {
@@ -662,16 +660,11 @@ async fn run(
                     Effect::Send(sending) => give(&setup.requests, &verdict_done, sending),
                     Effect::Input(input) => give(&setup.requests, &verdict_done, control(input)),
                     Effect::Copy { text, what } => {
-                        // The terminal's clipboard, and the system's. The status
-                        // line says "Copied" only when the system's took it.
-                        let _ = terminal.copy_to_clipboard(&text);
-                        app.say(match clipboard::copy(&text) {
-                            clipboard::Copied::System => format!("Copied {what}"),
-                            clipboard::Copied::Terminal => {
-                                "Sent to the terminal's clipboard".into()
-                            }
-                            clipboard::Copied::Failed(why) => why,
-                        });
+                        // The terminal's clipboard, where it takes copies, and
+                        // the system's. The status line says "Copied" only when
+                        // the system's took it.
+                        let sent = matches!(terminal.copy_to_clipboard(&text), Ok(true));
+                        app.say(copy_said(clipboard::copy(&text), sent, &what));
                     }
                     Effect::Mouse(on) => {
                         let mode = if on {
@@ -745,6 +738,18 @@ async fn run(
         .map(|reply| format!("{}\n\n", glyphs::render(reply.trim())))
         .unwrap_or_default();
     let _ = terminal.close_with_tail(reply.as_bytes());
+}
+
+/// What the status line says of a copy of `what`, which the system's
+/// clipboard took or didn't (`copied`), and which went to the terminal's
+/// (`sent`) or didn't.
+fn copy_said(copied: clipboard::Copied, sent: bool, what: &str) -> String {
+    match copied {
+        clipboard::Copied::System => format!("Copied {what}"),
+        clipboard::Copied::Terminal if sent => "Sent to the terminal's clipboard".into(),
+        clipboard::Copied::Terminal => clipboard::NOT_SENT.into(),
+        clipboard::Copied::Failed(why) => why,
+    }
 }
 
 /// Carries out what the view's recording needs of the dictation service
@@ -1089,10 +1094,10 @@ mod tests {
     /// is, and so do dictation's and the speech engine's, which recover.
     #[test]
     fn only_panics_that_end_the_view_give_the_terminal_back() {
-        assert!(gives_back(Some(THREAD), false));
-        assert!(gives_back(Some("main"), false));
-        assert!(gives_back(Some(WRITER), false));
-        assert!(gives_back(Some("tokio-runtime-worker"), true));
+        assert!(gives_back(Some(THREAD), false, false));
+        assert!(gives_back(Some("main"), false, false));
+        assert!(gives_back(Some("tokio-runtime-worker"), true, false));
+        assert!(gives_back(None, false, true));
         for other in [
             Some("tokio-runtime-worker"),
             Some("arko-dictation"),
@@ -1100,8 +1105,9 @@ mod tests {
             Some("arko-microphone"),
             None,
         ] {
-            assert!(!gives_back(other, false), "{other:?}");
+            assert!(!gives_back(other, false, false), "{other:?}");
         }
+        assert!(!tuiframe::is_writer_thread());
         // The names the threads have, and what opening says.
         let dictation = std::thread::Builder::new()
             .name("arko-dictation".into())
@@ -1122,6 +1128,24 @@ mod tests {
             assert!(OPENING.with(std::cell::Cell::get));
         }
         assert!(!OPENING.with(std::cell::Cell::get));
+    }
+
+    /// A copy that only the terminal could take says it went there only
+    /// when it did.
+    #[test]
+    fn a_copy_says_where_it_went() {
+        use clipboard::Copied;
+        assert_eq!(copy_said(Copied::System, false, "a line"), "Copied a line");
+        assert_eq!(
+            copy_said(Copied::Terminal, true, "a line"),
+            "Sent to the terminal's clipboard"
+        );
+        assert_eq!(
+            copy_said(Copied::Terminal, false, "a line"),
+            clipboard::NOT_SENT
+        );
+        let failed = Copied::Failed("Couldn't copy".into());
+        assert_eq!(copy_said(failed, true, "a line"), "Couldn't copy");
     }
 
     /// When the feed's subscription lags and the view starts over from the
