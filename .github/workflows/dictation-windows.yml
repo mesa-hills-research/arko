@@ -1,0 +1,24 @@
+name: Dictation on Windows
+on:
+  pull_request:
+    paths:
+      - "src/dictation/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/dictation-windows.yml"
+  push:
+    paths:
+      - "src/dictation/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/dictation-windows.yml"
+
+jobs:
+  test:
+    name: Dictation tests on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Telmo, the speech engine, needs Rust 1.97.
+      - run: rustup toolchain install 1.97 --profile minimal && rustup default 1.97
+      - run: cargo test --locked --features dictation --lib -- dictation
