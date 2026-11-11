@@ -1371,9 +1371,9 @@ mod tests {
         assert_eq!(panic_ends(Some(THREAD), false), Ends::View);
         assert_eq!(panic_ends(Some("main"), false), Ends::View);
         assert_eq!(panic_ends(Some(writer::THREAD), false), Ends::Writer);
-        assert_eq!(panic_ends(Some("tokio-runtime-worker"), true), Ends::View);
+        assert_eq!(panic_ends(Some("tokio-rt-worker"), true), Ends::View);
         for other in [
-            Some("tokio-runtime-worker"),
+            Some("tokio-rt-worker"),
             Some("arko-dictation"),
             Some("speech-worker-3"),
             Some("arko-microphone"),
@@ -1394,7 +1394,8 @@ mod tests {
         let worker = runtime
             .block_on(runtime.spawn(async { std::thread::current().name().map(str::to_string) }))
             .unwrap();
-        assert_eq!(worker.as_deref(), Some("tokio-runtime-worker"));
+        assert_eq!(panic_ends(worker.as_deref(), false), Ends::Nothing);
+        assert_eq!(panic_ends(worker.as_deref(), true), Ends::View);
         assert!(!OPENING.with(std::cell::Cell::get));
         {
             let _opening = Opening::new();
