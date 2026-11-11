@@ -14,8 +14,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::symbols::border;
+use tuiframe::caps::ColorDepth;
+use tuiframe::style::{Color, Modifier, Style};
+use tuiframe::widgets::BorderSet;
 
 use crate::glyphs::{self, Symbols};
 
@@ -146,28 +147,17 @@ pub enum Depth {
     Ansi16,
 }
 
-/// The colours this terminal shows, 24-bit where COLORTERM says so
-/// (GNOME Terminal sets it) or where Windows' console takes escape codes
-/// (Windows Terminal, and Windows 10's console, where crossterm turns them on,
-/// style.rs:163-170). 256 where TERM says so without COLORTERM (macOS
-/// Terminal.app). Else 16. NO_COLOR asks for none, so the terminal's
-/// colours are kept (crossterm drops colours then anyway).
-pub fn depth() -> Depth {
-    let var = |name: &str| std::env::var(name).unwrap_or_default().to_ascii_lowercase();
-    if !var("NO_COLOR").is_empty() {
+/// The colours a terminal that shows `colors` gets, as the terminal said
+/// when it was opened. NO_COLOR asks for none, so the terminal's colours
+/// are kept.
+pub fn depth(colors: ColorDepth) -> Depth {
+    if !std::env::var("NO_COLOR").unwrap_or_default().is_empty() {
         return Depth::Ansi16;
     }
-    #[cfg(windows)]
-    if crossterm::style::available_color_count() == u16::MAX {
-        return Depth::Rgb;
-    }
-    let colorterm = var("COLORTERM");
-    if colorterm.contains("truecolor") || colorterm.contains("24bit") {
-        Depth::Rgb
-    } else if var("TERM").contains("256color") {
-        Depth::Ansi256
-    } else {
-        Depth::Ansi16
+    match colors {
+        ColorDepth::TrueColor => Depth::Rgb,
+        ColorDepth::Ansi256 => Depth::Ansi256,
+        _ => Depth::Ansi16,
     }
 }
 
@@ -696,23 +686,14 @@ impl Theme {
     /// The lines and corners of a bordered element (an overlay, a panel),
     /// rounded or square as the theme's radius says, in the symbols the
     /// terminal shows.
-    pub fn borders(&self) -> border::Set<'static> {
+    pub fn borders(&self) -> BorderSet {
         match glyphs::symbols() {
-            Symbols::Ascii => border::Set {
-                top_left: "+",
-                top_right: "+",
-                bottom_left: "+",
-                bottom_right: "+",
-                vertical_left: "|",
-                vertical_right: "|",
-                horizontal_top: "-",
-                horizontal_bottom: "-",
-            },
+            Symbols::Ascii => BorderSet::ASCII,
             // (The classic console's fonts have no rounded corners.)
-            Symbols::Basic => border::PLAIN,
+            Symbols::Basic => BorderSet::PLAIN,
             Symbols::Full => match self.corners {
-                Corners::Square => border::PLAIN,
-                Corners::Rounded => border::ROUNDED,
+                Corners::Square => BorderSet::PLAIN,
+                Corners::Rounded => BorderSet::ROUNDED,
             },
         }
     }

@@ -1,4 +1,4 @@
-//! Every screen of the full-screen view, drawn through ratatui's test backend
+//! Every screen of the full-screen view, drawn on tuiframe's test terminal
 //! and compared with the goldens in `tests/screens/`, one file for each
 //! state at each size, named `STATE-WIDTHxHEIGHT.styled`. A golden holds the
 //! size, the cursor and every row's characters and styles
@@ -20,9 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
 use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use tuiframe::testing::TestTerminal;
 
 use super::app::App;
 use super::app::tests as app_tests;
@@ -363,8 +362,8 @@ fn states() -> Vec<State> {
 
 // ----- drawing -----
 
-pub(super) fn draw(app: &mut App, (width, height): (u16, u16)) -> Terminal<TestBackend> {
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+pub(super) fn draw(app: &mut App, (width, height): (u16, u16)) -> TestTerminal {
+    let mut terminal = golden::terminal(width, height);
     terminal.draw(|frame| screen::draw(frame, app)).unwrap();
     terminal
 }
@@ -372,17 +371,7 @@ pub(super) fn draw(app: &mut App, (width, height): (u16, u16)) -> Terminal<TestB
 /// The rows of the screen as text, to find what the keys and the mouse act
 /// on.
 pub(super) fn rows(app: &mut App, size: (u16, u16)) -> Vec<String> {
-    let terminal = draw(app, size);
-    let buffer = terminal.backend().buffer();
-    (0..size.1)
-        .map(|y| {
-            (0..size.0)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect()
+    draw(app, size).screen().rows()
 }
 
 /// An app with nothing in it, drawn in `look`, that reads nothing from the
@@ -441,7 +430,18 @@ fn render(state: &State, size: (u16, u16), dir: &Path) -> String {
     let _frozen = Frozen::new();
     let mut app = fresh(state.look);
     (state.build)(&mut app, &Ctx { dir: &dir, size });
-    golden::of(draw(&mut app, size).backend())
+    let mut terminal = golden::terminal(size.0, size.1);
+    let drawn = terminal
+        .draw(|frame| screen::draw(frame, &mut app))
+        .unwrap();
+    let buffer = drawn.buffer().clone();
+    // The terminal shows the text the frame drew.
+    let drew: Vec<String> = super::buffer_lines(&buffer)
+        .iter()
+        .map(|row| row.trim_end().to_string())
+        .collect();
+    assert_eq!(terminal.screen().rows(), drew, "{dir:?}");
+    golden::styled(&buffer, terminal.cursor().map(|cursor| cursor.position))
 }
 
 fn golden_dir() -> PathBuf {

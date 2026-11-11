@@ -5,11 +5,11 @@
 
 use std::time::Instant;
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear};
+use tuiframe::Frame;
+use tuiframe::layout::Rect;
+use tuiframe::style::{Color, Modifier, Style};
+use tuiframe::text::{Line, Span};
+use tuiframe::widgets::{Block, Borders, Clear};
 
 use super::app::App;
 use super::theme::{Depth, Theme};

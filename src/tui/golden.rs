@@ -11,7 +11,7 @@
 //! ```
 //!
 //! The `cursor` line has the cursor's column and row, then `visible default`
-//! or `hidden`. A `text` line gives a row's symbols as a JSON string, as
+//! or `hidden` (a hidden cursor is at 0 0). A `text` line gives a row's symbols as a JSON string, as
 //! serde_json writes one, without the second cell of a wide character and
 //! without trailing spaces. Each `style` line after it gives a run of cells
 //! with the same style that isn't the default. It has the row, the first
@@ -25,36 +25,71 @@
 
 use std::fmt::Write;
 
-use ratatui::backend::TestBackend;
-use ratatui::buffer::{Buffer, Cell};
-use ratatui::style::{Color, Modifier};
-use unicode_width::UnicodeWidthStr;
+use tuiframe::Frame;
+use tuiframe::buffer::{Buffer, CellRef};
+use tuiframe::caps::ColorDepth;
+use tuiframe::layout::Position;
+use tuiframe::style::{Color, Modifier};
+use tuiframe::testing::TestTerminal;
 
-/// `buffer` in the golden format, with the cursor at `cursor` (column, row),
-/// shown or hidden.
-pub(super) fn styled(buffer: &Buffer, cursor: (u16, u16), visible: bool) -> String {
-    let (width, height) = (buffer.area.width, buffer.area.height);
+/// A terminal in memory for the view's tests, `width` by `height` cells,
+/// which shows 24-bit colour as the view's themes paint.
+pub(super) fn terminal(width: u16, height: u16) -> TestTerminal {
+    let terminal = TestTerminal::new(width, height);
+    let mut caps = terminal.capabilities().clone();
+    caps.colors = ColorDepth::TrueColor;
+    terminal.with_caps(caps)
+}
+
+/// The rows a `width` by `height` terminal shows once `draw` drew a frame,
+/// without their trailing spaces.
+pub(super) fn rows(width: u16, height: u16, draw: impl FnOnce(&mut Frame<'_>)) -> Vec<String> {
+    let mut terminal = terminal(width, height);
+    terminal.draw(draw).unwrap();
+    terminal.screen().rows()
+}
+
+/// The rows and the cells a `width` by `height` terminal shows once `draw`
+/// drew a frame, the cells as the frame drew them.
+pub(super) fn drawn(
+    width: u16,
+    height: u16,
+    draw: impl FnOnce(&mut Frame<'_>),
+) -> (Vec<String>, Buffer) {
+    let mut terminal = terminal(width, height);
+    let buffer = terminal.draw(draw).unwrap().buffer().clone();
+    (terminal.screen().rows(), buffer)
+}
+
+/// The frame `draw` draws on `terminal`, in the golden format, with the
+/// cursor where the terminal shows it.
+pub(super) fn frame(terminal: &mut TestTerminal, draw: impl FnOnce(&mut Frame<'_>)) -> String {
+    let buffer = terminal.draw(draw).unwrap().buffer().clone();
+    let cursor = terminal.cursor().map(|cursor| cursor.position);
+    styled(&buffer, cursor)
+}
+
+/// `buffer` in the golden format, with the cursor at `cursor`, or hidden.
+pub(super) fn styled(buffer: &Buffer, cursor: Option<Position>) -> String {
+    let (width, height) = (buffer.area().width, buffer.area().height);
     let mut out = format!("size {width} {height}\n");
-    let (x, y) = cursor;
-    if visible {
-        writeln!(out, "cursor {x} {y} visible default").unwrap();
-    } else {
-        writeln!(out, "cursor {x} {y} hidden").unwrap();
+    match cursor {
+        Some(Position { x, y }) => writeln!(out, "cursor {x} {y} visible default").unwrap(),
+        None => writeln!(out, "cursor 0 0 hidden").unwrap(),
     }
     for y in 0..height {
         let mut text = String::new();
         let mut row = Vec::with_capacity(width as usize);
-        // The look of the character being written, and how many cells it still
-        // covers after its first. A terminal paints them all in the first's look.
-        let (mut look, mut covered) = (Look::default(), 0);
+        // The look of the character being written. A terminal paints the
+        // cells a wide character covers (empty ones) in its look.
+        let mut look = Look::default();
         for x in 0..width {
-            let cell = &buffer[(x, y)];
-            if covered > 0 {
-                covered -= 1;
-            } else {
+            let Some(cell) = buffer.cell((x, y)) else {
+                continue;
+            };
+            if !cell.symbol().is_empty() {
                 text.push_str(cell.symbol());
-                covered = cell.symbol().width().saturating_sub(1);
-                look = Look::of(cell);
+                look = Look::of(&cell);
             }
             row.push(look);
         }
@@ -75,12 +110,6 @@ pub(super) fn styled(buffer: &Buffer, cursor: (u16, u16), visible: bool) -> Stri
     out
 }
 
-/// The screen a `TestBackend` shows, after a draw.
-pub(super) fn of(backend: &TestBackend) -> String {
-    let at = backend.cursor_position();
-    styled(backend.buffer(), (at.x, at.y), backend.cursor_visible())
-}
-
 /// What a cell shows besides its symbol.
 #[derive(Clone, Copy, Default, PartialEq)]
 struct Look {
@@ -91,12 +120,12 @@ struct Look {
 }
 
 impl Look {
-    fn of(cell: &Cell) -> Self {
+    fn of(cell: &CellRef) -> Self {
         Self {
-            fg: cell.fg,
-            bg: cell.bg,
-            underline: cell.underline_color,
-            modifier: cell.modifier,
+            fg: cell.fg(),
+            bg: cell.bg(),
+            underline: cell.underline_color(),
+            modifier: cell.modifier(),
         }
     }
 }
@@ -155,8 +184,8 @@ fn colour(color: Color) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::layout::Rect;
-    use ratatui::style::Style;
+    use tuiframe::layout::Rect;
+    use tuiframe::style::Style;
 
     /// Escapes, wide characters, runs, trailing cells with a background, every
     /// attribute in its place and the cursor.
@@ -180,7 +209,7 @@ mod tests {
                 .add_modifier(Modifier::all()),
         );
         assert_eq!(
-            styled(&buffer, (2, 3), true),
+            styled(&buffer, Some(Position::new(2, 3))),
             concat!(
                 "size 14 4\n",
                 "cursor 2 3 visible default\n",
@@ -197,8 +226,6 @@ mod tests {
                 "style 3 0 1 fg=light-cyan bg=gray ul=white underline bold dim italic blink rapid-blink reverse hidden strike\n",
             )
         );
-        assert!(
-            styled(&buffer, (5, 1), false).starts_with("size 14 4\ncursor 5 1 hidden\ntext 0 ")
-        );
+        assert!(styled(&buffer, None).starts_with("size 14 4\ncursor 0 0 hidden\ntext 0 "));
     }
 }

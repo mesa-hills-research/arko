@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
-use ratatui::buffer::Buffer;
 use serde::Serialize;
+use tuiframe::buffer::Buffer;
 
 use super::app::{App, Effect};
 use super::overlay::Overlay;
@@ -91,7 +91,7 @@ impl App {
     /// A snapshot of the frame drawn last, with what the view shows now and
     /// `note` (none when empty).
     pub fn snapshot(&self, note: &str) -> Snapshot {
-        let area = self.drawn_frame.area;
+        let area = self.drawn_frame.area();
         let anchor = self.transcript.reading_position();
         let meta = Meta {
             time: Local::now(),
@@ -274,18 +274,17 @@ fn link_latest(snapshots: &Path, name: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::tui::app::tests::app;
-    use ratatui::Terminal as Screen;
-    use ratatui::backend::TestBackend;
-    use ratatui::layout::Rect;
-    use ratatui::style::Style;
     use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tuiframe::layout::Rect;
+    use tuiframe::style::Style;
+    use tuiframe::testing::TestTerminal;
 
     /// Draws a frame of `app` and keeps it, as the view's loop does.
-    fn draw(terminal: &mut Screen<TestBackend>, app: &mut App) {
+    fn draw(terminal: &mut TestTerminal, app: &mut App) {
         let drawn = terminal
             .draw(|frame| super::super::screen::draw(frame, app))
             .unwrap();
-        app.drawn_frame.clone_from(drawn.buffer);
+        app.drawn_frame.clone_from(drawn.buffer());
     }
 
     fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
@@ -310,13 +309,13 @@ mod tests {
     #[test]
     fn ctrl_s_saves_the_frame_on_the_screen_and_changes_nothing() {
         let mut app = app();
-        let mut terminal = Screen::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = crate::tui::golden::terminal(80, 24);
         for c in "draft".chars() {
             press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
         app.overlay = Some(Overlay::Help { scroll: 0 });
         draw(&mut terminal, &mut app);
-        let shown = screen_text(terminal.backend().buffer());
+        let shown = screen_text(&app.drawn_frame);
 
         press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert_eq!(app.overlay, Some(Overlay::Help { scroll: 0 }));
@@ -328,7 +327,7 @@ mod tests {
         assert_eq!(snapshot.screen, shown);
         assert!(shown.contains("Keys"));
         draw(&mut terminal, &mut app);
-        assert_eq!(screen_text(terminal.backend().buffer()), shown);
+        assert_eq!(screen_text(&app.drawn_frame), shown);
 
         let temp = tempfile::tempdir().unwrap();
         let folder = save(temp.path(), (**snapshot).clone()).unwrap();
@@ -351,7 +350,7 @@ mod tests {
     #[test]
     fn the_command_saves_the_next_frame_with_its_note() {
         let mut app = app();
-        let mut terminal = Screen::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = crate::tui::golden::terminal(80, 24);
         for c in "/snapshot gap after the tick".chars() {
             press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }

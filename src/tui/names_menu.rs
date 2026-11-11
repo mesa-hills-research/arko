@@ -4,11 +4,11 @@
 //! tried, and says under each what it needs that is missing now. Space
 //! turns a way on or off, Shift+↑ and Shift+↓ move it, and Enter saves.
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::Modifier;
-use ratatui::text::{Line, Span};
+use tuiframe::Frame;
 use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
+use tuiframe::layout::Rect;
+use tuiframe::style::Modifier;
+use tuiframe::text::{Line, Span};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;
@@ -233,8 +233,6 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, menu: &NamesMenu) {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
 
     /// What the ways need on a machine with Claude Code but no login or
     /// keys.
@@ -257,20 +255,9 @@ pub(super) mod tests {
     /// The menu as an 80-column screen shows it, row by row.
     pub fn screen(menu: &NamesMenu, theme: &Theme) -> Vec<String> {
         let (width, height) = (80, 24);
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| draw(frame, theme, frame.area(), menu))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
+        crate::tui::golden::rows(width, height, |frame| {
+            draw(frame, theme, frame.area(), menu)
+        })
     }
 
     fn press(menu: &mut NamesMenu, code: KeyCode) -> Action {

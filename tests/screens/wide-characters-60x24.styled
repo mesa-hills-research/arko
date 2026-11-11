@@ -61,7 +61,7 @@ style 10 0 2 fg=#419cff bg=#202020
 style 10 2 60 fg=#dedede bg=#202020
 text 11 ""
 style 11 0 60 fg=#dedede bg=#131313
-text 12 "  日本語のテキストは二列ずつ。A flag 🇯🇵, a heart ❤️, a famil"
+text 12 "  日本語のテキストは二列ずつ。A flag 🇯🇵, a heart ❤️, a family"
 style 12 0 60 fg=#dedede bg=#131313
 text 13 "  👨‍👩‍👧, a coder 👩‍💻, an accent é and café."
 style 13 0 60 fg=#dedede bg=#131313

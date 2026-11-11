@@ -6,11 +6,11 @@
 //! the picker switch one way.
 
 use chrono::{DateTime, Local};
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::Modifier;
-use ratatui::text::{Line, Span};
+use tuiframe::Frame;
 use tuiframe::event::{KeyCode, KeyEvent};
+use tuiframe::layout::Rect;
+use tuiframe::style::Modifier;
+use tuiframe::text::{Line, Span};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;
@@ -149,8 +149,6 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ResumePicker)
 pub(crate) mod tests {
     use super::*;
     use chrono::Utc;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
     use tuiframe::event::KeyModifiers;
 
     /// Noon today. The tests open the picker then, so "2 hours ago" is
@@ -190,20 +188,9 @@ pub(crate) mod tests {
     /// The picker as a screen `width` columns wide shows it, row by row.
     pub(crate) fn screen(picker: &ResumePicker, width: u16) -> Vec<String> {
         let height = 12;
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| draw(frame, &Theme::terminal(), frame.area(), picker))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
+        crate::tui::golden::rows(width, height, |frame| {
+            draw(frame, &Theme::terminal(), frame.area(), picker)
+        })
     }
 
     fn press(picker: &mut ResumePicker, code: KeyCode) -> Outcome {

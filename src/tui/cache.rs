@@ -50,9 +50,6 @@ pub(super) mod tests {
     use std::cell::Cell;
     use std::time::Duration;
 
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
     use super::*;
     use crate::glyphs::{Symbols, tests::choose_symbols};
     use crate::remote::{Activity, CacheStatus, Question};
@@ -118,20 +115,8 @@ pub(super) mod tests {
 
     /// The screen's rows and the buffer's cells, drawn on a `width` by
     /// `height` terminal.
-    fn drawn(app: &mut App, width: u16, height: u16) -> (Vec<String>, ratatui::buffer::Buffer) {
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let rows = (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect();
-        (rows, buffer)
+    fn drawn(app: &mut App, width: u16, height: u16) -> (Vec<String>, tuiframe::buffer::Buffer) {
+        crate::tui::golden::drawn(width, height, |frame| draw(frame, app))
     }
 
     /// The status line, two rows above the input box.
@@ -145,11 +130,11 @@ pub(super) mod tests {
 
     /// Whether the timer's cells are in the warning colour (`true`) or the
     /// dim one, in the status line of `rows`.
-    fn timer_style(rows: &[String], buffer: &ratatui::buffer::Buffer) -> ratatui::style::Style {
+    fn timer_style(rows: &[String], buffer: &tuiframe::buffer::Buffer) -> tuiframe::style::Style {
         let y = rows.iter().position(|row| row == status_row(rows)).unwrap() as u16;
         let x = status_row(rows).find("cache").unwrap();
         let x = status_row(rows)[..x].chars().count() as u16;
-        buffer[(x, y)].style()
+        buffer.cell((x, y)).unwrap().style()
     }
 
     /// While the agent waits, the status line counts the cache down after

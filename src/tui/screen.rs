@@ -5,10 +5,10 @@
 //! the transcript takes the rest. The transcript is what the reader is
 //! there for. Everything else stays small.
 
-use ratatui::Frame;
-use ratatui::layout::{Position, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use tuiframe::Frame;
+use tuiframe::layout::{Position, Rect};
+use tuiframe::style::{Modifier, Style};
+use tuiframe::text::{Line, Span};
 
 use super::app::{AgentState, App, ListRow};
 use super::cache;
@@ -814,8 +814,7 @@ mod tests {
     use super::*;
     use crate::remote::{Activity, AgentStatus, Item, Kind, Question, Update, WorkerState};
     use crate::tui::app::App;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use crate::tui::golden;
     use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
 
     /// The transcript's views of the session `ARKO_SCENARIO` names, at 100
@@ -891,9 +890,9 @@ mod tests {
     }
 
     /// A colour as CSS writes it, where it's one of red, green and blue.
-    fn css(color: ratatui::style::Color) -> Option<String> {
+    fn css(color: tuiframe::style::Color) -> Option<String> {
         match color {
-            ratatui::style::Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
+            tuiframe::style::Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
             _ => None,
         }
     }
@@ -901,10 +900,8 @@ mod tests {
     /// The screen at `width` by `height`, its rows as text and as HTML in
     /// their cells' colours.
     fn screen_html(app: &mut App, width: u16, height: u16) -> (Vec<String>, Vec<String>) {
-        use ratatui::style::Modifier;
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
+        use tuiframe::style::Modifier;
+        let (_, buffer) = golden::drawn(width, height, |frame| draw(frame, app));
         let mut text = Vec::new();
         let mut html = Vec::new();
         for y in 0..height {
@@ -913,13 +910,13 @@ mod tests {
             let mut x = 0;
             while x < width {
                 let look = |x: u16| {
-                    let cell = &buffer[(x, y)];
-                    (cell.fg, cell.bg, cell.modifier)
+                    let cell = buffer.cell((x, y)).unwrap();
+                    (cell.fg(), cell.bg(), cell.modifier())
                 };
                 let (fg, bg, modifier) = look(x);
                 let mut run = String::new();
                 while x < width && look(x) == (fg, bg, modifier) {
-                    run.push_str(buffer[(x, y)].symbol());
+                    run.push_str(buffer.symbol((x, y)));
                     x += 1;
                 }
                 row.push_str(&run);
@@ -969,18 +966,7 @@ mod tests {
     }
 
     fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
+        golden::rows(width, height, |frame| draw(frame, app))
     }
 
     /// The API keys menu over an 80-column screen, and the settings' row
@@ -1122,19 +1108,12 @@ mod tests {
         for c in "Please explain the Methodology".chars() {
             app.editor.insert(c);
         }
-        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        let mut terminal = golden::terminal(30, 12);
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let row = |y: u16| {
-            (0..30)
-                .map(|x| buffer[(x, y)].symbol().to_string())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        };
-        assert_eq!(row(9), " › Please explain the");
-        assert_eq!(row(10), "   Methodology");
-        let cursor = terminal.get_cursor_position().unwrap();
+        let rows = terminal.screen().rows();
+        assert_eq!(rows[9], " › Please explain the");
+        assert_eq!(rows[10], "   Methodology");
+        let cursor = terminal.cursor().unwrap().position;
         assert_eq!((cursor.x, cursor.y), (14, 10));
     }
 
@@ -1148,19 +1127,12 @@ mod tests {
         for c in "abcdefghijklmnopqrstuvwxyz".chars() {
             app.editor.insert(c);
         }
-        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        let mut terminal = golden::terminal(30, 12);
         let mut drawn = |app: &mut App| {
             terminal.draw(|frame| draw(frame, app)).unwrap();
-            let buffer = terminal.backend().buffer().clone();
-            let row = |y: u16| {
-                (0..30)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            };
-            let cursor = terminal.get_cursor_position().unwrap();
-            (row(9), row(10), (cursor.x, cursor.y))
+            let mut rows = terminal.screen().rows();
+            let cursor = terminal.cursor().unwrap().position;
+            (rows.remove(9), rows.remove(9), (cursor.x, cursor.y))
         };
         assert_eq!(
             drawn(&mut app),
@@ -1313,20 +1285,27 @@ mod tests {
         }
         let theme = app.theme.clone();
         assert_ne!(theme.success().fg, theme.accent().fg);
-        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        let mut terminal = golden::terminal(80, 40);
         let mut look = |app: &mut App| {
-            terminal.draw(|frame| draw(frame, app)).unwrap();
-            let buffer = terminal.backend().buffer().clone();
+            let buffer = terminal
+                .draw(|frame| draw(frame, app))
+                .unwrap()
+                .buffer()
+                .clone();
             // Each agent's bullet, its colour, and whether its name is bold.
             (35..40)
                 .map(|y| {
-                    let name: String = (3..7).map(|x| buffer[(x, y)].symbol()).collect();
-                    let bullet = &buffer[(1, y)];
-                    let bold = buffer[(3, y)].modifier.contains(Modifier::BOLD);
+                    let name: String = (3..7).map(|x| buffer.symbol((x, y))).collect();
+                    let bullet = buffer.cell((1, y)).unwrap();
+                    let bold = buffer
+                        .cell((3, y))
+                        .unwrap()
+                        .modifier()
+                        .contains(Modifier::BOLD);
                     (
                         name.trim().to_string(),
                         bullet.symbol().to_string(),
-                        bullet.fg,
+                        bullet.fg(),
                         bold,
                     )
                 })
@@ -1633,22 +1612,12 @@ mod tests {
         }
     }
 
-    fn status_buffer(app: &App, width: u16) -> ratatui::buffer::Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
-        terminal
-            .draw(|frame| draw_status(frame, app, frame.area()))
-            .unwrap();
-        terminal.backend().buffer().clone()
+    fn status_buffer(app: &App, width: u16) -> tuiframe::buffer::Buffer {
+        golden::drawn(width, 1, |frame| draw_status(frame, app, frame.area())).1
     }
 
     fn bar(app: &App, width: u16) -> String {
-        status_buffer(app, width)
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>()
-            .trim_end()
-            .to_string()
+        golden::rows(width, 1, |frame| draw_status(frame, app, frame.area())).remove(0)
     }
 
     #[test]
@@ -1680,15 +1649,27 @@ mod tests {
             assert_eq!(text, " Claude 5h: 0% · 7d: 98% · ChatGPT 5h: 12% · 7d: 40%");
             let buffer = status_buffer(&app, width);
             let at = text.chars().position(|c| c == '7').unwrap() as u16;
-            assert_eq!(buffer[(at, 0)].fg, app.theme.warning().fg.unwrap());
-            assert_eq!(buffer[(8, 0)].fg, app.theme.dim().fg.unwrap());
+            assert_eq!(
+                buffer.cell((at, 0)).unwrap().fg(),
+                app.theme.warning().fg.unwrap()
+            );
+            assert_eq!(
+                buffer.cell((8, 0)).unwrap().fg(),
+                app.theme.dim().fg.unwrap()
+            );
         }
         app.reading.plans[1].windows[0].used_percent = 80.0;
         let buffer = status_buffer(&app, 80);
-        assert_eq!(buffer[(8, 0)].fg, app.theme.warning().fg.unwrap());
+        assert_eq!(
+            buffer.cell((8, 0)).unwrap().fg(),
+            app.theme.warning().fg.unwrap()
+        );
         app.reading.plans[1].windows[0].used_percent = 79.0;
         let buffer = status_buffer(&app, 80);
-        assert_eq!(buffer[(8, 0)].fg, app.theme.dim().fg.unwrap());
+        assert_eq!(
+            buffer.cell((8, 0)).unwrap().fg(),
+            app.theme.dim().fg.unwrap()
+        );
     }
 
     #[test]
@@ -1803,7 +1784,6 @@ mod tests {
 
     #[test]
     fn status_bar_goldens() {
-        use ratatui::backend::{Backend, CrosstermBackend};
         use std::path::PathBuf;
         let golden_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/status-bar");
         for case in [
@@ -1858,19 +1838,15 @@ mod tests {
                 if let Some(dir) = std::env::var_os("ARKO_STATUS_CAPTURES") {
                     let dir = PathBuf::from(dir);
                     std::fs::create_dir_all(&dir).unwrap();
-                    let file = std::fs::File::create(dir.join(format!("{name}.ansi"))).unwrap();
-                    let mut backend = CrosstermBackend::new(file);
-                    let buffer = status_buffer(&app, width);
-                    backend
-                        .draw(
-                            buffer
-                                .content
-                                .iter()
-                                .enumerate()
-                                .map(|(x, cell)| (x as u16, 0, cell)),
-                        )
+                    // The bytes of the line's cells, after a blank frame.
+                    let mut terminal = golden::terminal(width, 1);
+                    terminal.draw(|_| {}).unwrap();
+                    terminal.take_output();
+                    terminal
+                        .draw(|frame| draw_status(frame, &app, frame.area()))
                         .unwrap();
-                    backend.flush().unwrap();
+                    let path = dir.join(format!("{name}.ansi"));
+                    std::fs::write(path, terminal.take_output()).unwrap();
                 }
             }
         }
@@ -2212,26 +2188,38 @@ mod tests {
                 .starts_with(" viewing r1 · ● main asks you · ● working 1m05s · 171k/190k"),
             "{rows:#?}"
         );
-        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
+        let mut terminal = golden::terminal(100, 14);
+        let buffer = terminal
+            .draw(|frame| draw(frame, &mut app))
+            .unwrap()
+            .buffer()
+            .clone();
         let row = (0..14u16)
             .find(|y| {
                 (0..100u16)
-                    .map(|x| buffer[(x, *y)].symbol())
+                    .map(|x| buffer.symbol((x, *y)))
                     .collect::<String>()
                     .contains("viewing r1")
             })
             .unwrap();
         let at = (0..100u16)
-            .find(|x| buffer[(*x, row)].symbol() == "1" && buffer[(*x + 1, row)].symbol() == "7")
+            .find(|x| buffer.symbol((*x, row)) == "1" && buffer.symbol((*x + 1, row)) == "7")
             .unwrap();
-        assert_eq!(buffer[(at, row)].fg, app.theme.warning().fg.unwrap());
+        assert_eq!(
+            buffer.cell((at, row)).unwrap().fg(),
+            app.theme.warning().fg.unwrap()
+        );
         // Below nine tenths it isn't one.
         app.reading.agents = vec![context_of("r1", 170_000, 190_000)];
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        assert_ne!(buffer[(at, row)].fg, app.theme.warning().fg.unwrap());
+        let buffer = terminal
+            .draw(|frame| draw(frame, &mut app))
+            .unwrap()
+            .buffer()
+            .clone();
+        assert_ne!(
+            buffer.cell((at, row)).unwrap().fg(),
+            app.theme.warning().fg.unwrap()
+        );
     }
 
     /// A session on the mock model whose main agent started a worker that
@@ -3148,27 +3136,13 @@ mod tests {
             since: Some(now),
             question: None,
         });
-        // A terminal of 120 by 40 that the frames' escape codes go to, as
-        // they would to the screen, counting what changed since the last frame.
-        struct Count(std::rc::Rc<std::cell::Cell<usize>>);
-        impl std::io::Write for Count {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.set(self.0.get() + bytes.len());
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let bytes = std::rc::Rc::new(std::cell::Cell::new(0));
-        let backend = ratatui::backend::CrosstermBackend::new(Count(bytes.clone()));
-        let viewport = ratatui::Viewport::Fixed(Rect::new(0, 0, 120, 40));
-        let mut terminal =
-            Terminal::with_options(backend, ratatui::TerminalOptions { viewport }).unwrap();
+        // A terminal of 120 by 40 in memory, which reads each frame's escape
+        // codes as a terminal would (its time is in the frame's).
+        let mut terminal = golden::terminal(120, 40);
         // Draws a frame, and returns how many bytes it wrote.
         let mut frame = |app: &mut App| {
-            terminal.draw(|frame| draw(frame, app)).unwrap();
-            bytes.replace(0)
+            let drawn = terminal.draw(|frame| draw(frame, app)).unwrap();
+            drawn.stats().bytes
         };
         let mut measure = |app: &mut App, what: &str| {
             // The first frame fills the lines' caches.
@@ -3197,7 +3171,7 @@ mod tests {
             let share = (cpu() - used).as_secs_f64() / wall.elapsed().as_secs_f64();
             // Of a frame, the transcript's part.
             let area = Rect::new(0, 0, 120, 30);
-            let mut buffer = ratatui::buffer::Buffer::empty(area);
+            let mut buffer = tuiframe::buffer::Buffer::empty(area);
             let (filter, theme) = (app.filter(), app.theme.clone());
             let start = Instant::now();
             for _ in 0..300 {
@@ -3448,10 +3422,8 @@ mod tests {
             [copy("Tabs or spaces", "14 characters")]
         );
         // It is highlighted, from its first cell to its last.
-        let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let lit = |dx: u16| buffer[(x + dx, y)].bg == app.theme.selection;
+        let (_, buffer) = golden::drawn(50, 20, |frame| draw(frame, &mut app));
+        let lit = |dx: u16| buffer.cell((x + dx, y)).unwrap().bg() == app.theme.selection;
         assert!(lit(0) && lit(13) && !lit(14));
         app.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         assert_eq!(app.docked.as_ref().unwrap().selection, None);

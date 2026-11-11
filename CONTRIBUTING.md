@@ -36,7 +36,7 @@ override in `Cargo.lock`, so regenerate the lock without the override before com
 
 ## Building against a local tuiframe
 
-The full-screen view takes its event types from tuiframe, which isn't on crates.io yet. Clone
+The full-screen view draws and runs on tuiframe, which isn't on crates.io yet. Clone
 [tuiframe](https://github.com/mesa-hills-research/tuiframe) beside this repository and add this
 override to `.cargo/config.toml`, which git ignores.
 

@@ -2,8 +2,8 @@
 //! (kept in Arko's `history.txt`, in the line editor's format, so both
 //! front ends share it), and long pastes folded into chips.
 
-use ratatui::style::Style;
-use ratatui::text::Span;
+use tuiframe::style::Style;
+use tuiframe::text::Span;
 
 use super::wrap::char_width;
 pub use crate::history::History;

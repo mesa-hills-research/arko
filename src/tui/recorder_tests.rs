@@ -22,9 +22,8 @@
 
 use std::time::{Duration, Instant};
 
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
 use tuiframe::event::{KeyCode, KeyModifiers};
+use tuiframe::testing::TestTerminal;
 
 use super::app::App;
 use super::golden;
@@ -40,14 +39,14 @@ use crate::remote::{ActKind, Activity, CallStatus, ContentKind, Item, Kind, Leve
 /// A terminal that keeps its screen between frames, as the view's does, and
 /// the frames drawn on it.
 struct Recording {
-    terminal: Terminal<TestBackend>,
+    terminal: TestTerminal,
     text: String,
 }
 
 impl Recording {
     fn new(width: u16, height: u16) -> Self {
         Self {
-            terminal: Terminal::new(TestBackend::new(width, height)).unwrap(),
+            terminal: golden::terminal(width, height),
             text: String::new(),
         }
     }
@@ -55,10 +54,8 @@ impl Recording {
     /// Draws a frame at `ms` on the animations' clock and keeps it.
     fn frame(&mut self, app: &mut App, ms: u64) {
         motion::CHOSEN.set(Some(ms));
-        self.terminal
-            .draw(|frame| screen::draw(frame, app))
-            .unwrap();
-        self.text.push_str(&golden::of(self.terminal.backend()));
+        let frame = golden::frame(&mut self.terminal, |frame| screen::draw(frame, app));
+        self.text.push_str(&frame);
     }
 
     fn save(self, dir: &std::path::Path, scene: &str, frames: usize) {

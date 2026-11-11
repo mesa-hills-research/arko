@@ -7,11 +7,11 @@
 //! them, on a thread of its own ([`Worker`]), so that a wait for another
 //! change never stops the keys.
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::Modifier;
-use ratatui::text::{Line, Span};
+use tuiframe::Frame;
 use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
+use tuiframe::layout::Rect;
+use tuiframe::style::Modifier;
+use tuiframe::text::{Line, Span};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;
@@ -458,8 +458,6 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, menu: &OpenRouterMenu)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
     use std::time::{Duration, Instant};
 
     /// A key, with the change it asks for made at once (the screen has a
@@ -485,21 +483,12 @@ mod tests {
     /// The menu as an 80-column screen shows it, inside its box.
     fn screen(menu: &OpenRouterMenu) -> Vec<String> {
         let (width, height) = (80, 30);
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| draw(frame, &Theme::terminal(), frame.area(), menu))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .replace('│', " ")
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
+        crate::tui::golden::rows(width, height, |frame| {
+            draw(frame, &Theme::terminal(), frame.area(), menu)
+        })
+        .into_iter()
+        .map(|row| row.replace('│', " ").trim_end().to_string())
+        .collect()
     }
 
     fn on_row(menu: &mut OpenRouterMenu, control: Control) {
