@@ -6,11 +6,11 @@
 //! the picker switch one way.
 
 use chrono::{DateTime, Local};
-use tuiframe::Frame;
-use tuiframe::event::{KeyCode, KeyEvent};
-use tuiframe::layout::Rect;
-use tuiframe::style::Modifier;
-use tuiframe::text::{Line, Span};
+use termelon::Frame;
+use termelon::event::{KeyCode, KeyEvent};
+use termelon::layout::Rect;
+use termelon::style::Modifier;
+use termelon::text::{Line, Span};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;
@@ -149,7 +149,7 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ResumePicker)
 pub(crate) mod tests {
     use super::*;
     use chrono::Utc;
-    use tuiframe::event::KeyModifiers;
+    use termelon::event::KeyModifiers;
 
     /// Noon today. The tests open the picker then, so "2 hours ago" is
     /// the same day at any hour they run.

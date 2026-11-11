@@ -14,9 +14,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use tuiframe::caps::ColorDepth;
-use tuiframe::style::{Color, Modifier, Style};
-use tuiframe::widgets::BorderSet;
+use termelon::caps::ColorDepth;
+use termelon::style::{Color, Modifier, Style};
+use termelon::widgets::BorderSet;
 
 use crate::glyphs::{self, Symbols};
 

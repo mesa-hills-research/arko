@@ -1,11 +1,11 @@
 //! Word wrapping of styled text by display width. The view wraps each item
 //! itself, once per width, because the transcript needs every item's height
 //! to scroll without drawing it. Widths are those of grapheme clusters, as
-//! the cells take them (`tuiframe::text`), so a wrapped line fills its
+//! the cells take them (`termelon::text`), so a wrapped line fills its
 //! cells exactly.
 
-use tuiframe::style::Style;
-use tuiframe::text::{self, Span};
+use termelon::style::Style;
+use termelon::text::{self, Span};
 
 /// The display width of `c` on its own, which is 0 for marks that join the
 /// character before. (For the input box, which moves by character.)
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn styles_survive_a_break_and_wide_characters_count_twice() {
-        let bold = Style::new().add_modifier(tuiframe::style::Modifier::BOLD);
+        let bold = Style::new().add_modifier(termelon::style::Modifier::BOLD);
         let line = [Span::raw("see "), Span::styled("this word", bold)];
         let lines = wrap(&line, 8, 0);
         assert_eq!(text(&lines), ["see this", "word"]);

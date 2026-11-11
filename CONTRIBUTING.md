@@ -34,18 +34,17 @@ arko_index = { path = "../arko_framework/arko_index" }
 The checkout's crate versions must match the ones `Cargo.toml` asks for. Cargo records the
 override in `Cargo.lock`, so regenerate the lock without the override before committing.
 
-## Building against a local tuiframe
+## Building against a local termelon
 
-The full-screen view draws and runs on tuiframe, which isn't on crates.io yet. Clone
-[tuiframe](https://github.com/mesa-hills-research/tuiframe) beside this repository and add this
-override to `.cargo/config.toml`, which git ignores.
+The full-screen view draws and runs on
+[termelon](https://github.com/mesa-hills-research/termelon), which comes from its GitHub repository
+at a fixed commit until it's on crates.io. To build against a local checkout, clone it beside this
+repository and add this override to `.cargo/config.toml`, which git ignores.
 
 ```toml
-[patch.crates-io]
-tuiframe = { path = "../tuiframe/crates/tuiframe" }
+[patch."https://github.com/mesa-hills-research/termelon"]
+termelon = { path = "../termelon/crates/termelon" }
 ```
-
-`Cargo.lock` lists tuiframe without a source until it's published.
 
 ## Dictation
 

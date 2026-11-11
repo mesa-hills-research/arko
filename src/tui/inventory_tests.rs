@@ -1,4 +1,4 @@
-//! Every screen of the full-screen view, drawn on tuiframe's test terminal
+//! Every screen of the full-screen view, drawn on termelon's test terminal
 //! and compared with the goldens in `tests/screens/`, one file for each
 //! state at each size, named `STATE-WIDTHxHEIGHT.styled`. A golden holds the
 //! size, the cursor and every row's characters and styles
@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use tuiframe::testing::TestTerminal;
+use termelon::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use termelon::testing::TestTerminal;
 
 use super::app::App;
 use super::app::tests as app_tests;

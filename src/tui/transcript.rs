@@ -21,10 +21,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tuiframe::buffer::Buffer;
-use tuiframe::layout::Rect;
-use tuiframe::style::{Modifier, Style};
-use tuiframe::text::{Line, Span};
+use termelon::buffer::Buffer;
+use termelon::layout::Rect;
+use termelon::style::{Modifier, Style};
+use termelon::text::{Line, Span};
 
 use super::markdown;
 use super::motion;
@@ -401,7 +401,7 @@ impl Drawn {
     /// The block's line on the screen's row `y` (not the blank line
     /// before it).
     fn row_at(&self, x: u16, y: u16) -> Option<RowRef> {
-        if !self.area.contains(tuiframe::layout::Position { x, y }) {
+        if !self.area.contains(termelon::layout::Position { x, y }) {
             return None;
         }
         self.rows
@@ -2525,7 +2525,7 @@ fn cells(line: &Wrapped) -> Vec<(&str, usize, usize)> {
     let mut cells = Vec::new();
     let mut col = 0;
     for span in &line.spans {
-        for (c, w) in tuiframe::text::graphemes(&span.content) {
+        for (c, w) in termelon::text::graphemes(&span.content) {
             let w = usize::from(w);
             cells.push((c, col, w));
             col += w;
@@ -3576,7 +3576,7 @@ fn record_lines(
     // Settled questions need nothing more from the user, so the box is
     // drawn as quietly as an overlay's, not in the open panel's accent.
     let border = Style::new().fg(if theme.is_terminal() {
-        tuiframe::style::Color::Reset
+        termelon::style::Color::Reset
     } else {
         theme.border
     });
@@ -3663,7 +3663,7 @@ pub(super) fn cut_end(text: &str, width: usize) -> String {
     }
     let mut cut = String::new();
     let mut used = 0;
-    for (c, w) in tuiframe::text::graphemes(text) {
+    for (c, w) in termelon::text::graphemes(text) {
         let w = usize::from(w);
         if used + w + 1 > width {
             break;
@@ -3807,7 +3807,7 @@ fn fit(text: &str, room: usize) -> String {
     let ellipsis = glyphs::render("…");
     let mut fitted = String::new();
     let mut taken = text_width(&ellipsis);
-    for (c, width) in tuiframe::text::graphemes(text) {
+    for (c, width) in termelon::text::graphemes(text) {
         let width = usize::from(width);
         if taken + width > room {
             break;
@@ -3868,7 +3868,7 @@ fn worker_line(
             let room = width.saturating_sub(used);
             let mut cut = String::new();
             let mut cut_width = 0;
-            for (c, cw) in tuiframe::text::graphemes(&span.content) {
+            for (c, cw) in termelon::text::graphemes(&span.content) {
                 let cw = usize::from(cw);
                 if cut_width + cw + 1 > room {
                     break;

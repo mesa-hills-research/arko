@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use tuiframe::event::{
+use termelon::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
@@ -415,9 +415,9 @@ pub struct App {
     /// in the text it clicked.
     folded: Option<(u64, super::transcript::Point)>,
     /// Where the agent list was drawn, and its rows, for the mouse.
-    pub list_drawn: (tuiframe::layout::Rect, Vec<ListRow>),
+    pub list_drawn: (termelon::layout::Rect, Vec<ListRow>),
     /// Where the status line was drawn, which its timer redraws alone.
-    pub status_drawn: Option<tuiframe::layout::Rect>,
+    pub status_drawn: Option<termelon::layout::Rect>,
     /// How many workers the agent list is scrolled past, and the farthest
     /// it scrolls, as last drawn.
     list_scroll: (usize, usize),
@@ -2622,7 +2622,7 @@ impl App {
     /// triple click a line), and a click (no drag) opens what it is on.
     pub fn mouse(&mut self, event: MouseEvent) {
         let (x, y) = (event.column, event.row);
-        let at = tuiframe::layout::Position { x, y };
+        let at = termelon::layout::Position { x, y };
         match event.kind {
             // Over the help, the wheel scrolls it.
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -2839,7 +2839,7 @@ impl App {
     /// opens to its Quiet rows, a command's fold line opens or closes its
     /// whole output, and a worker's line opens its transcript. Elsewhere it
     /// does nothing.
-    fn click(&mut self, at: tuiframe::layout::Position) {
+    fn click(&mut self, at: termelon::layout::Position) {
         if self.overlay.is_some() {
             return;
         }
@@ -3735,7 +3735,7 @@ pub(super) mod tests {
         // A click on a row of the list (pressed and let go) shows that
         // agent, and copies nothing.
         app.list_drawn = (
-            tuiframe::layout::Rect::new(0, 20, 80, 2),
+            termelon::layout::Rect::new(0, 20, 80, 2),
             vec![ListRow::Agent(0), ListRow::Agent(1)],
         );
         click(&mut app, 5, 21);
@@ -3985,7 +3985,7 @@ pub(super) mod tests {
         // The wheel moves the list away from it, and it stays where the
         // wheel left it, until the selection moves.
         let rows = app.list_rows(7);
-        app.list_drawn = (tuiframe::layout::Rect::new(0, 30, 80, 7), rows);
+        app.list_drawn = (termelon::layout::Rect::new(0, 30, 80, 7), rows);
         for _ in 0..5 {
             app.mouse(MouseEvent::new(
                 MouseEventKind::ScrollUp,
@@ -4064,7 +4064,7 @@ pub(super) mod tests {
         assert_eq!(app.list_rows(7), bottom);
         // A click on the count above moves back to the worker before those
         // shown, and one on the count below on to the next after them.
-        let area = tuiframe::layout::Rect::new(0, 30, 80, 7);
+        let area = termelon::layout::Rect::new(0, 30, 80, 7);
         app.list_drawn = (area, app.list_rows(7));
         click(&mut app, 5, 31);
         assert_eq!(app.list_focus, Some(2));
@@ -5110,7 +5110,7 @@ pub(super) mod tests {
     /// again, as the terminal may never report the release.
     #[test]
     fn losing_the_focus_mid_drag_lets_the_view_follow() {
-        use tuiframe::{buffer::Buffer, layout::Rect};
+        use termelon::{buffer::Buffer, layout::Rect};
         let mut app = app();
         let line = |id: u64| {
             let mut item = Item::new(Kind::Output, format!("line {id}"));

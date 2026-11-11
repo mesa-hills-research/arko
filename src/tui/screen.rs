@@ -5,11 +5,11 @@
 //! the transcript takes the rest. The transcript is what the reader is
 //! there for. Everything else stays small.
 
-use tuiframe::Frame;
-use tuiframe::layout::{Position, Rect};
-use tuiframe::style::{Modifier, Style};
-use tuiframe::text::{Line, Span};
-use tuiframe::widgets::Clear;
+use termelon::Frame;
+use termelon::layout::{Position, Rect};
+use termelon::style::{Modifier, Style};
+use termelon::text::{Line, Span};
+use termelon::widgets::Clear;
 
 use super::app::{AgentState, App, ListRow};
 use super::cache;
@@ -861,7 +861,7 @@ mod tests {
     use crate::remote::{Activity, AgentStatus, Item, Kind, Question, Update, WorkerState};
     use crate::tui::app::App;
     use crate::tui::golden;
-    use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
+    use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
 
     /// The transcript's views of the session `ARKO_SCENARIO` names, at 100
     /// columns, in the folder `ARKO_RENDERINGS` names (`remote::scenario`):
@@ -936,9 +936,9 @@ mod tests {
     }
 
     /// A colour as CSS writes it, where it's one of red, green and blue.
-    fn css(color: tuiframe::style::Color) -> Option<String> {
+    fn css(color: termelon::style::Color) -> Option<String> {
         match color {
-            tuiframe::style::Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
+            termelon::style::Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
             _ => None,
         }
     }
@@ -946,7 +946,7 @@ mod tests {
     /// The screen at `width` by `height`, its rows as text and as HTML in
     /// their cells' colours.
     fn screen_html(app: &mut App, width: u16, height: u16) -> (Vec<String>, Vec<String>) {
-        use tuiframe::style::Modifier;
+        use termelon::style::Modifier;
         let (_, buffer) = golden::drawn(width, height, |frame| draw(frame, app));
         let mut text = Vec::new();
         let mut html = Vec::new();
@@ -1658,7 +1658,7 @@ mod tests {
         }
     }
 
-    fn status_buffer(app: &App, width: u16) -> tuiframe::buffer::Buffer {
+    fn status_buffer(app: &App, width: u16) -> termelon::buffer::Buffer {
         golden::drawn(width, 1, |frame| draw_status(frame, app, frame.area())).1
     }
 
@@ -2680,7 +2680,7 @@ mod tests {
     /// on a line of its own words.
     #[test]
     fn quiet_rows_merge_calls_and_a_click_opens_one() {
-        use tuiframe::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         app.set_view(crate::tui::transcript::View::Quiet);
         quiet_calls(&mut app);
@@ -2726,7 +2726,7 @@ mod tests {
     #[test]
     fn opening_a_tall_quiet_row_keeps_its_line_in_place() {
         use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Update};
-        use tuiframe::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         app.set_view(crate::tui::transcript::View::Quiet);
         let mut user = Item::new(Kind::User, "Edit it");
@@ -2770,7 +2770,7 @@ mod tests {
     #[test]
     fn a_commands_output_opens_inside_a_quiet_row() {
         use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Update};
-        use tuiframe::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         app.set_view(crate::tui::transcript::View::Quiet);
         let mut user = Item::new(Kind::User, "List it");
@@ -2900,7 +2900,7 @@ mod tests {
     #[test]
     fn a_click_on_an_open_cards_line_opens_the_panel() {
         use crate::remote::{Item, Kind, Update};
-        use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+        use termelon::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
         let mut app = app();
         let questions = crate::tui::app::tests::asking().questions;
         let mut card = Item::new(Kind::Question, "Arko asked 2 questions");
@@ -3191,7 +3191,7 @@ mod tests {
         let mut frame = |app: &mut App, alone: bool| {
             if alone && let Some(regions) = moving(app) {
                 let drawn = terminal.draw_regions(&regions, |frame| draw_moving(frame, app));
-                if let tuiframe::Drawn::Written(drawn) = drawn.unwrap() {
+                if let termelon::Drawn::Written(drawn) = drawn.unwrap() {
                     return drawn.stats().bytes;
                 }
             }
@@ -3235,7 +3235,7 @@ mod tests {
             let after = at_ten(|tick| tick % 5 == 0);
             // Of a whole frame, the transcript's part.
             let area = Rect::new(0, 0, 120, 30);
-            let mut buffer = tuiframe::buffer::Buffer::empty(area);
+            let mut buffer = termelon::buffer::Buffer::empty(area);
             let (filter, theme) = (app.filter(), app.theme.clone());
             let start = Instant::now();
             for _ in 0..300 {
@@ -3333,7 +3333,7 @@ mod tests {
                 let drawn = terminal
                     .draw_regions(&regions, |frame| draw_moving(frame, &app))
                     .unwrap();
-                let tuiframe::Drawn::Written(drawn) = drawn else {
+                let termelon::Drawn::Written(drawn) = drawn else {
                     panic!("{drawn:?}");
                 };
                 let alone = drawn.buffer().clone();
@@ -3446,8 +3446,8 @@ mod tests {
         );
     }
 
-    fn mouse(app: &mut App, kind: tuiframe::event::MouseEventKind, x: u16, y: u16) {
-        app.mouse(tuiframe::event::MouseEvent::new(
+    fn mouse(app: &mut App, kind: termelon::event::MouseEventKind, x: u16, y: u16) {
+        app.mouse(termelon::event::MouseEvent::new(
             kind,
             x,
             y,
@@ -3460,7 +3460,7 @@ mod tests {
     #[test]
     fn a_drag_copies_and_a_click_does_not() {
         use crate::tui::app::Effect;
-        use tuiframe::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let mut item = Item::new(Kind::Reply, "Hello there, reader.");
         item.id = 1;
@@ -3522,7 +3522,7 @@ mod tests {
     #[test]
     fn the_answer_panels_text_selects_and_copies() {
         use crate::tui::app::Effect;
-        use tuiframe::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let text = "Tabs or spaces for the **new** files? The old ones use tabs, so I'd keep them.";
         app.set_reading(crate::remote::Reading {
@@ -3597,7 +3597,7 @@ mod tests {
     fn a_settled_ask_is_a_boxed_record_in_the_transcript() {
         use crate::questions::QuestionState;
         use crate::tui::app::Effect;
-        use tuiframe::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let reading = crate::tui::app::tests::asking();
         let mut card = Item::new(Kind::Question, "Arko asked 2 questions");
@@ -3669,7 +3669,7 @@ mod tests {
     #[test]
     fn a_click_on_a_thinkings_label_or_text_folds_it() {
         use crate::tui::app::Effect;
-        use tuiframe::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         for (id, kind, text) in [
             (1, Kind::Thinking, "Read the parser first.\nThen the tests."),
@@ -3721,7 +3721,7 @@ mod tests {
     fn a_click_opens_and_closes_a_commands_output() {
         use crate::remote::CallStatus;
         use crate::tui::app::Effect;
-        use tuiframe::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let mut call = Item::new(Kind::Call, "$ seq 10");
         call.status = Some(CallStatus::Ok);

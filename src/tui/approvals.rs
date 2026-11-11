@@ -12,12 +12,12 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use tuiframe::Frame;
-use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
-use tuiframe::layout::Rect;
-use tuiframe::style::{Modifier, Style};
-use tuiframe::text::{Line, Span};
-use tuiframe::widgets::Clear;
+use termelon::Frame;
+use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
+use termelon::layout::Rect;
+use termelon::style::{Modifier, Style};
+use termelon::text::{Line, Span};
+use termelon::widgets::Clear;
 
 use super::app::{AgentState, App, Effect};
 use super::markdown;

@@ -6,7 +6,7 @@
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use tuiframe::buffer::Buffer;
+use termelon::buffer::Buffer;
 
 use super::theme::Theme;
 use crate::glyphs;
@@ -106,9 +106,9 @@ mod tests {
     #[test]
     fn a_frame_paints_the_spinner_and_the_highlight() {
         use crate::tui::theme::{Catalog, DEFAULT, Depth};
-        use tuiframe::layout::Rect;
-        use tuiframe::style::Color;
-        use tuiframe::text::Line;
+        use termelon::layout::Rect;
+        use termelon::style::Color;
+        use termelon::text::Line;
         let theme = Catalog::load(None).theme(DEFAULT, Depth::Rgb);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 1));
         let line = Line::styled("  Working… and more", theme.dim());

@@ -1,5 +1,5 @@
 //! Copying, to the system clipboard and through the terminal (OSC 52,
-//! tuiframe's `copy_to_clipboard`, which reaches the user's clipboard over
+//! termelon's `copy_to_clipboard`, which reaches the user's clipboard over
 //! SSH where the terminal honours it, but GNOME Terminal doesn't).
 //!
 //! The system clipboard is arboard's, which is the X11 clipboard, Wayland's where

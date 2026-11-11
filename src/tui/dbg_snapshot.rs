@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
 use serde::Serialize;
-use tuiframe::buffer::Buffer;
-use tuiframe::{CompletedFrame, CursorShape};
+use termelon::buffer::Buffer;
+use termelon::{CompletedFrame, CursorShape};
 
 use super::app::{App, Effect};
 use super::overlay::Overlay;
@@ -21,13 +21,13 @@ use crate::remote::Level;
 pub struct Drawn {
     pub buffer: Buffer,
     /// Where the frame put the cursor, `None` when it hid it.
-    pub cursor: Option<tuiframe::Cursor>,
+    pub cursor: Option<termelon::Cursor>,
 }
 
 impl Default for Drawn {
     fn default() -> Self {
         Self {
-            buffer: Buffer::empty(tuiframe::Rect::ZERO),
+            buffer: Buffer::empty(termelon::Rect::ZERO),
             cursor: None,
         }
     }
@@ -112,7 +112,7 @@ pub struct ScreenCursor {
 }
 
 impl ScreenCursor {
-    fn of(cursor: Option<tuiframe::Cursor>) -> Self {
+    fn of(cursor: Option<termelon::Cursor>) -> Self {
         Self {
             visible: cursor.is_some(),
             column: cursor.map(|cursor| cursor.position.x),
@@ -343,10 +343,10 @@ fn link_latest(snapshots: &Path, name: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::tui::app::tests::app;
-    use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
-    use tuiframe::layout::Rect;
-    use tuiframe::style::Style;
-    use tuiframe::testing::TestTerminal;
+    use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
+    use termelon::layout::Rect;
+    use termelon::style::Style;
+    use termelon::testing::TestTerminal;
 
     /// Draws a frame of `app` and keeps it, as the view's loop does.
     fn draw(terminal: &mut TestTerminal, app: &mut App) {

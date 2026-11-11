@@ -4,11 +4,11 @@
 //! tried, and says under each what it needs that is missing now. Space
 //! turns a way on or off, Shift+↑ and Shift+↓ move it, and Enter saves.
 
-use tuiframe::Frame;
-use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
-use tuiframe::layout::Rect;
-use tuiframe::style::Modifier;
-use tuiframe::text::{Line, Span};
+use termelon::Frame;
+use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
+use termelon::layout::Rect;
+use termelon::style::Modifier;
+use termelon::text::{Line, Span};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;

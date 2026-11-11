@@ -1,6 +1,6 @@
 //! The view's dictation flows, with the service's events given by hand.
 
-use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
+use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
 use crate::dictation::models::GRANITE;

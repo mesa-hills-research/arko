@@ -115,7 +115,7 @@ pub(super) mod tests {
 
     /// The screen's rows and the buffer's cells, drawn on a `width` by
     /// `height` terminal.
-    fn drawn(app: &mut App, width: u16, height: u16) -> (Vec<String>, tuiframe::buffer::Buffer) {
+    fn drawn(app: &mut App, width: u16, height: u16) -> (Vec<String>, termelon::buffer::Buffer) {
         crate::tui::golden::drawn(width, height, |frame| draw(frame, app))
     }
 
@@ -130,7 +130,7 @@ pub(super) mod tests {
 
     /// Whether the timer's cells are in the warning colour (`true`) or the
     /// dim one, in the status line of `rows`.
-    fn timer_style(rows: &[String], buffer: &tuiframe::buffer::Buffer) -> tuiframe::style::Style {
+    fn timer_style(rows: &[String], buffer: &termelon::buffer::Buffer) -> termelon::style::Style {
         let y = rows.iter().position(|row| row == status_row(rows)).unwrap() as u16;
         let x = status_row(rows).find("cache").unwrap();
         let x = status_row(rows)[..x].chars().count() as u16;

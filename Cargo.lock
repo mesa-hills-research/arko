@@ -204,8 +204,8 @@ dependencies = [
  "subtle",
  "telmo",
  "tempfile",
+ "termelon",
  "tokio",
- "tuiframe",
  "unicode-segmentation",
  "unicode-width",
  "uuid",
@@ -3927,6 +3927,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "termelon"
+version = "0.1.0"
+source = "git+https://github.com/mesa-hills-research/termelon?rev=5037d016f1b4087388d646fcd20489e929a620f1#5037d016f1b4087388d646fcd20489e929a620f1"
+dependencies = [
+ "rustix",
+ "signal-hook",
+ "termelon-vt",
+ "unicode-segmentation",
+ "unicode-width",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "termelon-vt"
+version = "0.1.0"
+source = "git+https://github.com/mesa-hills-research/termelon?rev=5037d016f1b4087388d646fcd20489e929a620f1#5037d016f1b4087388d646fcd20489e929a620f1"
+dependencies = [
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4211,26 +4233,6 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
-
-[[package]]
-name = "tuiframe"
-version = "0.1.0"
-dependencies = [
- "rustix",
- "signal-hook",
- "tuiframe-vt",
- "unicode-segmentation",
- "unicode-width",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "tuiframe-vt"
-version = "0.1.0"
-dependencies = [
- "unicode-segmentation",
- "unicode-width",
-]
 
 [[package]]
 name = "typed-path"

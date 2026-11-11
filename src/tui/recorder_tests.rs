@@ -22,8 +22,8 @@
 
 use std::time::{Duration, Instant};
 
-use tuiframe::event::{KeyCode, KeyModifiers};
-use tuiframe::testing::TestTerminal;
+use termelon::event::{KeyCode, KeyModifiers};
+use termelon::testing::TestTerminal;
 
 use super::app::App;
 use super::golden;

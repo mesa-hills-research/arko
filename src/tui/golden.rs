@@ -26,11 +26,11 @@
 
 use std::fmt::Write;
 
-use tuiframe::buffer::{Buffer, CellRef};
-use tuiframe::layout::Position;
-use tuiframe::style::{Color, Modifier};
+use termelon::buffer::{Buffer, CellRef};
+use termelon::layout::Position;
+use termelon::style::{Color, Modifier};
 #[cfg(test)]
-use tuiframe::{Frame, caps::ColorDepth, testing::TestTerminal};
+use termelon::{Frame, caps::ColorDepth, testing::TestTerminal};
 
 /// A terminal in memory for the view's tests, `width` by `height` cells,
 /// which shows 24-bit colour as the view's themes paint.
@@ -188,8 +188,8 @@ fn colour(color: Color) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tuiframe::layout::Rect;
-    use tuiframe::style::Style;
+    use termelon::layout::Rect;
+    use termelon::style::Style;
 
     /// Escapes, wide characters, runs, trailing cells with a background, every
     /// attribute in its place and the cursor.

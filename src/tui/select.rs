@@ -3,8 +3,8 @@
 //! highlights it and copies it when the button is let go, a double click
 //! takes a word, and a triple click a line.
 
-use tuiframe::buffer::Buffer;
-use tuiframe::layout::{Position, Rect};
+use termelon::buffer::Buffer;
+use termelon::layout::{Position, Rect};
 
 use super::theme::Theme;
 use super::transcript::{Range, copied, highlight, selected_columns, text_line, word_columns};

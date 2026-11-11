@@ -1,14 +1,14 @@
-# While the full screen has the terminal, only tuiframe's writer writes to
+# While the full screen has the terminal, only termelon's writer writes to
 # it. These are denied in src/tui outside its tests, and allowed elsewhere.
 # A few are needed before the view has the terminal, where they say why.
 disallowed-methods = [
-    { path = "std::io::stdout", reason = "the full screen writes through tuiframe's writer" },
-    { path = "std::io::stderr", reason = "the full screen writes through tuiframe's writer" },
+    { path = "std::io::stdout", reason = "the full screen writes through termelon's writer" },
+    { path = "std::io::stderr", reason = "the full screen writes through termelon's writer" },
 ]
 disallowed-macros = [
-    { path = "std::print", reason = "the full screen writes through tuiframe's writer" },
-    { path = "std::println", reason = "the full screen writes through tuiframe's writer" },
-    { path = "std::eprint", reason = "the full screen writes through tuiframe's writer" },
-    { path = "std::eprintln", reason = "the full screen writes through tuiframe's writer" },
-    { path = "std::dbg", reason = "the full screen writes through tuiframe's writer" },
+    { path = "std::print", reason = "the full screen writes through termelon's writer" },
+    { path = "std::println", reason = "the full screen writes through termelon's writer" },
+    { path = "std::eprint", reason = "the full screen writes through termelon's writer" },
+    { path = "std::eprintln", reason = "the full screen writes through termelon's writer" },
+    { path = "std::dbg", reason = "the full screen writes through termelon's writer" },
 ]

@@ -11,10 +11,10 @@
 //! What is unusual shows, not what is normal. The keys are those of
 //! chat apps, pagers and readline.
 //!
-//! tuiframe has the terminal while the view runs. Its threads read and
+//! termelon has the terminal while the view runs. Its threads read and
 //! write it, and its writer sends the terminal everything.
 
-// While it has the terminal, only tuiframe's writer writes to it (clippy.toml).
+// While it has the terminal, only termelon's writer writes to it (clippy.toml).
 #![cfg_attr(not(test), deny(clippy::disallowed_methods, clippy::disallowed_macros))]
 
 mod app;
@@ -55,9 +55,9 @@ use std::time::{Duration, Instant};
 
 use futures_util::FutureExt;
 use tokio::sync::{mpsc, oneshot};
-use tuiframe::caps::KeyboardSupport;
-use tuiframe::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use tuiframe::{Drawn, MouseMode, Options, RestoreHandle, Terminal};
+use termelon::caps::KeyboardSupport;
+use termelon::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use termelon::{Drawn, MouseMode, Options, RestoreHandle, Terminal};
 
 use crate::glyphs;
 use crate::remote;
@@ -136,7 +136,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
         Err(error) => {
             // (The classic Windows console without escape codes takes the
             // line prompt without a word, as it always has.)
-            if !matches!(error, tuiframe::Error::NoVirtualTerminal) {
+            if !matches!(error, termelon::Error::NoVirtualTerminal) {
                 say_it_didnt_start(&error);
             }
             if let Some(printer) = ui::spawn_input(
@@ -214,7 +214,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
 /// Says why the full screen didn't start, on standard error, once the
 /// terminal is as it was.
 #[allow(clippy::disallowed_macros, reason = "the terminal is as it was")]
-fn say_it_didnt_start(error: &tuiframe::Error) {
+fn say_it_didnt_start(error: &termelon::Error) {
     let why = match std::error::Error::source(error) {
         Some(source) => format!("{error}: {source}"),
         None => error.to_string(),
@@ -230,7 +230,7 @@ fn say_its_thread_didnt_start(error: &std::io::Error) {
 }
 
 /// Whether the terminal tells Shift+Enter from Enter, as it does with the
-/// first flag of the kitty keyboard protocol, which tuiframe asks for, and
+/// first flag of the kitty keyboard protocol, which termelon asks for, and
 /// as Windows' console does, whose key records carry Shift with Enter.
 fn shift_enter(keyboard: KeyboardSupport) -> bool {
     matches!(keyboard, KeyboardSupport::Kitty { flags } if flags & 1 != 0) || cfg!(windows)
@@ -286,9 +286,9 @@ impl Screen {
 /// mouse (buttons, the wheel and drags, not every motion, which would wake
 /// the view at every move), pastes and focus reported, and Shift+Enter told
 /// apart from Enter where the terminal can (the kitty keyboard protocol).
-/// From then on tuiframe's writer sends it everything. When it fails, the
+/// From then on termelon's writer sends it everything. When it fails, the
 /// terminal is as it was.
-fn open() -> tuiframe::Result<Terminal> {
+fn open() -> termelon::Result<Terminal> {
     install_panic_hook();
     // (The view's own hook gives the terminal back, by its rules.)
     let terminal = Terminal::open(Options::default().panic_hook(false))?;
@@ -306,7 +306,7 @@ fn install_panic_hook() {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let opening = OPENING.with(std::cell::Cell::get);
-            let writer = tuiframe::is_writer_thread();
+            let writer = termelon::is_writer_thread();
             if !gives_back(std::thread::current().name(), opening, writer) {
                 log::error!("{info}");
                 return;
@@ -320,7 +320,7 @@ fn install_panic_hook() {
 /// Whether a panic on the thread named `thread` ends the view, so that it
 /// gives the terminal back. The view's thread's, the main thread's (whose
 /// panic ends the process), the thread opening the view while it does
-/// (`opening`), and tuiframe's writer's (`writer`), which can't give the
+/// (`opening`), and termelon's writer's (`writer`), which can't give the
 /// terminal back itself. A session's task, whose panic tokio catches, or
 /// dictation's thread, which recovers from its own, leave the view as it is.
 fn gives_back(thread: Option<&str>, opening: bool, writer: bool) -> bool {
@@ -365,7 +365,7 @@ pub(crate) fn give_back_terminal() {
 
 /// Gives the terminal back now, for a process that ends at once (a panic,
 /// a signal, a runtime that is stuck), waiting at most `wait` for it to
-/// take the reset. tuiframe stops its writer and writes the reset from a
+/// take the reset. termelon stops its writer and writes the reset from a
 /// thread of its own, once however many ends ask, and puts the terminal's
 /// modes back. It does nothing when no view had the terminal.
 pub(crate) fn give_back_terminal_at_once(wait: Duration) {
@@ -377,7 +377,7 @@ pub(crate) fn give_back_terminal_at_once(wait: Duration) {
 
 /// Takes the terminal as the view does, for a test of how it's given back.
 #[cfg(all(test, target_os = "linux"))]
-pub(crate) fn take_terminal() -> tuiframe::Result<impl Sized> {
+pub(crate) fn take_terminal() -> termelon::Result<impl Sized> {
     open()
 }
 
@@ -960,7 +960,7 @@ fn handle(
             }
             Event::FocusGained => app.focus_changed(true),
             Event::FocusLost => app.focus_changed(false),
-            // (tuiframe draws the next frame whole.)
+            // (termelon draws the next frame whole.)
             Event::Resize(..) | Event::Resumed => {}
             // (Arko doesn't ask for colour scheme reports.)
             _ => {}
@@ -1031,7 +1031,7 @@ fn draw_moving(terminal: &mut Terminal, app: &mut App, title: &mut String) -> bo
 /// The lines a buffer shows, one per row at its full width, as the terminal
 /// shows them (the cells a wide character covers are empty).
 #[cfg(any(test, feature = "dbg-snapshot"))]
-fn buffer_lines(buffer: &tuiframe::Buffer) -> Vec<String> {
+fn buffer_lines(buffer: &termelon::Buffer) -> Vec<String> {
     let area = buffer.area();
     (area.top()..area.bottom())
         .map(|y| {
@@ -1045,7 +1045,7 @@ fn buffer_lines(buffer: &tuiframe::Buffer) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tuiframe::event::{MouseEvent, MouseEventKind};
+    use termelon::event::{MouseEvent, MouseEventKind};
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
@@ -1139,7 +1139,7 @@ mod tests {
         ] {
             assert!(!gives_back(other, false, false), "{other:?}");
         }
-        assert!(!tuiframe::is_writer_thread());
+        assert!(!termelon::is_writer_thread());
         // The names the threads have, and what opening says.
         let dictation = std::thread::Builder::new()
             .name("arko-dictation".into())

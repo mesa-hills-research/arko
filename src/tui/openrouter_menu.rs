@@ -7,11 +7,11 @@
 //! them, on a thread of its own ([`Worker`]), so that a wait for another
 //! change never stops the keys.
 
-use tuiframe::Frame;
-use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
-use tuiframe::layout::Rect;
-use tuiframe::style::Modifier;
-use tuiframe::text::{Line, Span};
+use termelon::Frame;
+use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
+use termelon::layout::Rect;
+use termelon::style::Modifier;
+use termelon::text::{Line, Span};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;

@@ -3,8 +3,8 @@
 //! isn't markdown (a table, an unclosed marker in text that is still
 //! streaming) is drawn as it is.
 
-use tuiframe::style::{Modifier, Style};
-use tuiframe::text::Span;
+use termelon::style::{Modifier, Style};
+use termelon::text::Span;
 
 use super::theme::Theme;
 use super::wrap::{self, Wrapped, width as text_width};

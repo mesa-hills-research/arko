@@ -5,11 +5,11 @@
 
 use std::time::Instant;
 
-use tuiframe::Frame;
-use tuiframe::layout::Rect;
-use tuiframe::style::{Color, Modifier, Style};
-use tuiframe::text::{Line, Span};
-use tuiframe::widgets::{Block, Borders, Clear};
+use termelon::Frame;
+use termelon::layout::Rect;
+use termelon::style::{Color, Modifier, Style};
+use termelon::text::{Line, Span};
+use termelon::widgets::{Block, Borders, Clear};
 
 use super::app::App;
 use super::theme::{Depth, Theme};
