@@ -6,11 +6,11 @@
 //! removes a key Arko saved. A key never reaches the input box, its history or the clipboard, because
 //! the menu keeps it as a [`Secret`] until it goes to the session.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
+use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;

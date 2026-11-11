@@ -7,11 +7,11 @@
 //! them, on a thread of its own ([`Worker`]), so that a wait for another
 //! change never stops the keys.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
+use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;

@@ -12,12 +12,12 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Clear;
+use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::{AgentState, App, Effect};
 use super::markdown;

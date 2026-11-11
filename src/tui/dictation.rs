@@ -10,7 +10,7 @@
 //! carries out, and the service's events come back on the view's own
 //! channel ([`App::dictation_event`]).
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::{App, Effect};
 use super::overlay::Overlay;

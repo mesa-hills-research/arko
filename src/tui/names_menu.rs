@@ -4,11 +4,11 @@
 //! tried, and says under each what it needs that is missing now. Space
 //! turns a way on or off, Shift+↑ and Shift+↓ move it, and Enter saves.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
+use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;

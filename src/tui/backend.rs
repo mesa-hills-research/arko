@@ -153,12 +153,12 @@ mod tests {
     use crate::tui::overlay::Overlay;
     use crate::tui::screen;
     use crate::tui::transcript::View;
-    use crossterm::event::{
-        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-    };
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::{Terminal, TerminalOptions, Viewport};
+    use tuiframe::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
 
     /// What a terminal is sent, shared with the test that reads it.
     #[derive(Clone, Default)]
@@ -450,12 +450,7 @@ mod tests {
     }
 
     fn mouse(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
-        app.mouse(MouseEvent {
-            kind,
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        });
+        app.mouse(MouseEvent::new(kind, column, row, KeyModifiers::NONE));
     }
 
     /// While the agent works, the screen is drawn again and again, and the

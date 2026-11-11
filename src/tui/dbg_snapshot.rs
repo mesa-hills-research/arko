@@ -274,11 +274,11 @@ fn link_latest(snapshots: &Path, name: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::tui::app::tests::app;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal as Screen;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::style::Style;
+    use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
 
     /// Draws a frame of `app` and keeps it, as the view's loop does.
     fn draw(terminal: &mut Screen<TestBackend>, app: &mut App) {

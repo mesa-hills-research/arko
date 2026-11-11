@@ -11,11 +11,11 @@
 //! picker change models one way.
 
 pub use crate::models::{menu, names, needs};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
+use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;

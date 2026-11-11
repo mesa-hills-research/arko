@@ -30,7 +30,7 @@ required-features = ["tui"]
 default = ["tui", "remote"]
 # The command line and the terminal's front ends (the full-screen view, the
 # line prompt, the setup screen). An app that drives sessions builds without it.
-tui = ["dep:arboard", "dep:clap", "dep:crossterm", "dep:ratatui", "dep:rustyline", "dep:signal-hook", "dep:windows-sys"]
+tui = ["dep:arboard", "dep:clap", "dep:crossterm", "dep:ratatui", "dep:rustyline", "dep:signal-hook", "dep:tuiframe", "dep:windows-sys"]
 # The web page's server (--remote, /remote). Without it, a session says
 # this build has no web page.
 remote = [
@@ -126,6 +126,9 @@ sha2 = "0.10.9"
 speech = { package = "telmo", version = "0.3", default-features = false, optional = true }
 subtle = "2.6.1"
 tokio = { version = "1.37.0", features = ["full"] }
+# A terminal UI framework in pure Rust that replaces crossterm and ratatui. The
+# full-screen view takes its event types, and crossterm still reads the terminal.
+tuiframe = { version = "0.1.0", optional = true }
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2.0"
 uuid = { version = "1.8.0", features = ["v4"] }

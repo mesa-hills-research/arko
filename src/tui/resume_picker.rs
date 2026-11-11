@@ -6,11 +6,11 @@
 //! the picker switch one way.
 
 use chrono::{DateTime, Local};
-use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
+use tuiframe::event::{KeyCode, KeyEvent};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;
@@ -149,9 +149,9 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, picker: &ResumePicker)
 pub(crate) mod tests {
     use super::*;
     use chrono::Utc;
-    use crossterm::event::KeyModifiers;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use tuiframe::event::KeyModifiers;
 
     /// Noon today. The tests open the picker then, so "2 hours ago" is
     /// the same day at any hour they run.

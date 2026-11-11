@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use super::app::App;
 use super::app::tests as app_tests;
@@ -538,12 +538,7 @@ fn type_text(app: &mut App, text: &str) {
 }
 
 fn mouse(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
-    app.mouse(MouseEvent {
-        kind,
-        column,
-        row,
-        modifiers: KeyModifiers::NONE,
-    });
+    app.mouse(MouseEvent::new(kind, column, row, KeyModifiers::NONE));
 }
 
 // ----- items -----

@@ -5,12 +5,12 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear};
+use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::app::{App, Effect};
 use super::input::{Editor, History};

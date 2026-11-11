@@ -22,9 +22,9 @@
 
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use tuiframe::event::{KeyCode, KeyModifiers};
 
 use super::app::App;
 use super::golden;

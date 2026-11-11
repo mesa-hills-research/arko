@@ -19,6 +19,7 @@ mod approvals;
 mod backend;
 mod cache;
 mod clipboard;
+mod crossterm_events;
 #[cfg(feature = "dbg-snapshot")]
 mod dbg_snapshot;
 mod dictation;
@@ -54,8 +55,8 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    EnableFocusChange, EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{
     BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
@@ -64,6 +65,7 @@ use crossterm::{Command, cursor, execute, queue};
 use futures_util::{FutureExt, StreamExt};
 use ratatui::Terminal;
 use tokio::sync::{mpsc, oneshot};
+use tuiframe::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::glyphs;
 use crate::remote;
@@ -762,7 +764,7 @@ async fn run(
                 };
                 watchdog.stage("taking keys");
                 // What came together comes as one batch.
-                let mut batch = vec![event];
+                let mut batch: Vec<Event> = crossterm_events::convert(event).into_iter().collect();
                 batch.extend(waiting(&mut events).await);
                 handle(&mut app, batch, &mut enter, &mut burst);
                 draw_now = true;
@@ -1117,7 +1119,7 @@ fn asks(update: &remote::Update) -> bool {
 async fn waiting(events: &mut EventStream) -> Vec<Event> {
     let mut batch = Vec::new();
     while let Ok(Some(Ok(event))) = tokio::time::timeout(Duration::ZERO, events.next()).await {
-        batch.push(event);
+        batch.extend(crossterm_events::convert(event));
     }
     batch
 }
@@ -1181,7 +1183,9 @@ fn handle(
             }
             Event::FocusGained => app.focus_changed(true),
             Event::FocusLost => app.focus_changed(false),
-            Event::Resize(..) => app.resized = true,
+            Event::Resize(..) | Event::Resumed => app.resized = true,
+            // (Arko doesn't ask for colour scheme reports.)
+            _ => {}
         }
     }
     if pasting && let Some(burst) = burst {
@@ -1258,15 +1262,10 @@ fn buffer_lines(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEventState, MouseEvent};
+    use tuiframe::event::{MouseEvent, MouseEventKind};
 
     fn key(code: KeyCode) -> Event {
-        Event::Key(KeyEvent {
-            code,
-            modifiers: KeyModifiers::NONE,
-            kind: KeyEventKind::Press,
-            state: KeyEventState::NONE,
-        })
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
     #[test]
@@ -1327,12 +1326,12 @@ mod tests {
         assert!(enter.is_some());
         handle(
             &mut app,
-            vec![Event::Mouse(MouseEvent {
-                kind: crossterm::event::MouseEventKind::Moved,
-                column: 0,
-                row: 0,
-                modifiers: KeyModifiers::NONE,
-            })],
+            vec![Event::Mouse(MouseEvent::new(
+                MouseEventKind::Moved,
+                0,
+                0,
+                KeyModifiers::NONE,
+            ))],
             &mut enter,
             &mut burst,
         );
@@ -1942,7 +1941,7 @@ mod tests {
             terminal.backend_mut().size = Some(Size::new(width, height));
             handle(
                 &mut app,
-                vec![Event::Resize(width, height)],
+                vec![Event::Resize(tuiframe::Size::new(width, height))],
                 &mut enter,
                 &mut burst,
             );

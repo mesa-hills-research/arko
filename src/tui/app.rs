@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
+use tuiframe::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
@@ -3849,12 +3849,7 @@ pub(super) mod tests {
             MouseEventKind::Down(MouseButton::Left),
             MouseEventKind::Up(MouseButton::Left),
         ] {
-            app.mouse(MouseEvent {
-                kind,
-                column: x,
-                row: y,
-                modifiers: KeyModifiers::NONE,
-            });
+            app.mouse(MouseEvent::new(kind, x, y, KeyModifiers::NONE));
         }
     }
 
@@ -3994,12 +3989,12 @@ pub(super) mod tests {
         let rows = app.list_rows(7);
         app.list_drawn = (ratatui::layout::Rect::new(0, 30, 80, 7), rows);
         for _ in 0..5 {
-            app.mouse(MouseEvent {
-                kind: MouseEventKind::ScrollUp,
-                column: 5,
-                row: 32,
-                modifiers: KeyModifiers::NONE,
-            });
+            app.mouse(MouseEvent::new(
+                MouseEventKind::ScrollUp,
+                5,
+                32,
+                KeyModifiers::NONE,
+            ));
         }
         assert!(!app.list_rows(7).contains(&ListRow::Agent(6)));
         add(&mut app, 8);
@@ -4093,14 +4088,8 @@ pub(super) mod tests {
         assert_eq!(app.watching, None);
         assert_eq!(app.list_rows(7), bottom);
         // The wheel over the list scrolls it, as far as it goes.
-        let wheel = |app: &mut App, kind| {
-            app.mouse(MouseEvent {
-                kind,
-                column: 5,
-                row: 32,
-                modifiers: KeyModifiers::NONE,
-            })
-        };
+        let wheel =
+            |app: &mut App, kind| app.mouse(MouseEvent::new(kind, 5, 32, KeyModifiers::NONE));
         app.list_drawn = (area, app.list_rows(7));
         for _ in 0..3 {
             wheel(&mut app, MouseEventKind::ScrollUp);
@@ -5150,12 +5139,12 @@ pub(super) mod tests {
                 .collect()
         };
         rows(&mut app);
-        app.mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 3,
-            row: 1,
-            modifiers: KeyModifiers::NONE,
-        });
+        app.mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            3,
+            1,
+            KeyModifiers::NONE,
+        ));
         app.focus_changed(false);
         rows(&mut app);
         app.transcript.apply(crate::remote::Update::Item(line(6)));

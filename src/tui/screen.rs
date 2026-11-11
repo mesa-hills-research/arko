@@ -814,9 +814,9 @@ mod tests {
     use super::*;
     use crate::remote::{Activity, AgentStatus, Item, Kind, Question, Update, WorkerState};
     use crate::tui::app::App;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
 
     /// The transcript's views of the session `ARKO_SCENARIO` names, at 100
     /// columns, in the folder `ARKO_RENDERINGS` names (`remote::scenario`):
@@ -2646,7 +2646,7 @@ mod tests {
     /// on a line of its own words.
     #[test]
     fn quiet_rows_merge_calls_and_a_click_opens_one() {
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use tuiframe::event::{MouseButton, MouseEventKind};
         let mut app = app();
         app.set_view(crate::tui::transcript::View::Quiet);
         quiet_calls(&mut app);
@@ -2692,7 +2692,7 @@ mod tests {
     #[test]
     fn opening_a_tall_quiet_row_keeps_its_line_in_place() {
         use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Update};
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use tuiframe::event::{MouseButton, MouseEventKind};
         let mut app = app();
         app.set_view(crate::tui::transcript::View::Quiet);
         let mut user = Item::new(Kind::User, "Edit it");
@@ -2736,7 +2736,7 @@ mod tests {
     #[test]
     fn a_commands_output_opens_inside_a_quiet_row() {
         use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Update};
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use tuiframe::event::{MouseButton, MouseEventKind};
         let mut app = app();
         app.set_view(crate::tui::transcript::View::Quiet);
         let mut user = Item::new(Kind::User, "List it");
@@ -2866,7 +2866,7 @@ mod tests {
     #[test]
     fn a_click_on_an_open_cards_line_opens_the_panel() {
         use crate::remote::{Item, Kind, Update};
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+        use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
         let mut app = app();
         let questions = crate::tui::app::tests::asking().questions;
         let mut card = Item::new(Kind::Question, "Arko asked 2 questions");
@@ -3346,13 +3346,13 @@ mod tests {
         );
     }
 
-    fn mouse(app: &mut App, kind: crossterm::event::MouseEventKind, x: u16, y: u16) {
-        app.mouse(crossterm::event::MouseEvent {
+    fn mouse(app: &mut App, kind: tuiframe::event::MouseEventKind, x: u16, y: u16) {
+        app.mouse(tuiframe::event::MouseEvent::new(
             kind,
-            column: x,
-            row: y,
-            modifiers: KeyModifiers::NONE,
-        });
+            x,
+            y,
+            KeyModifiers::NONE,
+        ));
     }
 
     /// Letting go of a drag copies what it highlighted, and says how much;
@@ -3360,7 +3360,7 @@ mod tests {
     #[test]
     fn a_drag_copies_and_a_click_does_not() {
         use crate::tui::app::Effect;
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use tuiframe::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let mut item = Item::new(Kind::Reply, "Hello there, reader.");
         item.id = 1;
@@ -3422,7 +3422,7 @@ mod tests {
     #[test]
     fn the_answer_panels_text_selects_and_copies() {
         use crate::tui::app::Effect;
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use tuiframe::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let text = "Tabs or spaces for the **new** files? The old ones use tabs, so I'd keep them.";
         app.set_reading(crate::remote::Reading {
@@ -3499,7 +3499,7 @@ mod tests {
     fn a_settled_ask_is_a_boxed_record_in_the_transcript() {
         use crate::questions::QuestionState;
         use crate::tui::app::Effect;
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use tuiframe::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let reading = crate::tui::app::tests::asking();
         let mut card = Item::new(Kind::Question, "Arko asked 2 questions");
@@ -3571,7 +3571,7 @@ mod tests {
     #[test]
     fn a_click_on_a_thinkings_label_or_text_folds_it() {
         use crate::tui::app::Effect;
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use tuiframe::event::{MouseButton, MouseEventKind};
         let mut app = app();
         for (id, kind, text) in [
             (1, Kind::Thinking, "Read the parser first.\nThen the tests."),
@@ -3623,7 +3623,7 @@ mod tests {
     fn a_click_opens_and_closes_a_commands_output() {
         use crate::remote::CallStatus;
         use crate::tui::app::Effect;
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use tuiframe::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let mut call = Item::new(Kind::Call, "$ seq 10");
         call.status = Some(CallStatus::Ok);

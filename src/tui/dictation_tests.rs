@@ -1,8 +1,8 @@
 //! The view's dictation flows, with the service's events given by hand.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use tuiframe::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
 use crate::dictation::models::GRANITE;

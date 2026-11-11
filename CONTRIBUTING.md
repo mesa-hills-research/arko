@@ -34,6 +34,19 @@ arko_index = { path = "../arko_framework/arko_index" }
 The checkout's crate versions must match the ones `Cargo.toml` asks for. Cargo records the
 override in `Cargo.lock`, so regenerate the lock without the override before committing.
 
+## Building against a local tuiframe
+
+The full-screen view takes its event types from tuiframe, which isn't on crates.io yet. Clone
+[tuiframe](https://github.com/mesa-hills-research/tuiframe) beside this repository and add this
+override to `.cargo/config.toml`, which git ignores.
+
+```toml
+[patch.crates-io]
+tuiframe = { path = "../tuiframe/crates/tuiframe" }
+```
+
+`Cargo.lock` lists tuiframe without a source until it's published.
+
 ## Dictation
 
 The tests that run the real speech model skip unless `ARKO_TEST_SPEECH_PACK` names Granite
