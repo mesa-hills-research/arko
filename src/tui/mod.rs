@@ -22,6 +22,8 @@ mod clipboard;
 #[cfg(feature = "dbg-snapshot")]
 mod dbg_snapshot;
 mod dictation;
+#[cfg(test)]
+mod golden;
 mod input;
 mod keys_menu;
 mod markdown;
