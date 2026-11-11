@@ -36,6 +36,8 @@ mod openrouter_menu;
 mod overlay;
 mod prefs;
 mod questions;
+#[cfg(test)]
+mod recorder_tests;
 mod resume_picker;
 mod screen;
 mod select;
