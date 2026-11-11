@@ -5,7 +5,8 @@
 use std::sync::mpsc::Receiver;
 
 use super::*;
-use crate::dictation::models::GRANITE;
+use crate::dictation::models::{GRANITE, PACK_FILE};
+use speech::disfluency::Punctuation;
 
 /// Arko's folder with `dictation.json` holding `settings`.
 fn root_with(settings: &str) -> tempfile::TempDir {
@@ -35,7 +36,12 @@ fn a_missing_model_asks_before_it_downloads() {
     let Err(error) = service.open(DictationOptions::default(), sink) else {
         panic!("opened without the model");
     };
-    assert_eq!(error, DictationError::NeedsDownload(&GRANITE));
+    let missing = Download {
+        speech: Some(&GRANITE),
+        cleanup: None,
+    };
+    assert_eq!(error, DictationError::NeedsDownload(missing));
+    assert_eq!(service.missing(), Some(missing));
 }
 
 #[test]
@@ -316,17 +322,20 @@ fn the_words_telmo_refuses_are_left_out() {
         text: text.into(),
         code,
     };
-    let list = special_words(&[
-        word("DictationOptions", true),
-        // Two letters or digits are kept in code only.
-        word("r5", true),
-        word("ab", false),
-        word("Sol", false),
-        word("Sol", false),
-        word("日本語", true),
-        word("one two three four five six", false),
-        word("Cargo.toml", true),
-    ]);
+    let list = special_words(
+        &SpecialWords::new(),
+        &[
+            word("DictationOptions", true),
+            // Two letters or digits are kept in code only.
+            word("r5", true),
+            word("ab", false),
+            word("Sol", false),
+            word("Sol", false),
+            word("日本語", true),
+            word("one two three four five six", false),
+            word("Cargo.toml", true),
+        ],
+    );
     assert_eq!(
         list.words().collect::<Vec<_>>(),
         ["DictationOptions", "r5", "Sol", "Cargo.toml"]
@@ -338,10 +347,95 @@ fn the_words_telmo_refuses_are_left_out() {
 #[test]
 fn telmo_accepts_the_own_names() {
     let words = super::super::session_words::merge(Vec::new(), Vec::new());
-    let list = special_words(&words);
+    let list = special_words(&SpecialWords::new(), &words);
     assert_eq!(list.len(), words.len());
     assert!(list.words().any(|word| word == "Mesa Hills Research"));
     const { assert!(super::super::session_words::MAX_WORDS <= SpecialWords::MAX_WORDS) };
+}
+
+/// Telmo's cleanup is for English, so the settings' level applies to
+/// English and nothing to another language.
+#[test]
+fn cleanup_is_for_english() {
+    let settings = |text: &str| -> Settings { serde_json::from_str(text).unwrap() };
+    let fillers = |language: &str| {
+        cleanup(&settings(&format!(
+            r#"{{"cleanup": "light", "language": "{language}"}}"#
+        )))
+    };
+    assert_eq!(fillers("en"), Cleanup::Light);
+    assert_eq!(fillers("en_GB"), Cleanup::Light);
+    assert_eq!(fillers("fr"), Cleanup::Off);
+    assert_eq!(fillers("pt-BR"), Cleanup::Off);
+    assert_eq!(cleanup(&settings(r#"{"language": "en"}"#)), Cleanup::Off);
+}
+
+/// Each level's list leaves out what it takes out, and keeps doing so once
+/// the session's words are added to it.
+#[test]
+fn the_list_leaves_out_what_the_cleanup_takes_out() {
+    assert_eq!(cleaned(Cleanup::Off, None), SpecialWords::new());
+    let base = cleaned(Cleanup::Light, None);
+    assert_eq!(base.fillers(), Fillers::for_language("en"));
+    let word = SessionWord {
+        text: "Telmo".into(),
+        code: false,
+    };
+    let list = special_words(&base, &[word]);
+    assert_eq!(list.fillers(), Fillers::for_language("en"));
+    assert_eq!(list.words().collect::<Vec<_>>(), ["Telmo"]);
+    // Medium's tagger is built in.
+    assert!(cleaned(Cleanup::Medium, None).disfluencies().is_some());
+    // Every level keeps what the guards protect, and tidies the
+    // punctuation.
+    let punctuation = Punctuation::for_language("en").map(Punctuation::joining_more);
+    for level in [Cleanup::Light, Cleanup::Medium, Cleanup::Full] {
+        assert_eq!(cleaned(level, None).guards(), Guards::for_language("en"));
+        assert_eq!(cleaned(level, None).punctuation(), punctuation);
+    }
+}
+
+/// Full cleanup's missing tagger is asked about with the speech model, and
+/// downloads first. A tagger that can't load fails before the speech model
+/// downloads.
+#[test]
+fn full_cleanup_asks_for_its_tagger_and_fails_first_without_it() {
+    let root = root_with(r#"{"model": "granite", "cleanup": "full", "language": "en"}"#);
+    let service = DictationService::downloading_from(root.path(), NO_SERVER);
+    let missing = Download {
+        speech: Some(&GRANITE),
+        cleanup: Some(download::TAGGER.bytes),
+    };
+    assert_eq!(service.missing(), Some(missing));
+    let Err(error) = service.open(DictationOptions::default(), sink().0) else {
+        panic!("opened without the models");
+    };
+    assert_eq!(error, DictationError::NeedsDownload(missing));
+    // Another language needs no tagger.
+    let french = root_with(r#"{"model": "granite", "cleanup": "full", "language": "fr"}"#);
+    let speech_only = DictationService::downloading_from(french.path(), NO_SERVER).missing();
+    assert_eq!(speech_only.map(|download| download.cleanup), Some(None));
+    let failed = || {
+        let (sink, updates) = sink();
+        let _dictation = service
+            .open(DictationOptions { download: true }, sink)
+            .unwrap();
+        updates.recv_timeout(Duration::from_secs(10)).unwrap().event
+    };
+    assert_eq!(
+        failed(),
+        DictationEvent::Failed("Couldn't download the cleanup model (couldn't reach GitHub). Start dictation again to resume.".into())
+    );
+    let dir = models::tagger_dir(root.path());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(PACK_FILE), "not a pack").unwrap();
+    let DictationEvent::Failed(why) = failed() else {
+        panic!("a tagger that can't load was used");
+    };
+    assert!(
+        why.starts_with("Couldn't load the cleanup model ("),
+        "{why}"
+    );
 }
 
 /// Arko's folder with `dictation.json` holding `settings` and Granite
@@ -369,6 +463,15 @@ fn granite_and_clip(settings: &str) -> Option<(tempfile::TempDir, Source)> {
 /// The words settled when the clip is dictated through `service`, given
 /// `words` to favour as a front end gives them, once the dictation opened.
 fn dictated(service: &DictationService, source: &Source, words: &[SessionWord]) -> String {
+    dictated_pieces(service, source, words).concat()
+}
+
+/// The words settled as [`dictated`] gives them, each event's on its own.
+fn dictated_pieces(
+    service: &DictationService,
+    source: &Source,
+    words: &[SessionWord],
+) -> Vec<String> {
     let (sink, updates) = sink();
     let mut dictation = service.open(DictationOptions::default(), sink).unwrap();
     dictation.words_sender().send(words.to_vec());
@@ -386,11 +489,12 @@ fn dictated(service: &DictationService, source: &Source, words: &[SessionWord]) 
         }
     }
     let capture = dictation.record(source).unwrap();
-    let mut settled = String::new();
+    let mut pieces: Vec<String> = Vec::new();
     // The clip is 5.7 s, then silence ends the utterance.
-    while !settled.contains("length") {
+    while !pieces.concat().contains("length") {
         match next() {
-            DictationEvent::Text { settled: words, .. } => settled.push_str(&words),
+            DictationEvent::Text { settled, .. } if settled.is_empty() => {}
+            DictationEvent::Text { settled, .. } => pieces.push(settled),
             other => panic!("{other:?} while listening"),
         }
     }
@@ -398,17 +502,103 @@ fn dictated(service: &DictationService, source: &Source, words: &[SessionWord]) 
     dictation.finish();
     loop {
         match next() {
-            DictationEvent::Text { settled: words, .. } => settled.push_str(&words),
-            DictationEvent::Done => return settled,
+            DictationEvent::Text { settled, .. } if settled.is_empty() => {}
+            DictationEvent::Text { settled, .. } => pieces.push(settled),
+            DictationEvent::Done => return pieces,
             other => panic!("{other:?} while finishing"),
         }
     }
 }
 
+/// The clip dictated through `service`, whose one utterance settles whole
+/// when it ends, with the session's words kept.
+fn settles_whole(service: &DictationService, source: &Source) {
+    let words = [SessionWord {
+        text: "Hamburgh".into(),
+        code: false,
+    }];
+    let pieces = dictated_pieces(service, source, &words);
+    let first = pieces[0].to_lowercase();
+    assert!(
+        first.contains("i saw") && first.contains("thirty feet in length"),
+        "{pieces:?}"
+    );
+    assert!(first.contains("hamburgh"), "{pieces:?}");
+}
+
+/// With medium cleanup, which needs no pack of its own, an utterance
+/// settles whole when it ends. It runs with the clip and the pack
+/// ([`granite_and_clip`]).
+#[test]
+fn medium_cleanup_settles_an_utterance_once_it_ends() {
+    let settings = r#"{"model": "granite", "cleanup": "medium", "language": "en"}"#;
+    let Some((root, source)) = granite_and_clip(settings) else {
+        return;
+    };
+    settles_whole(
+        &DictationService::downloading_from(root.path(), NO_SERVER),
+        &source,
+    );
+}
+
+/// With full cleanup, an utterance settles whole when it ends. It runs only
+/// with the pack and the clip ([`granite_and_clip`]) and
+/// `ARKO_TEST_CLEANUP_PACK` naming the tagger's pack.
+#[test]
+fn full_cleanup_settles_an_utterance_once_it_ends() {
+    let settings = r#"{"model": "granite", "cleanup": "full", "language": "en"}"#;
+    let Some(tagger) = std::env::var_os("ARKO_TEST_CLEANUP_PACK") else {
+        eprintln!("skipped: ARKO_TEST_CLEANUP_PACK isn't set");
+        return;
+    };
+    let Some((root, source)) = granite_and_clip(settings) else {
+        return;
+    };
+    let dir = models::tagger_dir(root.path());
+    std::fs::create_dir_all(&dir).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&tagger, dir.join(PACK_FILE)).unwrap();
+    #[cfg(not(unix))]
+    std::fs::copy(&tagger, dir.join(PACK_FILE)).unwrap();
+    settles_whole(
+        &DictationService::downloading_from(root.path(), NO_SERVER),
+        &source,
+    );
+}
+
+/// Full cleanup's tagger leaves memory when a recording uses another level,
+/// and loads again for the next with full cleanup. It runs as
+/// [`full_cleanup_settles_an_utterance_once_it_ends`] does.
+#[test]
+fn the_tagger_loads_again_after_another_level() {
+    let full = r#"{"model": "granite", "cleanup": "full", "language": "en"}"#;
+    let Some(tagger) = std::env::var_os("ARKO_TEST_CLEANUP_PACK") else {
+        eprintln!("skipped: ARKO_TEST_CLEANUP_PACK isn't set");
+        return;
+    };
+    let Some((root, source)) = granite_and_clip(full) else {
+        return;
+    };
+    let pack = models::tagger_pack(root.path());
+    std::fs::create_dir_all(pack.parent().unwrap()).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&tagger, &pack).unwrap();
+    #[cfg(not(unix))]
+    std::fs::copy(&tagger, &pack).unwrap();
+    let service = DictationService::downloading_from(root.path(), NO_SERVER);
+    let settings = root.path().join(super::super::settings::FILE);
+    settles_whole(&service, &source);
+    std::fs::write(&settings, r#"{"model": "granite", "cleanup": "off"}"#).unwrap();
+    let text = dictated(&service, &source, &[]).to_lowercase();
+    assert!(text.contains("thirty feet in length"), "{text:?}");
+    std::fs::write(&settings, full).unwrap();
+    settles_whole(&service, &source);
+}
+
 /// The session's words reach the streamer. Given the clip's "Hamburg" in
-/// another spelling, the words come out in it, and not once the settings
-/// turn session words off, which the service checks whatever a front end
-/// sends. It runs with the clip and the pack, as
+/// another spelling, the words come out in it, also while fillers are left
+/// out, and not once the settings turn session words off, which the service
+/// checks whatever a front end sends. It runs with the clip and the pack, as
 /// [`a_wav_file_is_dictated_end_to_end`] does.
 #[test]
 fn the_session_words_reach_the_streamer() {
@@ -420,6 +610,14 @@ fn the_session_words_reach_the_streamer() {
         text: "Hamburgh".into(),
         code: false,
     }];
+    let text = dictated(&service, &source, &words);
+    assert!(text.contains("Hamburgh"), "{text:?}");
+    // Leaving out fillers keeps the words.
+    std::fs::write(
+        root.path().join(super::super::settings::FILE),
+        r#"{"model": "granite", "cleanup": "light"}"#,
+    )
+    .unwrap();
     let text = dictated(&service, &source, &words);
     assert!(text.contains("Hamburgh"), "{text:?}");
     std::fs::write(

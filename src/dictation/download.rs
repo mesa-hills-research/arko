@@ -1,10 +1,11 @@
 //! Downloading a speech model and packing it, meaning each file from the model's
 //! pinned revision, resumed where an earlier try stopped, checked against
 //! its SHA-256, then converted into the engine's pack in the model's 8-bit
-//! precision. The downloaded files go once the pack is written. One
-//! process at a time installs a model, holding the operating system's lock
-//! on a file in its folder, and cancelling stops the work at the next
-//! megabyte or tensor.
+//! precision. The downloaded files go once the pack is written. Full
+//! cleanup's pack downloads the same way, ready to use. One process at a
+//! time installs a model, holding the operating system's lock on a file in
+//! its folder, and cancelling stops the work at the next megabyte or
+//! tensor.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -15,8 +16,8 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 use speech::pack::{self, FileSink};
 
-use super::Preparing;
-use super::models::{PACK_FILE, RemoteFile, SpeechModel};
+use super::models::{self, PACK_FILE, RemoteFile, SpeechModel};
+use super::{ModelKind, Preparing};
 
 /// How the download ended, when it didn't.
 #[derive(Debug, PartialEq)]
@@ -36,9 +37,27 @@ const DOWNLOAD_DIR: &str = "download";
 /// holds. It stays there.
 const LOCK_FILE: &str = "install.lock";
 
-fn failed(why: impl std::fmt::Display) -> Error {
+/// A model as its download's errors name it, and where it comes from.
+#[derive(Clone, Copy)]
+struct Origin {
+    model: &'static str,
+    host: &'static str,
+}
+
+const SPEECH: Origin = Origin {
+    model: "speech model",
+    host: "Hugging Face",
+};
+
+const CLEANUP: Origin = Origin {
+    model: "cleanup model",
+    host: "GitHub",
+};
+
+fn failed(origin: Origin, why: impl std::fmt::Display) -> Error {
     Error::Failed(format!(
-        "Couldn't download the speech model ({why}). {RESUME}"
+        "Couldn't download the {} ({why}). {RESUME}",
+        origin.model
     ))
 }
 
@@ -53,13 +72,14 @@ pub(super) fn install(
 ) -> Result<(), Error> {
     let dir = model.dir(root);
     let downloads = dir.join(DOWNLOAD_DIR);
-    let unsaved = |error: std::io::Error| unsaved(&dir, error);
+    let unsaved = |error: std::io::Error| unsaved(SPEECH, &dir, error);
     fs::create_dir_all(&dir).map_err(unsaved)?;
     // Held for the whole install. Another process installing it is followed
     // by the size of its files.
     let total = model.download_bytes();
-    let _lock = InstallLock::take(&dir.join(LOCK_FILE), cancel, || {
+    let _lock = InstallLock::take(&dir.join(LOCK_FILE), SPEECH, cancel, || {
         progress(Preparing::Downloading {
+            model: ModelKind::Speech,
             done: downloaded(model, &downloads),
             total,
         })
@@ -94,16 +114,7 @@ fn download_files(
     progress: &mut dyn FnMut(Preparing),
     cancel: &AtomicBool,
 ) -> Result<(), Error> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(failed)?;
-    // Hugging Face redirects to its file servers. Nothing secret is sent.
-    let client = arko_ai::http_client_builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent(concat!("arko/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(failed)?;
+    let (runtime, client) = connection(SPEECH)?;
     let total = model.download_bytes();
     let mut before = 0;
     for file in model.files {
@@ -114,8 +125,10 @@ fn download_files(
             &url,
             &path,
             file,
+            SPEECH,
             &mut |done| {
                 progress(Preparing::Downloading {
+                    model: ModelKind::Speech,
                     done: before + done,
                     total,
                 })
@@ -127,7 +140,7 @@ fn download_files(
     progress(Preparing::Packing);
     for file in model.files {
         let path = downloads.join(file.name);
-        let digest = sha256(&path, cancel)?;
+        let digest = sha256(&path, SPEECH, cancel)?;
         if digest != file.sha256 {
             let _ = fs::remove_file(&path);
             return Err(Error::Failed(
@@ -141,10 +154,107 @@ fn download_files(
     Ok(())
 }
 
+/// Full cleanup's pack, as Telmo pins it.
+pub(super) const TAGGER: RemoteFile = RemoteFile {
+    name: speech::disfluency::PACK_DOWNLOAD.name,
+    bytes: speech::disfluency::PACK_DOWNLOAD.bytes,
+    sha256: speech::disfluency::PACK_DOWNLOAD.sha256,
+};
+
+/// Full cleanup's pack, from `url`, into its folder in Arko's folder `root`,
+/// telling `progress` the bytes. It's checked against `file` and put in
+/// place with its notice.
+pub(super) fn install_tagger(
+    root: &Path,
+    url: &str,
+    file: &RemoteFile,
+    progress: &mut dyn FnMut(Preparing),
+    cancel: &AtomicBool,
+) -> Result<(), Error> {
+    let dir = models::tagger_dir(root);
+    let unsaved = |error: std::io::Error| unsaved(CLEANUP, &dir, error);
+    fs::create_dir_all(&dir).map_err(unsaved)?;
+    let downloads = dir.join(DOWNLOAD_DIR);
+    let path = downloads.join(file.name);
+    let step = |done| Preparing::Downloading {
+        model: ModelKind::Cleanup,
+        done,
+        total: file.bytes,
+    };
+    // Held for the whole install, as for a speech model.
+    let _lock = InstallLock::take(&dir.join(LOCK_FILE), CLEANUP, cancel, || {
+        progress(step(
+            fs::metadata(&path).map_or(0, |meta| meta.len().min(file.bytes)),
+        ))
+    })?;
+    let pack = models::tagger_pack(root);
+    if pack.is_file() {
+        return Ok(());
+    }
+    fs::create_dir_all(&downloads).map_err(unsaved)?;
+    let (runtime, client) = connection(CLEANUP)?;
+    runtime.block_on(fetch(
+        &client,
+        url,
+        &path,
+        file,
+        CLEANUP,
+        &mut |done| progress(step(done)),
+        cancel,
+    ))?;
+    if sha256(&path, CLEANUP, cancel)? != file.sha256 {
+        let _ = fs::remove_file(&path);
+        return Err(Error::Failed(
+            "The downloaded cleanup model was damaged, so Arko deleted it. Start dictation again to download it again.".into(),
+        ));
+    }
+    // Whole on disk before it counts as installed, and the notice first,
+    // because the pack is what makes the model installed. Windows flushes a
+    // file only through a handle that may write to it.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .and_then(|written| written.sync_all())
+        .map_err(unsaved)?;
+    fs::write(dir.join("NOTICE.txt"), tagger_notice(url)).map_err(unsaved)?;
+    fs::rename(&path, &pack).map_err(unsaved)?;
+    if let Err(error) = fs::remove_dir_all(&downloads) {
+        log::warn!("couldn't delete {} ({error})", downloads.display());
+    }
+    Ok(())
+}
+
+/// `NOTICE.txt` beside full cleanup's pack, which says what it's made of and
+/// where Arko got it.
+fn tagger_notice(url: &str) -> String {
+    format!(
+        "{}\n\nArko downloaded it from {url}, Telmo's {} release.\n",
+        speech::disfluency::PACK_NOTICE,
+        models::TAGGER_RELEASE
+    )
+}
+
+/// A runtime and an HTTP client for a download from `origin`.
+fn connection(origin: Origin) -> Result<(tokio::runtime::Runtime, reqwest::Client), Error> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| failed(origin, error))?;
+    // Hugging Face and GitHub redirect to their file servers. Nothing
+    // secret is sent.
+    let client = arko_ai::http_client_builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .user_agent(concat!("arko/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| failed(origin, error))?;
+    Ok((runtime, client))
+}
+
 /// `future`, unless it takes longer than [`STALL`] (`stalled` says what
 /// didn't come) or the dictation is cancelled first.
 async fn waited<T>(
     future: impl std::future::Future<Output = T>,
+    origin: Origin,
     cancel: &AtomicBool,
     stalled: &str,
 ) -> Result<T, Error> {
@@ -154,7 +264,7 @@ async fn waited<T>(
         }
     };
     tokio::select! {
-        result = tokio::time::timeout(STALL, future) => result.map_err(|_| failed(stalled)),
+        result = tokio::time::timeout(STALL, future) => result.map_err(|_| failed(origin, stalled)),
         () = cancelled => Err(Error::Cancelled),
     }
 }
@@ -166,9 +276,12 @@ async fn fetch(
     url: &str,
     path: &Path,
     file: &RemoteFile,
+    origin: Origin,
     progress: &mut dyn FnMut(u64),
     cancel: &AtomicBool,
 ) -> Result<(), Error> {
+    let failed = |why: String| failed(origin, why);
+    let host = origin.host;
     let mut have = fs::metadata(path).map_or(0, |meta| meta.len());
     // A file larger than it should be can't be resumed.
     if have > file.bytes {
@@ -183,9 +296,14 @@ async fn fetch(
     if have > 0 {
         request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
     }
-    let mut response = waited(request.send(), cancel, "Hugging Face didn't answer")
-        .await?
-        .map_err(|error| failed(reason(error)))?;
+    let mut response = waited(
+        request.send(),
+        origin,
+        cancel,
+        &format!("{host} didn't answer"),
+    )
+    .await?
+    .map_err(|error| failed(reason(error, host)))?;
     let resumed = match response.status() {
         reqwest::StatusCode::PARTIAL_CONTENT => {
             let range = response
@@ -196,13 +314,13 @@ async fn fetch(
             if range != Some((have, file.bytes)) {
                 // The next try starts the file over.
                 let _ = fs::remove_file(path);
-                return Err(failed("Hugging Face sent the wrong part of the file"));
+                return Err(failed(format!("{host} sent the wrong part of the file")));
             }
             true
         }
         // The whole file, because the server ignored the range.
         reqwest::StatusCode::OK => false,
-        status => return Err(failed(format!("Hugging Face answered {status}"))),
+        status => return Err(failed(format!("{host} answered {status}"))),
     };
     if !resumed {
         have = 0;
@@ -213,15 +331,23 @@ async fn fetch(
         .write(true)
         .truncate(!resumed)
         .open(path)
-        .map_err(failed)?;
+        .map_err(|error| failed(error.to_string()))?;
     progress(have);
     loop {
-        let chunk = match waited(response.chunk(), cancel, "no data came for a minute").await? {
-            Err(error) => return Err(failed(reason(error))),
+        let chunk = match waited(
+            response.chunk(),
+            origin,
+            cancel,
+            "no data came for a minute",
+        )
+        .await?
+        {
+            Err(error) => return Err(failed(reason(error, host))),
             Ok(None) => break,
             Ok(Some(chunk)) => chunk,
         };
-        out.write_all(&chunk).map_err(failed)?;
+        out.write_all(&chunk)
+            .map_err(|error| failed(error.to_string()))?;
         have += chunk.len() as u64;
         if have > file.bytes {
             drop(out);
@@ -230,19 +356,19 @@ async fn fetch(
         }
         progress(have);
     }
-    out.flush().map_err(failed)?;
+    out.flush().map_err(|error| failed(error.to_string()))?;
     if have < file.bytes {
-        return Err(failed("the connection ended early"));
+        return Err(failed("the connection ended early".into()));
     }
     Ok(())
 }
 
-/// A request's error in a few words, without its URL.
-fn reason(error: reqwest::Error) -> String {
+/// A request's error to `host` in a few words, without its URL.
+fn reason(error: reqwest::Error, host: &str) -> String {
     if error.is_timeout() {
         "it timed out".into()
     } else if error.is_connect() {
-        "couldn't reach Hugging Face".into()
+        format!("couldn't reach {host}")
     } else {
         let error = error.without_url();
         let mut text = error.to_string();
@@ -265,18 +391,20 @@ fn content_range(value: &str) -> Option<(u64, u64)> {
     (end + 1 == total && start <= end).then_some((start, total))
 }
 
-fn unsaved(dir: &Path, error: std::io::Error) -> Error {
+fn unsaved(origin: Origin, dir: &Path, error: std::io::Error) -> Error {
     Error::Failed(format!(
-        "Couldn't save the speech model in {} ({error}).",
+        "Couldn't save the {} in {} ({error}).",
+        origin.model,
         dir.display()
     ))
 }
 
 /// A file's SHA-256, in hex, unless the dictation is cancelled first.
-fn sha256(path: &Path, cancel: &AtomicBool) -> Result<String, Error> {
+fn sha256(path: &Path, origin: Origin, cancel: &AtomicBool) -> Result<String, Error> {
     let unread = |error: std::io::Error| {
         Error::Failed(format!(
-            "Couldn't read the speech model's download {} ({error}).",
+            "Couldn't read the {}'s download {} ({error}).",
+            origin.model,
             path.display()
         ))
     };
@@ -319,10 +447,16 @@ struct InstallLock {
 }
 
 impl InstallLock {
-    /// Takes the lock on the file at `path`, waiting while another process
-    /// holds it and telling `waiting` every half second meanwhile.
-    fn take(path: &Path, cancel: &AtomicBool, mut waiting: impl FnMut()) -> Result<Self, Error> {
-        let unsaved = |error: std::io::Error| unsaved(path.parent().unwrap_or(path), error);
+    /// Takes the lock on the file at `path`, in the folder of a model from
+    /// `origin`, waiting while another process holds it and telling
+    /// `waiting` every half second meanwhile.
+    fn take(
+        path: &Path,
+        origin: Origin,
+        cancel: &AtomicBool,
+        mut waiting: impl FnMut(),
+    ) -> Result<Self, Error> {
+        let unsaved = |error: std::io::Error| unsaved(origin, path.parent().unwrap_or(path), error);
         let file = fs::OpenOptions::new()
             .create(true)
             .truncate(false)

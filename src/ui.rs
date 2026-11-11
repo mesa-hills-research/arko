@@ -489,12 +489,8 @@ fn dictate_at_prompt(
     };
     let mut stdout = std::io::stdout();
     let opened = match open(false) {
-        Err(DictationError::NeedsDownload(model)) => {
-            print!(
-                "{}\n{}\nDownload it? [Y/n] ",
-                dictation::DOWNLOAD_TITLE,
-                model.offer()
-            );
+        Err(DictationError::NeedsDownload(download)) => {
+            print!("{}\n{}\n[Y/n] ", download.title(), download.offer());
             let _ = stdout.flush();
             let mut answer = String::new();
             let read = std::io::stdin().read_line(&mut answer).unwrap_or(0);

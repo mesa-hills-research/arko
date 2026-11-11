@@ -4595,9 +4595,9 @@ dependencies = [
 
 [[package]]
 name = "telmo"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fca96d3a6c7dff9193f4903d60b6377c43983447394e88c289e96553d2cfb55"
+checksum = "34b2f97f3483787d4bb2f272dd79be9a6b72f01ddec5f3a31d9f44e72617dd86"
 
 [[package]]
 name = "tempfile"

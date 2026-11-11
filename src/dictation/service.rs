@@ -1,7 +1,7 @@
 //! The service is one thread per process that runs the speech engine, one
 //! dictation at a time. It loads the model on the first recording, keeps it
 //! while recordings follow, and drops it after the idle time the settings
-//! give.
+//! give. Full cleanup's tagger loads and leaves memory the same way.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -10,20 +10,21 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use speech::disfluency::{Guards, PACK_DOWNLOAD, Punctuation, Tagger};
 use speech::model::ModelType;
 use speech::stream::{Event, StreamConfig, Streamer};
-use speech::{Model, Options, SpecialWords};
+use speech::{Fillers, Model, Options, SpecialWords};
 
 use super::capture::{self, Capture};
 use super::download;
-use super::models::{Family, SpeechModel};
-use super::settings::Settings;
+use super::models::{self, Family, SpeechModel};
+use super::settings::{Cleanup, Settings};
 use super::{
-    DictationError, DictationEvent, DictationOptions, DictationUpdate, Preparing, SessionWord,
-    Sink, Source,
+    DictationError, DictationEvent, DictationOptions, DictationUpdate, Download, Preparing,
+    SessionWord, Sink, Source,
 };
 
-/// Where models download from.
+/// Where speech models download from.
 const HUGGING_FACE: &str = "https://huggingface.co";
 /// How often a dictation waiting for audio looks whether it was cancelled.
 const POLL: Duration = Duration::from_millis(100);
@@ -38,6 +39,14 @@ const LAG_SECONDS: f64 = 30.0;
 /// What a dictation says when its audio piles up, or recognition falls too
 /// far behind it.
 const OVERLOADED: &str = "Dictation can't keep up on this computer.";
+
+/// Where models download from.
+struct Sources {
+    /// Hugging Face, or a server in its place.
+    hugging_face: String,
+    /// Full cleanup's pack.
+    tagger: String,
+}
 
 /// Runs dictations, one at a time, on a thread of its own.
 pub struct DictationService {
@@ -58,6 +67,8 @@ struct Job {
     idle: Duration,
     /// The settings favour the session's words, when they come.
     session_words: bool,
+    /// What to take out of the speech, for its language.
+    cleanup: Cleanup,
 }
 
 enum Message {
@@ -119,16 +130,35 @@ impl DictationService {
     /// A service for Arko's folder `root`, whose thread starts now. Arko
     /// itself uses [`shared`](Self::shared).
     pub fn new(root: &Path) -> Self {
-        Self::downloading_from(root, HUGGING_FACE)
+        Self::with_sources(
+            root,
+            Sources {
+                hugging_face: HUGGING_FACE.into(),
+                tagger: PACK_DOWNLOAD.url.into(),
+            },
+        )
     }
 
-    /// A service that downloads models from `base` in place of Hugging Face.
+    /// A service that downloads models from `base` in place of Hugging Face
+    /// and GitHub, full cleanup's pack under its name.
+    #[cfg(test)]
     pub(crate) fn downloading_from(root: &Path, base: &str) -> Self {
+        let base = base.trim_end_matches('/');
+        Self::with_sources(
+            root,
+            Sources {
+                hugging_face: base.into(),
+                tagger: format!("{base}/{}", PACK_DOWNLOAD.name),
+            },
+        )
+    }
+
+    fn with_sources(root: &Path, sources: Sources) -> Self {
         let (jobs, received) = mpsc::channel();
-        let (thread_root, base) = (root.to_path_buf(), base.to_string());
+        let thread_root = root.to_path_buf();
         std::thread::Builder::new()
             .name("arko-dictation".into())
-            .spawn(move || serve(&thread_root, &base, received))
+            .spawn(move || serve(&thread_root, &sources, received))
             .expect("a thread for dictation");
         Self {
             root: root.to_path_buf(),
@@ -150,17 +180,23 @@ impl DictationService {
         choose(&Settings::load(&self.root))
     }
 
+    /// What a recording would download before it starts, by the settings,
+    /// if anything.
+    pub fn missing(&self) -> Option<Download> {
+        missing(&self.root, &Settings::load(&self.root))
+    }
+
     /// Starts a dictation, whose events go to `sink`. A missing model is
     /// downloaded first only when the user agreed (`options.download`) or
     /// the settings download without asking.
     pub fn open(&self, options: DictationOptions, sink: Sink) -> Result<Dictation, DictationError> {
         let settings = Settings::load(&self.root);
         let model = choose(&settings);
-        if !model.is_installed(&self.root)
-            && !options.download
+        if !options.download
             && !settings.downloads_without_asking()
+            && let Some(download) = missing(&self.root, &settings)
         {
-            return Err(DictationError::NeedsDownload(model));
+            return Err(DictationError::NeedsDownload(download));
         }
         if self.busy.swap(true, Ordering::SeqCst) {
             return Err(DictationError::Busy);
@@ -176,6 +212,7 @@ impl DictationService {
             sink,
             idle: settings.idle(),
             session_words: settings.session_words,
+            cleanup: cleanup(&settings),
         };
         let dictation = Dictation {
             id,
@@ -202,6 +239,29 @@ fn choose(settings: &Settings) -> &'static SpeechModel {
     match family {
         ModelType::Parakeet => &super::models::PARAKEET,
         ModelType::Granite => &super::models::GRANITE,
+    }
+}
+
+/// What a recording with `settings` in Arko's folder `root` would download
+/// first, if anything.
+fn missing(root: &Path, settings: &Settings) -> Option<Download> {
+    let model = choose(settings);
+    let download = Download {
+        speech: (!model.is_installed(root)).then_some(model),
+        cleanup: (cleanup(settings) == Cleanup::Full && !models::tagger_pack(root).is_file())
+            .then_some(PACK_DOWNLOAD.bytes),
+    };
+    (download.speech.is_some() || download.cleanup.is_some()).then_some(download)
+}
+
+/// The cleanup `settings` choose for the language spoken. Telmo's cleanup is
+/// for English, so another language gets none. A language neither the
+/// settings nor the system name counts as English, as the model choice
+/// takes Granite then.
+fn cleanup(settings: &Settings) -> Cleanup {
+    match settings.language() {
+        Some(code) if Fillers::for_language(&code).is_none() => Cleanup::Off,
+        _ => settings.cleanup(),
     }
 }
 
@@ -302,8 +362,9 @@ impl Drop for Dictation {
 
 /// The service's thread, running each dictation in turn, the model dropped once
 /// none came for the idle time.
-fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
+fn serve(root: &Path, sources: &Sources, jobs: mpsc::Receiver<Job>) {
     let mut loaded: Option<Loaded> = None;
+    let mut tagger: Option<Arc<Tagger>> = None;
     let mut idle = Settings::default().idle();
     loop {
         let job = if loaded.is_some() {
@@ -311,6 +372,7 @@ fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
                 Ok(job) => job,
                 Err(RecvTimeoutError::Timeout) => {
                     loaded = None;
+                    tagger = None;
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -326,8 +388,12 @@ fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
         // (The full-screen view's panic hook leaves this thread's panics to
         // it, and to the engine's own threads, which it rethrows here.)
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(root, base, &mut job, &mut loaded)
+            run(root, sources, &mut job, &mut loaded, &mut tagger)
         }));
+        // The tagger never stays in memory without the model.
+        if ran.is_err() || loaded.is_none() {
+            tagger = None;
+        }
         if ran.is_err() {
             loaded = None;
             if !job.intake.is_cancelled() {
@@ -342,9 +408,15 @@ fn serve(root: &Path, base: &str, jobs: mpsc::Receiver<Job>) {
     }
 }
 
-/// One dictation, with the model made ready, then the audio until it ends.
-/// Nothing is sent once it's cancelled.
-fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
+/// One dictation, with the tagger and the model made ready, then the audio
+/// until it ends. Nothing is sent once it's cancelled.
+fn run(
+    root: &Path,
+    sources: &Sources,
+    job: &mut Job,
+    loaded: &mut Option<Loaded>,
+    tagger: &mut Option<Arc<Tagger>>,
+) {
     let id = job.id;
     let intake = job.intake.clone();
     let sink = &mut job.sink;
@@ -353,20 +425,39 @@ fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
             sink(DictationUpdate { id, event });
         }
     };
-    let pack = job.model.pack(root);
-    if !pack.is_file() {
-        // Each megabyte once.
-        let mut shown = u64::MAX;
-        let mut progress = |step: Preparing| {
-            if let Preparing::Downloading { done, .. } = step {
-                if done / 1_000_000 == shown {
+    // The tagger first, so a broken one fails before the speech model
+    // downloads.
+    if job.cleanup == Cleanup::Full {
+        if !models::tagger_pack(root).is_file() {
+            let (url, cancel) = (&sources.tagger, &intake.cancelled);
+            let installed = {
+                let progress = &mut each_megabyte(&mut send);
+                download::install_tagger(root, url, &download::TAGGER, progress, cancel)
+            };
+            match installed {
+                Ok(()) => {}
+                Err(download::Error::Cancelled) => return,
+                Err(download::Error::Failed(message)) => {
+                    send(DictationEvent::Failed(message));
                     return;
                 }
-                shown = done / 1_000_000;
             }
-            send(DictationEvent::Preparing(step));
+        }
+        if let Err(why) = load_tagger(root, tagger) {
+            send(DictationEvent::Failed(why));
+            return;
+        }
+    } else {
+        *tagger = None;
+    }
+    let pack = job.model.pack(root);
+    if !pack.is_file() {
+        let installed = {
+            let progress = &mut each_megabyte(&mut send);
+            let (base, cancel) = (&sources.hugging_face, &intake.cancelled);
+            download::install(job.model, root, base, progress, cancel)
         };
-        match download::install(job.model, root, base, &mut progress, &intake.cancelled) {
+        match installed {
             Ok(()) => {}
             Err(download::Error::Cancelled) => return,
             Err(download::Error::Failed(message)) => {
@@ -407,12 +498,72 @@ fn run(root: &Path, base: &str, job: &mut Job, loaded: &mut Option<Loaded>) {
         return;
     }
     send(DictationEvent::Listening);
-    listen(&job.audio, &intake, model, job.session_words, &mut send);
+    let base = cleaned(job.cleanup, tagger.clone());
+    listen(
+        &job.audio,
+        &intake,
+        model,
+        job.session_words,
+        &base,
+        &mut send,
+    );
 }
 
-/// The words in Telmo's list, best first. Those it refuses are left out.
-fn special_words(words: &[SessionWord]) -> SpecialWords {
+/// Tells `send` the steps of making a model ready, a download's once each
+/// megabyte.
+fn each_megabyte(send: &mut dyn FnMut(DictationEvent)) -> impl FnMut(Preparing) + '_ {
+    let mut shown = u64::MAX;
+    move |step| {
+        if let Preparing::Downloading { done, .. } = step {
+            if done / 1_000_000 == shown {
+                return;
+            }
+            shown = done / 1_000_000;
+        }
+        send(DictationEvent::Preparing(step));
+    }
+}
+
+/// Full cleanup's tagger, in `slot` once loaded from Arko's folder `root`,
+/// or the sentence to show when it can't load.
+fn load_tagger(root: &Path, slot: &mut Option<Arc<Tagger>>) -> Result<(), String> {
+    if slot.is_some() {
+        return Ok(());
+    }
+    let tagger =
+        Tagger::load(&models::tagger_pack(root), &Options::default()).map_err(|error| {
+            format!(
+                "Couldn't load the cleanup model ({}). Delete {} to download it again.",
+                error.to_string().trim_end_matches('.'),
+                models::tagger_dir(root).display()
+            )
+        })?;
+    *slot = Some(Arc::new(tagger));
+    Ok(())
+}
+
+/// The list every pass starts from, which leaves out what `cleanup` takes
+/// out, full cleanup with `tagger`. Every level keeps what Telmo's guards
+/// protect, such as a spoken symbol or a unit after a number, and tidies
+/// the punctuation and capitals the words that went leave, joining more
+/// sentences a pause split ("a release. Build." is "a release build").
+fn cleaned(cleanup: Cleanup, tagger: Option<Arc<Tagger>>) -> SpecialWords {
     let mut list = SpecialWords::new();
+    match cleanup {
+        Cleanup::Off => return list,
+        Cleanup::Light => list.set_fillers(Fillers::for_language("en")),
+        Cleanup::Medium => list.set_disfluencies(Some(Arc::new(Tagger::hand_written()))),
+        Cleanup::Full => list.set_disfluencies(tagger),
+    }
+    list.set_guards(Guards::for_language("en"));
+    list.set_punctuation(Punctuation::for_language("en").map(Punctuation::joining_more));
+    list
+}
+
+/// `base` with the words added, best first. Those Telmo refuses are left
+/// out.
+fn special_words(base: &SpecialWords, words: &[SessionWord]) -> SpecialWords {
+    let mut list = base.clone();
     for word in words {
         let _ = if word.code {
             list.add_code_word(&word.text)
@@ -433,18 +584,19 @@ fn wait_for(next_pass: Option<Instant>, now: Instant) -> Duration {
 }
 
 /// Takes the audio, running passes as Telmo's `Stream` does, until the
-/// dictation finishes, fails or is cancelled. The passes favour the words
-/// that come, if the settings favour the session's words
-/// (`session_words`).
+/// dictation finishes, fails or is cancelled. The passes use the list
+/// `base`, with the words that come if the settings favour the session's
+/// words (`session_words`).
 fn listen(
     audio: &mpsc::Receiver<Message>,
     intake: &Intake,
     model: Arc<Model>,
     session_words: bool,
+    base: &SpecialWords,
     send: &mut dyn FnMut(DictationEvent),
 ) {
     let mut streamer: Option<Streamer> = None;
-    let mut words = SpecialWords::new();
+    let mut words = base.clone();
     let mut shown = Shown::default();
     let mut lag = Lag::default();
     let mut next_pass: Option<Instant> = None;
@@ -479,7 +631,7 @@ fn listen(
                     lag.took(samples.len() as f64 / f64::from(rate.max(1)), &events);
                 }
                 Ok(Message::Words(given)) if session_words => {
-                    words = special_words(&given);
+                    words = special_words(base, &given);
                     if let Some(streamer) = &mut streamer {
                         streamer.set_special_words(&words);
                     }

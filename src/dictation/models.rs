@@ -1,7 +1,8 @@
 //! The speech models Arko downloads, each from a pinned revision on Hugging
 //! Face, and where they're kept, `models/speech/<model>/` in Arko's folder,
 //! with the pack the engine loads (`model.pack`), what it was made from
-//! (`source.json`) and who made it under which licence (`NOTICE.txt`).
+//! (`source.json`) and who made it under which licence (`NOTICE.txt`). Full
+//! cleanup's tagger has a folder of its own ([`tagger_dir`]).
 
 use std::path::{Path, PathBuf};
 
@@ -114,6 +115,21 @@ pub const MODELS: [&SpeechModel; 2] = [&GRANITE, &PARAKEET];
 /// The pack's name in a model's folder.
 pub const PACK_FILE: &str = "model.pack";
 
+/// Where full cleanup's tagger is kept, in Arko's folder `root`, with its
+/// pack ([`PACK_FILE`]).
+pub fn tagger_dir(root: &Path) -> PathBuf {
+    root.join("models").join("cleanup").join(TAGGER_RELEASE)
+}
+
+/// The release of full cleanup's tagger that Arko downloads, which names
+/// its folder, so a later release goes in a folder of its own.
+pub const TAGGER_RELEASE: &str = "disfluency-tagger-1";
+
+/// Full cleanup's pack, in Arko's folder `root`.
+pub fn tagger_pack(root: &Path) -> PathBuf {
+    tagger_dir(root).join(PACK_FILE)
+}
+
 /// Megabytes, rounded, as the download question gives sizes.
 pub fn megabytes(bytes: u64) -> u64 {
     (bytes + 500_000) / 1_000_000
@@ -222,6 +238,10 @@ mod tests {
         assert_eq!(
             GRANITE.pack(root),
             root.join("models/speech/granite-speech-5.0-470m-turboctc/model.pack")
+        );
+        assert_eq!(
+            tagger_dir(root),
+            root.join("models/cleanup/disfluency-tagger-1")
         );
     }
 

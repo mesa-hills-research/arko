@@ -40,6 +40,35 @@ still comes out as the model hears it.
 With `session_words` off, nothing is favoured, the names included, so the model's own spelling
 stands.
 
+## Cleanup
+
+Cleanup takes hesitations, repeats and false starts out of what you dictate in English. Set
+`cleanup` in `dictation.json`, or Cleanup in Arko Studio's Settings › Input.
+
+| Level | What goes |
+|---|---|
+| `off` | Nothing, the default |
+| `light` | Hesitations such as um and uh, and stutters such as "the the" |
+| `medium` | Also repeats, false starts and openers such as "So" or "I mean" |
+| `full` | The same as `medium`, caught more often, with a 158 MB model |
+
+With `medium` and `full`, what you say stays dimmed until you pause, then goes into the box
+cleaned.
+
+Cleanup deletes words and mends the punctuation and capitals they leave, joining sentences a
+pause split ("a release. Build." becomes "a release build"). The favoured words always stay. So
+do the words dictation needs that look like fillers or repeats, such as a spoken symbol and the
+words beside it ("dash dash force"), a unit after a number ("5 mm"), a filler talked about as a
+word ("strip the ums") and list items that share their first word ("better tests, better docs").
+Cleanup applies when the language is English or the system names none.
+
+The model of `full` is Telmo's disfluency tagger (MIT or Apache 2.0), fine-tuned from Ettin
+encoder 68M on the AMI Meeting Corpus (CC BY 4.0). The first recording with `full` asks before it
+downloads the model from Telmo's releases on GitHub, as for the speech model, and keeps it in
+`models/cleanup/disfluency-tagger-1/` in Arko's folder, with a `NOTICE.txt` that credits its
+sources. It stays in memory beside the speech model for as long. To remove it, delete
+`models/cleanup`.
+
 ## The speech model
 
 The first recording asks before it downloads a model from Hugging Face. Arko checks the download,
@@ -76,9 +105,10 @@ left out.
 | `model` | `automatic` (by the language), `granite` or `parakeet` |
 | `language` | The language you speak, such as `fr` or `pt-BR`, in place of the system's |
 | `idle_minutes` | How long the model stays in memory after a recording |
-| `download` | `ask` before downloading a missing model, or `automatic` |
+| `download` | `ask` before downloading a missing model (the speech model or full cleanup's), or `automatic` |
 | `session_words` | `true` to favour [these words](#favoured-words), or `false` to favour none |
 | `leave_out_secrets` | `true` to leave secrets out of the favoured words, `false` by default |
+| `cleanup` | `off`, `light`, `medium` or `full`, for what [cleanup](#cleanup) takes out |
 
 `leave_out_secrets` leaves out the values that context marks as secret and keeps the names. Those
 are what follows a password, key or token name (`API_KEY=…`, `password: …`, `--token …`), an

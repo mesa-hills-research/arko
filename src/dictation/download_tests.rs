@@ -34,16 +34,22 @@ pub(crate) struct FileServer {
 
 impl FileServer {
     pub(crate) fn start(model: &SpeechModel, dir: &Path) -> FileServer {
+        FileServer::serving(
+            model
+                .files
+                .iter()
+                .map(|file| {
+                    let path = format!("/{}/resolve/{}/{}", model.repo, model.revision, file.name);
+                    (path, dir.join(file.name))
+                })
+                .collect(),
+        )
+    }
+
+    /// A server for `files`, by the path each is served at.
+    fn serving(files: HashMap<String, PathBuf>) -> FileServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let files: HashMap<String, PathBuf> = model
-            .files
-            .iter()
-            .map(|file| {
-                let path = format!("/{}/resolve/{}/{}", model.repo, model.revision, file.name);
-                (path, dir.join(file.name))
-            })
-            .collect();
         let behaviour: Arc<Mutex<Behaviour>> = Arc::default();
         let state = behaviour.clone();
         std::thread::spawn(move || {
@@ -235,12 +241,20 @@ fn the_files_download_and_are_checked() {
     let total = setup.model.download_bytes();
     assert_eq!(
         steps.first(),
-        Some(&Preparing::Downloading { done: 0, total })
+        Some(&Preparing::Downloading {
+            model: ModelKind::Speech,
+            done: 0,
+            total
+        })
     );
     assert_eq!(
         &steps[steps.len() - 2..],
         &[
-            Preparing::Downloading { done: total, total },
+            Preparing::Downloading {
+                model: ModelKind::Speech,
+                done: total,
+                total
+            },
             Preparing::Packing
         ]
     );
@@ -405,7 +419,7 @@ fn cancelling_stops_checking_and_packing() {
     let path = setup.downloads.join("model.safetensors");
     std::fs::write(&path, weights()).unwrap();
     let cancel = AtomicBool::new(true);
-    assert_eq!(sha256(&path, &cancel), Err(Error::Cancelled));
+    assert_eq!(sha256(&path, SPEECH, &cancel), Err(Error::Cancelled));
     let out = setup.downloads.join("model.pack");
     let mut writer = PackWriter {
         file: FileSink::create(&out, "test", Vec::new()).unwrap(),
@@ -414,7 +428,7 @@ fn cancelling_stops_checking_and_packing() {
     assert!(pack::Sink::bytes(&mut writer, "a", b"bytes").is_err());
     cancel.store(false, Ordering::SeqCst);
     pack::Sink::bytes(&mut writer, "a", b"bytes").unwrap();
-    assert_eq!(sha256(&path, &cancel).unwrap().len(), 64);
+    assert_eq!(sha256(&path, SPEECH, &cancel).unwrap().len(), 64);
 }
 
 /// One process installs a model at a time. Another waits, following the
@@ -425,7 +439,8 @@ fn a_second_install_waits_for_the_first() {
     let root = tempfile::tempdir().unwrap();
     let dir = setup.model.dir(root.path());
     std::fs::create_dir_all(dir.join(DOWNLOAD_DIR)).unwrap();
-    let held = InstallLock::take(&dir.join(LOCK_FILE), &AtomicBool::new(false), || {}).unwrap();
+    let held =
+        InstallLock::take(&dir.join(LOCK_FILE), SPEECH, &AtomicBool::new(false), || {}).unwrap();
     std::fs::write(dir.join(DOWNLOAD_DIR).join("config.json"), b"{}").unwrap();
     let (model, base, root_path) = (
         setup.model,
@@ -452,6 +467,7 @@ fn a_second_install_waits_for_the_first() {
     assert_eq!(
         steps.first(),
         Some(&Preparing::Downloading {
+            model: ModelKind::Speech,
             done: 2,
             total: setup.model.download_bytes()
         })
@@ -467,15 +483,16 @@ fn a_second_install_waits_for_the_first() {
 fn contenders_for_the_lock_take_turns() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(LOCK_FILE);
-    let first = InstallLock::take(&path, &AtomicBool::new(false), || panic!("waited")).unwrap();
+    let first =
+        InstallLock::take(&path, SPEECH, &AtomicBool::new(false), || panic!("waited")).unwrap();
     assert_eq!(
-        InstallLock::take(&path, &AtomicBool::new(true), || {}).err(),
+        InstallLock::take(&path, SPEECH, &AtomicBool::new(true), || {}).err(),
         Some(Error::Cancelled)
     );
     let waits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (second_path, counted) = (path.clone(), waits.clone());
     let second = std::thread::spawn(move || {
-        InstallLock::take(&second_path, &AtomicBool::new(false), || {
+        InstallLock::take(&second_path, SPEECH, &AtomicBool::new(false), || {
             counted.fetch_add(1, Ordering::SeqCst);
         })
         .map(|_| ())
@@ -508,7 +525,8 @@ impl Drop for Killed {
 #[test]
 fn a_lock_whose_holder_dies_is_free() {
     if let Some(path) = std::env::var_os(HOLDER) {
-        let _lock = InstallLock::take(Path::new(&path), &AtomicBool::new(false), || {}).unwrap();
+        let _lock =
+            InstallLock::take(Path::new(&path), SPEECH, &AtomicBool::new(false), || {}).unwrap();
         // (The test harness prints it after the test's name.)
         println!("{HELD}");
         std::thread::sleep(std::time::Duration::from_secs(60));
@@ -536,13 +554,13 @@ fn a_lock_whose_holder_dies_is_free() {
         "the holder didn't take the lock"
     );
     assert_eq!(
-        InstallLock::take(&path, &AtomicBool::new(true), || {}).err(),
+        InstallLock::take(&path, SPEECH, &AtomicBool::new(true), || {}).err(),
         Some(Error::Cancelled),
         "the lock was free while held"
     );
     holder.0.kill().unwrap();
     holder.0.wait().unwrap();
-    InstallLock::take(&path, &AtomicBool::new(false), || panic!("waited")).unwrap();
+    InstallLock::take(&path, SPEECH, &AtomicBool::new(false), || panic!("waited")).unwrap();
 }
 
 /// A server that takes the connection and never answers, and cancelling ends
@@ -608,4 +626,99 @@ fn granite_installs_from_its_files() {
     let bytes = std::fs::metadata(model.pack(root.path())).unwrap().len();
     assert!(bytes.abs_diff(model.pack_bytes) < 4096, "{bytes}");
     speech::Model::load(&model.pack(root.path()), &speech::Options::default()).unwrap();
+}
+
+/// A pack of a megabyte and a half served at `/{name}`, as a GitHub release
+/// file, with how it's pinned (its SHA-256 given, or its own).
+fn served_pack(sha256: Option<&'static str>) -> (FileServer, RemoteFile, tempfile::TempDir) {
+    let served = tempfile::tempdir().unwrap();
+    let name = "tagger-q8_0.pack";
+    std::fs::write(served.path().join(name), weights()).unwrap();
+    let digest: String = Sha256::digest(weights())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let file = RemoteFile {
+        name,
+        bytes: weights().len() as u64,
+        sha256: sha256.unwrap_or(Box::leak(digest.into_boxed_str())),
+    };
+    let server = FileServer::serving([(format!("/{name}"), served.path().join(name))].into());
+    (server, file, served)
+}
+
+/// Full cleanup's pack downloads, is checked and goes in place with its
+/// notice, and the download is gone.
+#[test]
+fn the_cleanup_pack_downloads_and_goes_in_place() {
+    let (server, file, _served) = served_pack(None);
+    let root = tempfile::tempdir().unwrap();
+    let mut steps = Vec::new();
+    let url = format!("{}/{}", server.base, file.name);
+    let cancel = AtomicBool::new(false);
+    install_tagger(
+        root.path(),
+        &url,
+        &file,
+        &mut |step| steps.push(step),
+        &cancel,
+    )
+    .unwrap();
+    let dir = models::tagger_dir(root.path());
+    assert_eq!(
+        std::fs::read(models::tagger_pack(root.path())).unwrap(),
+        weights()
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("NOTICE.txt")).unwrap(),
+        tagger_notice(&url)
+    );
+    assert!(tagger_notice(&url).starts_with(speech::disfluency::PACK_NOTICE));
+    assert!(tagger_notice(&url).ends_with(" release.\n"));
+    assert!(!dir.join(DOWNLOAD_DIR).exists());
+    let step = |done| Preparing::Downloading {
+        model: ModelKind::Cleanup,
+        done,
+        total: file.bytes,
+    };
+    assert_eq!(steps.first(), Some(&step(0)));
+    assert_eq!(steps.last(), Some(&step(file.bytes)));
+    // Installed, it isn't downloaded again.
+    install_tagger(root.path(), &url, &file, &mut |_| {}, &cancel).unwrap();
+    assert_eq!(server.requests().len(), 1);
+}
+
+/// A cleanup pack that isn't the one pinned is deleted, and nothing goes in
+/// place.
+#[test]
+fn a_damaged_cleanup_pack_is_deleted() {
+    let wrong = "0000000000000000000000000000000000000000000000000000000000000000";
+    let (server, file, _served) = served_pack(Some(wrong));
+    let root = tempfile::tempdir().unwrap();
+    let url = format!("{}/{}", server.base, file.name);
+    let cancel = AtomicBool::new(false);
+    let error = install_tagger(root.path(), &url, &file, &mut |_| {}, &cancel).unwrap_err();
+    assert_eq!(
+        error,
+        Error::Failed("The downloaded cleanup model was damaged, so Arko deleted it. Start dictation again to download it again.".into())
+    );
+    let dir = models::tagger_dir(root.path());
+    assert!(!models::tagger_pack(root.path()).exists());
+    assert!(!dir.join(DOWNLOAD_DIR).join(file.name).exists());
+}
+
+/// The tagger's folder is named after the release Telmo pins, so a new pin
+/// downloads into a folder of its own instead of finding the old pack.
+#[test]
+fn the_tagger_folder_follows_the_pinned_release() {
+    let name = speech::disfluency::PACK_DOWNLOAD.name;
+    assert!(
+        name.starts_with(&format!("{}-", models::TAGGER_RELEASE)),
+        "{name}"
+    );
+    let url = speech::disfluency::PACK_DOWNLOAD.url;
+    assert!(
+        url.contains(&format!("/download/{}/", models::TAGGER_RELEASE)),
+        "{url}"
+    );
 }

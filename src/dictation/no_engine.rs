@@ -5,7 +5,7 @@ use std::convert::Infallible;
 use std::path::Path;
 
 use super::models::{GRANITE, SpeechModel};
-use super::{DictationError, DictationOptions, SessionWord, Sink, Source};
+use super::{DictationError, DictationOptions, Download, SessionWord, Sink, Source};
 
 pub struct DictationService;
 
@@ -20,6 +20,10 @@ impl DictationService {
 
     pub fn model(&self) -> &'static SpeechModel {
         &GRANITE
+    }
+
+    pub fn missing(&self) -> Option<Download> {
+        None
     }
 
     pub fn open(
