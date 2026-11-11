@@ -2447,6 +2447,7 @@ pub fn describe_dense(info: &DenseIndexInfo) -> &'static str {
     }
 }
 
-#[cfg(test)]
+// The tests hold a call with Linux's file descriptors.
+#[cfg(all(test, target_os = "linux"))]
 #[path = "engine_tests.rs"]
 mod tests;

@@ -7,7 +7,6 @@ use super::*;
 /// session saved in its manifest while the creation waited, such as the
 /// tokens and dollars an embedding run spent.
 #[test]
-#[cfg(target_os = "linux")]
 fn create_keeps_what_another_session_saved_while_it_waited() {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
