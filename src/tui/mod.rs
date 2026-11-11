@@ -25,6 +25,8 @@ mod dictation;
 #[cfg(test)]
 mod golden;
 mod input;
+#[cfg(test)]
+mod inventory_tests;
 mod keys_menu;
 mod markdown;
 mod model_picker;

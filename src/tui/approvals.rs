@@ -66,6 +66,14 @@ impl Tray {
             .elapsed()
             .as_millis() as u64
     }
+
+    /// Sets the clock `ms` back, so the requests shown count as shown that
+    /// much longer.
+    #[cfg(test)]
+    pub(super) fn age(&mut self, ms: u64) {
+        let clock = self.clock.get_or_insert_with(Instant::now);
+        *clock -= Duration::from_millis(ms);
+    }
 }
 
 impl App {

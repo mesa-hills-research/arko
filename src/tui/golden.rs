@@ -25,6 +25,7 @@
 
 use std::fmt::Write;
 
+use ratatui::backend::TestBackend;
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::style::{Color, Modifier};
 use unicode_width::UnicodeWidthStr;
@@ -72,6 +73,12 @@ pub(super) fn styled(buffer: &Buffer, cursor: (u16, u16), visible: bool) -> Stri
         }
     }
     out
+}
+
+/// The screen a `TestBackend` shows, after a draw.
+pub(super) fn of(backend: &TestBackend) -> String {
+    let at = backend.cursor_position();
+    styled(backend.buffer(), (at.x, at.y), backend.cursor_visible())
 }
 
 /// What a cell shows besides its symbol.

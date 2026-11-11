@@ -63,7 +63,7 @@ pub(super) mod tests {
 
     thread_local! {
         /// The time a test chose for its thread, in place of the clock's.
-        pub(super) static NOW: Cell<Option<i64>> = const { Cell::new(None) };
+        pub(in crate::tui) static NOW: Cell<Option<i64>> = const { Cell::new(None) };
     }
 
     /// The idle session's start. The cache was last used at this time.

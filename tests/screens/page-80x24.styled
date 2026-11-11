@@ -1,0 +1,209 @@
+size 80 24
+cursor 0 0 hidden
+text 0 ""
+style 0 0 80 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ───┌ Web page ────────────────────────────────────────────┐─────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 12 fg=#303030 bg=#131313
+style 1 12 13 fg=#303030 bg=#101010
+style 1 13 23 fg=#dedede bg=#101010 bold
+style 1 23 68 fg=#303030 bg=#101010
+style 1 68 78 fg=#303030 bg=#131313
+style 1 78 80 fg=#dedede bg=#131313
+text 2 "  │ Model   │ █████████████████████████████████                    │         │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 12 fg=#9d9d9d bg=#131313
+style 2 12 13 fg=#303030 bg=#101010
+style 2 13 14 fg=#dedede bg=#101010
+style 2 14 47 fg=#ffffff bg=#000000
+style 2 47 67 fg=#dedede bg=#101010
+style 2 67 68 fg=#303030 bg=#101010
+style 2 68 76 fg=#dedede bg=#131313
+style 2 76 78 fg=#303030 bg=#131313
+style 2 78 80 fg=#dedede bg=#131313
+text 3 "  │ Workers │ ██ ▄▄▄▄▄ █▀▀████   ▀█▄▀█ ▄▄▄▄▄ ██                    │         │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 12 fg=#9d9d9d bg=#131313
+style 3 12 13 fg=#303030 bg=#101010
+style 3 13 14 fg=#dedede bg=#101010
+style 3 14 47 fg=#ffffff bg=#000000
+style 3 47 67 fg=#dedede bg=#101010
+style 3 67 68 fg=#303030 bg=#101010
+style 3 68 76 fg=#dedede bg=#131313
+style 3 76 78 fg=#303030 bg=#131313
+style 3 78 80 fg=#dedede bg=#131313
+text 4 "  │ Workspac│ ██ █   █ █▀▄▀██▀▀▄▀▀ ▄ █ █   █ ██                    │         │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 12 fg=#9d9d9d bg=#131313
+style 4 12 13 fg=#303030 bg=#101010
+style 4 13 14 fg=#dedede bg=#101010
+style 4 14 47 fg=#ffffff bg=#000000
+style 4 47 67 fg=#dedede bg=#101010
+style 4 67 68 fg=#303030 bg=#101010
+style 4 68 76 fg=#dedede bg=#131313
+style 4 76 78 fg=#303030 bg=#131313
+style 4 78 80 fg=#dedede bg=#131313
+text 5 "  │ Session │ ██ █▄▄▄█ █▀▄▄▄  ▀▀███▄██ █▄▄▄█ ██                    │         │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 12 fg=#9d9d9d bg=#131313
+style 5 12 13 fg=#303030 bg=#101010
+style 5 13 14 fg=#dedede bg=#101010
+style 5 14 47 fg=#ffffff bg=#000000
+style 5 47 67 fg=#dedede bg=#101010
+style 5 67 68 fg=#303030 bg=#101010
+style 5 68 76 fg=#dedede bg=#131313
+style 5 76 78 fg=#303030 bg=#131313
+style 5 78 80 fg=#dedede bg=#131313
+text 6 "  │ Project │ ██▄▄▄▄▄▄▄█▄▀ █▄█▄█ █▄█▄█▄▄▄▄▄▄▄██                    │         │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 12 fg=#9d9d9d bg=#131313
+style 6 12 13 fg=#303030 bg=#101010
+style 6 13 14 fg=#dedede bg=#101010
+style 6 14 47 fg=#ffffff bg=#000000
+style 6 47 67 fg=#dedede bg=#101010
+style 6 67 68 fg=#303030 bg=#101010
+style 6 68 76 fg=#dedede bg=#131313
+style 6 76 78 fg=#303030 bg=#131313
+style 6 78 80 fg=#dedede bg=#131313
+text 7 "  │ Tools   │ ██▄▄▄▄▄█▄▄ ▄█▀▄█ ▄    ▄▄▀▄▀▄█▄▀██                    │         │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 12 fg=#9d9d9d bg=#131313
+style 7 12 13 fg=#303030 bg=#101010
+style 7 13 14 fg=#dedede bg=#101010
+style 7 14 47 fg=#ffffff bg=#000000
+style 7 47 67 fg=#dedede bg=#101010
+style 7 67 68 fg=#303030 bg=#101010
+style 7 68 76 fg=#dedede bg=#131313
+style 7 76 78 fg=#303030 bg=#131313
+style 7 78 80 fg=#dedede bg=#131313
+text 8 "  └─────────│ ██ ▀ ▄ ▀▄▄ █▄█▀▄  █▄█▀█▀▀▄ ██▀███                    │─────────┘"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 12 fg=#303030 bg=#131313
+style 8 12 13 fg=#303030 bg=#101010
+style 8 13 14 fg=#dedede bg=#101010
+style 8 14 47 fg=#ffffff bg=#000000
+style 8 47 67 fg=#dedede bg=#101010
+style 8 67 68 fg=#303030 bg=#101010
+style 8 68 78 fg=#303030 bg=#131313
+style 8 78 80 fg=#dedede bg=#131313
+text 9 "            │ ██  ▄ ▀ ▄ ▄ ▄▄█▄▄█ ▄  ▄▄▀▄▀▄ █▀██                    │"
+style 9 0 12 fg=#dedede bg=#131313
+style 9 12 13 fg=#303030 bg=#101010
+style 9 13 14 fg=#dedede bg=#101010
+style 9 14 47 fg=#ffffff bg=#000000
+style 9 47 67 fg=#dedede bg=#101010
+style 9 67 68 fg=#303030 bg=#101010
+style 9 68 80 fg=#dedede bg=#131313
+text 10 "▎ Add a READ│ ██ ▀▀█▀█▄█▄██▀▀▄█▄▄▄▄██ ▄▀██▄▀███                    │"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 12 fg=#dedede bg=#202020
+style 10 12 13 fg=#303030 bg=#101010
+style 10 13 14 fg=#dedede bg=#101010
+style 10 14 47 fg=#ffffff bg=#000000
+style 10 47 67 fg=#dedede bg=#101010
+style 10 67 68 fg=#303030 bg=#101010
+style 10 68 80 fg=#dedede bg=#202020
+text 11 "            │ ██  █▄▀█▄▀▄█▄▀▄▄▀▄▄ ▀▀▄ ▀█▀▀ █▀██                    │"
+style 11 0 12 fg=#dedede bg=#131313
+style 11 12 13 fg=#303030 bg=#101010
+style 11 13 14 fg=#dedede bg=#101010
+style 11 14 47 fg=#ffffff bg=#000000
+style 11 47 67 fg=#dedede bg=#101010
+style 11 67 68 fg=#303030 bg=#101010
+style 11 68 80 fg=#dedede bg=#131313
+text 12 "  Done. The │ ██ ██▀▄█▄▀▀  █ ▄█ ▄▄▄▀█▀ █▀▄▄▀███                    │"
+style 12 0 12 fg=#dedede bg=#131313
+style 12 12 13 fg=#303030 bg=#101010
+style 12 13 14 fg=#dedede bg=#101010
+style 12 14 47 fg=#ffffff bg=#000000
+style 12 47 67 fg=#dedede bg=#101010
+style 12 67 68 fg=#303030 bg=#101010
+style 12 68 80 fg=#dedede bg=#131313
+text 13 "            │ ██▄███▄█▄▄▀▀█ ▀▀▄▄ ▄▀▀ ▄▄▄ ▀   ██                    │"
+style 13 0 12 fg=#dedede bg=#131313
+style 13 12 13 fg=#303030 bg=#101010
+style 13 13 14 fg=#dedede bg=#101010
+style 13 14 47 fg=#ffffff bg=#000000
+style 13 47 67 fg=#dedede bg=#101010
+style 13 67 68 fg=#303030 bg=#101010
+style 13 68 80 fg=#dedede bg=#131313
+text 14 "            │ ██ ▄▄▄▄▄ █▄▀▄▀ █▄▄▄██▄ █▄█ ▄▄▀███                    │"
+style 14 0 12 fg=#dedede bg=#131313
+style 14 12 13 fg=#303030 bg=#101010
+style 14 13 14 fg=#dedede bg=#101010
+style 14 14 47 fg=#ffffff bg=#000000
+style 14 47 67 fg=#dedede bg=#101010
+style 14 67 68 fg=#303030 bg=#101010
+style 14 68 80 fg=#dedede bg=#131313
+text 15 "            │ ██ █   █ █ ▄▀██ ▄▀▀ ██  ▄ ▄▄▄█▀██                    │"
+style 15 0 12 fg=#dedede bg=#131313
+style 15 12 13 fg=#303030 bg=#101010
+style 15 13 14 fg=#dedede bg=#101010
+style 15 14 47 fg=#ffffff bg=#000000
+style 15 47 67 fg=#dedede bg=#101010
+style 15 67 68 fg=#303030 bg=#101010
+style 15 68 80 fg=#dedede bg=#131313
+text 16 "            │ ██ █▄▄▄█ █  ▄▀ █   █▄▄ ▀▄▀ ▄█ ███                    │"
+style 16 0 12 fg=#dedede bg=#131313
+style 16 12 13 fg=#303030 bg=#101010
+style 16 13 14 fg=#dedede bg=#101010
+style 16 14 47 fg=#ffffff bg=#000000
+style 16 47 67 fg=#dedede bg=#101010
+style 16 67 68 fg=#303030 bg=#101010
+style 16 68 80 fg=#dedede bg=#131313
+text 17 "            │ ██▄▄▄▄▄▄▄█▄██▄█▄▄█▄▄▄██████▄▄████                    │"
+style 17 0 12 fg=#dedede bg=#131313
+style 17 12 13 fg=#303030 bg=#101010
+style 17 13 14 fg=#dedede bg=#101010
+style 17 14 47 fg=#ffffff bg=#000000
+style 17 47 67 fg=#dedede bg=#101010
+style 17 67 68 fg=#303030 bg=#101010
+style 17 68 80 fg=#dedede bg=#131313
+text 18 "            │ █████████████████████████████████                    │"
+style 18 0 12 fg=#dedede bg=#131313
+style 18 12 13 fg=#303030 bg=#101010
+style 18 13 14 fg=#dedede bg=#101010
+style 18 14 47 fg=#ffffff bg=#000000
+style 18 47 67 fg=#dedede bg=#101010
+style 18 67 68 fg=#303030 bg=#101010
+style 18 68 80 fg=#dedede bg=#131313
+text 19 "────────────│ http://192.168.1.20:8765/#key=Kq3xv9TnWb2LmzR8cYd5Hs │────────────"
+style 19 0 12 fg=#303030 bg=#131313
+style 19 12 13 fg=#303030 bg=#101010
+style 19 13 67 fg=#dedede bg=#101010
+style 19 67 68 fg=#303030 bg=#101010
+style 19 68 80 fg=#303030 bg=#131313
+text 20 " last turn 3│ LAN                                                  │"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 12 fg=#9d9d9d bg=#131313
+style 20 12 13 fg=#303030 bg=#101010
+style 20 13 14 fg=#dedede bg=#101010
+style 20 14 17 fg=#9d9d9d bg=#101010
+style 20 17 67 fg=#dedede bg=#101010
+style 20 67 68 fg=#303030 bg=#101010
+style 20 68 80 fg=#dedede bg=#131313
+text 21 "────────────└────────────────────── ← →  other links   Esc  close ─┘────────────"
+style 21 0 12 fg=#303030 bg=#131313
+style 21 12 35 fg=#303030 bg=#101010
+style 21 35 40 fg=#dedede bg=#232323
+style 21 40 52 fg=#9d9d9d bg=#101010
+style 21 52 54 fg=#303030 bg=#101010
+style 21 54 59 fg=#dedede bg=#232323
+style 21 59 65 fg=#9d9d9d bg=#101010
+style 21 65 68 fg=#303030 bg=#101010
+style 21 68 80 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 80 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 fg=#303030 bg=#131313

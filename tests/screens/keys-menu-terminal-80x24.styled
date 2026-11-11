@@ -1,0 +1,67 @@
+size 80 24
+cursor 0 0 hidden
+text 0 ""
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 78 dim
+text 2 "  │ Model      gpt-6-luna (high effort)                                      │"
+style 2 2 15 dim
+style 2 76 78 dim
+text 3 "  │ Workers    parallel workers                                              │"
+style 3 2 15 dim
+style 3 76 78 dim
+text 4 "  │ ┌ API keys ────────────────────────────────────────────────────────────┐ │"
+style 4 2 4 dim
+style 4 5 15 bold
+style 4 76 78 dim
+text 5 "  │ │                                                                      │ │"
+style 5 2 4 dim
+style 5 76 78 dim
+text 6 "  │ │ ▸ Anthropic      sk-ant-…a1b2    saved by Arko                       │ │"
+style 6 2 4 dim
+style 6 6 8 fg=cyan
+style 6 8 23 fg=cyan bold
+style 6 39 52 dim
+style 6 76 78 dim
+text 7 "  │ │                  Saved by Arko in /home/me/.local/share/arko/.env.   │ │"
+style 7 2 4 dim
+style 7 23 72 dim
+style 7 76 78 dim
+text 8 "  └─│   OpenAI         not set                                             │─┘"
+style 8 2 4 dim
+style 8 23 39 dim
+style 8 76 78 dim
+text 9 "    │   Google Gemini  AIza…x9Yz       environment                         │"
+style 9 39 50 dim
+text 10 "▎ Ad│   OpenRouter     sk-or-…77aa     .env file                           │"
+style 10 0 2 fg=cyan
+style 10 39 48 dim
+text 11 "    │   Voyage         not set                                             │"
+style 11 23 39 dim
+text 12 "  Do│                                                                      │"
+text 13 "    └───────── ↑ ↓  choose   Enter  replace   Delete  remove   Esc  close ─┘"
+style 13 14 19 reverse
+style 13 19 26 dim
+style 13 28 35 reverse
+style 13 35 43 dim
+style 13 45 53 reverse
+style 13 53 60 dim
+style 13 62 67 reverse
+style 13 67 73 dim
+text 14 ""
+text 15 ""
+text 16 ""
+text 17 ""
+text 18 ""
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 dim
+text 20 " last turn 34s"
+style 20 1 14 dim
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 dim
+text 22 " › Message  / for commands"
+style 22 1 3 fg=cyan
+style 22 3 26 dim
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 dim

@@ -1,0 +1,57 @@
+size 80 24
+cursor 0 0 hidden
+text 0 "  ┌ Main agent's model ──────────────────────────────────────────────────────┐"
+style 0 3 23 bold
+text 1 "  │                                                                          │"
+text 2 "  │ OpenAI, with your API key                                                │"
+style 2 4 29 bold dim
+text 3 "  │   gpt-6.1-sol    sol    API, $2/$10                                      │"
+style 3 21 46 dim
+text 4 "  │   gpt-6-astra    astra  API, $10/$50                                     │"
+style 4 21 46 dim
+text 5 "  │   gpt-6.1-terra  terra  API, $1/$5                                       │"
+style 5 21 46 dim
+text 6 "  │ ▸ gpt-6-luna     luna   API, $0.10/$0.50  now, high effort               │"
+style 6 4 6 fg=cyan
+style 6 6 21 fg=cyan bold
+style 6 21 46 dim
+style 6 46 62 fg=cyan
+text 7 "  │                                                                          │"
+text 8 "  │ Claude Code, on your Claude plan  needs Claude Code signed in            │"
+style 8 4 36 bold dim
+style 8 36 65 dim
+text 9 "  │                                                                          │"
+text 10 "▎ │ Anthropic API, billed per token  needs ANTHROPIC_API_KEY                 │"
+style 10 0 2 fg=cyan
+style 10 4 35 bold dim
+style 10 35 60 dim
+text 11 "  │                                                                          │"
+text 12 "  │ Google Gemini, billed per token  needs GEMINI_API_KEY                    │"
+style 12 4 35 bold dim
+style 12 35 57 dim
+text 13 "  │                                                                          │"
+text 14 "  │ OpenRouter, billed per token  needs OPENROUTER_API_KEY                   │"
+style 14 4 32 bold dim
+style 14 32 58 dim
+text 15 "  │                                                                          │"
+text 16 "  │ Another model                                                            │"
+style 16 4 17 bold dim
+text 17 "  │                                                                          │"
+text 18 "  └───────────────────────────────── ↑ ↓  choose   Enter  next   Esc  close ─┘"
+style 18 36 41 reverse
+style 18 41 48 dim
+style 18 50 57 reverse
+style 18 57 62 dim
+style 18 64 69 reverse
+style 18 69 75 dim
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 dim
+text 20 " last turn 34s"
+style 20 1 14 dim
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 dim
+text 22 " › Message  / for commands"
+style 22 1 3 fg=cyan
+style 22 3 26 dim
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 dim

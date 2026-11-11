@@ -1,0 +1,47 @@
+size 80 24
+cursor 3 22 visible default
+text 0 "│"
+style 0 0 2 dim
+text 1 "│ test result: FAILED. 3 passed; 1 failed"
+style 1 0 2 dim
+text 2 "! retrying in 2 s"
+style 2 0 17 fg=yellow
+text 3 ""
+text 4 "  The parser skipped the blank line at the end of a file. I changed the loop,"
+text 5 "  and now I run the tests again."
+text 6 ""
+text 7 "▾ $ cargo test · ✓ exit 0 · 4 passed"
+style 7 0 17 dim
+style 7 17 18 fg=green
+style 7 18 36 dim
+text 8 "│ running 4 tests"
+style 8 0 2 dim
+text 9 "│ test result: ok. 4 passed; 0 failed"
+style 9 0 2 dim
+text 10 ""
+text 11 "  Fixed. The parser keeps the blank line at the end now."
+text 12 ""
+text 13 "  • All 4 tests pass."
+style 13 8 9 bold
+text 14 "  • The edit is in src/parser.rs."
+style 14 19 32 fg=cyan
+text 15 ""
+text 16 "  │ while self.peek().is_some_and(|c| c != '\\n') {"
+style 16 2 4 dim
+text 17 "  │     end += 1;"
+style 17 2 4 dim
+text 18 "  │ }"
+style 18 2 4 dim
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 dim
+text 20 " last turn 2m10s · 142k/250k · cache 0:20 · main: $3.20"
+style 20 1 31 dim
+style 20 31 41 fg=yellow
+style 20 41 55 dim
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 dim
+text 22 " › Message  / for commands"
+style 22 1 3 fg=cyan
+style 22 3 26 dim
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 dim

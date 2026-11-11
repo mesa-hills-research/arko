@@ -1,0 +1,12 @@
+size 40 5
+cursor 0 0 hidden
+text 0 ""
+style 0 0 40 fg=#dedede bg=#131313
+text 1 ""
+style 1 0 40 fg=#dedede bg=#131313
+text 2 ""
+style 2 0 40 fg=#dedede bg=#131313
+text 3 ""
+style 3 0 40 fg=#dedede bg=#131313
+text 4 ""
+style 4 0 40 fg=#dedede bg=#131313

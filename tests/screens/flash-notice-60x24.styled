@@ -1,0 +1,153 @@
+size 60 24
+cursor 0 0 hidden
+text 0 ""
+style 0 0 60 fg=#dedede bg=#131313
+text 1 "  ┌ Ar┌ Theme ───────────────────────────────────────┐───┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 6 fg=#dedede bg=#131313 bold
+style 1 6 7 fg=#303030 bg=#101010
+style 1 7 14 fg=#dedede bg=#101010 bold
+style 1 14 54 fg=#303030 bg=#101010
+style 1 54 58 fg=#303030 bg=#131313
+style 1 58 60 fg=#dedede bg=#131313
+text 2 "  │ Mo│                                              │   │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 6 fg=#9d9d9d bg=#131313
+style 2 6 7 fg=#303030 bg=#101010
+style 2 7 53 fg=#dedede bg=#101010
+style 2 53 54 fg=#303030 bg=#101010
+style 2 54 56 fg=#dedede bg=#131313
+style 2 56 58 fg=#303030 bg=#131313
+style 2 58 60 fg=#dedede bg=#131313
+text 3 "  │ Wo│ Lantern                                      │   │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 6 fg=#9d9d9d bg=#131313
+style 3 6 7 fg=#303030 bg=#101010
+style 3 7 8 fg=#dedede bg=#101010
+style 3 8 15 fg=#9d9d9d bg=#101010 bold
+style 3 15 53 fg=#dedede bg=#101010
+style 3 53 54 fg=#303030 bg=#101010
+style 3 54 56 fg=#dedede bg=#131313
+style 3 56 58 fg=#303030 bg=#131313
+style 3 58 60 fg=#dedede bg=#131313
+text 4 "  ┌ Theme previews ──────────────────────────────────────┐"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 3 fg=#303030 bg=#101010
+style 4 3 19 fg=#dedede bg=#101010 bold
+style 4 19 58 fg=#303030 bg=#101010
+style 4 58 60 fg=#dedede bg=#131313
+text 5 "  │                                                      │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 3 fg=#303030 bg=#101010
+style 5 3 57 fg=#dedede bg=#101010
+style 5 57 58 fg=#303030 bg=#101010
+style 5 58 60 fg=#dedede bg=#131313
+text 6 "  │ Resting on a theme in the list shows it. Moving      │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 3 fg=#303030 bg=#101010
+style 6 3 57 fg=#dedede bg=#101010
+style 6 57 58 fg=#303030 bg=#101010
+style 6 58 60 fg=#dedede bg=#131313
+text 7 "  │ between light and dark themes makes the whole screen │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 3 fg=#303030 bg=#101010
+style 7 3 57 fg=#dedede bg=#101010
+style 7 57 58 fg=#303030 bg=#101010
+style 7 58 60 fg=#dedede bg=#131313
+text 8 "  │ flash. If flashing light affects you, choose No      │"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 3 fg=#303030 bg=#101010
+style 8 3 57 fg=#dedede bg=#101010
+style 8 57 58 fg=#303030 bg=#101010
+style 8 58 60 fg=#dedede bg=#131313
+text 9 "  │ previews. Settings can change this later.            │"
+style 9 0 2 fg=#dedede bg=#131313
+style 9 2 3 fg=#303030 bg=#101010
+style 9 3 57 fg=#dedede bg=#101010
+style 9 57 58 fg=#303030 bg=#101010
+style 9 58 60 fg=#dedede bg=#131313
+text 10 "▎ │                                                      │"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 3 fg=#303030 bg=#101010
+style 10 3 57 fg=#dedede bg=#101010
+style 10 57 58 fg=#303030 bg=#101010
+style 10 58 60 fg=#dedede bg=#202020
+text 11 "  │  Preview themes    No previews                       │"
+style 11 0 2 fg=#dedede bg=#131313
+style 11 2 3 fg=#303030 bg=#101010
+style 11 3 4 fg=#dedede bg=#101010
+style 11 4 20 fg=#f2f9ff bg=#006ee5
+style 11 20 22 fg=#dedede bg=#101010
+style 11 22 35 fg=#dedede bg=#232323
+style 11 35 57 fg=#dedede bg=#101010
+style 11 57 58 fg=#303030 bg=#101010
+style 11 58 60 fg=#dedede bg=#131313
+text 12 "  │                                                      │"
+style 12 0 2 fg=#dedede bg=#131313
+style 12 2 3 fg=#303030 bg=#101010
+style 12 3 57 fg=#dedede bg=#101010
+style 12 57 58 fg=#303030 bg=#101010
+style 12 58 60 fg=#dedede bg=#131313
+text 13 "  └───────────── ← →  choose   Enter  go on   Esc  back ─┘"
+style 13 0 2 fg=#dedede bg=#131313
+style 13 2 16 fg=#303030 bg=#101010
+style 13 16 21 fg=#dedede bg=#232323
+style 13 21 28 fg=#9d9d9d bg=#101010
+style 13 28 30 fg=#303030 bg=#101010
+style 13 30 37 fg=#dedede bg=#232323
+style 13 37 43 fg=#9d9d9d bg=#101010
+style 13 43 45 fg=#303030 bg=#101010
+style 13 45 50 fg=#dedede bg=#232323
+style 13 50 55 fg=#9d9d9d bg=#101010
+style 13 55 58 fg=#303030 bg=#101010
+style 13 58 60 fg=#dedede bg=#131313
+text 14 "      │                                              │"
+style 14 0 6 fg=#dedede bg=#131313
+style 14 6 7 fg=#303030 bg=#101010
+style 14 7 53 fg=#dedede bg=#101010
+style 14 53 54 fg=#303030 bg=#101010
+style 14 54 60 fg=#dedede bg=#131313
+text 15 "      │ Mellifluous                                  │"
+style 15 0 6 fg=#dedede bg=#131313
+style 15 6 7 fg=#303030 bg=#101010
+style 15 7 8 fg=#dedede bg=#101010
+style 15 8 19 fg=#9d9d9d bg=#101010 bold
+style 15 19 53 fg=#dedede bg=#101010
+style 15 53 54 fg=#303030 bg=#101010
+style 15 54 60 fg=#dedede bg=#131313
+text 16 "      │                                              │"
+style 16 0 6 fg=#dedede bg=#131313
+style 16 6 7 fg=#303030 bg=#101010
+style 16 7 53 fg=#dedede bg=#101010
+style 16 53 54 fg=#303030 bg=#101010
+style 16 54 60 fg=#dedede bg=#131313
+text 17 "      └──────────────────── Enter  keep   Esc  back ─┘"
+style 17 0 6 fg=#dedede bg=#131313
+style 17 6 27 fg=#303030 bg=#101010
+style 17 27 34 fg=#dedede bg=#232323
+style 17 34 39 fg=#9d9d9d bg=#101010
+style 17 39 41 fg=#303030 bg=#101010
+style 17 41 46 fg=#dedede bg=#232323
+style 17 46 51 fg=#9d9d9d bg=#101010
+style 17 51 54 fg=#303030 bg=#101010
+style 17 54 60 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 60 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────────────────────────"
+style 19 0 60 fg=#303030 bg=#131313
+text 20 " last turn 34s"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 14 fg=#9d9d9d bg=#131313
+style 20 14 60 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────────────────────────"
+style 21 0 60 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 60 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────"
+style 23 0 60 fg=#303030 bg=#131313

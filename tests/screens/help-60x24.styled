@@ -1,0 +1,149 @@
+size 60 24
+cursor 0 0 hidden
+text 0 " ┌ Help ──────────────────────────────────────────────────┐"
+style 0 0 1 fg=#dedede bg=#131313
+style 0 1 2 fg=#303030 bg=#101010
+style 0 2 8 fg=#dedede bg=#101010 bold
+style 0 8 59 fg=#303030 bg=#101010
+style 0 59 60 fg=#dedede bg=#131313
+text 1 " │                                                        │"
+style 1 0 1 fg=#dedede bg=#131313
+style 1 1 2 fg=#303030 bg=#101010
+style 1 2 58 fg=#dedede bg=#101010
+style 1 58 59 fg=#303030 bg=#101010
+style 1 59 60 fg=#dedede bg=#131313
+text 2 " │ Keys                                                   │"
+style 2 0 1 fg=#dedede bg=#131313
+style 2 1 2 fg=#303030 bg=#101010
+style 2 2 3 fg=#dedede bg=#101010
+style 2 3 7 fg=#419cff bg=#101010 bold
+style 2 7 58 fg=#dedede bg=#101010
+style 2 58 59 fg=#303030 bg=#101010
+style 2 59 60 fg=#dedede bg=#131313
+text 3 " │  Enter         send (a note while the agent works,     │"
+style 3 0 1 fg=#dedede bg=#131313
+style 3 1 2 fg=#303030 bg=#101010
+style 3 2 3 fg=#dedede bg=#101010
+style 3 3 10 fg=#dedede bg=#232323
+style 3 10 58 fg=#dedede bg=#101010
+style 3 58 59 fg=#303030 bg=#101010
+style 3 59 60 fg=#dedede bg=#131313
+text 4 " │                else a new turn)                        │"
+style 4 0 1 fg=#dedede bg=#131313
+style 4 1 2 fg=#303030 bg=#101010
+style 4 2 58 fg=#dedede bg=#101010
+style 4 58 59 fg=#303030 bg=#101010
+style 4 59 60 fg=#dedede bg=#131313
+text 5 " │  Shift+Enter   new line, where the terminal tells it   │"
+style 5 0 1 fg=#dedede bg=#131313
+style 5 1 2 fg=#303030 bg=#101010
+style 5 2 3 fg=#dedede bg=#101010
+style 5 3 16 fg=#dedede bg=#232323
+style 5 16 58 fg=#dedede bg=#101010
+style 5 58 59 fg=#303030 bg=#101010
+style 5 59 60 fg=#dedede bg=#131313
+text 6 " │                from Enter                              │"
+style 6 0 1 fg=#dedede bg=#131313
+style 6 1 2 fg=#303030 bg=#101010
+style 6 2 58 fg=#dedede bg=#101010
+style 6 58 59 fg=#303030 bg=#101010
+style 6 59 60 fg=#dedede bg=#131313
+text 7 " │  Ctrl+J        new line, in every terminal (Alt+Enter  │"
+style 7 0 1 fg=#dedede bg=#131313
+style 7 1 2 fg=#303030 bg=#101010
+style 7 2 3 fg=#dedede bg=#101010
+style 7 3 11 fg=#dedede bg=#232323
+style 7 11 58 fg=#dedede bg=#101010
+style 7 58 59 fg=#303030 bg=#101010
+style 7 59 60 fg=#dedede bg=#131313
+text 8 " │                too where Alt works)                    │"
+style 8 0 1 fg=#dedede bg=#131313
+style 8 1 2 fg=#303030 bg=#101010
+style 8 2 58 fg=#dedede bg=#101010
+style 8 58 59 fg=#303030 bg=#101010
+style 8 59 60 fg=#dedede bg=#131313
+text 9 " │  ↑ ↓           earlier messages from the first or last │"
+style 9 0 1 fg=#dedede bg=#131313
+style 9 1 2 fg=#303030 bg=#101010
+style 9 2 3 fg=#dedede bg=#101010
+style 9 3 8 fg=#dedede bg=#232323
+style 9 8 58 fg=#dedede bg=#101010
+style 9 58 59 fg=#303030 bg=#101010
+style 9 59 60 fg=#dedede bg=#131313
+text 10 "▎│                line, then ↓ goes to the agent list     │"
+style 10 0 1 fg=#419cff bg=#202020
+style 10 1 2 fg=#303030 bg=#101010
+style 10 2 58 fg=#dedede bg=#101010
+style 10 58 59 fg=#303030 bg=#101010
+style 10 59 60 fg=#dedede bg=#202020
+text 11 " │  Tab           complete a command in the menu, or its  │"
+style 11 0 1 fg=#dedede bg=#131313
+style 11 1 2 fg=#303030 bg=#101010
+style 11 2 3 fg=#dedede bg=#101010
+style 11 3 8 fg=#dedede bg=#232323
+style 11 8 58 fg=#dedede bg=#101010
+style 11 58 59 fg=#303030 bg=#101010
+style 11 59 60 fg=#dedede bg=#131313
+text 12 " │                argument (↑ ↓ show the others, → takes  │"
+style 12 0 1 fg=#dedede bg=#131313
+style 12 1 2 fg=#303030 bg=#101010
+style 12 2 58 fg=#dedede bg=#101010
+style 12 58 59 fg=#303030 bg=#101010
+style 12 59 60 fg=#dedede bg=#131313
+text 13 " │                the one shown), else go to the agent    │"
+style 13 0 1 fg=#dedede bg=#131313
+style 13 1 2 fg=#303030 bg=#101010
+style 13 2 58 fg=#dedede bg=#101010
+style 13 58 59 fg=#303030 bg=#101010
+style 13 59 60 fg=#dedede bg=#131313
+text 14 " │                list                                    │"
+style 14 0 1 fg=#dedede bg=#131313
+style 14 1 2 fg=#303030 bg=#101010
+style 14 2 58 fg=#dedede bg=#101010
+style 14 58 59 fg=#303030 bg=#101010
+style 14 59 60 fg=#dedede bg=#131313
+text 15 " │  Ctrl+A E B F  line start, end, back, forward          │"
+style 15 0 1 fg=#dedede bg=#131313
+style 15 1 2 fg=#303030 bg=#101010
+style 15 2 3 fg=#dedede bg=#101010
+style 15 3 17 fg=#dedede bg=#232323
+style 15 17 58 fg=#dedede bg=#101010
+style 15 58 59 fg=#303030 bg=#101010
+style 15 59 60 fg=#dedede bg=#131313
+text 16 " │                (readline)                              │"
+style 16 0 1 fg=#dedede bg=#131313
+style 16 1 2 fg=#303030 bg=#101010
+style 16 2 58 fg=#dedede bg=#101010
+style 16 58 59 fg=#303030 bg=#101010
+style 16 59 60 fg=#dedede bg=#131313
+text 17 " │                                                        │"
+style 17 0 1 fg=#dedede bg=#131313
+style 17 1 2 fg=#303030 bg=#101010
+style 17 2 58 fg=#dedede bg=#101010
+style 17 58 59 fg=#303030 bg=#101010
+style 17 59 60 fg=#dedede bg=#131313
+text 18 " └───────────────────────────── Esc  close   ↑ ↓  scroll ─┘"
+style 18 0 1 fg=#dedede bg=#131313
+style 18 1 31 fg=#303030 bg=#101010
+style 18 31 36 fg=#dedede bg=#232323
+style 18 36 42 fg=#9d9d9d bg=#101010
+style 18 42 44 fg=#303030 bg=#101010
+style 18 44 49 fg=#dedede bg=#232323
+style 18 49 56 fg=#9d9d9d bg=#101010
+style 18 56 59 fg=#303030 bg=#101010
+style 18 59 60 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────────────────────────"
+style 19 0 60 fg=#303030 bg=#131313
+text 20 " last turn 34s"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 14 fg=#9d9d9d bg=#131313
+style 20 14 60 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────────────────────────"
+style 21 0 60 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 60 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────"
+style 23 0 60 fg=#303030 bg=#131313

@@ -1,0 +1,181 @@
+size 120 24
+cursor 0 0 hidden
+text 0 ""
+style 0 0 120 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 118 fg=#303030 bg=#131313
+style 1 118 120 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-lun┌ Session names ───────────────────────────────────────────────────────┐                     │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 24 fg=#dedede bg=#131313
+style 2 24 25 fg=#303030 bg=#101010
+style 2 25 40 fg=#dedede bg=#101010 bold
+style 2 40 96 fg=#303030 bg=#101010
+style 2 96 116 fg=#dedede bg=#131313
+style 2 116 118 fg=#303030 bg=#131313
+style 2 118 120 fg=#dedede bg=#131313
+text 3 "  │ Workers    parallel │                                                                      │                     │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 24 fg=#dedede bg=#131313
+style 3 24 25 fg=#303030 bg=#101010
+style 3 25 95 fg=#dedede bg=#101010
+style 3 95 96 fg=#303030 bg=#101010
+style 3 96 116 fg=#dedede bg=#131313
+style 3 116 118 fg=#303030 bg=#131313
+style 3 118 120 fg=#dedede bg=#131313
+text 4 "  │ Workspace  /home/ada│ ▸ ( ) First words                                                    │                     │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 15 fg=#9d9d9d bg=#131313
+style 4 15 24 fg=#dedede bg=#131313
+style 4 24 25 fg=#303030 bg=#101010
+style 4 25 26 fg=#dedede bg=#101010
+style 4 26 28 fg=#419cff bg=#101010
+style 4 28 32 fg=#9d9d9d bg=#101010
+style 4 32 43 fg=#419cff bg=#101010 bold
+style 4 43 95 fg=#dedede bg=#101010
+style 4 95 96 fg=#303030 bg=#101010
+style 4 96 116 fg=#dedede bg=#131313
+style 4 116 118 fg=#303030 bg=#131313
+style 4 118 120 fg=#dedede bg=#131313
+text 5 "  │ Session    20261110-│   (•) Named by a model                                               │                     │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 15 fg=#9d9d9d bg=#131313
+style 5 15 24 fg=#dedede bg=#131313
+style 5 24 25 fg=#303030 bg=#101010
+style 5 25 28 fg=#dedede bg=#101010
+style 5 28 32 fg=#9d9d9d bg=#101010
+style 5 32 95 fg=#dedede bg=#101010
+style 5 95 96 fg=#303030 bg=#101010
+style 5 96 116 fg=#dedede bg=#131313
+style 5 116 118 fg=#303030 bg=#131313
+style 5 118 120 fg=#dedede bg=#131313
+text 6 "  │ Project    AGENTS.md│                                                                      │                     │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 15 fg=#9d9d9d bg=#131313
+style 6 15 24 fg=#dedede bg=#131313
+style 6 24 25 fg=#303030 bg=#101010
+style 6 25 95 fg=#dedede bg=#101010
+style 6 95 96 fg=#303030 bg=#101010
+style 6 96 116 fg=#dedede bg=#131313
+style 6 116 118 fg=#303030 bg=#131313
+style 6 118 120 fg=#dedede bg=#131313
+text 7 "  │ Tools      2 skills │   [x] GPT-6 Luna on the ChatGPT plan                                 │                     │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 15 fg=#9d9d9d bg=#131313
+style 7 15 24 fg=#dedede bg=#131313
+style 7 24 25 fg=#303030 bg=#101010
+style 7 25 28 fg=#dedede bg=#101010
+style 7 28 32 fg=#9d9d9d bg=#101010
+style 7 32 95 fg=#dedede bg=#101010
+style 7 95 96 fg=#303030 bg=#101010
+style 7 96 116 fg=#dedede bg=#131313
+style 7 116 118 fg=#303030 bg=#131313
+style 7 118 120 fg=#dedede bg=#131313
+text 8 "  └─────────────────────│       No ChatGPT login                                               │─────────────────────┘"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 24 fg=#303030 bg=#131313
+style 8 24 25 fg=#303030 bg=#101010
+style 8 25 26 fg=#dedede bg=#101010
+style 8 26 48 fg=#9d9d9d bg=#101010
+style 8 48 95 fg=#dedede bg=#101010
+style 8 95 96 fg=#303030 bg=#101010
+style 8 96 118 fg=#303030 bg=#131313
+style 8 118 120 fg=#dedede bg=#131313
+text 9 "                        │   [x] Haiku 5.5 on the Claude plan                                   │"
+style 9 0 24 fg=#dedede bg=#131313
+style 9 24 25 fg=#303030 bg=#101010
+style 9 25 28 fg=#dedede bg=#101010
+style 9 28 32 fg=#9d9d9d bg=#101010
+style 9 32 95 fg=#dedede bg=#101010
+style 9 95 96 fg=#303030 bg=#101010
+style 9 96 120 fg=#dedede bg=#131313
+text 10 "▎ Add a README with a us│   [ ] Haiku 5.5 with the Anthropic API key                           │"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 24 fg=#dedede bg=#202020
+style 10 24 25 fg=#303030 bg=#101010
+style 10 25 28 fg=#dedede bg=#101010
+style 10 28 32 fg=#9d9d9d bg=#101010
+style 10 32 95 fg=#dedede bg=#101010
+style 10 95 96 fg=#303030 bg=#101010
+style 10 96 120 fg=#dedede bg=#202020
+text 11 "                        │       No Anthropic API key                                           │"
+style 11 0 24 fg=#dedede bg=#131313
+style 11 24 25 fg=#303030 bg=#101010
+style 11 25 26 fg=#dedede bg=#101010
+style 11 26 52 fg=#9d9d9d bg=#101010
+style 11 52 95 fg=#dedede bg=#101010
+style 11 95 96 fg=#303030 bg=#101010
+style 11 96 120 fg=#dedede bg=#131313
+text 12 "  Done. The README has a│   [ ] GPT-6 Luna with the OpenAI API key                             │"
+style 12 0 24 fg=#dedede bg=#131313
+style 12 24 25 fg=#303030 bg=#101010
+style 12 25 28 fg=#dedede bg=#101010
+style 12 28 32 fg=#9d9d9d bg=#101010
+style 12 32 95 fg=#dedede bg=#101010
+style 12 95 96 fg=#303030 bg=#101010
+style 12 96 120 fg=#dedede bg=#131313
+text 13 "                        │       No OpenAI API key                                              │"
+style 13 0 24 fg=#dedede bg=#131313
+style 13 24 25 fg=#303030 bg=#101010
+style 13 25 26 fg=#dedede bg=#101010
+style 13 26 49 fg=#9d9d9d bg=#101010
+style 13 49 95 fg=#dedede bg=#101010
+style 13 95 96 fg=#303030 bg=#101010
+style 13 96 120 fg=#dedede bg=#131313
+text 14 "                        │   Then the first words.                                              │"
+style 14 0 24 fg=#dedede bg=#131313
+style 14 24 25 fg=#303030 bg=#101010
+style 14 25 26 fg=#dedede bg=#101010
+style 14 26 49 fg=#9d9d9d bg=#101010
+style 14 49 95 fg=#dedede bg=#101010
+style 14 95 96 fg=#303030 bg=#101010
+style 14 96 120 fg=#dedede bg=#131313
+text 15 "                        │                                                                      │"
+style 15 0 24 fg=#dedede bg=#131313
+style 15 24 25 fg=#303030 bg=#101010
+style 15 25 95 fg=#dedede bg=#101010
+style 15 95 96 fg=#303030 bg=#101010
+style 15 96 120 fg=#dedede bg=#131313
+text 16 "                        └─────────────────────────── Space  choose   Enter  save   Esc  close ─┘"
+style 16 0 24 fg=#dedede bg=#131313
+style 16 24 52 fg=#303030 bg=#101010
+style 16 52 59 fg=#dedede bg=#232323
+style 16 59 66 fg=#9d9d9d bg=#101010
+style 16 66 68 fg=#303030 bg=#101010
+style 16 68 75 fg=#dedede bg=#232323
+style 16 75 80 fg=#9d9d9d bg=#101010
+style 16 80 82 fg=#303030 bg=#101010
+style 16 82 87 fg=#dedede bg=#232323
+style 16 87 93 fg=#9d9d9d bg=#101010
+style 16 93 96 fg=#303030 bg=#101010
+style 16 96 120 fg=#dedede bg=#131313
+text 17 ""
+style 17 0 120 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 120 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 19 0 120 fg=#303030 bg=#131313
+text 20 " last turn 34s"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 14 fg=#9d9d9d bg=#131313
+style 20 14 120 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 21 0 120 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 120 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 23 0 120 fg=#303030 bg=#131313

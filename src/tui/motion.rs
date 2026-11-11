@@ -18,8 +18,19 @@ const SWEEP_MS: u64 = 2000;
 /// How far the highlight reaches each side of its middle, in columns.
 const REACH: f64 = 3.0;
 
+#[cfg(test)]
+thread_local! {
+    /// The time a test chose for its thread, in milliseconds, in place of the
+    /// clock's, so the spinner and the highlight stand still where it says.
+    pub(super) static CHOSEN: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 /// The animations' clock, in milliseconds since the first frame.
 pub fn clock() -> u64 {
+    #[cfg(test)]
+    if let Some(ms) = CHOSEN.get() {
+        return ms;
+    }
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }

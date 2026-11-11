@@ -1,0 +1,205 @@
+size 120 40
+cursor 3 38 visible default
+text 0 "│  1"
+style 0 0 6 fg=#9d9d9d bg=#131313
+style 0 6 120 fg=#dedede bg=#131313
+text 1 "│  2  /// Reads lines until the end of the input."
+style 1 0 49 fg=#9d9d9d bg=#131313
+style 1 49 120 fg=#dedede bg=#131313
+text 2 "│  3  pub fn parse(input: &str) -> Vec<Token> {"
+style 2 0 6 fg=#9d9d9d bg=#131313
+style 2 6 9 fg=#87b1f6 bg=#131313
+style 2 9 10 fg=#dedede bg=#131313
+style 2 10 12 fg=#87b1f6 bg=#131313
+style 2 12 27 fg=#dedede bg=#131313
+style 2 27 30 fg=#cba6f7 bg=#131313
+style 2 30 35 fg=#dedede bg=#131313
+style 2 35 38 fg=#cba6f7 bg=#131313
+style 2 38 39 fg=#dedede bg=#131313
+style 2 39 44 fg=#cba6f7 bg=#131313
+style 2 44 120 fg=#dedede bg=#131313
+text 3 "│  4      let mut tokens = Vec::new();"
+style 3 0 6 fg=#9d9d9d bg=#131313
+style 3 6 10 fg=#dedede bg=#131313
+style 3 10 13 fg=#87b1f6 bg=#131313
+style 3 13 14 fg=#dedede bg=#131313
+style 3 14 17 fg=#87b1f6 bg=#131313
+style 3 17 27 fg=#dedede bg=#131313
+style 3 27 30 fg=#cba6f7 bg=#131313
+style 3 30 32 fg=#dedede bg=#131313
+style 3 32 35 fg=#b3c5f3 bg=#131313
+style 3 35 120 fg=#dedede bg=#131313
+text 4 "│  5      for line in input.lines() {"
+style 4 0 6 fg=#9d9d9d bg=#131313
+style 4 6 10 fg=#dedede bg=#131313
+style 4 10 13 fg=#87b1f6 bg=#131313
+style 4 13 19 fg=#dedede bg=#131313
+style 4 19 21 fg=#87b1f6 bg=#131313
+style 4 21 28 fg=#dedede bg=#131313
+style 4 28 33 fg=#bcc4e0 bg=#131313
+style 4 33 120 fg=#dedede bg=#131313
+text 5 "│  6          tokens.extend(split(line));"
+style 5 0 6 fg=#9d9d9d bg=#131313
+style 5 6 21 fg=#dedede bg=#131313
+style 5 21 27 fg=#bcc4e0 bg=#131313
+style 5 27 28 fg=#dedede bg=#131313
+style 5 28 33 fg=#b3c5f3 bg=#131313
+style 5 33 120 fg=#dedede bg=#131313
+text 6 "│  7      }"
+style 6 0 6 fg=#9d9d9d bg=#131313
+style 6 6 120 fg=#dedede bg=#131313
+text 7 "│  8      tokens"
+style 7 0 6 fg=#9d9d9d bg=#131313
+style 7 6 120 fg=#dedede bg=#131313
+text 8 "│  9  use std::collections::HashMap;"
+style 8 0 6 fg=#9d9d9d bg=#131313
+style 8 6 9 fg=#87b1f6 bg=#131313
+style 8 9 28 fg=#dedede bg=#131313
+style 8 28 35 fg=#cba6f7 bg=#131313
+style 8 35 120 fg=#dedede bg=#131313
+text 9 "│ 10"
+style 9 0 6 fg=#9d9d9d bg=#131313
+style 9 6 120 fg=#dedede bg=#131313
+text 10 "│ 11  /// Reads lines until the end of the input."
+style 10 0 49 fg=#9d9d9d bg=#131313
+style 10 49 120 fg=#dedede bg=#131313
+text 11 "│ 12  pub fn parse(input: &str) -> Vec<Token> {"
+style 11 0 6 fg=#9d9d9d bg=#131313
+style 11 6 9 fg=#87b1f6 bg=#131313
+style 11 9 10 fg=#dedede bg=#131313
+style 11 10 12 fg=#87b1f6 bg=#131313
+style 11 12 27 fg=#dedede bg=#131313
+style 11 27 30 fg=#cba6f7 bg=#131313
+style 11 30 35 fg=#dedede bg=#131313
+style 11 35 38 fg=#cba6f7 bg=#131313
+style 11 38 39 fg=#dedede bg=#131313
+style 11 39 44 fg=#cba6f7 bg=#131313
+style 11 44 120 fg=#dedede bg=#131313
+text 12 "│ 13      let mut tokens = Vec::new();"
+style 12 0 6 fg=#9d9d9d bg=#131313
+style 12 6 10 fg=#dedede bg=#131313
+style 12 10 13 fg=#87b1f6 bg=#131313
+style 12 13 14 fg=#dedede bg=#131313
+style 12 14 17 fg=#87b1f6 bg=#131313
+style 12 17 27 fg=#dedede bg=#131313
+style 12 27 30 fg=#cba6f7 bg=#131313
+style 12 30 32 fg=#dedede bg=#131313
+style 12 32 35 fg=#b3c5f3 bg=#131313
+style 12 35 120 fg=#dedede bg=#131313
+text 13 "│ 14      for line in input.lines() {"
+style 13 0 6 fg=#9d9d9d bg=#131313
+style 13 6 10 fg=#dedede bg=#131313
+style 13 10 13 fg=#87b1f6 bg=#131313
+style 13 13 19 fg=#dedede bg=#131313
+style 13 19 21 fg=#87b1f6 bg=#131313
+style 13 21 28 fg=#dedede bg=#131313
+style 13 28 33 fg=#bcc4e0 bg=#131313
+style 13 33 120 fg=#dedede bg=#131313
+text 14 "│ 15          tokens.extend(split(line));"
+style 14 0 6 fg=#9d9d9d bg=#131313
+style 14 6 21 fg=#dedede bg=#131313
+style 14 21 27 fg=#bcc4e0 bg=#131313
+style 14 27 28 fg=#dedede bg=#131313
+style 14 28 33 fg=#b3c5f3 bg=#131313
+style 14 33 120 fg=#dedede bg=#131313
+text 15 "│ 16      }"
+style 15 0 6 fg=#9d9d9d bg=#131313
+style 15 6 120 fg=#dedede bg=#131313
+text 16 "│ … 38 more lines"
+style 16 0 17 fg=#9d9d9d bg=#131313
+style 16 17 120 fg=#dedede bg=#131313
+text 17 "▾ edit src/parser.rs · ✓"
+style 17 0 23 fg=#9d9d9d bg=#131313
+style 17 23 24 fg=#30d158 bg=#131313
+style 17 24 120 fg=#dedede bg=#131313
+text 18 "│ 41       let mut end = start;"
+style 18 0 7 fg=#9d9d9d bg=#131313
+style 18 7 11 fg=#dedede bg=#131313
+style 18 11 14 fg=#87b1f6 bg=#131313
+style 18 14 15 fg=#dedede bg=#131313
+style 18 15 18 fg=#87b1f6 bg=#131313
+style 18 18 120 fg=#dedede bg=#131313
+text 19 "│ 42 -     while self.peek() != '\\n' {"
+style 19 0 2 fg=#9d9d9d bg=#131313
+style 19 2 7 fg=#ff5257 bg=#341c1d
+style 19 7 11 fg=#dedede bg=#341c1d
+style 19 11 16 fg=#87b1f6 bg=#341c1d
+style 19 16 22 fg=#dedede bg=#341c1d
+style 19 22 26 fg=#bcc4e0 bg=#341c1d
+style 19 26 32 fg=#dedede bg=#341c1d
+style 19 32 36 fg=#a3e09f bg=#341c1d
+style 19 36 120 fg=#dedede bg=#341c1d
+text 20 "│ 42 +     while self.peek().is_some_and(|c| c != '\\n') {"
+style 20 0 2 fg=#9d9d9d bg=#131313
+style 20 2 7 fg=#30d158 bg=#18311e
+style 20 7 11 fg=#dedede bg=#18311e
+style 20 11 16 fg=#87b1f6 bg=#18311e
+style 20 16 22 fg=#dedede bg=#18311e
+style 20 22 26 fg=#bcc4e0 bg=#18311e
+style 20 26 29 fg=#dedede bg=#18311e
+style 20 29 40 fg=#bcc4e0 bg=#18311e
+style 20 40 50 fg=#dedede bg=#18311e
+style 20 50 54 fg=#a3e09f bg=#18311e
+style 20 54 120 fg=#dedede bg=#18311e
+text 21 "│ 43           end += 1;"
+style 21 0 7 fg=#9d9d9d bg=#131313
+style 21 7 22 fg=#dedede bg=#131313
+style 21 22 23 fg=#cc9e00 bg=#131313
+style 21 23 120 fg=#dedede bg=#131313
+text 22 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
+style 22 0 2 fg=#ff5257 bg=#131313
+style 22 2 30 fg=#9d9d9d bg=#131313
+style 22 30 61 fg=#ff5257 bg=#131313
+style 22 61 120 fg=#dedede bg=#131313
+text 23 "│ running 4 tests"
+style 23 0 2 fg=#9d9d9d bg=#131313
+style 23 2 120 fg=#dedede bg=#131313
+text 24 "│ test parser::tests::reads ... ok"
+style 24 0 2 fg=#9d9d9d bg=#131313
+style 24 2 120 fg=#dedede bg=#131313
+text 25 "│ test parser::tests::skips_blank ... FAILED"
+style 25 0 2 fg=#9d9d9d bg=#131313
+style 25 2 120 fg=#dedede bg=#131313
+text 26 "│ test parser::tests::quotes ... ok"
+style 26 0 2 fg=#9d9d9d bg=#131313
+style 26 2 120 fg=#dedede bg=#131313
+text 27 "│ test parser::tests::empty ... ok"
+style 27 0 2 fg=#9d9d9d bg=#131313
+style 27 2 120 fg=#dedede bg=#131313
+text 28 "│"
+style 28 0 2 fg=#9d9d9d bg=#131313
+style 28 2 120 fg=#dedede bg=#131313
+text 29 "│ test result: FAILED. 3 passed; 1 failed"
+style 29 0 2 fg=#9d9d9d bg=#131313
+style 29 2 120 fg=#dedede bg=#131313
+text 30 "! retrying in 2 s"
+style 30 0 17 fg=#ffc600 bg=#131313
+style 30 17 120 fg=#dedede bg=#131313
+text 31 ""
+style 31 0 120 fg=#dedede bg=#131313
+text 32 "  The parser skipped the blank line at the end of a file. I changed the loop, and now I run the tests again."
+style 32 0 120 fg=#dedede bg=#131313
+text 33 ""
+style 33 0 120 fg=#dedede bg=#131313
+text 34 "· $ cargo test · 41s …"
+style 34 0 22 fg=#9d9d9d bg=#131313
+style 34 22 120 fg=#dedede bg=#131313
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 fg=#303030 bg=#131313
+text 36 " ● working 1m00s · 142k/250k · main: $3.20                                                                 Ctrl+C  stop"
+style 36 0 1 fg=#dedede bg=#131313
+style 36 1 10 fg=#419cff bg=#131313
+style 36 10 42 fg=#9d9d9d bg=#131313
+style 36 42 106 fg=#dedede bg=#131313
+style 36 106 114 fg=#dedede bg=#232323
+style 36 114 119 fg=#9d9d9d bg=#131313
+style 36 119 120 fg=#dedede bg=#131313
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 fg=#303030 bg=#131313
+text 38 " › Add to the task"
+style 38 0 1 fg=#dedede bg=#131313
+style 38 1 3 fg=#419cff bg=#131313
+style 38 3 18 fg=#9d9d9d bg=#131313
+style 38 18 120 fg=#dedede bg=#131313
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 fg=#303030 bg=#131313

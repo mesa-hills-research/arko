@@ -1,0 +1,152 @@
+size 120 24
+cursor 0 0 hidden
+text 0 ""
+style 0 0 120 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 118 fg=#303030 bg=#131313
+style 1 118 120 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-luna (high effort) via OpenAI API key                                                           │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 116 fg=#dedede bg=#131313
+style 2 116 118 fg=#303030 bg=#131313
+style 2 118 120 fg=#dedede bg=#131313
+text 3 "  │ Workers    parallel workers                                                                                      │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 116 fg=#dedede bg=#131313
+style 3 116 118 fg=#303030 bg=#131313
+style 3 118 120 fg=#dedede bg=#131313
+text 4 "  │ Workspac┌ Main agent's effort on gpt-6-luna ──────────────────────────────────────────────────────────┐          │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 12 fg=#9d9d9d bg=#131313
+style 4 12 13 fg=#303030 bg=#101010
+style 4 13 48 fg=#dedede bg=#101010 bold
+style 4 48 107 fg=#303030 bg=#101010
+style 4 107 116 fg=#dedede bg=#131313
+style 4 116 118 fg=#303030 bg=#131313
+style 4 118 120 fg=#dedede bg=#131313
+text 5 "  │ Session │                                                                                             │          │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 12 fg=#9d9d9d bg=#131313
+style 5 12 13 fg=#303030 bg=#101010
+style 5 13 106 fg=#dedede bg=#101010
+style 5 106 107 fg=#303030 bg=#101010
+style 5 107 116 fg=#dedede bg=#131313
+style 5 116 118 fg=#303030 bg=#131313
+style 5 118 120 fg=#dedede bg=#131313
+text 6 "  │ Project │   low     fastest, thinks least                                                             │          │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 12 fg=#9d9d9d bg=#131313
+style 6 12 13 fg=#303030 bg=#101010
+style 6 13 24 fg=#dedede bg=#101010
+style 6 24 45 fg=#9d9d9d bg=#101010
+style 6 45 106 fg=#dedede bg=#101010
+style 6 106 107 fg=#303030 bg=#101010
+style 6 107 116 fg=#dedede bg=#131313
+style 6 116 118 fg=#303030 bg=#131313
+style 6 118 120 fg=#dedede bg=#131313
+text 7 "  │ Tools   │   medium  quicker, thinks less                                                              │          │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 12 fg=#9d9d9d bg=#131313
+style 7 12 13 fg=#303030 bg=#101010
+style 7 13 24 fg=#dedede bg=#101010
+style 7 24 44 fg=#9d9d9d bg=#101010
+style 7 44 106 fg=#dedede bg=#101010
+style 7 106 107 fg=#303030 bg=#101010
+style 7 107 116 fg=#dedede bg=#131313
+style 7 116 118 fg=#303030 bg=#131313
+style 7 118 120 fg=#dedede bg=#131313
+text 8 "  └─────────│ ▸ high    thinks more  now                                                                  │──────────┘"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 12 fg=#303030 bg=#131313
+style 8 12 13 fg=#303030 bg=#101010
+style 8 13 14 fg=#dedede bg=#101010
+style 8 14 16 fg=#419cff bg=#101010
+style 8 16 24 fg=#419cff bg=#101010 bold
+style 8 24 35 fg=#9d9d9d bg=#101010
+style 8 35 40 fg=#419cff bg=#101010
+style 8 40 106 fg=#dedede bg=#101010
+style 8 106 107 fg=#303030 bg=#101010
+style 8 107 118 fg=#303030 bg=#131313
+style 8 118 120 fg=#dedede bg=#131313
+text 9 "            │   xhigh   thinks hard, Arko's default                                                       │"
+style 9 0 12 fg=#dedede bg=#131313
+style 9 12 13 fg=#303030 bg=#101010
+style 9 13 24 fg=#dedede bg=#101010
+style 9 24 51 fg=#9d9d9d bg=#101010
+style 9 51 106 fg=#dedede bg=#101010
+style 9 106 107 fg=#303030 bg=#101010
+style 9 107 120 fg=#dedede bg=#131313
+text 10 "▎ Add a READ│   max     thinks most, slowest                                                              │"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 12 fg=#dedede bg=#202020
+style 10 12 13 fg=#303030 bg=#101010
+style 10 13 24 fg=#dedede bg=#101010
+style 10 24 44 fg=#9d9d9d bg=#101010
+style 10 44 106 fg=#dedede bg=#101010
+style 10 106 107 fg=#303030 bg=#101010
+style 10 107 120 fg=#dedede bg=#202020
+text 11 "            │                                                                                             │"
+style 11 0 12 fg=#dedede bg=#131313
+style 11 12 13 fg=#303030 bg=#101010
+style 11 13 106 fg=#dedede bg=#101010
+style 11 106 107 fg=#303030 bg=#101010
+style 11 107 120 fg=#dedede bg=#131313
+text 12 "  Done. The │   ← Back to the models                                                                      │"
+style 12 0 12 fg=#dedede bg=#131313
+style 12 12 13 fg=#303030 bg=#101010
+style 12 13 106 fg=#dedede bg=#101010
+style 12 106 107 fg=#303030 bg=#101010
+style 12 107 120 fg=#dedede bg=#131313
+text 13 "            │                                                                                             │"
+style 13 0 12 fg=#dedede bg=#131313
+style 13 12 13 fg=#303030 bg=#101010
+style 13 13 106 fg=#dedede bg=#101010
+style 13 106 107 fg=#303030 bg=#101010
+style 13 107 120 fg=#dedede bg=#131313
+text 14 "            └──────────────────────────────────────────────────── ↑ ↓  choose   Enter  apply   Esc  back ─┘"
+style 14 0 12 fg=#dedede bg=#131313
+style 14 12 65 fg=#303030 bg=#101010
+style 14 65 70 fg=#dedede bg=#232323
+style 14 70 77 fg=#9d9d9d bg=#101010
+style 14 77 79 fg=#303030 bg=#101010
+style 14 79 86 fg=#dedede bg=#232323
+style 14 86 92 fg=#9d9d9d bg=#101010
+style 14 92 94 fg=#303030 bg=#101010
+style 14 94 99 fg=#dedede bg=#232323
+style 14 99 104 fg=#9d9d9d bg=#101010
+style 14 104 107 fg=#303030 bg=#101010
+style 14 107 120 fg=#dedede bg=#131313
+text 15 ""
+style 15 0 120 fg=#dedede bg=#131313
+text 16 ""
+style 16 0 120 fg=#dedede bg=#131313
+text 17 ""
+style 17 0 120 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 120 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 19 0 120 fg=#303030 bg=#131313
+text 20 " last turn 34s"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 14 fg=#9d9d9d bg=#131313
+style 20 14 120 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 21 0 120 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 120 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 23 0 120 fg=#303030 bg=#131313

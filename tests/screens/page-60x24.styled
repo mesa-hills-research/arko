@@ -1,0 +1,178 @@
+size 60 24
+cursor 0 0 hidden
+text 0 ""
+style 0 0 60 fg=#dedede bg=#131313
+text 1 "  ┌ Web page ────────────────────────────────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#101010
+style 1 3 13 fg=#dedede bg=#101010 bold
+style 1 13 58 fg=#303030 bg=#101010
+style 1 58 60 fg=#dedede bg=#131313
+text 2 "  │ █████████████████████████████████                    │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 3 fg=#303030 bg=#101010
+style 2 3 4 fg=#dedede bg=#101010
+style 2 4 37 fg=#ffffff bg=#000000
+style 2 37 57 fg=#dedede bg=#101010
+style 2 57 58 fg=#303030 bg=#101010
+style 2 58 60 fg=#dedede bg=#131313
+text 3 "  │ ██ ▄▄▄▄▄ █▀▀████   ▀█▄▀█ ▄▄▄▄▄ ██                    │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 3 fg=#303030 bg=#101010
+style 3 3 4 fg=#dedede bg=#101010
+style 3 4 37 fg=#ffffff bg=#000000
+style 3 37 57 fg=#dedede bg=#101010
+style 3 57 58 fg=#303030 bg=#101010
+style 3 58 60 fg=#dedede bg=#131313
+text 4 "  │ ██ █   █ █▀▄▀██▀▀▄▀▀ ▄ █ █   █ ██                    │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 3 fg=#303030 bg=#101010
+style 4 3 4 fg=#dedede bg=#101010
+style 4 4 37 fg=#ffffff bg=#000000
+style 4 37 57 fg=#dedede bg=#101010
+style 4 57 58 fg=#303030 bg=#101010
+style 4 58 60 fg=#dedede bg=#131313
+text 5 "  │ ██ █▄▄▄█ █▀▄▄▄  ▀▀███▄██ █▄▄▄█ ██                    │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 3 fg=#303030 bg=#101010
+style 5 3 4 fg=#dedede bg=#101010
+style 5 4 37 fg=#ffffff bg=#000000
+style 5 37 57 fg=#dedede bg=#101010
+style 5 57 58 fg=#303030 bg=#101010
+style 5 58 60 fg=#dedede bg=#131313
+text 6 "  │ ██▄▄▄▄▄▄▄█▄▀ █▄█▄█ █▄█▄█▄▄▄▄▄▄▄██                    │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 3 fg=#303030 bg=#101010
+style 6 3 4 fg=#dedede bg=#101010
+style 6 4 37 fg=#ffffff bg=#000000
+style 6 37 57 fg=#dedede bg=#101010
+style 6 57 58 fg=#303030 bg=#101010
+style 6 58 60 fg=#dedede bg=#131313
+text 7 "  │ ██▄▄▄▄▄█▄▄ ▄█▀▄█ ▄    ▄▄▀▄▀▄█▄▀██                    │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 3 fg=#303030 bg=#101010
+style 7 3 4 fg=#dedede bg=#101010
+style 7 4 37 fg=#ffffff bg=#000000
+style 7 37 57 fg=#dedede bg=#101010
+style 7 57 58 fg=#303030 bg=#101010
+style 7 58 60 fg=#dedede bg=#131313
+text 8 "  │ ██ ▀ ▄ ▀▄▄ █▄█▀▄  █▄█▀█▀▀▄ ██▀███                    │"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 3 fg=#303030 bg=#101010
+style 8 3 4 fg=#dedede bg=#101010
+style 8 4 37 fg=#ffffff bg=#000000
+style 8 37 57 fg=#dedede bg=#101010
+style 8 57 58 fg=#303030 bg=#101010
+style 8 58 60 fg=#dedede bg=#131313
+text 9 "  │ ██  ▄ ▀ ▄ ▄ ▄▄█▄▄█ ▄  ▄▄▀▄▀▄ █▀██                    │"
+style 9 0 2 fg=#dedede bg=#131313
+style 9 2 3 fg=#303030 bg=#101010
+style 9 3 4 fg=#dedede bg=#101010
+style 9 4 37 fg=#ffffff bg=#000000
+style 9 37 57 fg=#dedede bg=#101010
+style 9 57 58 fg=#303030 bg=#101010
+style 9 58 60 fg=#dedede bg=#131313
+text 10 "▎ │ ██ ▀▀█▀█▄█▄██▀▀▄█▄▄▄▄██ ▄▀██▄▀███                    │"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 3 fg=#303030 bg=#101010
+style 10 3 4 fg=#dedede bg=#101010
+style 10 4 37 fg=#ffffff bg=#000000
+style 10 37 57 fg=#dedede bg=#101010
+style 10 57 58 fg=#303030 bg=#101010
+style 10 58 60 fg=#dedede bg=#202020
+text 11 "  │ ██  █▄▀█▄▀▄█▄▀▄▄▀▄▄ ▀▀▄ ▀█▀▀ █▀██                    │"
+style 11 0 2 fg=#dedede bg=#131313
+style 11 2 3 fg=#303030 bg=#101010
+style 11 3 4 fg=#dedede bg=#101010
+style 11 4 37 fg=#ffffff bg=#000000
+style 11 37 57 fg=#dedede bg=#101010
+style 11 57 58 fg=#303030 bg=#101010
+style 11 58 60 fg=#dedede bg=#131313
+text 12 "  │ ██ ██▀▄█▄▀▀  █ ▄█ ▄▄▄▀█▀ █▀▄▄▀███                    │"
+style 12 0 2 fg=#dedede bg=#131313
+style 12 2 3 fg=#303030 bg=#101010
+style 12 3 4 fg=#dedede bg=#101010
+style 12 4 37 fg=#ffffff bg=#000000
+style 12 37 57 fg=#dedede bg=#101010
+style 12 57 58 fg=#303030 bg=#101010
+style 12 58 60 fg=#dedede bg=#131313
+text 13 "  │ ██▄███▄█▄▄▀▀█ ▀▀▄▄ ▄▀▀ ▄▄▄ ▀   ██                    │"
+style 13 0 2 fg=#dedede bg=#131313
+style 13 2 3 fg=#303030 bg=#101010
+style 13 3 4 fg=#dedede bg=#101010
+style 13 4 37 fg=#ffffff bg=#000000
+style 13 37 57 fg=#dedede bg=#101010
+style 13 57 58 fg=#303030 bg=#101010
+style 13 58 60 fg=#dedede bg=#131313
+text 14 "  │ ██ ▄▄▄▄▄ █▄▀▄▀ █▄▄▄██▄ █▄█ ▄▄▀███                    │"
+style 14 0 2 fg=#dedede bg=#131313
+style 14 2 3 fg=#303030 bg=#101010
+style 14 3 4 fg=#dedede bg=#101010
+style 14 4 37 fg=#ffffff bg=#000000
+style 14 37 57 fg=#dedede bg=#101010
+style 14 57 58 fg=#303030 bg=#101010
+style 14 58 60 fg=#dedede bg=#131313
+text 15 "  │ ██ █   █ █ ▄▀██ ▄▀▀ ██  ▄ ▄▄▄█▀██                    │"
+style 15 0 2 fg=#dedede bg=#131313
+style 15 2 3 fg=#303030 bg=#101010
+style 15 3 4 fg=#dedede bg=#101010
+style 15 4 37 fg=#ffffff bg=#000000
+style 15 37 57 fg=#dedede bg=#101010
+style 15 57 58 fg=#303030 bg=#101010
+style 15 58 60 fg=#dedede bg=#131313
+text 16 "  │ ██ █▄▄▄█ █  ▄▀ █   █▄▄ ▀▄▀ ▄█ ███                    │"
+style 16 0 2 fg=#dedede bg=#131313
+style 16 2 3 fg=#303030 bg=#101010
+style 16 3 4 fg=#dedede bg=#101010
+style 16 4 37 fg=#ffffff bg=#000000
+style 16 37 57 fg=#dedede bg=#101010
+style 16 57 58 fg=#303030 bg=#101010
+style 16 58 60 fg=#dedede bg=#131313
+text 17 "  │ ██▄▄▄▄▄▄▄█▄██▄█▄▄█▄▄▄██████▄▄████                    │"
+style 17 0 2 fg=#dedede bg=#131313
+style 17 2 3 fg=#303030 bg=#101010
+style 17 3 4 fg=#dedede bg=#101010
+style 17 4 37 fg=#ffffff bg=#000000
+style 17 37 57 fg=#dedede bg=#101010
+style 17 57 58 fg=#303030 bg=#101010
+style 17 58 60 fg=#dedede bg=#131313
+text 18 "  │ █████████████████████████████████                    │"
+style 18 0 2 fg=#dedede bg=#131313
+style 18 2 3 fg=#303030 bg=#101010
+style 18 3 4 fg=#dedede bg=#101010
+style 18 4 37 fg=#ffffff bg=#000000
+style 18 37 57 fg=#dedede bg=#101010
+style 18 57 58 fg=#303030 bg=#101010
+style 18 58 60 fg=#dedede bg=#131313
+text 19 "──│ http://192.168.1.20:8765/#key=Kq3xv9TnWb2LmzR8cYd5Hs │──"
+style 19 0 2 fg=#303030 bg=#131313
+style 19 2 3 fg=#303030 bg=#101010
+style 19 3 57 fg=#dedede bg=#101010
+style 19 57 58 fg=#303030 bg=#101010
+style 19 58 60 fg=#303030 bg=#131313
+text 20 " l│ LAN                                                  │"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 2 fg=#9d9d9d bg=#131313
+style 20 2 3 fg=#303030 bg=#101010
+style 20 3 4 fg=#dedede bg=#101010
+style 20 4 7 fg=#9d9d9d bg=#101010
+style 20 7 57 fg=#dedede bg=#101010
+style 20 57 58 fg=#303030 bg=#101010
+style 20 58 60 fg=#dedede bg=#131313
+text 21 "──└────────────────────── ← →  other links   Esc  close ─┘──"
+style 21 0 2 fg=#303030 bg=#131313
+style 21 2 25 fg=#303030 bg=#101010
+style 21 25 30 fg=#dedede bg=#232323
+style 21 30 42 fg=#9d9d9d bg=#101010
+style 21 42 44 fg=#303030 bg=#101010
+style 21 44 49 fg=#dedede bg=#232323
+style 21 49 55 fg=#9d9d9d bg=#101010
+style 21 55 58 fg=#303030 bg=#101010
+style 21 58 60 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 60 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────"
+style 23 0 60 fg=#303030 bg=#131313

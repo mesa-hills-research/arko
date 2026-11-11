@@ -1,0 +1,91 @@
+size 120 40
+cursor 0 0 hidden
+text 0 ""
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 118 dim
+text 2 "  │ Model      gpt-6-luna (high effort) via OpenAI API key                                                           │"
+style 2 2 15 dim
+style 2 116 118 dim
+text 3 "  │ Workers    parallel workers                                                                                      │"
+style 3 2 15 dim
+style 3 116 118 dim
+text 4 "  │ Workspace  /home/ada/proj                                                                                        │"
+style 4 2 15 dim
+style 4 116 118 dim
+text 5 "  │ Session ┌ Workers' model ─────────────────────────────────────────────────────────────────────────────┐          │"
+style 5 2 12 dim
+style 5 13 29 bold
+style 5 116 118 dim
+text 6 "  │ Project │                                                                                             │          │"
+style 6 2 12 dim
+style 6 116 118 dim
+text 7 "  │ Tools   │ For workers started from now on. Running workers keep their model.                          │          │"
+style 7 2 12 dim
+style 7 14 80 dim
+style 7 116 118 dim
+text 8 "  └─────────│                                                                                             │──────────┘"
+style 8 2 12 dim
+style 8 107 118 dim
+text 9 "            │ ▸ Same as the main agent (gpt-6-luna)  now                                                  │"
+style 9 14 16 fg=cyan
+style 9 16 53 fg=cyan bold
+style 9 53 56 fg=cyan
+text 10 "▎ Add a READ│                                                                                             │"
+style 10 0 2 fg=cyan
+text 11 "            │ OpenAI, with your API key                                                                   │"
+style 11 14 39 bold dim
+text 12 "  Done. The │   gpt-6.1-sol    sol    API, $2/$10                                                         │"
+style 12 31 56 dim
+text 13 "            │   gpt-6-astra    astra  API, $10/$50                                                        │"
+style 13 31 56 dim
+text 14 "            │   gpt-6.1-terra  terra  API, $1/$5                                                          │"
+style 14 31 56 dim
+text 15 "            │   gpt-6-luna     luna   API, $0.10/$0.50                                                    │"
+style 15 31 56 dim
+text 16 "            │                                                                                             │"
+text 17 "            │ Claude Code, on your Claude plan  needs Claude Code signed in                               │"
+style 17 14 46 bold dim
+style 17 46 75 dim
+text 18 "            │                                                                                             │"
+text 19 "            │ Anthropic API, billed per token  needs ANTHROPIC_API_KEY                                    │"
+style 19 14 45 bold dim
+style 19 45 70 dim
+text 20 "            │                                                                                             │"
+text 21 "            │ Google Gemini, billed per token  needs GEMINI_API_KEY                                       │"
+style 21 14 45 bold dim
+style 21 45 67 dim
+text 22 "            │                                                                                             │"
+text 23 "            │ OpenRouter, billed per token  needs OPENROUTER_API_KEY                                      │"
+style 23 14 42 bold dim
+style 23 42 68 dim
+text 24 "            │                                                                                             │"
+text 25 "            │ Another model                                                                               │"
+style 25 14 27 bold dim
+text 26 "            │ Type a model ID, an alias, cc:<model> or openrouter:<slug>…                                 │"
+text 27 "            │                                                                                             │"
+text 28 "            └──────────────────────────────────────────────────── ↑ ↓  choose   Enter  next   Esc  close ─┘"
+style 28 65 70 reverse
+style 28 70 77 dim
+style 28 79 86 reverse
+style 28 86 91 dim
+style 28 93 98 reverse
+style 28 98 104 dim
+text 29 ""
+text 30 ""
+text 31 ""
+text 32 ""
+text 33 ""
+text 34 ""
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 dim
+text 36 " last turn 34s"
+style 36 1 14 dim
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 dim
+text 38 " › Message  / for commands"
+style 38 1 3 fg=cyan
+style 38 3 26 dim
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 dim

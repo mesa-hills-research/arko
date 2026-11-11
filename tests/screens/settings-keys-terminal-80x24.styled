@@ -1,0 +1,74 @@
+size 80 24
+cursor 0 0 hidden
+text 0 "    ┌ Settings ────────────────────────────────────────────────────────────┐"
+style 0 5 15 bold
+text 1 "  ┌ │                                                                      │─┐"
+style 1 2 3 dim
+style 1 3 4 bold
+style 1 76 78 dim
+text 2 "  │ │                                                                      │ │"
+style 2 2 4 dim
+style 2 76 78 dim
+text 3 "  │ │ Skills                                                               │ │"
+style 3 2 4 dim
+style 3 6 12 bold dim
+style 3 76 78 dim
+text 4 "  │ │   Built-in skills    on   off                                        │ │"
+style 4 2 4 dim
+style 4 26 30 dim
+style 4 31 36 reverse
+style 4 76 78 dim
+text 5 "  │ │                                                                      │ │"
+style 5 2 4 dim
+style 5 76 78 dim
+text 6 "  │ │ Approvals                                                            │ │"
+style 6 2 4 dim
+style 6 6 15 bold dim
+style 6 76 78 dim
+text 7 "  │ │   Ask before adding MCP servers          on   off                    │ │"
+style 7 2 4 dim
+style 7 46 50 reverse
+style 7 51 56 dim
+style 7 76 78 dim
+text 8 "  └─│   Review project skills                  on   off                    │─┘"
+style 8 2 4 dim
+style 8 46 50 dim
+style 8 51 56 reverse
+style 8 76 78 dim
+text 9 "    │                                                                      │"
+text 10 "▎ Ad│ Project files                                                        │"
+style 10 0 2 fg=cyan
+style 10 6 19 bold dim
+text 11 "    │   Keep agents' project files out of git  on   off                    │"
+style 11 46 50 reverse
+style 11 51 56 dim
+text 12 "  Do│                                                                      │"
+text 13 "    │ Providers                                                            │"
+style 13 6 15 bold dim
+text 14 "    │ ▸ API keys           3 of 5 set ›                                    │"
+style 14 6 8 fg=cyan
+style 14 8 26 fg=cyan bold
+style 14 38 39 dim
+text 15 "    │                     The model providers' keys, and Voyage's for      │"
+style 15 26 69 dim
+text 16 "    │                     the search indexes. Enter opens them.            │"
+style 16 26 63 dim
+text 17 "    │                                                                      │"
+text 18 "    └───────────────────────────── ↑ ↓  choose   ← →  change   Esc  close ─┘"
+style 18 34 39 reverse
+style 18 39 46 dim
+style 18 48 53 reverse
+style 18 53 60 dim
+style 18 62 67 reverse
+style 18 67 73 dim
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 dim
+text 20 " last turn 34s"
+style 20 1 14 dim
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 dim
+text 22 " › Message  / for commands"
+style 22 1 3 fg=cyan
+style 22 3 26 dim
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 dim

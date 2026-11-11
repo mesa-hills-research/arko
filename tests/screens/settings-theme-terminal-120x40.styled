@@ -1,0 +1,121 @@
+size 120 40
+cursor 0 0 hidden
+text 0 "                        ┌ Settings ────────────────────────────────────────────────────────────┐"
+style 0 25 35 bold
+text 1 "  ┌ Arko ───────────────│                                                                      │─────────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 24 dim
+style 1 96 118 dim
+text 2 "  │ Model      gpt-6-lun│ Transcript                                                           │                     │"
+style 2 2 15 dim
+style 2 26 36 bold dim
+style 2 116 118 dim
+text 3 "  │ Workers    parallel │   View               full   quiet   messages                         │                     │"
+style 3 2 15 dim
+style 3 46 52 reverse
+style 3 53 60 dim
+style 3 61 71 dim
+style 3 116 118 dim
+text 4 "  │ Workspace  /home/ada│                                                                      │                     │"
+style 4 2 15 dim
+style 4 116 118 dim
+text 5 "  │ Session    20261110-│ Look                                                                 │                     │"
+style 5 2 15 dim
+style 5 26 30 bold dim
+style 5 116 118 dim
+text 6 "  │ Project    AGENTS.md│ ▸ Theme              terminal ›                                      │                     │"
+style 6 2 15 dim
+style 6 26 28 fg=cyan
+style 6 28 46 fg=cyan bold
+style 6 56 57 dim
+style 6 116 118 dim
+text 7 "  │ Tools      2 skills │                     This terminal shows 16 colours, so its own are   │                     │"
+style 7 2 15 dim
+style 7 46 92 dim
+style 7 116 118 dim
+text 8 "  └─────────────────────│                     used.                                            │─────────────────────┘"
+style 8 2 24 dim
+style 8 46 51 dim
+style 8 96 118 dim
+text 9 "                        │   Previews           on   off                                        │"
+style 9 46 50 reverse
+style 9 51 56 dim
+text 10 "▎ Add a README with a us│   Mouse              on   off                                        │"
+style 10 0 2 fg=cyan
+style 10 46 50 reverse
+style 10 51 56 dim
+text 11 "                        │                                                                      │"
+text 12 "  Done. The README has a│ Quitting                                                             │"
+style 12 26 34 bold dim
+text 13 "                        │   Ask first          on   off                                        │"
+style 13 46 50 reverse
+style 13 51 56 dim
+text 14 "                        │                                                                      │"
+text 15 "                        │ Status line                                                          │"
+style 15 26 37 bold dim
+text 16 "                        │   API prices         on   off                                        │"
+style 16 46 50 dim
+style 16 51 56 reverse
+text 17 "                        │                                                                      │"
+text 18 "                        │ Session                                                              │"
+style 18 26 33 bold dim
+text 19 "                        │   Outside            on   off                                        │"
+style 19 46 50 dim
+style 19 51 56 reverse
+text 20 "                        │   Background        ←  off  →                                        │"
+style 20 46 48 dim
+style 20 48 53 reverse
+style 20 53 55 dim
+text 21 "                        │   Monitor wakes     ←  auto  →                                       │"
+style 21 46 48 dim
+style 21 48 54 reverse
+style 21 54 56 dim
+text 22 "                        │   Text replies       on   off                                        │"
+style 22 46 50 dim
+style 22 51 56 reverse
+text 23 "                        │   Extra rules        small   all   off                               │"
+style 23 46 53 dim
+style 23 54 59 dim
+style 23 60 65 reverse
+text 24 "                        │   Keep warm         ←  off  →                                        │"
+style 24 46 48 dim
+style 24 48 53 reverse
+style 24 53 55 dim
+text 25 "                        │   Web page           on   off                                        │"
+style 25 46 50 dim
+style 25 51 56 reverse
+text 26 "                        │                                                                      │"
+text 27 "                        │ Handover                                                             │"
+style 27 26 34 bold dim
+text 28 "                        │   Main agent        ←  250k  →                                       │"
+style 28 46 48 dim
+style 28 48 54 reverse
+style 28 54 56 dim
+text 29 "                        │                                                                      │"
+text 30 "                        │ Project instructions                                                 │"
+style 30 26 46 bold dim
+text 31 "                        │   Files              one   both   off                                │"
+style 31 46 51 reverse
+style 31 52 58 dim
+style 31 59 64 dim
+text 32 "                        │                                                                      │"
+text 33 "                        │                                                                      │"
+text 34 "                        └───────────────────────────── ↑ ↓  choose   ← →  change   Esc  close ─┘"
+style 34 54 59 reverse
+style 34 59 66 dim
+style 34 68 73 reverse
+style 34 73 80 dim
+style 34 82 87 reverse
+style 34 87 93 dim
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 dim
+text 36 " last turn 34s"
+style 36 1 14 dim
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 dim
+text 38 " › Message  / for commands"
+style 38 1 3 fg=cyan
+style 38 3 26 dim
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 dim

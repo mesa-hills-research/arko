@@ -1,0 +1,92 @@
+size 120 40
+cursor 0 0 hidden
+text 0 "                     ┌ Help ──────────────────────────────────────────────────────────────────────┐"
+style 0 22 28 bold
+text 1 "  ┌ Arko ────────────│                                                                            │──────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 21 dim
+style 1 99 118 dim
+text 2 "  │ Model      gpt-6-│ Keys                                                                       │                  │"
+style 2 2 15 dim
+style 2 23 27 fg=cyan bold
+style 2 116 118 dim
+text 3 "  │ Workers    parall│  Enter         send (a note while the agent works, else a new turn)        │                  │"
+style 3 2 15 dim
+style 3 23 30 reverse
+style 3 116 118 dim
+text 4 "  │ Workspace  /home/│  Shift+Enter   new line, where the terminal tells it from Enter            │                  │"
+style 4 2 15 dim
+style 4 23 36 reverse
+style 4 116 118 dim
+text 5 "  │ Session    202611│  Ctrl+J        new line, in every terminal (Alt+Enter too where Alt works) │                  │"
+style 5 2 15 dim
+style 5 23 31 reverse
+style 5 116 118 dim
+text 6 "  │ Project    AGENTS│  ↑ ↓           earlier messages from the first or last line, then ↓ goes   │                  │"
+style 6 2 15 dim
+style 6 23 28 reverse
+style 6 116 118 dim
+text 7 "  │ Tools      2 skil│                to the agent list                                           │                  │"
+style 7 2 15 dim
+style 7 116 118 dim
+text 8 "  └──────────────────│  Tab           complete a command in the menu, or its argument (↑ ↓ show   │──────────────────┘"
+style 8 2 21 dim
+style 8 23 28 reverse
+style 8 99 118 dim
+text 9 "                     │                the others, → takes the one shown), else go to the agent    │"
+text 10 "▎ Add a README with a│                list                                                        │"
+style 10 0 2 fg=cyan
+text 11 "                     │  Ctrl+A E B F  line start, end, back, forward (readline)                   │"
+style 11 23 37 reverse
+text 12 "  Done. The README ha│  Ctrl+K U W Y  cut to the end, to the start or a word back, and paste the  │"
+style 12 23 37 reverse
+text 13 "                     │                cut                                                         │"
+text 14 "                     │  PgUp PgDn     scroll the transcript (the wheel and Shift+↑ ↓ too)         │"
+style 14 23 34 reverse
+text 15 "                     │  End           back to the bottom, when the box is empty (Ctrl+End always) │"
+style 15 23 28 reverse
+text 16 "                     │  Ctrl+B        move the agent's running call to the background, else back  │"
+style 16 23 31 reverse
+text 17 "                     │                a character                                                 │"
+text 18 "                     │  Ctrl+O        the next view (full, quiet, messages)                       │"
+style 18 23 31 reverse
+text 19 "                     │  Ctrl+G        the transcript's rows that open, where ↑ ↓ move and Enter   │"
+style 19 23 31 reverse
+text 20 "                     │                opens or closes one                                         │"
+text 21 "                     │  Ctrl+R        dictate into the box, and again to stop and edit the words  │"
+style 21 23 31 reverse
+text 22 "                     │                (Enter stops too, Esc takes them out)                       │"
+text 23 "                     │  Ctrl+T        the agent list, where Tab and Shift+Tab move through it and │"
+style 23 23 31 reverse
+text 24 "                     │                Enter shows a worker's own work                             │"
+text 25 "                     │  Alt+Q         open the answer panel for the agent's questions             │"
+style 25 23 30 reverse
+text 26 "                     │  Alt+A         the approval tray, where Space selects, Enter approves the  │"
+style 26 23 30 reverse
+text 27 "                     │                selection, R rejects all, V opens a row's details and M     │"
+text 28 "                     │                flips Include message                                       │"
+text 29 "                     │  Esc           close, go back, or leave the answer panel to answer in a    │"
+style 29 23 28 reverse
+text 30 "                     │                message                                                     │"
+text 31 "                     │  Ctrl+C        stop the turn, else clear the box                           │"
+style 31 23 31 reverse
+text 32 "                     │  Ctrl+D        quit, when the box is empty (as /exit)                      │"
+style 32 23 31 reverse
+text 33 "                     │                                                                            │"
+text 34 "                     └───────────────────────────────────────────────── Esc  close   ↑ ↓  scroll ─┘"
+style 34 71 76 reverse
+style 34 76 82 dim
+style 34 84 89 reverse
+style 34 89 96 dim
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 dim
+text 36 " last turn 34s"
+style 36 1 14 dim
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 dim
+text 38 " › Message  / for commands"
+style 38 1 3 fg=cyan
+style 38 3 26 dim
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 dim

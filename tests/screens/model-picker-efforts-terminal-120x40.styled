@@ -1,0 +1,80 @@
+size 120 40
+cursor 0 0 hidden
+text 0 ""
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 118 dim
+text 2 "  │ Model      gpt-6-luna (high effort) via OpenAI API key                                                           │"
+style 2 2 15 dim
+style 2 116 118 dim
+text 3 "  │ Workers    parallel workers                                                                                      │"
+style 3 2 15 dim
+style 3 116 118 dim
+text 4 "  │ Workspace  /home/ada/proj                                                                                        │"
+style 4 2 15 dim
+style 4 116 118 dim
+text 5 "  │ Session    20261110-101010-abcd                                                                                  │"
+style 5 2 15 dim
+style 5 116 118 dim
+text 6 "  │ Project    AGENTS.md                                                                                             │"
+style 6 2 15 dim
+style 6 116 118 dim
+text 7 "  │ Tools      2 skills · 1 MCP server                                                                               │"
+style 7 2 15 dim
+style 7 116 118 dim
+text 8 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+style 8 2 118 dim
+text 9 ""
+text 10 "▎ Add a README with a usage section"
+style 10 0 2 fg=cyan
+text 11 ""
+text 12 "  Done. The ┌ Main agent's effort on gpt-6-luna ──────────────────────────────────────────────────────────┐"
+style 12 13 48 bold
+text 13 "            │                                                                                             │"
+text 14 "            │   low     fastest, thinks least                                                             │"
+style 14 24 45 dim
+text 15 "            │   medium  quicker, thinks less                                                              │"
+style 15 24 44 dim
+text 16 "            │ ▸ high    thinks more  now                                                                  │"
+style 16 14 16 fg=cyan
+style 16 16 24 fg=cyan bold
+style 16 24 35 dim
+style 16 35 40 fg=cyan
+text 17 "            │   xhigh   thinks hard, Arko's default                                                       │"
+style 17 24 51 dim
+text 18 "            │   max     thinks most, slowest                                                              │"
+style 18 24 44 dim
+text 19 "            │                                                                                             │"
+text 20 "            │   ← Back to the models                                                                      │"
+text 21 "            │                                                                                             │"
+text 22 "            └──────────────────────────────────────────────────── ↑ ↓  choose   Enter  apply   Esc  back ─┘"
+style 22 65 70 reverse
+style 22 70 77 dim
+style 22 79 86 reverse
+style 22 86 92 dim
+style 22 94 99 reverse
+style 22 99 104 dim
+text 23 ""
+text 24 ""
+text 25 ""
+text 26 ""
+text 27 ""
+text 28 ""
+text 29 ""
+text 30 ""
+text 31 ""
+text 32 ""
+text 33 ""
+text 34 ""
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 dim
+text 36 " last turn 34s"
+style 36 1 14 dim
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 dim
+text 38 " › Message  / for commands"
+style 38 1 3 fg=cyan
+style 38 3 26 dim
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 dim

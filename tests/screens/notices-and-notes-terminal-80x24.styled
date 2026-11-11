@@ -1,0 +1,43 @@
+size 80 24
+cursor 3 22 visible default
+text 0 "  │ Tools      2 skills · 1 MCP server                                       │"
+style 0 2 15 dim
+style 0 76 78 dim
+text 1 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 1 2 78 dim
+text 2 ""
+text 3 "▎ Update the dependencies"
+style 3 0 2 fg=cyan
+text 4 ""
+text 5 "  Checking which crates are old."
+text 6 ""
+text 7 "· handed over to a fresh conversation"
+style 7 0 37 dim
+text 8 "! retrying in 2 s"
+style 8 0 17 fg=yellow
+text 9 "✗ The model server answered 500 three times in a row"
+style 9 0 52 fg=red
+text 10 ""
+text 11 "  make: Nothing to be done for 'all'."
+text 12 ""
+text 13 "✉ Halfway there. Two crates are left."
+style 13 0 2 dim
+text 14 ""
+text 15 "▎ Then update the lock file                                               queued"
+style 15 0 2 fg=cyan
+style 15 27 80 dim italic
+text 16 ""
+text 17 "▎ Keep the old name for the config file              pending · from the web page"
+style 17 0 39 dim
+style 17 39 80 dim italic
+text 18 ""
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 dim
+text 20 ""
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 dim
+text 22 " › Message  / for commands"
+style 22 1 3 fg=cyan
+style 22 3 26 dim
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 dim

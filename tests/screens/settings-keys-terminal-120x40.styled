@@ -1,0 +1,120 @@
+size 120 40
+cursor 0 0 hidden
+text 0 "                        ┌ Settings ────────────────────────────────────────────────────────────┐"
+style 0 25 35 bold
+text 1 "  ┌ Arko ───────────────│                                                                      │─────────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 24 dim
+style 1 96 118 dim
+text 2 "  │ Model      gpt-6-lun│   API prices         on   off                                        │                     │"
+style 2 2 15 dim
+style 2 46 50 dim
+style 2 51 56 reverse
+style 2 116 118 dim
+text 3 "  │ Workers    parallel │                                                                      │                     │"
+style 3 2 15 dim
+style 3 116 118 dim
+text 4 "  │ Workspace  /home/ada│ Session                                                              │                     │"
+style 4 2 15 dim
+style 4 26 33 bold dim
+style 4 116 118 dim
+text 5 "  │ Session    20261110-│   Outside            on   off                                        │                     │"
+style 5 2 15 dim
+style 5 46 50 dim
+style 5 51 56 reverse
+style 5 116 118 dim
+text 6 "  │ Project    AGENTS.md│   Background        ←  off  →                                        │                     │"
+style 6 2 15 dim
+style 6 46 48 dim
+style 6 48 53 reverse
+style 6 53 55 dim
+style 6 116 118 dim
+text 7 "  │ Tools      2 skills │   Monitor wakes     ←  auto  →                                       │                     │"
+style 7 2 15 dim
+style 7 46 48 dim
+style 7 48 54 reverse
+style 7 54 56 dim
+style 7 116 118 dim
+text 8 "  └─────────────────────│   Text replies       on   off                                        │─────────────────────┘"
+style 8 2 24 dim
+style 8 46 50 dim
+style 8 51 56 reverse
+style 8 96 118 dim
+text 9 "                        │   Extra rules        small   all   off                               │"
+style 9 46 53 dim
+style 9 54 59 dim
+style 9 60 65 reverse
+text 10 "▎ Add a README with a us│   Keep warm         ←  off  →                                        │"
+style 10 0 2 fg=cyan
+style 10 46 48 dim
+style 10 48 53 reverse
+style 10 53 55 dim
+text 11 "                        │   Web page           on   off                                        │"
+style 11 46 50 dim
+style 11 51 56 reverse
+text 12 "  Done. The README has a│                                                                      │"
+text 13 "                        │ Handover                                                             │"
+style 13 26 34 bold dim
+text 14 "                        │   Main agent        ←  250k  →                                       │"
+style 14 46 48 dim
+style 14 48 54 reverse
+style 14 54 56 dim
+text 15 "                        │                                                                      │"
+text 16 "                        │ Project instructions                                                 │"
+style 16 26 46 bold dim
+text 17 "                        │   Files              one   both   off                                │"
+style 17 46 51 reverse
+style 17 52 58 dim
+style 17 59 64 dim
+text 18 "                        │                                                                      │"
+text 19 "                        │ Skills                                                               │"
+style 19 26 32 bold dim
+text 20 "                        │   Built-in skills    on   off                                        │"
+style 20 46 50 dim
+style 20 51 56 reverse
+text 21 "                        │                                                                      │"
+text 22 "                        │ Approvals                                                            │"
+style 22 26 35 bold dim
+text 23 "                        │   Ask before adding MCP servers          on   off                    │"
+style 23 66 70 reverse
+style 23 71 76 dim
+text 24 "                        │   Review project skills                  on   off                    │"
+style 24 66 70 dim
+style 24 71 76 reverse
+text 25 "                        │                                                                      │"
+text 26 "                        │ Project files                                                        │"
+style 26 26 39 bold dim
+text 27 "                        │   Keep agents' project files out of git  on   off                    │"
+style 27 66 70 reverse
+style 27 71 76 dim
+text 28 "                        │                                                                      │"
+text 29 "                        │ Providers                                                            │"
+style 29 26 35 bold dim
+text 30 "                        │ ▸ API keys           3 of 5 set ›                                    │"
+style 30 26 28 fg=cyan
+style 30 28 46 fg=cyan bold
+style 30 58 59 dim
+text 31 "                        │                     The model providers' keys, and Voyage's for      │"
+style 31 46 89 dim
+text 32 "                        │                     the search indexes. Enter opens them.            │"
+style 32 46 83 dim
+text 33 "                        │                                                                      │"
+text 34 "                        └───────────────────────────── ↑ ↓  choose   ← →  change   Esc  close ─┘"
+style 34 54 59 reverse
+style 34 59 66 dim
+style 34 68 73 reverse
+style 34 73 80 dim
+style 34 82 87 reverse
+style 34 87 93 dim
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 dim
+text 36 " last turn 34s"
+style 36 1 14 dim
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 dim
+text 38 " › Message  / for commands"
+style 38 1 3 fg=cyan
+style 38 3 26 dim
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 dim

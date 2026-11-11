@@ -1,0 +1,69 @@
+size 120 40
+cursor 3 38 visible default
+text 0 ""
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 118 dim
+text 2 "  │ Model      gpt-6-luna (high effort)                                                                              │"
+style 2 2 15 dim
+style 2 116 118 dim
+text 3 "  │ Workers    parallel workers                                                                                      │"
+style 3 2 15 dim
+style 3 116 118 dim
+text 4 "  │ Workspace  /home/ada/proj                                                                                        │"
+style 4 2 15 dim
+style 4 116 118 dim
+text 5 "  │ Session    20261110-101010-abcd                                                                                  │"
+style 5 2 15 dim
+style 5 116 118 dim
+text 6 "  │ Project    AGENTS.md                                                                                             │"
+style 6 2 15 dim
+style 6 116 118 dim
+text 7 "  │ Tools      2 skills · 1 MCP server                                                                               │"
+style 7 2 15 dim
+style 7 116 118 dim
+text 8 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+style 8 2 118 dim
+text 9 ""
+text 10 "  ┌ Arko asked 3 questions ──────────────────────────────────────────────────────────────────────────────────────────┐"
+style 10 3 27 dim
+text 11 "  │   1. Tabs or spaces?                                                                                             │"
+text 12 "  │      Spaces                                                                                                      │"
+style 12 9 15 dim
+text 13 "  │   2. Which checks?                                                                                               │"
+text 14 "  │      Answered in your message                                                                                    │"
+style 14 9 33 dim
+text 15 "  │   3. How should I update the configuration?                                                                      │"
+text 16 "  │      Arko closed it. The user said to leave it                                                                   │"
+style 16 9 50 dim
+text 17 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+text 18 ""
+text 19 "  ┌ Arko asked a question ───────────────────────────────────────────────────────────────────────────────────────────┐"
+style 19 3 26 dim
+text 20 "  │   Anything else I should know?                                                                                   │"
+text 21 "  │   Dismissed                                                                                                      │"
+style 21 6 15 dim
+text 22 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+text 23 ""
+text 24 ""
+text 25 ""
+text 26 ""
+text 27 ""
+text 28 ""
+text 29 ""
+text 30 ""
+text 31 ""
+text 32 ""
+text 33 ""
+text 34 ""
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 dim
+text 36 ""
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 dim
+text 38 " › Message  / for commands"
+style 38 1 3 fg=cyan
+style 38 3 26 dim
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 dim

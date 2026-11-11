@@ -1,0 +1,188 @@
+size 120 40
+cursor 0 0 hidden
+text 0 ""
+style 0 0 120 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 118 fg=#303030 bg=#131313
+style 1 118 120 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-luna (high effort) via OpenAI API key                                                           │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 116 fg=#dedede bg=#131313
+style 2 116 118 fg=#303030 bg=#131313
+style 2 118 120 fg=#dedede bg=#131313
+text 3 "  │ Workers    parallel workers                                                                                      │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 116 fg=#dedede bg=#131313
+style 3 116 118 fg=#303030 bg=#131313
+style 3 118 120 fg=#dedede bg=#131313
+text 4 "  │ Workspace  /home/ada/proj                                                                                        │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 15 fg=#9d9d9d bg=#131313
+style 4 15 116 fg=#dedede bg=#131313
+style 4 116 118 fg=#303030 bg=#131313
+style 4 118 120 fg=#dedede bg=#131313
+text 5 "  │ Session    20261110-101010-abcd                                                                                  │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 15 fg=#9d9d9d bg=#131313
+style 5 15 116 fg=#dedede bg=#131313
+style 5 116 118 fg=#303030 bg=#131313
+style 5 118 120 fg=#dedede bg=#131313
+text 6 "  │ Project    AGENTS.md                                                                                             │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 15 fg=#9d9d9d bg=#131313
+style 6 15 116 fg=#dedede bg=#131313
+style 6 116 118 fg=#303030 bg=#131313
+style 6 118 120 fg=#dedede bg=#131313
+text 7 "  │ Tools      2 skills · 1 MCP server                                                                               │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 15 fg=#9d9d9d bg=#131313
+style 7 15 116 fg=#dedede bg=#131313
+style 7 116 118 fg=#303030 bg=#131313
+style 7 118 120 fg=#dedede bg=#131313
+text 8 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 118 fg=#303030 bg=#131313
+style 8 118 120 fg=#dedede bg=#131313
+text 9 ""
+style 9 0 120 fg=#dedede bg=#131313
+text 10 "▎ Add a README with a usage section"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 120 fg=#dedede bg=#202020
+text 11 ""
+style 11 0 120 fg=#dedede bg=#131313
+text 12 "  Done. The ┌ Main agent's effort on gpt-6-luna ──────────────────────────────────────────────────────────┐"
+style 12 0 12 fg=#dedede bg=#131313
+style 12 12 13 fg=#303030 bg=#101010
+style 12 13 48 fg=#dedede bg=#101010 bold
+style 12 48 107 fg=#303030 bg=#101010
+style 12 107 120 fg=#dedede bg=#131313
+text 13 "            │                                                                                             │"
+style 13 0 12 fg=#dedede bg=#131313
+style 13 12 13 fg=#303030 bg=#101010
+style 13 13 106 fg=#dedede bg=#101010
+style 13 106 107 fg=#303030 bg=#101010
+style 13 107 120 fg=#dedede bg=#131313
+text 14 "            │   low     fastest, thinks least                                                             │"
+style 14 0 12 fg=#dedede bg=#131313
+style 14 12 13 fg=#303030 bg=#101010
+style 14 13 24 fg=#dedede bg=#101010
+style 14 24 45 fg=#9d9d9d bg=#101010
+style 14 45 106 fg=#dedede bg=#101010
+style 14 106 107 fg=#303030 bg=#101010
+style 14 107 120 fg=#dedede bg=#131313
+text 15 "            │   medium  quicker, thinks less                                                              │"
+style 15 0 12 fg=#dedede bg=#131313
+style 15 12 13 fg=#303030 bg=#101010
+style 15 13 24 fg=#dedede bg=#101010
+style 15 24 44 fg=#9d9d9d bg=#101010
+style 15 44 106 fg=#dedede bg=#101010
+style 15 106 107 fg=#303030 bg=#101010
+style 15 107 120 fg=#dedede bg=#131313
+text 16 "            │ ▸ high    thinks more  now                                                                  │"
+style 16 0 12 fg=#dedede bg=#131313
+style 16 12 13 fg=#303030 bg=#101010
+style 16 13 14 fg=#dedede bg=#101010
+style 16 14 16 fg=#419cff bg=#101010
+style 16 16 24 fg=#419cff bg=#101010 bold
+style 16 24 35 fg=#9d9d9d bg=#101010
+style 16 35 40 fg=#419cff bg=#101010
+style 16 40 106 fg=#dedede bg=#101010
+style 16 106 107 fg=#303030 bg=#101010
+style 16 107 120 fg=#dedede bg=#131313
+text 17 "            │   xhigh   thinks hard, Arko's default                                                       │"
+style 17 0 12 fg=#dedede bg=#131313
+style 17 12 13 fg=#303030 bg=#101010
+style 17 13 24 fg=#dedede bg=#101010
+style 17 24 51 fg=#9d9d9d bg=#101010
+style 17 51 106 fg=#dedede bg=#101010
+style 17 106 107 fg=#303030 bg=#101010
+style 17 107 120 fg=#dedede bg=#131313
+text 18 "            │   max     thinks most, slowest                                                              │"
+style 18 0 12 fg=#dedede bg=#131313
+style 18 12 13 fg=#303030 bg=#101010
+style 18 13 24 fg=#dedede bg=#101010
+style 18 24 44 fg=#9d9d9d bg=#101010
+style 18 44 106 fg=#dedede bg=#101010
+style 18 106 107 fg=#303030 bg=#101010
+style 18 107 120 fg=#dedede bg=#131313
+text 19 "            │                                                                                             │"
+style 19 0 12 fg=#dedede bg=#131313
+style 19 12 13 fg=#303030 bg=#101010
+style 19 13 106 fg=#dedede bg=#101010
+style 19 106 107 fg=#303030 bg=#101010
+style 19 107 120 fg=#dedede bg=#131313
+text 20 "            │   ← Back to the models                                                                      │"
+style 20 0 12 fg=#dedede bg=#131313
+style 20 12 13 fg=#303030 bg=#101010
+style 20 13 106 fg=#dedede bg=#101010
+style 20 106 107 fg=#303030 bg=#101010
+style 20 107 120 fg=#dedede bg=#131313
+text 21 "            │                                                                                             │"
+style 21 0 12 fg=#dedede bg=#131313
+style 21 12 13 fg=#303030 bg=#101010
+style 21 13 106 fg=#dedede bg=#101010
+style 21 106 107 fg=#303030 bg=#101010
+style 21 107 120 fg=#dedede bg=#131313
+text 22 "            └──────────────────────────────────────────────────── ↑ ↓  choose   Enter  apply   Esc  back ─┘"
+style 22 0 12 fg=#dedede bg=#131313
+style 22 12 65 fg=#303030 bg=#101010
+style 22 65 70 fg=#dedede bg=#232323
+style 22 70 77 fg=#9d9d9d bg=#101010
+style 22 77 79 fg=#303030 bg=#101010
+style 22 79 86 fg=#dedede bg=#232323
+style 22 86 92 fg=#9d9d9d bg=#101010
+style 22 92 94 fg=#303030 bg=#101010
+style 22 94 99 fg=#dedede bg=#232323
+style 22 99 104 fg=#9d9d9d bg=#101010
+style 22 104 107 fg=#303030 bg=#101010
+style 22 107 120 fg=#dedede bg=#131313
+text 23 ""
+style 23 0 120 fg=#dedede bg=#131313
+text 24 ""
+style 24 0 120 fg=#dedede bg=#131313
+text 25 ""
+style 25 0 120 fg=#dedede bg=#131313
+text 26 ""
+style 26 0 120 fg=#dedede bg=#131313
+text 27 ""
+style 27 0 120 fg=#dedede bg=#131313
+text 28 ""
+style 28 0 120 fg=#dedede bg=#131313
+text 29 ""
+style 29 0 120 fg=#dedede bg=#131313
+text 30 ""
+style 30 0 120 fg=#dedede bg=#131313
+text 31 ""
+style 31 0 120 fg=#dedede bg=#131313
+text 32 ""
+style 32 0 120 fg=#dedede bg=#131313
+text 33 ""
+style 33 0 120 fg=#dedede bg=#131313
+text 34 ""
+style 34 0 120 fg=#dedede bg=#131313
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 fg=#303030 bg=#131313
+text 36 " last turn 34s"
+style 36 0 1 fg=#dedede bg=#131313
+style 36 1 14 fg=#9d9d9d bg=#131313
+style 36 14 120 fg=#dedede bg=#131313
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 fg=#303030 bg=#131313
+text 38 " › Message  / for commands"
+style 38 0 1 fg=#dedede bg=#131313
+style 38 1 3 fg=#419cff bg=#131313
+style 38 3 26 fg=#9d9d9d bg=#131313
+style 38 26 120 fg=#dedede bg=#131313
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 fg=#303030 bg=#131313

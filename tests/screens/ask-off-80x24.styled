@@ -1,0 +1,136 @@
+size 80 24
+cursor 0 0 hidden
+text 0 ""
+style 0 0 80 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 78 fg=#303030 bg=#131313
+style 1 78 80 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-luna (high effort)                                      │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 76 fg=#dedede bg=#131313
+style 2 76 78 fg=#303030 bg=#131313
+style 2 78 80 fg=#dedede bg=#131313
+text 3 "  │ Workers    parallel workers                                              │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 76 fg=#dedede bg=#131313
+style 3 76 78 fg=#303030 bg=#131313
+style 3 78 80 fg=#dedede bg=#131313
+text 4 "  │ Workspace  /home/ada/proj                                                │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 15 fg=#9d9d9d bg=#131313
+style 4 15 76 fg=#dedede bg=#131313
+style 4 76 78 fg=#303030 bg=#131313
+style 4 78 80 fg=#dedede bg=#131313
+text 5 "  │ Sessio┌ Ask before adding MCP servers ───────────────────────────┐       │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 10 fg=#9d9d9d bg=#131313
+style 5 10 11 fg=#303030 bg=#101010
+style 5 11 42 fg=#dedede bg=#101010 bold
+style 5 42 70 fg=#303030 bg=#101010
+style 5 70 76 fg=#dedede bg=#131313
+style 5 76 78 fg=#303030 bg=#131313
+style 5 78 80 fg=#dedede bg=#131313
+text 6 "  │ Projec│                                                          │       │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 10 fg=#9d9d9d bg=#131313
+style 6 10 11 fg=#303030 bg=#101010
+style 6 11 69 fg=#dedede bg=#101010
+style 6 69 70 fg=#303030 bg=#101010
+style 6 70 76 fg=#dedede bg=#131313
+style 6 76 78 fg=#303030 bg=#131313
+style 6 78 80 fg=#dedede bg=#131313
+text 7 "  │ Tools │ Agents will add MCP servers without asking. A server     │       │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 10 fg=#9d9d9d bg=#131313
+style 7 10 11 fg=#303030 bg=#101010
+style 7 11 69 fg=#dedede bg=#101010
+style 7 69 70 fg=#303030 bg=#101010
+style 7 70 76 fg=#dedede bg=#131313
+style 7 76 78 fg=#303030 bg=#131313
+style 7 78 80 fg=#dedede bg=#131313
+text 8 "  └───────│ runs a program the agent chose, with your permissions    │───────┘"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 10 fg=#303030 bg=#131313
+style 8 10 11 fg=#303030 bg=#101010
+style 8 11 69 fg=#dedede bg=#101010
+style 8 69 70 fg=#303030 bg=#101010
+style 8 70 78 fg=#303030 bg=#131313
+style 8 78 80 fg=#dedede bg=#131313
+text 9 "          │ and outside the command guard.                           │"
+style 9 0 10 fg=#dedede bg=#131313
+style 9 10 11 fg=#303030 bg=#101010
+style 9 11 69 fg=#dedede bg=#101010
+style 9 69 70 fg=#303030 bg=#101010
+style 9 70 80 fg=#dedede bg=#131313
+text 10 "▎ Add a RE│                                                          │"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 10 fg=#dedede bg=#202020
+style 10 10 11 fg=#303030 bg=#101010
+style 10 11 69 fg=#dedede bg=#101010
+style 10 69 70 fg=#303030 bg=#101010
+style 10 70 80 fg=#dedede bg=#202020
+text 11 "          │  Turn off    Cancel                                      │"
+style 11 0 10 fg=#dedede bg=#131313
+style 11 10 11 fg=#303030 bg=#101010
+style 11 11 12 fg=#dedede bg=#101010
+style 11 12 22 fg=#dedede bg=#232323
+style 11 22 24 fg=#dedede bg=#101010
+style 11 24 32 fg=#f2f9ff bg=#006ee5
+style 11 32 69 fg=#dedede bg=#101010
+style 11 69 70 fg=#303030 bg=#101010
+style 11 70 80 fg=#dedede bg=#131313
+text 12 "  Done. Th│                                                          │"
+style 12 0 10 fg=#dedede bg=#131313
+style 12 10 11 fg=#303030 bg=#101010
+style 12 11 69 fg=#dedede bg=#101010
+style 12 69 70 fg=#303030 bg=#101010
+style 12 70 80 fg=#dedede bg=#131313
+text 13 "          └─────────────── ← →  choose   Enter  go on   Esc  cancel ─┘"
+style 13 0 10 fg=#dedede bg=#131313
+style 13 10 26 fg=#303030 bg=#101010
+style 13 26 31 fg=#dedede bg=#232323
+style 13 31 38 fg=#9d9d9d bg=#101010
+style 13 38 40 fg=#303030 bg=#101010
+style 13 40 47 fg=#dedede bg=#232323
+style 13 47 53 fg=#9d9d9d bg=#101010
+style 13 53 55 fg=#303030 bg=#101010
+style 13 55 60 fg=#dedede bg=#232323
+style 13 60 67 fg=#9d9d9d bg=#101010
+style 13 67 70 fg=#303030 bg=#101010
+style 13 70 80 fg=#dedede bg=#131313
+text 14 ""
+style 14 0 80 fg=#dedede bg=#131313
+text 15 ""
+style 15 0 80 fg=#dedede bg=#131313
+text 16 ""
+style 16 0 80 fg=#dedede bg=#131313
+text 17 ""
+style 17 0 80 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 80 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 fg=#303030 bg=#131313
+text 20 " last turn 34s"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 14 fg=#9d9d9d bg=#131313
+style 20 14 80 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 80 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 fg=#303030 bg=#131313
