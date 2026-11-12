@@ -3929,7 +3929,7 @@ dependencies = [
 [[package]]
 name = "termelon"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/termelon?rev=788baf370e37527493aed129330c203de55d5ee0#788baf370e37527493aed129330c203de55d5ee0"
+source = "git+https://github.com/mesa-hills-research/termelon?rev=4301ceba85ffa8b8b20644ca88519bcd5a9a4f0f#4301ceba85ffa8b8b20644ca88519bcd5a9a4f0f"
 dependencies = [
  "rustix",
  "signal-hook",
@@ -3942,7 +3942,7 @@ dependencies = [
 [[package]]
 name = "termelon-vt"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/termelon?rev=788baf370e37527493aed129330c203de55d5ee0#788baf370e37527493aed129330c203de55d5ee0"
+source = "git+https://github.com/mesa-hills-research/termelon?rev=4301ceba85ffa8b8b20644ca88519bcd5a9a4f0f#4301ceba85ffa8b8b20644ca88519bcd5a9a4f0f"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
