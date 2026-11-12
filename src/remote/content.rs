@@ -133,7 +133,8 @@ pub fn grouped(count: usize) -> String {
 }
 
 /// The door of a preview that leaves out `lines` lines, or when it leaves
-/// out none, `characters` characters of lines it cut.
+/// out none, `characters` characters. A preview leaves out either the lines
+/// after its last or the characters after its cut, never both.
 pub fn door(lines: usize, characters: usize) -> Option<String> {
     let s = |count: usize| if count == 1 { "" } else { "s" };
     if lines > 0 {
@@ -149,25 +150,33 @@ pub fn door(lines: usize, characters: usize) -> Option<String> {
     }
 }
 
-/// The preview of the content `text`, which is its first
-/// [`PREVIEW_LINES`] lines, each at most [`PREVIEW_LINE_CHARS`]
-/// characters, and the door to the rest when it leaves any out.
-pub fn preview(text: &str) -> (String, Option<String>) {
+/// The preview of the content `text` of `kind`, which is its first
+/// [`PREVIEW_LINES`] lines, and the door to the rest when it leaves any out.
+/// A line over [`PREVIEW_LINE_CHARS`] characters ends it at its cut, so
+/// the door counts the characters that follow it, the line's rest and every
+/// line after.
+pub fn preview(kind: ContentKind, text: &str) -> (String, Option<String>) {
     let lines: Vec<&str> = text.lines().collect();
-    let mut cut = 0;
-    let shown: Vec<String> = lines
-        .iter()
-        .take(PREVIEW_LINES)
-        .map(|line| match line.char_indices().nth(PREVIEW_LINE_CHARS) {
-            Some((end, _)) => {
-                cut += line[end..].chars().count();
-                format!("{}…", &line[..end])
-            }
-            None => line.to_string(),
-        })
-        .collect();
+    let mut shown = Vec::new();
+    for (at, text_line) in lines.iter().enumerate().take(PREVIEW_LINES) {
+        let Some((end, _)) = text_line.char_indices().nth(PREVIEW_LINE_CHARS) else {
+            shown.push(text_line.to_string());
+            continue;
+        };
+        shown.push(format!("{}…", &text_line[..end]));
+        let after: usize = lines[at + 1..]
+            .iter()
+            .map(|each| match line(kind, each) {
+                Line::Numbered { text, .. } | Line::Plain(text) => text.chars().count(),
+            })
+            .sum();
+        return (
+            shown.join("\n"),
+            door(0, text_line[end..].chars().count() + after),
+        );
+    }
     let more = lines.len().saturating_sub(PREVIEW_LINES);
-    (shown.join("\n"), door(more, cut))
+    (shown.join("\n"), door(more, 0))
 }
 
 #[cfg(test)]
@@ -215,13 +224,50 @@ mod tests {
     #[test]
     fn a_preview_shows_sixteen_lines_and_says_how_many_more() {
         let text: Vec<String> = (1..=113).map(|n| format!("line {n}")).collect();
-        let (shown, more) = preview(&text.join("\n"));
+        let (shown, more) = preview(ContentKind::Plain, &text.join("\n"));
         assert_eq!(shown.lines().count(), PREVIEW_LINES);
         assert_eq!(more.as_deref(), Some("… 97 more lines"));
-        assert_eq!(preview("a\nb"), ("a\nb".to_string(), None));
-        let (_, more) = preview(&"x".repeat(PREVIEW_LINE_CHARS + 1240));
+        assert_eq!(
+            preview(ContentKind::Plain, "a\nb"),
+            ("a\nb".to_string(), None)
+        );
+        let (_, more) = preview(ContentKind::Plain, &"x".repeat(PREVIEW_LINE_CHARS + 1240));
         assert_eq!(more.as_deref(), Some("… 1,240 more characters"));
         assert_eq!(door(1, 0).as_deref(), Some("… 1 more line"));
+    }
+
+    /// A long line ends the preview at its cut, so the door counts what
+    /// follows the last line shown, and the lines after the cut aren't shown.
+    #[test]
+    fn a_cut_line_ends_the_preview_and_the_door_counts_what_follows_it() {
+        let first = format!("{}tail.", "x".repeat(PREVIEW_LINE_CHARS));
+        let second = "Second paragraph.";
+        let (shown, more) = preview(ContentKind::Plain, &format!("{first}\n\n{second}"));
+        assert_eq!(shown, format!("{}…", "x".repeat(PREVIEW_LINE_CHARS)));
+        // The rest of its line, then the second paragraph.
+        let hidden = "tail.".len() + second.len();
+        assert_eq!(more, door(0, hidden));
+        assert_eq!(
+            more.as_deref(),
+            Some(format!("… {hidden} more characters").as_str())
+        );
+        // A cut in the last line leaves nothing after it.
+        let (shown, more) = preview(
+            ContentKind::Plain,
+            &format!("short\n{}", "y".repeat(PREVIEW_LINE_CHARS + 11)),
+        );
+        assert_eq!(shown.lines().count(), 2);
+        assert_eq!(more.as_deref(), Some("… 11 more characters"));
+        // A file's lines count their text, not their numbers.
+        let lines = [
+            numbered(1, &"z".repeat(PREVIEW_LINE_CHARS)),
+            numbered(2, "abc"),
+            numbered(10, "de"),
+        ];
+        let (shown, more) = preview(ContentKind::Lines, &lines.join("\n"));
+        assert_eq!(shown.lines().count(), 1);
+        // (Its number and tab take two of the 400, so two of its text are cut.)
+        assert_eq!(more.as_deref(), Some("… 7 more characters"));
     }
 
     #[test]

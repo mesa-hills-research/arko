@@ -16,8 +16,8 @@ A result item (`Kind::Result`) holds its call's content, in the form that fits t
 | Field | What it holds |
 |---|---|
 | `content` | Its form, a `ContentKind` (`Plain`, `Muted`, `Lines` or `Diff`) |
-| `text` | Its first 16 lines (`content::PREVIEW_LINES`) |
-| `more` | The line that opens the rest ("… 24 more lines"), when there's more |
+| `text` | Its first 16 lines (`content::PREVIEW_LINES`), up to a line over 400 characters (`content::PREVIEW_LINE_CHARS`), which ends it cut with "…" |
+| `more` | The line that opens the rest ("… 24 more lines", or "… 1,240 more characters" after a cut), when there's more |
 | `language` | The language of the code it holds |
 | `whole` | All of it, while the feed keeps it |
 

@@ -1197,7 +1197,7 @@ impl Content {
     /// Its block, which shows its preview, and keeps the whole when the
     /// preview leaves some out.
     fn block(self) -> Item {
-        let (preview, more) = content::preview(&self.text);
+        let (preview, more) = content::preview(self.kind, &self.text);
         let mut block = Item::new(Kind::Result, preview);
         block.content = Some(self.kind);
         block.whole = more.is_some().then(|| self.text.into());
@@ -1902,6 +1902,32 @@ mod tests {
             Some(&edited("a\n\n", "a", "b", false)),
         );
         assert_eq!(edit.block.unwrap().text, "-1\ta\n+1\tb\n 2\t");
+    }
+
+    /// A message of two long paragraphs previews as a start of the first,
+    /// cut with its door under it, and the second paragraph stays behind
+    /// the door, which counts everything after the cut.
+    #[test]
+    fn a_message_cut_in_its_first_paragraph_hides_the_second() {
+        let first = format!("{} end.", "word ".repeat(80));
+        let second = "Also add the patterns, and tell me if that belongs in the skill.";
+        let message = format!("{first}\n\n{second}");
+        let sent = super::outcome(
+            crew::MESSAGE_AGENT,
+            &params(&[("to", "r82".into()), ("message", message.as_str().into())]),
+            "Sent to r82.",
+        );
+        let block = sent.block.unwrap();
+        assert_eq!(
+            block.text,
+            format!("{}…", &first[..content::PREVIEW_LINE_CHARS])
+        );
+        let hidden = first.chars().count() - content::PREVIEW_LINE_CHARS + second.chars().count();
+        assert_eq!(
+            block.more.as_deref(),
+            Some(format!("… {hidden} more characters").as_str())
+        );
+        assert_eq!(block.whole.as_deref(), Some(message.as_str()));
     }
 
     /// A skill's load opens to the skill's text, its first lines and the
