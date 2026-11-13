@@ -26,18 +26,31 @@ changes.
 ## Transcript rows
 
 The transcript has three views. Full shows every call as its own row. Quiet merges neighbouring
-calls of one kind into a row that says what they did ("Read 4 files in src/tui", "Ran 2 commands
-(rg, sed)"). Messages shows the text and one line per turn ("▸ 8 tool calls") that opens to the
-turn's Quiet rows in place. The three views share one model of a row.
+calls into a row that says what they did ("Read 4 files in src/tui", "Ran 2 commands (rg, sed)").
+Messages shows the text and one line per turn ("▸ 8 tool calls") that opens to the turn's work as
+Quiet shows it. The three views share one model of a row.
 
+What is said (the user's message, the agent's text) is bright, in the body size, and stands apart.
+The agent's work (its calls, its thoughts, its workers' lines and Arko's notices) is a quiet list
+of single lines under it.
+
+- Everything shows where it happened, at every level, so "above" always means "before".
+- Closed, every item of work is one line at any width. Its words are cut to fit with "…", and its
+  outcome stays whole ("(24 passed)", "· running", ✗). A cut line opens to the rest. In Quiet a row
+  of one call opens to the call as written, unless its detail already says it whole.
 - A row's line is its words and its outcome, nothing else. In Quiet the words are a sentence in
   the past tense ("Read engine.rs", "Messaged r3"), or the present while the call runs ("Running
   cargo build · 41s"). In Full they are the call as written ("read src/engine.rs:100-112"). The line
   carries no quote or preview of what the call held.
-- The outcome is news only. A test run's count ("(24 passed)"), "no results", a monitor's state, a
-  spinner and a timer while a call runs. In Quiet a success shows nothing, since the past tense says
-  the call ended, and a failure shows one ✗ at the right of the row. In Full the line ends with ✓ or
-  ✗ and the outcome's words ("✓ 13 lines", "✗ exit 101").
+- The outcome is news only. A test run's count ("(24 passed)"), "no results", a job's or a
+  monitor's state ("· running", "· finished"), a spinner and a timer while a call runs. In Quiet a
+  success shows nothing, since the past tense says the call ended, and a failure shows one ✗ at the
+  right of the row. In Full the line ends with ✓ or ✗ and the outcome's words ("✓ 13 lines",
+  "✗ exit 101"). A job's row says its state, never its ID.
+- A row holds calls of one kind that follow one another, or the reads and changes of one file, and
+  its title names every kind it holds ("Read transcript.rs and made 3 edits"). A failure, a test run,
+  a call of another kind and anything said end a row, and so does a row of one call the reader
+  opened.
 - Opening a row shows the call's content, which is its result in the form that fits the tool. It
   sits directly under the row, with no call line between them.
 
@@ -58,35 +71,59 @@ turn's Quiet rows in place. The three views share one model of a row.
 | Skill | The skill's text |
 | Any other tool | Its result, muted |
 
-- Detail is the exception, and it is one muted line. Where the words cut something the reader may
-  need (a command's whole text with its folder and variables, a long search), that whole thing shows
-  as one muted line above the content. Never a list of labelled parameters, and never the path or
-  target the words already said.
-- A merged row opens to one Full line per call, with its outcome, and each of those opens to its
-  content. Two levels at most, the row, then the call, then content.
+- Detail is the exception, and it is one muted line. Where the words leave out something the
+  reader may need (a command's variables, its folder or its other lines, a long search), that whole
+  thing shows as one muted line above the content. Never a list of labelled parameters, and never
+  the path or target the words already said.
+- A merged row opens to one Full line per call, muted, with its outcome, and each of those opens to
+  its content. Two levels at most, the row, then what it holds on its rail, then a call's content.
 - Status and controls live on the row's line only. Stop, Move to background, the timer and the
   spinner appear once per call, whatever is open.
-- A row with no content and no detail has no triangle (in the terminal, a dot in its place). Long
-  content shows its first 16 lines and one line that says how much more there is ("… 97 more
-  lines"), which opens the rest. That line is muted text on every surface. A line too long to show
-  whole ends the preview where it's cut, so nothing hidden sits above text that shows, and the
-  count is of the characters after the cut ("… 1,240 more characters").
+- A row has a triangle exactly while opening shows something. One with no content and no detail
+  has none (in the terminal, a dot in its place), also while its call runs, and gains ▸ in the same
+  column when its result comes. Long content shows its first 16 lines and one line that says how
+  much more there is ("… 97 more lines"), which opens the rest. That line is muted text on every
+  surface. A line too long to show whole ends the preview where it's cut, so nothing hidden sits
+  above text that shows, and the count is of the characters after the cut ("… 1,240 more
+  characters").
 - A row never moves. It keeps its place, its calls and its height once shown, and opening it adds
   below it. A row's words change in place while calls join it, and only the last row of a run takes
   new calls.
-- Every marker (a fold's ▸ or ▾, the user's bar, ✉, ·) stands in one column in every view. On the
-  page and in Studio it is the column of the Working spinner. In the terminal it is the left edge,
-  where a call's content hangs on a rail under its marker, so the calls and the user's messages make
-  a column of their own. The agent's text, its thinking's triangle and the Working spinner start two
-  columns in.
-- In the terminal a thinking opens and closes from its label, its triangle or its text, and open, a
-  blank row sets it apart from what follows. Inside an open row it stands behind the row's line, as
-  the calls do.
-- Working… is the one loading indicator of a turn, with the status bar's Working. It has as much
-  space below it as above, and so does a thinking row. In the terminal it has no blank row among the
-  agent's calls, and one on each side after what was said or above a message waiting to be read. Such
-  a message has a blank row above it and one below it, before the status line. The page keeps the
-  line's room at the end while a call or a thinking shows that the agent works.
+
+### Thoughts
+
+- A thought is the agent's words to itself, muted and italic in the text column, with no label,
+  marker or timer. Closed it is its first line, ending with "…" where it leaves something out, and a
+  click, a tap or Enter shows the whole. One that fits on its line has nothing to open. It looks the
+  same in Quiet, in Full, inside a row and in a worker's view.
+- A thought between two calls of one Quiet row sits inside that row, between them, so a closed row
+  hides only what happened between its first call and its last. Every other thought is a line of its
+  own. The last one stands at the end until the next call comes, and goes in the row above if that
+  call joins it. One the reader opened stays where it is, and the next call starts a row of its own.
+
+### Markers, the live line and gaps
+
+- There is one marker column and one text column. ▸ opens, ▾ is open, · is a call with nothing more
+  to show (the terminal only), the spinner marks the one line that is live, ▎ is the user's message
+  and ✗ a failure at the right of the line. The agent's text and its thoughts have no marker.
+- In the terminal markers stand at the left edge and words two columns in. An open row's rail hangs
+  from its marker, a merged row's inner markers stand two columns in, and their words, content and
+  thoughts four in. On the page the marker column is 10 px wide, words start 16 px in, the rail is
+  2 px wide under the marker's centre, and inner words and content start 32 px in.
+- Exactly one line is live. While the agent waits on its model it is "Working…". While it thinks it
+  is the thought itself, whose words grow in place. While a call runs, its row says so with its
+  timer, and there is no Working line beside it. The spinner turns in the marker column.
+- Lines of work stack. A gap stands between what is said and the work, and on both sides of
+  anything open, also on a rail, and gaps never add up. The terminal's gap is one blank line. On the
+  page work stacks 4 px apart, what is said and anything open stand 12 px apart, the user's message
+  24 px below what's above it, and an open thought's paragraphs 8 px apart. A rail never starts or
+  ends with a gap. The line the reader opened stays where it is on screen, so the gap above it comes
+  from what is above moving up.
+- Working… has as much space below it as above. In the terminal it has no blank row among the
+  agent's calls, and one on each side after what was said, after anything open, or above a message
+  waiting to be read. Such a message has a blank row above it and one below it, before the status
+  line. The page keeps the line's room at the end while a call or a thinking shows that the agent
+  works.
 - A tag never sits between a message's rows. A message that fits on one row has its tag ("pending",
   "queued", "from the web page") at the right of that row. One that wraps has the tag on a row of
   its own under the last.
@@ -94,6 +131,21 @@ turn's Quiet rows in place. The three views share one model of a row.
   The terminal shows a turn's time and cost in its status bar instead.
 - Content ends where it ends. A final table or code block has no gap below it, and a reply's actions
   sit at the same distance from any last block.
+
+### Type
+
+| Item | Page | Terminal |
+|---|---|---|
+| The user's message, the agent's text | UI font, 16 px on 24 | Plain |
+| A thought | UI font, 14 px on 20, italic, muted | Dim italic |
+| Working… | UI font, 14 px on 20, muted, with the shimmer | Dim |
+| A row's words | Mono, 13 px on 20, the text colour | Plain |
+| A row's outcome and timer, an inner call's line | Mono, 13 px on 20, muted (✓ and ✗ in the success and error colours) | Dim |
+| Detail, a door | Mono, 12 px on 18, muted | Dim |
+| A file's lines, a diff, output, a message | Mono, 12 px on 18, the text colour, line numbers muted | Plain, line numbers dim |
+| Other content | Mono, 12 px on 18, muted | Dim |
+| A worker's ID | UI font, 12 px on 16, weight 600 | Bold |
+| Markers | Muted | Dim |
 
 ## Theme tokens
 
@@ -447,4 +499,4 @@ and the names of things. These differences come from the medium.
 | A row's secondary actions | On hover or focus | On hover or focus, always on touch | None |
 | Panels | Docked from 1200 px, sheets below | Sheets at every width | In place |
 | Reduced motion | System or Settings | System | None |
-| Row markers | Under the Working spinner | Under the Working spinner | At the left edge, two columns before the agent's text |
+| Row markers | Under the Working spinner | In the spinner's column, 10 px wide | At the left edge, two columns before the agent's text, as the spinner is |

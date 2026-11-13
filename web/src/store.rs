@@ -27,8 +27,6 @@ pub struct Store {
     pub jobs: HashMap<String, JobSummary>,
     /// When each item came or last changed, in this device's time (ms).
     pub grown: HashMap<u64, f64>,
-    /// When each item came, in this device's time (ms).
-    born: HashMap<u64, f64>,
     counts: [usize; 2],
     /// Each call's content, its result, by the call.
     contents: HashMap<u64, u64>,
@@ -89,7 +87,6 @@ impl Store {
             self.contents.insert(call, item.id);
         }
         self.grown.insert(item.id, now);
-        self.born.insert(item.id, now);
         self.index.insert(item.id, self.items.len());
         self.items.push(item);
         self.counts[lane] += 1;
@@ -104,7 +101,6 @@ impl Store {
             };
             let old = self.items.remove(at);
             self.grown.remove(&old.id);
-            self.born.remove(&old.id);
             self.let_go_content(old.id);
             self.counts[lane] -= 1;
             trimmed.push(old.id);
@@ -139,14 +135,6 @@ impl Store {
         true
     }
 
-    /// How long the page saw the item `id` grow, once that is a second or
-    /// more. A thinking that came whole, or before the page opened, has no
-    /// time to tell.
-    pub fn grew_for(&self, id: u64) -> Option<f64> {
-        let ms = self.grown.get(&id)? - self.born.get(&id)?;
-        (ms >= 1000.0).then_some(ms)
-    }
-
     /// Takes the item `id` out. False if it isn't kept.
     pub fn remove(&mut self, id: u64) -> bool {
         let Some(at) = self.index.remove(&id) else {
@@ -154,7 +142,6 @@ impl Store {
         };
         let item = self.items.remove(at);
         self.grown.remove(&id);
-        self.born.remove(&id);
         self.let_go_content(id);
         self.counts[usize::from(item.agent != MAIN)] -= 1;
         self.reindex();
@@ -352,20 +339,6 @@ pub mod tests {
             reread_dollars: None,
             reread_plan: None,
         }
-    }
-
-    /// How long a thinking grew is known once the page saw it grow for a
-    /// second.
-    #[test]
-    fn a_thinking_that_grew_has_a_time() {
-        let mut store = Store::default();
-        store.add(item(1, Kind::Thinking, MAIN, ""), 1000.0);
-        assert_eq!(store.grew_for(1), None);
-        store.append(1, "hm", 1500.0);
-        assert_eq!(store.grew_for(1), None, "under a second");
-        store.append(1, "m", 13_000.0);
-        assert_eq!(store.grew_for(1), Some(12_000.0));
-        assert_eq!(store.grew_for(2), None);
     }
 
     #[test]

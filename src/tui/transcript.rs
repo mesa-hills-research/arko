@@ -251,10 +251,13 @@ fn is_count(key: u64) -> bool {
 }
 
 /// A turn's calls as the Messages view counts them, on one line where the
-/// first one came.
+/// first one came, or the thinking that led to it.
 #[derive(Debug, Default)]
 struct Counted {
+    /// Its first call, by which it opens.
     first: u64,
+    /// Where its line stands, the first call or the thinking before it.
+    from: u64,
     calls: usize,
     failed: usize,
     running: usize,
@@ -1036,10 +1039,7 @@ impl Transcript {
             };
             let item = &self.entries[index].item;
             let opens = opened.contains(&index);
-            if let Some(count) = counts
-                .get(&item.turn)
-                .filter(|count| count.first == item.id)
-            {
+            if let Some(count) = counts.get(&item.turn).filter(|count| count.from == item.id) {
                 blocks.push(Block {
                     key: COUNT_KEY | count.first,
                     shown: Shown::Counter {
@@ -1295,7 +1295,7 @@ impl Transcript {
             let opens = opened.contains(&index);
             let first = counts
                 .get(&item.turn)
-                .is_some_and(|count| count.first == item.id);
+                .is_some_and(|count| count.from == item.id);
             let hidden = matches!(
                 self.shows(if opens { &as_quiet } else { filter }, item),
                 Show::Hidden
@@ -1371,9 +1371,10 @@ impl Transcript {
 
     /// The turns' counts of calls in `filter`'s view when it's Messages, by
     /// turn, and the entries that show as the Quiet view shows them because
-    /// their turn's count is open. A count's line stands where the turn's
-    /// work began, its first call or thinking, and open it shows that and
-    /// what came after it in the turn, as Quiet does.
+    /// their turn's count is open. A count's line stands at the turn's first
+    /// call, or at the thinking that led to it with nothing Messages shows
+    /// between them, and open it shows that and what came after it in the
+    /// turn, as Quiet does.
     fn counted(&self, filter: &Filter) -> (HashMap<Option<u64>, Counted>, HashSet<usize>) {
         let mut counts: HashMap<Option<u64>, Counted> = HashMap::new();
         let mut opened = HashSet::new();
@@ -1381,32 +1382,38 @@ impl Transcript {
             return (counts, opened);
         }
         let order = self.order();
-        // Where each turn's work began.
-        let mut began: HashMap<Option<u64>, u64> = HashMap::new();
+        // The thinking since the last thing Messages showed.
+        let mut thought = None;
         for index in &order {
             let item = &self.entries[*index].item;
-            let work = matches!(self.shows(filter, item), Show::Count)
-                || (filter.owns(item) && item.kind == Kind::Thinking);
-            if work {
-                began.entry(item.turn).or_insert(item.id);
+            match self.shows(filter, item) {
+                Show::Count => {}
+                Show::Hidden if filter.owns(item) && item.kind == Kind::Thinking => {
+                    thought.get_or_insert(item.id);
+                    continue;
+                }
+                Show::Hidden => continue,
+                Show::Item | Show::Worker(_) => {
+                    thought = None;
+                    continue;
+                }
             }
-            if matches!(self.shows(filter, item), Show::Count) {
-                let first = began[&item.turn];
-                let count = counts.entry(item.turn).or_insert_with(|| Counted {
-                    first,
-                    open: self.counts_open.contains(&first),
-                    ..Counted::default()
-                });
-                count.calls += 1;
-                count.failed += usize::from(item.status == Some(CallStatus::Failed));
-                count.running += usize::from(item.status == Some(CallStatus::Running));
-            }
+            let from = thought.take().unwrap_or(item.id);
+            let count = counts.entry(item.turn).or_insert_with(|| Counted {
+                first: item.id,
+                from,
+                open: self.counts_open.contains(&item.id),
+                ..Counted::default()
+            });
+            count.calls += 1;
+            count.failed += usize::from(item.status == Some(CallStatus::Failed));
+            count.running += usize::from(item.status == Some(CallStatus::Running));
         }
         for index in order {
             let item = &self.entries[index].item;
             let open = counts
                 .get(&item.turn)
-                .is_some_and(|count| count.open && item.id >= count.first);
+                .is_some_and(|count| count.open && item.id >= count.from);
             if filter.owns(item) && open {
                 opened.insert(index);
             }

@@ -214,7 +214,8 @@ pub fn layout(all: &[ItemData], view: View, worker: Option<&str>) -> Vec<Row> {
 }
 
 /// [`layout`], where `sealed` are the calls whose Quiet rows of one call
-/// the reader opened, which keep their form ([`quiet::Call::sealed`]),
+/// the reader opened, which keep their form ([`quiet::Call::sealed`]), and
+/// the thoughts the reader opened on lines of their own, which stay there,
 /// `leads` the workers that a worker started, by the worker that started
 /// each, whose reports and messages go to that lead's view, and
 /// `counts_open` the turns whose count of
@@ -264,6 +265,33 @@ pub fn layout_sealed(
     let ids: HashSet<u64> = items.iter().map(|item| item.id).collect();
     // A result whose call is gone shows where it came.
     let orphan = |item: &ItemData| item.call.is_some_and(|call| !ids.contains(&call));
+    // Where each turn's count stands (Messages), at its first call, or at
+    // the thinking that led to it with nothing Messages shows between them,
+    // so open it shows the turn's work from its first thought, with that
+    // first call, by which it's known.
+    let mut began: HashMap<u64, u64> = HashMap::new();
+    if view == View::Messages {
+        let mut turns = HashSet::new();
+        let mut thought = None;
+        for item in &items {
+            if item.agent != viewed || (placed.contains(&item.id) && !orphan(item)) {
+                continue;
+            }
+            match place(view, item) {
+                Place::Count => {
+                    if turns.insert(item.turn) {
+                        began.insert(thought.unwrap_or(item.id), item.id);
+                    }
+                    thought = None;
+                }
+                Place::Row => thought = None,
+                Place::Hidden if item.kind == Kind::Thinking => {
+                    thought.get_or_insert(item.id);
+                }
+                Place::Hidden => {}
+            }
+        }
+    }
     let mut counts: HashMap<Option<u64>, usize> = HashMap::new();
     let mut opened: HashSet<Option<u64>> = HashSet::new();
     // Whether the turn so far has a row in this view. A turn Arko started
@@ -283,20 +311,23 @@ pub fn layout_sealed(
             rows.push(Row::Status(item.id));
             continue;
         }
-        let place = place(view, item);
-        if let Place::Count = place {
+        if let Some(&first) = began.get(&item.id) {
             turn_shown = true;
-            let at = *counts.entry(item.turn).or_insert_with(|| {
-                rows.push(Row::Count {
-                    turn: item.turn,
-                    id: item.id,
-                    count: Count::default(),
-                });
-                if counts_open.contains(&item.id) {
-                    opened.insert(item.turn);
-                }
-                rows.len() - 1
+            rows.push(Row::Count {
+                turn: item.turn,
+                id: first,
+                count: Count::default(),
             });
+            counts.insert(item.turn, rows.len() - 1);
+            if counts_open.contains(&first) {
+                opened.insert(item.turn);
+            }
+        }
+        let place = place(view, item);
+        if let Place::Count = place
+            && let Some(&at) = counts.get(&item.turn)
+        {
+            turn_shown = true;
             if let Row::Count { count, .. } = &mut rows[at] {
                 count.calls += 1;
                 match item.status {
@@ -372,6 +403,8 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData], sealed: &HashSet<u64>) -> Vec
                 }),
                 None => quiet::Step::Other(*id),
             },
+            // (One the reader opened on its own line stays there.)
+            Row::Item(id, Kind::Thinking) if sealed.contains(id) => quiet::Step::Other(*id),
             Row::Item(_, Kind::Thinking) => quiet::Step::Thinking,
             Row::Item(id, _) | Row::Status(id) => quiet::Step::Other(*id),
             _ => quiet::Step::Other(0),
@@ -429,13 +462,12 @@ pub fn quiet_members(calls: &[Row]) -> Vec<(Row, Vec<Row>)> {
 }
 
 /// The first line of an agent's thinking, for its folded row, the first
-/// one with text, without Markdown's bold marks.
-pub fn first_line(text: &str) -> String {
-    text.lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("")
-        .replace("**", "")
+/// one with text, without Markdown's bold marks, and whether lines with
+/// text follow it.
+pub fn first_line(text: &str) -> (String, bool) {
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or("").replace("**", "");
+    (first, lines.next().is_some())
 }
 
 /// Text that hasn't grown for this long, while its agent works, no longer
@@ -522,9 +554,9 @@ pub fn motion(
             let grown = store.grown.get(&id).copied().unwrap_or(now);
             (None, now - grown >= QUIET_MS)
         }
-        // The Messages view leaves the agent's thinking out.
-        Busy::Thinking(_) if view == View::Messages => (None, true),
-        Busy::Thinking(id) => (Some(id), false),
+        // Messages shows the agent's thinking only where its turn's count
+        // is open, so elsewhere the Working row stands in for it.
+        Busy::Thinking(id) => (Some(id), view == View::Messages),
         // It counts calls, so the line at the end says what the agent's
         // call does while it runs (`working_label`).
         Busy::Tool if view == View::Messages => (None, true),
@@ -941,9 +973,11 @@ mod tests {
         );
         assert!(room(&store, View::Full, 0.0));
         assert!(!room(&store, View::Messages, 0.0));
+        // (Messages shows the Working row unless its open count shows the
+        // thinking, which the transcript's rows say.)
         assert_eq!(
             motion(&store, &status, View::Messages, None, 0.0),
-            (None, true)
+            (Some(2), true)
         );
         store.add(item(3, Kind::Text, MAIN, "So"), 100.0);
         assert_eq!(
@@ -1033,12 +1067,38 @@ mod tests {
         assert_eq!(unseen(&rows, &store, 1), 1);
     }
 
+    /// A turn's count in Messages stands at the thinking that led to its
+    /// first call, so open it shows the turn's work from its first thought,
+    /// as Quiet does. Its key is still its first call's.
+    #[test]
+    fn a_turns_count_stands_at_its_first_thought() {
+        let mut call = item(3, Kind::Call, MAIN, "ls");
+        call.status = Some(CallStatus::Ok);
+        let items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            item(2, Kind::Thinking, MAIN, "First, the list."),
+            call,
+            item(4, Kind::Reply, MAIN, "Done."),
+        ];
+        let laid = |open: &[u64]| {
+            let open: HashSet<u64> = open.iter().copied().collect();
+            let (sealed, leads) = (HashSet::new(), HashMap::new());
+            layout_sealed(&items, View::Messages, None, &sealed, &leads, &open)
+        };
+        assert_eq!(ids(&laid(&[])), ["i1", "c1:3", "i4"]);
+        // (A call without an act shows as it is.)
+        assert_eq!(ids(&laid(&[3])), ["i1", "c1:3", "i2", "i3", "i4"]);
+    }
+
+    /// A thought folds to its first line, without bold marks, which says
+    /// whether more follows.
     #[test]
     fn thinking_folds_to_its_first_line_without_bold_marks() {
         assert_eq!(
             first_line("\n  **Planning** the fix\nmore"),
-            "Planning the fix"
+            ("Planning the fix".to_string(), true)
         );
+        assert_eq!(first_line("All of it."), ("All of it.".to_string(), false));
     }
 
     /// A conversation with the main agent's thinking and reply, and a worker
@@ -1115,8 +1175,8 @@ mod tests {
     }
 
     /// A turn's count of calls that's open shows the turn's Quiet rows, each
-    /// where it came among what the agent said, with the thinking and the
-    /// results Quiet puts in them. Each turn keeps one count.
+    /// where it came among what the agent said, with the results Quiet puts
+    /// in them and its thinking where it happened. Each turn keeps one count.
     #[test]
     fn a_turns_count_opens_to_its_quiet_rows_in_place() {
         use crate::protocol::{Act, ActKind};
@@ -1164,7 +1224,7 @@ mod tests {
         let open = laid(&[2]);
         assert_eq!(
             ids(&open),
-            ["i1", "c1:2", "q2", "i6", "q7", "i8", "i9", "c2:10"]
+            ["i1", "c1:2", "q2", "i5", "i6", "q7", "i8", "i9", "c2:10"]
         );
         let Row::Quiet { row, .. } = &open[2] else {
             panic!("{open:?}");
@@ -1172,8 +1232,8 @@ mod tests {
         assert_eq!(row.words.text, "Read a.rs and b.rs");
         assert_eq!(
             ids(&row.calls),
-            ["i2", "i3", "i4", "i5"],
-            "its calls, a result and the thinking after them"
+            ["i2", "i3", "i4"],
+            "its calls and a result"
         );
         assert!(
             matches!(
@@ -1486,7 +1546,7 @@ mod tests {
             call(3, "cargo build", CallStatus::Running),
         ];
         let said = |rows: &[Row]| match &rows[1] {
-            Row::Quiet { row, .. } => (row.words.text.clone(), row.words.running),
+            Row::Quiet { row, .. } => (row.words.said(), row.words.running),
             other => panic!("{other:?}"),
         };
         let running = layout(&items, View::Quiet, None);
@@ -1529,7 +1589,7 @@ mod tests {
             let Some(Row::Quiet { row, .. }) = rows.get(1) else {
                 panic!("{name}: {rows:?}");
             };
-            assert_eq!(row.words.text, fixture.words, "{name}");
+            assert_eq!(row.words.said(), fixture.words, "{name}");
             assert_eq!(row.words.failed, fixture.failed, "{name}");
             assert_eq!(row.opens, fixture.opens, "{name}");
             assert!(!row.merged, "{name}");
@@ -1623,11 +1683,11 @@ mod tests {
         assert_eq!(words(&[1]), ["Read a.rs", "Read b.rs"]);
     }
 
-    /// A thinking after a call is in that call's Quiet row from the start,
-    /// so no row goes when the next call joins, and the Working row stands
-    /// for it while it streams.
+    /// A thinking after a call stands on a line of its own at the end,
+    /// where it happened, and goes in the call's row, between its calls,
+    /// when the next call joins it. One the reader opened stays where it is.
     #[test]
-    fn a_thinking_after_a_call_is_in_its_row() {
+    fn a_thinking_goes_in_a_row_between_its_calls() {
         use crate::protocol::{Act, ActKind};
         let read = |id: u64, path: &str| ItemData {
             status: Some(CallStatus::Ok),
@@ -1644,11 +1704,21 @@ mod tests {
             item(3, Kind::Thinking, MAIN, "Which next?"),
         ];
         let thinking = layout(&items, View::Quiet, None);
-        assert_eq!(ids(&thinking), ["i1", "q2"]);
-        assert!(in_quiet_row(&thinking, 3));
-        assert!(!in_quiet_row(&thinking, 1));
+        assert_eq!(ids(&thinking), ["i1", "q2", "i3"]);
+        assert!(!in_quiet_row(&thinking, 3));
         items.push(read(4, "b.rs"));
-        assert_eq!(ids(&layout(&items, View::Quiet, None)), ["i1", "q2"]);
+        let joined = layout(&items, View::Quiet, None);
+        assert_eq!(ids(&joined), ["i1", "q2"]);
+        assert!(in_quiet_row(&joined, 3));
+        let opened = layout_sealed(
+            &items,
+            View::Quiet,
+            None,
+            &[3].into(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(ids(&opened), ["i1", "q2", "i3", "q4"]);
     }
 
     /// An open Quiet row shows each of its calls with the output under it,
@@ -1733,10 +1803,10 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let (words, calls) = said(&rows[1]);
-        assert_eq!(words.text, "Made 1 edit to app.rs");
+        assert_eq!(words.text, "Read app.rs and made 1 edit");
         assert_eq!(calls, ["i2", "i3", "i4"]);
         let (words, calls) = said(&rows[2]);
-        assert_eq!(words.text, "Ran cargo test (1 failed, 3 passed)");
+        assert_eq!(words.said(), "Ran cargo test (1 failed, 3 passed)");
         assert!(words.failed);
         assert_eq!(calls, ["i5", "i6"]);
         // Images that a call's result brings later leave the rows as they

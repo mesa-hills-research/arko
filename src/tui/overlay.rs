@@ -527,7 +527,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ),
     (
         "Click",
-        "open a worker's line, a row of the agent list, a count of calls, a quiet row of calls, a command's whole output at its \"more lines\", or an agent's thinking at its Thinking line",
+        "open a worker's line, a row of the agent list, a count of calls, a quiet row of calls, a command's whole output at its \"more lines\", or an agent's thinking at its first line",
     ),
 ];
 

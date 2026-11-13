@@ -11,7 +11,7 @@ use crate::files::SentFiles;
 use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
-use crate::protocol::{ActKind, CallStatus, ItemData, Kind, Level, Source, WorkerState, duration};
+use crate::protocol::{ActKind, CallStatus, ItemData, Kind, Level, Source, WorkerState};
 use crate::shimmer::Shimmer;
 use crate::spinner::Spinner;
 use crate::store::{Entry, MAIN, call_actions};
@@ -49,15 +49,16 @@ pub fn Transcript() -> impl IntoView {
     let rows = Memo::new(move |_| {
         let (thinking, working, room) = motion.get();
         let (feed, rows) = laid_out.get();
-        // A thinking in a Quiet row has no row of its own, so the Working
-        // row says it thinks while it streams. A call that runs with a row of
-        // its own shows that there.
-        let hidden = thinking.is_some_and(|id| layout::in_quiet_row(&rows, id));
         let worker = page.worker.get();
         STORE.with(|store| {
             let store = store.borrow();
-            let elsewhere = working && layout::running_shown(&rows, &store, worker.as_deref());
-            let working = (working && !elsewhere) || hidden;
+            // The thinking that streams is the live line where its row
+            // shows, and a call that runs with a row of its own shows that
+            // there.
+            let live = thinking.is_some_and(|id| rows.contains(&Row::Item(id, Kind::Thinking)));
+            let elsewhere =
+                working && (live || layout::running_shown(&rows, &store, worker.as_deref()));
+            let working = working && !elsewhere;
             let room = !working && (room || elsewhere);
             let rows = layout::with_working(rows, working || room, &store);
             (feed, rows, room)
@@ -211,22 +212,21 @@ fn row_key(feed: Option<u64>, row: &Row) -> (Option<u64>, String) {
 fn row_view(row: Row, thinking: Memo<Option<u64>>, room: Memo<bool>) -> AnyView {
     let key = row.key();
     match row {
+        // The live line while the agent waits on its model, its spinner in
+        // the markers' column and its words where a thinking's start, so
+        // the thinking that takes its place starts where it stood.
         Row::Working => {
             let page = page();
-            // What the agent's call does while it runs, else "Working…". It
-            // shows beside a thinking that streams only when that thinking is
-            // in a Quiet row, and then says "Thinking".
+            // What the agent's call does while it runs, else "Working…".
             let label = Memo::new(move |_| {
                 page.version.track();
-                if thinking.get().is_some() {
-                    return "Thinking".to_string();
-                }
                 let worker = page.worker.get();
                 STORE.with(|store| layout::working_label(&store.borrow(), worker.as_deref()))
             });
             view! {
                 <div class="row working" class:room=move || room.get()
                     aria-hidden=move || room.get().then_some("true")>
+                    <span class="mark">{move || (!room.get()).then(|| view! { <Spinner /> })}</span>
                     <Shimmer class="what" text=move || label.get() active=move || !room.get() />
                 </div>
             }
@@ -284,14 +284,56 @@ fn count_row(id: u64, key: String, count: Count) -> AnyView {
     .into_any()
 }
 
+/// Whether the element under `root` that `selector` finds shows less than
+/// its text, its end cut with an ellipsis.
+fn overflows(root: &web_sys::Element, selector: &str) -> bool {
+    root.query_selector(selector)
+        .ok()
+        .flatten()
+        .is_some_and(|found| found.scroll_width() > found.client_width())
+}
+
+/// The element an event's handler is on.
+fn handler_element(event: &web_sys::Event) -> Option<web_sys::Element> {
+    use wasm_bindgen::JsCast;
+    event.current_target()?.dyn_into::<web_sys::Element>().ok()
+}
+
+/// Whether the words (`.what`) of the line `summary` holds are cut, as
+/// drawn, measured once the line shows and again whenever `words` say
+/// something else. A line that cuts its words opens to them whole.
+/// (shortcut: measured when the words change and not when the page's width
+/// does, until a turned phone leaves a line marked wrongly, when the
+/// transcript's resize should measure it too.)
+fn cut_words(
+    summary: NodeRef<leptos::html::Summary>,
+    words: impl Fn() -> String + Send + Sync + 'static,
+) -> RwSignal<bool> {
+    let cut = RwSignal::new(false);
+    Effect::new(move |_| {
+        words();
+        let measure = move || {
+            if let Some(summary) = summary.get_untracked() {
+                cut.try_set(overflows(&summary, ".what"));
+            }
+        };
+        // (Once the browser has laid the line out.)
+        let frame = wasm_bindgen::closure::Closure::once_into_js(measure);
+        use wasm_bindgen::JsCast;
+        let _ = window().request_animation_frame(frame.unchecked_ref());
+    });
+    cut
+}
+
 /// Calls in a few words (Quiet), by the first one's ID. The row keeps its
 /// place in the page while calls join it and its words change, so focus and
-/// what's open inside it stay ([`QUIET`]). A click on its line (or Enter on
-/// it) opens it to what its calls hold, behind a bar ([`quiet_member`]),
-/// which is made only then. A row with nothing more to show than its words
-/// has no fold. Each of its calls keeps what its own row offers (Move to
-/// background, Stop) and the images its tool returned under the line, as
-/// Full does, whatever row it's in.
+/// what's open inside it stay ([`QUIET`]). Its line is one line, its words
+/// cut to fit and its outcome whole. A click on its line (or Enter on it)
+/// opens it to what its calls hold, on a rail ([`quiet_member`]), which is
+/// made only then, and to the call as written where the line cut its words.
+/// A row with nothing more to show has no fold. Each of its calls keeps
+/// what its own row offers (Move to background, Stop) and the images its
+/// tool returned under the line, as Full does, whatever row it's in.
 fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<u64>>) -> AnyView {
     let page = page();
     let shared = QUIET.with(|quiet| {
@@ -302,8 +344,10 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
             .clone()
     });
     let data = RwSignal::from(&shared);
+    let summary = NodeRef::<leptos::html::Summary>::new();
+    let cut = cut_words(summary, move || data.with(|row| row.words.said()));
     let opens = move || data.with(|row| row.opens);
-    let open = move || opens() && page.quiet_open.contains(id);
+    let open = move || (opens() || cut.get()) && page.quiet_open.contains(id);
     let words = move || data.with(|row| row.words.clone());
     // The row's calls, by ID.
     let members = move || {
@@ -326,7 +370,7 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         if words.muted {
             class.push_str(" muted");
         }
-        if !opens() {
+        if !opens() && !cut.get() {
             class.push_str(" still");
         }
         class
@@ -367,9 +411,25 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                 .collect_view()
         })
     };
+    // Where its line cut its words, a row of one call opens to the call as
+    // written, unless its detail says it whole.
+    let whole = move || {
+        (cut.get() && !data.with(|row| row.merged))
+            .then(|| members().first().copied().and_then(cell))
+            .flatten()
+            .filter(|cell| {
+                cell.data
+                    .with(|item| item.act.as_ref().is_none_or(|act| act.detail.is_empty()))
+            })
+            .map(|cell| {
+                let text = cell.data.with(|item| item.text.clone());
+                view! { <div class="holds"><pre class="held">{text}</pre></div> }
+            })
+    };
     let inside = move || {
         open().then(|| {
             view! {
+                {whole}
                 <For
                     each=move || data.with(|row| layout::quiet_members(&row.calls))
                     key=|(row, results)| {
@@ -384,13 +444,20 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         <div class=class data-id=id data-row=key>
             <details class="call quiet" prop:open=open>
                 <summary
-                    tabindex=move || if opens() { "0" } else { "-1" }
+                    node_ref=summary
+                    tabindex=move || if opens() || cut.get() { "0" } else { "-1" }
                     on:click=move |event| {
                         event.prevent_default();
-                        if !opens() {
-                            return;
+                        let opening = !page.quiet_open.contains_untracked(id);
+                        if opening {
+                            let cuts = handler_element(&event)
+                                .is_some_and(|summary| overflows(&summary, ".what"));
+                            cut.set(cuts);
+                            if !opens() && !cuts {
+                                return;
+                            }
                         }
-                        let opening = page.quiet_open.toggle(id);
+                        page.quiet_open.toggle(id);
                         // A row of one call the reader opened keeps its form.
                         if opening && !data.with_untracked(|row| row.merged) {
                             page.quiet_sealed.update(|sealed| {
@@ -400,8 +467,10 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                     }
                 >
                     <span class="call-line">
-                        <span class="mark">{move || if opens() { "▸" } else { "" }}</span>
-                        <span class="what" title=move || words().text>{move || words().text}</span>
+                        // (Its triangle turns as it opens.)
+                        <span class="mark">{move || if opens() || cut.get() { "▸" } else { "" }}</span>
+                        <span class="what" title=move || words().said()>{move || words().text}</span>
+                        {move || words().news.map(|news| view! { <span class="news">{format!("({news})")}</span> })}
                         {move || words().note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
                         {move || words().running.then(|| view! {
                             <span class="outcome"><Spinner /></span>
@@ -420,10 +489,12 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
     .into_any()
 }
 
-/// What an open Quiet row shows of one of its calls, behind the row's bar.
+/// What an open Quiet row shows of one of its calls, on the row's rail.
 /// In a row of one call that's the call's detail and content. In a row of
-/// several it's the call's Full line, which opens to its detail and
-/// content. The thinking after a call shows as Quiet shows it.
+/// several it's the call's Full line, muted, which opens to its detail and
+/// content, and to the call as written where the line cut it. A thinking
+/// between them shows as it does on its own, in their text column. Anything
+/// open stands apart from its neighbours (`.open`).
 fn quiet_member(
     row: Row,
     results: Vec<Row>,
@@ -432,7 +503,13 @@ fn quiet_member(
 ) -> AnyView {
     let page = page();
     let Row::Item(id, Kind::Call) = row else {
-        return row_view(row, thinking, Memo::new(|_| false));
+        return match row {
+            Row::Item(id, Kind::Thinking) => match cell(id) {
+                Some(cell) => thought_row(id, row.key(), cell.for_row(), thinking, true),
+                None => ().into_any(),
+            },
+            row => row_view(row, thinking, Memo::new(|_| false)),
+        };
     };
     let Some(cell) = cell(id) else {
         return ().into_any();
@@ -441,7 +518,9 @@ fn quiet_member(
     let merged = move || quiet.with(|row| row.merged);
     let has_content = !results.is_empty();
     let folds = move || has_content || data.with(|item| item.detail.is_some());
-    let open = move || !merged() || page.calls_open.contains(id);
+    // Its line cut its words as the reader opened it.
+    let cut = RwSignal::new(false);
+    let open = move || !merged() || ((folds() || cut.get()) && page.calls_open.contains(id));
     // What it holds, its detail and its content.
     let contents: Vec<RwSignal<ItemData>> = results
         .iter()
@@ -465,9 +544,14 @@ fn quiet_member(
         })
         .map(|detail| view! { <pre class="held">{detail}</pre> })
     };
+    let whole = move || {
+        (merged() && cut.get())
+            .then(|| view! { <pre class="held">{data.with(|item| item.text.clone())}</pre> })
+    };
     let holds = move || {
         open().then(|| {
             view! {
+                {whole}
                 {detail}
                 {contents.iter().map(|data| contents::content_view(*data)).collect_view()}
             }
@@ -475,14 +559,22 @@ fn quiet_member(
     };
     let line = move || {
         merged().then(|| {
-            let mark = move || match (folds(), open()) {
+            let mark = move || match (folds() || cut.get(), open()) {
                 (false, _) => "",
                 (true, false) => "▸",
                 (true, true) => "▾",
             };
             view! {
-                <button type="button" class="member-line" disabled=move || !folds()
-                    on:click=move |_| {
+                <button type="button" class="member-line"
+                    on:click=move |event| {
+                        if !page.calls_open.contains_untracked(id) {
+                            let cuts = handler_element(&event)
+                                .is_some_and(|line| overflows(&line, ".what"));
+                            cut.set(cuts);
+                            if !folds() && !cuts {
+                                return;
+                            }
+                        }
                         page.calls_open.toggle(id);
                     }>
                     {call_line(data, mark, true)}
@@ -490,12 +582,78 @@ fn quiet_member(
             }
         })
     };
+    // (Open, its line and what it holds stand apart from its neighbours.)
     view! {
-        <div class="quiet-member" class:own=merged>
+        <div class="quiet-member" class:own=merged class:open=move || merged() && open()>
             {line}
             <div class="holds">
                 {holds}
                 <Thumbnails data=data />
+            </div>
+        </div>
+    }
+    .into_any()
+}
+
+/// An agent's thinking, in the words' column with no label or marker, its
+/// muted italic words its first line, which a click, a tap or Enter opens
+/// whole and closes again. One that fits on its line has nothing to open.
+/// While it streams, the spinner turns in the markers' column. `inside` is
+/// set for one on an open Quiet row's rail. One the reader opened on its own
+/// line in Quiet stays there when the next call comes
+/// ([`crate::quiet::Step::Thinking`]).
+fn thought_row(
+    id: u64,
+    key: String,
+    cell: RowCell,
+    thinking: Memo<Option<u64>>,
+    inside: bool,
+) -> AnyView {
+    let page = page();
+    let text = cell.text;
+    let open = RwSignal::new(false);
+    let first = move || {
+        text.with(|text| {
+            let (first, more) = layout::first_line(text);
+            if more { format!("{first} …") } else { first }
+        })
+    };
+    let toggle = move |event: &web_sys::Event| {
+        let opening = !open.get_untracked();
+        if opening {
+            let more = text.with_untracked(|text| layout::first_line(text).1);
+            let cut = handler_element(event).is_some_and(|words| overflows(&words, ".first"));
+            if !more && !cut {
+                return;
+            }
+            if !inside && page.view.get_untracked() != View::Full {
+                page.quiet_sealed.update(|sealed| {
+                    sealed.insert(id);
+                });
+            }
+        }
+        open.set(opening);
+    };
+    let words = move || {
+        if open.get() {
+            view! { <Md id=id text=text code=cell.code class="thinking-text" /> }.into_any()
+        } else {
+            view! { <span class="first">{first}</span> }.into_any()
+        }
+    };
+    view! {
+        <div class="row thinking" class:open=move || open.get() data-id=id data-row=key>
+            <span class="mark">{move || (thinking.get() == Some(id)).then(|| view! { <Spinner /> })}</span>
+            <div class="thought" role="button" tabindex="0"
+                aria-expanded=move || open.get().to_string()
+                on:click=move |event| toggle(&event)
+                on:keydown=move |event| {
+                    if matches!(event.key().as_str(), "Enter" | " ") {
+                        event.prevent_default();
+                        toggle(&event);
+                    }
+                }>
+                {words}
             </div>
         </div>
     }
@@ -594,32 +752,7 @@ fn item_row(id: u64, key: String, cell: RowCell, thinking: Memo<Option<u64>>) ->
             .into_any()
         }
         Kind::Text => view! { <Md id=id text=text code=cell.code /> }.into_any(),
-        Kind::Thinking => {
-            let first = move || text.with(|text| layout::first_line(text));
-            // "Thinking" while it streams, then how long it took.
-            let label = move || {
-                if thinking.get() == Some(id) {
-                    return "Thinking".to_string();
-                }
-                match STORE.with(|store| store.borrow().grew_for(id)) {
-                    Some(ms) => format!("Thought for {}", duration(ms as i64)),
-                    None => "Thought".to_string(),
-                }
-            };
-            // The quiet view has no preview of it.
-            let preview = move || (page.view.get() != View::Quiet).then(|| view! { <span class="first">{first}</span> });
-            view! {
-                <details class="thinking" class:streaming=move || thinking.get() == Some(id)>
-                    <summary>
-                        <span class="mark">"▸"</span>
-                        <Shimmer class="what" text=label active=move || thinking.get() == Some(id) />
-                        {preview}
-                    </summary>
-                    <Md id=id text=text code=cell.code class="thinking-text" />
-                </details>
-            }
-            .into_any()
-        }
+        Kind::Thinking => return thought_row(id, key, cell, thinking, false),
         Kind::Message => {
             let from = item.from.clone();
             let agent = item.agent.clone();
@@ -911,28 +1044,44 @@ fn call_row(cell: RowCell) -> AnyView {
     let data = cell.data;
     let (id, command) = data.with_untracked(|item| (item.id, is_command(item)));
     let content = Memo::new(move |_| crate::app::content_of(id).is_some());
+    let summary = NodeRef::<leptos::html::Summary>::new();
+    let cut = cut_words(summary, move || data.with(|item| item.text.clone()));
     // (A worker's call in the main view shows without its content. A row
     // is drawn for one view.)
     let folds = move || {
         let own = data.with(|item| item.agent == MAIN) || page.worker.get_untracked().is_some();
-        data.with(|item| item.detail.is_some()) || (own && content.get())
+        data.with(|item| item.detail.is_some()) || (own && content.get()) || cut.get()
     };
     let open = move || folds() && full_open(page, id, command);
     // (Its triangle turns as it opens.)
     let mark = move || if folds() { "▸" } else { "" };
     let detail = move || {
-        open()
-            .then(|| data.with(|item| item.detail.clone()))
-            .flatten()
-            .map(|detail| view! { <div class="holds"><pre class="held">{detail}</pre></div> })
+        open().then(|| {
+            let whole = cut
+                .get()
+                .then(|| view! { <pre class="held">{data.with(|item| item.text.clone())}</pre> });
+            let detail = data
+                .with(|item| item.detail.clone())
+                .map(|detail| view! { <pre class="held">{detail}</pre> });
+            (cut.get() || detail.is_some())
+                .then(|| view! { <div class="holds">{whole}{detail}</div> })
+        })
     };
     view! {
         <details class="call" prop:open=open>
             <summary
+                node_ref=summary
                 tabindex=move || if folds() { "0" } else { "-1" }
                 on:click=move |event| {
                     event.prevent_default();
-                    if folds() {
+                    if open() {
+                        page.flipped.toggle(id);
+                        return;
+                    }
+                    let cuts = handler_element(&event)
+                        .is_some_and(|summary| overflows(&summary, ".what"));
+                    cut.set(cuts);
+                    if folds() && !full_open(page, id, command) {
                         page.flipped.toggle(id);
                     }
                 }
@@ -1283,6 +1432,33 @@ pub fn item(id: u64) -> Option<ItemData> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A thought is its first line in the words' column, with no label or
+    /// marker, and "…" where more follows. While it streams, the spinner
+    /// turns in the markers' column.
+    #[test]
+    fn a_thought_is_its_first_line_with_no_label() {
+        use crate::store::tests::item;
+        let owner = Owner::new();
+        owner.with(|| {
+            let _page = crate::testing::page();
+            let cell = || RowCell {
+                data: RwSignal::new(item(1, Kind::Thinking, MAIN, "")),
+                text: RwSignal::new("**Planning**\nRead the tests first.".into()),
+                code: RwSignal::new(0),
+            };
+            let html = thought_row(1, "i1".into(), cell(), Memo::new(|_| None), false).to_html();
+            assert!(html.contains(">Planning …<"), "{html}");
+            for label in ["Thought", "Thinking", "▸", "spinner"] {
+                assert!(!html.contains(label), "{label}: {html}");
+            }
+            let live = thought_row(1, "i1".into(), cell(), Memo::new(|_| Some(1)), false).to_html();
+            assert!(
+                live.contains("<span class=\"mark\"><span class=\"spinner\">"),
+                "{live}"
+            );
+        });
+    }
 
     /// Another feed's rows are other rows, whatever their items' IDs.
     #[test]
