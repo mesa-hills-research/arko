@@ -2226,7 +2226,10 @@ mod tests {
         ) else {
             return;
         };
-        let feed = super::super::scenario::play(&script);
+        super::super::scenario::render(&script, &out, draw_renderings);
+    }
+
+    fn draw_renderings(feed: &Feed, out: &str) {
         let snapshot = feed.subscribe().0;
         let workers = serde_json::to_value(&snapshot.workers).unwrap();
         let items = snapshot.items;
@@ -2248,6 +2251,15 @@ mod tests {
         let write = |name: &str, value: serde_json::Value| {
             std::fs::write(format!("{out}/{name}"), value.to_string()).unwrap();
         };
+        write(
+            "reset.json",
+            serde_json::json!({
+                "items": page,
+                "workers": workers,
+                "jobs": snapshot.jobs,
+                "status": snapshot.activity,
+            }),
+        );
         write("items.json", page.into());
         write("workers.json", workers);
         write("results.json", results.into());

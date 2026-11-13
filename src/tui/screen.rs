@@ -825,17 +825,28 @@ mod tests {
     /// the session has it. Each view's `-bottom` file is the foot of a
     /// screen 20 rows tall before anything opens, where the space around
     /// the Working line and the messages waiting to be read shows.
+    /// With `ARKO_RENDER_STEPS` set, each step gets its own folder, at 100
+    /// and 50 columns, including the worker's Quiet views, with all folds open.
     #[test]
     #[ignore]
     fn renderings() {
-        use crate::tui::transcript::View;
         let (Ok(script), Ok(out)) = (
             std::env::var("ARKO_SCENARIO"),
             std::env::var("ARKO_RENDERINGS"),
         ) else {
             return;
         };
-        let feed = crate::remote::scenario::play(&script);
+        crate::remote::scenario::render(&script, &out, |feed, out| {
+            draw_renderings(feed, out, 100);
+            if std::env::var_os("ARKO_RENDER_STEPS").is_some() {
+                draw_renderings(feed, out, 50);
+            }
+        });
+    }
+
+    fn draw_renderings(feed: &crate::remote::Feed, out: &str, width: u16) {
+        use crate::tui::transcript::View;
+        let steps = std::env::var_os("ARKO_RENDER_STEPS").is_some();
         for (view, name, open, worker) in [
             (View::Full, "full", true, None),
             (View::Quiet, "quiet-closed", false, None),
@@ -843,7 +854,14 @@ mod tests {
             (View::Messages, "messages", false, None),
             (View::Messages, "messages-open", true, None),
             (View::Full, "worker-r3", false, Some("r3")),
+            (View::Quiet, "worker-r3-quiet-closed", false, Some("r3")),
+            (View::Quiet, "worker-r3-quiet-open", true, Some("r3")),
         ] {
+            let name = if steps {
+                format!("{name}-{width}")
+            } else {
+                name.to_string()
+            };
             let mut app = app();
             app.reset(feed.subscribe().0);
             app.set_view(view);
@@ -855,15 +873,19 @@ mod tests {
             }
             // The bottom of a screen 20 rows tall, as it shows before
             // anything opens, its blank rows too.
-            let (rows, _) = screen_html(&mut app, 100, 20);
+            let (rows, _) = screen_html(&mut app, width, 20);
             std::fs::write(format!("{out}/terminal-{name}-bottom.txt"), rows.join("\n")).unwrap();
-            if open {
-                app.transcript.open_for_renderings(view);
+            if open || (steps && view == View::Full) {
+                if steps {
+                    app.transcript.open_all_for_renderings(view, worker);
+                } else {
+                    app.transcript.open_for_renderings(view);
+                }
             }
             // As tall as it takes, from its first line, without the empty
             // rows between its last and the status line, as text and in its
             // colours as HTML.
-            let (rows, html) = screen_html(&mut app, 100, 400);
+            let (rows, html) = screen_html(&mut app, width, 800);
             let first = rows.iter().position(|row| !row.is_empty()).unwrap_or(0);
             let bar = rows
                 .iter()
@@ -888,6 +910,28 @@ mod tests {
             );
             std::fs::write(format!("{out}/terminal-{name}.html"), html).unwrap();
         }
+    }
+
+    #[test]
+    fn step_renderings_open_a_workers_thinking_and_call_content() {
+        use crate::tui::transcript::View;
+        let path = format!(
+            "{}/src/remote/scenarios/thinking.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let feed = crate::remote::scenario::play(&path);
+        let mut app = app();
+        app.reset(feed.subscribe().0);
+        app.watching = Some("r3".into());
+        app.set_view(View::Quiet);
+        app.transcript
+            .open_all_for_renderings(View::Quiet, Some("r3"));
+        let text = screen(&mut app, 100, 80).join("\n");
+        assert!(
+            text.contains("Both values are 10, exactly the boundary"),
+            "{text}"
+        );
+        assert!(text.contains("\"expires\": 10"), "{text}");
     }
 
     /// A colour as CSS writes it, where it's one of red, green and blue.
