@@ -2382,6 +2382,30 @@ mod tests {
         );
     }
 
+    /// A call that runs with nothing to show has no fold, and its row gets
+    /// one when its result brings content, keeping its key.
+    #[test]
+    fn a_running_row_opens_once_its_result_comes() {
+        let wait = act(Wait, "r3");
+        let step = |status: CallStatus, content: bool| {
+            Step::Call(Call {
+                id: 1,
+                act: Some(&wait),
+                status: Some(status),
+                content,
+                turn: Some(1),
+                ..Call::default()
+            })
+        };
+        let row = |step: Step| match rows(&[step]).as_slice() {
+            [Piece::Row(row)] => (row.opens, row.words.running),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(row(step(Running, false)), (false, true));
+        assert_eq!(row(step(Ok, true)), (true, false));
+        assert_eq!(keys(&[step(Running, false)]), keys(&[step(Ok, true)]));
+    }
+
     /// A row of one file's reads and changes names each kind once, the
     /// file once, and counts the edits.
     #[test]

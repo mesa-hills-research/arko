@@ -4953,6 +4953,43 @@ mod tests {
         assert!(is_working(&shown[1]), "{shown:?}");
     }
 
+    /// A Quiet row's words are bright and its marker and outcome dim, so a
+    /// row reads apart from a thought on a terminal without italics. A call
+    /// that runs with nothing to show has a dot, and ▸ in the same column
+    /// once its result brings content, its words where they were.
+    #[test]
+    fn a_rows_words_are_bright_and_a_running_row_has_a_dot() {
+        use crate::remote::{Act, ActKind};
+        let quiet = Filter::Main(View::Quiet);
+        let theme = Theme::terminal();
+        let mut t = Transcript::new();
+        let mut call = item(1, Kind::Call, "$ cargo test");
+        call.status = Some(CallStatus::Running);
+        call.act = Some(Act {
+            kind: ActKind::Command,
+            target: "cargo test".into(),
+            alone: true,
+            ..Act::default()
+        });
+        t.apply(Update::Item(call.clone()));
+        assert_eq!(rows(&mut t, &quiet, 40, 1), ["· Running cargo test …"]);
+        call.status = Some(CallStatus::Ok);
+        call.act.as_mut().unwrap().news = "2 passed".into();
+        t.apply(Update::Change(call));
+        let mut output = item(2, Kind::Result, "test result: ok");
+        output.call = Some(1);
+        output.content = Some(ContentKind::Plain);
+        t.apply(Update::Item(output));
+        assert_eq!(rows(&mut t, &quiet, 40, 1), ["▸ Ran cargo test (2 passed)"]);
+        let area = Rect::new(0, 0, 40, 1);
+        let mut buffer = Buffer::empty(area);
+        t.draw(&mut buffer, area, &quiet, &theme);
+        let fg = |x: u16| buffer[(x, 0)].fg;
+        assert_eq!(fg(0), theme.dim().fg.unwrap(), "the marker");
+        assert_eq!(fg(MARGIN as u16), theme.text().fg.unwrap(), "the words");
+        assert_eq!(fg(18), theme.dim().fg.unwrap(), "the news");
+    }
+
     /// A thinking the reader opened on a line of its own stays there when
     /// the next call comes, and that call starts a row of its own.
     #[test]
