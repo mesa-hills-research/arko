@@ -912,6 +912,93 @@ mod tests {
         }
     }
 
+    /// The scripted session of `src/remote/scenarios/thinking.json`, drawn
+    /// at the steps where the transcript's rules show, matches the files
+    /// in `tests/transcript/`, a file for each view and width with a section
+    /// for each step, in the full set of symbols. `UPDATE_GOLDENS=1` writes
+    /// them again. What the clock decides is made steady, each worker having
+    /// run 2 s and the spinner showing its first frame.
+    #[test]
+    fn the_scripted_session_draws_as_its_goldens() {
+        use crate::tui::transcript::View;
+        use std::collections::BTreeMap;
+        let _full = crate::glyphs::tests::choose_symbols(crate::glyphs::Symbols::Full);
+        let root = env!("CARGO_MANIFEST_DIR");
+        let script = format!("{root}/src/remote/scenarios/thinking.json");
+        let dir = std::path::PathBuf::from(root).join("tests/transcript");
+        let closed = ["02", "06", "12", "13", "14", "26", "31", "33"];
+        let open = ["13", "17", "33"];
+        let mut files: BTreeMap<String, String> = BTreeMap::new();
+        crate::remote::scenario::play_each(&script, |step, label, feed| {
+            let step = format!("{step:02}");
+            let mut views = Vec::new();
+            if closed.contains(&step.as_str()) {
+                views.push((View::Quiet, "quiet-closed", false, None));
+            }
+            if open.contains(&step.as_str()) {
+                views.push((View::Quiet, "quiet-open", true, None));
+            }
+            if step == "33" {
+                views.push((View::Full, "full", false, None));
+                views.push((View::Messages, "messages-open", true, None));
+                views.push((View::Quiet, "worker-r3-quiet-open", true, Some("r3")));
+            }
+            for (view, name, opened, worker) in views {
+                for width in [100u16, 50] {
+                    let mut app = app();
+                    let mut snapshot = feed.subscribe().0;
+                    for worker in &mut snapshot.workers {
+                        (worker.ran_ms, worker.running_since) = (2000, None);
+                    }
+                    app.reset(snapshot);
+                    app.set_view(view);
+                    app.watching = worker.map(str::to_string);
+                    screen(&mut app, width, 400);
+                    if opened {
+                        app.transcript.open_all_for_renderings(view, worker);
+                    }
+                    let rows = screen(&mut app, width, 400);
+                    let bar = rows
+                        .iter()
+                        .position(|row| row.starts_with('─'))
+                        .unwrap_or(rows.len());
+                    let first = rows.iter().position(|row| !row.is_empty()).unwrap_or(0);
+                    let last = rows[..bar]
+                        .iter()
+                        .rposition(|row| !row.is_empty())
+                        .unwrap_or(first);
+                    let file = files.entry(format!("{name}-{width}.txt")).or_default();
+                    file.push_str(&format!("## {step} {label}\n"));
+                    for row in &rows[first..=last] {
+                        file.push_str(&steady(row));
+                        file.push('\n');
+                    }
+                    file.push('\n');
+                }
+            }
+        });
+        for (name, text) in files {
+            let path = dir.join(&name);
+            if std::env::var_os("UPDATE_GOLDENS").is_some() {
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(&path, &text).unwrap();
+            }
+            let golden = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(golden == text, "{name} differs:\n{text}");
+        }
+    }
+
+    /// `row` with a spinner's frame, which the clock decides, as its first.
+    fn steady(row: &str) -> String {
+        let (frames, _) = crate::glyphs::spinner_frames(crate::glyphs::symbols());
+        row.chars()
+            .map(|c| match frames.contains(&c.to_string().as_str()) {
+                true => frames[0].to_string(),
+                false => c.to_string(),
+            })
+            .collect()
+    }
+
     #[test]
     fn step_renderings_open_a_workers_thinking_and_call_content() {
         use crate::tui::transcript::View;
@@ -2700,7 +2787,7 @@ mod tests {
                 .position(|row| row.contains(text))
                 .unwrap_or_else(|| panic!("{text}: {rows:#?}"))
         };
-        let edits = at(&rows, "▸ Made 2 edits to app.rs");
+        let edits = at(&rows, "▸ Read app.rs and made 2 edits");
         // (A failed row shows one ✗ at its right.)
         let test = &rows[edits + 1];
         assert!(
@@ -2716,13 +2803,13 @@ mod tests {
         mouse(&mut app, MouseEventKind::Down(left), 4, edits as u16);
         mouse(&mut app, MouseEventKind::Up(left), 4, edits as u16);
         let open = screen(&mut app, 70, 24);
-        let edits = at(&open, "▾ Made 2 edits to app.rs");
+        let edits = at(&open, "▾ Read app.rs and made 2 edits");
         assert_eq!(
             open[edits + 1..edits + 4],
             [
-                "│   read src/app.rs · ✓",
-                "│   edit src/app.rs · ✓",
-                "│   edit src/app.rs · ✓",
+                "│ · read src/app.rs · ✓",
+                "│ · edit src/app.rs · ✓",
+                "│ · edit src/app.rs · ✓",
             ],
             "{open:#?}"
         );
@@ -2894,7 +2981,7 @@ mod tests {
         let rows = screen(&mut app, 70, 24);
         assert!(
             rows.iter()
-                .any(|row| row.contains("▾ Made 2 edits to app.rs"))
+                .any(|row| row.contains("▾ Read app.rs and made 2 edits"))
         );
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.transcript.focus, None);
@@ -3609,11 +3696,11 @@ mod tests {
         );
     }
 
-    /// A click on a thinking's label opens it, and a click on its label or
-    /// a line of its text closes it, its label staying on its row. A double
-    /// click on a word of its text copies the word and leaves it open.
+    /// A click on any line of a thinking opens it and closes it again, its
+    /// first line staying on its row. A double click on a word of its text
+    /// copies the word and leaves it open.
     #[test]
-    fn a_click_on_a_thinkings_label_or_text_folds_it() {
+    fn a_click_on_a_thinkings_text_folds_it() {
         use crate::tui::app::Effect;
         use crossterm::event::{MouseButton, MouseEventKind};
         let mut app = app();
@@ -3632,23 +3719,26 @@ mod tests {
             screen(app, 40, 12)
         };
         let rows = screen(&mut app, 40, 12);
-        let label = rows.iter().position(|row| row.contains("Thought")).unwrap();
+        let label = rows
+            .iter()
+            .position(|row| row.contains("Read the parser first."))
+            .unwrap();
         let (label_y, text_y) = (label as u16, label as u16 + 1);
         let open = |rows: &[String]| {
-            rows[label] == "  ▾ Thought" && rows[label + 1] == "    Read the parser first."
+            rows[label] == "  Read the parser first." && rows[label + 1] == "  Then the tests."
         };
-        // Its label opens it, and its label or a line of its text closes it,
-        // the label staying on its row.
+        // Its line opens it, and any of its lines closes it, its first line
+        // staying on its row.
         for y in [label_y, text_y] {
             assert!(open(&click(&mut app, 4, label_y)), "{y}");
             let rows = click(&mut app, 10, y);
-            assert!(rows[label].starts_with("  ▸ Thought · "), "{y} {rows:#?}");
+            assert_eq!(rows[label], "  Read the parser first. …", "{y} {rows:#?}");
         }
         // A double click on a word of its text copies the word and leaves it
         // open.
         click(&mut app, 4, label_y);
-        click(&mut app, 15, text_y);
-        let rows = click(&mut app, 15, text_y);
+        click(&mut app, 15, label_y);
+        let rows = click(&mut app, 15, label_y);
         assert!(open(&rows), "{rows:#?}");
         assert_eq!(
             app.take_effects(),

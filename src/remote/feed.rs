@@ -1527,6 +1527,13 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// Whether a call's line, its `outcome`, says its job runs, so the line
+/// follows the job until it ends. That is a call that moved to the
+/// background, or a `terminal_start` that started a job.
+fn follows_job(outcome: &str) -> bool {
+    outcome.starts_with(render::MOVED_OUTCOME) || outcome == render::JOB_RUNNING
+}
+
 /// How a monitor's call line reads, from the monitor's summary.
 fn monitor_outcome(job: &JobSummary) -> (CallStatus, String) {
     let alerts = match job.alerts.unwrap_or(0) {
@@ -2575,8 +2582,7 @@ impl Feed {
             .iter()
             .filter(|item| {
                 item.outcome.as_deref().is_some_and(|outcome| {
-                    outcome.starts_with(render::MOVED_OUTCOME)
-                        || outcome.starts_with(render::MONITORING)
+                    follows_job(outcome) || outcome.starts_with(render::MONITORING)
                 })
             })
             .filter_map(|item| item.job.as_deref()?.parse().ok())
@@ -2775,9 +2781,8 @@ impl Feed {
             }
             return;
         }
-        // A moved call's line says how it ended, and so does a restored
-        // line of it. A command terminal_start started has its own result
-        // already.
+        // The line of the call that moved there or started it says how it
+        // ended, and so does a restored line of it.
         let mut lines = state.lines_naming(&id);
         if let Some(item) = job.call {
             lines.push((job.agent.clone(), item));
@@ -2851,9 +2856,11 @@ impl Feed {
     }
 
     /// The call `item` of `agent`, if its line says it moved to the
-    /// background, says how its job ended, as `ended`, at `now`, having
-    /// started at `started` (else with the call). With `now` unknown (a
-    /// job that ended with an earlier Arko), the line says how only.
+    /// background or started a job that runs, says how its job ended, as
+    /// `ended`, at `now`, having started at `started` (else with the call).
+    /// With `now` unknown (a job that ended with an earlier Arko), the line
+    /// says how only. A started job's line says its state alone, since the
+    /// call's own words say where it ran.
     fn end_moved_call(
         &self,
         state: &mut State,
@@ -2868,19 +2875,28 @@ impl Feed {
         let Some(call) = lane.find(item) else {
             return;
         };
-        if !call
+        let Some(outcome) = call
             .outcome
             .as_deref()
-            .is_some_and(|outcome| outcome.starts_with(render::MOVED_OUTCOME))
-        {
+            .filter(|outcome| follows_job(outcome))
+        else {
             return;
-        }
+        };
         let ran = now.map(|now| {
             render::duration_words(Duration::from_millis(
                 u64::try_from(now - started.unwrap_or(call.at)).unwrap_or(0),
             ))
         });
         let (status, text) = match ended {
+            _ if outcome == render::JOB_RUNNING => {
+                let (status, text) = match ended {
+                    JobState::Finished => (CallStatus::Ok, "finished"),
+                    JobState::Failed => (CallStatus::Failed, "failed"),
+                    JobState::Interrupted => (CallStatus::Failed, "interrupted"),
+                    _ => (CallStatus::Ok, "stopped"),
+                };
+                (status, text.to_string())
+            }
             JobState::Finished => (
                 CallStatus::Ok,
                 match ran {
@@ -4537,9 +4553,55 @@ mod tests {
         assert_eq!(line(&feed).outcome.as_deref(), Some("interrupted"));
     }
 
-    /// Any tool's call that moved to the background says so on its line and
-    /// names its job. The job's summary follows it, and when the job ends,
-    /// the call's line says how.
+    /// A `terminal_start` call's line says how the job it started goes,
+    /// "running" and then how it ended, and never names the job's ID.
+    #[test]
+    fn a_started_jobs_line_says_its_state() {
+        let start = |feed: &Feed, ended: JobState| {
+            let (call, job) = (Uuid::new_v4(), Uuid::new_v4());
+            let mut parameters = HashMap::new();
+            parameters.insert("command".to_string(), serde_json::json!("npm test"));
+            let started = AgentEvent::ToolCallFormatted {
+                tool_call_id: call,
+                tool_name: "terminal_start".into(),
+                parameters,
+            };
+            feed.event(&event("main", started), None);
+            feed.job_started(
+                JobStart::new(job, MAIN_AGENT, JobKind::Command, "npm test").made_by(call),
+            );
+            let output = format!("{{\"job_id\":\"{job}\",\"state\":\"running\"}}");
+            let result = AgentEvent::ToolResult {
+                tool_call_id: call,
+                tool_name: "terminal_start".into(),
+                output,
+                receipt: None,
+            };
+            feed.event(&event("main", result), None);
+            let line = call_item(feed, "npm test");
+            assert_eq!(line.outcome.as_deref(), Some(render::JOB_RUNNING));
+            assert_eq!(line.job, Some(job.to_string()));
+            feed.job_ended(job, ended, Some("exit 1".into()));
+            let line = call_item(feed, "npm test");
+            (line.status, line.outcome)
+        };
+        assert_eq!(
+            start(&Feed::new("main"), JobState::Finished),
+            (Some(CallStatus::Ok), Some("finished".into()))
+        );
+        assert_eq!(
+            start(&Feed::new("main"), JobState::Failed),
+            (Some(CallStatus::Failed), Some("failed".into()))
+        );
+        assert_eq!(
+            start(&Feed::new("main"), JobState::Stopped),
+            (Some(CallStatus::Ok), Some("stopped".into()))
+        );
+    }
+
+    /// Any tool's call that moved to the background says so on its line,
+    /// without its job's ID. The job's summary follows it, and when the job
+    /// ends, the call's line says how.
     #[test]
     fn a_moved_calls_line_follows_its_job() {
         let feed = Feed::new("main");
@@ -4559,10 +4621,7 @@ mod tests {
         );
         let item = call_item(&feed, "lookup");
         assert_eq!(item.status, Some(CallStatus::Ok));
-        assert_eq!(
-            item.outcome.as_deref(),
-            Some(format!("in the background · job {}", &job.to_string()[..8]).as_str())
-        );
+        assert_eq!(item.outcome.as_deref(), Some("in the background"));
         assert_eq!(item.job, Some(job.to_string()));
 
         let (_, mut receiver) = feed.subscribe();
@@ -5581,7 +5640,7 @@ mod tests {
         assert!(
             rows(&live)
                 .iter()
-                .any(|row| row.contains("Waited for workers · nothing new")),
+                .any(|row| row.contains("Waited for workers") && row.contains("nothing new")),
             "{:?}",
             rows(&live)
         );

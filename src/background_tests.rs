@@ -108,7 +108,7 @@ async fn a_long_command_moves_to_the_background_and_its_end_wakes_the_idle_agent
     assert!(
         call.outcome
             .as_deref()
-            .is_some_and(|outcome| outcome.starts_with("in the background · job ")),
+            .is_some_and(|outcome| outcome == "in the background"),
         "{call:?}"
     );
 
@@ -756,7 +756,7 @@ async fn ctrl_b_moves_another_tools_call_and_its_result_wakes_the_agent() {
     assert!(
         call(&harness.feed)
             .outcome
-            .is_some_and(|outcome| outcome.starts_with("in the background · job ")),
+            .is_some_and(|outcome| outcome == "in the background"),
     );
 
     lookup.release.notify_one();

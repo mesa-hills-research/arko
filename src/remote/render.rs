@@ -559,8 +559,8 @@ fn text_of<'a>(parameters: &'a Parameters, name: &str) -> &'a str {
 /// A command's words, with what they keep of it ([`command_words_kept`]).
 struct CommandWords {
     words: String,
-    /// They state the command as it is: one line, no variables, no `cd`, no
-    /// program by its path, and it fit.
+    /// They state the command as it is, one line with no variables, no `cd`
+    /// and no program by its path.
     kept: bool,
     /// The folder they name, the `cwd`'s or the one a `cd` goes to.
     folder: Option<Folder>,
@@ -573,11 +573,11 @@ enum Folder {
     Cd,
 }
 
-/// A command as its row names it, by its first line, at most
-/// [`quiet::COMMAND_CHARS`] characters, with a program run by its path named
-/// by its file name, and after a `cd dir &&` that becomes "in dir", as the
-/// folder `cwd` does, with what the words keep of the command and which
-/// folder they name.
+/// A command as its row names it, by its first line whole (each client
+/// cuts the row to its width), with a program run by its path named by its
+/// file name, and after a `cd dir &&` that becomes "in dir", as the folder
+/// `cwd` does, with what the words keep of the command and which folder
+/// they name.
 fn command_words_kept(command: &str, cwd: &str) -> CommandWords {
     let mut line = command.trim().lines().next().unwrap_or_default().trim();
     let mut folder = match cwd.trim() {
@@ -621,8 +621,8 @@ fn command_words_kept(command: &str, cwd: &str) -> CommandWords {
         None if line.contains('/') && !line.contains('=') => last_part(line),
         _ => line.to_string(),
     };
-    let words = cut(&line, quiet::COMMAND_CHARS);
-    let kept = !command.is_empty() && words == command;
+    let kept = !command.is_empty() && line == command;
+    let words = line;
     let words = if folder.is_empty() {
         words
     } else {
@@ -794,9 +794,15 @@ fn long(text: &str, limit: usize) -> String {
     }
 }
 
-/// How the line of a call that moved to the background starts, before
-/// its job's first characters, as `in the background · job 4d2c1a9b`.
-pub const MOVED_OUTCOME: &str = "in the background · job ";
+/// How the line of a call that moved to the background starts while its
+/// job runs. (A line an earlier Arko made goes on with the job's first
+/// characters, as `in the background · job 4d2c1a9b`.) The line names the
+/// job's state, never its ID, and follows the job ([`super::Feed::job_ended`]).
+pub const MOVED_OUTCOME: &str = "in the background";
+
+/// The line of a `terminal_start` call while the job it started runs. It
+/// follows the job, and says how the job ended once it does.
+pub const JOB_RUNNING: &str = "running";
 
 /// How the line of a `monitor_start` call starts while its monitor runs, as
 /// `monitoring · 3 alerts`.
@@ -825,10 +831,11 @@ pub fn moved_job(output: &str) -> Option<Uuid> {
         .ok()
 }
 
-/// A moved call's line, as `in the background · job 4d2c1a9b`.
-fn moved_outcome(job: Uuid) -> String {
-    let job = job.to_string();
-    format!("{MOVED_OUTCOME}{}", &job[..8])
+/// The job a `terminal_start` call's result says it started, as
+/// `{"job_id": "4d2c…", "state": "running"}`.
+fn started_job(output: &str) -> Option<Uuid> {
+    let value: serde_json::Value = serde_json::from_str(output.trim()).ok()?;
+    value.get("job_id")?.as_str()?.parse().ok()
 }
 
 /// How long something ran, in a few words, as `40 s`, `4 min`, `2 h 5 min`.
@@ -1019,9 +1026,16 @@ pub(crate) fn outcome_after(
         && let Some(job) = job
     {
         // Any tool's call that moved, as the shell's line says it.
-        let mut outcome = Outcome::ok(moved_outcome(job));
+        let mut outcome = Outcome::ok(MOVED_OUTCOME);
         outcome.output = Some(output.into());
         outcome.job = Some(job);
+        return outcome;
+    }
+    // Its line says how the job it started goes, not what started it.
+    if tool == "terminal_start" {
+        let mut outcome = Outcome::ok(JOB_RUNNING);
+        outcome.output = Some(output.into());
+        outcome.job = started_job(output);
         return outcome;
     }
     if tool == "monitor_start"
@@ -1634,8 +1648,8 @@ fn command_outcome(output: &str) -> Outcome {
         ran: true,
         ..Settled::default()
     };
-    let text = if let Some(job) = job {
-        format!("{MOVED_OUTCOME}{}", job.get(..8).unwrap_or(job))
+    let text = if job.is_some() {
+        MOVED_OUTCOME.to_string()
     } else if ok {
         tests.unwrap_or_else(|| time.to_string())
     } else {
@@ -2465,11 +2479,32 @@ mod tests {
         let output = "in the background as job 1f0c2d3e-0000-4000-8000-000000000000, 600.0 s\nIt ran longer than 10 minutes, so it moved to the background. It goes on running.\nCompiling arko\nCompiling arko_agents";
         let moved = outcome(SHELL_TOOL_NAME, output);
         assert_eq!(moved.status, CallStatus::Ok);
-        assert_eq!(
-            moved.text.as_deref(),
-            Some("in the background · job 1f0c2d3e")
-        );
+        assert_eq!(moved.text.as_deref(), Some("in the background"));
         let block = moved.block.unwrap();
         assert_eq!(block.text, "Compiling arko\nCompiling arko_agents");
+    }
+
+    /// A `terminal_start` call's line says the job it started runs, and the
+    /// call knows the job, by its result's ID.
+    #[test]
+    fn a_started_job_says_it_runs() {
+        let job = "1f0c2d3e-0000-4000-8000-000000000000";
+        let started = super::outcome(
+            "terminal_start",
+            &params(&[("command", Value::from("npm run dev"))]),
+            &format!("{{\"job_id\":\"{job}\",\"state\":\"running\"}}"),
+        );
+        assert_eq!(started.text.as_deref(), Some(JOB_RUNNING));
+        assert_eq!(started.job.map(|job| job.to_string()).as_deref(), Some(job));
+    }
+
+    /// A command's words are its whole first line, however long, since each
+    /// client cuts the row to its width.
+    #[test]
+    fn a_commands_words_are_whole() {
+        let command = format!("cargo test -p arko-tui {}", "a_long_test_name_".repeat(6));
+        let words = command_words_kept(&command, "");
+        assert_eq!(words.words, command);
+        assert!(words.kept);
     }
 }

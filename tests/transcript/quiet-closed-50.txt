@@ -1,0 +1,125 @@
+## 02 First thought starts before any call
+▎ Fix the stale cache test, check the neighbouring
+▎ code, and ask a worker to check the fixture.
+
+⣷ I’ll clear the scratch build first.
+
+## 06 Live thought grows after the background start
+▎ Fix the stale cache test, check the neighbouring
+▎ code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+▸ Started cargo-locked test cache in a… · running
+⣷ The cache test is running in the background. I…
+
+## 12 Live thinking inside merged reads
+▎ Fix the stale cache test, check the neighbouring
+▎ code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+▸ Started cargo-locked test cache in a… · running
+  The cache test is running in the background. I…
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-ch…
+▸ Read cache.rs and cache_tests.rs
+⣷ The test expects expiry at the deadline.
+
+## 13 Third read joins the same row
+▎ Fix the stale cache test, check the neighbouring
+▎ code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+▸ Started cargo-locked test cache in a… · running
+  The cache test is running in the background. I…
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-ch…
+▸ Read 3 files in src
+⣷ Working…
+
+## 14 Long thought between different call kinds
+▎ Fix the stale cache test, check the neighbouring
+▎ code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+▸ Started cargo-locked test cache in a… · running
+  The cache test is running in the background. I…
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-ch…
+▸ Read 3 files in src
+⣷ The clock and the cache use the same units, so…
+
+## 26 Live thought after the failed call
+▎ Fix the stale cache test, check the neighbouring
+▎ code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+▸ Started cargo-locked test cache in a… · running
+  The cache test is running in the background. I…
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-ch…
+▸ Read 3 files in src
+  The clock and the cache use the same units, so…
+▸ Made 1 edit to cache.rs
+  Now check the fixture independently.
+▸ Changed note 1
+▸ Ran git worktree add ../fixture-check -b fixtur…
+  r3 Check that the… · 1 tool call · 2s · finished
+▸ r3 reported
+▸ Ran cargo-locked test cache -- --excat         ✗
+⣷ I misspelled the exact-test option.
+
+## 31 Final thought streams with no following call
+▎ Fix the stale cache test, check the neighbouring
+▎ code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+▸ Started cargo-locked test cache in a… · finished
+  The cache test is running in the background. I…
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-ch…
+▸ Read 3 files in src
+  The clock and the cache use the same units, so…
+▸ Made 1 edit to cache.rs
+  Now check the fixture independently.
+▸ Changed note 1
+▸ Ran git worktree add ../fixture-check -b fixtur…
+  r3 Check that the… · 1 tool call · 2s · finished
+▸ r3 reported
+▸ Ran cargo-locked test cache -- --excat         ✗
+  I misspelled the exact-test option. I should us…
+▸ Ran cargo-locked test cache_tests::e… (1 passed)
+⣷ The focused check passes. The worker agrees wit…
+
+## 33 Turn ends and all thoughts settle
+▎ Fix the stale cache test, check the neighbouring
+▎ code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+▸ Started cargo-locked test cache in a… · finished
+  The cache test is running in the background. I…
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-ch…
+▸ Read 3 files in src
+  The clock and the cache use the same units, so…
+▸ Made 1 edit to cache.rs
+  Now check the fixture independently.
+▸ Changed note 1
+▸ Ran git worktree add ../fixture-check -b fixtur…
+  r3 Check that the… · 1 tool call · 2s · finished
+▸ r3 reported
+▸ Ran cargo-locked test cache -- --excat         ✗
+  I misspelled the exact-test option. I should us…
+▸ Ran cargo-locked test cache_tests::e… (1 passed)
+  The focused check passes. The worker agrees wit…
+
+  Changed the cache to expire at its deadline. The
+  focused test passes, and the fixture uses the
+  same deadline.
+

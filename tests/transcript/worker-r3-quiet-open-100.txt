@@ -1,0 +1,17 @@
+## 33 Turn ends and all thoughts settle
+  r3 Check that the cache fixture uses the same deadline as the test. · finished · 2s
+
+  I’ll compare the fixture with the deadline assertion.
+
+▾ Read cache.json
+│ 1  {
+│ 2    "now": 10,
+│ 3    "expires": 10
+│ 4  }
+
+  Both values are 10, exactly the boundary in the test.
+
+  The fixture and assertion both use the deadline 10.
+
+  The fixture and assertion both use the deadline 10.
+

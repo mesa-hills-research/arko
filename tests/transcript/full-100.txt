@@ -1,0 +1,45 @@
+## 33 Turn ends and all thoughts settle
+▎ Fix the stale cache test, check the neighbouring code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· $ rm -rf target/x · ✓ 0.1 s
+· background $ cargo-locked test cache · ✓ finished
+  The cache test is running in the background. I can record the expected result while it runs.
+▸ keep_note · ✓ Changed note 1.
+
+▾ $ git worktree add ../cache-check -b cache-check · ✓ 0.1 s
+│ Preparing worktree (new branch 'cache-check')
+│ HEAD is now at abc1234 Keep cached values until expiry
+
+▸ read src/cache.rs · ✓ 3 lines
+  The boundary is inclusive.
+▸ read src/cache_tests.rs · ✓ 4 lines
+  The test expects expiry at the deadline.
+▸ read src/clock.rs · ✓ 3 lines
+  The clock and the cache use the same units, so this looks like a boundary error rather than a tim…
+▸ edit src/cache.rs · ✓ 1 edit
+  Now check the fixture independently.
+▸ keep_note · ✓ Changed note 1.
+
+▾ $ git worktree add ../fixture-check -b fixture-check · ✓ 0.1 s
+│ Preparing worktree (new branch 'fixture-check')
+│ HEAD is now at abc1234 Keep cached values until expiry
+
+  r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s · finished
+▸ r3 reported
+
+▾ $ cargo-locked test cache -- --excat · ✗ exit 101
+│ error: Unrecognized option: 'excat'
+
+  I misspelled the exact-test option. I should use the full test path instead of changing the test.
+
+▾ $ cargo-locked test cache_tests::expires_at_the_deadline -- --exact · ✓ 1 passed
+│ running 1 test
+│ test cache_tests::expires_at_the_deadline ... ok
+│ test result: ok. 1 passed; 0 failed
+
+  The focused check passes. The worker agrees with the fixture, and the background run has finished…
+
+  Changed the cache to expire at its deadline. The focused test passes, and the fixture uses the
+  same deadline.
+

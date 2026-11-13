@@ -4,9 +4,12 @@
 //!
 //! A run is the stretch of an agent's calls and thinking between two other
 //! things the view shows. Within a run a call joins the row before it when
-//! it is of the same kind, or reads a file the row edits or writes. A row
-//! holds calls that follow each other, so rows never reorder, and the
-//! thinking after a row's call goes inside it. A call's row is
+//! it is of the row's one kind, or when it reads or changes the one file
+//! every call of the row reads or changes ("Read app.rs and made 3 edits").
+//! A row holds calls that follow each other, so rows never reorder. A
+//! thinking between two calls of one row goes inside it, between them, and
+//! any other thinking is a step of its own, so everything shows where it
+//! happened. A call's row is
 //! decided when the call comes, from what is known then, and nothing that
 //! comes later moves it. So a long call (a command, a wait, an MCP call)
 //! shows on its row while it runs ("Ran 4 commands · running cargo build"),
@@ -18,10 +21,14 @@
 //! show under its row's line, in whatever row it is. Rows only grow at the
 //! end, and a row keeps its calls once anything shows after it ([`rows`]).
 //!
+//! A row's words are whole. Each client cuts them to its width, and keeps
+//! what follows them whole ([`Words::news`], [`Words::note`]), so a cut
+//! line still says how the call went.
+//!
 //! An open row of one call shows the call's content right under its line
 //! ([`content`](super::content)), after its detail ([`Act::detail`]). An
 //! open row of several shows each call's Full line, which opens to the
-//! call's content in turn.
+//! call's content in turn, and the thinking between them.
 //!
 //! The web page compiles this file beside `protocol.rs` as a module of its
 //! own, so it depends on the standard library and that module alone.
@@ -40,14 +47,13 @@ pub const HELD: &str = "held for the compaction";
 /// A call's outcome when the session stopped before its result came.
 pub const INTERRUPTED: &str = "interrupted";
 
-/// The longest command a row names, in characters.
-pub const COMMAND_CHARS: usize = 48;
-
 /// An item of a transcript, as the Quiet view reads it, in the order shown.
 #[derive(Debug, Clone, Copy)]
 pub enum Step<'a> {
     Call(Call<'a>),
-    /// The agent's thinking, which doesn't end a run.
+    /// The agent's thinking, which doesn't end a run. One the reader opened
+    /// while it stood on a line of its own is [`Step::Other`] instead, so it
+    /// stays there and the next call starts a row of its own.
     Thinking,
     /// Anything else the view shows, by its item's ID, which ends a run.
     Other(u64),
@@ -94,7 +100,7 @@ pub enum Piece {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     /// The steps it holds, by index, in order. They are its calls and the
-    /// thinking after them.
+    /// thinking between them.
     pub members: Vec<usize>,
     pub words: Words,
     /// It holds several calls, each of which shows as its Full line when
@@ -106,18 +112,38 @@ pub struct Row {
     pub opens: bool,
 }
 
-/// What a row says.
+/// What a row says. A client cuts `text` to its width and shows the rest
+/// whole after it, `news` in parentheses and then `note`, both muted.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Words {
+    /// What its calls did ("Ran cargo test -p arko", "Read 3 files in src").
     pub text: String,
+    /// How it went, as a test run's counts ("1 failed, 23 passed").
+    pub news: Option<String>,
     /// A call of it failed, which one ✗ at the row's right says.
     pub failed: bool,
-    /// More, said after it, muted, such as how a call's job is going.
+    /// More, said after it, muted, such as how a call's job is going, what
+    /// came while it waited, or what of it still runs.
     pub note: Option<String>,
     /// A call a stop or a compaction cut short, whose row is muted.
     pub muted: bool,
     /// A call of it runs.
     pub running: bool,
+}
+
+impl Words {
+    /// All it says in one line, as a row shows it whole ("Ran cargo test
+    /// (2 passed)", "Waited for r3 · r3 finished").
+    pub fn said(&self) -> String {
+        let mut said = self.text.clone();
+        if let Some(news) = &self.news {
+            said.push_str(&format!(" ({news})"));
+        }
+        if let Some(note) = &self.note {
+            said.push_str(&format!(" · {note}"));
+        }
+        said
+    }
 }
 
 /// The rows of `steps`, with the steps that show as they are. They follow
@@ -226,41 +252,40 @@ fn slots<'a>(
 }
 
 /// A row being made.
+#[derive(Clone)]
 struct Group<'a> {
-    kind: ActKind,
-    /// The calls it counts.
+    /// Its calls, in order.
     calls: Vec<Member<'a>>,
-    /// The reads of a file it changes, which it holds without counting.
-    absorbed: Vec<Member<'a>>,
     /// It takes no more calls.
     alone: bool,
+}
+
+/// Whether a call of `kind` reads or changes a file.
+fn of_a_file(kind: ActKind) -> bool {
+    matches!(kind, ActKind::Read | ActKind::Write | ActKind::Edit)
 }
 
 impl<'a> Group<'a> {
     fn new(member: Member<'a>) -> Self {
         Self {
-            kind: member.act.kind,
             alone: member.alone(),
             calls: vec![member],
-            absorbed: Vec::new(),
         }
     }
 
     /// Its calls by step index, in order.
     fn members(&self) -> Vec<usize> {
-        let mut members: Vec<usize> = self
-            .calls
-            .iter()
-            .chain(&self.absorbed)
-            .map(|member| member.index)
-            .collect();
-        members.sort_unstable();
-        members
+        self.calls.iter().map(|member| member.index).collect()
     }
 
-    /// The files it changes or reads.
-    fn files(&self) -> impl Iterator<Item = &str> {
-        self.calls.iter().map(|call| call.act.target.as_str())
+    /// The kind of all its calls, unless it holds the reads and changes of
+    /// one file.
+    fn kind(&self) -> Option<ActKind> {
+        let first = self.calls[0].act.kind;
+        self.calls
+            .iter()
+            .all(|call| call.act.kind == first)
+            .then_some(first)
     }
 
     /// Takes `member` if it belongs in this row. A call joins as it comes,
@@ -270,19 +295,12 @@ impl<'a> Group<'a> {
             return Err(member);
         }
         // A row of one call that the reader opened keeps its form.
-        let alone = self.calls.len() + self.absorbed.len() == 1;
-        if alone
-            && self
-                .calls
-                .iter()
-                .chain(&self.absorbed)
-                .any(|call| call.call.sealed)
-        {
+        if self.calls.len() == 1 && self.calls[0].call.sealed {
             return Err(member);
         }
         // A failure ends the row. A call that came while the failed one ran
         // stays in it.
-        let after_failure = self.calls.iter().chain(&self.absorbed).any(|call| {
+        let after_failure = self.calls.iter().any(|call| {
             call.failed() && call.call.ended.is_some_and(|ended| member.call.id >= ended)
         });
         if after_failure {
@@ -290,8 +308,7 @@ impl<'a> Group<'a> {
         }
         let kind = member.act.kind;
         let target = member.act.target.as_str();
-        let changes = matches!(self.kind, ActKind::Edit | ActKind::Write);
-        if kind == self.kind {
+        if self.kind() == Some(kind) {
             // A job's checks and an MCP tool's calls merge one target only.
             let one_target = matches!(kind, ActKind::Check | ActKind::Mcp);
             if one_target && self.calls[0].act.target != target {
@@ -300,17 +317,12 @@ impl<'a> Group<'a> {
             self.calls.push(member);
             return Ok(());
         }
-        // Reading back a file it changes is part of changing it.
-        if changes && kind == ActKind::Read && self.files().any(|file| file == target) {
-            self.absorbed.push(member);
-            return Ok(());
-        }
-        // A row that only read one file becomes a row that changes it, in
-        // its place.
-        let changing = matches!(kind, ActKind::Edit | ActKind::Write);
-        if self.kind == ActKind::Read && changing && self.files().all(|file| file == target) {
-            self.kind = kind;
-            self.absorbed.append(&mut self.calls);
+        // The reads and changes of one file are one thing to the reader.
+        let one_file = self
+            .calls
+            .iter()
+            .all(|call| of_a_file(call.act.kind) && call.act.target == target);
+        if of_a_file(kind) && one_file {
             self.calls.push(member);
             return Ok(());
         }
@@ -344,8 +356,8 @@ fn build(slots: Vec<Option<Member<'_>>>) -> Vec<Group<'_>> {
 }
 
 /// Places a run's rows `groups` in `steps[start..end]`, onto `out`, each row
-/// where its first call is, with the thinking after its calls, and the rest
-/// as they are.
+/// where its first call is, with the thinking between its calls, and the
+/// rest as they are.
 fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut Vec<Piece>) {
     // Which row each call is in.
     let mut row_of: HashMap<usize, usize> = HashMap::new();
@@ -357,26 +369,27 @@ fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut V
     let calls: Vec<usize> = (start..end)
         .filter(|index| matches!(steps[*index], Step::Call(_)))
         .collect();
-    // A thinking goes in the row of the call before it as it comes, so it
-    // never leaves a row of its own when the next call joins that row. One
-    // with no call before it in the run, or after a row of one call that
-    // takes no more (a test run), has a row of its own.
+    // A thinking goes in a row when the calls on either side of it are
+    // that row's, so a closed row hides only what happened between its
+    // first call and its last. Any other thinking has a line of its own,
+    // where it happened. The last one stands at the end until the next call
+    // comes, and goes in the row above if that call joins it.
     let inside = |index: usize| {
         let before = calls.iter().rev().find(|call| **call < index)?;
+        let after = calls.iter().find(|call| **call > index)?;
         let row = row_of.get(before)?;
-        (!groups[*row].calls.iter().any(Member::alone)).then_some(*row)
+        (row_of.get(after) == Some(row)).then_some(*row)
     };
     // Each row, and whether its call has something to show.
     let mut more = Vec::with_capacity(groups.len());
     let mut rows: Vec<Option<Row>> = groups
         .iter()
         .map(|group| {
-            let calls = group.calls.len() + group.absorbed.len();
-            more.push(group.calls.iter().chain(&group.absorbed).any(Member::opens));
+            more.push(group.calls.iter().any(Member::opens));
             Some(Row {
                 members: Vec::new(),
                 words: words(group),
-                merged: calls > 1,
+                merged: group.calls.len() > 1,
                 opens: false,
             })
         })
@@ -398,8 +411,8 @@ fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut V
             built.members.push(index);
         }
     }
-    // A row opens when it holds more than one step, or its call has
-    // something to show.
+    // A row opens when it holds more than one call, or its call has
+    // something to show. (A thinking is only ever between two calls.)
     for (row, more) in rows.iter_mut().zip(more) {
         if let Some(row) = row.as_mut() {
             row.opens = row.members.len() > 1 || more;
@@ -555,9 +568,7 @@ fn words(group: &Group) -> Words {
         .partition(|member| member.long() && member.running());
     if !live.is_empty() && !done.is_empty() {
         let before = Group {
-            kind: group.kind,
             calls: done.into_iter().cloned().collect(),
-            absorbed: group.absorbed.clone(),
             alone: false,
         };
         let mut words = words(&before);
@@ -565,20 +576,20 @@ fn words(group: &Group) -> Words {
             [one] => lower_first(&phrases(one).doing),
             many => format!("running {} more", many.len()),
         };
-        words.text = format!("{} · {running}", words.text);
+        words.note = Some(match words.note {
+            Some(note) => format!("{note} · {running}"),
+            None => running,
+        });
         words.running = true;
         return words;
     }
     let calls = &group.calls;
-    let every = || calls.iter().chain(&group.absorbed);
-    let running = every().any(Member::running);
+    let running = calls.iter().any(Member::running);
     // (A call that failed stays in its row, which shows one ✗.)
-    let failed = every().any(Member::failed);
+    let failed = calls.iter().any(Member::failed);
     if calls.len() == 1 {
         let mut words = one(&calls[0]);
         words.running = running;
-        // (Or a read it holds.)
-        words.failed |= failed;
         return words;
     }
     let now = calls.iter().all(Member::running);
@@ -599,20 +610,27 @@ fn words(group: &Group) -> Words {
         }
     };
     let targets = || distinct(calls.iter().map(|call| call.act.target.as_str()));
-    let text = match group.kind {
-        ActKind::Read => format!("{} {}", tense("Reading", "Read"), files(("file", "files"))),
-        ActKind::List => format!(
+    let mut note = Vec::new();
+    let text = match group.kind() {
+        // The reads and changes of one file, each kind named.
+        None => file_words(calls, now),
+        Some(ActKind::Read) => {
+            format!("{} {}", tense("Reading", "Read"), files(("file", "files")))
+        }
+        Some(ActKind::List) => format!(
             "{} {}",
             tense("Listing", "Listed"),
             files(("folder", "folders"))
         ),
-        ActKind::Write => format!("{} {}", tense("Writing", "Wrote"), files(("file", "files"))),
-        ActKind::Edit => format!(
+        Some(ActKind::Write) => {
+            format!("{} {}", tense("Writing", "Wrote"), files(("file", "files")))
+        }
+        Some(ActKind::Edit) => format!(
             "{} {count} edits to {}",
             tense("Making", "Made"),
             files(("file", "files"))
         ),
-        ActKind::Command => {
+        Some(ActKind::Command) => {
             let programs = distinct(calls.iter().map(|call| program(&call.act.target)));
             format!(
                 "{} {count} commands ({})",
@@ -620,7 +638,7 @@ fn words(group: &Group) -> Words {
                 parenthesized(&programs, 3)
             )
         }
-        ActKind::Search => {
+        Some(ActKind::Search) => {
             let indexes = distinct(
                 calls
                     .iter()
@@ -635,7 +653,7 @@ fn words(group: &Group) -> Words {
                 many => format!("{verb} {} indexes {count} times", many.len()),
             }
         }
-        ActKind::Skill => {
+        Some(ActKind::Skill) => {
             let skills = targets();
             match skills.as_slice() {
                 [one] => format!("{} the {one} skill", tense("Loading", "Loaded")),
@@ -647,14 +665,14 @@ fn words(group: &Group) -> Words {
                 ),
             }
         }
-        ActKind::Message => {
+        Some(ActKind::Message) => {
             let to = targets();
             match to.as_slice() {
                 [one] => format!("{} {one} {count} times", tense("Messaging", "Messaged")),
                 _ => format!("{} {}", tense("Messaging", "Messaged"), listed(&to, 3)),
             }
         }
-        ActKind::Wait => {
+        Some(ActKind::Wait) => {
             let mut runs: Vec<String> = Vec::new();
             for call in calls {
                 for run in call.act.target.split(',').map(str::trim) {
@@ -680,46 +698,77 @@ fn words(group: &Group) -> Words {
                     came.updates += theirs.updates;
                 }
             }
-            let mut text = format!("{} for {who}", tense("Waiting", "Waited"));
             if any {
-                text.push_str(" · ");
-                text.push_str(&came_words(&came));
+                note.push(came_words(&came));
             }
-            text
+            format!("{} for {who}", tense("Waiting", "Waited"))
         }
-        ActKind::Check => format!(
+        Some(ActKind::Check) => format!(
             "{} {} {count} times",
             tense("Checking", "Checked"),
             calls[0].name
         ),
-        ActKind::Note => format!("{} {count} notes", tense("Keeping", "Kept")),
-        ActKind::Mcp => format!(
+        Some(ActKind::Note) => format!("{} {count} notes", tense("Keeping", "Kept")),
+        Some(ActKind::Mcp) => format!(
             "{} {} {count} times",
             tense("Calling", "Called"),
             calls[0].name
         ),
         // (A call of another kind has a row of its own.)
-        ActKind::Other => calls[0].act.done.clone(),
+        Some(ActKind::Other) => calls[0].act.done.clone(),
     };
-    let mut words = Words {
+    // How the jobs of its calls go, which stay in the row.
+    let jobs: Vec<&Member> = calls.iter().filter(|member| member.call.job).collect();
+    match jobs.as_slice() {
+        [] => {}
+        [one] => note.extend(
+            one.call
+                .outcome
+                .map(str::trim)
+                .filter(|outcome| !outcome.is_empty())
+                .map(str::to_string),
+        ),
+        many => note.push(plural(many.len(), "job", "jobs")),
+    }
+    Words {
         text,
         running,
         failed,
+        note: (!note.is_empty()).then(|| note.join(" · ")),
         ..Words::default()
-    };
-    // How the jobs of its calls go, which stay in the row.
-    let jobs: Vec<&Member> = every().filter(|member| member.call.job).collect();
-    words.note = match jobs.as_slice() {
-        [] => None,
-        [one] => one
-            .call
-            .outcome
-            .map(str::trim)
-            .filter(|outcome| !outcome.is_empty())
-            .map(str::to_string),
-        many => Some(plural(many.len(), "job", "jobs")),
-    };
-    words
+    }
+}
+
+/// What a row of the reads and changes of one file says, each kind in
+/// turn, the file named once ("Read app.rs and made 3 edits", "Read app.rs,
+/// wrote it and made 1 edit"). Edits are counted, and a file read or
+/// written again is still one.
+fn file_words(calls: &[Member], now: bool) -> String {
+    let tense = |present: &str, past: &str| if now { present } else { past }.to_string();
+    let name = calls[0].name.as_str();
+    let has = |kind: ActKind| calls.iter().any(|call| call.act.kind == kind);
+    let edits = calls
+        .iter()
+        .filter(|call| call.act.kind == ActKind::Edit)
+        .count();
+    let mut parts: Vec<String> = Vec::new();
+    if has(ActKind::Read) {
+        parts.push(format!("{} {name}", tense("Reading", "Read")));
+    }
+    if has(ActKind::Write) {
+        parts.push(match parts.is_empty() {
+            true => format!("{} {name}", tense("Writing", "Wrote")),
+            false => format!("{} it", tense("writing", "wrote")),
+        });
+    }
+    if edits > 0 {
+        let made = plural(edits, "edit", "edits");
+        parts.push(match parts.is_empty() {
+            true => format!("{} {made} to {name}", tense("Making", "Made")),
+            false => format!("{} {made}", tense("making", "made")),
+        });
+    }
+    listed(&parts, 3)
 }
 
 /// What a worker's item is in its lead's view, which shows a worker only
@@ -792,6 +841,7 @@ impl WorkerRow {
             note: outcome.map(str::trim).filter(|_| cut).map(str::to_string),
             muted: cut,
             running: self == WorkerRow::Message(Sending::Running),
+            ..Words::default()
         }
     }
 }
@@ -1005,10 +1055,8 @@ fn one(member: &Member) -> Words {
         },
         // It ran, and its tests' counts are news.
         Some(CallStatus::Failed) if act.ran || member.call.job => Words {
-            text: match news {
-                Some(news) => format!("{done} ({news})"),
-                None => done,
-            },
+            text: done,
+            news,
             failed: true,
             ..Words::default()
         },
@@ -1017,23 +1065,21 @@ fn one(member: &Member) -> Words {
             failed: true,
             ..Words::default()
         },
-        Some(CallStatus::Ok) => {
-            let mut text = done;
-            if act.kind == ActKind::Wait
-                && let Some(came) = &act.came
-            {
-                text.push_str(" · ");
-                text.push_str(&came_words(came));
-            } else if let Some(news) = news {
-                text.push_str(&format!(" ({news})"));
-            }
-            Words {
-                text,
-                // How its job is going.
+        // What came while it waited, else its news, and how its job is
+        // going.
+        Some(CallStatus::Ok) => match &act.came {
+            Some(came) if act.kind == ActKind::Wait => Words {
+                text: done,
+                note: Some(came_words(came)),
+                ..Words::default()
+            },
+            _ => Words {
+                text: done,
+                news,
                 note: outcome.filter(|_| member.call.job).map(str::to_string),
                 ..Words::default()
-            }
-        }
+            },
+        },
         _ => Words {
             text: doing,
             ..Words::default()
@@ -1193,20 +1239,20 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
             job: true,
             full_detail: Some("every 30 s, when its output changes, for 30 min"),
             ..fixture(
-                "a monitor whose command the words cut",
+                "a monitor of a long command",
                 "monitor_start",
                 r#"{"command": "grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log", "every_seconds": 30, "alert_when": "output", "expires_minutes": 30}"#,
                 "Monitor 7f3e9a1c-1111-2222-3333-444455556666 started.",
                 Act {
-                    detail: "grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log\nevery 30 s, when its output changes, for 30 min".into(),
+                    detail: "every 30 s, when its output changes, for 30 min".into(),
                     ..other(
-                        "Starting to watch grep -c \"^EXIT\" /home/user/work/logs/build-linux…",
-                        "Started watching grep -c \"^EXIT\" /home/user/work/logs/build-linux…",
-                        "watch grep -c \"^EXIT\" /home/user/work/logs/build-linux…",
+                        "Starting to watch grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log",
+                        "Started watching grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log",
+                        "watch grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log",
                     )
                 },
                 "monitor $ grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log",
-                "Started watching grep -c \"^EXIT\" /home/user/work/logs/build-linux…",
+                "Started watching grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log · monitoring",
             )
         },
         Fixture {
@@ -1229,17 +1275,17 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
             outcome: "0.0 s",
             content: Some((Plain, "this-is-a-command-with-a-critical-suffix")),
             ..fixture(
-                "a command cut short",
+                "a command whose words leave out its variable",
                 "shell",
                 r#"{"command": "CARGO_INCREMENTAL=0 printf '%s' this-is-a-command-with-a-critical-suffix"}"#,
                 "exit code 0, 0.0 s\nthis-is-a-command-with-a-critical-suffix",
                 Act {
                     detail: "CARGO_INCREMENTAL=0 printf '%s' this-is-a-command-with-a-critical-suffix".into(),
                     news: String::new(),
-                    ..command("printf '%s' this-is-a-command-with-a-critical-su…")
+                    ..command("printf '%s' this-is-a-command-with-a-critical-suffix")
                 },
                 "$ CARGO_INCREMENTAL=0 printf '%s' this-is-a-command-with-a-critical-suffix",
-                "Ran printf '%s' this-is-a-command-with-a-critical-su…",
+                "Ran printf '%s' this-is-a-command-with-a-critical-suffix",
             )
         },
         Fixture {
@@ -1333,7 +1379,7 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
             )
         },
         Fixture {
-            outcome: "in the background · job 4d2c1a9b",
+            outcome: "in the background",
             job: true,
             opens: false,
             ..fixture(
@@ -1343,7 +1389,7 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                 "in the background as job 4d2c1a9b-1111-2222-3333-444455556666, 600.0 s\nterminal_status shows how it goes.",
                 command("cargo build"),
                 "$ cargo build",
-                "Ran cargo build",
+                "Ran cargo build · in the background",
             )
         },
         Fixture {
@@ -1596,12 +1642,9 @@ mod tests {
             .map(|piece| match piece {
                 Piece::Step(index) => format!("step {index}"),
                 Piece::Row(row) => {
-                    let mut text = row.words.text;
+                    let mut text = row.words.said();
                     if row.words.failed {
                         text.push_str(" ✗");
-                    }
-                    if let Some(note) = row.words.note {
-                        text.push_str(&format!(" · {note}"));
                     }
                     text
                 }
@@ -1642,7 +1685,7 @@ mod tests {
     fn a_rows_words_and_fold_follow_the_fixtures() {
         for fixture in fixtures() {
             let row = row_of(&fixture);
-            assert_eq!(row.words.text, fixture.words, "{}", fixture.name);
+            assert_eq!(row.words.said(), fixture.words, "{}", fixture.name);
             assert_eq!(row.words.failed, fixture.failed, "{}", fixture.name);
             assert_eq!(row.opens, fixture.opens, "{}", fixture.name);
             assert!(!row.merged, "{}", fixture.name);
@@ -1674,7 +1717,7 @@ mod tests {
         assert!(row.merged && row.opens && !row.words.failed);
         let (a, edit) = (act(Read, "src/a.rs"), act(Edit, "src/a.rs"));
         let row = one(&[call(1, &a, Ok), call(2, &edit, Ok)]);
-        assert_eq!(row.words.text, "Made 1 edit to a.rs");
+        assert_eq!(row.words.text, "Read a.rs and made 1 edit");
         assert!(row.merged && row.opens);
         let (rg, git) = (act(Command, "rg x"), act(Command, "git diff"));
         let row = one(&[call(1, &rg, Ok), call(2, &git, Failed)]);
@@ -1823,9 +1866,10 @@ mod tests {
         );
     }
 
-    /// Reads of a file being edited join its edits, interleaved edits of
-    /// two files are one row that names both, and a different kind between
-    /// them splits the run. A row never takes the calls of a row after it.
+    /// The reads and changes of one file are one row whose title names
+    /// each kind, interleaved edits of two files are one row that names
+    /// both, and a different kind between them splits the run. A row never
+    /// takes the calls of a row after it.
     #[test]
     fn mixed_runs_merge_by_what_they_change() {
         assert_eq!(
@@ -1835,7 +1879,7 @@ mod tests {
                 ok(Read, "app.rs"),
                 ok(Edit, "app.rs"),
             ]),
-            ["Made 2 edits to app.rs"]
+            ["Read app.rs and made 2 edits"]
         );
         assert_eq!(
             shown(&[
@@ -1862,11 +1906,21 @@ mod tests {
                 ok(Read, "b.rs"),
                 ok(Edit, "b.rs"),
             ]),
-            ["Made 1 edit to a.rs", "Made 1 edit to b.rs"]
+            ["Read a.rs and made 1 edit", "Read b.rs and made 1 edit"]
         );
         assert_eq!(
             shown(&[ok(Write, "new.rs"), ok(Edit, "new.rs"), ok(Edit, "new.rs")]),
-            ["Wrote new.rs", "Made 2 edits to new.rs"]
+            ["Wrote new.rs and made 2 edits"]
+        );
+        // A row of one file's reads and changes takes no other file, and a
+        // row of edits of two files no read.
+        assert_eq!(
+            shown(&[ok(Read, "a.rs"), ok(Edit, "a.rs"), ok(Edit, "b.rs")]),
+            ["Read a.rs and made 1 edit", "Made 1 edit to b.rs"]
+        );
+        assert_eq!(
+            shown(&[ok(Edit, "a.rs"), ok(Edit, "b.rs"), ok(Read, "a.rs")]),
+            ["Made 2 edits to a.rs and b.rs", "Read a.rs"]
         );
         assert_eq!(
             shown(&[
@@ -1909,11 +1963,10 @@ mod tests {
             matches!(pieces.as_slice(), [Piece::Row(row)] if row.members == [0, 1, 2]),
             "{pieces:?}"
         );
-        // Thinking after a row's call goes in that row, whatever comes next,
-        // and one before the run's first call stays as it is.
+        // Any other thinking is a line of its own, where it happened.
         assert_eq!(
             shown(&[None, ok(Read, "a.rs"), None, ok(Command, "ls"), None]),
-            ["step 0", "Read a.rs", "Ran ls"]
+            ["step 0", "Read a.rs", "step 2", "Ran ls", "step 4"]
         );
         // So does one after a test run, which takes no more calls.
         let test = Act {
@@ -2028,7 +2081,7 @@ mod tests {
             Step::Call(Call {
                 act: Some(&build),
                 status: Some(Ok),
-                outcome: Some("in the background · job 4d2c1a9b"),
+                outcome: Some("in the background"),
                 job: true,
                 ..Call::default()
             }),
@@ -2038,14 +2091,8 @@ mod tests {
                 ..Call::default()
             }),
         ];
-        assert_eq!(
-            said(&moved[..1]),
-            ["Ran cargo build · in the background · job 4d2c1a9b"]
-        );
-        assert_eq!(
-            said(&moved),
-            ["Ran 2 commands (cargo) · in the background · job 4d2c1a9b"]
-        );
+        assert_eq!(said(&moved[..1]), ["Ran cargo build · in the background"]);
+        assert_eq!(said(&moved), ["Ran 2 commands (cargo) · in the background"]);
     }
 
     /// A call keeps the row it joined, whatever its result, and a row keeps
@@ -2144,7 +2191,7 @@ mod tests {
                 id,
                 act: Some(act),
                 status: Some(Ok),
-                outcome: Some("in the background · job 4d2c1a9b"),
+                outcome: Some("in the background"),
                 job: true,
                 turn: Some(1),
                 ..Call::default()
@@ -2179,13 +2226,19 @@ mod tests {
             vec![call(1, &x, Ok), call(2, &y, Failed)],
             vec![call(1, &x, Ok), call(2, &y, Failed), call(3, &rg, Ok)],
         ]);
-        // Thinking after a row, then a call that joins it.
-        assert_rows_only_grow(&[
+        // Thinking after a row stands at the end, and goes in the row when
+        // the next call joins it. Nothing else moves.
+        let thinking = [
             vec![call(1, &rg, Ok)],
             vec![call(1, &rg, Ok), Step::Thinking],
             vec![call(1, &rg, Ok), Step::Thinking, call(3, &build, Running)],
             vec![call(1, &rg, Ok), Step::Thinking, call(3, &build, Ok)],
-        ]);
+        ];
+        assert_eq!(
+            thinking.iter().map(|steps| keys(steps)).collect::<Vec<_>>(),
+            [vec!["q1"], vec!["q1", "s1"], vec!["q1"], vec!["q1"]]
+        );
+        assert_rows_only_grow(&thinking[2..]);
         // A failure after something showed, then more calls.
         assert_rows_only_grow(&[
             vec![call(1, &rg, Ok), call(2, &build, Running), Step::Other(3)],
@@ -2258,6 +2311,147 @@ mod tests {
                 Some((act(Wait, "r3"), Running))
             ]),
             ["Waited for r3 · 1 update · waiting for r3"]
+        );
+    }
+
+    /// A thinking sits where it happened. Between two calls of one row it is
+    /// inside that row, between them, so a row of one call never holds
+    /// one. Before the first call, after the last, and between rows it is a
+    /// step of its own. One the reader opened on its own line comes as
+    /// `Other`, so it stays there and the next call starts a row.
+    #[test]
+    fn a_thinking_sits_where_it_happened() {
+        let (a, b, c) = (
+            act(Read, "src/a.rs"),
+            act(Read, "src/b.rs"),
+            act(Read, "src/c.rs"),
+        );
+        let edit = act(Edit, "src/a.rs");
+        let call = |id: u64, act| {
+            Step::Call(Call {
+                id,
+                act: Some(act),
+                status: Some(Ok),
+                turn: Some(1),
+                ..Call::default()
+            })
+        };
+        let pieces = |steps: &[Step]| -> Vec<String> {
+            rows(steps)
+                .into_iter()
+                .map(|piece| match piece {
+                    Piece::Step(at) => format!("step {at}"),
+                    Piece::Row(row) => format!("{} {:?}", row.words.text, row.members),
+                })
+                .collect()
+        };
+        // The lab's reads, a thinking between each, then a long one and an
+        // edit of another kind.
+        let steps = [
+            call(1, &a),
+            Step::Thinking,
+            call(3, &b),
+            Step::Thinking,
+            call(5, &c),
+            Step::Thinking,
+            call(7, &edit),
+        ];
+        assert_eq!(
+            pieces(&steps),
+            [
+                "Read 3 files in src [0, 1, 2, 3, 4]",
+                "step 5",
+                "Made 1 edit to a.rs [6]"
+            ]
+        );
+        // The last thinking stands at the end until the next call comes.
+        assert_eq!(
+            pieces(&steps[..4]),
+            ["Read a.rs and b.rs [0, 1, 2]", "step 3"]
+        );
+        // A row of one call holds no thinking.
+        assert_eq!(
+            pieces(&[Step::Thinking, call(2, &a), Step::Thinking]),
+            ["step 0", "Read a.rs [1]", "step 2"]
+        );
+        // Opened on its own line, it stays there, and the next read starts
+        // a row of its own.
+        assert_eq!(
+            pieces(&[call(1, &a), Step::Other(2), call(3, &b)]),
+            ["Read a.rs [0]", "step 1", "Read b.rs [2]"]
+        );
+    }
+
+    /// A row of one file's reads and changes names each kind once, the
+    /// file once, and counts the edits.
+    #[test]
+    fn a_files_reads_and_changes_name_each_kind() {
+        assert_eq!(
+            shown(&[ok(Read, "src/app.rs"), ok(Edit, "src/app.rs")]),
+            ["Read app.rs and made 1 edit"]
+        );
+        assert_eq!(
+            shown(&[
+                ok(Read, "src/app.rs"),
+                ok(Write, "src/app.rs"),
+                ok(Edit, "src/app.rs"),
+                ok(Read, "src/app.rs"),
+            ]),
+            ["Read app.rs, wrote it and made 1 edit"]
+        );
+        assert_eq!(
+            shown(&[ok(Read, "src/app.rs"), ok(Write, "src/app.rs")]),
+            ["Read app.rs and wrote it"]
+        );
+        assert_eq!(
+            shown(&[
+                Some((act(Read, "src/app.rs"), Running)),
+                Some((act(Edit, "src/app.rs"), Running)),
+            ]),
+            ["Reading app.rs and making 1 edit"]
+        );
+    }
+
+    /// A row's words leave out how it went, which a client keeps whole
+    /// when it cuts the words to its width.
+    #[test]
+    fn a_rows_news_and_note_come_apart_from_its_words() {
+        let mut test = act(Command, "cargo test -p arko");
+        test.news = "24 passed".into();
+        test.alone = true;
+        test.ran = true;
+        let steps = [Step::Call(Call {
+            act: Some(&test),
+            status: Some(Ok),
+            ..Call::default()
+        })];
+        let [Piece::Row(row)]: [Piece; 1] = rows(&steps).try_into().unwrap() else {
+            panic!()
+        };
+        assert_eq!(row.words.text, "Ran cargo test -p arko");
+        assert_eq!(row.words.news.as_deref(), Some("24 passed"));
+        let started = Act {
+            done: "Started npm run dev in a terminal".into(),
+            ..act(ActKind::Other, "")
+        };
+        let steps = [Step::Call(Call {
+            act: Some(&started),
+            status: Some(Ok),
+            outcome: Some("running"),
+            job: true,
+            ..Call::default()
+        })];
+        let [Piece::Row(row)]: [Piece; 1] = rows(&steps).try_into().unwrap() else {
+            panic!()
+        };
+        assert_eq!(row.words.text, "Started npm run dev in a terminal");
+        assert_eq!(row.words.note.as_deref(), Some("running"));
+        assert_eq!(
+            shown(&[
+                ok(Command, "rg x"),
+                Some((act(Command, "cargo build"), Running))
+            ]),
+            ["Ran rg x · running cargo build"]
         );
     }
 

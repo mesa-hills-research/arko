@@ -1,0 +1,116 @@
+## 02 First thought starts before any call
+▎ Fix the stale cache test, check the neighbouring code, and ask a worker to check the fixture.
+
+⣷ I’ll clear the scratch build first.
+
+## 06 Live thought grows after the background start
+▎ Fix the stale cache test, check the neighbouring code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+· Started cargo-locked test cache in a terminal · running
+⣷ The cache test is running in the background. I can record the expected result while it runs.
+
+## 12 Live thinking inside merged reads
+▎ Fix the stale cache test, check the neighbouring code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+· Started cargo-locked test cache in a terminal · running
+  The cache test is running in the background. I can record the expected result while it runs.
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-check
+▸ Read cache.rs and cache_tests.rs
+⣷ The test expects expiry at the deadline.
+
+## 13 Third read joins the same row
+▎ Fix the stale cache test, check the neighbouring code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+· Started cargo-locked test cache in a terminal · running
+  The cache test is running in the background. I can record the expected result while it runs.
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-check
+▸ Read 3 files in src
+⣷ Working…
+
+## 14 Long thought between different call kinds
+▎ Fix the stale cache test, check the neighbouring code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+· Started cargo-locked test cache in a terminal · running
+  The cache test is running in the background. I can record the expected result while it runs.
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-check
+▸ Read 3 files in src
+⣷ The clock and the cache use the same units, so this looks like a boundary error rather than a tim…
+
+## 26 Live thought after the failed call
+▎ Fix the stale cache test, check the neighbouring code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+· Started cargo-locked test cache in a terminal · running
+  The cache test is running in the background. I can record the expected result while it runs.
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-check
+▸ Read 3 files in src
+  The clock and the cache use the same units, so this looks like a boundary error rather than a tim…
+▸ Made 1 edit to cache.rs
+  Now check the fixture independently.
+▸ Changed note 1
+▸ Ran git worktree add ../fixture-check -b fixture-check
+  r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s · finished
+▸ r3 reported
+▸ Ran cargo-locked test cache -- --excat                                                           ✗
+⣷ I misspelled the exact-test option.
+
+## 31 Final thought streams with no following call
+▎ Fix the stale cache test, check the neighbouring code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+· Started cargo-locked test cache in a terminal · finished
+  The cache test is running in the background. I can record the expected result while it runs.
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-check
+▸ Read 3 files in src
+  The clock and the cache use the same units, so this looks like a boundary error rather than a tim…
+▸ Made 1 edit to cache.rs
+  Now check the fixture independently.
+▸ Changed note 1
+▸ Ran git worktree add ../fixture-check -b fixture-check
+  r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s · finished
+▸ r3 reported
+▸ Ran cargo-locked test cache -- --excat                                                           ✗
+  I misspelled the exact-test option. I should use the full test path instead of changing the test.
+▸ Ran cargo-locked test cache_tests::expires_at_the_deadline -- --exact (1 passed)
+⣷ The focused check passes. The worker agrees with the fixture, and the background run has finished…
+
+## 33 Turn ends and all thoughts settle
+▎ Fix the stale cache test, check the neighbouring code, and ask a worker to check the fixture.
+
+  I’ll clear the scratch build first.
+· Ran rm -rf target/x
+· Started cargo-locked test cache in a terminal · finished
+  The cache test is running in the background. I can record the expected result while it runs.
+▸ Changed note 1
+▸ Ran git worktree add ../cache-check -b cache-check
+▸ Read 3 files in src
+  The clock and the cache use the same units, so this looks like a boundary error rather than a tim…
+▸ Made 1 edit to cache.rs
+  Now check the fixture independently.
+▸ Changed note 1
+▸ Ran git worktree add ../fixture-check -b fixture-check
+  r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s · finished
+▸ r3 reported
+▸ Ran cargo-locked test cache -- --excat                                                           ✗
+  I misspelled the exact-test option. I should use the full test path instead of changing the test.
+▸ Ran cargo-locked test cache_tests::expires_at_the_deadline -- --exact (1 passed)
+  The focused check passes. The worker agrees with the fixture, and the background run has finished…
+
+  Changed the cache to expire at its deadline. The focused test passes, and the fixture uses the
+  same deadline.
+
