@@ -68,7 +68,9 @@ turn's Quiet rows in place. The three views share one model of a row.
   spinner appear once per call, whatever is open.
 - A row with no content and no detail has no triangle (in the terminal, a dot in its place). Long
   content shows its first 16 lines and one line that says how much more there is ("… 97 more
-  lines"), which opens the rest. That line is muted text on every surface.
+  lines"), which opens the rest. That line is muted text on every surface. A line too long to show
+  whole ends the preview where it's cut, so nothing hidden sits above text that shows, and the
+  count is of the characters after the cut ("… 1,240 more characters").
 - A row never moves. It keeps its place, its calls and its height once shown, and opening it adds
   below it. A row's words change in place while calls join it, and only the last row of a run takes
   new calls.
