@@ -3891,8 +3891,9 @@ fn thought_lines(
         markdown::render(text, style, theme, room)
     } else {
         let mut shown = cut_end(&first, room);
-        if more && shown == first && text_width(&shown) + 2 <= room {
-            shown.push_str(&rendered(" …"));
+        // (Where " …" has no room after the line, the line is cut for it.)
+        if more && shown == first {
+            shown = cut_end(&(first.clone() + &rendered(" …")), room);
         }
         let mut line = Wrapped::line(vec![Span::styled(shown.clone(), style)]);
         // (A copy of it, selected whole, takes it whole.)

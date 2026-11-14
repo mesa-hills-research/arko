@@ -313,3 +313,20 @@ fn a_selection_keeps_its_words_at_another_width() {
     let copied = t.selected_text(&filter, &Theme::terminal());
     assert_eq!(copied.as_deref(), Some("wraps"), "{narrow:?}");
 }
+
+/// A closed thought that leaves some out ends with "…", also where its
+/// first line fills the row.
+#[test]
+fn a_closed_thought_that_fills_its_row_ends_with_an_ellipsis() {
+    let first = "Thinking about the first line here";
+    for width in 34..42 {
+        let mut t = Transcript::new();
+        t.apply(Update::Item(item(
+            1,
+            Kind::Thinking,
+            &format!("{first}\nAnd more."),
+        )));
+        let rows = screen(&mut t, &Filter::Main(View::Full), width, 3);
+        assert!(rows[0].ends_with('…'), "{width}: {rows:?}");
+    }
+}
