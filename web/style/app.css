@@ -344,7 +344,6 @@ button.cache { padding: 0; border: 0; background: none; }
 .conn { color: var(--muted); }
 .conn-row { flex-wrap: wrap; justify-content: center; text-align: center; }
 .conn-detail { color: var(--muted); font: 12px var(--mono); opacity: 0.8; }
-.conn-detail:empty { display: none; }
 
 /* ----- transcript ----- */
 
@@ -1229,7 +1228,6 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.36); }
 .lock form { display: flex; flex-direction: column; gap: 8px; margin-top: 28px; text-align: left; }
 .lock label { color: var(--muted); font-size: 13px; }
 .lock .btn { min-height: 40px; }
-.lock .conn-detail { margin-top: 16px; }
 
 /* The page couldn't start, or stopped. */
 #failed { max-width: 380px; margin: 0 auto; padding: 18vh var(--gutter) 0; text-align: center; }
