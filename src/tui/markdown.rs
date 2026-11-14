@@ -155,11 +155,14 @@ fn list_item(line: &str) -> Option<(usize, &str, &str)> {
 }
 
 /// For each line that's a numbered list's item, the columns of its list's
-/// widest number ("10." takes 3), else 0. A list is the numbered items at
+/// widest number ("10." takes 3), and never fewer than two digits take, so a
+/// list that streams in doesn't move as its tenth item comes, else 0. A list is the numbered items at
 /// one indent with one delimiter (`.` or `)`). A bullet there ends it, and
 /// so does any other line there or further left, unless it runs on from
 /// the line before.
 fn number_columns(lines: &[&str]) -> Vec<usize> {
+    /// The fewest columns a list keeps for its numbers, those of "10.".
+    const NUMBERS_MIN: usize = 3;
     /// A numbered list, with the lines of its items so far.
     struct List {
         indent: usize,
@@ -208,7 +211,7 @@ fn number_columns(lines: &[&str]) -> Vec<usize> {
                         open.push(List {
                             indent: at,
                             delimiter,
-                            widest: bullet.len(),
+                            widest: bullet.len().max(NUMBERS_MIN),
                             items: vec![n],
                         });
                     }
@@ -401,7 +404,7 @@ mod tests {
         // A list item's text lines up under its first line.
         assert_eq!(
             lines("1. one two three", 9),
-            ["1. one", "   two", "   three"]
+            [" 1. one", "    two", "    three"]
         );
     }
 
@@ -416,15 +419,16 @@ mod tests {
     /// `start`, its number at the right of a column as wide as `widest`'s,
     /// so every item's text starts in one place.
     fn line_up(lines: &[String], start: u64, widest: u64) {
-        let column = format!("{widest}.").len();
+        let column = format!("{widest}.").len().max(3);
         for (line, n) in lines.iter().zip(start..) {
             assert_eq!(*line, format!("{:>column$} item", format!("{n}.")));
         }
     }
 
-    /// Nine items keep a column of one digit, apart from a list of ten.
+    /// Nine items keep the column of two digits a list of ten has, so a
+    /// list doesn't move as its tenth item comes.
     #[test]
-    fn nine_numbers_keep_a_column_of_one_digit() {
+    fn nine_numbers_keep_a_column_of_two_digits() {
         let text = numbered(1, 9) + "\nThen:\n\n" + &numbered(1, 10);
         let lines = lines(&text, 40);
         line_up(&lines[..9], 1, 9);
@@ -449,8 +453,8 @@ mod tests {
                 "",
                 "more of it",
                 "",
-                "   1. inner",
-                "   2. inner",
+                "    1. inner",
+                "    2. inner",
                 "",
             ]
         );
@@ -458,7 +462,7 @@ mod tests {
         // A bullet ends a list.
         assert_eq!(
             lines_of("9. item\n- bullet\n10. item"),
-            ["9. item", "• bullet", "10. item"]
+            [" 9. item", "• bullet", "10. item"]
         );
         assert_eq!(
             lines(&format!("{}10. one two three four", numbered(1, 9)), 12)[9..],

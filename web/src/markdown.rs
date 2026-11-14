@@ -277,13 +277,15 @@ fn close(html: &mut String, tag: TagEnd) {
 }
 
 /// Gives the numbered list whose `<ol` starts at `at` in `html` the count of
-/// its widest number's digits, when that's more than one, for the page to
-/// keep a column that wide for its numbers (`.md ol` in app.css).
-/// Markdown's numbers have at most 9 digits, so the widest has at most 10.
+/// its widest number's digits, when that's more than two, for the page to
+/// keep a column that wide for its numbers (`.md ol` in app.css). Every list
+/// keeps two digits' room, so one that streams in doesn't move as its tenth
+/// item comes. Markdown's numbers have at most 9 digits, so the widest has
+/// at most 10.
 fn number_digits(html: &mut String, at: usize, start: u64, items: u64) {
     let widest = start.saturating_add(items.saturating_sub(1));
     let digits = widest.checked_ilog10().unwrap_or(0) + 1;
-    if digits > 1 {
+    if digits > 2 {
         debug_assert!(html[at..].starts_with("<ol"));
         html.insert_str(at + "<ol".len(), &format!(" data-digits=\"{digits}\""));
     }
@@ -563,13 +565,13 @@ mod tests {
     fn number_columns(html: &str) -> usize {
         let css = include_str!("../style/app.css");
         assert!(
-            css.contains(".md ol { --digits: 1; padding-left: calc((var(--digits) + 2) * 1ch); }"),
+            css.contains(".md ol { --digits: 2; padding-left: calc((var(--digits) + 2) * 1ch); }"),
             "the list's column rule changed"
         );
         let tag = &html[..html.find('>').unwrap()];
         assert!(tag.starts_with("<ol"), "{html}");
         let Some((_, digits)) = tag.split_once("data-digits=\"") else {
-            return 1 + 2;
+            return 2 + 2;
         };
         let digits = &digits[..digits.find('"').unwrap()];
         let rule = format!(".md ol[data-digits=\"{digits}\"] {{ --digits: {digits}; }}");
@@ -587,14 +589,16 @@ mod tests {
         let widest = format!("{}. ", start + items - 1);
         assert_eq!(
             number_columns(&html),
-            widest.len(),
+            widest.len().max("10. ".len()),
             "{start}, {items} items: {}",
             &html[..html.len().min(60)]
         );
     }
 
+    /// Nine items keep the column of two digits a list of ten has, so a
+    /// list doesn't move as its tenth item comes.
     #[test]
-    fn nine_numbers_have_a_column_of_one_digit() {
+    fn nine_numbers_have_a_column_of_two_digits() {
         numbers_fit(1, 9);
     }
 
@@ -608,13 +612,13 @@ mod tests {
         }
         let html = to_html(&text);
         assert!(
-            html.starts_with("<ol data-digits=\"2\"><li>outer<ol><li>"),
+            html.starts_with("<ol><li>outer<ol><li>"),
             "{html}"
         );
         assert_eq!(number_columns(&html), 4);
         assert_eq!(
             number_columns(&html[html.find("<ol><li>inner").unwrap()..]),
-            3
+            4
         );
     }
 

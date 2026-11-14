@@ -732,9 +732,10 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 /* A numbered list keeps a column for its widest number and its ". ", 1ch
    each in a monospaced font and narrower in another, so no number reaches
    past the list's edge (onto a rail) and every item's text starts in one
-   place. Markdown gives the widest number's digits in data-digits. */
-.md ol { --digits: 1; padding-left: calc((var(--digits) + 2) * 1ch); }
-.md ol[data-digits="2"] { --digits: 2; }
+   place. Every list keeps room for two digits, so one that streams in
+   doesn't move as its tenth item comes. Markdown gives a wider number's
+   digits in data-digits. */
+.md ol { --digits: 2; padding-left: calc((var(--digits) + 2) * 1ch); }
 .md ol[data-digits="3"] { --digits: 3; }
 .md ol[data-digits="4"] { --digits: 4; }
 .md ol[data-digits="5"] { --digits: 5; }
