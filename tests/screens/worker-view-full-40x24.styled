@@ -23,20 +23,20 @@ style 5 2 23 fg=#dedede bg=#131313
 style 5 23 26 fg=#9d9d9d bg=#131313
 style 5 26 27 fg=#30d158 bg=#131313
 style 5 27 40 fg=#dedede bg=#131313
-text 6 "· $ cargo test --test quoting · 12s …"
-style 6 0 2 fg=#9d9d9d bg=#131313
-style 6 2 29 fg=#dedede bg=#131313
-style 6 29 37 fg=#9d9d9d bg=#131313
-style 6 37 40 fg=#dedede bg=#131313
-text 7 "⣟ Which test …"
-style 7 0 1 fg=#9d9d9d bg=#131313
-style 7 1 2 fg=#dedede bg=#131313
-style 7 2 14 fg=#9d9d9d bg=#131313 italic
-style 7 14 40 fg=#dedede bg=#131313
+text 6 ""
+style 6 0 40 fg=#dedede bg=#131313
+text 7 "· $ cargo test --test quoting · 12s …"
+style 7 0 2 fg=#9d9d9d bg=#131313
+style 7 2 29 fg=#dedede bg=#131313
+style 7 29 37 fg=#9d9d9d bg=#131313
+style 7 37 40 fg=#dedede bg=#131313
 text 8 ""
 style 8 0 40 fg=#dedede bg=#131313
-text 9 ""
-style 9 0 40 fg=#dedede bg=#131313
+text 9 "⣟ Which test …"
+style 9 0 1 fg=#9d9d9d bg=#131313
+style 9 1 2 fg=#dedede bg=#131313
+style 9 2 14 fg=#9d9d9d bg=#131313 italic
+style 9 14 40 fg=#dedede bg=#131313
 text 10 ""
 style 10 0 40 fg=#dedede bg=#131313
 text 11 ""

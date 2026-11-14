@@ -12,14 +12,14 @@ text 4 "▸ read tests/quoting.rs · ✓"
 style 4 0 2 dim
 style 4 23 26 dim
 style 4 26 27 fg=green
-text 5 "· $ cargo test --test quoting · 12s …"
-style 5 0 2 dim
-style 5 29 37 dim
-text 6 "⣟ Which test …"
-style 6 0 1 dim
-style 6 2 14 dim italic
+text 5 ""
+text 6 "· $ cargo test --test quoting · 12s …"
+style 6 0 2 dim
+style 6 29 37 dim
 text 7 ""
-text 8 ""
+text 8 "⣟ Which test …"
+style 8 0 1 dim
+style 8 2 14 dim italic
 text 9 ""
 text 10 ""
 text 11 ""

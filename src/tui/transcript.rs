@@ -1246,13 +1246,21 @@ impl Transcript {
                     // opened to, and a thinking or a worker's row is open
                     // when it shows more than its line. (Only the work's
                     // lines stand apart by it, so the rest aren't wrapped
-                    // for it.)
+                    // for it.) What opens by itself stands apart from the
+                    // start, so nothing moves when it opens. A command does
+                    // while it runs (its output shows once it ends), and a
+                    // thinking shown whole while it streams. One that ends
+                    // with nothing to show, or on its one line, stacks again.
+                    let live = self.motion.thinking == Some(entry.item.id);
                     let open = match entry.item.kind {
-                        Kind::Call if status.is_none() => folds && face.open,
+                        Kind::Call if status.is_none() => {
+                            face.open && (folds || entry.item.status == Some(CallStatus::Running))
+                        }
                         Kind::Result => true,
                         _ if group != Group::Activity => false,
                         // (Closed, a thinking and a worker's row are a line.)
                         Kind::Thinking if !face.open => false,
+                        Kind::Thinking if live => true,
                         _ if status.is_some() && !(folds && face.open) => false,
                         _ => {
                             let rows = self.entry_rows(*index, &face, theme, width, own);
@@ -6667,6 +6675,105 @@ mod tests {
                 "▾ Ran make test",
                 "│ ok"
             ]
+        );
+    }
+
+    /// What opens by itself stands apart from when it shows, so its line
+    /// stays where it is when it opens. In the Full view a command does
+    /// while it runs, and stacks again when it ends with nothing to show. A
+    /// thought shown whole does while it streams, and stacks again when it
+    /// ends on its one line.
+    #[test]
+    fn what_opens_by_itself_stands_apart_from_when_it_shows() {
+        use crate::remote::{Act, ActKind};
+        let mut t = Transcript::new();
+        t.set_open_thinking(true);
+        t.working = Some(0);
+        let filter = full();
+        let call = |id: u64, kind: ActKind, text: &str| {
+            let mut call = item(id, Kind::Call, text);
+            call.status = Some(CallStatus::Running);
+            call.act = Some(Act {
+                kind,
+                target: text.into(),
+                ..Act::default()
+            });
+            call
+        };
+        let ended = |mut call: Item, outcome: &str| {
+            call.status = Some(CallStatus::Ok);
+            call.outcome = Some(outcome.into());
+            call
+        };
+        t.apply(Update::Item(item(1, Kind::User, "Go")));
+        let read = call(2, ActKind::Read, "read a.rs");
+        t.apply(Update::Item(read.clone()));
+        t.apply(Update::Change(ended(read, "3 lines")));
+        // A command with nothing to show.
+        let quiet = call(3, ActKind::Command, "$ true");
+        t.apply(Update::Item(quiet.clone()));
+        assert_eq!(
+            rows(&mut t, &filter, 40, 20)[..6],
+            ["▎ Go", "", "· read a.rs · ✓ 3 lines", "", "· $ true …", ""]
+        );
+        t.apply(Update::Change(ended(quiet, "exit 0")));
+        assert_eq!(rows(&mut t, &filter, 40, 20)[3], "· $ true · ✓ exit 0");
+        // A command with output.
+        let make = call(4, ActKind::Command, "$ make");
+        t.apply(Update::Item(make.clone()));
+        let running = rows(&mut t, &filter, 40, 20);
+        assert_eq!(running[3..6], ["· $ true · ✓ exit 0", "", "· $ make …"]);
+        t.apply(Update::Change(ended(make, "exit 0")));
+        let mut output = item(5, Kind::Result, "ok");
+        output.content = Some(ContentKind::Plain);
+        output.call = Some(4);
+        t.apply(Update::Item(output));
+        let done = rows(&mut t, &filter, 40, 20);
+        assert_eq!(
+            done[..7],
+            [
+                "▎ Go",
+                "",
+                "· read a.rs · ✓ 3 lines",
+                "· $ true · ✓ exit 0",
+                "",
+                "▾ $ make · ✓ exit 0",
+                "│ ok"
+            ]
+        );
+        // A thought shown whole, after a call.
+        let list = call(6, ActKind::List, "list src");
+        t.apply(Update::Item(list.clone()));
+        t.apply(Update::Change(ended(list, "2 entries")));
+        t.apply(Update::Item(item(7, Kind::Thinking, "Plan.")));
+        let streams = rows(&mut t, &filter, 40, 20);
+        assert_eq!(
+            streams[8..10],
+            ["· list src · ✓ 2 entries", ""],
+            "{streams:?}"
+        );
+        assert_eq!(after_spinner(&streams[10]), Some(" Plan."), "{streams:?}");
+        t.apply(Update::Append {
+            id: 7,
+            text: "\n\nThen more.".into(),
+        });
+        let grown = rows(&mut t, &filter, 40, 20);
+        assert_eq!(grown[8..10], streams[8..10], "{grown:?}");
+        assert_eq!(after_spinner(&grown[10]), Some(" Plan."), "{grown:?}");
+        // One that ends on its line stacks again.
+        let read = call(8, ActKind::Read, "read b.rs");
+        t.apply(Update::Item(read.clone()));
+        t.apply(Update::Change(ended(read, "1 line")));
+        t.apply(Update::Item(item(9, Kind::Thinking, "Short.")));
+        let live = rows(&mut t, &filter, 40, 20);
+        assert_eq!(live[14..16], ["· read b.rs · ✓ 1 line", ""], "{live:?}");
+        assert_eq!(after_spinner(&live[16]), Some(" Short."), "{live:?}");
+        t.apply(Update::Item(call(10, ActKind::Read, "read c.rs")));
+        let stacked = rows(&mut t, &filter, 40, 20);
+        assert_eq!(
+            stacked[14..17],
+            ["· read b.rs · ✓ 1 line", "  Short.", "· read c.rs …"],
+            "{stacked:?}"
         );
     }
 

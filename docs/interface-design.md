@@ -118,7 +118,10 @@ of single lines under it.
   page work stacks 4 px apart, what is said and anything open stand 12 px apart, the user's message
   24 px below what's above it, and an open thought's paragraphs 8 px apart. A rail never starts or
   ends with a gap. The line the reader opened stays where it is on screen, so the gap above it comes
-  from what is above moving up.
+  from what is above moving up. What opens by itself stands apart from when it shows, so nothing
+  moves when it opens. A command in the Full view has its gaps while it runs, and a thought shown
+  whole has them while it streams. One that ends with nothing to show, or on its one line, stacks
+  again.
 - Working… has as much space below it as above. In the terminal it has no blank row among the
   agent's calls, and one on each side after what was said, after anything open, or above a message
   waiting to be read. Such a message has a blank row above it and one below it, before the status
