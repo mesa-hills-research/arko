@@ -93,6 +93,8 @@ pub mod remote;
 mod remote_demo;
 #[cfg(all(test, feature = "remote"))]
 mod remote_load;
+#[cfg(all(test, feature = "remote"))]
+mod remote_shift;
 mod sending;
 mod session;
 pub mod session_names;
