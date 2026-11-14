@@ -288,3 +288,28 @@ fn a_block_with_nothing_to_show_has_a_row() {
         );
     }
 }
+
+/// A selection in a wrapped line keeps its words at another width.
+#[test]
+fn a_selection_keeps_its_words_at_another_width() {
+    let mut t = Transcript::new();
+    t.apply(Update::Item(item(
+        1,
+        Kind::Reply,
+        "A long line that the screen wraps into two rows of text",
+    )));
+    let filter = Filter::Main(View::Full);
+    let rows = screen(&mut t, &filter, 30, 4);
+    assert_eq!(rows[0], "  A long line that the screen");
+    assert_eq!(rows[1], "  wraps into two rows of text");
+    // "wraps", on the second row.
+    let (from, to) = (t.point_at(2, 1).unwrap(), t.point_at(6, 1).unwrap());
+    t.select(from, to, &filter);
+    assert_eq!(
+        t.selected_text(&filter, &Theme::terminal()).as_deref(),
+        Some("wraps")
+    );
+    let narrow = screen(&mut t, &filter, 26, 4);
+    let copied = t.selected_text(&filter, &Theme::terminal());
+    assert_eq!(copied.as_deref(), Some("wraps"), "{narrow:?}");
+}

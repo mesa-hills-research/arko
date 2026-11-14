@@ -418,15 +418,18 @@ pub struct Point {
     pub line: usize,
     mark: u64,
     pub col: usize,
+    /// Where it is in the block's text ([`Spot::at`]).
+    at: u64,
 }
 
 /// A place in the text that keeps its text at any width, a block (by its
-/// key), the mark of a line of it ([`body_marks`]), and a column.
+/// key) and where in the block's text it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Spot {
     key: u64,
-    mark: u64,
-    col: usize,
+    /// Twice the characters of text before it ([`text_cells`]), and one
+    /// more when it's on a character rather than in the space before one.
+    at: u64,
 }
 
 /// Text the reader highlighted with the mouse, from where the drag began
@@ -445,6 +448,8 @@ pub struct Drawn {
     pub area: Rect,
     /// What each row of the area shows.
     rows: Vec<Option<RowRef>>,
+    /// Each row's characters of text ([`text_cells`]).
+    texts: Vec<Vec<(usize, usize)>>,
     /// The "new" marker's area, while it shows.
     pub marker: Option<Rect>,
     /// The keys of the counted turns' lines.
@@ -2011,14 +2016,8 @@ impl Transcript {
         }
         // The selection's ends, in the order of the text.
         let range = self.selection.clone().and_then(|selection| {
-            let mut place = |spot: Spot| {
-                let index = *at.get(&spot.key)?;
-                let block = &blocks[index];
-                let marks = self.marks(block, theme, width, own);
-                Some((index, mark_row(&marks, block, spot.mark), spot.col))
-            };
-            let (a, b) = (place(selection.anchor)?, place(selection.head)?);
-            Some(if a <= b { (a, b) } else { (b, a) })
+            let index = |key: u64| at.get(&key).copied();
+            self.range(&selection, &blocks, index, theme, width, own)
         });
         if self.selection.is_some() && range.is_none() {
             // Its text left the view (or the history).
@@ -2040,10 +2039,11 @@ impl Transcript {
             highlight: highlight(theme),
             ms: motion::clock(),
             rows: vec![None; area.height as usize],
+            texts: vec![Vec::new(); area.height as usize],
             moving: Vec::new(),
         };
         view.render(area, buffer, &mut rows);
-        let (rows, moving) = (rows.rows, rows.moving);
+        let (rows, texts, moving) = (rows.rows, rows.texts, rows.moving);
         self.view = view;
         // A drag holds the view still, also where the wheel took it to the
         // end.
@@ -2113,6 +2113,7 @@ impl Transcript {
         self.drawn = Drawn {
             area,
             rows,
+            texts,
             marker: None,
             counters: blocks
                 .iter()
@@ -2416,35 +2417,35 @@ impl Transcript {
             .filter_map(|(row, at)| at.map(|at| (row, at)))
             .collect();
         let (first, last) = (drawn.first()?, drawn.last()?);
+        let point = |(row, at): (usize, RowRef), col: usize| {
+            let texts = self.drawn.texts.get(row).map_or(&[][..], Vec::as_slice);
+            Point {
+                key: at.key,
+                line: at.line,
+                mark: at.mark,
+                col,
+                at: text_at(at.mark >> 10, texts, col),
+            }
+        };
         if y < area.y {
-            return Some(Point {
-                key: first.1.key,
-                line: first.1.line,
-                mark: first.1.mark,
-                col: 0,
-            });
+            return Some(point(*first, 0));
         }
         let row = (y - area.y) as usize;
         let at = drawn.iter().rev().find(|(r, _)| *r <= row).unwrap_or(first);
         let past = y >= area.bottom() || row > last.0;
-        Some(Point {
-            key: at.1.key,
-            line: at.1.line,
-            mark: at.1.mark,
-            col: if past {
-                usize::MAX / 2
-            } else {
-                x.saturating_sub(area.x) as usize
-            },
-        })
+        let col = if past {
+            usize::MAX / 2
+        } else {
+            x.saturating_sub(area.x) as usize
+        };
+        Some(point(*at, col))
     }
 
     /// Highlights from `anchor` to `head`, in `filter`'s view.
     pub fn select(&mut self, anchor: Point, head: Point, filter: &Filter) {
         let spot = |point: Point| Spot {
             key: point.key,
-            mark: point.mark,
-            col: point.col,
+            at: point.at,
         };
         self.selection = Some(Selection {
             anchor: spot(anchor),
@@ -2846,14 +2847,15 @@ impl Transcript {
         theme: &Theme,
     ) -> Option<(Point, Point)> {
         let (rows, _) = self.rows_of(point.key, filter, theme)?;
-        let (start, end) = word_columns(rows.get(point.line)?, point.col)?;
-        Some((
-            Point {
-                col: start,
-                ..point
-            },
-            Point { col: end, ..point },
-        ))
+        let line = rows.get(point.line)?;
+        let (start, end) = word_columns(line, point.col)?;
+        let texts = text_cells(line);
+        let at = |col| Point {
+            col,
+            at: text_at(point.mark >> 10, &texts, col),
+            ..point
+        };
+        Some((at(start), at(end)))
     }
 
     /// The line at `point`, as the text has it (the display lines it was
@@ -2866,20 +2868,80 @@ impl Transcript {
     ) -> Option<(Point, Point)> {
         let (rows, marks) = self.rows_of(point.key, filter, theme)?;
         let (first, last) = text_line(&rows, point.line)?;
-        Some((
-            Point {
-                line: first,
-                mark: marks[first],
-                col: 0,
-                ..point
-            },
-            Point {
-                line: last,
-                mark: marks[last],
-                col: usize::MAX / 2,
-                ..point
-            },
-        ))
+        let at = |line: usize, col: usize| Point {
+            line,
+            mark: marks[line],
+            col,
+            at: text_at(marks[line] >> 10, &text_cells(&rows[line]), col),
+            ..point
+        };
+        Some((at(first, 0), at(last, usize::MAX / 2)))
+    }
+
+    /// Where `selection` is among `blocks` at `width`, from its start to its
+    /// end in the order of the text, each as (block, line, column), with
+    /// `index` finding a block by its key. `None` when its text left them.
+    fn range(
+        &mut self,
+        selection: &Selection,
+        blocks: &[Block],
+        index: impl Fn(u64) -> Option<usize>,
+        theme: &Theme,
+        width: usize,
+        own: bool,
+    ) -> Option<Range> {
+        let (a, b) = (selection.anchor, selection.head);
+        let (from, to) = ((index(a.key)?, a), (index(b.key)?, b));
+        let (from, to) = if (from.0, from.1.at) <= (to.0, to.1.at) {
+            (from, to)
+        } else {
+            (to, from)
+        };
+        let mut place = |(index, spot): (usize, Spot), end: bool| {
+            let block = &blocks[index];
+            let (line, col) = self.spot_place(block, spot.at, end, theme, width, own);
+            (index, line, col)
+        };
+        Some((place(from, false), place(to, true)))
+    }
+
+    /// The line of `block` (counting the blank one before it) and the column
+    /// that `at` ([`Spot::at`]) names at `width`. A place between characters
+    /// is the next one's at a selection's start, and the one's before it at
+    /// its `end`, which includes its column.
+    fn spot_place(
+        &mut self,
+        block: &Block,
+        at: u64,
+        end: bool,
+        theme: &Theme,
+        width: usize,
+        own: bool,
+    ) -> (usize, usize) {
+        let (count, on) = (at / 2, at % 2 == 1);
+        let char = match (on, end) {
+            (false, true) if count == 0 => return (0, 0),
+            (false, true) => count - 1,
+            _ => count,
+        };
+        let gap = usize::from(block.gap);
+        // The line that holds it, the last that starts at or before it.
+        let (line, before) = {
+            let marks = self.marks(block, theme, width, own);
+            let line = marks
+                .partition_point(|mark| mark >> 10 <= char)
+                .saturating_sub(1);
+            (line, marks.get(line).map_or(0, |mark| mark >> 10))
+        };
+        let body = self.body(block, theme, width, own);
+        let col = body
+            .get(line)
+            .and_then(|wrapped| {
+                let nth = usize::try_from(char - before).ok()?;
+                text_cells(wrapped).get(nth).map(|(col, _)| *col)
+            })
+            .unwrap_or(usize::MAX / 2);
+        (gap + line, col)
     }
 
     /// The highlighted text, as written, without the view's margins,
@@ -2890,14 +2952,8 @@ impl Transcript {
         let width = self.drawn.area.width as usize;
         let own = matches!(filter, Filter::Worker(..));
         let blocks = self.blocks(filter, theme, width);
-        let mut place = |spot: Spot| {
-            let index = blocks.iter().position(|block| block.key == spot.key)?;
-            let block = &blocks[index];
-            let marks = self.marks(block, theme, width, own);
-            Some((index, mark_row(&marks, block, spot.mark), spot.col))
-        };
-        let (a, b) = (place(selection.anchor)?, place(selection.head)?);
-        let range = if a <= b { (a, b) } else { (b, a) };
+        let index = |key: u64| blocks.iter().position(|block| block.key == key);
+        let range = self.range(&selection, &blocks, index, theme, width, own)?;
         let mut rows: Vec<((usize, usize), Wrapped)> = Vec::new();
         for (index, block) in blocks
             .iter()
@@ -2961,16 +3017,39 @@ fn body_marks(lines: &[Wrapped]) -> Vec<u64> {
     marks
 }
 
-/// How many characters of text `line` has, white space and decoration aside.
+/// How many characters of text `line` has ([`text_cells`]).
 fn text_count(line: &Wrapped) -> u64 {
+    text_cells(line).len() as u64
+}
+
+/// The column and width of each of `line`'s characters of text, white
+/// space and decoration aside, which marks and a selection's ends count.
+fn text_cells(line: &Wrapped) -> Vec<(usize, usize)> {
     if line.bare {
-        return 0;
+        return Vec::new();
     }
     let end = text_end(line);
     cells(line)
-        .iter()
+        .into_iter()
         .filter(|(c, col, _)| *col >= line.skip && *col < end && !blank(c))
-        .count() as u64
+        .map(|(_, col, w)| (col, w))
+        .collect()
+}
+
+/// Where column `col` of a line is in its block's text ([`Spot::at`]), the
+/// line's characters of text being `texts` and the block's characters
+/// before the line `before`. Past the line's end is after its last
+/// character.
+fn text_at(before: u64, texts: &[(usize, usize)], col: usize) -> u64 {
+    let count = texts
+        .iter()
+        .take_while(|(start, w)| start + w <= col)
+        .count();
+    let on = texts.get(count).is_some_and(|(start, _)| *start <= col);
+    before
+        .saturating_add(count as u64)
+        .saturating_mul(2)
+        .saturating_add(u64::from(on))
 }
 
 /// The mark of `block`'s row `row`, whose lines but the blank ones have the
@@ -3014,6 +3093,8 @@ struct Rows<'a> {
     ms: u64,
     /// What each row of the area shows, as drawn.
     rows: Vec<Option<RowRef>>,
+    /// Each row's characters of text, as drawn ([`text_cells`]).
+    texts: Vec<Vec<(usize, usize)>>,
     /// The lines drawn that move.
     moving: Vec<Moving>,
 }
@@ -3116,13 +3197,17 @@ impl FeedRows<u64> for Rows<'_> {
                     }
                 }
                 None => {
-                    if let Some(at) = self.rows.get_mut(usize::from(row - self.area.y)) {
-                        *at = Some(RowRef {
+                    let at = usize::from(row - self.area.y);
+                    if let Some(drawn) = self.rows.get_mut(at) {
+                        *drawn = Some(RowRef {
                             key: block.key,
                             line,
                             mark: row_mark(&marks, block, line),
                             gap,
                         });
+                    }
+                    if let Some(texts) = self.texts.get_mut(at) {
+                        *texts = text_cells(wrapped);
                     }
                 }
             }
