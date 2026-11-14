@@ -153,3 +153,7 @@ strip = true
 # The speech engine is far too slow to dictate with unoptimized.
 [profile.dev.package.telmo]
 opt-level = 3
+
+# Until Telmo 0.5.0 is on crates.io.
+[patch.crates-io]
+telmo = { git = "https://github.com/mesa-hills-research/telmo", rev = "ce8f5a920e18eb464580d7e98c1f32e9bc62d303" }
