@@ -13,10 +13,19 @@
 // shorter one took while following. A panel opened and closed with nothing
 // between puts every line back on its pixel.
 //
+// Then it plays the pixel cases, each in a session of its own at ratios 1,
+// 1.25, 1.5 and 2, with the inputs' times set.
+//
 // Arko's `remote_page_shift` test runs it with the session's side, which
 // makes the feed's changes it asks for. Node 24 and its WebSocket are all it
-// needs. SHIFT_METER_OUT names a file for the tables, and SHIFT_METER_FULL=1
-// plays every size and view with more turns.
+// needs. `--page DIR` serves the page's files from DIR. SHIFT_METER_OUT
+// names a file for the tables, and SHIFT_METER_FULL=1 plays every size and
+// view with more turns. To look closer, SHIFT_METER_ONLY=1:quiet:up plays
+// one session (size, view, following or up), SHIFT_METER_CASES=0 leaves the
+// pixel cases out and SHIFT_METER_CASES_ONLY=1 plays only them,
+// SHIFT_METER_VERBOSE=1 prints each move, and SHIFT_METER_TRACE=<step>
+// prints the lines of every frame of the steps it names and the page's
+// console. SHIFT_METER_TABS is how many browsers play at once (3).
 
 import net from 'node:net';
 import { spawn } from 'node:child_process';
@@ -170,51 +179,6 @@ const INSTRUMENT = `(() => {
     return every(callback, ms, ...rest);
   };
   meter.tick = (ms) => { meter.ahead += ms; for (const tick of meter.ticks) tick(); };
-  if (__TRACE__) {
-    for (const name of ['scrollHeight', 'clientHeight']) {
-      const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, name);
-      Object.defineProperty(Element.prototype, name, {
-        get() {
-          const value = descriptor.get.call(this);
-          if (this.tagName === 'TEXTAREA') {
-            const log = document.getElementById('log');
-            console.log('TRACE read textarea ' + name + ' ' + value + ' value ' + JSON.stringify(this.value) + ' log ' + (log && log.scrollTop) + '/' + (log && descriptor.get.call(log)) + ' ' + new Error().stack.split('\\n').slice(2, 4).join(' | '));
-          }
-          return value;
-        },
-        configurable: true,
-      });
-    }
-    window.addEventListener('keydown', () => {
-      const log = document.getElementById('log');
-      const header = document.querySelector('header');
-      console.log('TRACE keydown first: log ' + (log && log.scrollTop) + ' header ' + (header && header.getBoundingClientRect().height) + ' log top ' + (log && log.getBoundingClientRect().top) + ' height ' + (log && log.getBoundingClientRect().height));
-    }, true);
-    const watch = () => {
-      const footer = document.querySelector('footer.bottom');
-      if (!footer) { setTimeout(watch, 200); return; }
-      new MutationObserver((records) => {
-        const log = document.getElementById('log');
-        for (const record of records) console.log('TRACE footer ' + record.type + ' ' + (record.target.className || record.target.nodeName) + ' ' + (record.attributeName || '') + ' added ' + record.addedNodes.length + ' removed ' + record.removedNodes.length + ' log ' + log.scrollTop + '/' + log.clientHeight);
-      }).observe(footer, { subtree: true, childList: true, attributes: true });
-    };
-    watch();
-    document.addEventListener('scroll', (event) => {
-      const log = document.getElementById('log');
-      if (event.target !== log) return;
-      const floor = log.querySelector('.floor');
-      console.log('TRACE scroll ' + log.scrollTop + ' of ' + log.scrollHeight + '-' + log.clientHeight + ' floor ' + (floor && floor.style.top) + ' rows ' + document.getElementById('rows').getBoundingClientRect().height);
-    }, true);
-
-    for (const name of ['scrollTo', 'scrollBy', 'scrollIntoView', 'focus']) {
-      const original = Element.prototype[name] || HTMLElement.prototype[name];
-      const owner = Element.prototype[name] ? Element.prototype : HTMLElement.prototype;
-      owner[name] = function (...args) {
-        if (name !== 'scrollTo' || this.id !== 'log') console.log('TRACE ' + name + ' on ' + this.tagName + '.' + this.className + ' ' + JSON.stringify(args) + ' ' + new Error().stack.split('\\n').slice(2, 6).join(' | '));
-        return original.apply(this, args);
-      };
-    }
-  }
   const Source = window.EventSource;
   window.EventSource = class extends Source {
     addEventListener(type, listen, options) {
@@ -600,7 +564,7 @@ class Run {
       this.failures.push(`page exception: ${event.exceptionDetails?.exception?.description ?? event.exceptionDetails?.text}`);
     });
     this.cdp.on(sessionId, 'Runtime.consoleAPICalled', (event) => {
-      if (TRACE && event.type === 'log' && (TRACE === '*' || String(event.args[0]?.value).startsWith('TRACE') || this.step === TRACE || String(this.step).startsWith(TRACE.split('|')[0]))) console.log(`   console [${this.step}]: ${event.args.map((arg) => arg.value ?? arg.description).join(" ")}`);
+      if (TRACE && event.type === 'log') console.log(`   console [${this.step}]: ${event.args.map((arg) => arg.value ?? arg.description).join(' ')}`);
       if (event.type === 'error') this.failures.push(`console: ${event.args.map((arg) => arg.value ?? arg.description).join(' ')}`);
     });
     await this.metrics(this.size.width, this.size.height);
@@ -610,7 +574,7 @@ class Run {
         userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Mobile Safari/537.36',
       }, sessionId);
     }
-    await this.cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INSTRUMENT.replace('__VIEW__', this.view).replace('__TRACE__', TRACE ? 'true' : 'false') }, sessionId);
+    await this.cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INSTRUMENT.replace('__VIEW__', this.view) }, sessionId);
     if (PAGE) {
       // The page's files as built in this tree, whatever the server was
       // built with.
