@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use termelon::buffer::Buffer;
-use termelon::feed::{Anchor, Change, ItemId, Measure};
+use termelon::feed::{Anchor, Change, Feed, ItemId, Measure, Placement};
 use termelon::layout::Rect;
 use termelon::style::{Modifier, Style};
 use termelon::text::{Line, Span};
@@ -227,14 +227,27 @@ struct Pin {
     line: usize,
     /// The row of the area it stays on.
     row: usize,
-    /// The fold opened (else it closed).
-    opened: bool,
 }
 
-/// How the reader scrolled since the view was last drawn (taken at the next
-/// draw, after the view's blocks, which may be another view's).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the reader did since the view was last drawn. The next draw applies
+/// it to their place, after the view's blocks (which may be another
+/// view's), and decides what it does there on the layout that applies it,
+/// so a click is never judged on the frame before it took effect.
+#[derive(Debug, Clone, Copy, Default)]
+struct Acted {
+    scroll: Scroll,
+    /// A fold opened or closed, its line held on the row it was on.
+    pin: Option<Pin>,
+    /// The button went up after a press that held the view still.
+    released: bool,
+    /// The keyboard moved, so its line comes into sight.
+    reveal: bool,
+}
+
+/// How the reader scrolled since the view was last drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Scroll {
+    #[default]
     None,
     /// By this many rows, down when positive.
     By(i64),
@@ -521,11 +534,8 @@ pub struct Transcript {
     hold: bool,
     /// The lines drawn last, by row.
     pub drawn: Drawn,
-    /// How the reader scrolled since the last draw.
-    scroll: Scroll,
-    /// A fold was opened or closed, and the next draw keeps the line clicked
-    /// on the row of the area it was on.
-    pin: Option<Pin>,
+    /// What the reader did since the last draw.
+    acted: Acted,
     /// The agents' thinking shows whole from the start (`--show-thinking`),
     /// instead of folded to its first line.
     open_thinking: bool,
@@ -556,8 +566,6 @@ pub struct Transcript {
     /// The row the keyboard is on (Ctrl+G). It shows in the selection's
     /// colour, and the view keeps it in sight.
     pub focus: Option<Target>,
-    /// The keyboard moved, so the next draw scrolls its row into sight.
-    reveal: bool,
     /// The width the blocks were last made for, which decides what a line
     /// cuts and so what opens.
     width: usize,
@@ -582,8 +590,7 @@ impl Transcript {
             selection: None,
             hold: false,
             drawn: Drawn::default(),
-            scroll: Scroll::None,
-            pin: None,
+            acted: Acted::default(),
             open_thinking: false,
             working: None,
             motion: Motion::default(),
@@ -595,7 +602,6 @@ impl Transcript {
             generation: 0,
             quiet_order: None,
             focus: None,
-            reveal: false,
             width: 0,
         }
     }
@@ -920,7 +926,7 @@ impl Transcript {
                 .feed()
                 .key(item)
                 .map(|key| (*key, offset as usize)),
-            Anchor::Follow => None,
+            _ => None,
         }
     }
 
@@ -928,13 +934,17 @@ impl Transcript {
     /// terminal may never report.
     pub fn follow(&mut self) {
         self.view.feed_mut().follow();
-        self.scroll = Scroll::None;
-        self.pin = None;
+        self.acted = Acted {
+            reveal: self.acted.reveal,
+            ..Acted::default()
+        };
         self.hold = false;
     }
 
     /// Follows the bottom again from where the reader is, after a press held
-    /// the view still. Where the end is in sight, nothing moves.
+    /// the view still while they followed. Where the end is in sight,
+    /// nothing moves. (A fold the click toggles then decides at the next
+    /// draw, as it does for any reader.)
     pub fn follow_on(&mut self) {
         self.view.feed_mut().follow_in_place();
         self.hold = false;
@@ -942,7 +952,7 @@ impl Transcript {
 
     /// Scrolls by `lines` (up when negative) at the next draw.
     pub fn scroll(&mut self, lines: i64) {
-        self.scroll = match self.scroll {
+        self.acted.scroll = match self.acted.scroll {
             Scroll::None => Scroll::By(lines),
             Scroll::By(by) => Scroll::By(by.saturating_add(lines)),
             Scroll::Top(by) => Scroll::Top(by.saturating_add(lines)),
@@ -963,11 +973,10 @@ impl Transcript {
         if let Some(at) = self.drawn.rows.get(row).copied().flatten()
             && at.key == key
         {
-            self.pin = Some(Pin {
+            self.acted.pin = Some(Pin {
                 key,
                 line: at.line,
                 row,
-                opened: self.counts_open.contains(&(key & !COUNT_KEY)),
             });
         }
     }
@@ -999,7 +1008,7 @@ impl Transcript {
 
     /// Scrolls to the top at the next draw.
     pub fn top(&mut self) {
-        self.scroll = Scroll::Top(0);
+        self.acted.scroll = Scroll::Top(0);
     }
 
     /// What the agent `agent` is under way with while it works (its turn
@@ -2013,8 +2022,10 @@ impl Transcript {
             .map(|(index, block)| (block.key, index))
             .collect();
         self.lay(filter, &blocks, theme_key(theme) ^ u64::from(own));
+        // What the reader did, applied to their place.
+        let acted = std::mem::take(&mut self.acted);
         let feed = self.view.feed_mut();
-        match std::mem::replace(&mut self.scroll, Scroll::None) {
+        match acted.scroll {
             Scroll::None => {}
             Scroll::By(by) => feed.scroll_by(by),
             Scroll::Top(by) => {
@@ -2023,24 +2034,11 @@ impl Transcript {
             }
         }
         // A fold opened or closed. The line clicked stays under the mouse.
-        // Following, one that closed follows on from there, and one that
-        // opened does once the frame shows the end still.
-        let mut opened_following = false;
-        if let Some(pin) = self.pin.take()
+        if let Some(pin) = acted.pin
             && let Some((item, _)) = self.laid.slots.get(&pin.key).copied()
         {
-            let feed = self.view.feed_mut();
-            let following = feed.is_following();
-            feed.place(item, pin.line as u32, pin.row as i64);
-            if following && pin.opened {
-                opened_following = true;
-            } else if following {
-                feed.follow_in_place();
-            }
-        }
-        // The line the keyboard moved to comes into sight.
-        if std::mem::take(&mut self.reveal) {
-            self.reveal(&blocks, area.height);
+            let row = i64::try_from(pin.row).unwrap_or(i64::MAX);
+            feed.place(item, u32::try_from(pin.line).unwrap_or(u32::MAX), row);
         }
         // The selection's ends, in the order of the text.
         let range = self.selection.clone().and_then(|selection| {
@@ -2070,17 +2068,36 @@ impl Transcript {
             texts: vec![Vec::new(); area.height as usize],
             moving: Vec::new(),
         };
+        // What the action does to the reader's place is decided on the
+        // frame that applies it.
+        let follows = view.feed().is_following();
+        let on = acted.pin.is_some() || acted.released;
+        if on || acted.reveal || (rows.t.hold && follows) {
+            // (The area the render draws in.)
+            let drawn = area.intersection(buffer.area());
+            let shown = view.layout(drawn, &mut rows).clone();
+            let feed = view.feed_mut();
+            // A drag holds the view still, also where the wheel took it to
+            // the end.
+            if rows.t.hold {
+                if shown.following {
+                    feed.stay();
+                }
+            } else if on && !shown.following && shows_end(feed, &shown, drawn.height) {
+                // The button went up or a fold opened or closed under the
+                // pointer, and the end shows, so the view follows from there.
+                feed.follow_in_place();
+            }
+            // The line the keyboard moved to (or opened) comes into sight.
+            if acted.reveal
+                && let Some((item, line)) = rows.t.focused(&blocks)
+            {
+                reveal(feed, &shown, item, line, drawn.height);
+            }
+        }
         view.render(area, buffer, &mut rows);
         let (rows, texts, moving) = (rows.rows, rows.texts, rows.moving);
         self.view = view;
-        // A drag holds the view still, also where the wheel took it to the
-        // end.
-        if self.hold && self.following() {
-            self.stay();
-        }
-        if opened_following && self.end_in_sight() {
-            self.view.feed_mut().follow_in_place();
-        }
 
         // The marker of what is new below, the lines that came since
         // following stopped.
@@ -2180,7 +2197,7 @@ impl Transcript {
             let feed = self.view.feed();
             let place = match feed.anchor() {
                 Anchor::At { item, offset, .. } => feed.key(item).map(|key| (*key, offset)),
-                Anchor::Follow => None,
+                _ => None,
             };
             self.view = new_view();
             self.laid = Laid {
@@ -2297,38 +2314,14 @@ impl Transcript {
         self.laid.keys = blocks.iter().map(|block| block.key).collect();
     }
 
-    /// Scrolls the line the keyboard is on into sight of a screen `height`
-    /// rows tall, where the last frame had it out of sight.
-    fn reveal(&mut self, blocks: &[Block], height: u16) {
-        let Some((key, line)) = blocks
+    /// The feed's item that the line the keyboard is on is in, among
+    /// `blocks`, and that line.
+    fn focused(&self, blocks: &[Block]) -> Option<(ItemId, u32)> {
+        let (key, line) = blocks
             .iter()
-            .find_map(|block| self.focus_line(block).map(|line| (block.key, line)))
-        else {
-            return;
-        };
-        let Some((item, _)) = self.laid.slots.get(&key).copied() else {
-            return;
-        };
-        let (feed, shown) = (self.view.feed(), self.view.placement());
-        let height = i64::from(height);
-        let line = line as u32;
-        let row = match shown.items.iter().find(|placed| placed.item == item) {
-            Some(placed) => placed.y + i64::from(line),
-            // (Above what shows, or below it.)
-            None => match (shown.items.first(), feed.rank(item)) {
-                (Some(first), Some(rank))
-                    if feed.rank(first.item).is_some_and(|top| rank < top) =>
-                {
-                    -1
-                }
-                _ => height,
-            },
-        };
-        if row < 0 {
-            self.view.feed_mut().place(item, line, 0);
-        } else if row >= height {
-            self.view.feed_mut().place(item, line, height - 1);
-        }
+            .find_map(|block| self.focus_line(block).map(|line| (block.key, line)))?;
+        let (item, _) = self.laid.slots.get(&key).copied()?;
+        Some((item, u32::try_from(line).unwrap_or(u32::MAX)))
     }
 
     /// Whether `block` is one of the user's messages.
@@ -2486,28 +2479,15 @@ impl Transcript {
     /// move the text under the mouse (it comes below, counted by the
     /// marker), as when the reader scrolls up.
     pub fn hold(&mut self) {
-        if self.following() {
-            self.stay();
-        }
+        self.view.feed_mut().stay();
         self.hold = true;
     }
 
-    /// The reader stays on the row at the top of the screen, as last drawn,
-    /// rather than following.
-    fn stay(&mut self) {
-        if let Some(first) = self.view.placement().items.first().copied() {
-            let above = u32::try_from(-first.y).unwrap_or(0);
-            self.view.feed_mut().place(first.item, above, 0);
-        }
-    }
-
-    /// The drag ended. Where the end is in sight, the view follows again
-    /// from there.
+    /// The drag ended. Where the next frame shows the end, the view follows
+    /// again from there.
     pub fn release(&mut self) {
         self.hold = false;
-        if self.end_in_sight() {
-            self.view.feed_mut().follow_in_place();
-        }
+        self.acted.released = true;
     }
 
     /// The blank rows the last frame left below the end (tests).
@@ -2519,12 +2499,10 @@ impl Transcript {
     /// Whether the last frame showed the end, with no rows of it below the
     /// screen.
     fn end_in_sight(&self) -> bool {
-        let (Some(area), Some(last)) = (self.view.area(), self.view.placement().items.last())
-        else {
-            return self.view.feed().is_empty();
-        };
-        self.view.feed().last() == Some(last.item)
-            && last.y + i64::from(last.height) <= i64::from(area.height)
+        match self.view.area() {
+            Some(area) => shows_end(self.view.feed(), self.view.placement(), area.height),
+            None => self.view.feed().is_empty(),
+        }
     }
 
     /// The fold at the screen's `x`, `y`, namely a Quiet row's line, a call's
@@ -2647,10 +2625,8 @@ impl Transcript {
                 .iter()
                 .position(|at| at.is_some_and(|at| (at.key, at.line) == (fold.block, fold.line)))
         });
-        let opened;
         if row {
-            opened = !self.quiet_open.remove(&item);
-            if opened {
+            if !self.quiet_open.remove(&item) {
                 self.quiet_open.insert(item);
                 self.seal(item, filter, theme);
             }
@@ -2671,11 +2647,9 @@ impl Transcript {
             let mut sealed = false;
             if quiet && owned && matches!(entry.item.kind, Kind::Thinking | Kind::Call) {
                 entry.open_quiet = !entry.open_quiet;
-                opened = entry.open_quiet;
                 sealed = alone && entry.open_quiet && entry.item.kind == Kind::Thinking;
             } else {
                 entry.open = !entry.open;
-                opened = entry.open;
             }
             entry.touch();
             // A thinking the reader opened on a line of its own stays there.
@@ -2684,11 +2658,10 @@ impl Transcript {
             }
         }
         let fold = self.fold(item, inner, filter, theme)?;
-        self.pin = Some(Pin {
+        self.acted.pin = Some(Pin {
             key: fold.block,
             line: fold.line,
             row: shown_at.unwrap_or(y.saturating_sub(self.drawn.area.y) as usize),
-            opened,
         });
         Some(fold)
     }
@@ -2780,7 +2753,7 @@ impl Transcript {
             None => last,
         };
         self.focus = Some(keys[at]);
-        self.reveal = true;
+        self.acted.reveal = true;
         true
     }
 
@@ -2790,7 +2763,7 @@ impl Transcript {
         let Some(focus) = self.focus else {
             return;
         };
-        self.reveal = true;
+        self.acted.reveal = true;
         let key = match focus {
             Target::Block(key) => key,
             // A call or a thinking inside a Quiet row opens there, a
@@ -3098,6 +3071,36 @@ fn mark_row(body: &[u64], block: &Block, mark: u64) -> usize {
         0 => 0,
         u64::MAX => (gap + body.len() + usize::from(block.tail)).saturating_sub(1),
         _ => gap + body.partition_point(|at| *at <= mark).saturating_sub(1),
+    }
+}
+
+/// Brings `line` of `item` into sight of a screen `height` rows tall, where
+/// the frame `shown` has it out of sight, to its top or its bottom.
+fn reveal(feed: &mut Feed<u64>, shown: &Placement, item: ItemId, line: u32, height: u16) {
+    let height = i64::from(height);
+    let row = match shown.items.iter().find(|placed| placed.item == item) {
+        Some(placed) => placed.y + i64::from(line),
+        // (Above what shows, or below it.)
+        None => match (shown.items.first(), feed.rank(item)) {
+            (Some(first), Some(rank)) if feed.rank(first.item).is_some_and(|top| rank < top) => -1,
+            _ => height,
+        },
+    };
+    if row < 0 {
+        feed.place(item, line, 0);
+    } else if row >= height {
+        feed.place(item, line, height - 1);
+    }
+}
+
+/// Whether the frame `shown` of `feed`, `height` rows tall, shows the end,
+/// with no rows of it below the screen.
+fn shows_end(feed: &Feed<u64>, shown: &Placement, height: u16) -> bool {
+    match shown.items.last() {
+        Some(last) => {
+            feed.last() == Some(last.item) && last.y + i64::from(last.height) <= i64::from(height)
+        }
+        None => feed.is_empty(),
     }
 }
 

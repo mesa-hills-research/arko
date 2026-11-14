@@ -357,3 +357,171 @@ fn a_frame_reads_a_thoughts_text_only_when_it_changes() {
     let long = time(&"A thought that goes on for a while, as they do. ".repeat(42));
     assert!(long < short * 3, "{short:?} against {long:?}");
 }
+
+/// A click (no drag) at `x`, `y`, as the app makes it of a press and a
+/// release.
+fn click(t: &mut Transcript, x: u16, y: u16, filter: &Filter) {
+    let theme = Theme::terminal();
+    let following = t.following();
+    t.hold();
+    t.release();
+    if following {
+        t.follow_on();
+    }
+    if let Some(key) = t.drawn.key_at(x, y) {
+        if t.is_counter(key) {
+            t.toggle_count(key, y);
+        } else if let Some(fold) = t.fold_at(x, y, filter, &theme) {
+            t.toggle(fold.item, y, filter, &theme);
+        }
+    }
+}
+
+/// A reader who follows, opens a fold near the end and closes it again
+/// still follows, since the end is in sight as it was.
+#[test]
+fn a_fold_opened_and_closed_at_the_end_follows_on() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Full);
+    for id in 1..=20 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+    }
+    let lines: Vec<String> = (1..=30).map(|n| format!("Thought line {n}.")).collect();
+    t.apply(Update::Item(item(21, Kind::Thinking, &lines.join("\n"))));
+    t.apply(Update::Item(item(22, Kind::Text, "Done.")));
+    let before = screen(&mut t, &filter, 40, 12);
+    assert!(t.following());
+    let row = before
+        .iter()
+        .position(|row| row.contains("Thought line 1."))
+        .unwrap() as u16;
+    click(&mut t, 4, row, &filter);
+    let open = screen(&mut t, &filter, 40, 12);
+    assert!(open[row as usize].contains("Thought line 1."), "{open:?}");
+    assert!(!t.following(), "it opened past the end of the screen");
+    click(&mut t, 4, row, &filter);
+    let closed = screen(&mut t, &filter, 40, 12);
+    assert_eq!(closed, before);
+    // What comes next shows.
+    t.apply(Update::Item(item(23, Kind::Text, "And more.")));
+    t.apply(Update::Item(item(24, Kind::Text, "And the last.")));
+    let after = screen(&mut t, &filter, 40, 12);
+    assert!(
+        after.iter().any(|row| row.contains("And the last.")),
+        "{after:?}"
+    );
+}
+
+/// A fold the keyboard opens while the reader follows keeps its line
+/// in sight.
+#[test]
+fn a_fold_opened_by_the_keyboard_stays_in_sight() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Full);
+    let theme = Theme::terminal();
+    for id in 1..=20 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+    }
+    t.apply(Update::Item(call(
+        21,
+        ActKind::Read,
+        "src/a.rs",
+        "read src/a.rs",
+    )));
+    let lines: Vec<String> = (1..=14).map(|n| format!("{n}\tline {n}")).collect();
+    let mut result = item(22, Kind::Result, &lines.join("\n"));
+    result.content = Some(ContentKind::Lines);
+    result.call = Some(21);
+    result.turn = Some(1);
+    t.apply(Update::Item(result));
+    let closed = screen(&mut t, &filter, 40, 10);
+    assert!(closed[9].contains("read src/a.rs"), "{closed:?}");
+    assert!(t.following());
+    // The keyboard goes to the call's line and opens it.
+    assert!(t.move_focus(0, &filter, &theme));
+    assert_eq!(t.focus, Some(Target::Block(21)));
+    screen(&mut t, &filter, 40, 10);
+    t.open_focus(Some(true), &filter, &theme);
+    let open = screen(&mut t, &filter, 40, 10);
+    assert!(
+        open.iter().any(|row| row.contains("read src/a.rs")),
+        "the focused line left the screen: {open:?}"
+    );
+}
+
+/// The first wheel step up while a reply streams moves the rows the
+/// reader saw by the whole step.
+#[test]
+fn the_first_step_up_is_whole_while_text_streams() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Full);
+    for id in 1..=30 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+    }
+    let before = screen(&mut t, &filter, 40, 10);
+    assert_eq!(before[0], "  line 21");
+    // Two lines come in the frame the wheel turns in.
+    t.apply(Update::Item(item(31, Kind::Output, "line 31")));
+    t.apply(Update::Item(item(32, Kind::Output, "line 32")));
+    t.scroll(-3);
+    let after = screen(&mut t, &filter, 40, 10);
+    assert_eq!(after[0], "  line 18", "{after:?}");
+}
+
+/// When the transcript's area gets a few rows back (the command menu
+/// closes, the input box loses a line), the end is on the last row again.
+#[test]
+fn a_taller_area_brings_the_end_to_the_last_row() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Full);
+    for id in 1..=30 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+    }
+    let before = screen(&mut t, &filter, 40, 10);
+    assert_eq!(before[9], "  line 30");
+    // The menu takes two rows, then gives them back.
+    let menu = screen(&mut t, &filter, 40, 8);
+    assert_eq!(menu[7], "  line 30");
+    let after = screen(&mut t, &filter, 40, 10);
+    assert_eq!(after, before, "the rows the menu took are blank");
+}
+
+/// On the whole screen, the command menu of a few rows opens over the
+/// transcript's end and closes again, and the end is back on its row.
+#[test]
+fn the_menu_closing_leaves_no_blank_rows() {
+    use crate::tui::app::{App, Info};
+    use crate::tui::input::{Editor, History};
+    use crate::tui::theme::{Catalog, Depth};
+    use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = App::new(
+        crate::remote::Snapshot::default(),
+        Editor::new(History::load(None)),
+        Info::default(),
+        Catalog::load(None),
+        Depth::Rgb,
+    );
+    for id in 1..=40 {
+        app.transcript
+            .apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+    }
+    let draw = |app: &mut App| {
+        crate::tui::golden::rows(60, 24, |frame| crate::tui::screen::draw(frame, app))
+    };
+    let row_of = |rows: &[String]| rows.iter().position(|row| row.trim() == "line 40");
+    let before = draw(&mut app);
+    for c in "/mo".chars() {
+        app.typed(c);
+    }
+    let menu = draw(&mut app);
+    for _ in 0..3 {
+        app.key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+    let after = draw(&mut app);
+    assert_ne!(
+        row_of(&menu),
+        row_of(&before),
+        "the menu took rows: {menu:#?}"
+    );
+    assert_eq!(row_of(&after), row_of(&before), "{after:#?}");
+}
