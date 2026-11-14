@@ -33,6 +33,21 @@ the output.
 cargo test --manifest-path web/Cargo.toml
 ```
 
+The shift meter (`shift/meter.mjs`) plays scripted sessions into the page in Chromium's headless
+shell, a frame at a time, and fails on any line of the transcript that moves down or sideways where
+the transcript's rules don't let it, on a panel that doesn't put every line back, and on any of its
+pixel cases. Arko's own server and feed play the agent's side. It needs Node and the headless
+shell, which `ARKO_CHROMIUM` names (else Playwright's cache is searched), and says it skipped
+without them. From the repository's root:
+
+```sh
+cargo test --lib remote_page_shift -- --ignored
+```
+
+It serves the page's files from `src/remote/page/` as they are, so a rebuilt page needs no new
+build of Arko. `SHIFT_METER_OUT=<file>` writes its tables, and `SHIFT_METER_FULL=1` plays more
+sizes and turns.
+
 ## Try it
 
 Arko's scripted demo runs without a model. From the repository's root:
