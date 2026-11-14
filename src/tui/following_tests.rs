@@ -1309,3 +1309,104 @@ fn a_panel_that_opens_and_closes_gives_every_line_back_its_row() {
     check_moves(Moves::Same, &before, &after, None, "a taller window");
     assert_eq!(run.gap(), 5, "a taller window's rows are blank");
 }
+
+/// A follower whose tall fold took the end off the screen keeps their
+/// block through another view and back, and through a worker's view and
+/// back, as a reader does.
+#[test]
+fn a_follower_away_from_the_end_keeps_their_block_in_another_view() {
+    for worker in [false, true] {
+        let what = if worker { "a worker's view" } else { "Ctrl+O" };
+        let mut run = Run::new(View::Full);
+        let first = run.thought(30);
+        run.reply(1);
+        run.draw();
+        let y = run.row_of(&first).expect("the thought shows");
+        run.click(y);
+        let open = run.draw();
+        assert!(!run.reading() && !run.following() && run.marker().is_some());
+        if worker {
+            run.app().watch(Some("r1".into()));
+            run.draw();
+            run.key(KeyCode::Esc, KeyModifiers::NONE);
+            run.draw();
+        } else {
+            for _ in 0..3 {
+                run.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+                run.draw();
+                run.check(what);
+                assert!(!run.reading(), "{what}");
+            }
+        }
+        let after = run.draw();
+        run.check(what);
+        assert_eq!(after, open, "{what}");
+        assert!(!run.following() && !run.reading(), "{what}");
+    }
+}
+
+/// What a streaming reply grew by while the reader reads is still counted
+/// in another view and back.
+#[test]
+fn the_count_of_a_growing_reply_carries_to_another_view() {
+    for view in [View::Full, View::Quiet] {
+        let mut run = Run::new(view);
+        let text: Vec<String> = (0..2).map(|_| run.s.words(3)).collect();
+        let reply = run.s.item(Kind::Text, &text.join("\n\n"));
+        let reply = run.s.add(reply);
+        run.draw();
+        assert!(run.following(), "{view:?}");
+        for _ in 0..4 {
+            run.steps(MouseEventKind::ScrollUp, 1);
+            run.draw();
+        }
+        assert!(run.reading(), "{view:?}");
+        for _ in 0..12 {
+            let more = format!("\n\n{}", run.s.words(3));
+            run.s.append(reply, &more);
+        }
+        run.draw();
+        let count = run.new_lines();
+        assert!(count.is_some_and(|n| n > 0), "{view:?}: {count:?}");
+        run.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        run.draw();
+        if run.marker().is_some() {
+            assert!(
+                run.new_lines().is_some_and(|n| n > 0),
+                "{view:?}: in the next view"
+            );
+        }
+        for _ in 0..2 {
+            run.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+            run.draw();
+        }
+        assert_eq!(run.new_lines(), count, "{view:?}: back where it was");
+    }
+}
+
+/// The block kept for the way back through the views is forgotten at
+/// another width, where its row names other text, so the way round
+/// comes back to the top line's text.
+#[test]
+fn the_place_kept_for_the_views_goes_at_another_width() {
+    let mut run = Run::new(View::Full);
+    run.reply(1);
+    run.draw();
+    for _ in 0..6 {
+        run.steps(MouseEventKind::ScrollUp, 1);
+        run.draw();
+    }
+    assert!(run.reading());
+    for _ in 0..3 {
+        run.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        run.draw();
+    }
+    let size = run.term.size();
+    run.term.resize(40, size.height);
+    let before = run.draw();
+    for _ in 0..3 {
+        run.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        run.draw();
+    }
+    assert_eq!(run.rows, before);
+}

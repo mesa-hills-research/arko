@@ -1041,10 +1041,7 @@ impl Transcript {
     /// The main view as the reader leaves it for a worker's, which opens at
     /// its end, following.
     pub fn leave_main(&mut self) {
-        let place = match self.choice {
-            Choice::Read => self.reader_place(),
-            Choice::Follow => None,
-        };
+        let place = self.away_place();
         self.main = Some(Away {
             choice: self.choice,
             place,
@@ -1053,18 +1050,30 @@ impl Transcript {
         self.follow();
     }
 
-    /// Back to the main view from a worker's, as the reader left it: at its
-    /// end for a follower, and on their block, with the marker counting
-    /// what came since, for a reader.
+    /// Back to the main view from a worker's, as the reader left it. A
+    /// follower whose view followed is at its end. Anyone else is on their
+    /// block, with the marker counting what came since, and a follower
+    /// follows from there where the end shows.
     pub fn back_to_main(&mut self) {
         let away = self.main.take();
         self.follow();
         if let Some(away) = away
-            && away.choice == Choice::Read
+            && away.place.is_some()
         {
-            self.choice = Choice::Read;
+            self.choice = away.choice;
             self.left = away.place;
             self.baseline = away.baseline;
+        }
+    }
+
+    /// The block the reader is on and its row, unless the view follows,
+    /// for another view to put them on. (A follower whose fold took the end
+    /// off the screen is on a block too.)
+    fn away_place(&self) -> Option<(u64, u32)> {
+        if self.left.is_some() || !self.following() {
+            self.reader_place()
+        } else {
+            None
         }
     }
 
@@ -2174,6 +2183,11 @@ impl Transcript {
             .enumerate()
             .map(|(index, block)| (block.key, index))
             .collect();
+        // (Another width wraps the block the reader left, so its row names
+        // other text, and the feed's own place keeps the text.)
+        if area.width != self.drawn.area.width {
+            self.left = None;
+        }
         self.lay(filter, &blocks, theme_key(theme) ^ u64::from(own));
         // What the reader did, applied to their place. (A scroll down is
         // toward the end, a scroll up or Home away from it.)
@@ -2295,8 +2309,15 @@ impl Transcript {
                     let caught = acted.released == Some(Release::Click)
                         && rows.t.held_following
                         && pinned.is_none();
-                    if !shown.following && (ends || caught) {
-                        feed.follow_in_place();
+                    let settles = switched && ends && shown.gap > 0 && hidden_above(feed, &shown);
+                    if !shown.following {
+                        if settles {
+                            // In another view, at the end rather than over
+                            // blank rows with lines hidden above.
+                            feed.follow();
+                        } else if ends || caught {
+                            feed.follow_in_place();
+                        }
                     }
                 }
                 None if shown.following => feed.stay(),
@@ -2330,14 +2351,21 @@ impl Transcript {
                 _ => self.entries.back().map_or(0, |entry| entry.item.id),
             };
             let last = self.last_output(&blocks, newest);
+            let key = last.map(|block| block.key);
+            // (Where the last block is the one it was, what it grew by stays,
+            // as at another width.)
+            let grown = match &self.baseline {
+                Some(baseline) if !following && baseline.key == key => baseline.grown,
+                _ => 0,
+            };
             let height = last.map_or(0, |block| self.height(block, theme, width, own));
             self.baseline = Some(Baseline {
                 filter: filter.clone(),
                 newest,
-                key: last.map(|block| block.key),
-                height,
+                key,
+                height: height.saturating_sub(grown),
                 width,
-                grown: 0,
+                grown,
             });
         }
         let new = match self.baseline.clone() {
@@ -2458,16 +2486,13 @@ impl Transcript {
     /// Makes the feed's items `blocks`, the view `filter` shows, in the look
     /// `style`. A block that came or went comes or goes, and one whose lines
     /// may have changed ([`Block::sig`]) is measured again where it shows.
-    /// Another view starts over, at its end for a follower, and for a
-    /// reader on the block they were on (the one they left at the last
-    /// switch, while they haven't moved since) if it shows there, else the
-    /// next that does.
+    /// Another view starts over, at its end where the view followed, and
+    /// otherwise on the block the reader was on (the one they left at the
+    /// last switch, while they haven't moved since) if it shows there, else
+    /// the next that does.
     fn lay(&mut self, filter: &Filter, blocks: &[Block], style: u64) {
         if self.laid.filter.as_ref() != Some(filter) {
-            let place = match self.choice {
-                Choice::Read => self.reader_place(),
-                Choice::Follow => None,
-            };
+            let place = self.away_place();
             self.left = place;
             self.view = new_view();
             self.laid = Laid {
@@ -2502,6 +2527,7 @@ impl Transcript {
         }
         if self.laid.style != style {
             self.laid.style = style;
+            self.left = None;
             self.view.feed_mut().set_geometry();
         }
         let same = self.laid.keys.len() == blocks.len()
