@@ -6674,6 +6674,16 @@ pub(crate) mod tests {
         client: LLMClient,
         interactive: bool,
     ) -> (Harness, Inputs, mpsc::UnboundedSender<Input>) {
+        harness_running(temp, client, interactive, NO_LIMIT)
+    }
+
+    /// [`harness`] with at most `max_running` workers running at once.
+    fn harness_running(
+        temp: &Path,
+        client: LLMClient,
+        interactive: bool,
+        max_running: u32,
+    ) -> (Harness, Inputs, mpsc::UnboundedSender<Input>) {
         let luna = ModelSettings {
             model: resolve_model("luna").unwrap().id,
             effort: Effort::High,
@@ -6718,7 +6728,7 @@ pub(crate) mod tests {
             session_id: session.id.clone(),
             session_dir: session.dir.clone(),
             output: output.clone(),
-            max_running: NO_LIMIT,
+            max_running,
             cache_1h: false,
             openai_auth: None,
             cache_lifetime: arko_ai::prompt_cache::PromptCacheLifetime::Known(Duration::from_secs(
@@ -7543,6 +7553,106 @@ pub(crate) mod tests {
         let reading = remote::Meter::read(harness.gauges.as_ref());
         assert_eq!(reading.cost, ledger);
         assert_eq!(reading.api_price, None, "nothing ran on a plan");
+        harness.crew.as_ref().unwrap().shutdown().await;
+    }
+
+    /// The feed reads from the workflow's own results which worker a call
+    /// set going, for a start that queues its worker and for a message that
+    /// continues a worker that finished.
+    #[tokio::test]
+    async fn the_calls_that_set_a_worker_going_name_it() {
+        use crate::mock_model::{ModelServer, complete, tool_call, tool_calls};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let queued = Arc::new(AtomicBool::new(false));
+        let server = ModelServer::start(Arc::new(move |_, body: String| {
+            let queued = queued.clone();
+            Box::pin(async move {
+                let start = |task: &str| {
+                    (
+                        crew::START_AGENT,
+                        serde_json::json!({"agent": WORKER, "task": task}),
+                    )
+                };
+                if body.contains("You are agent run r1") && body.contains("Once more.") {
+                    complete("w3", "Done again.")
+                } else if body.contains("You are agent run r1") {
+                    // r1 runs until both starts have their results.
+                    while !queued.load(Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    complete("w1", "First done.")
+                } else if body.contains("You are agent run r2") {
+                    complete("w2", "Second done.")
+                } else if body.contains("call_m3") {
+                    complete("m4", "Done.")
+                } else if body.contains("call_m2") {
+                    tool_call(
+                        "m3",
+                        crew::MESSAGE_AGENT,
+                        serde_json::json!({"to": "r1", "message": "Once more."}),
+                    )
+                } else if body.contains("call_m1_1") {
+                    queued.store(true, Ordering::SeqCst);
+                    tool_call(
+                        "m2",
+                        crew::WAIT_FOR_AGENTS,
+                        serde_json::json!({"runs": ["r1", "r2"], "all": true, "timeout_seconds": 10}),
+                    )
+                } else {
+                    tool_calls("m1", &[start("First."), start("Second.")])
+                }
+            })
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, _sender) =
+            harness_running(temp.path(), server.client(), true, 1);
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Do both.".into()), &mut inputs),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Done.");
+        harness.flush_printer().await;
+        let (snapshot, _) = harness.feed.subscribe();
+        let calls_of = |tool: &str| -> Vec<&remote::Item> {
+            snapshot
+                .items
+                .iter()
+                .filter(|item| item.kind == remote::Kind::Call)
+                .filter(|item| item.tool.as_deref() == Some(tool))
+                .collect()
+        };
+        let set = |tool: &str| -> Vec<Option<String>> {
+            calls_of(tool)
+                .iter()
+                .map(|item| item.sets.clone())
+                .collect()
+        };
+        let calls: Vec<_> = snapshot
+            .items
+            .iter()
+            .filter(|item| item.kind == remote::Kind::Call)
+            .map(|item| (&item.text, &item.outcome))
+            .collect();
+        assert_eq!(
+            set(crew::START_AGENT),
+            [Some("r1".to_string()), Some("r2".to_string())],
+            "{calls:?}"
+        );
+        // (r2 waited for a place.)
+        let started: Vec<_> = calls_of(crew::START_AGENT)
+            .iter()
+            .map(|item| item.started.clone())
+            .collect();
+        assert_eq!(started, [Some("r1".to_string()), None], "{calls:?}");
+        assert_eq!(
+            set(crew::MESSAGE_AGENT),
+            [Some("r1".to_string())],
+            "{calls:?}"
+        );
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 
