@@ -1793,8 +1793,7 @@ impl Transcript {
                 match item.kind {
                     Kind::Call => {
                         let detail = item.act.as_ref().map_or("", |act| act.detail.as_str());
-                        // (Its detail says the whole of what the words cut.)
-                        if detail.is_empty() && quiet_cut(&row.words, width) {
+                        if quiet_cut(&row.words, width) {
                             rail(&mut lines, detail_lines(&call_words(item), theme, inner), 0);
                         }
                         if !detail.is_empty() {

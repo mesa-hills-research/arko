@@ -412,15 +412,11 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         })
     };
     // Where its line cut its words, a row of one call opens to the call as
-    // written, unless its detail says it whole.
+    // written.
     let whole = move || {
         (cut.get() && !data.with(|row| row.merged))
             .then(|| members().first().copied().and_then(cell))
             .flatten()
-            .filter(|cell| {
-                cell.data
-                    .with(|item| item.act.as_ref().is_none_or(|act| act.detail.is_empty()))
-            })
             .map(|cell| {
                 let text = cell.data.with(|item| item.text.clone());
                 view! { <div class="holds"><pre class="held">{text}</pre></div> }
