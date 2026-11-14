@@ -24,6 +24,8 @@ mod clipboard;
 #[cfg(feature = "dbg-snapshot")]
 mod dbg_snapshot;
 mod dictation;
+#[cfg(test)]
+mod following_tests;
 #[cfg(any(test, feature = "dbg-snapshot"))]
 mod golden;
 mod input;
@@ -44,8 +46,6 @@ mod resume_picker;
 mod screen;
 #[cfg(test)]
 mod scroll_tests;
-#[cfg(test)]
-mod following_tests;
 mod select;
 #[cfg(test)]
 mod shift_tests;

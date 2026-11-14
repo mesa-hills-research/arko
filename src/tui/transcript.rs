@@ -980,8 +980,9 @@ impl Transcript {
 
     /// Whether the reader chose to read rather than follow the end, by a
     /// scroll up or Home that moved a line or the keyboard's line going
-    /// above the screen.
-    pub fn reading(&self) -> bool {
+    /// above the screen (tests).
+    #[cfg(test)]
+    pub(super) fn reading(&self) -> bool {
         self.choice == Choice::Read
     }
 
@@ -1010,10 +1011,14 @@ impl Transcript {
 
     /// Esc. A reader follows again, from where they are where the end shows
     /// and at the end where it doesn't, so blank rows below the end stay. A
-    /// hold ends. False when the view already followed, so Esc had nothing
-    /// to do here.
+    /// hold ends, and a scroll asked for before it in this frame goes. False
+    /// when the view already followed, so Esc had nothing to do here.
     pub fn escape(&mut self) -> bool {
-        if !self.hold && self.choice == Choice::Follow && self.following() {
+        if !self.hold
+            && self.choice == Choice::Follow
+            && self.following()
+            && self.acted.scroll == Scroll::None
+        {
             return false;
         }
         self.view.feed_mut().follow_in_place();
@@ -2344,8 +2349,7 @@ impl Transcript {
                 let grown = match baseline.key.and_then(|key| at.get(&key)) {
                     Some(&index) => {
                         let now = self.height(&blocks[index], theme, width, own);
-                        if baseline.width != width || (pinned.is_some() && pinned == baseline.key)
-                        {
+                        if baseline.width != width || (pinned.is_some() && pinned == baseline.key) {
                             baseline.height = now.saturating_sub(baseline.grown);
                             baseline.width = width;
                         }
@@ -2425,8 +2429,10 @@ impl Transcript {
         own: bool,
         cap: usize,
     ) -> usize {
-        let (Some(last), Some(area)) = (self.view.placement().items.last().copied(), self.view.area())
-        else {
+        let (Some(last), Some(area)) = (
+            self.view.placement().items.last().copied(),
+            self.view.area(),
+        ) else {
             return 0;
         };
         let feed = self.view.feed();
@@ -3068,9 +3074,10 @@ impl Transcript {
                 let shown = |target: &Target| {
                     let (key, line) = match *target {
                         Target::Block(key) => (key, block(key).map(|block| usize::from(block.gap))),
-                        Target::Inner { row, item } => {
-                            (row, block(row).and_then(|block| self.inner_line(block, item)))
-                        }
+                        Target::Inner { row, item } => (
+                            row,
+                            block(row).and_then(|block| self.inner_line(block, item)),
+                        ),
                     };
                     line.is_some_and(|line| {
                         self.drawn
