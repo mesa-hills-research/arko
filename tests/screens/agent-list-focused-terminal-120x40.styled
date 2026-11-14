@@ -31,19 +31,19 @@ style 10 0 2 fg=cyan
 text 11 ""
 text 12 "  I'll start three workers."
 text 13 ""
-text 14 "  r1 Check the quoting tests · running · 6 calls · 1m"
+text 14 "  r1 Check the quoting tests · running · 6 tool calls · 1m"
 style 14 2 5 bold
 style 14 28 31 dim
 style 14 31 38 fg=cyan
-style 14 38 53 dim
-text 15 "  r2 Read the lexer · 5 calls · 48s"
+style 14 38 58 dim
+text 15 "  r2 Read the lexer · 5 tool calls · 48s"
 style 15 2 5 bold
-style 15 19 35 dim
-text 16 "  r3 Update the docs · failed · 3 calls · 9s"
+style 15 19 40 dim
+text 16 "  r3 Update the docs · failed · 3 tool calls · 9s"
 style 16 2 5 bold
 style 16 20 23 dim
 style 16 23 29 fg=red
-style 16 29 44 dim
+style 16 29 49 dim
 text 17 "▸ r2 reported"
 style 17 0 2 dim
 style 17 2 5 bold

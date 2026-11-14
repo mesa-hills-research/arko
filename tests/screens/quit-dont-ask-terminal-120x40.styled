@@ -38,7 +38,7 @@ text 14 "  r1 Check the quoting tests ·│   npm run dev                       
 style 14 2 5 bold
 style 14 28 30 dim
 style 14 83 88 dim
-text 15 "  r2 Read the lexer · 5 calls │                                                          │"
+text 15 "  r2 Read the lexer · 5 tool c│                                                          │"
 style 15 2 5 bold
 style 15 19 30 dim
 text 16 "  r3 Update the docs · failed │ Quit now?                                                │"

@@ -628,6 +628,8 @@ pub struct Transcript {
     /// The Quiet view's order as last worked out, for a view and a
     /// generation. It's worked out again only when the items change.
     quiet_order: Option<(Filter, u64, Arc<Vec<Placed>>)>,
+    /// The workers' rows as last worked out, for a generation.
+    workers_laid: std::cell::RefCell<Option<(u64, worker_rows::Rows)>>,
     /// The row the keyboard is on (Ctrl+G). It shows in the selection's
     /// colour, and the view keeps it in sight.
     pub focus: Option<Target>,
@@ -670,6 +672,7 @@ impl Transcript {
             quiet_cache: HashMap::new(),
             generation: 0,
             quiet_order: None,
+            workers_laid: std::cell::RefCell::new(None),
             focus: None,
             width: 0,
         }
@@ -769,18 +772,33 @@ impl Transcript {
         )
     }
 
-    /// The latest row of each worker, by the worker's ID, which alone says
-    /// how the worker stands ([`worker_rows::latest_rows`]).
-    fn latest_rows(&self) -> HashMap<String, u64> {
-        worker_rows::latest_rows(self.entries.iter().map(|entry| &entry.item), |line| {
-            !self.covered(line)
+    /// The workers' rows among the items ([`worker_rows::Rows`]), worked
+    /// out once for each generation of them.
+    fn worker_rows(&self) -> std::cell::Ref<'_, worker_rows::Rows> {
+        let fresh = self
+            .workers_laid
+            .borrow()
+            .as_ref()
+            .is_some_and(|(generation, _)| *generation == self.generation);
+        if !fresh {
+            let rows = worker_rows::rows(self.entries.iter().map(|entry| &entry.item));
+            *self.workers_laid.borrow_mut() = Some((self.generation, rows));
+        }
+        std::cell::Ref::map(self.workers_laid.borrow(), |rows| {
+            &rows.as_ref().expect("made above").1
         })
     }
 
+    /// The latest row of each worker, by the worker's ID, which alone says
+    /// how the worker stands.
+    fn latest_rows(&self) -> HashMap<String, u64> {
+        self.worker_rows().latest.clone()
+    }
+
     /// Whether a call of the worker's lead stands for the worker's
-    /// placeholder `line` ([`worker_rows::covered`]), so it doesn't show.
+    /// placeholder `line`, so it doesn't show.
     fn covered(&self, line: &Item) -> bool {
-        worker_rows::covered(line, self.entries.iter().map(|entry| &entry.item))
+        self.worker_rows().covered.contains(&line.id)
     }
 
     /// What the worker's row that `item` is says, from the worker's summary
@@ -7526,7 +7544,7 @@ mod tests {
         assert!(
             quiet
                 .iter()
-                .any(|r| r.contains("r1 Test it · running · 1 call")),
+                .any(|r| r.contains("r1 Test it · running · 1 tool call")),
             "{quiet:?}"
         );
         let messages = rows(&mut t, &Filter::Main(View::Messages), 60, 8);
@@ -8359,7 +8377,7 @@ mod tests {
         for view in View::ALL {
             let shown = rows(&mut t, &Filter::Main(view), 70, 12);
             for line in [
-                "▸ r1 Fix flaky test · running · 3 calls",
+                "▸ r1 Fix flaky test · running · 3 tool calls",
                 "· r2 Update docs · queued",
                 "· Waiting for billing · starting",
             ] {
@@ -8373,7 +8391,12 @@ mod tests {
                 "{view:?}: {shown:?}"
             );
             assert_eq!(count(&shown, "start worker"), 0, "{view:?}: {shown:?}");
-            assert_eq!(count(&shown, "tool call"), 0, "{view:?}: {shown:?}");
+            // (No count of calls in Messages, which would start with one.)
+            let counted = |r: &&String| {
+                r.strip_prefix("▸ ")
+                    .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+            };
+            assert!(!shown.iter().any(|r| counted(&r)), "{view:?}: {shown:?}");
         }
         // Open, it shows its task, in Messages too.
         t.open_all_for_renderings(View::Quiet, None);
@@ -8427,7 +8450,7 @@ mod tests {
             assert!(
                 shown
                     .iter()
-                    .any(|r| r == "· Messaged r2 · running · 2 calls"),
+                    .any(|r| r == "· Messaged r2 · running · 2 tool calls"),
                 "{view:?}: {shown:?}"
             );
         }
@@ -8547,7 +8570,7 @@ mod tests {
         assert!(
             quiet
                 .iter()
-                .any(|r| r.contains("r1 Test it · 2 calls · 2h 5m")),
+                .any(|r| r.contains("r1 Test it · 2 tool calls · 2h 5m")),
             "{quiet:?}"
         );
         let own = rows(&mut t, &Filter::Worker("r1".into(), View::Full), 60, 4);

@@ -25,7 +25,7 @@
 │ Preparing worktree (new branch 'fixture-check')
 │ HEAD is now at abc1234 Keep cached values until expiry
 
-  r3 Check that the cache fixture uses the same deadline as the test. · 1 call · 2s
+  r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s
 ▸ r3 reported
 
 ▾ $ cargo-locked test cache -- --excat · ✗ exit 101

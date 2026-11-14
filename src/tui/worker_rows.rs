@@ -4,7 +4,7 @@
 //! worker was asked. The feed's placeholder for the worker shows only where
 //! no such call stands for it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::crew::{MESSAGE_AGENT, START_AGENT};
 use crate::remote::{CallStatus, Item, Kind, WorkerState};
@@ -89,10 +89,11 @@ pub(super) fn worker_facts(
         facts.push((word.to_string(), tone));
     }
     if calls > 0 {
+        // (In the words of the agent list and the Messages view's count.)
         let calls = if calls == 1 {
-            "1 call".to_string()
+            "1 tool call".to_string()
         } else {
-            format!("{calls} calls")
+            format!("{calls} tool calls")
         };
         facts.push((calls, Tone::Muted));
     }
@@ -102,50 +103,78 @@ pub(super) fn worker_facts(
     facts
 }
 
-/// Whether a call of the worker's lead stands for the worker's placeholder
-/// `line` among `items`. That is a call of its turn that set the worker
-/// going, or one there that runs and may, until its result says.
-pub(super) fn covered<'a>(line: &Item, items: impl IntoIterator<Item = &'a Item>) -> bool {
-    let Some(worker) = line.worker.as_deref() else {
-        return false;
-    };
-    items.into_iter().any(|call| {
-        let running = call.status == Some(CallStatus::Running);
-        call.kind == Kind::Call
-            && call.agent == line.agent
-            && call.turn == line.turn
-            && match going(call) {
-                Some(Going::Start(Some(set)) | Going::Again(set)) => set == worker,
-                Some(Going::Start(None)) => running,
-                None => {
-                    running
-                        && call.tool.as_deref() == Some(MESSAGE_AGENT)
-                        && call.act.as_ref().is_some_and(|act| act.target == worker)
-                }
-            }
-    })
+/// The workers' rows among a transcript's items.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct Rows {
+    /// The placeholders that a call of the worker's lead stands for, by
+    /// their IDs, which don't show. Such a call is one of the placeholder's
+    /// turn that set the worker going, or one there that runs and may,
+    /// until its result says.
+    pub(super) covered: HashSet<u64>,
+    /// The latest row of each worker, the calls that set it going and its
+    /// placeholders that show, by the worker's ID. That row alone says how
+    /// the worker stands. A worker set going again in a later turn has a row
+    /// there, and its earlier rows keep only its ID and title.
+    pub(super) latest: HashMap<String, u64>,
 }
 
-/// The latest row of each worker among `items` in order, the calls that
-/// set it going and its placeholders that show (`shown`), by the worker's
-/// ID. That row alone says how the worker stands. A worker set going again
-/// in a later turn has a row there, and its earlier rows keep only its ID
-/// and title.
-pub(super) fn latest_rows<'a>(
-    items: impl IntoIterator<Item = &'a Item>,
-    shown: impl Fn(&Item) -> bool,
-) -> HashMap<String, u64> {
-    let mut latest = HashMap::new();
+/// The workers' rows among `items`, in order ([`Rows`]).
+pub(super) fn rows<'a>(items: impl IntoIterator<Item = &'a Item> + Clone) -> Rows {
+    // What the calls of each lead's turn set going, or may while they run.
+    #[derive(Default)]
+    struct Turn<'a> {
+        set: HashSet<&'a str>,
+        starting: bool,
+        messaging: HashSet<&'a str>,
+    }
+    let mut turns: HashMap<(&str, Option<u64>), Turn> = HashMap::new();
+    for call in items.clone() {
+        if call.kind != Kind::Call {
+            continue;
+        }
+        let running = call.status == Some(CallStatus::Running);
+        let key = (call.agent.as_str(), call.turn);
+        match going(call) {
+            Some(Going::Start(Some(set)) | Going::Again(set)) => {
+                turns.entry(key).or_default().set.insert(set);
+            }
+            Some(Going::Start(None)) if running => turns.entry(key).or_default().starting = true,
+            None if running && call.tool.as_deref() == Some(MESSAGE_AGENT) => {
+                if let Some(act) = &call.act {
+                    let target = act.target.as_str();
+                    turns.entry(key).or_default().messaging.insert(target);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut rows = Rows::default();
     for item in items {
         let worker = match item.kind {
-            Kind::WorkerLine if shown(item) => item.worker.as_deref(),
+            Kind::WorkerLine => {
+                let Some(worker) = item.worker.as_deref() else {
+                    continue;
+                };
+                let covered = turns
+                    .get(&(item.agent.as_str(), item.turn))
+                    .is_some_and(|turn| {
+                        turn.set.contains(worker)
+                            || turn.starting
+                            || turn.messaging.contains(worker)
+                    });
+                if covered {
+                    rows.covered.insert(item.id);
+                    continue;
+                }
+                Some(worker)
+            }
             _ => going(item).and_then(Going::worker),
         };
         if let Some(worker) = worker {
-            latest.insert(worker.to_string(), item.id);
+            rows.latest.insert(worker.to_string(), item.id);
         }
     }
-    latest
+    rows
 }
 
 #[cfg(test)]
@@ -185,19 +214,19 @@ mod tests {
         assert_eq!(said(WorkerState::Running, 0, Some("3s")), ["running", "3s"]);
         assert_eq!(
             said(WorkerState::Running, 1, Some("8s")),
-            ["running", "1 call", "8s"]
+            ["running", "1 tool call", "8s"]
         );
         assert_eq!(
             said(WorkerState::Finished, 2, Some("20s")),
-            ["2 calls", "20s"]
+            ["2 tool calls", "20s"]
         );
         assert_eq!(
             said(WorkerState::Failed, 1, Some("6s")),
-            ["failed", "1 call", "6s"]
+            ["failed", "1 tool call", "6s"]
         );
         assert_eq!(
             said(WorkerState::Stopped, 3, Some("1m")),
-            ["stopped", "3 calls", "1m"]
+            ["stopped", "3 tool calls", "1m"]
         );
         let tones: Vec<Tone> = worker_facts(WorkerState::Failed, 1, None)
             .into_iter()
@@ -234,11 +263,12 @@ mod tests {
     /// A placeholder is covered by a call of its turn that set its worker
     /// going, or by a start or a message to it that still runs, and not by
     /// one of another turn or another lead, or one that set another worker
-    /// going.
+    /// going. The latest row of a worker is its last call or placeholder
+    /// that shows.
     #[test]
     fn a_call_of_its_turn_stands_for_a_workers_placeholder() {
         let r1 = line(9, "r1");
-        let covers = |call: Item| covered(&r1, [&call]);
+        let covers = |call: Item| rows([&call, &r1]).covered.contains(&9);
         assert!(covers(call(1, START_AGENT, Some("r1"), CallStatus::Ok)));
         assert!(covers(call(1, START_AGENT, None, CallStatus::Running)));
         assert!(!covers(call(1, START_AGENT, None, CallStatus::Failed)));
@@ -259,15 +289,15 @@ mod tests {
         assert!(!covers(
             call(1, START_AGENT, Some("r1"), CallStatus::Ok).agent("r5")
         ));
-        let latest = latest_rows(
-            [
-                &call(1, START_AGENT, Some("r1"), CallStatus::Ok),
-                &call(2, START_AGENT, Some("r2"), CallStatus::Ok),
-                &line(3, "r1"),
-                &line(4, "r2"),
-            ],
-            |line| line.worker.as_deref() == Some("r1"),
-        );
-        assert_eq!((latest["r1"], latest["r2"]), (3, 2));
+        let mut later = line(4, "r2");
+        later.turn = Some(2);
+        let latest = rows([
+            &call(1, START_AGENT, Some("r1"), CallStatus::Ok),
+            &call(2, START_AGENT, Some("r2"), CallStatus::Ok),
+            &line(3, "r1"),
+            &later,
+        ])
+        .latest;
+        assert_eq!((latest["r1"], latest["r2"]), (1, 4));
     }
 }

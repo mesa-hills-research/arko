@@ -62,7 +62,7 @@
   Now check the fixture independently.
 ▸ Changed note 1
 ▸ Ran git worktree add ../fixture-check -b fixture-check
-  r3 Check that the cache fixture uses the same deadline as the test. · 1 call · 2s
+  r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s
 ▸ r3 reported
 ▸ Ran cargo-locked test cache -- --excat                                                           ✗
 ⣷ I misspelled the exact-test option.
@@ -82,7 +82,7 @@
   Now check the fixture independently.
 ▸ Changed note 1
 ▸ Ran git worktree add ../fixture-check -b fixture-check
-  r3 Check that the cache fixture uses the same deadline as the test. · 1 call · 2s
+  r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s
 ▸ r3 reported
 ▸ Ran cargo-locked test cache -- --excat                                                           ✗
   I misspelled the exact-test option. I should use the full test path instead of changing the test.
@@ -104,7 +104,7 @@
   Now check the fixture independently.
 ▸ Changed note 1
 ▸ Ran git worktree add ../fixture-check -b fixture-check
-  r3 Check that the cache fixture uses the same deadline as the test. · 1 call · 2s
+  r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s
 ▸ r3 reported
 ▸ Ran cargo-locked test cache -- --excat                                                           ✗
   I misspelled the exact-test option. I should use the full test path instead of changing the test.

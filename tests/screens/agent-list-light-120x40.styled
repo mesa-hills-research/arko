@@ -65,28 +65,28 @@ text 12 "  I'll start three workers."
 style 12 0 120 fg=#000000 bg=#f9f9f9
 text 13 ""
 style 13 0 120 fg=#000000 bg=#f9f9f9
-text 14 "  r1 Check the quoting tests · running · 6 calls · 1m"
+text 14 "  r1 Check the quoting tests · running · 6 tool calls · 1m"
 style 14 0 2 fg=#000000 bg=#f9f9f9
 style 14 2 5 fg=#000000 bg=#f9f9f9 bold
 style 14 5 28 fg=#000000 bg=#f9f9f9
 style 14 28 31 fg=#696969 bg=#f9f9f9
 style 14 31 38 fg=#0060de bg=#f9f9f9
-style 14 38 53 fg=#696969 bg=#f9f9f9
-style 14 53 120 fg=#000000 bg=#f9f9f9
-text 15 "  r2 Read the lexer · 5 calls · 48s"
+style 14 38 58 fg=#696969 bg=#f9f9f9
+style 14 58 120 fg=#000000 bg=#f9f9f9
+text 15 "  r2 Read the lexer · 5 tool calls · 48s"
 style 15 0 2 fg=#000000 bg=#f9f9f9
 style 15 2 5 fg=#000000 bg=#f9f9f9 bold
 style 15 5 19 fg=#000000 bg=#f9f9f9
-style 15 19 35 fg=#696969 bg=#f9f9f9
-style 15 35 120 fg=#000000 bg=#f9f9f9
-text 16 "  r3 Update the docs · failed · 3 calls · 9s"
+style 15 19 40 fg=#696969 bg=#f9f9f9
+style 15 40 120 fg=#000000 bg=#f9f9f9
+text 16 "  r3 Update the docs · failed · 3 tool calls · 9s"
 style 16 0 2 fg=#000000 bg=#f9f9f9
 style 16 2 5 fg=#000000 bg=#f9f9f9 bold
 style 16 5 20 fg=#000000 bg=#f9f9f9
 style 16 20 23 fg=#696969 bg=#f9f9f9
 style 16 23 29 fg=#d21f07 bg=#f9f9f9
-style 16 29 44 fg=#696969 bg=#f9f9f9
-style 16 44 120 fg=#000000 bg=#f9f9f9
+style 16 29 49 fg=#696969 bg=#f9f9f9
+style 16 49 120 fg=#000000 bg=#f9f9f9
 text 17 "▸ r2 reported"
 style 17 0 2 fg=#696969 bg=#f9f9f9
 style 17 2 5 fg=#000000 bg=#f9f9f9 bold

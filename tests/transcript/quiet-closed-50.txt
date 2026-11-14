@@ -68,7 +68,7 @@
   Now check the fixture independently.
 ▸ Changed note 1
 ▸ Ran git worktree add ../fixture-check -b fixtur…
-  r3 Check that the cache fixture u… · 1 call · 2s
+  r3 Check that the cache fixt… · 1 tool call · 2s
 ▸ r3 reported
 ▸ Ran cargo-locked test cache -- --excat         ✗
 ⣷ I misspelled the exact-test option.
@@ -89,7 +89,7 @@
   Now check the fixture independently.
 ▸ Changed note 1
 ▸ Ran git worktree add ../fixture-check -b fixtur…
-  r3 Check that the cache fixture u… · 1 call · 2s
+  r3 Check that the cache fixt… · 1 tool call · 2s
 ▸ r3 reported
 ▸ Ran cargo-locked test cache -- --excat         ✗
   I misspelled the exact-test option. I should us…
@@ -112,7 +112,7 @@
   Now check the fixture independently.
 ▸ Changed note 1
 ▸ Ran git worktree add ../fixture-check -b fixtur…
-  r3 Check that the cache fixture u… · 1 call · 2s
+  r3 Check that the cache fixt… · 1 tool call · 2s
 ▸ r3 reported
 ▸ Ran cargo-locked test cache -- --excat         ✗
   I misspelled the exact-test option. I should us…
