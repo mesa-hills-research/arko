@@ -36,7 +36,7 @@ models, and on your Claude plan through an installed Claude Code.
 - [MCP servers](docs/mcp.md) in Claude Code's `.mcp.json` format, reached through one tool so the
   prompt cache holds, which the agent can add with your OK
 - [Skills](docs/skills.md) from `.agents/skills` or `.claude/skills`, for some models or for the
-  main agent only, which the agent can save with your OK, and four built in (two for writing,
+  main agent only, which the agent can save with your OK, and three built in (prose for writing,
   ponytail for coding tasks and running workers, and arko-taste for anything a user sees)
 - What the agent saves in a project goes in a [`.arko` folder](docs/arko-folder.md) that git
   ignores by default
