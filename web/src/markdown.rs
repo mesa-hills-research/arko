@@ -611,10 +611,7 @@ mod tests {
             text.push_str(&format!("{n}. outer\n"));
         }
         let html = to_html(&text);
-        assert!(
-            html.starts_with("<ol><li>outer<ol><li>"),
-            "{html}"
-        );
+        assert!(html.starts_with("<ol><li>outer<ol><li>"), "{html}");
         assert_eq!(number_columns(&html), 4);
         assert_eq!(
             number_columns(&html[html.find("<ol><li>inner").unwrap()..]),
