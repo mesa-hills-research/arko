@@ -31,7 +31,7 @@
 │ HEAD is now at abc1234 Keep cached values until
 │ expiry
 
-  r3 Check that the cache fixt… · 1 tool call · 2s
+· r3 Check that the cache fixt… · 1 tool call · 2s
 ▸ r3 reported
 
 ▾ $ cargo-locked test cache -- --exc… · ✗ exit 101

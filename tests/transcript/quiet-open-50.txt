@@ -198,7 +198,7 @@
 │ HEAD is now at abc1234 Keep cached values until
 │ expiry
 
-  r3 Check that the cache fixt… · 1 tool call · 2s
+· r3 Check that the cache fixt… · 1 tool call · 2s
 
 ▾ r3 reported
 │ The fixture and assertion both use the deadline

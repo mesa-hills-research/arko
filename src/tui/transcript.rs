@@ -2803,13 +2803,13 @@ impl Transcript {
                 .unwrap_or_default(),
             // (From their caches, `body`.)
             Shown::Entry(_) | Shown::Quiet(_) => Vec::new(),
-            Shown::Worker(id) => vec![margin(worker_line(
+            Shown::Worker(id) => vec![worker_line(
                 self.worker(id),
                 id,
                 self.latest_rows().get(id.as_str()) == Some(&block.key),
                 theme,
                 width,
-            ))],
+            )],
             Shown::Heading(id) => self
                 .worker(id)
                 .map(|worker| heading_lines(worker, block.face.clock.as_deref(), theme, width))
@@ -5348,15 +5348,16 @@ pub fn run_time(worker: &WorkerSummary, now: i64) -> Option<i64> {
 
 /// A worker's placeholder, where it went on with no call of its lead's to
 /// stand for it (a message from the user set it going), as the row of a
-/// call that set it going says it, without a fold ([`worker_spans`]). How the
-/// worker stands shows only on its `latest` row.
+/// call that set it going says it ([`worker_spans`]), after the dot of a
+/// row with nothing to open, since a click opens the worker's own view. How
+/// the worker stands shows only on its `latest` row.
 fn worker_line(
     worker: Option<&WorkerSummary>,
     id: &str,
     latest: bool,
     theme: &Theme,
     width: usize,
-) -> Line<'static> {
+) -> Wrapped {
     let title = worker.map_or("", |worker| worker.title.as_str());
     let facts = match worker {
         Some(worker) if latest => {
@@ -5371,9 +5372,8 @@ fn worker_line(
         ..WorkerFace::default()
     };
     let room = width.saturating_sub(MARGIN).max(1);
-    let mut spans = vec![Span::raw(" ".repeat(MARGIN))];
-    spans.extend(worker_spans(&face, theme, room));
-    Line::from(spans)
+    Wrapped::line(worker_spans(&face, theme, room))
+        .decorated(marker(fold_symbol(None), theme.dim()))
 }
 
 /// A worker view's heading, the worker's ID, task and state, and its run
@@ -8568,7 +8568,8 @@ mod tests {
 
     /// A worker's row keeps its ID, its state, its count and its time at
     /// every width, and its title gives way to them, cut and then dropped.
-    /// A message's row keeps its worker's ID in place of its words. The rows
+    /// A message's row keeps its worker's ID in place of its words, and a
+    /// worker's line has the dot of a row with nothing to open. The rows
     /// are drawn at 40, 60 and 100 columns, in Quiet, and match
     /// `tests/transcript/worker-rows.txt` (`UPDATE_GOLDENS=1` writes it
     /// again).

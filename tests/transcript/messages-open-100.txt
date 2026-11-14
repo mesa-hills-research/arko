@@ -25,7 +25,7 @@
   Now check the fixture independently.
 ▸ Changed note 1
 ▸ Ran git worktree add ../fixture-check -b fixture-check
-  r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s
+· r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s
 
 ▾ r3 reported
 │ The fixture and assertion both use the deadline 10.

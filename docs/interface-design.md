@@ -119,8 +119,8 @@ of single lines under it.
   r2 · running · 3 tool calls · 52s"). Only a worker's latest row says how it stands, so its
   earlier rows keep its ID and title alone.
 - A worker that goes on with no earlier call of its lead's in that turn to stand for it (one the
-  user messaged, one that left the queue in a later turn) has a line of its own. A click on it
-  opens the worker's own view.
+  user messaged, one that left the queue in a later turn) has a line of its own, with · in the
+  marker column. A click on it opens the worker's own view.
 - Messages shows these rows, and counts the agent's other calls.
 - The worker's own view also opens from the agent list (Ctrl+T, then Enter or a click) and with
   /watch. The list keeps a worker for five minutes after it ends.
