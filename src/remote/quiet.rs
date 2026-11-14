@@ -33,7 +33,7 @@
 //! The web page compiles this file beside `protocol.rs` as a module of its
 //! own, so it depends on the standard library and that module alone.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[cfg(test)]
 use super::protocol::ContentKind;
@@ -324,13 +324,21 @@ fn slots<'a>(
     slots
 }
 
-/// A row being made.
+/// A row being made. What a joining call is checked against is kept as
+/// calls join, so a row of many calls is made in time growing with them.
 #[derive(Clone)]
 struct Group<'a> {
     /// Its calls, in order.
     calls: Vec<Member<'a>>,
     /// It takes no more calls.
     alone: bool,
+    /// The kind of all its calls, while they're of one kind.
+    same: Option<ActKind>,
+    /// The file all its calls read or change, while they all do and it's
+    /// one file.
+    file: Option<&'a str>,
+    /// When the first of its calls that failed ended, if one did.
+    failed: Option<u64>,
 }
 
 /// Whether a call of `kind` reads or changes a file.
@@ -340,10 +348,31 @@ fn of_a_file(kind: ActKind) -> bool {
 
 impl<'a> Group<'a> {
     fn new(member: Member<'a>) -> Self {
-        Self {
+        let mut group = Self {
             alone: member.alone(),
-            calls: vec![member],
+            calls: Vec::new(),
+            same: Some(member.act.kind),
+            file: of_a_file(member.act.kind).then_some(member.act.target.as_str()),
+            failed: None,
+        };
+        group.push(member);
+        group
+    }
+
+    /// Adds `member`, keeping what later calls are checked against.
+    fn push(&mut self, member: Member<'a>) {
+        if self.same != Some(member.act.kind) {
+            self.same = None;
         }
+        if !of_a_file(member.act.kind) || self.file != Some(member.act.target.as_str()) {
+            self.file = None;
+        }
+        if member.failed()
+            && let Some(ended) = member.call.ended
+        {
+            self.failed = Some(self.failed.map_or(ended, |first| first.min(ended)));
+        }
+        self.calls.push(member);
     }
 
     /// Its calls by step index, in order.
@@ -354,11 +383,7 @@ impl<'a> Group<'a> {
     /// The kind of all its calls, unless it holds the reads and changes of
     /// one file.
     fn kind(&self) -> Option<ActKind> {
-        let first = self.calls[0].act.kind;
-        self.calls
-            .iter()
-            .all(|call| call.act.kind == first)
-            .then_some(first)
+        self.same
     }
 
     /// Takes `member` if it belongs in this row. A call joins as it comes,
@@ -373,10 +398,7 @@ impl<'a> Group<'a> {
         }
         // A failure ends the row. A call that came while the failed one ran
         // stays in it.
-        let after_failure = self.calls.iter().any(|call| {
-            call.failed() && call.call.ended.is_some_and(|ended| member.call.id >= ended)
-        });
-        if after_failure {
+        if self.failed.is_some_and(|ended| member.call.id >= ended) {
             return Err(member);
         }
         let kind = member.act.kind;
@@ -387,16 +409,12 @@ impl<'a> Group<'a> {
             if one_target && self.calls[0].act.target != target {
                 return Err(member);
             }
-            self.calls.push(member);
+            self.push(member);
             return Ok(());
         }
         // The reads and changes of one file are one thing to the reader.
-        let one_file = self
-            .calls
-            .iter()
-            .all(|call| of_a_file(call.act.kind) && call.act.target == target);
-        if of_a_file(kind) && one_file {
-            self.calls.push(member);
+        if of_a_file(kind) && self.file == Some(target) {
+            self.push(member);
             return Ok(());
         }
         Err(member)
@@ -624,13 +642,12 @@ fn plural(count: usize, one: &str, many: &str) -> String {
 
 /// `items` once each, in order.
 fn distinct<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for item in items {
-        if !item.is_empty() && !out.iter().any(|seen| seen == item) {
-            out.push(item.to_string());
-        }
-    }
-    out
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| !item.is_empty() && seen.insert(*item))
+        .map(str::to_string)
+        .collect()
 }
 
 /// What a row of `group` says.
@@ -641,11 +658,13 @@ fn words(group: &Group) -> Words {
         .calls
         .iter()
         .partition(|member| member.long() && member.running());
-    if !live.is_empty() && !done.is_empty() {
-        let before = Group {
-            calls: done.into_iter().cloned().collect(),
-            alone: false,
-        };
+    if !live.is_empty()
+        && let Some((first, rest)) = done.split_first()
+    {
+        let mut before = Group::new((*first).clone());
+        for member in rest {
+            before.push((*member).clone());
+        }
         let mut words = words(&before);
         let running = match live.as_slice() {
             [one] => lower_first(&phrases(one).doing),
