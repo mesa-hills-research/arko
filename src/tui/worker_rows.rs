@@ -107,9 +107,9 @@ pub(super) fn worker_facts(
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Rows {
     /// The placeholders that a call of the worker's lead stands for, by
-    /// their IDs, which don't show. Such a call is one of the placeholder's
-    /// turn that set the worker going, or one there that runs and may,
-    /// until its result says.
+    /// their IDs, which don't show. Such a call came before the placeholder
+    /// in its turn and set the worker going, or is a start or a message of
+    /// that turn that still runs, which may be the one.
     pub(super) covered: HashSet<u64>,
     /// The latest row of each worker, the calls that set it going and its
     /// placeholders that show, by the worker's ID. That row alone says how
@@ -119,30 +119,59 @@ pub(super) struct Rows {
 }
 
 /// The workers' rows among `items`, in order ([`Rows`]).
+///
+/// A call stands only for a placeholder that came after it, since a worker
+/// can't exist before the call that set it going. A start that still runs
+/// can only be starting a new worker, so it stands only for a worker with
+/// no earlier placeholder and no earlier call that set it going. A line
+/// that shows keeps showing whatever its turn calls later.
 pub(super) fn rows<'a>(items: impl IntoIterator<Item = &'a Item> + Clone) -> Rows {
-    // What the calls of each lead's turn set going, or may while they run.
+    // What the calls of each lead's turn set going, or may while they run,
+    // each with the first such call's ID.
     #[derive(Default)]
     struct Turn<'a> {
-        set: HashSet<&'a str>,
-        starting: bool,
-        messaging: HashSet<&'a str>,
+        set: HashMap<&'a str, u64>,
+        starting: Option<u64>,
+        messaging: HashMap<&'a str, u64>,
+    }
+    fn first<'a>(firsts: &mut HashMap<&'a str, u64>, worker: &'a str, id: u64) {
+        let at = firsts.entry(worker).or_insert(id);
+        *at = (*at).min(id);
     }
     let mut turns: HashMap<(&str, Option<u64>), Turn> = HashMap::new();
-    for call in items.clone() {
-        if call.kind != Kind::Call {
+    // The first call that set each worker going and its first placeholder,
+    // of any lead and turn.
+    let mut set_first: HashMap<&str, u64> = HashMap::new();
+    let mut line_first: HashMap<&str, u64> = HashMap::new();
+    for item in items.clone() {
+        if item.kind == Kind::WorkerLine {
+            if let Some(worker) = item.worker.as_deref() {
+                first(&mut line_first, worker, item.id);
+            }
             continue;
         }
-        let running = call.status == Some(CallStatus::Running);
-        let key = (call.agent.as_str(), call.turn);
-        match going(call) {
+        if item.kind != Kind::Call {
+            continue;
+        }
+        let running = item.status == Some(CallStatus::Running);
+        let key = (item.agent.as_str(), item.turn);
+        match going(item) {
             Some(Going::Start(Some(set)) | Going::Again(set)) => {
-                turns.entry(key).or_default().set.insert(set);
+                first(&mut turns.entry(key).or_default().set, set, item.id);
+                first(&mut set_first, set, item.id);
             }
-            Some(Going::Start(None)) if running => turns.entry(key).or_default().starting = true,
-            None if running && call.tool.as_deref() == Some(MESSAGE_AGENT) => {
-                if let Some(act) = &call.act {
+            Some(Going::Start(None)) if running => {
+                let starting = &mut turns.entry(key).or_default().starting;
+                *starting = Some(starting.map_or(item.id, |at| at.min(item.id)));
+            }
+            None if running && item.tool.as_deref() == Some(MESSAGE_AGENT) => {
+                if let Some(act) = &item.act {
                     let target = act.target.as_str();
-                    turns.entry(key).or_default().messaging.insert(target);
+                    first(
+                        &mut turns.entry(key).or_default().messaging,
+                        target,
+                        item.id,
+                    );
                 }
             }
             _ => {}
@@ -155,12 +184,14 @@ pub(super) fn rows<'a>(items: impl IntoIterator<Item = &'a Item> + Clone) -> Row
                 let Some(worker) = item.worker.as_deref() else {
                     continue;
                 };
+                let before = |at: Option<&u64>| at.is_some_and(|&at| at < item.id);
+                let new = !before(set_first.get(worker)) && !before(line_first.get(worker));
                 let covered = turns
                     .get(&(item.agent.as_str(), item.turn))
                     .is_some_and(|turn| {
-                        turn.set.contains(worker)
-                            || turn.starting
-                            || turn.messaging.contains(worker)
+                        before(turn.set.get(worker))
+                            || before(turn.messaging.get(worker))
+                            || (new && before(turn.starting.as_ref()))
                     });
                 if covered {
                     rows.covered.insert(item.id);
@@ -299,5 +330,57 @@ mod tests {
         ])
         .latest;
         assert_eq!((latest["r1"], latest["r2"]), (1, 4));
+    }
+
+    /// A worker's line that shows keeps showing when a later start of its
+    /// turn runs, which can't be starting a worker that already has a line
+    /// or a call that set it going. A start that runs still stands for a
+    /// new worker's line that comes after it.
+    #[test]
+    fn a_later_start_leaves_a_line_that_shows() {
+        // r3 left the queue in this turn, and another start runs.
+        let mut queued = call(1, START_AGENT, Some("r3"), CallStatus::Ok);
+        queued.turn = Some(0);
+        let mut first = line(2, "r3");
+        first.turn = Some(0);
+        let shown = rows([
+            &queued,
+            &first,
+            &line(5, "r3"),
+            &call(6, START_AGENT, None, CallStatus::Running),
+        ]);
+        assert!(!shown.covered.contains(&5));
+        assert_eq!(shown.latest["r3"], 5);
+        // Nor does a start stand for a line that came before it.
+        let before = rows([
+            &line(5, "r4"),
+            &call(6, START_AGENT, None, CallStatus::Running),
+        ]);
+        assert!(!before.covered.contains(&5));
+        // A new worker's line after it is the start's to stand for.
+        let after = rows([
+            &call(6, START_AGENT, None, CallStatus::Running),
+            &line(7, "r4"),
+        ]);
+        assert!(after.covered.contains(&7));
+    }
+
+    /// A worker's line that shows stays when a later message of its turn
+    /// continues its worker, as an earlier row with its ID and title, and
+    /// the message is the worker's latest row.
+    #[test]
+    fn a_later_message_leaves_a_line_that_shows() {
+        let mut message = call(6, MESSAGE_AGENT, None, CallStatus::Running);
+        message.act = Some(Act {
+            target: "r1".into(),
+            ..Act::default()
+        });
+        let running = rows([&line(5, "r1"), &message]);
+        assert!(!running.covered.contains(&5));
+        message.status = Some(CallStatus::Ok);
+        message.sets = Some("r1".into());
+        let settled = rows([&line(5, "r1"), &message]);
+        assert!(!settled.covered.contains(&5));
+        assert_eq!(settled.latest["r1"], 6);
     }
 }
