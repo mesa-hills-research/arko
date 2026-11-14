@@ -53,6 +53,7 @@ These are the patterns that keep turning up, so check for each one by hand.
 - Lists of what something doesn't do, and emphatic negatives ("never from pasted text"). Before any negative, ask whether a reasonable reader would assume the opposite. If not, delete it.
 - Inflated words. "Use" over "utilize", "lets you" over "empowers", "shows" over "surfaces".
 - Filler states in a UI. No "LIVE", "CONNECTED" or "Ready!" badges and no decorative dots. Show a state only when it's unusual or the user must act on it.
+- "Word, its description" appositions ("C, its builds"). "X, their Y", "X, whose Y" as a label and "X — its Y" are the same habit. Name the thing directly, or give it a sentence. The table below ends with examples.
 
 | Instead of | Write |
 |---|---|
@@ -61,6 +62,14 @@ These are the patterns that keep turning up, so check for each one by hand.
 | Signed in: ~/.config/app/auth.json (yours). | Signed in with ~/.config/app/auth.json (yours). |
 | The app asks: Tabs or spaces? | The app asks "Tabs or spaces?" |
 | It chunks files with tree-sitter. It does not call a model or upload your code. | It splits files into chunks with tree-sitter and indexes them, all on your machine. |
+| C, its builds | C builds |
+| Cargo fetches Arko, its framework, GPUI Kit | Cargo fetches Arko, Arko Framework and GPUI Kit |
+| every grammar crate, its upstream crate and constants | every grammar crate with its upstream crate and constants |
+| (the whole command, its settings) | (the whole command and its settings) |
+| Each call's content, its result | Each call's result |
+| The scroll region, its top and bottom rows | The scroll region's top and bottom rows |
+| the terminal, whose reply it drops | the terminal (it drops the reply) |
+| panel — its name, its visibility, its dump | the panel's name, visibility and dump |
 
 ## Docs and commit messages
 
@@ -79,7 +88,7 @@ A commit message says what changed and why for any user of the project. "Autocom
 ## Before you finish
 
 1. Search the text for `: ` and `;`, comments included, and rewrite each one that isn't an allowed case.
-2. Search for "Note", "Tip", "Warning", "Important", bold-lead bullets, names, dates and words about how the project was made ("swarm", "agent", "maintainer", "verified").
+2. Search for "Note", "Tip", "Warning", "Important", bold-lead bullets, "its" appositions, names, dates and words about how the project was made ("swarm", "agent", "maintainer", "verified").
 3. Find every "not", "doesn't", "never" and "no". Keep each only where a reader would otherwise get it wrong.
 4. Look at each piece of text in place on its screen. Cut what the title, the icons, the controls or the person's last action already say.
 5. In a repo, check that the README is still an overview, that someone new to the project would see it as meant for them, and that no file is there only because of how the project was made.
