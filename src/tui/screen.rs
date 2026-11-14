@@ -998,8 +998,8 @@ mod tests {
     /// its files in `tests/transcript/` (`workers-*`), as
     /// [`the_scripted_session_draws_as_its_goldens`] does. Each start is one
     /// row in every view, which says "starting" until its worker has an ID,
-    /// then how the worker stands, and opens to its setup and its task. A
-    /// message that set a worker going again is that worker's latest row.
+    /// then how the worker stands, and opens to its task. A message that set
+    /// a worker going again is that worker's latest row.
     #[test]
     fn the_workers_session_draws_as_its_goldens() {
         use crate::tui::transcript::View;

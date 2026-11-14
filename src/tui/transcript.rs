@@ -893,11 +893,10 @@ impl Transcript {
     fn folds(&self, item: &Item) -> bool {
         match item.kind {
             Kind::Thinking => self.cuts(item, self.width, false),
-            // (A worker's row opens to what the worker was asked, and its
-            // line's words never show whole there.)
-            Kind::Call if going(item).is_some() => {
-                item.detail.is_some() || self.contents.contains(&item.id)
-            }
+            // (A worker's row opens only to the content of its result. Its
+            // line's words never show whole there, and a start or a message
+            // has no detail.)
+            Kind::Call if going(item).is_some() => self.contents.contains(&item.id),
             Kind::Call => {
                 item.detail.is_some()
                     || self.contents.contains(&item.id)
@@ -4631,13 +4630,6 @@ fn going_lines(
     let mut lines = vec![Wrapped::line(spans).decorated(marker(fold_symbol(fold), style))];
     if failed {
         cross_at_right(&mut lines, theme, width);
-    }
-    if look.folds
-        && look.open
-        && let Some(detail) = &item.detail
-    {
-        let inner = width.saturating_sub(MARGIN).max(1);
-        lines.extend(railed(detail_lines(detail, theme, inner), theme));
     }
     lines
 }

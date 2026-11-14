@@ -118,8 +118,9 @@ pub struct Item {
     pub act: Option<Act>,
     /// For a `start_agent` call that started its worker at once, the
     /// worker's ID. A worker that waits for a place, a refused start and a
-    /// call without its result yet have none. The quiet view leaves out the
-    /// calls that have it, because the worker's own line stands for them.
+    /// call without its result yet have none. The page's quiet view leaves
+    /// out the calls that have it, because the worker's own line stands for
+    /// them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started: Option<String>,
     /// For a call that set a worker going, the worker. A start names it once
@@ -2984,8 +2985,8 @@ impl Feed {
         let at = now_ms();
         for mut item in items {
             // The line of a worker the session has no record of would say
-            // nothing, so its call shows (the quiet view leaves out the
-            // calls that started a worker).
+            // nothing, so its call shows (the page's quiet view leaves out
+            // the calls that started a worker).
             if item.kind == Kind::WorkerLine
                 && item
                     .worker
@@ -2994,6 +2995,10 @@ impl Feed {
             {
                 continue;
             }
+            // With the worker's line gone, the page shows its start, so the
+            // start loses `started`. It keeps `sets`, which only the
+            // terminal reads. There the row still names the worker, and
+            // says nothing of how it stands.
             if let Some(worker) = &item.started
                 && state.worker(worker).is_none()
             {
