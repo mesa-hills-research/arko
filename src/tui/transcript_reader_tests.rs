@@ -526,6 +526,62 @@ fn the_marker_shows_once_output_passes_the_bottom_row() {
     assert!(rows[9].contains("4 new lines"), "{rows:?}");
 }
 
+/// A reply's code, three lines of which two are indented.
+fn with_code() -> (Transcript, Vec<String>) {
+    let mut t = Transcript::new();
+    t.apply(Update::Item(item(
+        1,
+        Kind::Reply,
+        "Here:\n\n```\ndef f():\n    if x:\n        return 1\n```",
+    )));
+    let rows = screen(&mut t, &Filter::Main(View::Full), 40, 8);
+    (t, rows)
+}
+
+/// A selection that starts at the left edge of an indented line of code
+/// copies the line with its indentation.
+#[test]
+fn a_selection_from_the_margin_keeps_a_lines_indentation() {
+    let (mut t, rows) = with_code();
+    let filter = Filter::Main(View::Full);
+    let row = rows
+        .iter()
+        .position(|row| row.ends_with("if x:"))
+        .unwrap_or_else(|| panic!("{rows:?}")) as u16;
+    let (from, to) = (
+        t.point_at(0, row).unwrap(),
+        t.point_at(39, row + 1).unwrap(),
+    );
+    t.select(from, to, &filter);
+    assert_eq!(
+        t.selected_text(&filter, &Theme::terminal()).as_deref(),
+        Some("    if x:\n        return 1"),
+        "{rows:?}"
+    );
+}
+
+/// A triple click on an indented line of code copies it with its
+/// indentation.
+#[test]
+fn a_triple_click_keeps_a_lines_indentation() {
+    let (mut t, rows) = with_code();
+    let filter = Filter::Main(View::Full);
+    let theme = Theme::terminal();
+    let row = rows
+        .iter()
+        .position(|row| row.ends_with("return 1"))
+        .unwrap_or_else(|| panic!("{rows:?}")) as u16;
+    let column = rows[row as usize].find("return").unwrap() as u16;
+    let point = t.point_at(column, row).unwrap();
+    let (from, to) = t.line_at(point, &filter, &theme).unwrap();
+    t.select(from, to, &filter);
+    assert_eq!(
+        t.selected_text(&filter, &theme).as_deref(),
+        Some("        return 1"),
+        "{rows:?}"
+    );
+}
+
 /// The first wheel step up while a reply streams moves the rows the
 /// reader saw by the whole step.
 #[test]

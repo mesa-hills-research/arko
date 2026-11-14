@@ -3000,6 +3000,11 @@ impl Transcript {
                 .saturating_sub(1);
             (line, marks.get(line).map_or(0, |mark| mark >> 10))
         };
+        // A start before a line's first character takes the line from its
+        // start, its indentation too.
+        if !end && !on && char == before {
+            return (gap + line, 0);
+        }
         let body = self.body(block, theme, width, own);
         let col = body
             .get(line)
