@@ -138,3 +138,103 @@ fn a_cut_row_opens_to_all_its_words() {
     }
     assert!(missing.is_empty(), "{missing:#?}");
 }
+
+/// The marker counts the agent's output that comes above a note that
+/// waits at the end.
+#[test]
+fn the_marker_counts_output_above_a_waiting_note() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Full);
+    for id in 1..=20 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+    }
+    let mut note = item(21, Kind::User, "Also check the docs");
+    note.pending = true;
+    note.delivery = Some(Delivery::Note);
+    t.apply(Update::Item(note));
+    screen(&mut t, &filter, 40, 8);
+    t.scroll(-6);
+    let up = screen(&mut t, &filter, 40, 8);
+    assert!(!t.following());
+    for id in 22..=26 {
+        t.apply(Update::Item(item(id, Kind::Text, &format!("text {id}"))));
+    }
+    let after = screen(&mut t, &filter, 40, 8);
+    assert_eq!(after[..7], up[..7]);
+    assert!(after[7].contains("new line"), "{after:?}");
+}
+
+/// In Quiet, the marker still counts what came after a thought the
+/// reader stopped at went into the row above.
+#[test]
+fn the_marker_counts_on_when_a_thought_goes_into_its_row() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Quiet);
+    let mut user = item(1, Kind::User, "Go");
+    user.turn = Some(1);
+    t.apply(Update::Item(user));
+    for id in 2..=30 {
+        let mut text = item(id, Kind::Text, &format!("text {id}"));
+        text.turn = Some(1);
+        t.apply(Update::Item(text));
+    }
+    t.apply(Update::Item(call(
+        31,
+        ActKind::Read,
+        "src/a.rs",
+        "read src/a.rs",
+    )));
+    let mut thought = item(32, Kind::Thinking, "Now the other file.");
+    thought.turn = Some(1);
+    t.apply(Update::Item(thought));
+    screen(&mut t, &filter, 40, 10);
+    t.scroll(-6);
+    let up = screen(&mut t, &filter, 40, 10);
+    assert!(!t.following());
+    // The next read joins the row, and the thought goes inside it.
+    t.apply(Update::Item(call(
+        33,
+        ActKind::Read,
+        "src/b.rs",
+        "read src/b.rs",
+    )));
+    let tucked = screen(&mut t, &filter, 40, 10);
+    assert_eq!(tucked[..9], up[..9]);
+    // A command, a row of its own, one more line below the screen.
+    t.apply(Update::Item(call(34, ActKind::Command, "ls", "$ ls")));
+    let more = screen(&mut t, &filter, 40, 10);
+    assert_eq!(more[..9], up[..9]);
+    assert!(more[9].contains("new line"), "{:?}", more[9]);
+}
+
+/// What the last block grew by after following stopped still counts once
+/// the width changes.
+#[test]
+fn the_marker_keeps_what_the_last_block_grew_by_at_another_width() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Full);
+    for id in 1..=20 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+    }
+    t.apply(Update::Item(item(21, Kind::Reply, "The reply starts.")));
+    screen(&mut t, &filter, 40, 8);
+    t.scroll(-6);
+    screen(&mut t, &filter, 40, 8);
+    assert!(!t.following());
+    for n in 0..5 {
+        t.apply(Update::Append {
+            id: 21,
+            text: format!("\n\nParagraph {n} of the reply."),
+        });
+    }
+    let new = |rows: &[String]| {
+        let words: Vec<&str> = rows[7].split_whitespace().collect();
+        let at = words.iter().position(|word| *word == "new")?;
+        words.get(at.checked_sub(1)?)?.parse::<usize>().ok()
+    };
+    let up = screen(&mut t, &filter, 40, 8);
+    let count = new(&up);
+    assert!(count.is_some_and(|count| count >= 10), "{up:?}");
+    let wider = screen(&mut t, &filter, 50, 8);
+    assert_eq!(new(&wider), count, "{wider:?}");
+}

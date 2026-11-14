@@ -380,15 +380,21 @@ struct Laid {
     slots: HashMap<u64, (ItemId, u64)>,
 }
 
-/// The last block that wasn't "Working…" when the reader stopped following,
-/// and its height then (at `width`), in the view it was. The marker counts
-/// what came after it.
+/// Where following stopped, in the view it was. The marker counts the rows
+/// of the blocks that came since, newer than the newest item then, wherever
+/// they stand, and what the last block then grew by while it stands.
 #[derive(Debug, Clone, PartialEq)]
 struct Baseline {
     filter: Filter,
+    /// The newest item then.
+    newest: u64,
+    /// The last block then of the agent's output (not "Working…" or a note
+    /// waiting at the end), and its height at `width`.
     key: u64,
     height: usize,
     width: usize,
+    /// What it had grown by at the last frame, which another width keeps.
+    grown: usize,
 }
 
 /// A row of the screen, with the block it shows, and which of its lines (the
@@ -2052,48 +2058,51 @@ impl Transcript {
             .as_ref()
             .is_none_or(|baseline| baseline.filter != *filter)
         {
+            let newest = self.entries.back().map_or(0, |entry| entry.item.id);
+            // (The agent's output grows above the notes waiting at the end.)
+            let waits = |block: &Block| matches!(block.shown, Shown::Entry(index) if self.entries[index].item.pending);
             self.baseline = blocks
                 .iter()
                 .rev()
-                .find(|block| block.shown != Shown::Working)
+                .find(|block| block.shown != Shown::Working && !waits(block))
                 .map(|block| Baseline {
                     filter: filter.clone(),
+                    newest,
                     key: block.key,
                     height: self.height(block, theme, width, own),
                     width,
+                    grown: 0,
                 });
         }
         let new = match self.baseline.clone() {
-            Some(baseline) => match at.get(&baseline.key) {
-                Some(&index) => {
-                    let now = self.height(&blocks[index], theme, width, own);
-                    // (Another width wraps it otherwise, which isn't new.)
-                    if baseline.width != width {
-                        self.baseline = Some(Baseline {
-                            height: now,
-                            width,
-                            ..baseline.clone()
-                        });
+            Some(mut baseline) => {
+                // What the last block then grew by, while it stands. Another
+                // width wraps it otherwise, which isn't new, so what it had
+                // grown by stays.
+                let grown = match at.get(&baseline.key) {
+                    Some(&index) => {
+                        let now = self.height(&blocks[index], theme, width, own);
+                        if baseline.width != width {
+                            baseline.height = now.saturating_sub(baseline.grown);
+                            baseline.width = width;
+                        }
+                        now.saturating_sub(baseline.height)
                     }
-                    let then = if baseline.width == width {
-                        baseline.height
-                    } else {
-                        now
-                    };
-                    let grown = now.saturating_sub(then);
-                    let came: usize = blocks[index + 1..]
-                        .iter()
-                        .filter(|block| block.shown != Shown::Working)
-                        .map(|block| self.height(block, theme, width, own))
-                        .sum();
-                    grown + came
-                }
-                // (It went, so what comes is counted from the end now.)
-                None => {
-                    self.baseline = None;
-                    0
-                }
-            },
+                    None => 0,
+                };
+                baseline.grown = grown;
+                // (A turn's count by its first call.)
+                let item = |key: u64| if is_count(key) { key & !COUNT_KEY } else { key };
+                let came: usize = blocks
+                    .iter()
+                    .filter(|block| {
+                        block.shown != Shown::Working && item(block.key) > baseline.newest
+                    })
+                    .map(|block| self.height(block, theme, width, own))
+                    .sum();
+                self.baseline = Some(baseline);
+                grown + came
+            }
             None => 0,
         };
         self.drawn = Drawn {
