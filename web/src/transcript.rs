@@ -115,7 +115,7 @@ pub fn Transcript() -> impl IntoView {
                 class="jump"
                 class:shown=move || marker.get().is_some()
                 tabindex=move || if marker.get().is_some() { "0" } else { "-1" }
-                on:click=move |_| scroll::to_end()
+                on:click=move |event| scroll::to_end_at(event.time_stamp())
             >
                 <ArrowDown size=16 />
                 {move || marker.get().map(scroll::marker_words)}

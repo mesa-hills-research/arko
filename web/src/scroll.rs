@@ -79,6 +79,14 @@ fn end_shows(end: f64, bottom: f64, ratio: f64) -> bool {
     end < bottom.ceil() + 1.0
 }
 
+/// Where a position `top` reads, past either end of the range as that end.
+/// The range ends at the start and where the end, `end`, meets the bottom
+/// edge of a view `height` tall, or at `floor`, the position the blank
+/// below the end holds the view at, whichever is lower.
+fn within(top: f64, end: f64, height: f64, floor: f64) -> f64 {
+    top.clamp(0.0, (end - height).max(floor).max(0.0))
+}
+
 /// The choice after a scroll by the reader that moved the lines `moved`
 /// device px down (up when less than 0). `down` says it was a scroll down,
 /// and `shows` that the end shows after it. A scroll up that moves a line
@@ -135,11 +143,13 @@ fn marker(follows: bool, shows: bool, below: f64, line: f64, ratio: f64) -> Opti
 
 /// A gesture of the wheel, and its carry, the part of its deltas below a
 /// device pixel. The carry adds to the next delta the same way and goes
-/// when the way turns or the gesture ends.
+/// when the way turns or the gesture ends. The gesture's last delta came at
+/// `last` (ms), going `down` or up.
 #[derive(Default)]
 struct Gesture {
     carry: f64,
     last: Option<f64>,
+    down: bool,
 }
 
 impl Gesture {
@@ -151,6 +161,7 @@ impl Gesture {
             self.carry = 0.0;
         }
         self.last = Some(now);
+        self.down = delta > 0.0;
         let total = self.carry + delta;
         let whole = exact(total).trunc();
         self.carry = total - whole;
@@ -158,37 +169,36 @@ impl Gesture {
     }
 }
 
-/// A coast still running after an input that placed the view, at `last`
-/// (ms), its way (down) once its first wheel event says it.
+/// The coast of a gesture still running when an input placed the view at
+/// `last` (ms), going `down` or up as the gesture went.
 #[derive(Clone, Copy, Debug)]
 struct Coast {
     last: f64,
-    down: Option<bool>,
+    down: bool,
 }
 
 impl Coast {
-    fn after(now: f64) -> Self {
-        Self {
+    /// The coast of `gesture` after an input that placed the view at `now`,
+    /// where its last delta came within 100 ms.
+    fn after(gesture: &Gesture, now: f64) -> Option<Self> {
+        let running = gesture
+            .last
+            .is_some_and(|last| now - last <= GESTURE_GAP_MS);
+        running.then_some(Self {
             last: now,
-            down: None,
-        }
+            down: gesture.down,
+        })
     }
 
     /// Whether the wheel event going `down` at `now` is the coast's, which
     /// moves nothing. A gap of more than 100 ms ends the coast, and so does
     /// an event the other way.
     fn takes(&mut self, down: bool, now: f64) -> bool {
-        if now - self.last > GESTURE_GAP_MS {
+        if now - self.last > GESTURE_GAP_MS || down != self.down {
             return false;
         }
-        match self.down {
-            Some(way) if way != down => false,
-            _ => {
-                self.down = Some(down);
-                self.last = now;
-                true
-            }
-        }
+        self.last = now;
+        true
     }
 }
 
@@ -877,7 +887,7 @@ impl State {
         if let Some(floor) = &self.floor {
             let _ = floor.style().set_property(
                 "top",
-                &format!("{}px", (whole + geometry.height).ceil() - 1.0),
+                &format!("{}px", (wanted + geometry.height).ceil() - 1.0),
             );
         }
         if fraction != self.fraction {
@@ -1113,7 +1123,7 @@ impl State {
 
     /// The view goes to the end, with no blank below it, and follows.
     fn end_now(&mut self, now: f64) -> Out {
-        self.coast = Some(Coast::after(now));
+        self.coast = Coast::after(&self.gesture, now);
         self.chose(Choice::Follow);
         self.kept = None;
         let Some(geometry) = self.geometry() else {
@@ -1166,14 +1176,20 @@ fn on_scroll() {
         {
             return Some(state.settle());
         }
-        let moved = (state.painted.top - geometry.top) * geometry.ratio;
+        // (A position past either end, a bounce, reads as that end.)
+        let top = within(
+            geometry.top,
+            geometry.end,
+            geometry.height,
+            state.painted.top,
+        );
+        let moved = (state.painted.top - top) * geometry.ratio;
         if moved.abs() < 0.5 {
             return None;
         }
         // (A scroll up drops the blank that left the view.)
         let down = moved < 0.0;
-        let shows = geometry.shows(geometry.top);
-        let choice = chosen(state.choice, moved, down, shows);
+        let choice = chosen(state.choice, moved, down, geometry.shows(top));
         state.chose(choice);
         state.kept = None;
         Some(state.write(&geometry, geometry.top))
@@ -1244,7 +1260,13 @@ fn on_wheel(event: WheelEvent) {
         let device = event.delta_y() * unit * geometry.ratio;
         let whole = state.gesture.take(device, now);
         if whole == 0.0 {
-            return None;
+            // (A scroll down of less than a device pixel moves nothing, and
+            // follows where the end shows.)
+            if !down || !geometry.shows(geometry.top) || state.choice == Choice::Follow {
+                return None;
+            }
+            state.chose(Choice::Follow);
+            return Some(state.write(&geometry, geometry.top));
         }
         Some(state.scroll_by(&geometry, whole / geometry.ratio))
     });
@@ -1433,7 +1455,9 @@ pub fn to_end() {
     to_end_at(now());
 }
 
-fn to_end_at(now: f64) {
+/// End or the marker at the time of its event, `now`, from which a coast
+/// still running moves nothing.
+pub fn to_end_at(now: f64) {
     STATE.with(|state| state.borrow_mut().end_now(now)).apply();
 }
 
@@ -1446,7 +1470,7 @@ pub fn escape(now: f64) {
         if !geometry.shows(geometry.top) {
             return Some(state.end_now(now));
         }
-        state.coast = Some(Coast::after(now));
+        state.coast = Coast::after(&state.gesture, now);
         state.chose(Choice::Follow);
         Some(state.write(&geometry, geometry.top))
     });
@@ -1460,7 +1484,7 @@ fn to_start(now: f64) -> Option<Out> {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         let geometry = state.geometry()?;
-        state.coast = Some(Coast::after(now));
+        state.coast = Coast::after(&state.gesture, now);
         let choice = chosen(state.choice, geometry.top * geometry.ratio, false, false);
         state.chose(choice);
         state.kept = None;
@@ -1533,7 +1557,7 @@ pub fn view_changing() {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.clicked = None;
-        state.coast = Some(Coast::after(now()));
+        state.coast = Coast::after(&state.gesture, now());
         if state.painted.follows {
             state.pending = Some(Pending::End);
             return;
@@ -1555,7 +1579,7 @@ pub fn worker_view(worker: bool) {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.clicked = None;
-        state.coast = Some(Coast::after(now()));
+        state.coast = Coast::after(&state.gesture, now());
         if worker {
             if state.left.is_none() {
                 state.left = Some(Left {
@@ -1623,6 +1647,21 @@ mod tests {
         // Float noise from sums of heights doesn't count.
         assert!(end_shows(800.000_000_1, 800.0, 1.0));
         assert!(!end_shows(800.999_999_9, 800.0, 1.0));
+    }
+
+    #[test]
+    fn a_position_past_either_end_reads_as_that_end() {
+        // The end 900 px down a view 600 tall, so the range ends at 300.
+        assert_eq!(within(330.0, 900.0, 600.0, 300.0), 300.0);
+        // A bounce's way back from there moves nothing.
+        assert_eq!(
+            within(310.0, 900.0, 600.0, 300.0),
+            within(300.0, 900.0, 600.0, 300.0)
+        );
+        assert_eq!(within(-20.0, 900.0, 600.0, 0.0), 0.0);
+        // With blank below the end, the range ends where the view stands.
+        assert_eq!(within(420.0, 900.0, 600.0, 400.0), 400.0);
+        assert_eq!(within(250.0, 900.0, 600.0, 400.0), 250.0);
     }
 
     #[test]
@@ -1714,18 +1753,28 @@ mod tests {
 
     #[test]
     fn a_coast_after_the_marker_moves_nothing_until_it_ends() {
-        // A flick up, the marker at 0 ms, and 30 more coast events up.
-        let mut coast = Coast::after(0.0);
+        // A flick up, its last delta at 112 ms, and the marker at 140.
+        let mut flick = Gesture::default();
+        for at in 0..8 {
+            flick.take(-30.0, f64::from(at) * 16.0);
+        }
+        let mut coast = Coast::after(&flick, 140.0).unwrap();
+        // Thirty more coast events up move nothing.
         for at in 1..=30 {
-            assert!(coast.takes(false, f64::from(at) * 16.0));
+            assert!(coast.takes(false, 140.0 + f64::from(at) * 16.0));
         }
         // A wheel event up 150 ms after the marker is the reader's.
-        let mut coast = Coast::after(0.0);
-        assert!(!coast.takes(false, 150.0));
+        let mut coast = Coast::after(&flick, 140.0).unwrap();
+        assert!(!coast.takes(false, 290.0));
         // A flick down, End during its coast, and an event up 20 ms later.
-        let mut coast = Coast::after(0.0);
-        assert!(coast.takes(true, 8.0));
-        assert!(!coast.takes(false, 28.0));
+        let mut flick = Gesture::default();
+        flick.take(30.0, 0.0);
+        let mut coast = Coast::after(&flick, 40.0).unwrap();
+        assert!(coast.takes(true, 48.0));
+        assert!(!coast.takes(false, 68.0));
+        // With no gesture going, there's no coast.
+        assert!(Coast::after(&flick, 400.0).is_none());
+        assert!(Coast::after(&Gesture::default(), 0.0).is_none());
     }
 
     /// Rows of `heights`, each an item's row.

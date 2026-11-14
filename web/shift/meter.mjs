@@ -35,6 +35,7 @@ const ONLY = process.env.SHIFT_METER_ONLY; // "size:view:reader", for one sessio
 const VERBOSE = process.env.SHIFT_METER_VERBOSE === '1';
 const PAGE = arg('page');
 const TRACE = process.env.SHIFT_METER_TRACE;
+const CASES_ONLY = process.env.SHIFT_METER_CASES_ONLY === '1';
 
 // ----- Chromium over the DevTools protocol -----
 
@@ -928,8 +929,9 @@ class Run {
     }
     const steps = Math.max(1, Math.round(Math.abs(delta) / 100));
     for (let at = 0; at < steps; at++) {
+      // (Chromium takes an emulated wheel's delta in device pixels.)
       await this.during(() => this.cdp.send('Input.dispatchMouseEvent', {
-        type: 'mouseWheel', x: box[0], y: box[1], deltaX: 0, deltaY: delta / steps,
+        type: 'mouseWheel', x: box[0], y: box[1], deltaX: 0, deltaY: (delta / steps) * this.size.dpr,
       }, this.session));
     }
   }
@@ -1438,6 +1440,412 @@ function describe(run, before, after, line, px) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// ----- the pixel cases -----
+
+// The cases of FOLLOWING.md's section 10, each from a session of its own in
+// a 1000×700 window, at pixel ratios 1, 1.25, 1.5 and 2. Deltas are in
+// device pixels, and the inputs that wait carry their own times, so nothing
+// sleeps.
+const RATIOS = [1, 1.25, 1.5, 2];
+
+class Case extends Run {
+  constructor(options) {
+    super(options);
+    this.base = Date.now() / 1000;
+    this.at = 0;
+  }
+
+  /// An input's time, `ms` after the case began.
+  time(ms) {
+    this.at = Math.max(this.at, ms);
+    return this.base + ms / 1000;
+  }
+
+  async look() {
+    const shot = await this.shot();
+    this.last = shot;
+    return shot;
+  }
+
+  /// A wheel event of `delta` device pixels (up is less than 0) at `ms`.
+  async roll(delta, ms) {
+    const box = await this.evaluate(`(() => { const r = document.getElementById('log').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+    await this.during(() => this.cdp.send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel', x: box[0], y: box[1], deltaX: 0, deltaY: delta, timestamp: this.time(ms),
+    }, this.session));
+    await this.settle(null);
+    return this.look();
+  }
+
+  async press(key, code, ms, keyCode) {
+    for (const type of ['rawKeyDown', 'keyUp']) {
+      await this.during(() => this.cdp.send('Input.dispatchKeyEvent', { type, key, code, windowsVirtualKeyCode: keyCode, timestamp: this.time(ms) }, this.session));
+    }
+    await this.settle(null);
+    return this.look();
+  }
+
+  async marker(ms) {
+    const at = await this.evaluate(`(() => { const j = document.querySelector('.jump.shown'); if (!j) return null; const r = j.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+    if (!at) return null;
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await this.during(() => this.cdp.send('Input.dispatchMouseEvent', { type, x: at[0], y: at[1], button: 'left', clickCount: 1, timestamp: this.time(ms) }, this.session));
+    }
+    await this.settle(null);
+    return this.look();
+  }
+
+  /// A transcript taller than the view, at its end and following.
+  async fill(paragraphs = 24) {
+    await this.feed({ do: 'user', text: `Please ${this.words(6)}` });
+    for (let at = 0; at < paragraphs; at++) {
+      await this.feed({ do: 'text', text: `${this.some(12, 8)}\n\n` });
+    }
+    await this.feed({ do: 'end' });
+    await this.settle(null);
+    return this.look();
+  }
+
+  /// Blank of `device` pixels below the end, made by an end that gets
+  /// that much shorter while following.
+  async blank(device) {
+    await this.evaluate(`(() => { const rows = document.getElementById('rows'); const spacer = document.createElement('div'); spacer.id = 'case-spacer'; spacer.style.height = '${device / this.size.dpr}px'; rows.appendChild(spacer); })()`);
+    await this.settle(null);
+    this.grown = await this.look();
+    await this.evaluate(`document.getElementById('case-spacer').remove()`);
+    await this.settle(null);
+    return this.look();
+  }
+
+  /// How far the lines moved from `before` to `after`, in device pixels
+  /// (down is more), by the lines both show, or null where they differ.
+  static moved(before, after) {
+    let moved = null;
+    for (const [id, line] of before.ids) {
+      const now = after.ids.get(id);
+      if (!now) continue;
+      const by = Math.round(now.raw - line.raw);
+      if (moved === null) moved = by;
+      else if (moved !== by) return NaN;
+    }
+    return moved ?? 0;
+  }
+}
+
+async function pixelCases(cdp, agent) {
+  const failures = [];
+  const skipped = [];
+  let count = 0;
+  const play = async (ratio, name, body) => {
+    count++;
+    const run = new Case({ cdp, agent, meter: new Meter(), size: { name: `cases @${ratio}`, width: 1000, height: 700, dpr: ratio, mobile: name.startsWith('touch') }, view: 'full', scrolled: false, seed: 7 });
+    try {
+      await run.open();
+      const problem = await body(run, ratio);
+      if (problem === 'skipped') skipped.push(`@${ratio} ${name}`);
+      else if (problem) failures.push(`@${ratio} ${name}: ${problem}`);
+    } catch (error) {
+      failures.push(`@${ratio} ${name}: ${error.stack ?? error}`);
+    }
+    for (const failure of run.failures) failures.push(`@${ratio} ${name}: ${failure}`);
+    await run.close();
+  };
+  const follows = (shot) => shot.choice === 'follow' && shot.following;
+  const blankOf = (shot) => shot.bottom - shot.end;
+  for (const ratio of RATIOS) {
+    await play(ratio, 'three scrolls up of 0.4 in one gesture', async (run) => {
+      const a = await run.fill();
+      const b = await run.roll(-0.4, 0);
+      const c = await run.roll(-0.4, 16);
+      if (Case.moved(a, c) !== 0 || !follows(c)) return `the first two moved ${Case.moved(a, c)} or stopped following`;
+      const d = await run.roll(-0.4, 32);
+      if (Case.moved(c, d) !== 1 || d.choice !== 'read') return `the third moved ${Case.moved(c, d)} and left the choice ${d.choice}`;
+      return b && null;
+    });
+    await play(ratio, 'up 0.4 and down 0.4, repeated', async (run) => {
+      const a = await run.fill();
+      let shot = a;
+      for (let at = 0; at < 10; at++) shot = await run.roll(at % 2 ? 0.4 : -0.4, at * 16);
+      if (Case.moved(a, shot) !== 0 || !follows(shot)) return `moved ${Case.moved(a, shot)}, ${shot.choice}`;
+      return null;
+    });
+    for (const back of [0.5, 1, 3]) {
+      await play(ratio, `a flick down to the end, then ${back} the other way`, async (run) => {
+        await run.fill();
+        await run.roll(-300, 0);
+        let shot;
+        for (let at = 1; at <= 8; at++) shot = await run.roll(60, 200 + at * 16);
+        if (!follows(shot)) return `the flick didn't follow (${shot.choice})`;
+        const after = await run.roll(-back, 200 + 9 * 16);
+        const moved = Case.moved(shot, after);
+        const want = Math.floor(back);
+        if (moved !== want) return `moved ${moved}, not ${want}`;
+        if ((want > 0) !== (after.choice === 'read')) return `the choice is ${after.choice}`;
+        return null;
+      });
+    }
+    for (const past of [0.3, 300]) {
+      await play(ratio, `a flick down that ends ${past} past the end`, async (run) => {
+        const end = await run.fill();
+        const up = await run.roll(-200, 0);
+        const gap = up.end - up.bottom;
+        await run.roll(gap + past, 200);
+        let shot = await run.look();
+        if (!follows(shot) || Math.abs(shot.end - shot.bottom) > 1) return `not at the end (${shot.end} against ${shot.bottom}), ${shot.choice}`;
+        const before = shot;
+        for (let at = 1; at <= 10; at++) shot = await run.roll(40, 200 + at * 16);
+        if (Case.moved(before, shot) !== 0 || !follows(shot)) return `the coast moved ${Case.moved(before, shot)}`;
+        return end && null;
+      });
+    }
+    await play(ratio, 'a scroll down as far as it goes follows', async (run) => {
+      await run.fill();
+      await run.roll(-500, 0);
+      const shot = await run.roll(5000, 400);
+      return follows(shot) && !shot.marker ? null : `${shot.choice}, marker "${shot.marker}"`;
+    });
+    await play(ratio, 'with 40 of blank, up 10 reads with 30, and down 0.5 follows with 30', async (run) => {
+      await run.fill();
+      const a = await run.blank(40);
+      if (blankOf(a) !== 40 || !follows(a)) return `blank ${blankOf(a)}, ${a.choice}`;
+      const b = await run.roll(-10, 0);
+      if (b.choice !== 'read' || blankOf(b) !== 30) return `after up 10: ${b.choice}, blank ${blankOf(b)}`;
+      const c = await run.roll(0.5, 300);
+      if (!follows(c) || blankOf(c) !== 30) return `after down 0.5: ${c.choice}, blank ${blankOf(c)}`;
+      return null;
+    });
+    await play(ratio, 'the end gets 25 shorter while following', async (run) => {
+      await run.fill();
+      const b = await run.blank(25);
+      const a = run.grown;
+      if (Case.moved(a, b) !== 0) return `the lines moved ${Case.moved(a, b)}`;
+      if (b.scrollHeight !== a.scrollHeight) return `the range went ${a.scrollHeight} → ${b.scrollHeight}`;
+      return null;
+    });
+    await play(ratio, 'a flick up, the marker during its coast, and 30 more coast events', async (run) => {
+      await run.fill();
+      for (let at = 0; at < 8; at++) await run.roll(-120, at * 16);
+      const marker = await run.marker(140);
+      if (!marker) return 'no marker';
+      let shot = marker;
+      for (let at = 1; at <= 30; at++) shot = await run.roll(-60, 140 + at * 16);
+      return follows(shot) && Case.moved(marker, shot) === 0 ? null : `${shot.choice}, moved ${Case.moved(marker, shot)}`;
+    });
+    await play(ratio, 'Home during a coast down stays at the start', async (run) => {
+      await run.fill();
+      await run.roll(-200, 0);
+      for (let at = 1; at <= 4; at++) await run.roll(60, 200 + at * 16);
+      await run.evaluate('document.activeElement && document.activeElement.blur()');
+      await run.press('Home', 'Home', 280, 36);
+      let shot;
+      for (let at = 1; at <= 10; at++) shot = await run.roll(60, 280 + at * 16);
+      return shot.scrollTop === 0 ? null : `at ${shot.scrollTop}`;
+    });
+    await play(ratio, 'a wheel event up 150 ms after the marker reads', async (run) => {
+      await run.fill();
+      await run.roll(-600, 0);
+      const marker = await run.marker(100);
+      if (!marker) return 'no marker';
+      const shot = await run.roll(-30, 250);
+      return shot.choice === 'read' && Case.moved(marker, shot) > 0 ? null : `${shot.choice}, moved ${Case.moved(marker, shot)}`;
+    });
+    await play(ratio, 'a flick down, End during its coast, and a wheel event up 20 ms later', async (run) => {
+      await run.fill();
+      await run.roll(-600, 0);
+      for (let at = 1; at <= 3; at++) await run.roll(60, 300 + at * 16);
+      await run.evaluate('document.activeElement && document.activeElement.blur()');
+      const end = await run.press('End', 'End', 360, 35);
+      const shot = await run.roll(-30, 380);
+      return shot.choice === 'read' && Case.moved(end, shot) > 0 ? null : `${shot.choice}, moved ${Case.moved(end, shot)}`;
+    });
+    await play(ratio, 'PageUp leaves the top line two lines above the bottom edge', async (run) => {
+      const a = await run.fill(60);
+      await run.evaluate('document.activeElement && document.activeElement.blur()');
+      const b = await run.press('PageUp', 'PageUp', 0, 33);
+      // (The first line whole on the screen moves a screen less two lines.)
+      const top = [...a.ids.entries()].filter(([, line]) => line.y >= a.top).sort((x, y) => x[1].y - y[1].y)[0];
+      const now = b.ids.get(top[0]);
+      if (!now) return 'the top line went';
+      const line = await run.evaluate('__meter.lineHeight()');
+      const want = Math.round(b.clientHeight * ratio - 2 * line);
+      const moved = Math.round(now.raw - top[1].raw);
+      return Math.abs(moved - want) <= 1 ? null : `it moved ${moved}, not ${want}`;
+    });
+    await play(ratio, 'six deltas in one frame and in six frames', async (run) => {
+      await run.fill();
+      const box = await run.evaluate(`(() => { const r = document.getElementById('log').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+      const sent = [];
+      for (let at = 0; at < 6; at++) {
+        sent.push(run.cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: box[0], y: box[1], deltaX: 0, deltaY: -50, timestamp: run.time(at) }, run.session));
+      }
+      for (let at = 0; at < 8; at++) await run.frame();
+      await Promise.all(sent);
+      const one = await run.look();
+      await run.roll(5000, 500);
+      for (let at = 0; at < 6; at++) await run.roll(-50, 1000 + at * 16);
+      const six = await run.look();
+      return one.scrollTop === six.scrollTop && one.choice === six.choice ? null : `${one.scrollTop} ${one.choice} against ${six.scrollTop} ${six.choice}`;
+    });
+    await play(ratio, 'a scroll down to the old end in the frame a reply grows', async (run) => {
+      await run.fill();
+      const up = await run.roll(-100, 0);
+      const gap = up.end - up.bottom;
+      await run.feed({ do: 'user', text: `Then ${run.words(4)}` });
+      await run.settle(null);
+      const a = await run.look();
+      const gapNow = a.end - a.bottom;
+      const box = await run.evaluate(`(() => { const r = document.getElementById('log').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+      // (The reply's growth and the wheel come before the same frame.)
+      await run.agent.ask({ do: 'text', text: `${run.some(30, 4)}\n\n` });
+      await sleep(30);
+      const wheel = run.cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: box[0], y: box[1], deltaX: 0, deltaY: gapNow, timestamp: run.time(400) }, run.session);
+      for (let at = 0; at < 6; at++) await run.frame();
+      await wheel;
+      const b = await run.look();
+      const moved = -Case.moved(a, b);
+      if (moved !== Math.round(gapNow)) return `moved up ${moved}, not the delta ${Math.round(gapNow)} (gap was ${gap})`;
+      return b.choice === 'read' && b.end > b.bottom ? null : `${b.choice} with the end at ${b.end} against ${b.bottom}`;
+    });
+    await play(ratio, 'a row above the screen grows by 37.5 while reading', async (run) => {
+      await run.fill();
+      const a = await run.roll(-300, 0);
+      await run.evaluate(`(() => { const row = document.querySelector('#rows > *'); row.style.paddingTop = '37.5px'; })()`);
+      await run.settle(null);
+      const b = await run.look();
+      return Case.moved(a, b) === 0 ? null : `the lines moved ${Case.moved(a, b)}`;
+    });
+    for (const where of ['following', 'following with blank', 'reading']) {
+      await play(ratio, `a fold clicked ${where} keeps the clicked line's row`, async (run) => {
+        await run.feed({ do: 'user', text: `Please ${run.words(6)}` });
+        for (let at = 0; at < 12; at++) await run.feed({ do: 'text', text: `${run.some(12, 8)}\n\n` });
+        for (let at = 0; at < 3; at++) {
+          const { call } = await run.feed({ do: 'call', tool: 'shell', parameters: { command: `cargo test ${run.words(2)}` } });
+          await run.feed({ do: 'result', call, tool: 'shell', output: `Exit code: 0\n${run.some(3, 3)} ok\n${run.some(3, 3)} ok` });
+        }
+        await run.feed({ do: 'end' });
+        await run.settle(null);
+        if (where === 'following with blank') await run.blank(30);
+        if (where === 'reading') await run.roll(-20, 0);
+        const fold = await run.evaluate(`(() => {
+          const log = document.getElementById('log').getBoundingClientRect();
+          const all = [...document.querySelectorAll('#rows summary')].filter((s) => { const r = s.getBoundingClientRect(); return r.height > 0 && r.top >= log.top && r.bottom <= log.bottom; });
+          const s = all[all.length - 1];
+          if (!s) return null;
+          const r = s.getBoundingClientRect();
+          return { x: r.left + 30, y: r.top + r.height / 2, top: r.top * devicePixelRatio };
+        })()`);
+        if (!fold) return 'no fold on the screen';
+        const before = await run.look();
+        await run.click(fold.x, fold.y);
+        await run.settle(null);
+        const after = await run.look();
+        const top = await run.evaluate(`(() => {
+          const s = document.elementFromPoint(${fold.x}, ${fold.y})?.closest('summary');
+          return s ? s.getBoundingClientRect().top * devicePixelRatio : null;
+        })()`);
+        if (top === null || Math.round(top - fold.top) !== 0) return `the line moved ${top === null ? 'away' : Math.round(top - fold.top)}`;
+        return after.choice === before.choice ? null : `the choice went ${before.choice} → ${after.choice}`;
+      });
+    }
+    await play(ratio, 'the thumb dragged up reads, and to the bottom follows', async (run) => {
+      await run.fill();
+      await run.evaluate(`document.getElementById('log').scrollBy({ top: -40, behavior: 'instant' })`);
+      await run.settle(null);
+      const up = await run.look();
+      if (up.choice !== 'read') return `up: ${up.choice}`;
+      await run.evaluate(`(() => { const l = document.getElementById('log'); l.scrollTo({ top: l.scrollHeight, behavior: 'instant' }); })()`);
+      await run.settle(null);
+      const down = await run.look();
+      return follows(down) ? null : `down: ${down.choice}`;
+    });
+    await play(ratio, 'with 40 of blank the thumb sits at the bottom, and a drag up leaves the blank behind', async (run) => {
+      await run.fill();
+      const a = await run.blank(40);
+      if (a.scrollTop + a.clientHeight < a.scrollHeight - 1) return `the thumb isn't at the bottom (${a.scrollTop} + ${a.clientHeight} of ${a.scrollHeight})`;
+      await run.evaluate(`document.getElementById('log').scrollBy({ top: -20, behavior: 'instant' })`);
+      await run.settle(null);
+      const b = await run.look();
+      if (b.choice !== 'read') return `${b.choice}`;
+      return b.scrollTop + b.clientHeight >= b.scrollHeight - 1 ? null : `the range kept the blank that left (${b.scrollTop} + ${b.clientHeight} of ${b.scrollHeight})`;
+    });
+    await play(ratio, 'a selection dragged past the top edge reads', async (run) => {
+      await run.fill();
+      // (On a word of a line in the middle of the screen.)
+      const shot = await run.look();
+      const middle = [...shot.ids.values()].sort((x, y) => x.y - y.y)[Math.floor(shot.ids.size / 2)];
+      const top = await run.evaluate(`document.getElementById('log').getBoundingClientRect().top`);
+      const box = [middle.x / ratio + 4, middle.y / ratio + 6, top];
+      await run.during(() => run.cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box[0], y: box[1], button: 'left', clickCount: 1 }, run.session));
+      await run.during(() => run.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box[0], y: box[2] - 30, button: 'left', buttons: 1 }, run.session));
+      for (let at = 0; at < 30; at++) await run.frame();
+      // (Chromium's headless shell, drawing frames on demand, doesn't
+      // scroll a selection dragged past an edge, so there's nothing to
+      // check there.)
+      const moved = await run.evaluate(`document.getElementById('log').scrollTop`);
+      if (!(await run.evaluate('String(getSelection()).length')) || moved === shot.scrollTop) return 'skipped';
+      await run.during(() => run.cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box[0], y: box[2] - 30, button: 'left', clickCount: 1 }, run.session));
+      await run.settle(null);
+      const after = await run.look();
+      return after.choice === 'read' ? null : `${after.choice}`;
+    });
+    await play(ratio, 'the count stays with no output', async (run) => {
+      await run.fill();
+      await run.roll(-400, 0);
+      await run.feed({ do: 'text', text: `${run.some(30, 4)}\n\n` });
+      await run.settle(null);
+      const a = await run.look();
+      for (let at = 0; at < 10; at++) await run.frame();
+      const b = await run.look();
+      return a.marker && a.marker === b.marker ? null : `"${a.marker}" → "${b.marker}"`;
+    });
+    for (const lines of [0, 1, 5]) {
+      await play(ratio, `the message box grows 3 lines and shrinks with ${lines} lines of blank`, async (run) => {
+        await run.fill();
+        const line = await run.evaluate('__meter.lineHeight()');
+        const a = lines ? await run.blank(lines * line) : await run.look();
+        await run.focusBox();
+        for (let at = 0; at < 3; at++) await run.type(`${run.words(2)}\n`);
+        await run.settle(null);
+        await run.evaluate(`document.querySelector('.field textarea').select()`);
+        await run.key('Backspace', 'Backspace');
+        await run.settle(null);
+        const b = await run.look();
+        const moved = Case.moved(a, b);
+        return moved === 0 ? null : `the lines are ${moved} from their rows`;
+      });
+    }
+    await play(ratio, 'touch: a finger lifted without a drag catches up to the end', async (run) => {
+      await run.fill();
+      const box = await run.evaluate(`(() => { const r = document.getElementById('log').getBoundingClientRect(); return [r.left + 100, r.top + 100]; })()`);
+      await run.during(() => run.cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: box[0], y: box[1] }] }, run.session));
+      await run.feed({ do: 'text', text: `${run.some(40, 4)}\n\n${run.some(40, 4)}` });
+      await run.settle(null);
+      const held = await run.look();
+      if (held.ids.size && held.end <= held.bottom) return 'the output didn\'t take the end off the screen';
+      await run.during(() => run.cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }, run.session));
+      await run.settle(null);
+      const shot = await run.look();
+      return follows(shot) ? null : `${shot.choice}, end ${shot.end} against ${shot.bottom}`;
+    });
+    await play(ratio, 'touch: a cancelled touch and a lost release end the hold', async (run) => {
+      await run.fill();
+      const box = await run.evaluate(`(() => { const r = document.getElementById('log').getBoundingClientRect(); return [r.left + 100, r.top + 100]; })()`);
+      await run.during(() => run.cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: box[0], y: box[1] }] }, run.session));
+      await run.settle(null);
+      if ((await run.evaluate(`document.getElementById('log').dataset.held`)) !== 'true') return 'a finger down doesn\'t hold';
+      await run.during(() => run.cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] }, run.session));
+      await run.settle(null);
+      if ((await run.evaluate(`document.getElementById('log').dataset.held`)) !== 'false') return 'a cancelled touch holds';
+      await run.during(() => run.cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box[0], y: box[1], button: 'left', clickCount: 1 }, run.session));
+      await run.settle(null);
+      await run.evaluate(`window.dispatchEvent(new FocusEvent('blur'))`);
+      await run.settle(null);
+      return (await run.evaluate(`document.getElementById('log').dataset.held`)) === 'false' ? null : 'a lost release holds';
+    });
+  }
+  return { failures, count, skipped };
+}
+
 // ----- the runs -----
 
 async function main() {
@@ -1455,7 +1863,7 @@ async function main() {
     for (const [index, view] of VIEWS.entries()) {
       for (const scrolled of [false, true]) {
         const key = `${at}:${view}:${scrolled ? 'up' : 'following'}`;
-        if (ONLY && ONLY !== key) continue;
+        if ((ONLY && ONLY !== key) || CASES_ONLY) continue;
         plays.push({ size, view, scrolled, seed: 1 + at * 20 + index * 4 + (scrolled ? 1 : 0) });
       }
     }
@@ -1486,11 +1894,24 @@ async function main() {
     browser.close();
   }
   await Promise.all(Array.from({ length: Math.min(parallel, plays.length) }, worker));
+  // The pixel cases, in a browser of their own.
+  let caseCount = 0;
+  if (process.env.SHIFT_METER_CASES !== '0' && !ONLY) {
+    const agent = new Agent(control);
+    const browser = await launch(chromium);
+    const { failures: missed, count, skipped } = await pixelCases(browser.cdp, agent);
+    caseCount = count;
+    for (const skip of skipped) console.log(`pixel case skipped: ${skip}`);
+    for (const failure of missed) failures.push(`pixel case ${failure}`);
+    agent.close();
+    browser.close();
+  }
   const tables = `${meter.frames()} frames, ${meter.shifted()} moved a line, ${meter.tripsFailed()} round trips left a line elsewhere. Each cell is frames · frames that moved a line · the most device pixels / all device pixels.\n\n${meter.table()}\n${meter.sizeTable()}\n${meter.causeTable()}\nThe moves the meter allows. Each cell is frames · the most device pixels / all device pixels.\n\n${meter.allowedTable()}\nPanels, the message box and the window, opened and closed with nothing between. Each cell is round trips · those that left a line elsewhere · the most device pixels.\n\n${meter.tripTable()}`;
   if (OUT) writeFileSync(OUT, `${tables}\n## The largest move of each cause, step and view\n\n${meter.exampleText()}`);
   console.log(tables);
+  if (caseCount) console.log(`${caseCount} pixel cases, ${failures.filter((failure) => failure.startsWith('pixel case')).length} failed.`);
   for (const failure of failures) console.error(failure);
-  const ok = failures.length === 0 && meter.frames() > 500 && meter.shifted() === 0 && meter.tripsFailed() === 0;
+  const ok = failures.length === 0 && (CASES_ONLY || meter.frames() > 500) && meter.shifted() === 0 && meter.tripsFailed() === 0;
   if (!ok && !OUT) console.error(meter.exampleText());
   process.exit(ok ? 0 : 1);
 }
