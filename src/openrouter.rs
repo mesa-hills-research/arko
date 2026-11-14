@@ -1488,17 +1488,14 @@ impl Catalog {
             .duration_since(self.fetched?)
             .ok()?
             .as_secs();
-        let ago = |count: u64, unit: &str| {
-            format!(
-                "updated {count} {unit}{} ago",
-                if count == 1 { "" } else { "s" }
-            )
+        let ago = |count: u64, one: &str, many: &str| {
+            format!("updated {} ago", crate::remote::plural(count, one, many))
         };
         Some(match seconds {
             0..=59 => "updated just now".to_string(),
-            60..=3599 => ago(seconds / 60, "minute"),
-            3600..=86399 => ago(seconds / 3600, "hour"),
-            _ => ago(seconds / 86400, "day"),
+            60..=3599 => ago(seconds / 60, "minute", "minutes"),
+            3600..=86399 => ago(seconds / 3600, "hour", "hours"),
+            _ => ago(seconds / 86400, "day", "days"),
         })
     }
 
@@ -2771,7 +2768,10 @@ mod tests {
         for (seconds, said) in [
             (5, "updated just now"),
             (60, "updated 1 minute ago"),
+            (120, "updated 2 minutes ago"),
+            (3600, "updated 1 hour ago"),
             (7300, "updated 2 hours ago"),
+            (86400, "updated 1 day ago"),
             (3 * 86400, "updated 3 days ago"),
         ] {
             catalog.fetched = ago(seconds);

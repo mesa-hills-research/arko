@@ -96,8 +96,8 @@ pub fn retry_cap_about(cap: Option<u32>) -> String {
             "Workers keep retrying failed model requests. On, a worker fails after {DEFAULT_RETRY_CAP} in a row, and the workers it started stop with it."
         ),
         Some(cap) => format!(
-            "A worker fails after {cap} failed model {} in a row, and the workers it started stop with it. A model response starts the count again.",
-            if cap == 1 { "request" } else { "requests" }
+            "A worker fails after {} in a row, and the workers it started stop with it. A model response starts the count again.",
+            crate::remote::plural(cap, "failed model request", "failed model requests")
         ),
     }
 }
@@ -267,6 +267,10 @@ mod tests {
         assert_eq!(
             retry_cap_about(Some(1)),
             "A worker fails after 1 failed model request in a row, and the workers it started stop with it. A model response starts the count again."
+        );
+        assert!(
+            retry_cap_about(Some(2))
+                .starts_with("A worker fails after 2 failed model requests in a row")
         );
         assert!(
             retry_cap_about(Some(5))

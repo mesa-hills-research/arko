@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::remote::plural;
+
 pub const SHELL_TOOL_NAME: &str = "shell";
 
 /// The time a command may run when the call doesn't say.
@@ -331,12 +333,11 @@ pub fn shown_background_after(seconds: u64) -> String {
 
 /// A time in seconds in words, as `90 seconds`, `10 minutes`, `1 hour`.
 pub fn background_after_words(seconds: u64) -> String {
-    let (count, unit) = match seconds {
-        seconds if seconds % 3_600 == 0 => (seconds / 3_600, "hour"),
-        seconds if seconds % 60 == 0 => (seconds / 60, "minute"),
-        seconds => (seconds, "second"),
-    };
-    format!("{count} {unit}{}", if count == 1 { "" } else { "s" })
+    match seconds {
+        seconds if seconds % 3_600 == 0 => plural(seconds / 3_600, "hour", "hours"),
+        seconds if seconds % 60 == 0 => plural(seconds / 60, "minute", "minutes"),
+        seconds => plural(seconds, "second", "seconds"),
+    }
 }
 
 #[derive(Debug)]
@@ -1168,5 +1169,10 @@ mod tests {
         assert_eq!(shown_background_after(0), "off");
         assert_eq!(background_after_words(60), "1 minute");
         assert_eq!(background_after_words(90), "90 seconds");
+        assert_eq!(background_after_words(1), "1 second");
+        assert_eq!(background_after_words(2), "2 seconds");
+        assert_eq!(background_after_words(120), "2 minutes");
+        assert_eq!(background_after_words(3_600), "1 hour");
+        assert_eq!(background_after_words(7_200), "2 hours");
     }
 }

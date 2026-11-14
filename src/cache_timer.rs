@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Datelike as _, Local, TimeZone};
 
-use crate::remote::{Activity, CacheStatus};
+use crate::remote::{Activity, CacheStatus, plural};
 
 /// The cache timer, while idle with a known lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,10 +97,9 @@ impl CacheTimer {
             CacheTimer::KeptWarm {
                 ends_at: Some(at), ..
             } => format!("cache warm until {}", time_of_day(at)),
-            CacheTimer::KeptWarm { left: Some(1), .. } => "cache warm, 1 refresh left".to_string(),
             CacheTimer::KeptWarm {
                 left: Some(left), ..
-            } => format!("cache warm, {left} refreshes left"),
+            } => format!("cache warm, {} left", plural(left, "refresh", "refreshes")),
             CacheTimer::KeptWarm { .. } => "cache warm".to_string(),
         }
     }
@@ -417,6 +416,14 @@ mod tests {
         );
         assert_eq!(CacheTimer::Expired.label(), "cache expired");
         assert!(!CacheTimer::Expired.warns());
+        // Keep-warm counts the refreshes left, one or many.
+        let warm = |left| CacheTimer::KeptWarm {
+            ends_at: None,
+            left: Some(left),
+        };
+        assert_eq!(warm(0).label(), "cache warm, 0 refreshes left");
+        assert_eq!(warm(1).label(), "cache warm, 1 refresh left");
+        assert_eq!(warm(2).label(), "cache warm, 2 refreshes left");
         // Hidden while working, and when the lifetime or the time isn't
         // known.
         assert_eq!(CacheTimer::of(&cache, true, 1_000), None);

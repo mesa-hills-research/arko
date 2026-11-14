@@ -1475,6 +1475,14 @@ fn a_diff_shows_the_changed_lines_with_two_around_them() {
     let diff = line_diff("", &many);
     assert_eq!(diff.lines().count(), DIFF_LINES + 1);
     assert!(diff.ends_with("\n… 100 more lines"), "{diff}");
+    // The lines left out are counted one or many.
+    let added = |count: usize| -> String { (1..=count).map(|n| format!("new {n}\n")).collect() };
+    let diff = line_diff("", &added(DIFF_LINES));
+    assert!(!diff.contains("more line"), "{diff}");
+    let diff = line_diff("", &added(DIFF_LINES + 1));
+    assert!(diff.ends_with("\n… 1 more line"), "{diff}");
+    let diff = line_diff("", &added(DIFF_LINES + 2));
+    assert!(diff.ends_with("\n… 2 more lines"), "{diff}");
 }
 
 /// `remove_skill` removes only a skill an agent saved, in either scope, and

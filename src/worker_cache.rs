@@ -249,13 +249,14 @@ pub fn short_tokens(tokens: usize) -> String {
 /// ago", "2 hours ago", "3 days ago".
 fn ago(span: chrono::Duration) -> String {
     let minutes = span.num_minutes().max(0);
-    let counted =
-        |count: i64, unit: &str| format!("{count} {unit}{} ago", if count == 1 { "" } else { "s" });
+    let counted = |count: i64, one: &str, many: &str| {
+        format!("{} ago", crate::remote::plural(count, one, many))
+    };
     match minutes {
         0 => "just now".to_string(),
-        1..60 => counted(minutes, "minute"),
-        60..2_880 => counted(minutes / 60, "hour"),
-        _ => counted(minutes / 1_440, "day"),
+        1..60 => counted(minutes, "minute", "minutes"),
+        60..2_880 => counted(minutes / 60, "hour", "hours"),
+        _ => counted(minutes / 1_440, "day", "days"),
     }
 }
 

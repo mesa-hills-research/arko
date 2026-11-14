@@ -201,3 +201,16 @@ async fn mcp_answers_on_the_web_page() {
         )]
     );
 }
+
+/// A running server's state counts its tools, one or many.
+#[test]
+fn a_running_server_counts_its_tools() {
+    let running = |tools: usize| McpServerFacts {
+        tools: Ok((0..tools).map(|n| format!("tool_{n}")).collect()),
+        state: McpState::Running,
+        ..Default::default()
+    };
+    assert_eq!(state_words(&running(0)), "running, 0 tools");
+    assert_eq!(state_words(&running(1)), "running, 1 tool");
+    assert_eq!(state_words(&running(2)), "running, 2 tools");
+}

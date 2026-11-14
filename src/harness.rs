@@ -24,7 +24,7 @@ use crate::crew::Crew;
 use crate::inputs::{Alert, Asker, Event, Inputs, alert_waits, unread_notes, waits_with};
 use crate::openings::{Opening, Subjects};
 use crate::remote::{
-    Action, Confirm, Delivery, Level, Partial, REFRESH_MESSAGE, RefusalKind, Source,
+    Action, Confirm, Delivery, Level, Partial, REFRESH_MESSAGE, RefusalKind, Source, noun, plural,
 };
 use crate::sending::{Admitted, Phase, Read, Reply, joined};
 use crate::session::{Mode, Session, Settings};
@@ -124,10 +124,8 @@ impl Managers {
 /// when it ends ("lines that match error · 3 alerts · ends in 22 min").
 fn monitor_about(info: &arko_agents::terminal::MonitorInfo) -> String {
     let mut parts = vec![crate::jobs::watching(&info.trigger, false)];
-    match info.alerts {
-        0 => {}
-        1 => parts.push("1 alert".into()),
-        count => parts.push(format!("{count} alerts")),
+    if info.alerts > 0 {
+        parts.push(plural(info.alerts, "alert", "alerts"));
     }
     parts.push(match minutes_left(info.expires_at) {
         0 => "ends in less than a minute".to_string(),
@@ -475,10 +473,7 @@ pub(crate) fn unoffered_with(
     };
     let others = missing.iter().filter(|name| !named(name)).count();
     if others > 0 {
-        parts.push(format!(
-            "{others} other tool{}",
-            if others == 1 { "" } else { "s" }
-        ));
+        parts.push(plural(others, "other tool", "other tools"));
     }
     if parts.is_empty() {
         return None;
@@ -1207,10 +1202,7 @@ impl Harness {
         let mut notes: Vec<(String, Option<Level>)> = Vec::new();
         let count = self.own_skills();
         if count > 0 {
-            tools.push(format!(
-                "{count} skill{}",
-                if count == 1 { "" } else { "s" }
-            ));
+            tools.push(plural(count, "skill", "skills"));
         }
         tools.extend(self.indexes.as_ref().and_then(|indexes| indexes.summary()));
         if let Some(crew) = &self.crew
@@ -1275,10 +1267,7 @@ impl Harness {
         extras.extend(self.mcp.servers.summary());
         let count = self.own_skills();
         if count > 0 {
-            extras.push(format!(
-                "{count} skill{}",
-                if count == 1 { "" } else { "s" }
-            ));
+            extras.push(plural(count, "skill", "skills"));
         }
         extras.extend(self.indexes.as_ref().and_then(|indexes| indexes.summary()));
         if !extras.is_empty() {
@@ -1416,8 +1405,10 @@ impl Harness {
         let mut text = match self.settings.max_workers {
             0 => return "no workers".to_string(),
             NO_LIMIT => "parallel workers".to_string(),
-            n if self.crew.is_some() => format!("up to {n} parallel workers"),
-            n => format!("up to {n} workers"),
+            n if self.crew.is_some() => {
+                format!("up to {}", plural(n, "parallel worker", "parallel workers"))
+            }
+            n => format!("up to {}", plural(n, "worker", "workers")),
         };
         if self.settings.worker != self.settings.main {
             text.push_str(&format!(
@@ -3554,24 +3545,23 @@ impl Harness {
         }
         let jobs = jobs.len();
         let them = |count: usize| if count == 1 { "it" } else { "them" };
-        let s = |count: usize| if count == 1 { "" } else { "s" };
         let text = match (workers, jobs) {
             (_, 0) => format!(
-                "{workers} worker{} running. /exit again stops {} and quits (resuming the session lets the agent continue {}).",
-                if workers == 1 { " is" } else { "s are" },
+                "{} running. /exit again stops {} and quits (resuming the session lets the agent continue {}).",
+                plural(workers, "worker is", "workers are"),
                 them(workers),
                 them(workers),
             ),
             (0, _) => format!(
-                "{jobs} background job{} running. /exit again stops {} and quits.",
-                if jobs == 1 { " is" } else { "s are" },
+                "{} running. /exit again stops {} and quits.",
+                plural(jobs, "background job is", "background jobs are"),
                 them(jobs),
             ),
             _ => format!(
-                "{workers} worker{} and {jobs} background job{} are running. /exit again stops them and quits (resuming the session lets the agent continue the worker{}).",
-                s(workers),
-                s(jobs),
-                s(workers),
+                "{} and {} are running. /exit again stops them and quits (resuming the session lets the agent continue the {}).",
+                plural(workers, "worker", "workers"),
+                plural(jobs, "background job", "background jobs"),
+                noun(workers, "worker", "workers"),
             ),
         };
         self.output.line(&self.output.warn(&text));
@@ -3663,8 +3653,8 @@ impl Harness {
                     out.line("No worker is running.");
                 } else {
                     out.line(&out.warn(&format!(
-                        "Stopping {stopped} worker{}. A message from the agent resumes {}.",
-                        if stopped == 1 { "" } else { "s" },
+                        "Stopping {}. A message from the agent resumes {}.",
+                        plural(stopped, "worker", "workers"),
                         if stopped == 1 { "it" } else { "them" }
                     )));
                 }
@@ -4963,8 +4953,8 @@ impl Harness {
                 | Event::Remote(Action::Stop) => {
                     let stopped = crew.stop_all("the user stopped Arko");
                     self.output.line(&self.output.warn(&format!(
-                        "Stopping {stopped} worker{}.",
-                        if stopped == 1 { "" } else { "s" }
+                        "Stopping {}.",
+                        plural(stopped, "worker", "workers")
                     )));
                     return TurnEnd::Stopped;
                 }
@@ -5296,10 +5286,7 @@ impl Harness {
         }
         let running = self.crew.as_ref().map_or(0, |crew| crew.running().len());
         if running > 0 {
-            parts.push(format!(
-                "{running} worker{} running",
-                if running == 1 { "" } else { "s" }
-            ));
+            parts.push(format!("{} running", plural(running, "worker", "workers")));
         }
         let parts = parts.join(" · ");
         let line = match &stats.plan_usage {
@@ -6032,6 +6019,21 @@ pub(crate) mod tests {
         }
     }
 
+    /// The banner counts the workers that may run at once, one or many.
+    #[tokio::test]
+    async fn the_banner_counts_workers_one_or_many() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), false);
+        for (most, said) in [
+            (0, "no workers"),
+            (1, "up to 1 parallel worker"),
+            (2, "up to 2 parallel workers"),
+        ] {
+            harness.settings.max_workers = most;
+            assert_eq!(harness.workers_summary(), said);
+        }
+    }
+
     /// A session saved before workers ran in parallel, and before the file
     /// tools and `ask_user`, keeps `run_workflow_agent`, and is told what
     /// its agents lack.
@@ -6602,6 +6604,23 @@ pub(crate) mod tests {
             unoffered(saved, &[(MAIN, &main), (WORKER, &worker)])
         };
         assert_eq!(fresh(&saved, &plain), None);
+        // The tools it doesn't name are counted, one or many.
+        let without = |names: &[&str]| {
+            saved_with(&|config| {
+                config
+                    .tool_config
+                    .available_tool_names
+                    .retain(|name| !names.contains(&name.as_str()))
+            })
+        };
+        let said = fresh(&without(&[shell::SHELL_TOOL_NAME]), &plain).unwrap();
+        assert!(said.contains("started without 1 other tool, so"), "{said}");
+        let said = fresh(
+            &without(&[shell::SHELL_TOOL_NAME, "terminal_start"]),
+            &plain,
+        )
+        .unwrap();
+        assert!(said.contains("started without 2 other tools, so"), "{said}");
         let servers = ["github".to_string(), "db".to_string()];
         let folders = [PathBuf::from("/work/.claude/skills")];
         let with = AgentSettings {

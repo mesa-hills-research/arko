@@ -383,7 +383,7 @@ fn choose_at(
 
 /// "1 level" or "3 levels".
 fn levels(count: u32) -> String {
-    format!("{count} level{}", if count == 1 { "" } else { "s" })
+    crate::remote::plural(count, "level", "levels")
 }
 
 /// The profiles in force as the main agent's instructions name them, meaning each

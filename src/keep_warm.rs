@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache_timer::{self, dollars, token_count};
 use crate::lock;
-use crate::remote::{Level, Source};
+use crate::remote::{Level, Source, plural};
 
 /// The setting's name, as /settings, the web page and what Arko says of it
 /// call it.
@@ -867,8 +867,7 @@ impl crate::ui::Stats {
 fn tally_sentence(said: Totals, on_plan: Option<&str>) -> String {
     let count = match said.sent {
         0 => return "It sent no refreshes.".into(),
-        1 => "1 refresh".to_string(),
-        sent => format!("{sent} refreshes"),
+        sent => refreshes_words(sent),
     };
     match on_plan.filter(|_| said.billed < 0.005) {
         Some(plan) => format!(
@@ -925,20 +924,12 @@ fn stopped(stop: &Stop, said: Totals, on_plan: Option<&str>) -> String {
 
 /// "15 hours", "1 hour".
 fn hours_words(hours: u32) -> String {
-    if hours == 1 {
-        "1 hour".into()
-    } else {
-        format!("{hours} hours")
-    }
+    plural(hours, "hour", "hours")
 }
 
 /// "10 refreshes", "1 refresh".
 fn refreshes_words(count: u32) -> String {
-    if count == 1 {
-        "1 refresh".into()
-    } else {
-        format!("{count} refreshes")
-    }
+    plural(count, "refresh", "refreshes")
 }
 
 /// Dollars as a command takes them, such as "5", "2.5".
@@ -1658,6 +1649,29 @@ mod tests {
         let back = KeepWarm::load(temp.path(), t(20 * MINUTE));
         assert_eq!(back.limits(Some(setting)), None);
         assert!(!back.follows_setting());
+    }
+
+    /// The notice and the setting count refreshes and hours one or many.
+    #[test]
+    fn refreshes_and_hours_are_counted_one_or_many() {
+        let sent = |sent| Totals {
+            sent,
+            ..Totals::default()
+        };
+        assert_eq!(tally_sentence(sent(0), None), "It sent no refreshes.");
+        assert_eq!(
+            tally_sentence(sent(1), None),
+            "It sent 1 refresh for $0.00."
+        );
+        assert_eq!(
+            tally_sentence(sent(2), None),
+            "It sent 2 refreshes for $0.00."
+        );
+        assert_eq!(refreshes_words(0), "0 refreshes");
+        assert_eq!(refreshes_words(1), "1 refresh");
+        assert_eq!(refreshes_words(2), "2 refreshes");
+        assert_eq!(hours_words(1), "1 hour");
+        assert_eq!(hours_words(2), "2 hours");
     }
 
     /// On a plan, the notice counts the tokens its refreshes read.

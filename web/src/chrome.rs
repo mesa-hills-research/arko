@@ -232,7 +232,7 @@ pub fn Header() -> impl IntoView {
                             on:click=move |_| page.sheet.set(Some(Sheet::Workers))>
                             <Bot size=16 />
                             {count}
-                            <span class="workers-word">{if count == 1 { "worker" } else { "workers" }}</span>
+                            <span class="workers-word">{crate::protocol::noun(count, "worker", "workers")}</span>
                         </button>
                     })
                 }}

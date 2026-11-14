@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::remote::{self, Delivery, Kind};
+use crate::remote::{self, Delivery, Kind, noun, plural};
 
 pub const TOOL_NAME: &str = "earlier_conversation";
 
@@ -159,7 +159,7 @@ fn header(parts: &BriefParts, transcript: &Transcript) -> String {
          The turn numbers here are the ones it takes.",
         parts.number,
         parts.model,
-        counted(transcript.turns.len(), "turn", "turns"),
+        plural(transcript.turns.len(), "turn", "turns"),
         short(size),
     )
 }
@@ -506,7 +506,7 @@ impl Part {
             } => format!(
                 "Report of a handover on {}, which replaced {} (about {} tokens)",
                 time(*at),
-                counted(*messages, "message", "messages"),
+                plural(*messages, "message", "messages"),
                 short(*tokens)
             ),
             Self::User(_) => "User".into(),
@@ -638,7 +638,7 @@ impl Transcript {
             .ok_or_else(|| {
                 format!(
                     "There is no turn {number}. Conversation {conversation} has {}.",
-                    counted(self.turns.len(), "turn", "turns")
+                    plural(self.turns.len(), "turn", "turns")
                 )
             })
     }
@@ -684,7 +684,7 @@ impl Turn {
         summary.push_str(&format!(
             ", about {} tokens, {}",
             short(self.tokens()),
-            counted(self.calls(), "call", "calls")
+            plural(self.calls(), "call", "calls")
         ));
         summary
     }
@@ -1350,7 +1350,7 @@ impl Request {
         hits.truncate(HITS);
         output.push(&format!(
             "{} of conversation {number} {} {}, the best first{}.",
-            counted(found, "turn", "turns"),
+            plural(found, "turn", "turns"),
             if found == 1 { "matches" } else { "match" },
             quoted(&terms),
             if found > HITS {
@@ -1373,7 +1373,7 @@ impl Request {
             if !output.fits(&block) {
                 output.push(&format!(
                     "The output stops at its limit after {}. A higher `limit` shows more.",
-                    counted(shown, "hit", "hits")
+                    plural(shown, "hit", "hits")
                 ));
                 break;
             }
@@ -1406,11 +1406,7 @@ impl Request {
             return Err(format!(
                 "Part {handle} has {} {}, so offset {} is past its end.",
                 thousands(total),
-                if total == 1 {
-                    "character"
-                } else {
-                    "characters"
-                },
+                noun(total, "character", "characters"),
                 self.offset
             ));
         }
@@ -1457,7 +1453,7 @@ fn part_index(turn: &Turn, at: At) -> Result<Option<usize>, String> {
             "There is no part {}.{part}. Turn {} has {}.",
             turn.number,
             turn.number,
-            counted(turn.parts.len(), "part", "parts")
+            plural(turn.parts.len(), "part", "parts")
         ));
     }
     Ok(Some(part - 1))
@@ -1727,11 +1723,6 @@ fn sentence(text: &str) -> String {
     } else {
         format!("{text}.")
     }
-}
-
-/// "1 turn", "212 turns".
-fn counted(count: usize, one: &str, many: &str) -> String {
-    format!("{count} {}", if count == 1 { one } else { many })
 }
 
 /// A token count, short, as "820", "8.2k", "142k", "1.2M".

@@ -836,11 +836,10 @@ impl SkillUpdate {
     /// What changes, in a few words for a row, as "SKILL.md and 2 more files".
     pub fn short(&self) -> String {
         let others = self.added.len() + self.removed.len() + self.changed.len();
-        let files = |n: usize| if n == 1 { "file" } else { "files" };
         match (self.diff.is_empty(), others) {
             (false, 0) => "SKILL.md".to_string(),
-            (false, n) => format!("SKILL.md and {n} more {}", files(n)),
-            (true, n) => format!("{n} {}", files(n)),
+            (false, n) => format!("SKILL.md and {}", plural(n, "more file", "more files")),
+            (true, n) => plural(n, "file", "files"),
         }
     }
 }
@@ -1033,11 +1032,7 @@ pub fn approval_words_refusal(words: &str) -> Option<String> {
 
 /// The tray's heading, as "1 approval", "3 approvals".
 pub fn approvals_heading(count: usize) -> String {
-    if count == 1 {
-        "1 approval".to_string()
-    } else {
-        format!("{count} approvals")
-    }
+    plural(count, "approval", "approvals")
 }
 
 /// What the button that sends the selection does, with `selected` of
@@ -1278,16 +1273,18 @@ impl Approval {
                 if let Some(main) = skill.files.first() {
                     let main_text = main.text.as_deref().unwrap_or_default();
                     let characters = main_text.chars().count();
+                    let lines = main_text.lines().count();
                     size_line = format!(
-                        "{} is {} characters ({} lines)",
+                        "{} is {} {} ({} {})",
                         main.path,
                         thousands(characters as u64),
-                        thousands(main_text.lines().count() as u64)
+                        noun(characters, "character", "characters"),
+                        thousands(lines as u64),
+                        noun(lines, "line", "lines")
                     );
                     size_line.push_str(&match skill.files.len() - 1 {
                         0 => ".".to_string(),
-                        1 => ", with 1 more file.".to_string(),
-                        more => format!(", with {more} more files."),
+                        more => format!(", with {}.", plural(more, "more file", "more files")),
                     });
                 }
                 if !skill.scripts.is_empty() {
@@ -1471,11 +1468,30 @@ fn thousands(count: u64) -> String {
     out
 }
 
+/// `count` and its noun, such as "0 lines", "1 line" and "3 lines". The
+/// terminal, the page and the apps count things with it.
+pub fn plural<N>(count: N, one: &str, many: &str) -> String
+where
+    N: Copy + std::fmt::Display + PartialEq + From<u8>,
+{
+    format!("{count} {}", noun(count, one, many))
+}
+
+/// The noun that goes with `count`, which is `one` for 1 and `many` for any
+/// other count. It suits a count written in its own way, such as "1,240
+/// lines".
+pub fn noun<'a, N>(count: N, one: &'a str, many: &'a str) -> &'a str
+where
+    N: PartialEq + From<u8>,
+{
+    if count == N::from(1) { one } else { many }
+}
+
 /// A file's size as people say it, such as `512 bytes`, `14 KB`, `1.2 MB`,
 /// `1.4 GB`.
 pub(crate) fn size(bytes: u64) -> String {
     match bytes {
-        0..1024 => format!("{bytes} bytes"),
+        0..1024 => plural(bytes, "byte", "bytes"),
         1024..1_048_576 => format!("{} KB", (bytes as f64 / 1024.0).round() as u64),
         1_048_576..1_073_741_824 => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
         _ => format!("{:.1} GB", bytes as f64 / 1_073_741_824.0),
@@ -1907,4 +1923,75 @@ pub fn code_hash(code: &str) -> String {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_takes_the_singular_and_every_other_count_the_plural() {
+        assert_eq!(plural(0_usize, "line", "lines"), "0 lines");
+        assert_eq!(plural(1_usize, "line", "lines"), "1 line");
+        assert_eq!(plural(2_usize, "line", "lines"), "2 lines");
+        assert_eq!(plural(1_u32, "more line", "more lines"), "1 more line");
+        assert_eq!(plural(1_u64, "entry", "entries"), "1 entry");
+        assert_eq!(plural(2_i64, "entry", "entries"), "2 entries");
+        assert_eq!(noun(0_usize, "file", "files"), "files");
+        assert_eq!(noun(1_usize, "file", "files"), "file");
+        assert_eq!(noun(2_usize, "file", "files"), "files");
+    }
+
+    /// Sizes, the tray's heading and a skill's card count one or many.
+    #[test]
+    fn sizes_and_skill_cards_count_one_or_many() {
+        assert_eq!(size(0), "0 bytes");
+        assert_eq!(size(1), "1 byte");
+        assert_eq!(size(2), "2 bytes");
+        assert_eq!(approvals_heading(0), "0 approvals");
+        assert_eq!(approvals_heading(1), "1 approval");
+        assert_eq!(approvals_heading(2), "2 approvals");
+
+        let update = |diff: &str, added: usize| SkillUpdate {
+            diff: diff.into(),
+            added: (0..added).map(|n| format!("file{n}.md")).collect(),
+            ..SkillUpdate::default()
+        };
+        assert_eq!(update("", 0).short(), "0 files");
+        assert_eq!(update("", 1).short(), "1 file");
+        assert_eq!(update("", 2).short(), "2 files");
+        assert_eq!(update("- a", 1).short(), "SKILL.md and 1 more file");
+        assert_eq!(update("- a", 2).short(), "SKILL.md and 2 more files");
+
+        let size_line = |text: &str, more: usize| {
+            let mut files = vec![SkillFile {
+                path: "SKILL.md".into(),
+                bytes: text.len() as u64,
+                text: Some(text.into()),
+            }];
+            files.extend((0..more).map(|n| SkillFile {
+                path: format!("file{n}.md"),
+                ..SkillFile::default()
+            }));
+            let skill = SkillApproval {
+                files,
+                ..SkillApproval::default()
+            };
+            Approval::Skill(skill)
+                .details()
+                .into_iter()
+                .map(|detail| detail.text)
+                .find(|text| text.starts_with("SKILL.md is"))
+                .unwrap()
+        };
+        assert_eq!(size_line("", 0), "SKILL.md is 0 characters (0 lines).");
+        assert_eq!(
+            size_line("a", 1),
+            "SKILL.md is 1 character (1 line), with 1 more file."
+        );
+        assert_eq!(
+            size_line("a\nb", 2),
+            "SKILL.md is 3 characters (2 lines), with 2 more files."
+        );
+    }
 }

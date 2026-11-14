@@ -17,7 +17,7 @@ use serde_json::Value;
 use super::embed;
 use super::engine::{
     self, Action, CreateArgs, CreateOutcome, EmbedPlan, IndexReport, Indexes, ModeArg, SearchArgs,
-    SearchOutput, fmt_ago, fmt_count, fmt_dollars,
+    SearchOutput, chunks_in_files, fmt_ago, fmt_count, fmt_counted, fmt_dollars,
 };
 use super::store::Kind;
 
@@ -562,8 +562,8 @@ fn search_header(query: &str, searched: &[String], hits: usize) -> String {
         format!("{NO_RESULTS}{query:?}{within}{NO_RESULTS_HINT}")
     } else {
         format!(
-            "{hits} result{} from {}:",
-            if hits == 1 { "" } else { "s" },
+            "{} from {}:",
+            crate::remote::plural(hits, "result", "results"),
             searched.join(", ")
         )
     }
@@ -768,13 +768,14 @@ pub fn format_status(reports: &[IndexReport], spent: Option<(u64, f64)>) -> Stri
         ));
         match (report.chunks, &manifest.last_build) {
             (Some(chunks), Some(build)) => out.push_str(&format!(
-                "  {} chunks in {} files, built {} ({:.1} s)\n",
-                fmt_count(chunks),
-                fmt_count(build.files),
+                "  {}, built {} ({:.1} s)\n",
+                chunks_in_files(chunks, build.files),
                 build.at.map(fmt_ago).unwrap_or_else(|| "earlier".into()),
                 build.seconds
             )),
-            (Some(chunks), None) => out.push_str(&format!("  {} chunks\n", fmt_count(chunks))),
+            (Some(chunks), None) => {
+                out.push_str(&format!("  {}\n", fmt_counted(chunks, "chunk", "chunks")))
+            }
             (None, _) => out.push_str(&format!(
                 "  not built: {}\n",
                 report.status_error.as_deref().unwrap_or("no index")
@@ -845,7 +846,7 @@ pub fn format_status(reports: &[IndexReport], spent: Option<(u64, f64)>) -> Stri
 pub fn format_create(outcome: &CreateOutcome) -> String {
     let manifest = &outcome.manifest;
     let mut out = format!(
-        "{} index {} ({}) of {}: {} chunks in {} files ({:.1} s).\n",
+        "{} index {} ({}) of {}: {} ({:.1} s).\n",
         if outcome.updated {
             "Updated"
         } else {
@@ -854,8 +855,7 @@ pub fn format_create(outcome: &CreateOutcome) -> String {
         manifest.name,
         manifest.kind.as_str(),
         manifest.root.display(),
-        fmt_count(outcome.record.chunks),
-        fmt_count(outcome.record.files),
+        chunks_in_files(outcome.record.chunks, outcome.record.files),
         outcome.record.seconds,
     );
     if let Some(census) = &outcome.census {

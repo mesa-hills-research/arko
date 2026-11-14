@@ -1538,8 +1538,7 @@ fn follows_job(outcome: &str) -> bool {
 fn monitor_outcome(job: &JobSummary) -> (CallStatus, String) {
     let alerts = match job.alerts.unwrap_or(0) {
         0 => String::new(),
-        1 => " · 1 alert".to_string(),
-        count => format!(" · {count} alerts"),
+        count => format!(" · {}", super::plural(count, "alert", "alerts")),
     };
     let ran = job.ended_at.map(|at| {
         render::duration_words(Duration::from_millis(
@@ -2393,7 +2392,10 @@ impl Feed {
 
     /// A workflow's events were missed (the printer fell behind).
     pub fn missed(&self, count: u64) {
-        self.notice(Level::Warn, &format!("({count} events not shown)"));
+        self.notice(
+            Level::Warn,
+            &format!("({} not shown)", super::plural(count, "event", "events")),
+        );
     }
 
     /// The user's text, and what became of it. Text that starts a turn
@@ -8139,5 +8141,45 @@ mod tests {
             two < 2
         });
         assert_eq!(two, 2);
+    }
+
+    /// A monitor's line and the notice of missed events count one or many.
+    #[test]
+    fn alerts_and_missed_events_are_counted_one_or_many() {
+        let monitor = |alerts| JobSummary {
+            id: "j1".into(),
+            agent: MAIN_AGENT.into(),
+            call: None,
+            kind: JobKind::Monitor,
+            label: "npm run dev".into(),
+            state: JobState::Finished,
+            started_at: 0,
+            ended_at: None,
+            outcome: None,
+            watching: None,
+            alerts: Some(alerts),
+            expires_at: None,
+        };
+        assert_eq!(monitor_outcome(&monitor(0)).1, "command exited");
+        assert_eq!(monitor_outcome(&monitor(1)).1, "command exited · 1 alert");
+        assert_eq!(monitor_outcome(&monitor(2)).1, "command exited · 2 alerts");
+
+        let feed = Feed::new(MAIN_AGENT);
+        for count in [0, 1, 2] {
+            feed.missed(count);
+        }
+        let notices: Vec<String> = items(&feed)
+            .into_iter()
+            .map(|item| item.text.to_string())
+            .filter(|text| text.ends_with("not shown)"))
+            .collect();
+        assert_eq!(
+            notices,
+            [
+                "(0 events not shown)",
+                "(1 event not shown)",
+                "(2 events not shown)"
+            ]
+        );
     }
 }

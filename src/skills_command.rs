@@ -203,7 +203,11 @@ fn files_line(path: &Path) -> String {
                 let characters = std::fs::read_to_string(path.join("SKILL.md"))
                     .map(|text| text.chars().count())
                     .unwrap_or_default();
-                format!("SKILL.md ({} characters)", thousands(characters))
+                format!(
+                    "SKILL.md ({} {})",
+                    thousands(characters),
+                    crate::remote::noun(characters, "character", "characters")
+                )
             } else {
                 file
             }
@@ -244,4 +248,22 @@ fn thousands(number: usize) -> String {
         .map(|group| group.iter().rev().collect())
         .collect();
     groups.into_iter().rev().collect::<Vec<_>>().join(",")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A skill's files give SKILL.md's length in characters, one or many.
+    #[test]
+    fn skill_md_counts_its_characters() {
+        let temp = tempfile::tempdir().unwrap();
+        let line = |text: &str| {
+            std::fs::write(temp.path().join("SKILL.md"), text).unwrap();
+            files_line(temp.path())
+        };
+        assert_eq!(line(""), "SKILL.md (0 characters)");
+        assert_eq!(line("a"), "SKILL.md (1 character)");
+        assert_eq!(line("ab"), "SKILL.md (2 characters)");
+    }
 }

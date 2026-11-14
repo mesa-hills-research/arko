@@ -41,7 +41,7 @@ use crate::glyphs;
 use crate::index;
 use crate::mcp;
 use crate::message;
-use crate::remote;
+use crate::remote::{self, plural};
 use crate::shell::SHELL_TOOL_NAME;
 
 pub const PROMPT: &str = "› ";
@@ -985,11 +985,12 @@ impl EventPrinter {
                     let said = outcome.unwrap_or_else(|| cut(first, 160));
                     self.output.echo(&self.output.dim(&format!("  ⎿ {said}")));
                 } else if tool_name == RUN_WORKFLOW_AGENT_TOOL_NAME {
-                    let lines = output.lines().count();
-                    self.output.echo(&self.output.dim(&format!(
-                        "  ⎿ the worker reported ({lines} line{})",
-                        if lines == 1 { "" } else { "s" }
-                    )));
+                    let lines = plural(output.lines().count(), "line", "lines");
+                    self.output.echo(
+                        &self
+                            .output
+                            .dim(&format!("  ⎿ the worker reported ({lines})")),
+                    );
                 }
             }
             AgentEvent::ErrorEncountered {
@@ -1442,17 +1443,18 @@ impl EventPrinter {
 /// The line that counts the lines of an output left out ("… 1 more line",
 /// "… 12 more lines").
 pub fn more_lines(count: usize) -> String {
-    format!("… {count} more line{}", if count == 1 { "" } else { "s" })
+    format!("… {}", plural(count, "more line", "more lines"))
 }
 
-/// A command's first line, with a count of the others.
+/// A command's first line, with a count of the others ("$ cd parse  (1 more
+/// line)").
 fn command_line(command: &str) -> String {
     let command = command.trim();
     let mut lines = command.lines();
     let first = cut(lines.next().unwrap_or_default(), 200);
     match lines.count() {
         0 => format!("$ {first}"),
-        more => format!("$ {first}  (+{more} lines)"),
+        more => format!("$ {first}  ({})", plural(more, "more line", "more lines")),
     }
 }
 
@@ -1619,7 +1621,7 @@ fn file_call(
                 .map_or(0, |content| content.lines().count());
             (
                 "write",
-                format!("{path} ({lines} line{})", if lines == 1 { "" } else { "s" }),
+                format!("{path} ({})", plural(lines, "line", "lines")),
             )
         }
         EDIT_FILE_TOOL_NAME => (
@@ -2141,13 +2143,37 @@ mod tests {
         plain
     }
 
+    /// A command of several lines shows its first, and counts the others
+    /// as an output's left-out lines are counted.
     #[test]
     fn commands_show_their_first_line() {
         assert_eq!(command_line("cargo test"), "$ cargo test");
+        assert_eq!(command_line("cd parse\nmake"), "$ cd parse  (1 more line)");
         assert_eq!(
             command_line("cat > a <<'EOF'\nx\nEOF"),
-            "$ cat > a <<'EOF'  (+2 lines)"
+            "$ cat > a <<'EOF'  (2 more lines)"
         );
+    }
+
+    #[test]
+    fn left_out_lines_are_counted_one_or_many() {
+        assert_eq!(more_lines(0), "… 0 more lines");
+        assert_eq!(more_lines(1), "… 1 more line");
+        assert_eq!(more_lines(2), "… 2 more lines");
+    }
+
+    #[test]
+    fn a_write_counts_its_lines_one_or_many() {
+        let write = |content: &str| {
+            let parameters = HashMap::from([
+                ("path".to_string(), serde_json::Value::from("a.rs")),
+                ("content".to_string(), serde_json::Value::from(content)),
+            ]);
+            brief(WRITE_FILE_TOOL_NAME, &parameters)
+        };
+        assert_eq!(write(""), "write a.rs (0 lines)");
+        assert_eq!(write("x"), "write a.rs (1 line)");
+        assert_eq!(write("x\ny"), "write a.rs (2 lines)");
     }
 
     /// A ChatGPT account's credits show beside its plan windows in the

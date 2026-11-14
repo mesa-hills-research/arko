@@ -408,9 +408,11 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, menu: &KeysMenu) {
                 Span::styled(" ", theme.chosen()),
             ]));
             if !value.is_empty() {
-                let count = value.len();
                 lines.push(Line::from(Span::styled(
-                    format!("  {count} character{}", if count == 1 { "" } else { "s" }),
+                    format!(
+                        "  {}",
+                        crate::remote::plural(value.len(), "character", "characters")
+                    ),
                     theme.dim(),
                 )));
             }
@@ -544,6 +546,19 @@ pub(super) mod tests {
         press(&mut menu, KeyCode::Down);
         let text = screen(&menu, &Theme::terminal()).join("\n");
         assert!(text.contains("The search indexes embed with it"), "{text}");
+    }
+
+    /// The field counts a key's characters, one or many, once it holds any.
+    #[test]
+    fn the_key_field_counts_its_characters() {
+        let shown = |pasted: &str| {
+            let mut menu = KeysMenu::open(states(), "add openai", None);
+            menu.paste(pasted);
+            screen(&menu, &Theme::terminal()).join("\n")
+        };
+        assert!(!shown("").contains("character"));
+        assert!(shown("a").contains("  1 character "), "{}", shown("a"));
+        assert!(shown("ab").contains("  2 characters "), "{}", shown("ab"));
     }
 
     /// A key is pasted into a field that shows its start and last 4

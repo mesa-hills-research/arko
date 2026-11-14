@@ -20,6 +20,7 @@ use arko_agents::tool::ToolReceipt;
 
 use super::content;
 use super::feed::{Act, ActKind, CallStatus, Came, ContentKind, Item, Kind};
+use super::plural;
 use super::quiet;
 use crate::crew;
 use crate::message;
@@ -1065,9 +1066,6 @@ fn brief(tool: &str, output: &str) -> Outcome {
             .filter(|line| !line.trim().is_empty())
             .count()
     };
-    let plural = |count: usize, one: &str, many: &str| {
-        format!("{count} {}", if count == 1 { one } else { many })
-    };
     match tool {
         SHELL_TOOL_NAME => command_outcome(output),
         // (Not the line that says which lines it read.)
@@ -2088,7 +2086,7 @@ mod tests {
             &params(&[("command", "cd a\nmake".into()), ("cwd", "src".into())]),
         )
         .unwrap();
-        assert_eq!(item.text, "(in src) $ cd a  (+1 lines)");
+        assert_eq!(item.text, "(in src) $ cd a  (1 more line)");
         assert_eq!(item.detail.as_deref(), Some("cd a\nmake"));
         let item = call(
             message::MESSAGE_USER,

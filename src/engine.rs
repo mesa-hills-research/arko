@@ -1292,8 +1292,8 @@ impl Engine {
             let running = crew.running().len();
             if running > 0 {
                 output.line(&output.dim(&format!(
-                    "Stopping {running} worker{}… (resuming the session lets the agent continue {})",
-                    if running == 1 { "" } else { "s" },
+                    "Stopping {}… (resuming the session lets the agent continue {})",
+                    crate::remote::plural(running, "worker", "workers"),
                     if running == 1 { "it" } else { "them" }
                 )));
             }
@@ -1876,9 +1876,7 @@ mod tests {
         let reply = items.iter().find(|item| item.kind == Kind::Reply).unwrap();
         assert_eq!(reply.text.trim(), whole.trim());
         assert!(
-            !items
-                .iter()
-                .any(|item| item.text.contains("events not shown")),
+            !items.iter().any(|item| item.text.ends_with(" not shown)")),
             "nothing missed"
         );
         quit(seam, ended).await;

@@ -37,7 +37,7 @@ use std::collections::{HashMap, HashSet};
 
 #[cfg(test)]
 use super::protocol::ContentKind;
-use super::protocol::{Act, ActKind, CallStatus, Came, Kind};
+use super::protocol::{Act, ActKind, CallStatus, Came, Kind, plural};
 
 /// A call's outcome when a stop cancelled it.
 pub const STOPPED: &str = "stopped";
@@ -634,10 +634,6 @@ fn parenthesized(names: &[String], most: usize) -> String {
     } else {
         names.join(", ")
     }
-}
-
-fn plural(count: usize, one: &str, many: &str) -> String {
-    format!("{count} {}", if count == 1 { one } else { many })
 }
 
 /// `items` once each, in order.
@@ -1395,7 +1391,7 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                     detail: "(in src/specific/work) printf one\nprintf two".into(),
                     ..command("printf one in work")
                 },
-                "(in src/specific/work) $ printf one  (+1 lines)",
+                "(in src/specific/work) $ printf one  (1 more line)",
                 "Ran printf one in work",
             )
         },

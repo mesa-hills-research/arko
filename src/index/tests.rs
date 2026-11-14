@@ -2282,3 +2282,78 @@ async fn a_calls_stop_reaches_its_embedding_run() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert!(!embedding.is_stopped());
 }
+
+/// Builds, embedding runs, estimates and censuses count their chunks,
+/// files, texts and days one or many.
+#[test]
+fn index_counts_are_one_or_many() {
+    use super::engine::{EmbedSummary, Estimate, chunks_in_files, fmt_ago, fmt_counted};
+    assert_eq!(fmt_counted(0, "chunk", "chunks"), "0 chunks");
+    assert_eq!(fmt_counted(1, "chunk", "chunks"), "1 chunk");
+    assert_eq!(fmt_counted(2, "chunk", "chunks"), "2 chunks");
+    assert_eq!(fmt_counted(1_240, "chunk", "chunks"), "1,240 chunks");
+    assert_eq!(chunks_in_files(0, 0), "0 chunks in 0 files");
+    assert_eq!(chunks_in_files(1, 1), "1 chunk in 1 file");
+    assert_eq!(chunks_in_files(2, 2), "2 chunks in 2 files");
+
+    let days = |days: i64| fmt_ago(chrono::Utc::now() - chrono::Duration::days(days));
+    assert_eq!(days(1), "1 day ago");
+    assert_eq!(days(2), "2 days ago");
+
+    let run = |new, too_long| {
+        EmbedSummary {
+            tokens: 300,
+            dollars: 0.0,
+            new,
+            embedded: 4,
+            docs: 4,
+            cap: 0,
+            cap_reached: false,
+            stopped: false,
+            superseded: false,
+            not_embedded_tokens: 0,
+            too_long,
+        }
+        .line()
+    };
+    assert_eq!(
+        run(0, 0),
+        "embedded 0 texts for 300 tokens ($0), and 4/4 chunks have vectors"
+    );
+    assert!(
+        run(1, 0).starts_with("embedded 1 text for"),
+        "{}",
+        run(1, 0)
+    );
+    assert!(
+        run(2, 0).starts_with("embedded 2 texts for"),
+        "{}",
+        run(2, 0)
+    );
+    assert!(run(1, 1).ends_with(". 1 chunk is too long to embed (found by keywords)"));
+    assert!(run(1, 2).ends_with(". 2 chunks are too long to embed (found by keywords)"));
+
+    let estimate = |texts| {
+        Estimate {
+            tokens: 300,
+            texts,
+            dollars: 0.0,
+            model: "voyage-code-4".into(),
+            embedded: 0,
+            docs: 2,
+        }
+        .line()
+    };
+    assert!(estimate(1).starts_with("embedding 1 chunk would take"));
+    assert!(estimate(2).starts_with("embedding 2 chunks would take"));
+
+    let census = |other| Census {
+        prose: 3,
+        code: 5,
+        other,
+        truncated: false,
+    };
+    assert_eq!(census(0).describe(), "3 prose, 5 source, 0 other files");
+    assert_eq!(census(1).describe(), "3 prose, 5 source, 1 other file");
+    assert_eq!(census(2).describe(), "3 prose, 5 source, 2 other files");
+}

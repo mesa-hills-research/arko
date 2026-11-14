@@ -1419,9 +1419,8 @@ impl Indexes {
                 match self.build(entry, &manifest, Caller::Background) {
                     Ok(record) => {
                         self.event(&format!(
-                            "Rebuilt {name}, {} chunks in {} files ({:.1} s)",
-                            fmt_count(record.chunks),
-                            fmt_count(record.files),
+                            "Rebuilt {name}, {} ({:.1} s)",
+                            chunks_in_files(record.chunks, record.files),
                             record.seconds
                         ));
                         if !stopped() {
@@ -2142,8 +2141,8 @@ impl Indexes {
             Action::Rebuild => {
                 let record = self.build(&entry, &found.manifest, Caller::Interactive)?;
                 let mut text = format!(
-                    "Rebuilt {name} with {} chunks ({:.1} s). {}.",
-                    fmt_count(record.chunks),
+                    "Rebuilt {name} with {} ({:.1} s). {}.",
+                    fmt_counted(record.chunks, "chunk", "chunks"),
                     record.seconds,
                     record.summary
                 );
@@ -2167,8 +2166,8 @@ impl Indexes {
                 let (manifest, record) = self.ensure_dense(&found)?;
                 if let Some(record) = record {
                     lines.push(format!(
-                        "Rebuilt {name} with embeddings enabled ({} chunks).",
-                        fmt_count(record.chunks)
+                        "Rebuilt {name} with embeddings enabled ({}).",
+                        fmt_counted(record.chunks, "chunk", "chunks")
                     ));
                 }
                 match self.estimate(&entry) {
@@ -2353,8 +2352,8 @@ fn changed_since(file: &Path, built: Option<DateTime<Utc>>) -> bool {
 impl EmbedSummary {
     pub fn line(&self) -> String {
         let mut line = format!(
-            "embedded {} texts for {} tokens ({}), and {}/{} chunks have vectors",
-            fmt_count(self.new),
+            "embedded {} for {} tokens ({}), and {}/{} chunks have vectors",
+            fmt_counted(self.new, "text", "texts"),
             fmt_count(self.tokens),
             fmt_dollars(self.dollars),
             fmt_count(self.embedded),
@@ -2371,8 +2370,11 @@ impl EmbedSummary {
         }
         if self.too_long > 0 {
             line.push_str(&format!(
-                ". {} chunks are too long to embed (found by keywords)",
-                fmt_count(self.too_long)
+                ". {} too long to embed (found by keywords)",
+                match self.too_long {
+                    1 => "1 chunk is".to_string(),
+                    many => format!("{} are", fmt_counted(many, "chunk", "chunks")),
+                }
             ));
         }
         line
@@ -2389,8 +2391,8 @@ impl Estimate {
             );
         }
         format!(
-            "embedding {} chunks would take ~{} tokens (~{} with {}), and {}/{} chunks have vectors",
-            fmt_count(self.texts),
+            "embedding {} would take ~{} tokens (~{} with {}), and {}/{} chunks have vectors",
+            fmt_counted(self.texts, "chunk", "chunks"),
             fmt_count(self.tokens),
             fmt_dollars(self.dollars),
             self.model,
@@ -2413,6 +2415,21 @@ pub fn fmt_count(n: u64) -> String {
     out
 }
 
+/// A count with its thousands apart and its noun, as `1 chunk`, `1,240
+/// chunks`.
+pub fn fmt_counted(n: u64, one: &str, many: &str) -> String {
+    format!("{} {}", fmt_count(n), crate::remote::noun(n, one, many))
+}
+
+/// What a build made, as `1 chunk in 1 file`, `1,240 chunks in 85 files`.
+pub fn chunks_in_files(chunks: u64, files: u64) -> String {
+    format!(
+        "{} in {}",
+        fmt_counted(chunks, "chunk", "chunks"),
+        fmt_counted(files, "file", "files")
+    )
+}
+
 /// Dollars, as `$0.14`, `$0.0012`, `<$0.0001`, `$0`.
 pub fn fmt_dollars(dollars: f64) -> String {
     if dollars <= 0.0 {
@@ -2426,14 +2443,18 @@ pub fn fmt_dollars(dollars: f64) -> String {
     }
 }
 
-/// How long ago `at` was, as `just now`, `5 min ago`, `3 h ago`, `2 days ago`.
+/// How long ago `at` was, as `just now`, `5 min ago`, `3 h ago`, `1 day ago`,
+/// `2 days ago`.
 pub fn fmt_ago(at: DateTime<Utc>) -> String {
     let seconds = (Utc::now() - at).num_seconds().max(0);
     match seconds {
         0..=59 => "just now".into(),
         60..=3599 => format!("{} min ago", seconds / 60),
         3600..=86_399 => format!("{} h ago", seconds / 3600),
-        _ => format!("{} days ago", seconds / 86_400),
+        _ => format!(
+            "{} ago",
+            fmt_counted(seconds as u64 / 86_400, "day", "days")
+        ),
     }
 }
 

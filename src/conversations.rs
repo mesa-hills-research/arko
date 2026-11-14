@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agents::MAIN;
-use crate::remote::{self, ConversationEntry, Level};
+use crate::remote::{self, ConversationEntry, Level, plural};
 use crate::{Conversation, Harness, conversation_of, lock};
 
 /// The record's file, in the session's folder.
@@ -296,14 +296,13 @@ pub fn title_of(prompt: &str) -> String {
 pub fn when(at: DateTime<Utc>, now: DateTime<Local>) -> String {
     let local = at.with_timezone(&Local);
     let minutes = (now - local).num_minutes().max(0);
-    let plural =
-        |count: i64, unit: &str| format!("{count} {unit}{} ago", if count == 1 { "" } else { "s" });
+    let ago = |count: i64, one: &str, many: &str| format!("{} ago", plural(count, one, many));
     if minutes < 1 {
         "just now".to_string()
     } else if minutes < 60 {
-        plural(minutes, "minute")
+        ago(minutes, "minute", "minutes")
     } else if local.date_naive() == now.date_naive() {
-        plural(minutes / 60, "hour")
+        ago(minutes / 60, "hour", "hours")
     } else if now.date_naive().pred_opt() == Some(local.date_naive()) {
         local.format("yesterday %H:%M").to_string()
     } else if local.year() == now.year() {
@@ -869,7 +868,9 @@ mod tests {
         };
         assert_eq!(when(at(2026, 10, 14, 15, 30), now), "just now");
         assert_eq!(when(at(2026, 10, 14, 15, 29), now), "1 minute ago");
+        assert_eq!(when(at(2026, 10, 14, 15, 28), now), "2 minutes ago");
         assert_eq!(when(at(2026, 10, 14, 14, 35), now), "55 minutes ago");
+        assert_eq!(when(at(2026, 10, 14, 14, 20), now), "1 hour ago");
         assert_eq!(when(at(2026, 10, 14, 13, 10), now), "2 hours ago");
         assert_eq!(when(at(2026, 10, 13, 22, 5), now), "yesterday 22:05");
         assert_eq!(when(at(2026, 10, 2, 9, 0), now), "Oct 2");

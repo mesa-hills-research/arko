@@ -73,8 +73,10 @@ fn state_words(server: &McpServerFacts) -> String {
     match &server.state {
         McpState::Starting => "starting".into(),
         McpState::Running => match &server.tools {
-            Ok(tools) if tools.len() == 1 => "running, 1 tool".into(),
-            Ok(tools) => format!("running, {} tools", tools.len()),
+            Ok(tools) => format!(
+                "running, {}",
+                crate::remote::plural(tools.len(), "tool", "tools")
+            ),
             Err(_) => "running".into(),
         },
         McpState::Stopped => "stopped".into(),

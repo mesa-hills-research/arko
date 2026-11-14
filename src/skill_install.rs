@@ -1762,7 +1762,11 @@ fn line_diff(before: &str, after: &str) -> String {
     if lines.len() > DIFF_LINES {
         let more = lines.len() - DIFF_LINES;
         lines.truncate(DIFF_LINES);
-        lines.push(format!("… {} more lines", thousands(more)));
+        lines.push(format!(
+            "… {} {}",
+            thousands(more),
+            crate::remote::noun(more, "more line", "more lines")
+        ));
     }
     lines.join("\n")
 }

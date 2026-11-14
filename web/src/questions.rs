@@ -102,10 +102,7 @@ pub fn asks_text(questions: &[QuestionData]) -> String {
 
 /// "2 open questions" is the quiet chip of the questions not attached.
 pub fn open_text(count: usize) -> String {
-    match count {
-        1 => "1 open question".to_string(),
-        count => format!("{count} open questions"),
-    }
+    crate::protocol::plural(count, "open question", "open questions")
 }
 
 /// "Replying to 2 questions" names the questions the next message answers.
@@ -844,6 +841,8 @@ mod tests {
             (open_text(1), replying_text(2)),
             ("1 open question".into(), "Replying to 2 questions".into())
         );
+        assert_eq!(open_text(0), "0 open questions");
+        assert_eq!(open_text(2), "2 open questions");
     }
 
     #[test]

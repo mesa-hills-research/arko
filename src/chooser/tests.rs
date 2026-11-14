@@ -1511,3 +1511,10 @@ fn a_worker_is_offered_the_mcp_tool_only_when_it_reaches_a_server() {
     assert!(offered(&nests));
     assert!(nests.nests());
 }
+
+/// The depth the user allows reads "1 level" or "2 levels".
+#[test]
+fn levels_are_counted_one_or_many() {
+    assert_eq!(levels(1), "1 level");
+    assert_eq!(levels(2), "2 levels");
+}

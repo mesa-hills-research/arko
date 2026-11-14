@@ -37,10 +37,10 @@ impl Census {
 
     pub fn describe(&self) -> String {
         format!(
-            "{} prose, {} source, {} other files{}",
+            "{} prose, {} source, {}{}",
             self.prose,
             self.code,
-            self.other,
+            crate::remote::plural(self.other, "other file", "other files"),
             if self.truncated { " (first files)" } else { "" }
         )
     }

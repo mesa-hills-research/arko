@@ -22,6 +22,7 @@ use super::transcript;
 use super::wrap::{self, Wrapped};
 use crate::glyphs;
 use crate::questions::{AgentQuestion, Answer, Answers, CHOOSE_ANY, QuestionAnswer};
+use crate::remote::plural;
 use crate::ui::Input;
 
 /// The panel opens by itself only after this long without a key.
@@ -107,18 +108,11 @@ pub enum Chip {
 
 impl Chip {
     pub fn text(&self) -> String {
-        let questions = |count: usize| {
-            if count == 1 {
-                "1 question".to_string()
-            } else {
-                format!("{count} questions")
-            }
-        };
+        let questions = |count: usize| plural(count, "question", "questions");
         match self {
             Chip::Asks(count) => format!("Arko asks {}", questions(*count)),
             Chip::Replying(count) => format!("Replying to {} ×", questions(*count)),
-            Chip::Open(1) => "1 open question".to_string(),
-            Chip::Open(count) => format!("{count} open questions"),
+            Chip::Open(count) => plural(*count, "open question", "open questions"),
         }
     }
 }

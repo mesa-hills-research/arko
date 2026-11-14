@@ -241,3 +241,16 @@ fn a_message_line_gives_its_worker_and_text() {
         assert_eq!(message_parts(line), None, "{line}");
     }
 }
+
+/// How long ago a cache expired counts its minutes, hours or days one or
+/// many.
+#[test]
+fn ago_counts_one_or_many() {
+    let ago = |minutes| ago(chrono::Duration::minutes(minutes));
+    assert_eq!(ago(0), "just now");
+    assert_eq!(ago(1), "1 minute ago");
+    assert_eq!(ago(2), "2 minutes ago");
+    assert_eq!(ago(60), "1 hour ago");
+    assert_eq!(ago(120), "2 hours ago");
+    assert_eq!(ago(2_880), "2 days ago");
+}

@@ -2417,9 +2417,9 @@ impl Transcript {
         if !self.following() && area.height > 0 && !self.end_in_sight() {
             let text = if new > 0 {
                 format!(
-                    " {} {new} new line{} ",
+                    " {} {} ",
                     glyphs::render("↓"),
-                    if new == 1 { "" } else { "s" }
+                    crate::remote::plural(new, "new line", "new lines")
                 )
             } else {
                 format!(" {} end ", glyphs::render("↓"))
@@ -2683,7 +2683,7 @@ impl Transcript {
                 let mut spans = vec![
                     marker(if *open { "▾" } else { "▸" }, theme.dim()),
                     Span::styled(
-                        format!("{calls} tool call{}", if *calls == 1 { "" } else { "s" }),
+                        crate::remote::plural(*calls, "tool call", "tool calls"),
                         theme.text(),
                     ),
                 ];

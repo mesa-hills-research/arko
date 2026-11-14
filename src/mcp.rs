@@ -1099,9 +1099,9 @@ impl Servers {
             .map(|facts| match (&facts.state, facts.tools) {
                 (ServerState::Failed(_), _) => format!("{} (failed)", facts.name),
                 (_, Some(count)) => format!(
-                    "{} ({count} tool{})",
+                    "{} ({})",
                     facts.name,
-                    if count == 1 { "" } else { "s" }
+                    crate::remote::plural(count, "tool", "tools")
                 ),
                 (_, None) => facts.name.clone(),
             })

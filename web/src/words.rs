@@ -1,5 +1,6 @@
 //! What the page says of figures, workers, states and settings.
 
+pub use crate::protocol::plural;
 use crate::protocol::{
     CacheData, Delivery, ItemData, KeepWarmData, KeepWarmSettingData, ModelsData, StatusData,
     WorkerData, WorkerState,
@@ -32,10 +33,6 @@ pub fn tokens(n: u64) -> String {
         return format!("{}k", (n as f64 / 1000.0).round());
     }
     n.to_string()
-}
-
-pub fn plural(n: impl std::fmt::Display + PartialEq<u32> + Copy, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 /// A time in seconds as settings say it, like `10 min`, `90 s`, `1 h`.
@@ -338,7 +335,7 @@ fn state_word(state: WorkerState) -> &'static str {
 fn skills_words(skills: Option<&[String]>) -> Option<String> {
     skills.map(|skills| match skills.len() {
         0 => "no skills".to_string(),
-        count => plural(count as u32, "skill", "skills"),
+        count => plural(count, "skill", "skills"),
     })
 }
 
@@ -347,7 +344,7 @@ fn skills_words(skills: Option<&[String]>) -> Option<String> {
 fn servers_words(mcp: Option<&[String]>) -> Option<String> {
     mcp.map(|mcp| match mcp.len() {
         0 => "no MCP".to_string(),
-        count => plural(count as u32, "MCP server", "MCP servers"),
+        count => plural(count, "MCP server", "MCP servers"),
     })
 }
 
@@ -612,8 +609,7 @@ pub fn kept_warm(cache: &CacheData, running: bool, now: f64) -> Option<KeepWarmD
 pub fn kept_warm_label(kept: &KeepWarmData, until: &str) -> String {
     match (kept.ends_at, kept.left) {
         (Some(_), _) => format!("cache warm until {until}"),
-        (None, Some(1)) => "cache warm, 1 refresh left".into(),
-        (None, Some(left)) => format!("cache warm, {left} refreshes left"),
+        (None, Some(left)) => format!("cache warm, {} left", plural(left, "refresh", "refreshes")),
         (None, None) => "cache warm".into(),
     }
 }
@@ -653,11 +649,7 @@ pub fn keep_warm_setting(setting: Option<&KeepWarmSettingData>) -> String {
     let Some(hours) = setting.and_then(|setting| setting.idle_hours) else {
         return "Off".into();
     };
-    let hours = if hours == 1 {
-        "1 hour".to_string()
-    } else {
-        format!("{hours} hours")
-    };
+    let hours = plural(hours, "hour", "hours");
     match setting.and_then(|setting| setting.dollars) {
         Some(most) => format!("{hours} or {}", dollars(most)),
         None => hours,
@@ -1156,6 +1148,25 @@ mod tests {
             dollars: Some(5.0),
         };
         assert_eq!(keep_warm_setting(Some(&setting)), "15 hours or $5.00");
+        // The refreshes left and the hours count one or many.
+        for (left, said) in [
+            (0, "cache warm, 0 refreshes left"),
+            (1, "cache warm, 1 refresh left"),
+            (2, "cache warm, 2 refreshes left"),
+        ] {
+            let kept = KeepWarmData {
+                left: Some(left),
+                ..counted
+            };
+            assert_eq!(kept_warm_label(&kept, ""), said);
+        }
+        for (hours, said) in [(1, "1 hour"), (2, "2 hours")] {
+            let setting = KeepWarmSettingData {
+                idle_hours: Some(hours),
+                dollars: None,
+            };
+            assert_eq!(keep_warm_setting(Some(&setting)), said);
+        }
     }
 
     #[test]

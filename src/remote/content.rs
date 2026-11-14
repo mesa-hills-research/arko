@@ -11,7 +11,7 @@
 //! The web page compiles this file beside `protocol.rs` as a module of its
 //! own, so it depends on the standard library and that module alone.
 
-use super::protocol::ContentKind;
+use super::protocol::{ContentKind, noun};
 
 /// The lines a content shows before its door ("… 97 more lines"), which
 /// opens the rest.
@@ -136,15 +136,13 @@ pub fn grouped(count: usize) -> String {
 /// out none, `characters` characters. A preview leaves out either the lines
 /// after its last or the characters after its cut, never both.
 pub fn door(lines: usize, characters: usize) -> Option<String> {
-    let s = |count: usize| if count == 1 { "" } else { "s" };
+    let more = |count: usize, one: &str, many: &str| {
+        format!("… {} {}", grouped(count), noun(count, one, many))
+    };
     if lines > 0 {
-        Some(format!("… {} more line{}", grouped(lines), s(lines)))
+        Some(more(lines, "more line", "more lines"))
     } else if characters > 0 {
-        Some(format!(
-            "… {} more character{}",
-            grouped(characters),
-            s(characters)
-        ))
+        Some(more(characters, "more character", "more characters"))
     } else {
         None
     }
@@ -233,7 +231,11 @@ mod tests {
         );
         let (_, more) = preview(ContentKind::Plain, &"x".repeat(PREVIEW_LINE_CHARS + 1240));
         assert_eq!(more.as_deref(), Some("… 1,240 more characters"));
+        assert_eq!(door(0, 0), None);
         assert_eq!(door(1, 0).as_deref(), Some("… 1 more line"));
+        assert_eq!(door(2, 0).as_deref(), Some("… 2 more lines"));
+        assert_eq!(door(0, 1).as_deref(), Some("… 1 more character"));
+        assert_eq!(door(0, 2).as_deref(), Some("… 2 more characters"));
     }
 
     /// A long line ends the preview at its cut, so the door counts what

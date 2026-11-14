@@ -420,3 +420,15 @@ fn answer_panel_goldens() {
         );
     }
 }
+
+/// The chips count the questions, one or many.
+#[test]
+fn chips_count_questions_one_or_many() {
+    assert_eq!(Chip::Asks(1).text(), "Arko asks 1 question");
+    assert_eq!(Chip::Asks(2).text(), "Arko asks 2 questions");
+    assert_eq!(Chip::Replying(1).text(), "Replying to 1 question ×");
+    assert_eq!(Chip::Replying(2).text(), "Replying to 2 questions ×");
+    assert_eq!(Chip::Open(0).text(), "0 open questions");
+    assert_eq!(Chip::Open(1).text(), "1 open question");
+    assert_eq!(Chip::Open(2).text(), "2 open questions");
+}

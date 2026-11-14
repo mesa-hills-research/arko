@@ -10,7 +10,7 @@ use arko_index::dense::{EmbedProgress, StopSignal};
 use super::embed::{self, Backend};
 use super::engine::{
     self, Action, CreateArgs, EmbedSummary, Events, Found, Indexes, ModeArg, SearchArgs, Timing,
-    fmt_count, fmt_dollars,
+    chunks_in_files, fmt_count, fmt_counted, fmt_dollars,
 };
 use super::tools::{self, format_create, format_search_detail, format_status};
 
@@ -282,10 +282,13 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                             (None, true) => "not embedded".to_string(),
                         };
                         println!(
-                            "{}\t{}\t{} chunks\t{}\t{}\t{}",
+                            "{}\t{}\t{}\t{}\t{}\t{}",
                             manifest.name,
                             manifest.kind.as_str(),
-                            report.chunks.map(fmt_count).unwrap_or_else(|| "-".into()),
+                            report.chunks.map_or_else(
+                                || "- chunks".into(),
+                                |chunks| fmt_counted(chunks, "chunk", "chunks")
+                            ),
                             vectors,
                             if manifest.monitor { "monitored" } else { "-" },
                             manifest.root.display()
@@ -365,10 +368,9 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             .await?;
             match built {
                 Some(record) => println!(
-                    "Rebuilt {} with {} chunks in {} files ({:.1} s). {}.",
+                    "Rebuilt {} with {} ({:.1} s). {}.",
                     found.manifest.name,
-                    fmt_count(record.chunks),
-                    fmt_count(record.files),
+                    chunks_in_files(record.chunks, record.files),
                     record.seconds,
                     record.summary
                 ),
@@ -404,9 +406,9 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             };
             if let Some(record) = record {
                 println!(
-                    "Rebuilt {} with embeddings enabled ({} chunks).",
+                    "Rebuilt {} with embeddings enabled ({}).",
                     manifest.name,
-                    fmt_count(record.chunks)
+                    fmt_counted(record.chunks, "chunk", "chunks")
                 );
             }
             let found = Found {
@@ -455,9 +457,8 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                 indexes.watch_index(found);
             }
             eprintln!(
-                "Watching {} index{} until Ctrl-C.",
-                targets.len(),
-                if targets.len() == 1 { "" } else { "es" }
+                "Watching {} until Ctrl-C.",
+                crate::remote::plural(targets.len(), "index", "indexes")
             );
             tokio::signal::ctrl_c()
                 .await

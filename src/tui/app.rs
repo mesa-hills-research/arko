@@ -27,7 +27,7 @@ use crate::credentials::{Key, KeyState};
 use crate::keys::Secret;
 use crate::model_command::Target;
 use crate::project;
-use crate::remote::{Activity, Reading, Snapshot, Update};
+use crate::remote::{Activity, Reading, Snapshot, Update, plural};
 use crate::session_names::Way;
 use crate::ui::Input;
 
@@ -2843,10 +2843,9 @@ impl App {
     fn copy(&mut self, text: String) {
         let lines = text.lines().count();
         let what = if lines > 1 {
-            format!("{lines} lines")
+            plural(lines, "line", "lines")
         } else {
-            let count = text.chars().count();
-            format!("{count} character{}", if count == 1 { "" } else { "s" })
+            plural(text.chars().count(), "character", "characters")
         };
         self.effects.push(Effect::Copy { text, what });
     }
@@ -3034,6 +3033,24 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["one\ntwo\nthree"]);
         assert!(app.editor.is_empty());
+    }
+
+    /// A copy says how much it copied, in characters, or in lines when it
+    /// has several.
+    #[test]
+    fn a_copy_counts_its_characters_or_lines() {
+        let mut app = app();
+        let said = |app: &mut App, text: &str| {
+            app.copy(text.to_string());
+            match app.take_effects().as_slice() {
+                [Effect::Copy { what, .. }] => what.clone(),
+                effects => panic!("{effects:?}"),
+            }
+        };
+        assert_eq!(said(&mut app, ""), "0 characters");
+        assert_eq!(said(&mut app, "a"), "1 character");
+        assert_eq!(said(&mut app, "ab"), "2 characters");
+        assert_eq!(said(&mut app, "a\nb"), "2 lines");
     }
 
     /// While the old model writes its report, a message goes to the
