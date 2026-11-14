@@ -1,4 +1,5 @@
-//! The transcript, with its rows laid out for the view, and Latest.
+//! The transcript, with its rows laid out for the view, and the marker of
+//! what came below it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,7 +22,7 @@ use crate::{contents, scroll, words};
 pub fn Transcript() -> impl IntoView {
     let page = page();
     let log: NodeRef<leptos::html::Main> = NodeRef::new();
-    log.on_load(move |log| scroll::attach(log.into(), page.pinned, page.width));
+    log.on_load(move |log| scroll::attach(log.into(), page.scroll, page.width));
     let laid_out = laid_out(page.version, page.view, page.worker);
     // What shows the agent is under way.
     let motion = Memo::new(move |_| {
@@ -68,22 +69,7 @@ pub fn Transcript() -> impl IntoView {
     let thinking = Memo::new(move |_| motion.get().0);
     // Quiet rows that stay follow their words and calls.
     Effect::new(move |_| rows.with(|(_, rows, _)| sync_quiet(rows)));
-    // The newest item the reader saw, while at the bottom.
-    Effect::new(move |_| {
-        rows.track();
-        if page.pinned.get() {
-            page.seen.set(STORE.with(|store| store.borrow().newest()));
-            page.grown.update(HashSet::clear);
-        }
-    });
-    let jump_label = move || {
-        rows.with(|(_, rows, _)| {
-            page.grown.with(|grown| {
-                STORE
-                    .with(|store| layout::jump_label(rows, &store.borrow(), page.seen.get(), grown))
-            })
-        })
-    };
+    let marker = page.scroll.marker;
     let empty = move || {
         if !rows.with(|(_, rows, _)| rows.is_empty())
             || page.connection.get() != words::Connection::Live
@@ -111,7 +97,7 @@ pub fn Transcript() -> impl IntoView {
     };
     view! {
         <div class="stage">
-            <main id="log" class="log" class:pinned=move || page.pinned.get() aria-label="Transcript" node_ref=log on:scroll=move |_| scroll::on_scroll()>
+            <main id="log" class="log" class:following=move || page.scroll.follows.get() aria-label="Transcript" node_ref=log>
                 <div id="rows" class="column rows">
                     <For
                         each=move || {
@@ -127,13 +113,12 @@ pub fn Transcript() -> impl IntoView {
             <button
                 type="button"
                 class="jump"
-                class:shown=move || !page.pinned.get()
-                tabindex=move || if page.pinned.get() { "-1" } else { "0" }
-                on:click=move |_| scroll::jump_to_latest()
+                class:shown=move || marker.get().is_some()
+                tabindex=move || if marker.get().is_some() { "0" } else { "-1" }
+                on:click=move |_| scroll::to_end()
             >
                 <ArrowDown size=16 />
-                {jump_label}
-                <kbd class="hint-key">"End"</kbd>
+                {move || marker.get().map(scroll::marker_words)}
             </button>
         </div>
     }
@@ -256,16 +241,10 @@ fn count_row(id: u64, key: String, count: Count) -> AnyView {
         running,
     } = count;
     let open = move || page.counts_open.with(|open| open.contains(&id));
-    // (It keeps its place as it opens, not the Quiet row of its first call.)
-    let anchor = scroll::Anchor {
-        id,
-        key: key.clone(),
-    };
     view! {
         <div class="row count" data-id=id data-row=key>
             <button type="button" class="call-line" aria-expanded=move || open().to_string()
                 on:click=move |_| {
-                    scroll::keep_place(anchor.clone());
                     page.counts_open.update(|open| {
                         if !open.remove(&id) {
                             open.insert(id);
@@ -1262,22 +1241,6 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
     }
 }
 
-thread_local! {
-    /// Where the reader was in the main transcript, to come back to, and the
-    /// feed it's a place among the rows of.
-    static MAIN_PLACE: std::cell::Cell<Option<(Option<u64>, (scroll::Anchor, f64))>> =
-        const { std::cell::Cell::new(None) };
-}
-
-/// Where the reader was in the main transcript of `feed`, taken to go back
-/// to. A place of another feed is among rows that are gone.
-fn take_main_place(feed: Option<u64>) -> Option<(scroll::Anchor, f64)> {
-    MAIN_PLACE
-        .with(|place| place.take())
-        .filter(|(of, _)| *of == feed)
-        .map(|(_, place)| place)
-}
-
 /// Shows the worker `id`'s own transcript (none for the main one) in a new
 /// entry of the browser's history, so Back and Forward step through the
 /// views the reader saw.
@@ -1335,30 +1298,11 @@ pub fn history_state(entry: &Entry) -> wasm_bindgen::JsValue {
 }
 
 /// Shows the worker `id`'s own transcript (none for the main one). A
-/// worker's opens at its latest, and coming back to the main one returns
-/// to where the reader was.
+/// worker's opens at its end, and coming back to the main one returns to
+/// where the reader was ([`scroll::worker_view`]).
 fn switch_view(page: Page, id: Option<String>) {
-    if page.worker.get_untracked().is_none() {
-        let place = (!page.pinned.get_untracked())
-            .then(scroll::first_visible)
-            .flatten();
-        MAIN_PLACE.with(|saved| saved.set(place.map(|place| (feed(), place))));
-    }
-    let back_to = if id.is_none() {
-        take_main_place(feed())
-    } else {
-        None
-    };
+    scroll::worker_view(id.is_some());
     page.worker.set(id);
-    match back_to {
-        Some(place) => scroll::restore_place(place),
-        None => {
-            page.pinned.set(true);
-            let frame = wasm_bindgen::closure::Closure::once_into_js(scroll::to_bottom_now);
-            use wasm_bindgen::JsCast;
-            let _ = window().request_animation_frame(frame.unchecked_ref());
-        }
-    }
 }
 
 /// Markdown that may still stream. Its finished blocks stay as they are,
@@ -1530,21 +1474,6 @@ mod tests {
         let row = Row::Item(4, Kind::Text);
         assert_eq!(row_key(Some(1), &row), row_key(Some(1), &row));
         assert_ne!(row_key(Some(1), &row), row_key(Some(2), &row));
-    }
-
-    /// The reader comes back to their place in the main transcript of the
-    /// feed it was in, and a new feed's opens at its latest.
-    #[test]
-    fn a_place_of_another_feed_isnt_gone_back_to() {
-        let at = || scroll::Anchor {
-            id: 7,
-            key: "i7".into(),
-        };
-        MAIN_PLACE.with(|place| place.set(Some((Some(1), (at(), -3.5)))));
-        assert_eq!(take_main_place(Some(1)), Some((at(), -3.5)));
-        assert_eq!(take_main_place(Some(1)), None);
-        MAIN_PLACE.with(|place| place.set(Some((Some(1), (at(), -3.5)))));
-        assert_eq!(take_main_place(Some(2)), None);
     }
 
     /// A text that becomes the reply (Arko's `change`, with no new item) is

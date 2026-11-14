@@ -697,12 +697,12 @@ pub fn Replying() -> impl IntoView {
     }
 }
 
-/// A question card in the transcript. While all its questions are open, one
-/// quiet line where the agent asked ("Arko asked 2 questions") opens the
-/// panel on the card. Once any is settled, the card is their record, boxed
-/// as the panel is, with each settled question and what became of it (the
-/// open ones are in the panel). A card without its questions (asked before
-/// they had ids) shows its text.
+/// A question card in the transcript. One quiet line where the agent asked
+/// ("Arko asked 2 questions") opens the panel on the card while any of its
+/// questions is open. Once any is settled, their record opens under the
+/// line, boxed as the panel is, with each settled question and what became
+/// of it (the open ones are in the panel), so the line keeps its place. A
+/// card without its questions (asked before they had ids) shows its text.
 pub fn card_view(id: u64, cell: RowCell) -> AnyView {
     let data = cell.data;
     // (A card comes first with its line, and its questions follow.)
@@ -741,19 +741,19 @@ pub fn card_view(id: u64, cell: RowCell) -> AnyView {
             }
             .into_any();
         }
+        let line = view! {
+            <button type="button" class="asked" disabled=move || !open() title=move || if open() { "Answer (Alt+Q)" } else { "" }
+                on:click=move |_| open_panel(Some(id))>
+                <MessageCircleQuestionMark size=16 />
+                <span>{move || data.with(|item| item.text.clone())}</span>
+            </button>
+        };
         if !recorded.get() {
-            return view! {
-                <button type="button" class="asked" disabled=move || !open() title=move || if open() { "Answer (Alt+Q)" } else { "" }
-                    on:click=move |_| open_panel(Some(id))>
-                    <MessageCircleQuestionMark size=16 />
-                    <span>{move || data.with(|item| item.text.clone())}</span>
-                </button>
-            }
-            .into_any();
+            return line.into_any();
         }
         view! {
+            {line}
             <div class="record-box">
-                <h3 class="record-title">{move || data.with(|item| item.text.clone())}</h3>
                 <ol class="record">
                     {move || settled().into_iter().map(|question| {
                         let outcome = outcome(&question).unwrap_or_default();

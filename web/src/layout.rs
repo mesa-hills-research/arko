@@ -655,10 +655,11 @@ pub fn with_working(mut rows: Vec<Row>, working: bool, store: &Store) -> Vec<Row
     rows
 }
 
-/// Whether `item` is one thing to read, counted once by Latest. A call's
-/// results and a command's output belong to what they follow. The end of a
-/// turn, a new conversation and a worker's place are marks, and a notice
-/// counts only when it opens a turn Arko started.
+/// Whether `item` is one thing to read. A call's results and a command's
+/// output belong to what they follow. The end of a turn, a new conversation
+/// and a worker's place are marks, and a notice counts only when it opens a
+/// turn Arko started. The tests read what a view shows by it.
+#[cfg(test)]
 fn is_read(item: &ItemData) -> bool {
     match item.kind {
         Kind::User
@@ -676,6 +677,7 @@ fn is_read(item: &ItemData) -> bool {
 /// How many of the things `rows` show came after the item `seen`. A
 /// turn's calls folded into one line (Messages) are one thing, where the
 /// first of them came, and "Working…" isn't new.
+#[cfg(test)]
 pub fn unseen(rows: &[Row], store: &Store, seen: u64) -> usize {
     rows.iter()
         .filter(|row| match row {
@@ -693,14 +695,15 @@ pub fn unseen(rows: &[Row], store: &Store, seen: u64) -> usize {
 
 /// Whether the text of one of the items `grown` shows in `rows`. A count
 /// row shows no text, and "Working…" isn't an item.
+#[cfg(test)]
 fn grew(rows: &[Row], grown: &HashSet<u64>) -> bool {
     rows.iter()
         .any(|row| matches!(row, Row::Item(id, _) if grown.contains(id)))
 }
 
-/// What Latest says. It counts the things that came after the item `seen`
-/// and, with none, says when text grew in a row of the view. Both read the
-/// same `rows`, so they agree with what the view shows.
+/// The things that came after the item `seen` and, with none, whether
+/// text grew in a row of the view, read from the same `rows`.
+#[cfg(test)]
 pub fn jump_label(rows: &[Row], store: &Store, seen: u64, grown: &HashSet<u64>) -> String {
     let fresh = unseen(rows, store, seen);
     if fresh > 0 {

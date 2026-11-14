@@ -194,11 +194,6 @@ impl Store {
         since
     }
 
-    /// The newest item's ID.
-    pub fn newest(&self) -> u64 {
-        self.items.last().map_or(0, |item| item.id)
-    }
-
     /// The workers' summaries in the order they came.
     pub fn worker_list(&self) -> Vec<&WorkerData> {
         self.worker_order

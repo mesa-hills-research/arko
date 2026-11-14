@@ -278,11 +278,7 @@ fn change_view(view: View) {
     if page.view.get_untracked() == view {
         return;
     }
-    if !page.pinned.get_untracked()
-        && let Some((at, _)) = crate::scroll::first_visible()
-    {
-        crate::scroll::keep_place(at);
-    }
+    crate::scroll::view_changing();
     page.set_view(view);
 }
 

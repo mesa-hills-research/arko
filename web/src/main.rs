@@ -175,12 +175,17 @@ fn listen(page: Page) {
         "keydown",
         Box::new(move |event| {
             let event = event.unchecked_ref::<web_sys::KeyboardEvent>();
-            let typing = event
+            let target = event
                 .target()
-                .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-                .is_some_and(|element| {
-                    matches!(element.tag_name().as_str(), "TEXTAREA" | "INPUT" | "SELECT")
-                });
+                .and_then(|target| target.dyn_into::<web_sys::Element>().ok());
+            let typing = target.as_ref().is_some_and(|element| {
+                matches!(element.tag_name().as_str(), "TEXTAREA" | "INPUT" | "SELECT")
+            });
+            // (The message box, of the fields, lets the keys that scroll
+            // the transcript through.)
+            let message_box = target
+                .as_ref()
+                .is_some_and(|element| element.matches(".compose textarea").unwrap_or(false));
             // Alt+Q (Option+Q on a Mac, whose key gives another letter)
             // opens the answer panel, or gives it the keyboard.
             if event.alt_key() && !event.ctrl_key() && !event.meta_key() && event.code() == "KeyQ" {
@@ -191,16 +196,30 @@ fn listen(page: Page) {
             if page.sheet.get_untracked().is_some() || page.image.get_untracked().is_some() {
                 return;
             }
+            if event.default_prevented() || event.alt_key() || (typing && !message_box) {
+                return;
+            }
             match event.key().as_str() {
                 "Escape" if page.worker.get_untracked().is_some() => {
                     transcript::show_worker(page, None)
                 }
-                // End goes back to the latest, as Latest does.
-                "End" if !typing && !page.pinned.get_untracked() => {
-                    event.prevent_default();
-                    scroll::jump_to_latest();
+                // Esc follows, where nothing else took it.
+                "Escape" => scroll::escape(event.time_stamp()),
+                _ => {
+                    // The keys that scroll the transcript, which the page
+                    // takes so the browser doesn't glide. With the message
+                    // box focused, Home and End only while it's empty.
+                    let empty = typing
+                        && event
+                            .target()
+                            .and_then(|target| {
+                                target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()
+                            })
+                            .is_some_and(|area| area.value().is_empty());
+                    if scroll::key(event, typing, empty) {
+                        event.prevent_default();
+                    }
                 }
-                _ => {}
             }
         }),
     );

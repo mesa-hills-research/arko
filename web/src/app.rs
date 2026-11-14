@@ -110,12 +110,8 @@ pub struct Page {
     pub image: RwSignal<Option<ImageData>>,
     /// The text item that streams now, whose open table row is held.
     pub streaming: RwSignal<Option<u64>>,
-    /// The newest item the reader saw at the bottom.
-    pub seen: RwSignal<u64>,
-    /// The items whose text grew since the reader left the bottom. Latest
-    /// says "New text" when the rows of the view show one of them.
-    pub grown: RwSignal<HashSet<u64>>,
-    pub pinned: RwSignal<bool>,
+    /// Whether the transcript follows its end, and its marker.
+    pub scroll: crate::scroll::Shown,
     /// The transcript's width in pixels, as last laid out, which decides
     /// what a line cuts.
     pub width: RwSignal<i32>,
@@ -272,9 +268,7 @@ impl Page {
             sheet: RwSignal::new(None),
             image: RwSignal::new(None),
             streaming,
-            seen: RwSignal::new(0),
-            grown: RwSignal::new(HashSet::new()),
-            pinned: RwSignal::new(true),
+            scroll: crate::scroll::Shown::new(),
             width: RwSignal::new(0),
             ask: crate::questions::Asking::new(),
             quiet_open: Opened::new(),
@@ -1063,10 +1057,7 @@ fn on_reset(page: Page, data: &str) -> Result<(), String> {
         crate::transcript::show_history_entry(page, &state);
     }
     let drawn = Closure::once_into_js(move || {
-        if page.pinned.get_untracked() {
-            crate::scroll::to_bottom_now();
-            page.seen.set(STORE.with(|store| store.borrow().newest()));
-        }
+        crate::scroll::changed();
         mark("arko-transcript");
     });
     let _ = window().request_animation_frame(drawn.unchecked_ref());
@@ -1167,9 +1158,7 @@ fn reset_cells(items: &[ItemData], new_code: &HashSet<u64>, switched: bool) -> V
 /// of what it kept of the last one's items and questions, and opens at the
 /// new one's latest.
 fn start_feed(page: Page) {
-    page.seen.set(STORE.with(|store| store.borrow().newest()));
-    page.grown.update(HashSet::clear);
-    page.pinned.set(true);
+    crate::scroll::new_feed();
     page.ask.clear();
     page.image.set(None);
     // The new Arko may be another version, with other commands.
@@ -1222,7 +1211,7 @@ fn on_item_event(page: Page, data: &str) -> Result<(), String> {
             listen(&item);
         }
     });
-    crate::scroll::follow();
+    crate::scroll::changed();
     Ok(())
 }
 
@@ -1269,7 +1258,7 @@ pub(crate) fn take_item(page: Page, item: ItemData, code: bool, now: f64) {
     page.version.update(|version| *version += 1);
 }
 
-fn on_append(page: Page, data: &str) -> Result<(), String> {
+fn on_append(_page: Page, data: &str) -> Result<(), String> {
     let append: Append = parse(data)?;
     let now = js_sys::Date::now();
     if !STORE.with(|store| store.borrow_mut().append(append.id, &append.text, now)) {
@@ -1278,19 +1267,7 @@ fn on_append(page: Page, data: &str) -> Result<(), String> {
     if let Some(cell) = cell(append.id) {
         cell.text.update(|text| text.push_str(&append.text));
     }
-    // Whether the text shows is for the label to say, from the rows of the
-    // view at that time.
-    if !page.pinned.get_untracked() {
-        let known = page
-            .grown
-            .with_untracked(|grown| grown.contains(&append.id));
-        if !known {
-            page.grown.update(|grown| {
-                grown.insert(append.id);
-            });
-        }
-    }
-    crate::scroll::follow();
+    crate::scroll::changed();
     Ok(())
 }
 
@@ -1299,7 +1276,7 @@ fn on_change(page: Page, data: &str) -> Result<(), String> {
     let code = std::mem::take(&mut item.code);
     crate::markdown::remember(&code);
     take_change(page, item, !code.is_empty(), js_sys::Date::now());
-    crate::scroll::follow();
+    crate::scroll::changed();
     Ok(())
 }
 
@@ -1608,9 +1585,6 @@ pub(crate) mod tests {
                 ask.focused.set(Some("q1".into()));
                 ask.panel.set(true);
                 ask.note.set(Some("Sent.".into()));
-                page.seen.set(1);
-                page.grown.set(HashSet::from([2]));
-                page.pinned.set(false);
                 page.commands.set(Some(Vec::new()));
             };
             kept();
@@ -1622,8 +1596,7 @@ pub(crate) mod tests {
                 ask.drafts
                     .with_untracked(|drafts| drafts.contains_key("q1"))
             );
-            assert!(ask.panel.get_untracked() && !page.pinned.get_untracked());
-            assert_eq!(page.grown.get_untracked(), HashSet::from([2]));
+            assert!(ask.panel.get_untracked());
             assert!(page.commands.get_untracked().is_some());
 
             assert!(take_reset(page, reset_of(0xb, items(), Vec::new()), 0.0));
@@ -1635,9 +1608,7 @@ pub(crate) mod tests {
             assert_eq!(ask.focused.get_untracked(), None);
             assert!(!ask.panel.get_untracked());
             assert_eq!(ask.note.get_untracked(), None);
-            assert_eq!(page.seen.get_untracked(), 2);
-            assert!(page.grown.get_untracked().is_empty());
-            assert!(page.pinned.get_untracked());
+            assert_eq!(crate::scroll::choice(), crate::scroll::Choice::Follow);
             assert_eq!(page.commands.get_untracked(), None);
         });
     }

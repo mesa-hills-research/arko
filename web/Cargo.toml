@@ -78,6 +78,14 @@ web-sys = { version = "0.3", features = [
     "XmlHttpRequest",
     "XmlHttpRequestEventTarget",
     "XmlHttpRequestUpload",
+    "FocusOptions",
+    "MouseEvent",
+    "MutationObserver",
+    "MutationObserverInit",
+    "PointerEvent",
+    "Selection",
+    "TouchEvent",
+    "TouchList",
 ] }
 
 [dev-dependencies]

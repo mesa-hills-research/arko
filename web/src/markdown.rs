@@ -497,13 +497,26 @@ fn is_item(line: &str) -> bool {
     }
 }
 
-/// `text` without the open last row of a table it ends in, which is a line that
-/// starts with a pipe and has fewer cells than the header or no closing
-/// pipe yet.
+/// `text` without its open last line where that line, still coming,
+/// changes what stands above it. That's the open last row of a table it
+/// ends in, a line that starts with a pipe and has fewer cells than the
+/// header or no closing pipe yet, and a line of `-` or `=` alone, which
+/// would make the paragraph above a heading until it becomes a list's item
+/// or a rule.
 fn without_open_row(text: &str) -> &str {
     let start = text.rfind('\n').map_or(0, |at| at + 1);
-    let last = text[start..].trim();
-    if !last.starts_with('|') || start == 0 {
+    let line = &text[start..];
+    let last = line.trim();
+    if start == 0 {
+        return text;
+    }
+    let indent = line.len() - line.trim_start().len();
+    let underline =
+        !last.is_empty() && (last.chars().all(|c| c == '-') || last.chars().all(|c| c == '='));
+    if underline && indent < 4 {
+        return &text[..start];
+    }
+    if !last.starts_with('|') {
         return text;
     }
     let header = text[..start]
@@ -762,5 +775,22 @@ mod tests {
         // A text that's finished shows every row.
         let (_, html) = Blocks::default().update("| a | b |\n|---|---|\n| 3 |", false);
         assert!(html.contains("<td>3</td>"), "{html}");
+    }
+
+    /// A line of `-` streaming under a paragraph waits for the rest of its
+    /// line, so the paragraph doesn't show as a heading for a moment before
+    /// a list's item comes.
+    #[test]
+    fn a_dash_that_may_start_a_list_waits_for_its_line() {
+        assert_eq!(without_open_row("Two files\n-"), "Two files\n");
+        assert_eq!(without_open_row("Two files\n- "), "Two files\n");
+        assert_eq!(without_open_row("Two files\n=="), "Two files\n");
+        assert_eq!(
+            without_open_row("Two files\n- the first"),
+            "Two files\n- the first"
+        );
+        assert_eq!(without_open_row("-"), "-");
+        // Indented four spaces, it's code, and shows.
+        assert_eq!(without_open_row("Two files\n    -"), "Two files\n    -");
     }
 }
