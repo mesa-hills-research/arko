@@ -44,6 +44,8 @@ mod resume_picker;
 mod screen;
 #[cfg(test)]
 mod scroll_tests;
+#[cfg(test)]
+mod following_tests;
 mod select;
 #[cfg(test)]
 mod shift_tests;

@@ -53,9 +53,17 @@ struct Press {
     /// A double or triple click chose what is highlighted (a word, a
     /// line), and it stays so unless the mouse drags on.
     chosen: bool,
-    /// The view followed the bottom when the button went down, so a click
-    /// (no drag) leaves it following.
-    following: bool,
+}
+
+impl Press {
+    /// How the press ends for the transcript, a click or a drag that copies.
+    fn release(&self) -> super::transcript::Release {
+        if self.dragged {
+            super::transcript::Release::Drag
+        } else {
+            super::transcript::Release::Click
+        }
+    }
 }
 
 /// The left button pressed on the answer panel's text, with where the press
@@ -1355,9 +1363,9 @@ impl App {
             self.menu.dismissed = Some(self.editor.shown());
         } else if self.watching.is_some() {
             self.watching = None;
-            self.transcript.follow();
-        } else if !self.transcript.following() {
-            self.transcript.follow();
+            self.transcript.back_to_main();
+        } else {
+            self.transcript.escape();
         }
     }
 
@@ -1604,9 +1612,15 @@ impl App {
 
     /// Shows the worker `id`'s own transcript (`None` is the main one).
     pub fn watch(&mut self, id: Option<String>) {
+        let from_main = self.watching.is_none();
         self.watching = id;
         self.transcript.selection = None;
-        self.transcript.follow();
+        match (self.watching.is_some(), from_main) {
+            // The main view keeps the reader's place for their way back.
+            (true, true) => self.transcript.leave_main(),
+            (false, false) => self.transcript.back_to_main(),
+            _ => self.transcript.follow(),
+        }
     }
 
     /// Enter sends what is typed. The view's own commands run here, and the
@@ -2194,7 +2208,7 @@ impl App {
                     self.mouse = !self.mouse;
                     if !self.mouse {
                         // No release comes while the mouse is off.
-                        self.transcript.release();
+                        self.transcript.release(self.release());
                         self.press = None;
                         self.docked_press = None;
                     }
@@ -2612,7 +2626,7 @@ impl App {
     pub fn focus_changed(&mut self, focused: bool) {
         self.focused = focused;
         if !focused {
-            self.transcript.release();
+            self.transcript.release(self.release());
         }
     }
 
@@ -2636,6 +2650,8 @@ impl App {
                     };
                 }
             }
+            // Over any other overlay, it moves nothing behind it.
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if self.overlay.is_some() => {}
             // Over the agent list, the wheel scrolls it, a worker at a time,
             // when it has workers to scroll to.
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -2720,7 +2736,6 @@ impl App {
                 };
                 // The text under the mouse holds still from the press, since what
                 // the press found is what a drag starts from.
-                let following = self.transcript.following();
                 self.transcript.hold();
                 self.press = Some(match span {
                     Some((from, to)) => {
@@ -2730,7 +2745,6 @@ impl App {
                             at: (x, y),
                             dragged: true,
                             chosen: true,
-                            following,
                         }
                     }
                     None => Press {
@@ -2738,7 +2752,6 @@ impl App {
                         at: (x, y),
                         dragged: false,
                         chosen: false,
-                        following,
                     },
                 });
             }
@@ -2782,17 +2795,12 @@ impl App {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                self.transcript.release();
+                self.transcript.release(self.release());
                 match self.press.take() {
                     Some(press) if press.dragged => self.copy_selection(),
                     // A click (no drag) never copies, it opens what it is on.
                     // (From where the press held the view, so nothing moves.)
-                    press => {
-                        if press.is_some_and(|press| press.following) {
-                            self.transcript.follow_on();
-                        }
-                        self.click(at);
-                    }
+                    _ => self.click(at),
                 }
             }
             _ => {}
@@ -2812,6 +2820,14 @@ impl App {
             let anchor = press.anchor;
             self.transcript.select(anchor, head, &filter);
         }
+    }
+
+    /// How the press that holds the transcript would end now, as a click or
+    /// as a drag that copies.
+    fn release(&self) -> super::transcript::Release {
+        self.press
+            .as_ref()
+            .map_or(super::transcript::Release::Drag, Press::release)
     }
 
     /// Copies what is highlighted, and says how much.

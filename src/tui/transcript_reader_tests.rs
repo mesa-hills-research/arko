@@ -362,12 +362,8 @@ fn a_frame_reads_a_thoughts_text_only_when_it_changes() {
 /// release.
 fn click(t: &mut Transcript, x: u16, y: u16, filter: &Filter) {
     let theme = Theme::terminal();
-    let following = t.following();
     t.hold();
-    t.release();
-    if following {
-        t.follow_on();
-    }
+    t.release(Release::Click);
     if let Some(key) = t.drawn.key_at(x, y) {
         if t.is_counter(key) {
             t.toggle_count(key, y);
@@ -488,8 +484,8 @@ fn a_fold_opened_and_closed_by_the_keyboard_follows_on() {
 
 /// Scrolled up a row into the blank rows below the end, the reader sees
 /// output fill them, with no marker while the end shows. Once output passes
-/// the bottom row, "↓ N new lines" shows and counts all that came since
-/// following stopped.
+/// the bottom row, "↓ N new lines" shows and counts the new rows below the
+/// last row, the ones the reader hasn't seen.
 #[test]
 fn the_marker_shows_once_output_passes_the_bottom_row() {
     let mut t = Transcript::new();
@@ -523,7 +519,12 @@ fn the_marker_shows_once_output_passes_the_bottom_row() {
     }
     let rows = screen(&mut t, &filter, 40, 10);
     assert!(rows[9].contains("more 23"), "{rows:?}");
-    assert!(rows[9].contains("4 new lines"), "{rows:?}");
+    assert!(rows[9].contains("2 new lines"), "{rows:?}");
+    // A row down shows one of them, and the marker counts the other.
+    t.scroll(1);
+    let rows = screen(&mut t, &filter, 40, 10);
+    assert!(rows[9].contains("more 24"), "{rows:?}");
+    assert!(rows[9].contains("1 new line"), "{rows:?}");
 }
 
 /// A Quiet row of one command whose line cut its words opens to the command
@@ -1092,7 +1093,6 @@ fn a_reader_at_random_sees_every_block_as_it_is() {
                             rng.below(width as u64) as u16,
                             rng.below(height.max(1) as u64) as u16,
                         );
-                        let following = t.following();
                         t.hold();
                         if rng.below(3) == 0 {
                             last = frame(&mut t, &filter, width, height);
@@ -1100,10 +1100,7 @@ fn a_reader_at_random_sees_every_block_as_it_is() {
                                 format!("seed {seed} {view:?} step {step} held: {wrong}")
                             }));
                         }
-                        t.release();
-                        if following {
-                            t.follow_on();
-                        }
+                        t.release(Release::Click);
                         if let Some(key) = t.drawn.key_at(x, y) {
                             if t.is_counter(key) {
                                 t.toggle_count(key, y);
@@ -1145,7 +1142,11 @@ fn a_reader_at_random_sees_every_block_as_it_is() {
                         "hold"
                     }
                     16 => {
-                        t.release();
+                        t.release(if rng.below(2) == 0 {
+                            Release::Click
+                        } else {
+                            Release::Drag
+                        });
                         "release"
                     }
                     17 => {

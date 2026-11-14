@@ -20,10 +20,10 @@ use crate::tui::theme::{Catalog, Depth};
 use crate::tui::transcript::View;
 
 /// Numbers from a seed, so a session plays the same each time.
-struct Rng(u64);
+pub(super) struct Rng(pub(super) u64);
 
 impl Rng {
-    fn below(&mut self, n: u64) -> u64 {
+    pub(super) fn below(&mut self, n: u64) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
@@ -32,23 +32,23 @@ impl Rng {
 }
 
 /// What a step of the session did, for the messages of a failing check.
-type Each<'a> = dyn FnMut(&mut App, &str) + 'a;
+pub(super) type Each<'a> = dyn FnMut(&mut App, &str) + 'a;
 
 /// An agent's session, played into an app a change at a time. Every word of
 /// its text is a word no other has, so each line on the screen can be found
 /// again in the next frame.
-struct Session {
-    app: App,
-    rng: Rng,
+pub(super) struct Session {
+    pub(super) app: App,
+    pub(super) rng: Rng,
     id: u64,
     at: i64,
     word: u64,
     /// A command that runs on while turns go by, and its words.
-    long: Option<(u64, String)>,
+    pub(super) long: Option<(u64, String)>,
 }
 
 impl Session {
-    fn new(seed: u64, view: View) -> Self {
+    pub(super) fn new(seed: u64, view: View) -> Self {
         let mut app = App::new(
             crate::remote::Snapshot::default(),
             Editor::new(History::load(None)),
@@ -68,7 +68,7 @@ impl Session {
     }
 
     /// `n` words no other text has.
-    fn words(&mut self, n: u64) -> String {
+    pub(super) fn words(&mut self, n: u64) -> String {
         let words: Vec<String> = (0..n)
             .map(|_| {
                 self.word += 1;
@@ -78,7 +78,7 @@ impl Session {
         words.join(" ")
     }
 
-    fn item(&mut self, kind: Kind, text: &str) -> Item {
+    pub(super) fn item(&mut self, kind: Kind, text: &str) -> Item {
         self.id += 1;
         self.at += 10;
         let mut item = Item::new(kind, text);
@@ -88,19 +88,19 @@ impl Session {
         item
     }
 
-    fn add(&mut self, item: Item) -> u64 {
+    pub(super) fn add(&mut self, item: Item) -> u64 {
         let id = item.id;
         self.app.update(Update::Item(item), Activity::default);
         id
     }
 
-    fn append(&mut self, id: u64, text: &str) {
+    pub(super) fn append(&mut self, id: u64, text: &str) {
         let text = text.to_string();
         self.app
             .update(Update::Append { id, text }, Activity::default);
     }
 
-    fn works(&mut self, working: bool) {
+    pub(super) fn works(&mut self, working: bool) {
         self.app.set_activity(Activity {
             reporting: false,
             working,
@@ -110,7 +110,7 @@ impl Session {
     }
 
     /// A command, running.
-    fn command(&mut self, words: &str) -> Item {
+    pub(super) fn command(&mut self, words: &str) -> Item {
         let mut call = self.item(Kind::Call, &format!("$ cargo test {words}"));
         call.status = Some(CallStatus::Running);
         call.act = Some(Act {
@@ -123,7 +123,7 @@ impl Session {
     }
 
     /// The command `call` ends, `lines` long, with its content.
-    fn ends(&mut self, call: u64, words: &str, lines: u64) {
+    pub(super) fn ends(&mut self, call: u64, words: &str, lines: u64) {
         let text: Vec<String> = (0..lines.max(1))
             .map(|line| format!("test {words} {line} ... ok"))
             .collect();
@@ -141,7 +141,7 @@ impl Session {
 
     /// A turn, from the user's message to its end, calling `each` after each
     /// change the screen could show.
-    fn turn(&mut self, each: &mut Each) {
+    pub(super) fn turn(&mut self, each: &mut Each) {
         let mut user = self.item(Kind::User, "");
         let n = 4 + self.rng.below(10);
         user.text = format!("Please {}", self.words(n));
@@ -209,7 +209,7 @@ impl Session {
 
 /// The transcript's rows on the emulator's screen, without their trailing
 /// spaces.
-fn transcript_rows(terminal: &TestTerminal, app: &App) -> Vec<String> {
+pub(super) fn transcript_rows(terminal: &TestTerminal, app: &App) -> Vec<String> {
     let area = app.transcript.drawn.area;
     let rows = terminal.screen().rows();
     rows[area.y as usize..area.bottom() as usize].to_vec()
@@ -217,7 +217,7 @@ fn transcript_rows(terminal: &TestTerminal, app: &App) -> Vec<String> {
 
 /// Draws a frame on `terminal`, and checks that the emulator shows what the
 /// frame drew.
-fn frame(terminal: &mut TestTerminal, app: &mut App) -> Vec<String> {
+pub(super) fn frame(terminal: &mut TestTerminal, app: &mut App) -> Vec<String> {
     let drawn = terminal.draw(|frame| draw(frame, app)).unwrap();
     let buffer = drawn.buffer().clone();
     let area = buffer.area();
@@ -240,7 +240,7 @@ fn moves_by_itself(row: &str) -> bool {
 }
 
 /// The rows with text that no other row has, with where they are.
-fn unique(rows: &[String]) -> Vec<(&str, usize)> {
+pub(super) fn unique(rows: &[String]) -> Vec<(&str, usize)> {
     let mut seen: std::collections::HashMap<&str, (usize, usize)> = Default::default();
     for (y, row) in rows.iter().enumerate() {
         let text = row.trim();
@@ -256,7 +256,7 @@ fn unique(rows: &[String]) -> Vec<(&str, usize)> {
 }
 
 /// The first word of `row`'s text, past its marker.
-fn first_word(row: &str) -> Option<&str> {
+pub(super) fn first_word(row: &str) -> Option<&str> {
     row.split_whitespace().find(|word| word.starts_with('w'))
 }
 
@@ -379,7 +379,7 @@ fn scrolled_up_the_text_at_the_top_holds() {
 }
 
 /// A click, pressed and let go, on the transcript's row `y`.
-fn click(app: &mut App, y: usize) {
+pub(super) fn click(app: &mut App, y: usize) {
     let area = app.transcript.drawn.area;
     let y = area.y + u16::try_from(y).unwrap();
     for kind in [
@@ -391,7 +391,7 @@ fn click(app: &mut App, y: usize) {
 }
 
 /// A notch of the wheel over the transcript.
-fn wheel(app: &mut App, kind: MouseEventKind) {
+pub(super) fn wheel(app: &mut App, kind: MouseEventKind) {
     let area = app.transcript.drawn.area;
     app.mouse(MouseEvent::new(
         kind,
@@ -402,7 +402,7 @@ fn wheel(app: &mut App, kind: MouseEventKind) {
 }
 
 /// No line of `after` is lower than in `before`.
-fn assert_none_lower(before: &[String], after: &[String], what: &str) {
+pub(super) fn assert_none_lower(before: &[String], after: &[String], what: &str) {
     let now = unique(after);
     for (text, was) in unique(before) {
         if let Some((_, y)) = now.iter().find(|(row, _)| *row == text) {
