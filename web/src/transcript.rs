@@ -1053,8 +1053,9 @@ fn call_line(
 
 /// A call's row in Full, its line, which opens to its detail and its
 /// content (its result's row, under it) when it has them. A command's is
-/// open from the start. The images its tool returned show under it, open
-/// or not.
+/// open from the start, and stands apart while it runs as it will once its
+/// output shows, so its line stays where it is when that comes. The images
+/// its tool returned show under it, open or not.
 fn call_row(cell: RowCell) -> AnyView {
     let page = page();
     let data = cell.data;
@@ -1069,6 +1070,11 @@ fn call_row(cell: RowCell) -> AnyView {
         data.with(|item| item.detail.is_some()) || (own && content.get()) || cut.get()
     };
     let open = move || folds() && full_open(page, id, command);
+    let apart = move || {
+        full_open(page, id, command)
+            && !folds()
+            && data.with(|item| command && item.status == Some(CallStatus::Running))
+    };
     // (Its triangle turns as it opens.)
     let mark = move || if folds() { "▸" } else { "" };
     let detail = move || {
@@ -1084,7 +1090,7 @@ fn call_row(cell: RowCell) -> AnyView {
         })
     };
     view! {
-        <details class="call" prop:open=open>
+        <details class="call" class:apart=apart prop:open=open>
             <summary
                 node_ref=summary
                 tabindex=move || if folds() { "0" } else { "-1" }
@@ -1474,6 +1480,48 @@ mod tests {
                 "{live}"
             );
         });
+    }
+
+    /// A command in Full stands apart while it runs, as it will once its
+    /// output opens under it, so it doesn't move when that comes. One that
+    /// ends with nothing to show stacks again, and so does one the reader
+    /// closed.
+    #[test]
+    fn a_running_command_stands_apart() {
+        use crate::protocol::Act;
+        use crate::store::tests::item;
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            let call = |status: CallStatus| {
+                let mut call = item(1, Kind::Call, MAIN, "$ make");
+                call.status = Some(status);
+                call.act = Some(Act {
+                    kind: ActKind::Command,
+                    target: "make".into(),
+                    ..Act::default()
+                });
+                RowCell {
+                    data: RwSignal::new(call),
+                    text: RwSignal::new("$ make".into()),
+                    code: RwSignal::new(0),
+                }
+            };
+            let running = call_row(call(CallStatus::Running)).to_html();
+            assert!(
+                running.contains("<details class=\"call apart\""),
+                "{running}"
+            );
+            let ended = call_row(call(CallStatus::Ok)).to_html();
+            assert!(ended.contains("<details class=\"call\""), "{ended}");
+            page.flipped.toggle(1);
+            let closed = call_row(call(CallStatus::Running)).to_html();
+            assert!(closed.contains("<details class=\"call\""), "{closed}");
+        });
+        let css = include_str!("../style/app.css");
+        assert!(css.contains(
+            ".row:is(.call:has(> details:is([open], .apart)), .thinking.open) { margin: 12px 0; }"
+        ));
     }
 
     /// Another feed's rows are other rows, whatever their items' IDs.

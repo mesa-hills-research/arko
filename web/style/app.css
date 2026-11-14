@@ -368,10 +368,12 @@ button.cache { padding: 0; border: 0; background: none; }
 /* What is said stands 12 px from its neighbours, and the user's message
    24 px from what is above it. The agent's work is a list of single lines
    4 px apart, and anything open stands 12 px from its neighbours. Margins
-   collapse, so gaps never add up. */
+   collapse, so gaps never add up. A command in Full stands apart while it
+   runs, as it will once its output opens under it, so it doesn't move when
+   that comes. */
 .row { margin: 12px 0; overflow-wrap: anywhere; }
 .row:is(.call, .count, .thinking, .working, .notice) { margin: 4px 0; }
-.row:is(.call:has(> details[open]), .thinking.open) { margin: 12px 0; }
+.row:is(.call:has(> details:is([open], .apart)), .thinking.open) { margin: 12px 0; }
 /* A call's content in Full is under its line, and the gap is after it. */
 .row.call:has(> details[open]):has(+ .row.result) { margin-bottom: 0; }
 
