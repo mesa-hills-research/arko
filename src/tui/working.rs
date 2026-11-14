@@ -110,12 +110,16 @@ mod tests {
             }
             Above::Notice => add(&mut app, item(100, Kind::Notice, "r1 reported")),
             Above::Worker => {
-                // The agent's call that started the worker, which the
-                // worker's line stands for in the Quiet view.
-                let mut start = call(100, "start r1", CallStatus::Ok);
-                start.started = Some("r1".into());
+                // The agent's call that started the worker, which is the
+                // worker's row, with its task and the worker's line.
+                let mut start = crate::tui::inventory_tests::worker_start("r1", "Task of r1");
+                start.id = 100;
                 add(&mut app, start);
-                let mut line = item(101, Kind::WorkerLine, "");
+                let mut task = item(101, Kind::Result, "Task of r1");
+                task.call = Some(100);
+                task.content = Some(crate::remote::ContentKind::Muted);
+                add(&mut app, task);
+                let mut line = item(102, Kind::WorkerLine, "Task of r1");
                 line.worker = Some("r1".into());
                 add(&mut app, line);
                 app.transcript

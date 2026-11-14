@@ -1,6 +1,6 @@
 size 80 24
 cursor 0 0 hidden
-text 0 "  │ Worksp┌ Quit Arko ───────────────────────────────────────────────┐       │"
+text 0 "  │ Tools ┌ Quit Arko ───────────────────────────────────────────────┐       │"
 style 0 0 2 fg=#dedede bg=#131313
 style 0 2 4 fg=#303030 bg=#131313
 style 0 4 10 fg=#9d9d9d bg=#131313
@@ -10,45 +10,34 @@ style 0 22 70 fg=#303030 bg=#101010
 style 0 70 76 fg=#dedede bg=#131313
 style 0 76 78 fg=#303030 bg=#131313
 style 0 78 80 fg=#dedede bg=#131313
-text 1 "  │ Sessio│                                                          │       │"
+text 1 "  └───────│                                                          │───────┘"
 style 1 0 2 fg=#dedede bg=#131313
-style 1 2 4 fg=#303030 bg=#131313
-style 1 4 10 fg=#9d9d9d bg=#131313
+style 1 2 10 fg=#303030 bg=#131313
 style 1 10 11 fg=#303030 bg=#101010
 style 1 11 69 fg=#dedede bg=#101010
 style 1 69 70 fg=#303030 bg=#101010
-style 1 70 76 fg=#dedede bg=#131313
-style 1 76 78 fg=#303030 bg=#131313
+style 1 70 78 fg=#303030 bg=#131313
 style 1 78 80 fg=#dedede bg=#131313
-text 2 "  │ Projec│ 2 background jobs are running. They stop when Arko       │       │"
-style 2 0 2 fg=#dedede bg=#131313
-style 2 2 4 fg=#303030 bg=#131313
-style 2 4 10 fg=#9d9d9d bg=#131313
+text 2 "          │ 2 background jobs are running. They stop when Arko       │"
+style 2 0 10 fg=#dedede bg=#131313
 style 2 10 11 fg=#303030 bg=#101010
 style 2 11 69 fg=#dedede bg=#101010
 style 2 69 70 fg=#303030 bg=#101010
-style 2 70 76 fg=#dedede bg=#131313
-style 2 76 78 fg=#303030 bg=#131313
-style 2 78 80 fg=#dedede bg=#131313
-text 3 "  │ Tools │ exits.                                                   │       │"
-style 3 0 2 fg=#dedede bg=#131313
-style 3 2 4 fg=#303030 bg=#131313
-style 3 4 10 fg=#9d9d9d bg=#131313
+style 2 70 80 fg=#dedede bg=#131313
+text 3 "▎ Check th│ exits.                                                   │"
+style 3 0 2 fg=#419cff bg=#202020
+style 3 2 10 fg=#dedede bg=#202020
 style 3 10 11 fg=#303030 bg=#101010
 style 3 11 69 fg=#dedede bg=#101010
 style 3 69 70 fg=#303030 bg=#101010
-style 3 70 76 fg=#dedede bg=#131313
-style 3 76 78 fg=#303030 bg=#131313
-style 3 78 80 fg=#dedede bg=#131313
-text 4 "  └───────│                                                          │───────┘"
-style 4 0 2 fg=#dedede bg=#131313
-style 4 2 10 fg=#303030 bg=#131313
+style 3 70 80 fg=#dedede bg=#202020
+text 4 "          │                                                          │"
+style 4 0 10 fg=#dedede bg=#131313
 style 4 10 11 fg=#303030 bg=#101010
 style 4 11 69 fg=#dedede bg=#101010
 style 4 69 70 fg=#303030 bg=#101010
-style 4 70 78 fg=#303030 bg=#131313
-style 4 78 80 fg=#dedede bg=#131313
-text 5 "          │   cargo watch -x test                                 2m │"
+style 4 70 80 fg=#dedede bg=#131313
+text 5 "  I'll sta│   cargo watch -x test                                 2m │"
 style 5 0 10 fg=#dedede bg=#131313
 style 5 10 11 fg=#303030 bg=#101010
 style 5 11 66 fg=#dedede bg=#101010
@@ -56,35 +45,40 @@ style 5 66 68 fg=#9d9d9d bg=#101010
 style 5 68 69 fg=#dedede bg=#101010
 style 5 69 70 fg=#303030 bg=#101010
 style 5 70 80 fg=#dedede bg=#131313
-text 6 "▎ Check th│   npm run dev                                      1h 1m │"
-style 6 0 2 fg=#419cff bg=#202020
-style 6 2 10 fg=#dedede bg=#202020
+text 6 "          │   npm run dev                                      1h 1m │"
+style 6 0 10 fg=#dedede bg=#131313
 style 6 10 11 fg=#303030 bg=#101010
 style 6 11 63 fg=#dedede bg=#101010
 style 6 63 68 fg=#9d9d9d bg=#101010
 style 6 68 69 fg=#dedede bg=#101010
 style 6 69 70 fg=#303030 bg=#101010
-style 6 70 80 fg=#dedede bg=#202020
-text 7 "          │                                                          │"
-style 7 0 10 fg=#dedede bg=#131313
+style 6 70 80 fg=#dedede bg=#131313
+text 7 "▸ r1 Check│                                                          │"
+style 7 0 2 fg=#9d9d9d bg=#131313
+style 7 2 5 fg=#dedede bg=#131313 bold
+style 7 5 10 fg=#dedede bg=#131313
 style 7 10 11 fg=#303030 bg=#101010
 style 7 11 69 fg=#dedede bg=#101010
 style 7 69 70 fg=#303030 bg=#101010
 style 7 70 80 fg=#dedede bg=#131313
-text 8 "  I'll sta│ Quit now?                                                │"
-style 8 0 10 fg=#dedede bg=#131313
+text 8 "▸ r2 Read │ Quit now?                                                │"
+style 8 0 2 fg=#9d9d9d bg=#131313
+style 8 2 5 fg=#dedede bg=#131313 bold
+style 8 5 10 fg=#dedede bg=#131313
 style 8 10 11 fg=#303030 bg=#101010
 style 8 11 69 fg=#dedede bg=#101010
 style 8 69 70 fg=#303030 bg=#101010
 style 8 70 80 fg=#dedede bg=#131313
-text 9 "          │                                                          │"
-style 9 0 10 fg=#dedede bg=#131313
+text 9 "▸ r3 Updat│                                                          │"
+style 9 0 2 fg=#9d9d9d bg=#131313
+style 9 2 5 fg=#dedede bg=#131313 bold
+style 9 5 10 fg=#dedede bg=#131313
 style 9 10 11 fg=#303030 bg=#101010
 style 9 11 69 fg=#dedede bg=#101010
 style 9 69 70 fg=#303030 bg=#101010
 style 9 70 80 fg=#dedede bg=#131313
-text 10 "  r1 Check│  Yes    No      [ ] Don't ask again                      │"
-style 10 0 2 fg=#dedede bg=#131313
+text 10 "▸ r2 repor│  Yes    No      [ ] Don't ask again                      │"
+style 10 0 2 fg=#9d9d9d bg=#131313
 style 10 2 5 fg=#dedede bg=#131313 bold
 style 10 5 10 fg=#dedede bg=#131313
 style 10 10 11 fg=#303030 bg=#101010
@@ -95,18 +89,22 @@ style 10 19 23 fg=#dedede bg=#232323
 style 10 23 69 fg=#dedede bg=#101010
 style 10 69 70 fg=#303030 bg=#101010
 style 10 70 80 fg=#dedede bg=#131313
-text 11 "  r2 Read │                                                          │"
-style 11 0 2 fg=#dedede bg=#131313
-style 11 2 5 fg=#dedede bg=#131313 bold
-style 11 5 10 fg=#dedede bg=#131313
+text 11 "          │                                                          │"
+style 11 0 10 fg=#dedede bg=#131313
 style 11 10 11 fg=#303030 bg=#101010
 style 11 11 69 fg=#dedede bg=#101010
 style 11 69 70 fg=#303030 bg=#101010
 style 11 70 80 fg=#dedede bg=#131313
-text 12 "  r3 Updat└────────────────── ← →  move   Enter  choose   Esc  stay ─┘"
-style 12 0 2 fg=#dedede bg=#131313
-style 12 2 5 fg=#dedede bg=#131313 bold
-style 12 5 10 fg=#dedede bg=#131313
+text 12 "⣟ Working…└────────────────── ← →  move   Enter  choose   Esc  stay ─┘"
+style 12 0 1 fg=#9d9d9d bg=#131313
+style 12 1 2 fg=#dedede bg=#131313
+style 12 2 3 fg=#9d9d9d bg=#131313
+style 12 3 4 fg=#a1a1a1 bg=#131313
+style 12 4 5 fg=#bebebe bg=#131313
+style 12 5 7 fg=#dadada bg=#131313
+style 12 7 8 fg=#bebebe bg=#131313
+style 12 8 9 fg=#a1a1a1 bg=#131313
+style 12 9 10 fg=#9d9d9d bg=#131313
 style 12 10 29 fg=#303030 bg=#101010
 style 12 29 34 fg=#dedede bg=#232323
 style 12 34 39 fg=#9d9d9d bg=#101010
@@ -118,10 +116,8 @@ style 12 57 62 fg=#dedede bg=#232323
 style 12 62 67 fg=#9d9d9d bg=#101010
 style 12 67 70 fg=#303030 bg=#101010
 style 12 70 80 fg=#dedede bg=#131313
-text 13 "▸ r2 reported"
-style 13 0 2 fg=#9d9d9d bg=#131313
-style 13 2 5 fg=#dedede bg=#131313 bold
-style 13 5 80 fg=#dedede bg=#131313
+text 13 ""
+style 13 0 80 fg=#dedede bg=#131313
 text 14 "────────────────────────────────────────────────────────────────────────────────"
 style 14 0 80 fg=#303030 bg=#131313
 text 15 " ● working 1m00s · 142k/250k · main: $3.20                         Ctrl+C  stop"

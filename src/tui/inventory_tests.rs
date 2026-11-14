@@ -608,6 +608,27 @@ pub(super) fn call(text: &str, status: CallStatus, outcome: Option<&str>, act: A
     item
 }
 
+/// The call that started `worker` on `task` at once, as the feed makes it
+/// once its result came. Its content is the task ([`content`]).
+pub(super) fn worker_start(worker: &str, task: &str) -> Item {
+    let mut item = call(
+        &format!("start worker “{task}”"),
+        CallStatus::Ok,
+        Some(worker),
+        Act {
+            doing: "Starting a worker".into(),
+            done: "Started a worker".into(),
+            verb: "start a worker".into(),
+            ..Act::default()
+        },
+    );
+    item.tool = Some(crate::crew::START_AGENT.into());
+    item.task_title = task.lines().next().map(str::to_string);
+    item.started = Some(worker.into());
+    item.sets = Some(worker.into());
+    item
+}
+
 /// The result of the call `call`, shown under it as `content`.
 pub(super) fn content(call: u64, kind: ContentKind, text: &str) -> Item {
     let mut item = Item::new(Kind::Result, text);
@@ -1027,21 +1048,24 @@ fn worker(id: &str, state: WorkerState, title: &str, seconds: i64) -> WorkerSumm
 }
 
 /// The main agent with four workers, r1 that runs and started r4, r2 that
-/// finished and r3 that failed, and their lines.
+/// finished and r3 that failed, their starts and their lines.
 fn crew(app: &mut App) {
     start(app);
     let now = now_ms();
     let mut items = Items::new(now);
     items.add(user("Check the quoting and the lexer, and update the docs"));
     items.add(Item::new(Kind::Text, "I'll start three workers."));
-    let line = |worker: &str, title: &str| {
-        let mut line = Item::new(Kind::WorkerLine, title);
+    for (worker, task) in [
+        ("r1", "Check the quoting tests"),
+        ("r2", "Read the lexer"),
+        ("r3", "Update the docs"),
+    ] {
+        let call = items.add(worker_start(worker, task));
+        items.add(content(call, ContentKind::Muted, task));
+        let mut line = Item::new(Kind::WorkerLine, task);
         line.worker = Some(worker.into());
-        line
-    };
-    items.add(line("r1", "Check the quoting tests"));
-    items.add(line("r2", "Read the lexer"));
-    items.add(line("r3", "Update the docs"));
+        items.add(line);
+    }
     // r1's own turn.
     items.add(Item::new(Kind::Text, "Reading tests/quoting.rs.").agent("r1"));
     let read = items.add(

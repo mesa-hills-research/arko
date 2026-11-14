@@ -1,68 +1,62 @@
 size 40 24
 cursor 3 17 visible default
-text 0 "  │ Project    AGENTS.md             │"
+text 0 "  └──────────────────────────────────┘"
 style 0 0 2 fg=#dedede bg=#131313
-style 0 2 4 fg=#303030 bg=#131313
-style 0 4 15 fg=#9d9d9d bg=#131313
-style 0 15 36 fg=#dedede bg=#131313
-style 0 36 38 fg=#303030 bg=#131313
+style 0 2 38 fg=#303030 bg=#131313
 style 0 38 40 fg=#dedede bg=#131313
-text 1 "  │ Tools      2 skills · 1 MCP      │"
-style 1 0 2 fg=#dedede bg=#131313
-style 1 2 4 fg=#303030 bg=#131313
-style 1 4 15 fg=#9d9d9d bg=#131313
-style 1 15 36 fg=#dedede bg=#131313
-style 1 36 38 fg=#303030 bg=#131313
-style 1 38 40 fg=#dedede bg=#131313
-text 2 "  │            server                │"
-style 2 0 2 fg=#dedede bg=#131313
-style 2 2 4 fg=#303030 bg=#131313
-style 2 4 15 fg=#9d9d9d bg=#131313
-style 2 15 36 fg=#dedede bg=#131313
-style 2 36 38 fg=#303030 bg=#131313
-style 2 38 40 fg=#dedede bg=#131313
-text 3 "  └──────────────────────────────────┘"
-style 3 0 2 fg=#dedede bg=#131313
-style 3 2 38 fg=#303030 bg=#131313
-style 3 38 40 fg=#dedede bg=#131313
+text 1 ""
+style 1 0 40 fg=#dedede bg=#131313
+text 2 "▎ Check the quoting and the lexer, and"
+style 2 0 2 fg=#419cff bg=#202020
+style 2 2 40 fg=#dedede bg=#202020
+text 3 "▎ update the docs"
+style 3 0 2 fg=#419cff bg=#202020
+style 3 2 40 fg=#dedede bg=#202020
 text 4 ""
 style 4 0 40 fg=#dedede bg=#131313
-text 5 "▎ Check the quoting and the lexer, and"
-style 5 0 2 fg=#419cff bg=#202020
-style 5 2 40 fg=#dedede bg=#202020
-text 6 "▎ update the docs"
-style 6 0 2 fg=#419cff bg=#202020
-style 6 2 40 fg=#dedede bg=#202020
-text 7 ""
-style 7 0 40 fg=#dedede bg=#131313
-text 8 "  I'll start three workers."
-style 8 0 40 fg=#dedede bg=#131313
-text 9 ""
-style 9 0 40 fg=#dedede bg=#131313
-text 10 "  r1 Check t… · running · 6 tool calls…"
-style 10 0 2 fg=#dedede bg=#131313
+text 5 "  I'll start three workers."
+style 5 0 40 fg=#dedede bg=#131313
+text 6 ""
+style 6 0 40 fg=#dedede bg=#131313
+text 7 "▸ r1 Check t… · running · 6 tool calls…"
+style 7 0 2 fg=#9d9d9d bg=#131313
+style 7 2 5 fg=#dedede bg=#131313 bold
+style 7 5 13 fg=#dedede bg=#131313
+style 7 13 16 fg=#9d9d9d bg=#131313
+style 7 16 23 fg=#419cff bg=#131313
+style 7 23 39 fg=#9d9d9d bg=#131313
+style 7 39 40 fg=#dedede bg=#131313
+text 8 "▸ r2 Read the lexer · 5 tool calls · 48s"
+style 8 0 2 fg=#9d9d9d bg=#131313
+style 8 2 5 fg=#dedede bg=#131313 bold
+style 8 5 19 fg=#dedede bg=#131313
+style 8 19 40 fg=#9d9d9d bg=#131313
+text 9 "▸ r3 Update… · failed · 3 tool calls · …"
+style 9 0 2 fg=#9d9d9d bg=#131313
+style 9 2 5 fg=#dedede bg=#131313 bold
+style 9 5 12 fg=#dedede bg=#131313
+style 9 12 15 fg=#9d9d9d bg=#131313
+style 9 15 21 fg=#ff5257 bg=#131313
+style 9 21 40 fg=#9d9d9d bg=#131313
+text 10 "▸ r2 reported"
+style 10 0 2 fg=#9d9d9d bg=#131313
 style 10 2 5 fg=#dedede bg=#131313 bold
-style 10 5 13 fg=#dedede bg=#131313
-style 10 13 16 fg=#9d9d9d bg=#131313
-style 10 16 23 fg=#419cff bg=#131313
-style 10 23 39 fg=#9d9d9d bg=#131313
-style 10 39 40 fg=#dedede bg=#131313
-text 11 "  r2 Read the lexer · 5 tool calls · 48s"
-style 11 0 2 fg=#dedede bg=#131313
-style 11 2 5 fg=#dedede bg=#131313 bold
-style 11 5 19 fg=#dedede bg=#131313
-style 11 19 40 fg=#9d9d9d bg=#131313
-text 12 "  r3 Update… · failed · 3 tool calls · …"
-style 12 0 2 fg=#dedede bg=#131313
-style 12 2 5 fg=#dedede bg=#131313 bold
-style 12 5 12 fg=#dedede bg=#131313
-style 12 12 15 fg=#9d9d9d bg=#131313
-style 12 15 21 fg=#ff5257 bg=#131313
-style 12 21 40 fg=#9d9d9d bg=#131313
-text 13 "▸ r2 reported"
-style 13 0 2 fg=#9d9d9d bg=#131313
-style 13 2 5 fg=#dedede bg=#131313 bold
-style 13 5 40 fg=#dedede bg=#131313
+style 10 5 40 fg=#dedede bg=#131313
+text 11 ""
+style 11 0 40 fg=#dedede bg=#131313
+text 12 "⣟ Working…"
+style 12 0 1 fg=#9d9d9d bg=#131313
+style 12 1 2 fg=#dedede bg=#131313
+style 12 2 3 fg=#9d9d9d bg=#131313
+style 12 3 4 fg=#a1a1a1 bg=#131313
+style 12 4 5 fg=#bebebe bg=#131313
+style 12 5 7 fg=#dadada bg=#131313
+style 12 7 8 fg=#bebebe bg=#131313
+style 12 8 9 fg=#a1a1a1 bg=#131313
+style 12 9 10 fg=#9d9d9d bg=#131313
+style 12 10 40 fg=#dedede bg=#131313
+text 13 ""
+style 13 0 40 fg=#dedede bg=#131313
 text 14 "────────────────────────────────────────"
 style 14 0 40 fg=#303030 bg=#131313
 text 15 " ● working 1m00s · 142k/250k · main: $3."
