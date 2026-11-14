@@ -1,0 +1,24 @@
+## 40
+· r1 · running · 6 tool calls · 1m
+· r2 · failed · 6 tool calls · 12s
+· r3 Check the quoting tests i… · queued
+· r4 Read the docs
+· r4 · running · 6 tool calls · 1m
+  r5 · stopped · 12 tool calls · 2m
+
+## 60
+· r1 Check the quoting tests… · running · 6 tool calls · 1m
+· r2 Check the quoting tests… · failed · 6 tool calls · 12s
+· r3 Check the quoting tests in the shell module a… · queued
+· r4 Read the docs
+· Messaged r4 · running · 6 tool calls · 1m
+  r5 Check the quoting tests… · stopped · 12 tool calls · 2m
+
+## 100
+· r1 Check the quoting tests in the shell module and their fixtures · running · 6 tool calls · 1m
+· r2 Check the quoting tests in the shell module and their fixtures · failed · 6 tool calls · 12s
+· r3 Check the quoting tests in the shell module and their fixtures · queued
+· r4 Read the docs
+· Messaged r4 · running · 6 tool calls · 1m
+  r5 Check the quoting tests in the shell module and their fixtures · stopped · 12 tool calls · 2m
+

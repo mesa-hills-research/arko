@@ -46,25 +46,24 @@ style 6 31 36 fg=#9d9d9d bg=#101010
 style 6 36 37 fg=#dedede bg=#101010
 style 6 37 38 fg=#303030 bg=#101010
 style 6 38 40 fg=#dedede bg=#131313
-text 7 "▸ │                                  │…"
+text 7 "▸ │                                  │"
 style 7 0 2 fg=#9d9d9d bg=#131313
 style 7 2 3 fg=#303030 bg=#101010
 style 7 3 37 fg=#dedede bg=#101010
 style 7 37 38 fg=#303030 bg=#101010
-style 7 38 39 fg=#9d9d9d bg=#131313
-style 7 39 40 fg=#dedede bg=#131313
+style 7 38 40 fg=#dedede bg=#131313
 text 8 "▸ │ Quit now?                        │8s"
 style 8 0 2 fg=#9d9d9d bg=#131313
 style 8 2 3 fg=#303030 bg=#101010
 style 8 3 37 fg=#dedede bg=#101010
 style 8 37 38 fg=#303030 bg=#101010
 style 8 38 40 fg=#9d9d9d bg=#131313
-text 9 "▸ │                                  │ …"
+text 9 "▸ │                                  │"
 style 9 0 2 fg=#9d9d9d bg=#131313
 style 9 2 3 fg=#303030 bg=#101010
 style 9 3 37 fg=#dedede bg=#101010
 style 9 37 38 fg=#303030 bg=#101010
-style 9 38 40 fg=#9d9d9d bg=#131313
+style 9 38 40 fg=#dedede bg=#131313
 text 10 "▸ │  Yes    No      [ ] Don't ask ag │"
 style 10 0 2 fg=#9d9d9d bg=#131313
 style 10 2 3 fg=#303030 bg=#101010

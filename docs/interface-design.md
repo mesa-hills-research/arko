@@ -109,6 +109,9 @@ of single lines under it.
   worker stands ("running", "queued", "failed" or "stopped"), its calls from the first, and how
   long it has run ("r1 Fix the flaky test · running · 3 tool calls · 41s"). A worker that finished
   says no state, and its report is a row of its own where it came ("r1 reported").
+- The ID, the state, the count and the time always show. On a narrow screen the title gives way to
+  them, cut down to eight columns and then left out ("r1 · running · 6 tool calls · 1m" at 40
+  columns). A message's row keeps the worker's ID in its place.
 - A click opens the row to the task.
 - A start that failed has ✗ at its right. One with nothing to open says how it ended ("stopped",
   "interrupted"), and one with a reason opens to it.

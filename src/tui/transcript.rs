@@ -430,6 +430,8 @@ struct WorkerFace {
     /// blank so the words don't move when it comes.
     reserve: usize,
     words: String,
+    /// What stands for the words where they don't fit ([`Going::short`]).
+    short: Option<String>,
     /// What follows the words ([`worker_facts`]), none for a row that a
     /// later one of its worker stands for.
     facts: Vec<(String, Tone)>,
@@ -863,6 +865,7 @@ impl Transcript {
             id: id.map(str::to_string),
             reserve,
             words: rendered(&words),
+            short: going.short().map(str::to_string),
             facts,
         }
     }
@@ -4617,14 +4620,7 @@ fn going_lines(
     // (A failed row's ✗ stands in its last column, two from its words.)
     let cross = if failed { 3 } else { 0 };
     let room = width.saturating_sub(MARGIN + cross).max(1);
-    let spans = worker_spans(
-        face.id.as_deref(),
-        face.reserve,
-        &face.words,
-        &face.facts,
-        theme,
-        room,
-    );
+    let spans = worker_spans(face, theme, room);
     let fold = look.folds.then_some(look.open);
     let style = if failed { theme.error() } else { theme.dim() };
     let mut lines = vec![Wrapped::line(spans).decorated(marker(fold_symbol(fold), style))];
@@ -4634,28 +4630,16 @@ fn going_lines(
     lines
 }
 
-/// A worker's row in `room` columns, its ID in bold (or `reserve` blank
-/// columns where the ID will come), its words cut to fit and its facts
-/// whole after them, each in its tone.
-fn worker_spans(
-    id: Option<&str>,
-    reserve: usize,
-    words: &str,
-    facts: &[(String, Tone)],
-    theme: &Theme,
-    room: usize,
-) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    match id {
-        Some(id) => spans.push(Span::styled(
-            format!("{id} "),
-            theme.text().add_modifier(Modifier::BOLD),
-        )),
-        None if reserve > 0 => spans.push(Span::raw(" ".repeat(reserve + 1))),
-        None => {}
-    }
+/// A worker's row ([`WorkerFace`]) in `room` columns, every part in its
+/// tone. Its ID (or the blank columns where the ID will come) and its facts
+/// show whole, and its words give way to them. Words with a short form
+/// show whole or as that form. Others are cut down to [`WORDS_MIN`] columns
+/// and then left out. Only facts too wide for the row on their own are cut,
+/// and then the words keep their few columns.
+fn worker_spans(face: &WorkerFace, theme: &Theme, room: usize) -> Vec<Span<'static>> {
+    let bold = theme.text().add_modifier(Modifier::BOLD);
     let mut tail = Vec::new();
-    for (fact, tone) in facts {
+    for (fact, tone) in &face.facts {
         tail.push(Span::styled(rendered(" · "), theme.dim()));
         let style = match tone {
             Tone::Muted => theme.dim(),
@@ -4668,16 +4652,46 @@ fn worker_spans(
     // (The feed may cut a title just after a space, which goes, so the
     // ellipsis follows the last word.)
     let ellipsis = glyphs::render("…");
-    let words = match words.strip_suffix(ellipsis.as_ref()) {
+    let words = match face.words.strip_suffix(ellipsis.as_ref()) {
         Some(head) if head.ends_with(char::is_whitespace) => {
             format!("{}{ellipsis}", head.trim_end())
         }
-        _ => words.to_string(),
+        _ => face.words.clone(),
     };
-    // The words give way to the facts, down to a few characters.
-    let used = spans_width(&spans) + spans_width(&tail);
-    let shown = cut_end(&words, room.saturating_sub(used).max(WORDS_MIN));
-    spans.push(Span::styled(shown, theme.text()));
+    let lead = match &face.id {
+        Some(id) => text_width(id) + 1,
+        None if face.reserve > 0 => face.reserve + 1,
+        None => 0,
+    };
+    let left = room.saturating_sub(lead + spans_width(&tail));
+    let facts_fit = lead + spans_width(&tail) <= room;
+    let shown = if text_width(&words) <= left {
+        Some(words)
+    } else if let Some(short) = &face.short {
+        Some(short.clone())
+    } else if left >= WORDS_MIN || !facts_fit {
+        Some(cut_end(&words, left.max(WORDS_MIN)))
+    } else {
+        None
+    }
+    .filter(|shown| !shown.is_empty());
+    let mut spans = Vec::new();
+    match (&face.id, &shown) {
+        (Some(id), Some(_)) => spans.push(Span::styled(format!("{id} "), bold)),
+        (Some(id), None) => spans.push(Span::styled(id.clone(), bold)),
+        (None, Some(_)) if face.reserve > 0 => {
+            spans.push(Span::raw(" ".repeat(face.reserve + 1)));
+        }
+        _ => {}
+    }
+    match shown {
+        Some(shown) => spans.push(Span::styled(shown, theme.text())),
+        // (With nothing before them, the facts start the row.)
+        None if spans.is_empty() && !tail.is_empty() => {
+            tail.remove(0);
+        }
+        None => {}
+    }
     spans.extend(tail);
     fit_spans(spans, room)
 }
@@ -5350,16 +5364,15 @@ fn worker_line(
         }
         _ => Vec::new(),
     };
+    let face = WorkerFace {
+        id: Some(id.to_string()),
+        words: rendered(title),
+        facts,
+        ..WorkerFace::default()
+    };
     let room = width.saturating_sub(MARGIN).max(1);
     let mut spans = vec![Span::raw(" ".repeat(MARGIN))];
-    spans.extend(worker_spans(
-        Some(id),
-        0,
-        &rendered(title),
-        &facts,
-        theme,
-        room,
-    ));
+    spans.extend(worker_spans(&face, theme, room));
     Line::from(spans)
 }
 
@@ -8551,6 +8564,103 @@ mod tests {
                 "{view:?}: {shown:?}"
             );
         }
+    }
+
+    /// A worker's row keeps its ID, its state, its count and its time at
+    /// every width, and its title gives way to them, cut and then dropped.
+    /// A message's row keeps its worker's ID in place of its words. The rows
+    /// are drawn at 40, 60 and 100 columns, in Quiet, and match
+    /// `tests/transcript/worker-rows.txt` (`UPDATE_GOLDENS=1` writes it
+    /// again).
+    #[test]
+    fn a_workers_row_keeps_its_facts_at_every_width() {
+        let _full = crate::glyphs::tests::choose_symbols(crate::glyphs::Symbols::Full);
+        let long = "Check the quoting tests in the shell module and their fixtures";
+        let mut t = Transcript::new();
+        t.apply(Update::Item(start_call(
+            1,
+            long,
+            CallStatus::Ok,
+            Some("r1"),
+        )));
+        t.apply(Update::Item(start_call(
+            2,
+            long,
+            CallStatus::Ok,
+            Some("r2"),
+        )));
+        t.apply(Update::Item(start_call(
+            3,
+            long,
+            CallStatus::Ok,
+            Some("r3"),
+        )));
+        t.apply(Update::Item(start_call(
+            4,
+            "Read the docs",
+            CallStatus::Ok,
+            Some("r4"),
+        )));
+        let mut again = item(5, Kind::Call, "message r4 “Fix the comment too.”");
+        again.turn = Some(2);
+        again.status = Some(CallStatus::Ok);
+        again.sets = Some("r4".into());
+        again.tool = Some(crate::crew::MESSAGE_AGENT.into());
+        again.act = Some(Act {
+            kind: ActKind::Message,
+            target: "r4".into(),
+            ..Act::default()
+        });
+        t.apply(Update::Item(again));
+        let mut line = item(6, Kind::WorkerLine, long);
+        line.worker = Some("r5".into());
+        line.turn = Some(3);
+        t.apply(Update::Item(line));
+        for (id, state, tool_calls, ran_ms) in [
+            ("r1", WorkerState::Running, 6, 60_000),
+            ("r2", WorkerState::Failed, 6, 12_000),
+            ("r3", WorkerState::Queued, 0, 0),
+            ("r4", WorkerState::Running, 6, 60_000),
+            ("r5", WorkerState::Stopped, 12, 125_000),
+        ] {
+            t.apply(Update::Worker(WorkerSummary {
+                title: if id == "r4" { "Read the docs" } else { long }.into(),
+                state,
+                tool_calls,
+                ran_ms,
+                ..WorkerSummary::new(id)
+            }));
+        }
+        let mut file = String::new();
+        for width in [40, 60, 100] {
+            let shown = rows(&mut t, &Filter::Main(View::Quiet), width, 12);
+            let shown: Vec<&String> = shown.iter().filter(|row| !row.is_empty()).collect();
+            let r1 = shown[0];
+            assert!(
+                r1.ends_with("· running · 6 tool calls · 1m"),
+                "{width}: {shown:?}"
+            );
+            assert!(
+                shown
+                    .iter()
+                    .all(|row| text_width(row) <= usize::from(width))
+            );
+            file.push_str(&format!("## {width}\n"));
+            for row in shown {
+                file.push_str(row);
+                file.push('\n');
+            }
+            file.push('\n');
+        }
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/transcript/worker-rows.txt"
+        );
+        if std::env::var_os("UPDATE_GOLDENS").is_some() {
+            std::fs::write(path, &file).unwrap();
+        }
+        let golden = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(golden == file, "worker-rows.txt differs:\n{file}");
     }
 
     /// The line of a worker that a worker started is in its parent's own

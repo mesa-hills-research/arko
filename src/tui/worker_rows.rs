@@ -66,6 +66,16 @@ impl<'a> Going<'a> {
             Going::Again(worker) => (None, format!("Messaged {worker}")),
         }
     }
+
+    /// What the row says in place of its words where they don't fit whole.
+    /// A message's row keeps its worker's ID, which a cut would lose, and a
+    /// start's ID leads its row anyway.
+    pub(super) fn short(self) -> Option<&'a str> {
+        match self {
+            Going::Start(_) => None,
+            Going::Again(worker) => Some(worker),
+        }
+    }
 }
 
 /// What a worker's row says after its ID and title, in order. That is its
@@ -286,6 +296,10 @@ mod tests {
         assert_eq!(
             Going::Again("r2").words("", None),
             (None, "Messaged r2".to_string())
+        );
+        assert_eq!(
+            (Going::Again("r2").short(), Going::Start(Some("r1")).short()),
+            (Some("r2"), None)
         );
         assert_eq!(going(&call(3, MESSAGE_AGENT, None, CallStatus::Ok)), None);
         assert_eq!(going(&call(4, "shell", Some("r1"), CallStatus::Ok)), None);
