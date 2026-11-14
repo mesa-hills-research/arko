@@ -37,14 +37,16 @@ override in `Cargo.lock`, so regenerate the lock without the override before com
 ## Building against a local termelon
 
 The full-screen view draws and runs on
-[termelon](https://github.com/mesa-hills-research/termelon), which comes from its GitHub repository
-at a fixed commit until it's on crates.io. To build against a local checkout, clone it beside this
-repository and add this override to `.cargo/config.toml`, which git ignores.
+[termelon](https://github.com/mesa-hills-research/termelon), from crates.io. To work on both
+together, clone it beside this repository and add this override to `.cargo/config.toml`.
 
 ```toml
-[patch."https://github.com/mesa-hills-research/termelon"]
+[patch.crates-io]
 termelon = { path = "../termelon/crates/termelon" }
 ```
+
+As with the framework, the checkout's version must match the one `Cargo.toml` asks for, and the
+lock must be regenerated without the override before committing.
 
 ## Dictation
 

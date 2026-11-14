@@ -3873,8 +3873,9 @@ dependencies = [
 
 [[package]]
 name = "termelon"
-version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/termelon?rev=c08b57d5e7cd6ccc556a4c9736034358fe5d15e3#c08b57d5e7cd6ccc556a4c9736034358fe5d15e3"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0182f7ab3b79d9c99a0a2d7026fddb800ade535e691a3462e00d4cc3b87b751"
 dependencies = [
  "rustix",
  "signal-hook",
@@ -3887,7 +3888,8 @@ dependencies = [
 [[package]]
 name = "termelon-vt"
 version = "0.1.0"
-source = "git+https://github.com/mesa-hills-research/termelon?rev=c08b57d5e7cd6ccc556a4c9736034358fe5d15e3#c08b57d5e7cd6ccc556a4c9736034358fe5d15e3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "195fb0bf266e3bac5c2e0ad1fa1e4c85d08bdf47b00561b093d2fbdf20b3d4e2"
 dependencies = [
  "unicode-segmentation",
  "unicode-width",
