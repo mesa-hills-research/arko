@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.22.0 (2026-11-14)
+
+### The transcript
+
+- A worker's start is one row, in Full, Quiet and Messages, where it drew the start call and then
+  the worker's line under it. The row names the task until the worker has an ID, then says how the
+  worker stands (queued, running, failed or stopped), its tool calls and its time, and opens to the
+  task. The words stay in place as the ID comes. On a narrow screen the title gives way first, so
+  the state, the tool calls and the time always show.
+- A message that sets a finished worker going again is that worker's row from then on, and only a
+  worker's latest row says how it stands. A worker's line still shows where no call of its turn
+  stands for it, with the · marker of a row, and it stays while another start or message of its
+  turn runs.
+- A start that failed with nothing to open says how it ended, such as "stopped", and a start with
+  an empty task says "Start a worker".
+- Counts of one take the singular. A command of two lines ends "(1 more line)" where it said
+  "(+1 lines)", and the same goes for "1 chunk in 1 file", "1 day ago" and the other counts, in the
+  terminal, on the web page and in the apps.
+
+### The web page
+
+- The page follows its end by the terminal's rules. It keeps your choice to follow or to read,
+  and following never moves a line down. When the end gets shorter, blank space stays below it
+  until new output fills it. A scroll up that moves a line stops following, and a scroll down that
+  brings the end into view, End, Esc, the marker and sending follow again.
+- "Latest" is now the marker "↓ N new lines", counting the lines below the screen, or "↓ end".
+- A fold keeps the clicked line where it was, and a panel, a menu or the message box that opens
+  and closes puts every line back. The page keeps its place when anything above the screen
+  changes.
+- The wheel, a touchpad and the keys scroll the transcript with no glide and no bounce.
+- A question card keeps its line as its record opens under it, inline code no longer makes its
+  line taller, and a line of "-" streaming under a paragraph no longer shows as a heading for a
+  moment.
+
+### Dictation
+
+- In English, dictation writes spoken symbols as code, so "dash dash force" comes out as `--force`.
+  It also writes a dictated path as the file of the session's workspace it names, so "source slash
+  engine dot rs" comes out as `src/engine.rs`. Prose stays as said. `workspace_paths` in
+  dictation.json turns both off, and [Dictation](docs/dictation.md) says more.
+
+### Dependencies
+
+- Telmo 0.5.0, for spoken symbols and paths.
+
+### For apps
+
+- `remote::Item` has two new public fields, `sets` and `task_title`, so code that builds one field
+  by field needs them. `Item::new` gives them.
+- `remote::plural` and `remote::noun` give a count's singular or plural, as the terminal and the
+  page use them.
+- `dictation::settings::Settings` has the new `workspace_paths` field.
+
 ## 0.21.0 (2026-11-14)
 
 ### The transcript
