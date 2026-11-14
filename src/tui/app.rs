@@ -5150,6 +5150,60 @@ pub(super) mod tests {
         assert_eq!(rows(&mut app)[3], "  line 6");
     }
 
+    /// Losing the focus with no press doesn't follow again, also where a
+    /// scroll up left the end in sight.
+    #[test]
+    fn losing_the_focus_after_a_scroll_up_keeps_the_view_where_it_is() {
+        use termelon::{buffer::Buffer, layout::Rect};
+        let mut app = app();
+        let line = |id: u64, text: &str| {
+            let mut item = Item::new(Kind::Output, text);
+            item.id = id;
+            item
+        };
+        for id in 1..=10 {
+            let text = format!("line {id}");
+            app.transcript
+                .apply(crate::remote::Update::Item(line(id, &text)));
+        }
+        app.transcript
+            .apply(crate::remote::Update::Item(line(11, "a\nb\nc")));
+        let area = Rect::new(0, 0, 20, 4);
+        let filter = Filter::Main(View::Full);
+        let theme = Theme::terminal();
+        let rows = |app: &mut App| -> Vec<String> {
+            let mut buffer = Buffer::empty(area);
+            app.transcript.draw(&mut buffer, area, &filter, &theme);
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buffer.symbol((x, y)).to_string())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect()
+        };
+        rows(&mut app);
+        // The end gets two lines shorter, and a row up leaves it in sight.
+        app.transcript
+            .apply(crate::remote::Update::Change(line(11, "a")));
+        rows(&mut app);
+        app.transcript.scroll(-1);
+        let up = rows(&mut app);
+        assert!(!app.transcript.following());
+        app.focus_changed(false);
+        assert_eq!(rows(&mut app), up);
+        assert!(!app.transcript.following());
+        // What comes next waits below.
+        for id in 12..=14 {
+            let text = format!("more {id}");
+            app.transcript
+                .apply(crate::remote::Update::Item(line(id, &text)));
+        }
+        assert_eq!(rows(&mut app)[..3], up[..3]);
+    }
+
     /// What a check of the ways finds while the names menu waits behind
     /// the answer panel shows in the menu once the panel closes.
     #[test]

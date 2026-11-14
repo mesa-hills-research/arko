@@ -2491,10 +2491,10 @@ impl Transcript {
     }
 
     /// The drag ended. Where the next frame shows the end, the view follows
-    /// again from there.
+    /// again from there. (Without a press that held the view, as when the
+    /// terminal loses the focus, nothing ended.)
     pub fn release(&mut self) {
-        self.hold = false;
-        self.acted.released = true;
+        self.acted.released |= std::mem::take(&mut self.hold);
     }
 
     /// The blank rows the last frame left below the end (tests).
