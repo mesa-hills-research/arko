@@ -2786,9 +2786,10 @@ impl App {
                 match self.press.take() {
                     Some(press) if press.dragged => self.copy_selection(),
                     // A click (no drag) never copies, it opens what it is on.
+                    // (From where the press held the view, so nothing moves.)
                     press => {
                         if press.is_some_and(|press| press.following) {
-                            self.transcript.follow();
+                            self.transcript.follow_on();
                         }
                         self.click(at);
                     }

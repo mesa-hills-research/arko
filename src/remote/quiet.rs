@@ -776,7 +776,7 @@ fn file_words(calls: &[Member], now: bool) -> String {
 /// worker that started it). Each is a row of its own, a status and not a
 /// call, that opens to its words. The rest of the worker's, its text, its
 /// calls and its conversation with the user, is in its own view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorkerRow {
     /// A report, the reply a run of the worker ended with.
     Reported,
@@ -785,7 +785,7 @@ pub enum WorkerRow {
 }
 
 /// How a worker's message to its lead stands, from its call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Sending {
     /// Its call runs.
     Running,

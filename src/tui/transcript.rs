@@ -12,19 +12,27 @@
 //! - **A worker's own** (the worker view) shows its text, calls, results and
 //!   report.
 //!
-//! The reading position is the reader's. While they are at the bottom the
-//! transcript follows what comes. Once they scroll up it stays where it is,
-//! anchored on the item at the top, however much comes below, and a marker
-//! counts what is new.
+//! The reading position is the reader's. The blocks of the view are the
+//! items of a [`FeedView`], which keeps the reader's place as a block and a
+//! row of it, and measures only the blocks it shows. While the reader
+//! follows the end the transcript follows what comes, and when the end gets
+//! shorter the rows above stay where they are, with up to [`GAP_LIMIT`]
+//! blank rows below it. Once they scroll up the screen stays where it is,
+//! however much comes, goes or grows elsewhere, and a marker counts what is
+//! new below. Only their own scroll moves the view.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use termelon::buffer::Buffer;
+use termelon::feed::{Anchor, Change, ItemId, Measure};
 use termelon::layout::Rect;
 use termelon::style::{Modifier, Style};
 use termelon::text::{Line, Span};
+use termelon::widgets::{FeedRows, FeedView};
 
 use super::markdown;
 use super::motion;
@@ -133,6 +141,8 @@ struct Cached {
     /// It was drawn as a worker's row in its lead's view.
     status: Option<quiet::WorkerRow>,
     lines: Vec<Wrapped>,
+    /// The lines' marks ([`body_marks`]), once something asked for them.
+    marks: Option<Vec<u64>>,
 }
 
 pub use crate::remote::protocol::duration;
@@ -198,6 +208,8 @@ struct QuietCached {
     lines: Vec<Wrapped>,
     /// Where each item's lines are among them, while the row is open.
     spans: Vec<(u64, std::ops::Range<usize>)>,
+    /// The lines' marks ([`body_marks`]), once something asked for them.
+    marks: Option<Vec<u64>>,
 }
 
 /// A line held on a row of the screen at the next draw, so the line a click
@@ -209,6 +221,19 @@ struct Pin {
     line: usize,
     /// The row of the area it stays on.
     row: usize,
+    /// The fold opened (else it closed).
+    opened: bool,
+}
+
+/// How the reader scrolled since the view was last drawn (taken at the next
+/// draw, after the view's blocks, which may be another view's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scroll {
+    None,
+    /// By this many rows, down when positive.
+    By(i64),
+    /// To the top, then by this many rows.
+    Top(i64),
 }
 
 /// What the keyboard is on (Ctrl+G): a block that opens (a Quiet row, a
@@ -296,36 +321,79 @@ struct Motion {
     label: Option<String>,
 }
 
-/// A block of lines in the drawn transcript.
+/// A block of lines in the drawn transcript, an item of the feed.
 struct Block {
-    /// The ID of its (first) item, where the reading position anchors.
+    /// The ID of its (first) item, its key in the feed.
     key: u64,
     shown: Shown,
     /// A blank line before it.
     gap: bool,
-    lines: usize,
     /// A blank line after it (the "Working…" line has one, at the end).
     tail: bool,
     /// It's open, so it stands apart from its neighbours by a blank line on
     /// each side.
     open: bool,
+    /// What its lines are drawn from, besides its items.
+    face: Face,
+    /// A number for everything its lines are made from, which changes when
+    /// they may have.
+    sig: u64,
 }
 
 impl Block {
-    fn height(&self) -> usize {
-        self.lines + usize::from(self.gap) + usize::from(self.tail)
+    /// A block that isn't an entry or a Quiet row, which stands apart from
+    /// nothing.
+    fn other(key: u64, shown: Shown, gap: bool) -> Self {
+        Self {
+            key,
+            shown,
+            gap,
+            tail: false,
+            open: false,
+            face: Face::default(),
+            sig: 0,
+        }
     }
 }
 
-/// Where the reader is, the block at the top of the screen, by its key,
-/// and how many of its lines are above the screen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Anchor {
+/// What an entry's or a Quiet row's lines are drawn from in a view, besides
+/// the items.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+struct Face {
+    open: bool,
+    folds: bool,
+    status: Option<quiet::WorkerRow>,
+    /// A running call's time.
+    clock: Option<String>,
+}
+
+/// Blank rows the end may leave below it while the reader follows, so that
+/// nothing above moves down when the end gets shorter ("Working…" going, a
+/// closing mark re-wrapping a line).
+const GAP_LIMIT: u32 = 3;
+
+/// The blocks the feed holds, as they were when it last took them.
+#[derive(Default)]
+struct Laid {
+    /// The view they are of.
+    filter: Option<Filter>,
+    /// The look they were measured in.
+    style: u64,
+    /// Their keys, in order.
+    keys: Vec<u64>,
+    /// Each one's item in the feed, and its [`Block::sig`].
+    slots: HashMap<u64, (ItemId, u64)>,
+}
+
+/// The last block that wasn't "Working…" when the reader stopped following,
+/// and its height then (at `width`), in the view it was. The marker counts
+/// what came after it.
+#[derive(Debug, Clone, PartialEq)]
+struct Baseline {
+    filter: Filter,
     key: u64,
-    /// Lines of the block above the top, as a share of its height (so a
-    /// re-wrap at another width keeps about the same place).
-    offset: usize,
     height: usize,
+    width: usize,
 }
 
 /// A row of the screen, with the block it shows, and which of its lines (the
@@ -334,28 +402,39 @@ struct Anchor {
 struct RowRef {
     key: u64,
     line: usize,
+    /// The line's mark ([`row_mark`]).
+    mark: u64,
     /// The blank line before the block.
     gap: bool,
 }
 
-/// A place in the transcript's text, a block (by its key), a line of it,
-/// and a column. It stays on its text as the screen scrolls.
+/// A place in the transcript's text, a block (by its key), a line of it as
+/// last drawn, with that line's mark ([`row_mark`]), and a column. It
+/// stays on its text as the screen scrolls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Point {
     pub key: u64,
     pub line: usize,
+    mark: u64,
     pub col: usize,
 }
 
+/// A place in the text that keeps its text at any width, a block (by its
+/// key), the mark of a line of it ([`body_marks`]), and a column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Spot {
+    key: u64,
+    mark: u64,
+    col: usize,
+}
+
 /// Text the reader highlighted with the mouse, from where the drag began
-/// (`anchor`) to where it is (`head`), in the view and at the width it was
-/// made in.
+/// (`anchor`) to where it is (`head`), in the view it was made in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Selection {
-    pub anchor: Point,
-    pub head: Point,
+    anchor: Spot,
+    head: Spot,
     filter: Filter,
-    width: usize,
 }
 
 /// What was drawn where, for the mouse.
@@ -365,8 +444,6 @@ pub struct Drawn {
     pub area: Rect,
     /// What each row of the area shows.
     rows: Vec<Option<RowRef>>,
-    /// Where the screen's top was, what holding the view still keeps.
-    top: Option<Anchor>,
     /// The "new" marker's area, while it shows.
     pub marker: Option<Rect>,
     /// The keys of the counted turns' lines.
@@ -415,11 +492,12 @@ impl Drawn {
 pub struct Transcript {
     entries: VecDeque<Entry>,
     workers: Vec<WorkerSummary>,
-    /// `None` while following the bottom.
-    anchor: Option<Anchor>,
-    /// The view's height in lines when following stopped (and the view it
-    /// was). The marker counts the lines that came since.
-    baseline: Option<(Filter, usize)>,
+    /// The view's blocks as the feed's items, with the reader's place.
+    view: FeedView<u64>,
+    /// The blocks the feed holds.
+    laid: Laid,
+    /// Where following stopped. The marker counts the lines that came since.
+    baseline: Option<Baseline>,
     /// The session's banner, which opens the main transcript.
     pub banner: Option<Banner>,
     /// What workers start with unless told otherwise.
@@ -431,8 +509,8 @@ pub struct Transcript {
     hold: bool,
     /// The lines drawn last, by row.
     pub drawn: Drawn,
-    /// Lines a scroll moved while the screen was not drawn yet.
-    pending_scroll: i64,
+    /// How the reader scrolled since the last draw.
+    scroll: Scroll,
     /// A fold was opened or closed, and the next draw keeps the line clicked
     /// on the row of the area it was on.
     pin: Option<Pin>,
@@ -484,14 +562,15 @@ impl Transcript {
         Self {
             entries: VecDeque::new(),
             workers: Vec::new(),
-            anchor: None,
+            view: new_view(),
+            laid: Laid::default(),
             baseline: None,
             banner: None,
             usual: Usual::default(),
             selection: None,
             hold: false,
             drawn: Drawn::default(),
-            pending_scroll: 0,
+            scroll: Scroll::None,
             pin: None,
             open_thinking: false,
             working: None,
@@ -794,27 +873,46 @@ impl Transcript {
 
     /// Whether the transcript follows the bottom.
     pub fn following(&self) -> bool {
-        self.anchor.is_none()
+        self.view.feed().is_following()
     }
 
     /// The key of the block at the top of the screen and how many of its
     /// lines are above it, unless the transcript follows the bottom.
     #[cfg(feature = "dbg-snapshot")]
     pub fn reading_position(&self) -> Option<(u64, usize)> {
-        self.anchor.map(|anchor| (anchor.key, anchor.offset))
+        match self.view.feed().anchor() {
+            Anchor::At { item, offset, .. } => self
+                .view
+                .feed()
+                .key(item)
+                .map(|key| (*key, offset as usize)),
+            Anchor::Follow => None,
+        }
     }
 
     /// Follows the bottom again, also during a drag, whose release the
     /// terminal may never report.
     pub fn follow(&mut self) {
-        self.anchor = None;
-        self.pending_scroll = 0;
+        self.view.feed_mut().follow();
+        self.scroll = Scroll::None;
+        self.pin = None;
+        self.hold = false;
+    }
+
+    /// Follows the bottom again from where the reader is, after a press held
+    /// the view still. Where the end is in sight, nothing moves.
+    pub fn follow_on(&mut self) {
+        self.view.feed_mut().follow_in_place();
         self.hold = false;
     }
 
     /// Scrolls by `lines` (up when negative) at the next draw.
     pub fn scroll(&mut self, lines: i64) {
-        self.pending_scroll += lines;
+        self.scroll = match self.scroll {
+            Scroll::None => Scroll::By(lines),
+            Scroll::By(by) => Scroll::By(by.saturating_add(lines)),
+            Scroll::Top(by) => Scroll::Top(by.saturating_add(lines)),
+        };
     }
 
     /// Whether the block `key` (as drawn last) is a turn's counted calls.
@@ -835,6 +933,7 @@ impl Transcript {
                 key,
                 line: at.line,
                 row,
+                opened: self.counts_open.contains(&(key & !COUNT_KEY)),
             });
         }
     }
@@ -866,7 +965,7 @@ impl Transcript {
 
     /// Scrolls to the top at the next draw.
     pub fn top(&mut self) {
-        self.pending_scroll = i64::MIN / 2;
+        self.scroll = Scroll::Top(0);
     }
 
     /// What the agent `agent` is under way with while it works (its turn
@@ -988,35 +1087,22 @@ impl Transcript {
         })
     }
 
-    /// The blocks of `filter`'s view of the items, at `width`.
+    /// The blocks of `filter`'s view of the items, at `width`, in order. It
+    /// wraps none of their lines but an open block's among the work, whose
+    /// neighbours stand apart from it when it shows more than one line.
     fn blocks(&mut self, filter: &Filter, theme: &Theme, width: usize) -> Vec<Block> {
         self.width = width;
         // A worker's own view doesn't name it on every line.
         let own = matches!(filter, Filter::Worker(..));
-        let style = theme_key(theme) ^ u64::from(own);
         let mut blocks: Vec<Block> = Vec::new();
         // (Key 0 is before every item. It scrolls away with them.)
-        if let (Filter::Main(_), Some(banner)) = (filter, &self.banner) {
-            blocks.push(Block {
-                key: 0,
-                shown: Shown::Banner,
-                gap: false,
-                lines: banner_lines(banner, theme, width).len(),
-                tail: false,
-                open: false,
-            });
+        if let (Filter::Main(_), Some(_)) = (filter, &self.banner) {
+            blocks.push(Block::other(0, Shown::Banner, false));
         }
         if let Filter::Worker(id, _) = filter
             && let Some(worker) = self.worker(id)
         {
-            blocks.push(Block {
-                key: 0,
-                shown: Shown::Heading(worker.id.clone()),
-                gap: false,
-                lines: heading_lines(worker, theme, width).len(),
-                tail: false,
-                open: false,
-            });
+            blocks.push(Block::other(0, Shown::Heading(worker.id.clone()), false));
         }
         // The Messages view counts each turn's tool activity on one line,
         // where the activity began. A count that's open shows the turn's
@@ -1056,19 +1142,14 @@ impl Transcript {
             let item = &self.entries[index].item;
             let opens = opened.contains(&index);
             if let Some(count) = counts.get(&item.turn).filter(|count| count.from == item.id) {
-                blocks.push(Block {
-                    key: COUNT_KEY | count.first,
-                    shown: Shown::Counter {
-                        calls: count.calls,
-                        failed: count.failed,
-                        running: count.running,
-                        open: count.open,
-                    },
-                    gap: last.is_some_and(|(group, open)| open || group != Group::Activity),
-                    lines: 1,
-                    tail: false,
-                    open: false,
-                });
+                let gap = last.is_some_and(|(group, open)| open || group != Group::Activity);
+                let counter = Shown::Counter {
+                    calls: count.calls,
+                    failed: count.failed,
+                    running: count.running,
+                    open: count.open,
+                };
+                blocks.push(Block::other(COUNT_KEY | count.first, counter, gap));
                 last = Some((Group::Activity, false));
             }
             let shown = match shown {
@@ -1100,96 +1181,52 @@ impl Transcript {
                                 if self.entries[at].item.call == Some(call))
                     })
                 });
-            let (lines, open) = match &shown {
+            let (face, open) = match &shown {
                 Shown::Entry(index) => {
-                    let folds = self.folds_in(&self.entries[*index].item, filter);
-                    let status = self.status_row(&self.entries[*index].item, filter);
-                    let entry = &mut self.entries[*index];
+                    let entry = &self.entries[*index];
+                    let folds = self.folds_in(&entry.item, filter);
+                    let status = self.status_row(&entry.item, filter);
                     // Only a click opens thinking in the quiet view.
                     let quiet = (quiet || opens) && entry.item.kind == Kind::Thinking;
-                    let open = if quiet { entry.open_quiet } else { entry.open };
-                    let clock = running_time(&entry.item, now);
-                    let fresh = entry.cache.as_ref().is_some_and(|c| {
-                        c.width == width
-                            && c.style == style
-                            && c.clock == clock
-                            && c.open == open
-                            && c.folds == folds
-                            && c.status == status
-                    });
-                    if !fresh {
-                        entry.cache = Some(Cached {
-                            width,
-                            style,
-                            lines: entry_lines(
-                                &entry.item,
-                                theme,
-                                width,
-                                own,
-                                Look {
-                                    open,
-                                    clock: clock.as_deref(),
-                                    folds,
-                                    status,
-                                },
-                            ),
-                            clock,
-                            open,
-                            folds,
-                            status,
-                        });
-                    }
-                    let lines = entry.cache.as_ref().map_or(0, |c| c.lines.len());
+                    let face = Face {
+                        open: if quiet { entry.open_quiet } else { entry.open },
+                        folds,
+                        status,
+                        clock: running_time(&entry.item, now),
+                    };
                     // A call opens to what it holds, a content is what it
                     // opened to, and a thinking or a worker's row is open
-                    // when it shows more than its line.
+                    // when it shows more than its line. (Only the work's
+                    // lines stand apart by it, so the rest aren't wrapped
+                    // for it.)
                     let open = match entry.item.kind {
-                        Kind::Call if status.is_none() => folds && open,
+                        Kind::Call if status.is_none() => folds && face.open,
                         Kind::Result => true,
-                        _ => lines > 1,
+                        _ if group != Group::Activity => false,
+                        // (Closed, a thinking and a worker's row are a line.)
+                        Kind::Thinking if !face.open => false,
+                        _ if status.is_some() && !(folds && face.open) => false,
+                        _ => {
+                            let rows = self.entry_rows(*index, &face, theme, width, own);
+                            rows.lines.len() > 1
+                        }
                     };
-                    (lines, open)
+                    (face, open)
                 }
                 Shown::Quiet(row) => {
                     let key = self.entries[row.members[0]].item.id;
-                    let open = self.quiet_open.contains(&key);
-                    let clock = self.quiet_clock(row, now);
-                    let members: Vec<(u64, u64)> = row
-                        .members
-                        .iter()
-                        .map(|member| {
-                            let entry = &self.entries[*member];
-                            (entry.item.id, entry.revision)
-                        })
-                        .collect();
-                    let fresh = self.quiet_cache.get(&key).is_some_and(|c| {
-                        c.words == row.words
-                            && c.members == members
-                            && c.open == open
-                            && c.width == width
-                            && c.style == style
-                            && c.clock == clock
-                    });
-                    if !fresh {
-                        let (lines, spans) = self.quiet_lines(row, theme, width, now);
-                        self.quiet_cache.insert(
-                            key,
-                            QuietCached {
-                                words: row.words.clone(),
-                                members,
-                                open,
-                                width,
-                                style,
-                                clock,
-                                lines,
-                                spans,
-                            },
-                        );
-                    }
-                    let lines = self.quiet_cache.get(&key).map_or(0, |c| c.lines.len());
-                    (lines, lines > 1)
+                    let face = Face {
+                        open: self.quiet_open.contains(&key),
+                        clock: self.quiet_clock(row, now),
+                        ..Face::default()
+                    };
+                    // (Closed, it is a line.)
+                    let open = face.open
+                        && Self::quiet_opens(row, width)
+                        && self.quiet_rows(key, row, &face, theme, width).lines.len() > 1;
+                    (face, open)
                 }
-                _ => (1, false),
+                _ => (Face::default(), false),
             };
             let gap = match last {
                 None => false,
@@ -1204,9 +1241,10 @@ impl Transcript {
                 key: self.entries[index].item.id,
                 shown,
                 gap,
-                lines,
                 tail: false,
                 open,
+                face,
+                sig: 0,
             });
         }
         if quiet || !opened.is_empty() {
@@ -1244,17 +1282,9 @@ impl Transcript {
                     .is_some_and(|(agent, since)| self.calls_begun(agent, since));
             let after_open = at.checked_sub(1).is_some_and(|last| blocks[last].open);
             let apart = at > 0 && (notes_below || !among_calls || after_open);
-            blocks.insert(
-                at,
-                Block {
-                    key: WORKING_KEY,
-                    shown: Shown::Working,
-                    gap: apart,
-                    lines: 1,
-                    tail: apart && !notes_below,
-                    open: false,
-                },
-            );
+            let mut working = Block::other(WORKING_KEY, Shown::Working, apart);
+            working.tail = apart && !notes_below;
+            blocks.insert(at, working);
         }
         // The notes the agent hasn't read wait at the end, with a blank line
         // below them, before the status line, as there is above them.
@@ -1263,7 +1293,181 @@ impl Transcript {
         {
             last.tail = true;
         }
+        for block in &mut blocks {
+            block.sig = self.sig(block);
+        }
         blocks
+    }
+
+    /// A number for everything `block`'s lines are made from at a width and
+    /// in a look, which changes when they may have.
+    fn sig(&self, block: &Block) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (block.gap, block.tail, &block.face).hash(&mut hasher);
+        match &block.shown {
+            Shown::Banner => format!("{:?}", self.banner).hash(&mut hasher),
+            Shown::Heading(id) => format!("{:?}", self.worker(id)).hash(&mut hasher),
+            Shown::Entry(index) => self.entries[*index].revision.hash(&mut hasher),
+            Shown::Quiet(row) => {
+                (&row.words, row.merged, row.opens).hash(&mut hasher);
+                for member in &row.members {
+                    let entry = &self.entries[*member];
+                    (entry.item.id, entry.revision).hash(&mut hasher);
+                }
+            }
+            Shown::Counter {
+                calls,
+                failed,
+                running,
+                open,
+            } => (calls, failed, running, open).hash(&mut hasher),
+            // (A line, whatever it says.)
+            Shown::Worker(_) | Shown::Working => {}
+        }
+        hasher.finish()
+    }
+
+    /// The lines of the entry `index` in `face` at `width`, wrapped again
+    /// only when what they show changed.
+    fn entry_rows(
+        &mut self,
+        index: usize,
+        face: &Face,
+        theme: &Theme,
+        width: usize,
+        own: bool,
+    ) -> &mut Cached {
+        let style = theme_key(theme) ^ u64::from(own);
+        let entry = &mut self.entries[index];
+        let fresh = entry.cache.as_ref().is_some_and(|c| {
+            c.width == width
+                && c.style == style
+                && c.clock == face.clock
+                && c.open == face.open
+                && c.folds == face.folds
+                && c.status == face.status
+        });
+        if !fresh {
+            entry.cache = None;
+        }
+        entry.cache.get_or_insert_with(|| {
+            let look = Look {
+                open: face.open,
+                clock: face.clock.as_deref(),
+                folds: face.folds,
+                status: face.status,
+            };
+            Cached {
+                width,
+                style,
+                lines: entry_lines(&entry.item, theme, width, own, look),
+                clock: face.clock.clone(),
+                open: face.open,
+                folds: face.folds,
+                status: face.status,
+                marks: None,
+            }
+        })
+    }
+
+    /// The lines of the Quiet row `key` in `face` at `width`, drawn again
+    /// only when what they show changed.
+    fn quiet_rows(
+        &mut self,
+        key: u64,
+        row: &QuietRow,
+        face: &Face,
+        theme: &Theme,
+        width: usize,
+    ) -> &mut QuietCached {
+        let style = theme_key(theme);
+        let members: Vec<(u64, u64)> = row
+            .members
+            .iter()
+            .map(|member| {
+                let entry = &self.entries[*member];
+                (entry.item.id, entry.revision)
+            })
+            .collect();
+        let fresh = self.quiet_cache.get(&key).is_some_and(|c| {
+            c.words == row.words
+                && c.members == members
+                && c.open == face.open
+                && c.width == width
+                && c.style == style
+                && c.clock == face.clock
+        });
+        if !fresh {
+            let (lines, spans) = self.quiet_lines(row, face, theme, width);
+            self.quiet_cache.insert(
+                key,
+                QuietCached {
+                    words: row.words.clone(),
+                    members,
+                    open: face.open,
+                    width,
+                    style,
+                    clock: face.clock.clone(),
+                    lines,
+                    spans,
+                    marks: None,
+                },
+            );
+        }
+        self.quiet_cache.get_mut(&key).expect("made above")
+    }
+
+    /// The lines of `block` but its blank ones, from the caches for an entry
+    /// and a Quiet row.
+    fn body(
+        &mut self,
+        block: &Block,
+        theme: &Theme,
+        width: usize,
+        own: bool,
+    ) -> Cow<'_, [Wrapped]> {
+        match &block.shown {
+            Shown::Entry(index) => Cow::Borrowed(
+                &self
+                    .entry_rows(*index, &block.face, theme, width, own)
+                    .lines,
+            ),
+            Shown::Quiet(row) => Cow::Borrowed(
+                &self
+                    .quiet_rows(block.key, row, &block.face, theme, width)
+                    .lines,
+            ),
+            _ => Cow::Owned(self.block_lines(block, theme, width)),
+        }
+    }
+
+    /// How many rows `block` takes, its blank lines too.
+    fn height(&mut self, block: &Block, theme: &Theme, width: usize, own: bool) -> usize {
+        usize::from(block.gap) + self.body(block, theme, width, own).len() + usize::from(block.tail)
+    }
+
+    /// The marks of `block`'s lines but its blank ones ([`body_marks`]), from
+    /// the caches for an entry and a Quiet row.
+    fn marks(&mut self, block: &Block, theme: &Theme, width: usize, own: bool) -> Cow<'_, [u64]> {
+        match &block.shown {
+            Shown::Entry(index) => {
+                let cached = self.entry_rows(*index, &block.face, theme, width, own);
+                Cow::Borrowed(
+                    cached
+                        .marks
+                        .get_or_insert_with(|| body_marks(&cached.lines)),
+                )
+            }
+            Shown::Quiet(row) => {
+                let cached = self.quiet_rows(block.key, row, &block.face, theme, width);
+                Cow::Borrowed(
+                    cached
+                        .marks
+                        .get_or_insert_with(|| body_marks(&cached.lines)),
+                )
+            }
+            _ => Cow::Owned(body_marks(&self.block_lines(block, theme, width))),
+        }
     }
 
     /// Whether `item` is a call's content whose call is closed in the Full
@@ -1571,16 +1775,12 @@ impl Transcript {
     fn quiet_lines(
         &self,
         row: &QuietRow,
+        face: &Face,
         theme: &Theme,
         width: usize,
-        now: i64,
     ) -> (Vec<Wrapped>, Vec<(u64, std::ops::Range<usize>)>) {
-        let open = self
-            .quiet_open
-            .contains(&self.entries[row.members[0]].item.id);
-        let clock = self.quiet_clock(row, now);
-        let fold = Self::quiet_opens(row, width).then_some(open);
-        let mut lines = quiet_line(&row.words, fold, theme, width, clock.as_deref());
+        let fold = Self::quiet_opens(row, width).then_some(face.open);
+        let mut lines = quiet_line(&row.words, fold, theme, width, face.clock.as_deref());
         let mut spans = Vec::new();
         if fold != Some(true) {
             return (lines, spans);
@@ -1762,119 +1962,58 @@ impl Transcript {
     /// Draws `filter`'s view into `area` of `buffer`.
     pub fn draw(&mut self, buffer: &mut Buffer, area: Rect, filter: &Filter, theme: &Theme) {
         let width = area.width as usize;
-        let height = area.height as usize;
-        // A selection made in another view, or at another width (its lines
-        // wrapped otherwise), is gone.
+        let own = matches!(filter, Filter::Worker(..));
+        // A selection made in another view is gone.
         if self
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.filter != *filter || selection.width != width)
+            .is_some_and(|selection| selection.filter != *filter)
         {
             self.selection = None;
         }
         let blocks = self.blocks(filter, theme, width);
-        let total: usize = blocks.iter().map(Block::height).sum();
-        // The lines of text. "Working…" comes and goes without being new.
-        let text_lines = total
-            - blocks
-                .iter()
-                .filter(|block| block.shown == Shown::Working)
-                .map(Block::height)
-                .sum::<usize>();
-        let bottom = total.saturating_sub(height);
-        // Where each block starts.
-        let mut starts = Vec::with_capacity(blocks.len());
-        let mut at = 0;
-        for block in &blocks {
-            starts.push(at);
-            at += block.height();
-        }
-        let mut top = match self.anchor {
-            None => bottom,
-            Some(anchor) => {
-                let index = blocks
-                    .iter()
-                    .position(|block| block.key == anchor.key)
-                    .or_else(|| blocks.iter().position(|block| block.key > anchor.key));
-                match index {
-                    Some(index) => {
-                        let block = &blocks[index];
-                        // The same share of the block, if it was re-wrapped.
-                        let offset = if anchor.height == 0 || block.height() == anchor.height {
-                            anchor.offset
-                        } else {
-                            anchor.offset * block.height() / anchor.height
-                        };
-                        starts[index] + offset.min(block.height().saturating_sub(1))
-                    }
-                    None => bottom,
-                }
+        let at: HashMap<u64, usize> = blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| (block.key, index))
+            .collect();
+        self.lay(filter, &blocks, theme_key(theme) ^ u64::from(own));
+        let feed = self.view.feed_mut();
+        match std::mem::replace(&mut self.scroll, Scroll::None) {
+            Scroll::None => {}
+            Scroll::By(by) => feed.scroll_by(by),
+            Scroll::Top(by) => {
+                feed.scroll_to_start();
+                feed.scroll_by(by);
             }
-        };
-        // A fold opened or closed. The line clicked stays under the mouse.
-        if let Some(pin) = self.pin.take()
-            && let Some(index) = blocks.iter().position(|block| block.key == pin.key)
-        {
-            top = (starts[index] + pin.line).saturating_sub(pin.row);
         }
-        if self.pending_scroll != 0 {
-            top = (top as i64 + self.pending_scroll).clamp(0, bottom as i64) as usize;
-            self.pending_scroll = 0;
+        // A fold opened or closed. The line clicked stays under the mouse.
+        // Following, one that closed follows on from there, and one that
+        // opened does once the frame shows the end still.
+        let mut opened_following = false;
+        if let Some(pin) = self.pin.take()
+            && let Some((item, _)) = self.laid.slots.get(&pin.key).copied()
+        {
+            let feed = self.view.feed_mut();
+            let following = feed.is_following();
+            feed.place(item, pin.line as u32, pin.row as i64);
+            if following && pin.opened {
+                opened_following = true;
+            } else if following {
+                feed.follow_in_place();
+            }
         }
         // The line the keyboard moved to comes into sight.
-        if std::mem::take(&mut self.reveal)
-            && let Some((index, line)) = blocks
-                .iter()
-                .enumerate()
-                .find_map(|(index, block)| self.focus_line(block).map(|line| (index, line)))
-        {
-            let at = starts[index] + line;
-            if at < top {
-                top = at;
-            } else if at >= top + height {
-                top = at + 1 - height;
-            }
+        if std::mem::take(&mut self.reveal) {
+            self.reveal(&blocks, area.height);
         }
-        top = top.min(bottom);
-        // The block at the top, and how far into it.
-        let here = (!blocks.is_empty()).then(|| {
-            let index = starts
-                .partition_point(|start| *start <= top)
-                .saturating_sub(1);
-            Anchor {
-                key: blocks[index].key,
-                offset: top - starts[index],
-                height: blocks[index].height(),
-            }
-        });
-        match here {
-            // At the bottom, following again (unless a drag holds it).
-            _ if top >= bottom && !self.hold => self.anchor = None,
-            Some(here) => {
-                // Following stopped (or the view changed). What comes from
-                // here on is new.
-                if self
-                    .baseline
-                    .as_ref()
-                    .is_none_or(|(view, _)| view != filter)
-                {
-                    self.baseline = Some((filter.clone(), text_lines));
-                }
-                self.anchor = Some(here);
-            }
-            None => self.anchor = None,
-        }
-        if self.anchor.is_none() {
-            self.baseline = None;
-        }
-
         // The selection's ends, in the order of the text.
-        let range = self.selection.as_ref().and_then(|selection| {
-            let place = |point: Point| {
-                blocks
-                    .iter()
-                    .position(|block| block.key == point.key)
-                    .map(|index| (index, point.line, point.col))
+        let range = self.selection.clone().and_then(|selection| {
+            let mut place = |spot: Spot| {
+                let index = *at.get(&spot.key)?;
+                let block = &blocks[index];
+                let marks = self.marks(block, theme, width, own);
+                Some((index, mark_row(&marks, block, spot.mark), spot.col))
             };
             let (a, b) = (place(selection.anchor)?, place(selection.head)?);
             Some(if a <= b { (a, b) } else { (b, a) })
@@ -1883,97 +2022,92 @@ impl Transcript {
             // Its text left the view (or the history).
             self.selection = None;
         }
-        let highlight = highlight(theme);
 
         // The lines on the screen.
         buffer.set_style(area, theme.base());
-        let mut rows: Vec<Option<RowRef>> = vec![None; height];
-        let first = starts
-            .partition_point(|start| *start <= top)
-            .saturating_sub(1);
-        let mut y = 0usize;
-        let mut skip = top.saturating_sub(starts.get(first).copied().unwrap_or(0));
-        let mut moving = Vec::new();
-        let ms = motion::clock();
-        for (index, block) in blocks.iter().enumerate().skip(first) {
-            if y >= height {
-                break;
-            }
-            // The user's messages sit on a band the width of the screen.
-            let band = self.is_user(block).then(|| Style::new().bg(theme.user));
-            let focused = self.focus_line(block);
-            for (line, wrapped) in self
-                .block_rows(block, theme, width)
-                .iter()
-                .enumerate()
-                .skip(skip)
-            {
-                if y >= height {
-                    break;
-                }
-                let row = area.y + y as u16;
-                if let Some(band) = band.filter(|_| !(block.gap && line == 0)) {
-                    buffer.set_style(Rect::new(area.x, row, area.width, 1), band);
-                }
-                buffer.set_line(area.x, row, &Line::from(wrapped.spans.clone()), area.width);
-                // The line the keyboard is on.
-                if focused == Some(line) {
-                    buffer.set_style(Rect::new(area.x, row, area.width, 1), highlight);
-                }
-                if let Some((from, to)) =
-                    range.and_then(|range| selected_columns(range, (index, line), wrapped))
-                {
-                    for x in from..to.min(width) {
-                        if let Some(mut cell) = buffer.cell_mut((area.x + x as u16, row)) {
-                            cell.set_style(highlight);
-                        }
-                    }
-                }
-                let gap = block.gap && line == 0;
-                // The thinking that streams, the live line, its spinner in
-                // the markers' column on its first line.
-                if let Shown::Entry(entry) = block.shown
-                    && self.motion.thinking == Some(self.entries[entry].item.id)
-                    && line == usize::from(block.gap)
-                {
-                    let line = Moving {
-                        at: (area.x + SPINNER as u16, row),
-                        width: 0,
-                    };
-                    motion::paint(buffer, line.at, line.width, theme, ms);
-                    moving.push(line);
-                }
-                if block.shown == Shown::Working {
-                    // (Not text, so the mouse finds the line above it.)
-                    if line == usize::from(block.gap) {
-                        let line = Moving {
-                            at: (area.x + SPINNER as u16, row),
-                            width: text_width(&glyphs::render(self.working_label())),
-                        };
-                        motion::paint(buffer, line.at, line.width, theme, ms);
-                        moving.push(line);
-                    }
-                } else {
-                    rows[y] = Some(RowRef {
-                        key: block.key,
-                        line,
-                        gap,
-                    });
-                }
-                y += 1;
-            }
-            skip = 0;
+        let mut view = std::mem::take(&mut self.view);
+        let mut rows = Rows {
+            t: self,
+            blocks: &blocks,
+            at: &at,
+            theme,
+            width,
+            own,
+            area,
+            range,
+            highlight: highlight(theme),
+            ms: motion::clock(),
+            rows: vec![None; area.height as usize],
+            moving: Vec::new(),
+        };
+        view.render(area, buffer, &mut rows);
+        let (rows, moving) = (rows.rows, rows.moving);
+        self.view = view;
+        // A drag holds the view still, also where the wheel took it to the
+        // end.
+        if self.hold && self.following() {
+            self.stay();
+        }
+        if opened_following && self.end_in_sight() {
+            self.view.feed_mut().follow_in_place();
         }
 
-        // The marker of what is new below, the lines that came since.
-        let new = self
+        // The marker of what is new below, the lines that came since
+        // following stopped.
+        if self.following() {
+            self.baseline = None;
+        } else if self
             .baseline
             .as_ref()
-            .map_or(0, |(_, then)| text_lines.saturating_sub(*then));
+            .is_none_or(|baseline| baseline.filter != *filter)
+        {
+            self.baseline = blocks
+                .iter()
+                .rev()
+                .find(|block| block.shown != Shown::Working)
+                .map(|block| Baseline {
+                    filter: filter.clone(),
+                    key: block.key,
+                    height: self.height(block, theme, width, own),
+                    width,
+                });
+        }
+        let new = match self.baseline.clone() {
+            Some(baseline) => match at.get(&baseline.key) {
+                Some(&index) => {
+                    let now = self.height(&blocks[index], theme, width, own);
+                    // (Another width wraps it otherwise, which isn't new.)
+                    if baseline.width != width {
+                        self.baseline = Some(Baseline {
+                            height: now,
+                            width,
+                            ..baseline.clone()
+                        });
+                    }
+                    let then = if baseline.width == width {
+                        baseline.height
+                    } else {
+                        now
+                    };
+                    let grown = now.saturating_sub(then);
+                    let came: usize = blocks[index + 1..]
+                        .iter()
+                        .filter(|block| block.shown != Shown::Working)
+                        .map(|block| self.height(block, theme, width, own))
+                        .sum();
+                    grown + came
+                }
+                // (It went, so what comes is counted from the end now.)
+                None => {
+                    self.baseline = None;
+                    0
+                }
+            },
+            None => 0,
+        };
         self.drawn = Drawn {
             area,
             rows,
-            top: here,
             marker: None,
             counters: blocks
                 .iter()
@@ -1982,7 +2116,7 @@ impl Transcript {
                 .collect(),
             moving,
         };
-        if self.anchor.is_some() && area.height > 0 && top < bottom {
+        if !self.following() && area.height > 0 && !self.end_in_sight() {
             let text = if new > 0 {
                 format!(
                     " {} {new} new line{} ",
@@ -2002,28 +2136,195 @@ impl Transcript {
         }
     }
 
-    /// A block's lines, with the blank line before it when it has one.
+    /// Makes the feed's items `blocks`, the view `filter` shows, in the look
+    /// `style`. A block that came or went comes or goes, and one whose lines
+    /// may have changed ([`Block::sig`]) is measured again where it shows.
+    /// Another view starts over, on the block the reader was on if it shows
+    /// there, else the next that does.
+    fn lay(&mut self, filter: &Filter, blocks: &[Block], style: u64) {
+        if self.laid.filter.as_ref() != Some(filter) {
+            let feed = self.view.feed();
+            let place = match feed.anchor() {
+                Anchor::At { item, offset, .. } => feed.key(item).map(|key| (*key, offset)),
+                Anchor::Follow => None,
+            };
+            self.view = new_view();
+            self.laid = Laid {
+                filter: Some(filter.clone()),
+                style,
+                ..Laid::default()
+            };
+            for block in blocks {
+                let hint = 1 + u32::from(block.gap) + u32::from(block.tail);
+                let item = self.view.feed_mut().push(block.key, hint);
+                self.laid.keys.push(block.key);
+                self.laid.slots.insert(block.key, (item, block.sig));
+            }
+            if let Some((key, offset)) = place {
+                // (In the order of the items, with a turn's count at its first
+                // call and "Working…" after them all.)
+                let order = |key: u64| if is_count(key) { key & !COUNT_KEY } else { key };
+                let found = match self.laid.slots.get(&key) {
+                    Some((item, _)) => Some((*item, offset)),
+                    None => blocks
+                        .iter()
+                        .find(|block| order(block.key) > order(key))
+                        .and_then(|block| self.laid.slots.get(&block.key))
+                        .map(|(item, _)| (*item, 0)),
+                };
+                if let Some((item, offset)) = found {
+                    self.view.feed_mut().place(item, offset, 0);
+                }
+            }
+            return;
+        }
+        if self.laid.style != style {
+            self.laid.style = style;
+            self.view.feed_mut().set_geometry();
+        }
+        let same = self.laid.keys.len() == blocks.len()
+            && self
+                .laid
+                .keys
+                .iter()
+                .zip(blocks)
+                .all(|(key, block)| *key == block.key);
+        if !same {
+            self.relay(blocks);
+        }
+        let feed = self.view.feed_mut();
+        for block in blocks {
+            if let Some((item, sig)) = self.laid.slots.get_mut(&block.key)
+                && *sig != block.sig
+            {
+                *sig = block.sig;
+                feed.changed(*item, Change::Reflowed);
+            }
+        }
+        #[cfg(debug_assertions)]
+        {
+            let feed = self.view.feed();
+            let keys: Vec<u64> = std::iter::successors(feed.first(), |item| feed.next(*item))
+                .filter_map(|item| feed.key(item).copied())
+                .collect();
+            let shown: Vec<u64> = blocks.iter().map(|block| block.key).collect();
+            debug_assert_eq!(
+                keys, shown,
+                "the feed's items are the view's blocks, in order"
+            );
+        }
+    }
+
+    /// Brings the feed's items to `blocks`' order, those that went out, those
+    /// that came in where they are, and those that moved taken out and put
+    /// in again.
+    fn relay(&mut self, blocks: &[Block]) {
+        let keys: HashSet<u64> = blocks.iter().map(|block| block.key).collect();
+        let feed = self.view.feed_mut();
+        let slots = &mut self.laid.slots;
+        let mut old: Vec<u64> = Vec::with_capacity(self.laid.keys.len());
+        for key in std::mem::take(&mut self.laid.keys) {
+            if keys.contains(&key) {
+                old.push(key);
+            } else if let Some((item, _)) = slots.remove(&key) {
+                feed.remove(item);
+            }
+        }
+        let mut moved: HashSet<u64> = HashSet::new();
+        let mut next = 0;
+        for block in blocks {
+            while next < old.len() && moved.contains(&old[next]) {
+                next += 1;
+            }
+            if old.get(next) == Some(&block.key) {
+                next += 1;
+                continue;
+            }
+            let hint = 1 + u32::from(block.gap) + u32::from(block.tail);
+            let before = old
+                .get(next)
+                .and_then(|key| slots.get(key))
+                .map(|(item, _)| *item);
+            let sig = match slots.remove(&block.key) {
+                // (Out of order, so it moves.)
+                Some((item, sig)) => {
+                    feed.remove(item);
+                    moved.insert(block.key);
+                    sig
+                }
+                None => block.sig,
+            };
+            let item = match before {
+                Some(before) => feed.insert_before(before, block.key, hint),
+                None => feed.push(block.key, hint),
+            };
+            slots.insert(block.key, (item, sig));
+        }
+        self.laid.keys = blocks.iter().map(|block| block.key).collect();
+    }
+
+    /// Scrolls the line the keyboard is on into sight of a screen `height`
+    /// rows tall, where the last frame had it out of sight.
+    fn reveal(&mut self, blocks: &[Block], height: u16) {
+        let Some((key, line)) = blocks
+            .iter()
+            .find_map(|block| self.focus_line(block).map(|line| (block.key, line)))
+        else {
+            return;
+        };
+        let Some((item, _)) = self.laid.slots.get(&key).copied() else {
+            return;
+        };
+        let (feed, shown) = (self.view.feed(), self.view.placement());
+        let height = i64::from(height);
+        let line = line as u32;
+        let row = match shown.items.iter().find(|placed| placed.item == item) {
+            Some(placed) => placed.y + i64::from(line),
+            // (Above what shows, or below it.)
+            None => match (shown.items.first(), feed.rank(item)) {
+                (Some(first), Some(rank))
+                    if feed.rank(first.item).is_some_and(|top| rank < top) =>
+                {
+                    -1
+                }
+                _ => height,
+            },
+        };
+        if row < 0 {
+            self.view.feed_mut().place(item, line, 0);
+        } else if row >= height {
+            self.view.feed_mut().place(item, line, height - 1);
+        }
+    }
+
     /// Whether `block` is one of the user's messages.
     fn is_user(&self, block: &Block) -> bool {
         matches!(block.shown, Shown::Entry(index) if self.entries[index].item.kind == Kind::User)
     }
 
-    fn block_rows(&self, block: &Block, theme: &Theme, width: usize) -> Vec<Wrapped> {
-        let mut rows = Vec::with_capacity(block.height());
+    /// A block's rows, with the blank line before it when it has one, and
+    /// after it.
+    fn block_rows(
+        &mut self,
+        block: &Block,
+        theme: &Theme,
+        width: usize,
+        own: bool,
+    ) -> Vec<Wrapped> {
+        let body = self.body(block, theme, width, own);
+        let mut rows = Vec::with_capacity(body.len() + 2);
         if block.gap {
             rows.push(Wrapped::line(Vec::new()));
         }
-        rows.extend(self.block_lines(block, theme, width));
+        rows.extend(body.iter().cloned());
         if block.tail {
-            // (Not text, so a copy leaves it out.)
-            let mut blank = Wrapped::line(Vec::new());
-            blank.bare = true;
-            rows.push(blank);
+            rows.push(tail_row());
         }
         rows
     }
 
-    /// A block's lines (from the cache for an entry).
+    /// The lines of a block that isn't an entry or a Quiet row, whose lines
+    /// are [`Self::body`]'s, from their caches.
     fn block_lines(&self, block: &Block, theme: &Theme, width: usize) -> Vec<Wrapped> {
         let margin = |line: Line<'static>| {
             let mut line = Wrapped::line(line.spans);
@@ -2036,19 +2337,8 @@ impl Transcript {
                 .as_ref()
                 .map(|banner| banner_lines(banner, theme, width))
                 .unwrap_or_default(),
-            Shown::Entry(index) => self.entries[*index]
-                .cache
-                .as_ref()
-                .map(|c| c.lines.clone())
-                .unwrap_or_default(),
-            // (As `blocks` drew them just before.)
-            Shown::Quiet(row) => match self.quiet_cache.get(&block.key) {
-                Some(cached) if cached.words == row.words => cached.lines.clone(),
-                _ => {
-                    self.quiet_lines(row, theme, width, chrono::Utc::now().timestamp_millis())
-                        .0
-                }
-            },
+            // (From their caches, `body`.)
+            Shown::Entry(_) | Shown::Quiet(_) => Vec::new(),
             Shown::Worker(id) => vec![margin(worker_line(
                 self.worker(id),
                 id,
@@ -2125,6 +2415,7 @@ impl Transcript {
             return Some(Point {
                 key: first.1.key,
                 line: first.1.line,
+                mark: first.1.mark,
                 col: 0,
             });
         }
@@ -2134,6 +2425,7 @@ impl Transcript {
         Some(Point {
             key: at.1.key,
             line: at.1.line,
+            mark: at.1.mark,
             col: if past {
                 usize::MAX / 2
             } else {
@@ -2144,11 +2436,15 @@ impl Transcript {
 
     /// Highlights from `anchor` to `head`, in `filter`'s view.
     pub fn select(&mut self, anchor: Point, head: Point, filter: &Filter) {
+        let spot = |point: Point| Spot {
+            key: point.key,
+            mark: point.mark,
+            col: point.col,
+        };
         self.selection = Some(Selection {
-            anchor,
-            head,
+            anchor: spot(anchor),
+            head: spot(head),
             filter: filter.clone(),
-            width: self.drawn.area.width as usize,
         });
     }
 
@@ -2156,15 +2452,45 @@ impl Transcript {
     /// move the text under the mouse (it comes below, counted by the
     /// marker), as when the reader scrolls up.
     pub fn hold(&mut self) {
-        if self.anchor.is_none() {
-            self.anchor = self.drawn.top;
+        if self.following() {
+            self.stay();
         }
         self.hold = true;
     }
 
-    /// The drag ended. At the bottom, the view follows again.
+    /// The reader stays on the row at the top of the screen, as last drawn,
+    /// rather than following.
+    fn stay(&mut self) {
+        if let Some(first) = self.view.placement().items.first().copied() {
+            let above = u32::try_from(-first.y).unwrap_or(0);
+            self.view.feed_mut().place(first.item, above, 0);
+        }
+    }
+
+    /// The drag ended. Where the end is in sight, the view follows again
+    /// from there.
     pub fn release(&mut self) {
         self.hold = false;
+        if self.end_in_sight() {
+            self.view.feed_mut().follow_in_place();
+        }
+    }
+
+    /// The blank rows the last frame left below the end (tests).
+    #[cfg(test)]
+    pub(super) fn gap(&self) -> u32 {
+        self.view.placement().gap
+    }
+
+    /// Whether the last frame showed the end, with no rows of it below the
+    /// screen.
+    fn end_in_sight(&self) -> bool {
+        let (Some(area), Some(last)) = (self.view.area(), self.view.placement().items.last())
+        else {
+            return self.view.feed().is_empty();
+        };
+        self.view.feed().last() == Some(last.item)
+            && last.y + i64::from(last.height) <= i64::from(area.height)
     }
 
     /// The fold at the screen's `x`, `y`, namely a Quiet row's line, a call's
@@ -2249,7 +2575,7 @@ impl Transcript {
     /// and closes it, the first of a call, a thinking or a worker's row,
     /// else its last.
     fn fold_line(
-        &self,
+        &mut self,
         block: &Block,
         index: usize,
         filter: &Filter,
@@ -2262,7 +2588,8 @@ impl Transcript {
         {
             usize::from(block.gap)
         } else {
-            self.block_rows(block, theme, width).len().saturating_sub(1)
+            let own = matches!(filter, Filter::Worker(..));
+            self.height(block, theme, width, own).saturating_sub(1)
         }
     }
 
@@ -2286,8 +2613,10 @@ impl Transcript {
                 .iter()
                 .position(|at| at.is_some_and(|at| (at.key, at.line) == (fold.block, fold.line)))
         });
+        let opened;
         if row {
-            if !self.quiet_open.remove(&item) {
+            opened = !self.quiet_open.remove(&item);
+            if opened {
                 self.quiet_open.insert(item);
                 self.seal(item, filter, theme);
             }
@@ -2308,9 +2637,11 @@ impl Transcript {
             let mut sealed = false;
             if quiet && owned && matches!(entry.item.kind, Kind::Thinking | Kind::Call) {
                 entry.open_quiet = !entry.open_quiet;
+                opened = entry.open_quiet;
                 sealed = alone && entry.open_quiet && entry.item.kind == Kind::Thinking;
             } else {
                 entry.open = !entry.open;
+                opened = entry.open;
             }
             entry.touch();
             // A thinking the reader opened on a line of its own stays there.
@@ -2323,6 +2654,7 @@ impl Transcript {
             key: fold.block,
             line: fold.line,
             row: shown_at.unwrap_or(y.saturating_sub(self.drawn.area.y) as usize),
+            opened,
         });
         Some(fold)
     }
@@ -2482,12 +2814,23 @@ impl Transcript {
         }
     }
 
-    /// The lines of the block `key` in `filter`'s view.
-    fn rows_of(&mut self, key: u64, filter: &Filter, theme: &Theme) -> Option<Vec<Wrapped>> {
+    /// The lines of the block `key` in `filter`'s view, with their marks.
+    fn rows_of(
+        &mut self,
+        key: u64,
+        filter: &Filter,
+        theme: &Theme,
+    ) -> Option<(Vec<Wrapped>, Vec<u64>)> {
         let width = self.drawn.area.width as usize;
+        let own = matches!(filter, Filter::Worker(..));
         let blocks = self.blocks(filter, theme, width);
         let block = blocks.iter().find(|block| block.key == key)?;
-        Some(self.block_rows(block, theme, width))
+        let rows = self.block_rows(block, theme, width, own);
+        let marks = self.marks(block, theme, width, own);
+        let marks = (0..rows.len())
+            .map(|row| row_mark(&marks, block, row))
+            .collect();
+        Some((rows, marks))
     }
 
     /// The word at `point`, which a double click selects.
@@ -2497,7 +2840,7 @@ impl Transcript {
         filter: &Filter,
         theme: &Theme,
     ) -> Option<(Point, Point)> {
-        let rows = self.rows_of(point.key, filter, theme)?;
+        let (rows, _) = self.rows_of(point.key, filter, theme)?;
         let (start, end) = word_columns(rows.get(point.line)?, point.col)?;
         Some((
             Point {
@@ -2516,16 +2859,18 @@ impl Transcript {
         filter: &Filter,
         theme: &Theme,
     ) -> Option<(Point, Point)> {
-        let rows = self.rows_of(point.key, filter, theme)?;
+        let (rows, marks) = self.rows_of(point.key, filter, theme)?;
         let (first, last) = text_line(&rows, point.line)?;
         Some((
             Point {
                 line: first,
+                mark: marks[first],
                 col: 0,
                 ..point
             },
             Point {
                 line: last,
+                mark: marks[last],
                 col: usize::MAX / 2,
                 ..point
             },
@@ -2538,24 +2883,236 @@ impl Transcript {
     pub fn selected_text(&mut self, filter: &Filter, theme: &Theme) -> Option<String> {
         let selection = self.selection.clone()?;
         let width = self.drawn.area.width as usize;
+        let own = matches!(filter, Filter::Worker(..));
         let blocks = self.blocks(filter, theme, width);
-        let place = |point: Point| {
-            blocks
-                .iter()
-                .position(|block| block.key == point.key)
-                .map(|index| (index, point.line, point.col))
+        let mut place = |spot: Spot| {
+            let index = blocks.iter().position(|block| block.key == spot.key)?;
+            let block = &blocks[index];
+            let marks = self.marks(block, theme, width, own);
+            Some((index, mark_row(&marks, block, spot.mark), spot.col))
         };
         let (a, b) = (place(selection.anchor)?, place(selection.head)?);
         let range = if a <= b { (a, b) } else { (b, a) };
-        let rows: Vec<((usize, usize), Wrapped)> = (range.0.0..=range.1.0)
-            .flat_map(|index| {
-                self.block_rows(&blocks[index], theme, width)
+        let mut rows: Vec<((usize, usize), Wrapped)> = Vec::new();
+        for (index, block) in blocks
+            .iter()
+            .enumerate()
+            .take(range.1.0 + 1)
+            .skip(range.0.0)
+        {
+            let lines = self.block_rows(block, theme, width, own);
+            rows.extend(
+                lines
                     .into_iter()
                     .enumerate()
-                    .map(move |(line, wrapped)| ((index, line), wrapped))
-            })
-            .collect();
+                    .map(|(line, wrapped)| ((index, line), wrapped)),
+            );
+        }
         copied(rows.iter().map(|(at, wrapped)| (*at, wrapped)), range)
+    }
+}
+
+/// A view with the feed's settings, [`GAP_LIMIT`] blank rows below the end.
+fn new_view() -> FeedView<u64> {
+    let mut view = FeedView::new();
+    view.feed_mut().set_gap_limit(GAP_LIMIT);
+    view
+}
+
+/// The blank row after a block. (Not text, so a copy leaves it out.)
+fn tail_row() -> Wrapped {
+    let mut blank = Wrapped::line(Vec::new());
+    blank.bare = true;
+    blank
+}
+
+/// A name for each of `lines`' content that holds when they are wrapped at
+/// another width or more comes at their end, for the feed and a selection.
+/// A line's mark is the number of characters of text before it (white space
+/// and the lines' decoration aside), shifted up 10 bits, and above them its
+/// place among the lines that start at the same character, from 1. Marks
+/// grow down the lines. The blank line before a block is 0 and the one after
+/// it `u64::MAX` ([`row_mark`]).
+fn body_marks(lines: &[Wrapped]) -> Vec<u64> {
+    let mut marks = Vec::with_capacity(lines.len());
+    let mut before = 0u64;
+    let mut last = None;
+    let mut nth = 0u64;
+    for line in lines {
+        nth = if last == Some(before) { nth + 1 } else { 0 };
+        last = Some(before);
+        marks.push(before << 10 | (nth.min(1022) + 1));
+        before += text_count(line);
+    }
+    marks
+}
+
+/// How many characters of text `line` has, white space and decoration aside.
+fn text_count(line: &Wrapped) -> u64 {
+    if line.bare {
+        return 0;
+    }
+    let end = text_end(line);
+    cells(line)
+        .iter()
+        .filter(|(c, col, _)| *col >= line.skip && *col < end && !blank(c))
+        .count() as u64
+}
+
+/// The mark of `block`'s row `row`, whose lines but the blank ones have the
+/// marks `body` ([`body_marks`]).
+fn row_mark(body: &[u64], block: &Block, row: usize) -> u64 {
+    let gap = usize::from(block.gap);
+    match row.checked_sub(gap) {
+        None => 0,
+        Some(line) => body.get(line).copied().unwrap_or(u64::MAX),
+    }
+}
+
+/// The row of `block` whose content `mark` names, of its lines with the
+/// marks `body` ([`body_marks`]), or the row it's in now.
+fn mark_row(body: &[u64], block: &Block, mark: u64) -> usize {
+    let gap = usize::from(block.gap);
+    match mark {
+        0 => 0,
+        u64::MAX => (gap + body.len() + usize::from(block.tail)).saturating_sub(1),
+        _ => gap + body.partition_point(|at| *at <= mark).saturating_sub(1),
+    }
+}
+
+/// The transcript's blocks for the feed, which measures and draws those it
+/// shows, for a frame.
+struct Rows<'a> {
+    t: &'a mut Transcript,
+    blocks: &'a [Block],
+    /// Each block's place in `blocks`, by key.
+    at: &'a HashMap<u64, usize>,
+    theme: &'a Theme,
+    width: usize,
+    /// It's a worker's own view.
+    own: bool,
+    /// The transcript's area.
+    area: Rect,
+    /// What's highlighted, as (block, line, column) from and to.
+    range: Option<Range>,
+    highlight: Style,
+    /// The animation's clock.
+    ms: u64,
+    /// What each row of the area shows, as drawn.
+    rows: Vec<Option<RowRef>>,
+    /// The lines drawn that move.
+    moving: Vec<Moving>,
+}
+
+impl Measure<u64> for Rows<'_> {
+    fn height(&mut self, key: &u64) -> u32 {
+        let Some(index) = self.at.get(key).copied() else {
+            return 0;
+        };
+        let (blocks, theme) = (self.blocks, self.theme);
+        let height = self.t.height(&blocks[index], theme, self.width, self.own);
+        u32::try_from(height).unwrap_or(u32::MAX)
+    }
+
+    fn mark_at(&mut self, key: &u64, row: u32) -> Option<u64> {
+        let (blocks, theme) = (self.blocks, self.theme);
+        let block = &blocks[*self.at.get(key)?];
+        let marks = self.t.marks(block, theme, self.width, self.own);
+        Some(row_mark(&marks, block, row as usize))
+    }
+
+    fn resolve(&mut self, key: &u64, mark: u64) -> Option<u32> {
+        let (blocks, theme) = (self.blocks, self.theme);
+        let block = &blocks[*self.at.get(key)?];
+        let marks = self.t.marks(block, theme, self.width, self.own);
+        u32::try_from(mark_row(&marks, block, mark)).ok()
+    }
+}
+
+impl FeedRows<u64> for Rows<'_> {
+    // (The blocks are made at the area's width, which the feed draws in.)
+    fn set_width(&mut self, _width: u16) {}
+
+    fn render(&mut self, key: &u64, rows: std::ops::Range<u32>, area: Rect, buffer: &mut Buffer) {
+        let Some(index) = self.at.get(key).copied() else {
+            return;
+        };
+        let (blocks, theme, width) = (self.blocks, self.theme, self.width);
+        let block = &blocks[index];
+        let t = &mut *self.t;
+        // The user's messages sit on a band the width of the screen.
+        let band = t.is_user(block).then(|| Style::new().bg(theme.user));
+        let focused = t.focus_line(block);
+        // The thinking that streams, the live line, its spinner in the
+        // markers' column on its first line.
+        let thinking = matches!(block.shown, Shown::Entry(entry)
+            if t.motion.thinking == Some(t.entries[entry].item.id));
+        let working =
+            (block.shown == Shown::Working).then(|| text_width(&glyphs::render(t.working_label())));
+        let marks = t.marks(block, theme, width, self.own).into_owned();
+        let body = t.body(block, theme, width, self.own);
+        let first = usize::from(block.gap);
+        let (blank, tail) = (Wrapped::line(Vec::new()), tail_row());
+        debug_assert!(
+            rows.end as usize <= first + body.len() + usize::from(block.tail),
+            "the feed measured block {key} otherwise"
+        );
+        for (row, line) in (area.y..area.bottom()).zip(rows.start as usize..rows.end as usize) {
+            let wrapped = match line.checked_sub(first) {
+                None => &blank,
+                Some(at) => body.get(at).unwrap_or(&tail),
+            };
+            let gap = block.gap && line == 0;
+            if let Some(band) = band.filter(|_| !gap) {
+                buffer.set_style(Rect::new(area.x, row, area.width, 1), band);
+            }
+            buffer.set_line(area.x, row, &Line::from(wrapped.spans.clone()), area.width);
+            // The line the keyboard is on.
+            if focused == Some(line) {
+                buffer.set_style(Rect::new(area.x, row, area.width, 1), self.highlight);
+            }
+            if let Some((from, to)) = self
+                .range
+                .and_then(|range| selected_columns(range, (index, line), wrapped))
+            {
+                for x in from..to.min(width) {
+                    if let Some(mut cell) = buffer.cell_mut((area.x + x as u16, row)) {
+                        cell.set_style(self.highlight);
+                    }
+                }
+            }
+            if thinking && line == first {
+                let line = Moving {
+                    at: (area.x + SPINNER as u16, row),
+                    width: 0,
+                };
+                motion::paint(buffer, line.at, line.width, theme, self.ms);
+                self.moving.push(line);
+            }
+            match working {
+                // (Not text, so the mouse finds the line above it.)
+                Some(label) => {
+                    if line == first {
+                        let line = Moving {
+                            at: (area.x + SPINNER as u16, row),
+                            width: label,
+                        };
+                        motion::paint(buffer, line.at, line.width, theme, self.ms);
+                        self.moving.push(line);
+                    }
+                }
+                None => {
+                    if let Some(at) = self.rows.get_mut(usize::from(row - self.area.y)) {
+                        *at = Some(RowRef {
+                            key: block.key,
+                            line,
+                            mark: row_mark(&marks, block, line),
+                            gap,
+                        });
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -4738,6 +5295,11 @@ mod tests {
             "│",
             "│ · b.rs · ✓ 3 lines",
         ];
+        // (Its first line stays on the row clicked, so the row's line goes
+        // up one row.)
+        let shown = rows(&mut t, &quiet, 40, 8);
+        assert_eq!(shown[..6], open[1..], "{shown:?}");
+        t.scroll(-1);
         let shown = rows(&mut t, &quiet, 40, 8);
         assert_eq!(shown[..7], open);
         // A click on its text folds it.
@@ -5158,8 +5720,8 @@ mod tests {
 
         // Two calls side by side, and while one runs, it shows the agent works.
         let mut calls = [
-            item(4, Kind::Call, "read a.rs"),
-            item(5, Kind::Call, "read b.rs"),
+            item(5, Kind::Call, "read a.rs"),
+            item(6, Kind::Call, "read b.rs"),
         ];
         calls[0].status = Some(CallStatus::Running);
         calls[1].status = Some(CallStatus::Ok);
@@ -5172,13 +5734,13 @@ mod tests {
         assert!(is_working(&last(&mut t, View::Full)));
 
         // Its text streams, then goes quiet (it writes a long call).
-        t.apply(Update::Item(item(6, Kind::Text, "Fixing the parser.")));
+        t.apply(Update::Item(item(7, Kind::Text, "Fixing the parser.")));
         assert_eq!(last(&mut t, View::Full), "  Fixing the parser.");
         let entry = t.entries.back_mut().unwrap();
         entry.changed -= QUIET;
         assert!(is_working(&last(&mut t, View::Full)));
         t.apply(Update::Append {
-            id: 6,
+            id: 7,
             text: " Then the tests.".into(),
         });
         assert_eq!(
@@ -5187,16 +5749,16 @@ mod tests {
         );
 
         // Its reply ends the turn.
-        t.apply(Update::Item(item(7, Kind::Reply, "All pass.")));
+        t.apply(Update::Item(item(8, Kind::Reply, "All pass.")));
         assert_eq!(last(&mut t, View::Full), "  All pass.");
-        let turn = item(8, Kind::Turn, "3 s");
+        let turn = item(9, Kind::Turn, "3 s");
         let ended = turn.at;
         t.apply(Update::Item(turn));
         assert_eq!(last(&mut t, View::Full), "  All pass.");
         t.working = None;
         assert_eq!(last(&mut t, View::Full), "  All pass.");
         // A turn that begins without a message (the workers' news came).
-        t.apply(Update::Item(item(9, Kind::Notice, "r1 reported")));
+        t.apply(Update::Item(item(10, Kind::Notice, "r1 reported")));
         t.working = Some(ended + 1);
         assert!(is_working(&last(&mut t, View::Full)));
     }
@@ -5982,15 +6544,19 @@ mod tests {
                 .contains(Modifier::REVERSED)
         };
         assert!(!reversed(3) && reversed(4) && reversed(12) && !reversed(13));
-        // Text added to an item keeps it. Another width (lines wrapped
-        // otherwise) takes it away.
+        // Text added to an item keeps it, and so does another width, which
+        // wraps its lines otherwise.
         t.apply(Update::Append {
             id: 1,
             text: " more".into(),
         });
         assert!(t.selection.is_some());
-        rows(&mut t, &filter, 26, 12);
-        assert!(t.selection.is_none());
+        let narrow = rows(&mut t, &filter, 26, 12);
+        assert_eq!(narrow[0], "  A long line that the", "{narrow:?}");
+        assert_eq!(
+            t.selected_text(&filter, &Theme::terminal()).as_deref(),
+            Some("long line")
+        );
     }
 
     /// The banner is a box that fits the screen, with a blank line above it
@@ -6081,6 +6647,31 @@ mod tests {
         t.apply(Update::Item(item(6, Kind::Output, "line 6")));
         assert_eq!(rows(&mut t, &filter, 20, 4)[3], "  line 6");
         assert!(t.following());
+    }
+
+    /// Another width wraps only the blocks the screen shows, not every one
+    /// kept, and what it wraps otherwise isn't counted as new.
+    #[test]
+    fn another_width_wraps_only_what_shows() {
+        let mut t = Transcript::new();
+        for id in 1..=KEPT as u64 {
+            let text = format!("Reply {id}, which says enough to wrap at a narrower width.");
+            t.apply(Update::Item(item(id, Kind::Reply, &text)));
+        }
+        let filter = full();
+        rows(&mut t, &filter, 100, 40);
+        t.scroll(-300);
+        let wide = rows(&mut t, &filter, 100, 40);
+        assert!(wide[39].contains("end"), "{:?}", wide[39]);
+        let narrow = rows(&mut t, &filter, 50, 40);
+        let wrapped = t
+            .entries
+            .iter()
+            .filter(|entry| entry.cache.as_ref().is_some_and(|cache| cache.width == 50))
+            .count();
+        assert!(wrapped <= 40, "{wrapped} wrapped");
+        assert!(narrow[39].contains("end"), "{:?}", narrow[39]);
+        assert_eq!(narrow[0].split(',').next(), wide[0].split(',').next());
     }
 
     /// Old items leaving the history don't shift the screen.

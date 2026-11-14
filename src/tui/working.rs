@@ -552,13 +552,12 @@ mod tests {
             .unwrap_or_else(|| panic!("{text:?} not drawn:\n{}", rows.join("\n")))
     }
 
-    /// What moves as the line comes and goes. Among the agent's calls it is
-    /// one row that the next call takes over, so the calls above it stay
-    /// put. After what was said, the next block (thinking, a call, text)
-    /// takes its row, and the blank row it had below goes, so what is above
-    /// moves down one row, once as the first thing of a turn comes.
+    /// Nothing above the line moves as it comes and goes. Among the agent's
+    /// calls it is one row that the next call takes over. After what was
+    /// said, the next block (thinking, a call, text) takes its row, and the
+    /// blank row it had below stays blank until more comes.
     #[test]
-    fn the_transcript_moves_only_by_the_one_row_the_line_gives_back() {
+    fn the_transcript_stays_where_it_is_as_the_line_goes() {
         // A call ended, the line stands under it, the next call begins.
         let mut app = working(Above::Call, false, View::Full);
         let first = row_of(&screen(&mut app, 60, 24), "$ make");
@@ -580,9 +579,15 @@ mod tests {
         let before = row_of(&screen(&mut app, 60, 24), "Fix the tests.");
         app.transcript
             .apply(Update::Item(item(300, Kind::Thinking, "Where to start?")));
-        let after = row_of(&screen(&mut app, 60, 24), "Fix the tests.");
-        assert_eq!(after, before + 1, "down by the blank row below the line");
-        // Then the first text.
+        let rows = screen(&mut app, 60, 24);
+        assert_eq!(
+            row_of(&rows, "Fix the tests."),
+            before,
+            "nothing moves down"
+        );
+        let thinking = row_of(&rows, "Where to start?");
+        assert_eq!(rows[thinking + 1], "", "a blank row below the end");
+        // Drawn with the text already there, the end is on the last row.
         let mut app = working(Above::User, false, View::Full);
         app.transcript
             .apply(Update::Item(item(300, Kind::Text, "Starting.")));

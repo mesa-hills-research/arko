@@ -124,6 +124,12 @@ of single lines under it.
   waiting to be read. Such a message has a blank row above it and one below it, before the status
   line. The page keeps the line's room at the end while a call or a thinking shows that the agent
   works.
+- In the terminal only the reader's own scroll moves the view. While it follows the end, nothing
+  above moves down. When the end gets shorter (Working… giving way to a shorter row, a closing mark
+  re-wrapping a line, a fold closing), up to three blank rows stand below it until more comes, and
+  past three the end comes down to the last row. Scrolled up, the row at the top keeps its text
+  through streaming, folds elsewhere and another width, and the view follows again once the reader
+  scrolls down to the end or goes there with End.
 - A tag never sits between a message's rows. A message that fits on one row has its tag ("pending",
   "queued", "from the web page") at the right of that row. One that wraps has the tag on a row of
   its own under the last.

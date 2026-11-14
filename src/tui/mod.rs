@@ -42,6 +42,8 @@ mod questions;
 mod recorder_tests;
 mod resume_picker;
 mod screen;
+#[cfg(test)]
+mod scroll_tests;
 mod select;
 pub(crate) mod theme;
 mod transcript;
@@ -54,10 +56,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::FutureExt;
-use tokio::sync::{mpsc, oneshot};
 use termelon::caps::KeyboardSupport;
 use termelon::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use termelon::{Drawn, MouseMode, Options, RestoreHandle, Terminal};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::glyphs;
 use crate::remote;
