@@ -7,7 +7,7 @@
 
 ·    Read docs/cache.md and the doc comments in src/cache.rs, and list each p… · starting
 
-·    Find every caller of cache::fresh and say whether any relies on a value … · starting
+·    Find every caller of cache::fresh and say whether any relies on a value… · starting
 
 ## 18 r1 reports
 ▎ Fix the stale cache test, and have workers check the fixture, the docs and the callers.
@@ -25,7 +25,7 @@
 │ Read docs/cache.md and the doc comments in src/cache.rs, and list each place that says a value
 │ stays fresh at its deadline.
 
-▾ r3 Find every caller of cache::fresh and say whether any relies on a value … · queued
+▾ r3 Find every caller of cache::fresh and say whether any relies on a value… · queued
 │ Find every caller of cache::fresh and say whether any relies on a value staying fresh at its
 │ deadline.
 

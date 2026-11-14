@@ -5,7 +5,7 @@
 
 ·    Check that the cache fixture uses the same deadline as the test, and rep… · starting
 ·    Read docs/cache.md and the doc comments in src/cache.rs, and list each p… · starting
-·    Find every caller of cache::fresh and say whether any relies on a value … · starting
+·    Find every caller of cache::fresh and say whether any relies on a value… · starting
 
 ## 08 r3 waits for a place
 ▎ Fix the stale cache test, and have workers check the fixture, the docs and the callers.
@@ -14,7 +14,7 @@
 
 ·    Check that the cache fixture uses the same deadline as the test, and rep… · starting
 ·    Read docs/cache.md and the doc comments in src/cache.rs, and list each p… · starting
-·    Find every caller of cache::fresh and say whether any relies on a value … · starting
+·    Find every caller of cache::fresh and say whether any relies on a value… · starting
 
 ## 11 The third start's result says it queued
 ▎ Fix the stale cache test, and have workers check the fixture, the docs and the callers.
@@ -23,7 +23,7 @@
 
 ▸ r1 Check that the cache fixture uses the same deadline as the test, and rep… · running · 2s
 ▸ r2 Read docs/cache.md and the doc comments in src/cache.rs, and list each p… · running · 2s
-▸ r3 Find every caller of cache::fresh and say whether any relies on a value … · queued
+▸ r3 Find every caller of cache::fresh and say whether any relies on a value… · queued
 ⣷ Working…
 
 ## 18 r1 reports
@@ -33,7 +33,7 @@
 
 ▸ r1 Check that the cache fixture uses the same deadline as the test, and rep… · 2 tool calls · 2s
 ▸ r2 Read docs/cache.md and the doc comments in src/cache.rs, and list… · running · 1 tool call · 2s
-▸ r3 Find every caller of cache::fresh and say whether any relies on a value … · queued
+▸ r3 Find every caller of cache::fresh and say whether any relies on a value… · queued
 ▸ Read cache.rs and made 1 edit
 ▸ r1 reported
 

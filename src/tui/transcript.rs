@@ -807,13 +807,15 @@ impl Transcript {
     /// What the worker's row that `item` is says, from the worker's summary
     /// once the worker has one. That is its ID and title, and how it stands
     /// where this is its latest row. A start that runs says so with its
-    /// time (`clock`).
+    /// time (`clock`), and one that failed with nothing to open (`folds`)
+    /// says its outcome.
     fn worker_face(
         &self,
         item: &Item,
         going: Going<'_>,
         latest: &HashMap<String, u64>,
         clock: Option<&str>,
+        folds: bool,
     ) -> WorkerFace {
         let summary = going.worker().and_then(|id| self.worker(id));
         let task = item.task_title.as_deref().unwrap_or_default();
@@ -824,6 +826,11 @@ impl Transcript {
                 facts.extend(clock.map(|clock| (clock.to_string(), Tone::Muted)));
                 facts
             }
+            (None, _) if item.status == Some(CallStatus::Failed) && !folds => item
+                .outcome
+                .iter()
+                .map(|outcome| (outcome.clone(), Tone::Failed))
+                .collect(),
             (Some(worker), Some(summary)) if latest.get(worker) == Some(&item.id) => {
                 worker_facts(summary.state, summary.tool_calls, worker_time(summary))
             }
@@ -1506,7 +1513,7 @@ impl Transcript {
                     let quiet = (quiet || opens) && entry.item.kind == Kind::Thinking;
                     let clock = running_time(&entry.item, now);
                     let worker = going(&entry.item).map(|going| {
-                        self.worker_face(&entry.item, going, &latest, clock.as_deref())
+                        self.worker_face(&entry.item, going, &latest, clock.as_deref(), folds)
                     });
                     let face = Face {
                         open: if quiet { entry.open_quiet } else { entry.open },
@@ -4666,9 +4673,18 @@ fn worker_spans(
         };
         tail.push(Span::styled(fact.clone(), style));
     }
+    // (The feed may cut a title just after a space, which goes, so the
+    // ellipsis follows the last word.)
+    let ellipsis = glyphs::render("…");
+    let words = match words.strip_suffix(ellipsis.as_ref()) {
+        Some(head) if head.ends_with(char::is_whitespace) => {
+            format!("{}{ellipsis}", head.trim_end())
+        }
+        _ => words.to_string(),
+    };
     // The words give way to the facts, down to a few characters.
     let used = spans_width(&spans) + spans_width(&tail);
-    let shown = cut_end(words, room.saturating_sub(used).max(WORDS_MIN));
+    let shown = cut_end(&words, room.saturating_sub(used).max(WORDS_MIN));
     spans.push(Span::styled(shown, theme.text()));
     spans.extend(tail);
     fit_spans(spans, room)
@@ -8449,6 +8465,55 @@ mod tests {
             assert!(shown[at].starts_with("▾ "), "{view:?}: {shown:?}");
             assert_eq!(shown[at + 1], "│ Fix flaky test", "{view:?}: {shown:?}");
             assert_eq!(count(&shown, "Run it 50 times."), 1, "{view:?}: {shown:?}");
+        }
+    }
+
+    /// A failed start with nothing to open says how it ended, and one that
+    /// opens to why leaves that to its content. A title the feed cut after a
+    /// space has its ellipsis after the last word.
+    #[test]
+    fn a_failed_start_says_how_it_ended() {
+        let mut t = Transcript::new();
+        let mut stopped = start_call(1, "Review the parser", CallStatus::Failed, None);
+        stopped.outcome = Some("stopped".into());
+        t.apply(Update::Item(stopped));
+        let mut refused = start_call(2, "Deploy it", CallStatus::Failed, None);
+        refused.outcome = Some("refused".into());
+        t.apply(Update::Item(refused));
+        let mut why = item(3, Kind::Result, "Refused. Outside access is off.");
+        why.call = Some(2);
+        why.content = Some(ContentKind::Muted);
+        t.apply(Update::Item(why));
+        t.apply(Update::Item(start_call(
+            4,
+            "Check that any relies on a value …",
+            CallStatus::Ok,
+            Some("r3"),
+        )));
+        t.apply(Update::Worker(WorkerSummary {
+            title: "Check that any relies on a value …".into(),
+            state: WorkerState::Queued,
+            ..WorkerSummary::new("r3")
+        }));
+        for view in View::ALL {
+            let shown = rows(&mut t, &Filter::Main(view), 70, 8);
+            let row = |start: &str| shown.iter().find(|r| r.starts_with(start)).cloned();
+            let stopped = row("·    Review the parser").unwrap_or_default();
+            assert!(
+                stopped.contains("Review the parser · stopped") && stopped.ends_with('✗'),
+                "{view:?}: {shown:?}"
+            );
+            let refused = row("▸    Deploy it").unwrap_or_default();
+            assert!(
+                !refused.contains("refused") && refused.ends_with('✗'),
+                "{view:?}: {shown:?}"
+            );
+            assert!(
+                shown
+                    .iter()
+                    .any(|r| r == "· r3 Check that any relies on a value… · queued"),
+                "{view:?}: {shown:?}"
+            );
         }
     }
 

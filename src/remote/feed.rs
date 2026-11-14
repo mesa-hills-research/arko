@@ -128,9 +128,9 @@ pub struct Item {
     /// call as the worker's row. The web page doesn't get it.
     #[serde(skip)]
     pub sets: Option<String>,
-    /// A worker start's title, its task's first line, which its row in the
-    /// terminal says until the worker has a title of its own. The web page
-    /// doesn't get it.
+    /// The first line of a worker start's task, which its row in the
+    /// terminal says until the worker has a title of its own. A start with
+    /// no task has the call's own words instead. The web page doesn't get it.
     #[serde(skip)]
     pub task_title: Option<String>,
     /// For a call's result (a `result`), what its content is, which its

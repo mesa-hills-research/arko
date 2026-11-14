@@ -69,13 +69,19 @@ pub fn call(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
     let mut item = line(tool, parameters, lead)?;
     if item.kind == Kind::Call {
         item.tool = Some(tool.to_string());
-        if tool == crew::START_AGENT {
-            item.task_title = Some(worker_title(text(parameters, "task")));
-        }
         // (In the order of their names, because a `HashMap` has none.)
         let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
         item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
         let act = act(tool, parameters, lead);
+        if tool == crew::START_AGENT {
+            // A start with no task says the call's own words ("Start a worker").
+            let title = worker_title(text(parameters, "task"));
+            item.task_title = Some(if title.is_empty() {
+                upper_first(&act.verb)
+            } else {
+                title
+            });
+        }
         // Full's line says the call as written, and its detail is what
         // the Quiet row's says that the line doesn't.
         if item.detail.is_none() {
@@ -2203,6 +2209,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(start.task_title.as_deref(), Some("Review"));
+        let empty = super::call(crew::START_AGENT, &params(&[("task", " ".into())]), "main");
+        assert_eq!(empty.unwrap().task_title.as_deref(), Some("Start a worker"));
     }
 
     /// Only a start that began the worker at once names it as started. One
