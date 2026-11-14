@@ -18,7 +18,7 @@ jobs:
     name: Dictation tests on Windows
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Telmo, the speech engine, needs Rust 1.97.
-      - run: rustup toolchain install 1.97 --profile minimal && rustup default 1.97
+      - run: rustup toolchain install 1.97.1 --profile minimal && rustup default 1.97.1
       - run: cargo test --locked --features dictation --lib -- dictation
