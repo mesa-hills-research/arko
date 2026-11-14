@@ -16,10 +16,10 @@
 //! items of a [`FeedView`], which keeps the reader's place as a block and a
 //! row of it, and measures only the blocks it shows. While the reader
 //! follows the end the transcript follows what comes, and when the end gets
-//! shorter the rows above stay where they are, with up to [`GAP_LIMIT`]
-//! blank rows below it. Once they scroll up the screen stays where it is,
-//! however much comes, goes or grows elsewhere, and a marker counts what is
-//! new below. Only their own scroll moves the view.
+//! shorter the rows above stay where they are, with blank rows below it
+//! ([`GAP_LIMIT`]) until more comes. Once they scroll up the screen stays
+//! where it is, however much comes, goes or grows elsewhere, and a marker
+//! counts what is new below. Only their own scroll moves the view.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -383,8 +383,9 @@ struct Face {
 
 /// Blank rows the end may leave below it while the reader follows, so that
 /// nothing above moves down when the end gets shorter ("Working…" going, a
-/// closing mark re-wrapping a line).
-const GAP_LIMIT: u32 = 3;
+/// closing mark re-wrapping a line, a fold closing). There's no cap, so they
+/// stand until more comes or the reader goes to the end.
+const GAP_LIMIT: u32 = u32::MAX;
 
 /// The blocks the feed holds, as they were when it last took them.
 #[derive(Default)]
@@ -2974,7 +2975,7 @@ impl Transcript {
     }
 }
 
-/// A view with the feed's settings, [`GAP_LIMIT`] blank rows below the end.
+/// A view with the feed's settings, blank rows below the end ([`GAP_LIMIT`]).
 fn new_view() -> FeedView<u64> {
     let mut view = FeedView::new();
     view.feed_mut().set_gap_limit(GAP_LIMIT);

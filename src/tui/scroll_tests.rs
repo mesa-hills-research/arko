@@ -2,10 +2,11 @@
 //! agent session. Scrolled up, the text at the top stays where it is as
 //! replies stream, results and thinking open elsewhere, "Working…" comes and
 //! goes and the width changes. Following, no row moves down when the end
-//! gets shorter by the gap limit or less, which is all a session's end does
-//! by itself. The screens are the emulator's, so they are what a terminal
-//! shows after the bytes Arko wrote, scrolled regions and all.
+//! gets shorter, by any number of rows, and a scroll down at the end moves
+//! no row either. The screens are the emulator's, so they are what a
+//! terminal shows after the bytes Arko wrote, scrolled regions and all.
 
+use termelon::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use termelon::testing::TestTerminal;
 
 use crate::glyphs::{Symbols, tests::choose_symbols};
@@ -17,9 +18,6 @@ use crate::tui::input::{Editor, History};
 use crate::tui::screen::draw;
 use crate::tui::theme::{Catalog, Depth};
 use crate::tui::transcript::View;
-
-/// The blank rows the end may leave below it while following.
-const GAP_LIMIT: usize = 3;
 
 /// Numbers from a seed, so a session plays the same each time.
 struct Rng(u64);
@@ -263,8 +261,8 @@ fn first_word(row: &str) -> Option<&str> {
 }
 
 /// Following a session, in each view, no row of the screen moves down from
-/// one frame to the next, the blank rows below the end are never more than
-/// the gap limit, and the screen ends with the session's end.
+/// one frame to the next, and blank rows below the end never fill the
+/// screen.
 #[test]
 fn following_a_session_never_moves_a_row_down() {
     let _full = choose_symbols(Symbols::Full);
@@ -295,10 +293,9 @@ fn following_a_session_never_moves_a_row_down() {
                     }
                 }
             }
-            // (Once the session is taller than the screen.)
             let gap = app.transcript.gap() as usize;
             assert!(
-                gap <= GAP_LIMIT || frames < 60,
+                gap < rows.len(),
                 "{view:?}, {what}: {gap} blank rows below the end\n{}",
                 rows.join("\n")
             );
@@ -379,6 +376,129 @@ fn scrolled_up_the_text_at_the_top_holds() {
         }
         assert!(!session.app.transcript.following());
     }
+}
+
+/// A click, pressed and let go, on the transcript's row `y`.
+fn click(app: &mut App, y: usize) {
+    let area = app.transcript.drawn.area;
+    let y = area.y + u16::try_from(y).unwrap();
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.mouse(MouseEvent::new(kind, area.x + 4, y, KeyModifiers::NONE));
+    }
+}
+
+/// A notch of the wheel over the transcript.
+fn wheel(app: &mut App, kind: MouseEventKind) {
+    let area = app.transcript.drawn.area;
+    app.mouse(MouseEvent::new(
+        kind,
+        area.x + 4,
+        area.y + 1,
+        KeyModifiers::NONE,
+    ));
+}
+
+/// No line of `after` is lower than in `before`.
+fn assert_none_lower(before: &[String], after: &[String], what: &str) {
+    let now = unique(after);
+    for (text, was) in unique(before) {
+        if let Some((_, y)) = now.iter().find(|(row, _)| *row == text) {
+            assert!(
+                *y <= was,
+                "{what}: {text:?} went from row {was} to {y}\n{}\n----\n{}",
+                before.join("\n"),
+                after.join("\n")
+            );
+        }
+    }
+}
+
+/// Following in the Full view, the reader opens a thought of `lines` lines
+/// near the end, scrolls down by up to `notches` of the wheel, and closes it.
+/// Returns the session, its terminal and the screen it closed to, unless
+/// the thought's first line left the screen.
+fn closed_near_the_end(lines: u64, notches: usize) -> Option<(Session, TestTerminal, Vec<String>)> {
+    let mut s = Session::new(31, View::Full);
+    let mut terminal = crate::tui::golden::terminal(70, 24);
+    let mut quiet = |_: &mut App, _: &str| {};
+    s.turn(&mut quiet);
+    s.turn(&mut quiet);
+    let text: Vec<String> = (0..lines).map(|_| s.words(4)).collect();
+    let first = text[0].clone();
+    let thought = s.item(Kind::Thinking, &text.join("\n"));
+    s.add(thought);
+    let words = s.words(3);
+    let reply = s.item(Kind::Text, &words);
+    s.add(reply);
+    let rows = frame(&mut terminal, &mut s.app);
+    assert!(s.app.transcript.following());
+    let at = |rows: &[String]| rows.iter().position(|row| row.contains(&first));
+    // Open, and scroll down.
+    click(&mut s.app, at(&rows).unwrap());
+    let mut rows = frame(&mut terminal, &mut s.app);
+    for _ in 0..notches {
+        if s.app.transcript.following() {
+            break;
+        }
+        wheel(&mut s.app, MouseEventKind::ScrollDown);
+        rows = frame(&mut terminal, &mut s.app);
+    }
+    // Close. The line clicked stays, and no line moves down.
+    let y = at(&rows)?;
+    click(&mut s.app, y);
+    let closed = frame(&mut terminal, &mut s.app);
+    let what = format!("{lines} lines, {notches} notches");
+    assert!(closed[y].contains(&first), "{what}\n{}", closed.join("\n"));
+    assert_none_lower(&rows, &closed, &what);
+    Some((s, terminal, closed))
+}
+
+/// Following in the Full view, the reader opens a thought near the end,
+/// scrolls down (to the end, or part of the way), and closes it. The line
+/// clicked stays, blank rows stand below the end where its lines were, and
+/// the view follows on. A scroll down then moves no line, by the wheel's 3
+/// rows or by 1, with 0 to 3 blank rows and more, and End closes them.
+#[test]
+fn a_scroll_down_after_a_fold_closed_near_the_end_moves_no_line() {
+    let _full = choose_symbols(Symbols::Full);
+    let mut gaps = std::collections::BTreeSet::new();
+    for lines in [1, 2, 3, 4, 5, 8, 12] {
+        for notches in [40, 1] {
+            for step in [1, 3] {
+                let what = format!("{lines} lines, {notches} notches, a scroll of {step}");
+                let Some((mut s, mut terminal, closed)) = closed_near_the_end(lines, notches)
+                else {
+                    continue;
+                };
+                assert!(s.app.transcript.following(), "{what}");
+                gaps.insert(s.app.transcript.gap());
+                for _ in 0..2 {
+                    if step == 3 {
+                        wheel(&mut s.app, MouseEventKind::ScrollDown);
+                    } else {
+                        s.app.transcript.scroll(1);
+                    }
+                    let after = frame(&mut terminal, &mut s.app);
+                    assert_eq!(after, closed, "{what}");
+                    assert!(s.app.transcript.following(), "{what}");
+                }
+                // End closes the blank rows.
+                s.app.transcript.follow();
+                frame(&mut terminal, &mut s.app);
+                assert_eq!(s.app.transcript.gap(), 0, "{what}");
+            }
+        }
+    }
+    for gap in [0, 1, 2, 3] {
+        assert!(
+            gaps.contains(&gap),
+            "no case left {gap} blank rows: {gaps:?}"
+        );
+    }
+    assert!(gaps.iter().any(|gap| *gap > 3), "{gaps:?}");
 }
 
 /// Scrolled up into a reply as it streams, the screen stays as it is as

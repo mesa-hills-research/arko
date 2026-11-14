@@ -764,11 +764,10 @@ fn check_still(before: &Frame, after: &Frame) -> Vec<String> {
         }
     }
     if before.following && after.following {
-        // The first row moves down by more than the blank rows allowed, or
-        // not at all.
+        // The first row doesn't move down, as blank rows stand below the
+        // end however many there are.
         if let Some(now) = find(&top)
             && now > was
-            && now - was <= GAP_LIMIT as usize
         {
             wrong.push(format!(
                 "following, row {was} (block {} line {}) moved down to {now}, gap {} then {}",
@@ -785,7 +784,7 @@ fn check_still(before: &Frame, after: &Frame) -> Vec<String> {
 /// every block at the height it has now and shows on each row the line its
 /// row table names, a reader who follows has the end in sight, the top row
 /// of a reader who scrolled up and did nothing stays, a row of one who
-/// follows doesn't move down by the gap limit or less, and a fold toggled
+/// follows doesn't move down, and a fold toggled
 /// under the pointer keeps its line on its row. A block whose lines are
 /// made from something its sig leaves out fails here.
 ///

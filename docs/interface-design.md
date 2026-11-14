@@ -126,10 +126,12 @@ of single lines under it.
   works.
 - In the terminal only the reader's own scroll moves the view. While it follows the end, nothing
   above moves down. When the end gets shorter (Working… giving way to a shorter row, a closing mark
-  re-wrapping a line, a fold closing), up to three blank rows stand below it until more comes, and
-  past three the end comes down to the last row. Scrolled up, the row at the top keeps its text
-  through streaming, folds elsewhere and another width, and the view follows again once the reader
-  scrolls down to the end or goes there with End.
+  re-wrapping a line, a fold closing), blank rows stand below it until more comes. A scroll down
+  stops where the end reaches the last row and never moves a line down, so at the end it moves
+  nothing. End, Esc and the "↓ N new lines" marker go to the end and close the blank rows. Scrolled
+  up, the row at the top keeps its text through streaming, folds elsewhere and another width. The
+  view follows again when the reader scrolls down to the end, goes there with End, or clicks so that
+  the end shows, also on a fold they open or close.
 - A tag never sits between a message's rows. A message that fits on one row has its tag ("pending",
   "queued", "from the web page") at the right of that row. One that wraps has the tag on a row of
   its own under the last.
