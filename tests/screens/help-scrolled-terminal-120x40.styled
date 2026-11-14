@@ -55,24 +55,23 @@ text 20 "                     │  Drag          select text, and it is copied w
 style 20 23 29 reverse
 text 21 "                     │  Double-click  select a word and copy it (a triple click a line)           │"
 style 21 23 37 reverse
-text 22 "                     │  Click         open a worker's line, a row of the agent list, a count of   │"
+text 22 "                     │  Click         open a worker's row to its task, a worker's line or a row   │"
 style 22 23 30 reverse
-text 23 "                     │                calls, a quiet row of calls, a command's whole output at    │"
-text 24 "                     │                its \"more lines\", or an agent's thinking at its first line  │"
-text 25 "                     │                                                                            │"
-text 26 "                     │ Commands                                                                   │"
-style 26 23 31 fg=cyan bold
-text 27 "                     │ /new          start a new conversation (/resume goes back to the old one). │"
-style 27 23 37 bold
-text 28 "                     │               /new continue starts it from a brief of this one and the     │"
-text 29 "                     │               agent's report  [continue]                                   │"
-style 29 51 63 dim
-text 30 "                     │ /resume       go back to an earlier conversation of this session, from a   │"
-style 30 23 37 bold
-text 31 "                     │               list or by its number  [NUMBER]                              │"
-style 31 58 68 dim
-text 32 "                     │ /cost         what this session has cost                                   │"
-style 32 23 37 bold
+text 23 "                     │                of the agent list to the worker's view, a count of calls, a │"
+text 24 "                     │                quiet row of calls, a command's whole output at its \"more   │"
+text 25 "                     │                lines\", or an agent's thinking at its first line            │"
+text 26 "                     │                                                                            │"
+text 27 "                     │ Commands                                                                   │"
+style 27 23 31 fg=cyan bold
+text 28 "                     │ /new          start a new conversation (/resume goes back to the old one). │"
+style 28 23 37 bold
+text 29 "                     │               /new continue starts it from a brief of this one and the     │"
+text 30 "                     │               agent's report  [continue]                                   │"
+style 30 51 63 dim
+text 31 "                     │ /resume       go back to an earlier conversation of this session, from a   │"
+style 31 23 37 bold
+text 32 "                     │               list or by its number  [NUMBER]                              │"
+style 32 58 68 dim
 text 33 "                     │                                                                            │"
 text 34 "                     └───────────────────────────────────────────────── Esc  close   ↑ ↓  scroll ─┘"
 style 34 71 76 reverse

@@ -109,15 +109,18 @@ of single lines under it.
   worker stands ("running", "queued", "failed" or "stopped"), its calls from the first, and how
   long it has run ("r1 Fix the flaky test · running · 3 tool calls · 41s"). A worker that finished
   says no state, and its report is a row of its own where it came ("r1 reported").
-- It opens to the task.
+- A click opens the row to the task.
+- A start that failed has ✗ at its right. One with nothing to open says how it ended ("stopped",
+  "interrupted"), and one with a reason opens to it.
 - A message that sets a worker that ended going again is that worker's row from then on ("Messaged
   r2 · running · 3 tool calls · 52s"). Only a worker's latest row says how it stands, so its
   earlier rows keep its ID and title alone.
-- A worker that goes on with no call of its lead's in that turn to stand for it (one the user
-  messaged, one that left the queue in a later turn) has a line of its own, which shows the
-  worker's own view.
+- A worker that goes on with no earlier call of its lead's in that turn to stand for it (one the
+  user messaged, one that left the queue in a later turn) has a line of its own. A click on it
+  opens the worker's own view.
 - Messages shows these rows, and counts the agent's other calls.
-- The worker's own view opens from the agent list (Ctrl+T, then Enter or a click) and with /watch.
+- The worker's own view also opens from the agent list (Ctrl+T, then Enter or a click) and with
+  /watch. The list keeps a worker for five minutes after it ends.
 - The web page and the app keep the worker's own line under its start.
 
 ### Markers, the live line and gaps

@@ -195,7 +195,7 @@ style 21 23 37 fg=#dedede bg=#232323
 style 21 37 98 fg=#dedede bg=#101010
 style 21 98 99 fg=#303030 bg=#101010
 style 21 99 120 fg=#dedede bg=#131313
-text 22 "                     │  Click         open a worker's line, a row of the agent list, a count of   │"
+text 22 "                     │  Click         open a worker's row to its task, a worker's line or a row   │"
 style 22 0 21 fg=#dedede bg=#131313
 style 22 21 22 fg=#303030 bg=#101010
 style 22 22 23 fg=#dedede bg=#101010
@@ -203,76 +203,74 @@ style 22 23 30 fg=#dedede bg=#232323
 style 22 30 98 fg=#dedede bg=#101010
 style 22 98 99 fg=#303030 bg=#101010
 style 22 99 120 fg=#dedede bg=#131313
-text 23 "                     │                calls, a quiet row of calls, a command's whole output at    │"
+text 23 "                     │                of the agent list to the worker's view, a count of calls, a │"
 style 23 0 21 fg=#dedede bg=#131313
 style 23 21 22 fg=#303030 bg=#101010
 style 23 22 98 fg=#dedede bg=#101010
 style 23 98 99 fg=#303030 bg=#101010
 style 23 99 120 fg=#dedede bg=#131313
-text 24 "                     │                its \"more lines\", or an agent's thinking at its first line  │"
+text 24 "                     │                quiet row of calls, a command's whole output at its \"more   │"
 style 24 0 21 fg=#dedede bg=#131313
 style 24 21 22 fg=#303030 bg=#101010
 style 24 22 98 fg=#dedede bg=#101010
 style 24 98 99 fg=#303030 bg=#101010
 style 24 99 120 fg=#dedede bg=#131313
-text 25 "                     │                                                                            │"
+text 25 "                     │                lines\", or an agent's thinking at its first line            │"
 style 25 0 21 fg=#dedede bg=#131313
 style 25 21 22 fg=#303030 bg=#101010
 style 25 22 98 fg=#dedede bg=#101010
 style 25 98 99 fg=#303030 bg=#101010
 style 25 99 120 fg=#dedede bg=#131313
-text 26 "                     │ Commands                                                                   │"
+text 26 "                     │                                                                            │"
 style 26 0 21 fg=#dedede bg=#131313
 style 26 21 22 fg=#303030 bg=#101010
-style 26 22 23 fg=#dedede bg=#101010
-style 26 23 31 fg=#419cff bg=#101010 bold
-style 26 31 98 fg=#dedede bg=#101010
+style 26 22 98 fg=#dedede bg=#101010
 style 26 98 99 fg=#303030 bg=#101010
 style 26 99 120 fg=#dedede bg=#131313
-text 27 "                     │ /new          start a new conversation (/resume goes back to the old one). │"
+text 27 "                     │ Commands                                                                   │"
 style 27 0 21 fg=#dedede bg=#131313
 style 27 21 22 fg=#303030 bg=#101010
 style 27 22 23 fg=#dedede bg=#101010
-style 27 23 37 fg=#dedede bg=#101010 bold
-style 27 37 98 fg=#dedede bg=#101010
+style 27 23 31 fg=#419cff bg=#101010 bold
+style 27 31 98 fg=#dedede bg=#101010
 style 27 98 99 fg=#303030 bg=#101010
 style 27 99 120 fg=#dedede bg=#131313
-text 28 "                     │               /new continue starts it from a brief of this one and the     │"
+text 28 "                     │ /new          start a new conversation (/resume goes back to the old one). │"
 style 28 0 21 fg=#dedede bg=#131313
 style 28 21 22 fg=#303030 bg=#101010
-style 28 22 98 fg=#dedede bg=#101010
+style 28 22 23 fg=#dedede bg=#101010
+style 28 23 37 fg=#dedede bg=#101010 bold
+style 28 37 98 fg=#dedede bg=#101010
 style 28 98 99 fg=#303030 bg=#101010
 style 28 99 120 fg=#dedede bg=#131313
-text 29 "                     │               agent's report  [continue]                                   │"
+text 29 "                     │               /new continue starts it from a brief of this one and the     │"
 style 29 0 21 fg=#dedede bg=#131313
 style 29 21 22 fg=#303030 bg=#101010
-style 29 22 51 fg=#dedede bg=#101010
-style 29 51 63 fg=#9d9d9d bg=#101010
-style 29 63 98 fg=#dedede bg=#101010
+style 29 22 98 fg=#dedede bg=#101010
 style 29 98 99 fg=#303030 bg=#101010
 style 29 99 120 fg=#dedede bg=#131313
-text 30 "                     │ /resume       go back to an earlier conversation of this session, from a   │"
+text 30 "                     │               agent's report  [continue]                                   │"
 style 30 0 21 fg=#dedede bg=#131313
 style 30 21 22 fg=#303030 bg=#101010
-style 30 22 23 fg=#dedede bg=#101010
-style 30 23 37 fg=#dedede bg=#101010 bold
-style 30 37 98 fg=#dedede bg=#101010
+style 30 22 51 fg=#dedede bg=#101010
+style 30 51 63 fg=#9d9d9d bg=#101010
+style 30 63 98 fg=#dedede bg=#101010
 style 30 98 99 fg=#303030 bg=#101010
 style 30 99 120 fg=#dedede bg=#131313
-text 31 "                     │               list or by its number  [NUMBER]                              │"
+text 31 "                     │ /resume       go back to an earlier conversation of this session, from a   │"
 style 31 0 21 fg=#dedede bg=#131313
 style 31 21 22 fg=#303030 bg=#101010
-style 31 22 58 fg=#dedede bg=#101010
-style 31 58 68 fg=#9d9d9d bg=#101010
-style 31 68 98 fg=#dedede bg=#101010
+style 31 22 23 fg=#dedede bg=#101010
+style 31 23 37 fg=#dedede bg=#101010 bold
+style 31 37 98 fg=#dedede bg=#101010
 style 31 98 99 fg=#303030 bg=#101010
 style 31 99 120 fg=#dedede bg=#131313
-text 32 "                     │ /cost         what this session has cost                                   │"
+text 32 "                     │               list or by its number  [NUMBER]                              │"
 style 32 0 21 fg=#dedede bg=#131313
 style 32 21 22 fg=#303030 bg=#101010
-style 32 22 23 fg=#dedede bg=#101010
-style 32 23 37 fg=#dedede bg=#101010 bold
-style 32 37 98 fg=#dedede bg=#101010
+style 32 22 58 fg=#dedede bg=#101010
+style 32 58 68 fg=#9d9d9d bg=#101010
+style 32 68 98 fg=#dedede bg=#101010
 style 32 98 99 fg=#303030 bg=#101010
 style 32 99 120 fg=#dedede bg=#131313
 text 33 "                     │                                                                            │"
