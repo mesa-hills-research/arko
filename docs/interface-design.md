@@ -128,11 +128,14 @@ of single lines under it.
   above moves down. When the end gets shorter (Working… giving way to a shorter row, a closing mark
   re-wrapping a line, a fold closing), blank rows stand below it until more comes. A scroll down
   stops where the end reaches the last row and never moves a line down, so at the end it moves
-  nothing. End, Esc and the "↓ N new lines" marker go to the end and close the blank rows. Scrolled
-  up, the row at the top keeps its text through streaming, folds elsewhere and another width. The
-  view follows again when the reader scrolls down to the end, goes there with End, or clicks so that
-  the end shows. A fold opened or closed, with a click or a key, keeps its line on its row, and the
-  view follows from there where the end shows.
+  nothing. A scroll up stops following, even with the end in sight, so what comes next doesn't
+  move the lines the reader went back to. Output then fills the blank rows, and once it passes the
+  bottom row "↓ N new lines" counts all that came. End goes to the end and closes the blank rows,
+  as Esc and the marker do for a reader who scrolled up. Scrolled up, the row at the top keeps its
+  text through streaming, folds elsewhere and another width. The view follows again when the reader
+  scrolls down to the end, goes there with End, or clicks so that the end shows. A fold opened or
+  closed, with a click or a key, keeps its line on its row, and the view follows from there where
+  the end shows.
 - A tag never sits between a message's rows. A message that fits on one row has its tag ("pending",
   "queued", "from the web page") at the right of that row. One that wraps has the tag on a row of
   its own under the last.

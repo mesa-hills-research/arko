@@ -486,6 +486,46 @@ fn a_fold_opened_and_closed_by_the_keyboard_follows_on() {
     assert!(after.iter().any(|row| row.contains("more 40")), "{after:?}");
 }
 
+/// Scrolled up a row into the blank rows below the end, the reader sees
+/// output fill them, with no marker while the end shows. Once output passes
+/// the bottom row, "↓ N new lines" shows and counts all that came since
+/// following stopped.
+#[test]
+fn the_marker_shows_once_output_passes_the_bottom_row() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Full);
+    for id in 1..=20 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+    }
+    t.apply(Update::Item(item(21, Kind::Output, "a\nb\nc\nd")));
+    screen(&mut t, &filter, 40, 10);
+    // The last output gets three lines shorter, and three blank rows stand
+    // below it.
+    t.apply(Update::Change(item(21, Kind::Output, "a")));
+    let rows = screen(&mut t, &filter, 40, 10);
+    assert!(t.following());
+    assert_eq!(t.gap(), 3, "{rows:?}");
+    t.scroll(-1);
+    let rows = screen(&mut t, &filter, 40, 10);
+    assert!(!t.following());
+    assert_eq!(t.gap(), 2, "{rows:?}");
+    assert!(t.drawn.marker.is_none(), "{rows:?}");
+    // Two lines fill the blank rows.
+    for id in 22..=23 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("more {id}"))));
+    }
+    let rows = screen(&mut t, &filter, 40, 10);
+    assert!(rows[9].contains("more 23"), "{rows:?}");
+    assert!(t.drawn.marker.is_none(), "{rows:?}");
+    // Two more pass the bottom row, and the rows stay.
+    for id in 24..=25 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("more {id}"))));
+    }
+    let rows = screen(&mut t, &filter, 40, 10);
+    assert!(rows[9].contains("more 23"), "{rows:?}");
+    assert!(rows[9].contains("4 new lines"), "{rows:?}");
+}
+
 /// The first wheel step up while a reply streams moves the rows the
 /// reader saw by the whole step.
 #[test]
