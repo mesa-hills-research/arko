@@ -28,7 +28,7 @@ pub struct Store {
     /// When each item came or last changed, in this device's time (ms).
     pub grown: HashMap<u64, f64>,
     counts: [usize; 2],
-    /// Each call's content, its result, by the call.
+    /// Each call's result, by the call.
     contents: HashMap<u64, u64>,
 }
 
@@ -117,7 +117,7 @@ impl Store {
         self.contents.retain(|_, result| *result != id);
     }
 
-    /// The content of the call `id`, its result, while it's kept.
+    /// The result of the call `id`, while it's kept.
     pub fn content_of(&self, id: u64) -> Option<u64> {
         self.contents
             .get(&id)

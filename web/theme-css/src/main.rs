@@ -144,7 +144,7 @@ fn main() {
 
     let mut rust = String::from(
         "// Written by web/theme-css from themes/. Don't edit.\n\n\
-         /// Every theme, with its name, its slug (`data-theme`) and whether it's dark.\n\
+         /// Every theme, with its name, slug (`data-theme`) and whether it's dark.\n\
          pub const THEMES: &[(&str, &str, bool)] = &[\n",
     );
     for theme in &themes {
