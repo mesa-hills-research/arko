@@ -2022,9 +2022,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mesquite"
-version = "0.26.0"
+version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc5fa6d732e0dede6ede9f4ab71b4b50106e895fe843f0bcd76c8e585a3a3124"
+checksum = "d6da86bc7372d865cd2cb2711e490bfa7c4de38e6aefa494adf9b79ee0909f05"
 dependencies = [
  "mesquite_language",
  "regex",

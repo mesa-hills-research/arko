@@ -86,7 +86,7 @@ qrcodegen = { version = "1.8.0", optional = true }
 # The web page's code highlighting uses arko_index's grammars (Mesquite, a
 # tree-sitter port), with the highlight queries in src/remote/highlight/, and
 # the page's Markdown parser to find the code blocks as it does.
-mesquite = { version = "0.26.0", optional = true }
+mesquite = { version = "0.26.1", optional = true }
 mesquite_bash = { version = "0.2.0", optional = true }
 mesquite_c = { version = "0.2.0", optional = true }
 mesquite_c_sharp = { version = "0.2.0", optional = true }
