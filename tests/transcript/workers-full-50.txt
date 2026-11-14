@@ -1,0 +1,68 @@
+## 05 Third start call, with a profile and a worktree
+▎ Fix the stale cache test, and have workers check
+▎ the fixture, the docs and the callers.
+
+  I'll start three workers for the checks and fix
+  the comparison myself.
+
+· Check that the cache fixture uses th… · starting
+· Read docs/cache.md and the doc comme… · starting
+· Find every caller of cache::fresh an… · starting
+
+## 11 The third start's result says it queued
+▎ Fix the stale cache test, and have workers check
+▎ the fixture, the docs and the callers.
+
+  I'll start three workers for the checks and fix
+  the comparison myself.
+
+▸ r1 Check that the cache fixture… · running · 2s
+▸ r2 Read docs/cache.md and the do… · running · 2s
+▸ r3 Find every caller of cache::fresh a… · queued
+⣷ Working…
+
+## 26 Turn ends
+▎ Fix the stale cache test, and have workers check
+▎ the fixture, the docs and the callers.
+
+  I'll start three workers for the checks and fix
+  the comparison myself.
+
+▸ r1 Check that the cache fixture… · 2 calls · 2s
+▸ r2 Read docs/cache.md and the doc… · 1 call · 2s
+▸ r3 Find every caller of… · failed · 1 call · 2s
+▸ read src/cache.rs · ✓ 3 lines
+▸ edit src/cache.rs · ✓ 1 edit
+▸ r1 reported
+▸ waiting for r2, r3 · ✓ r2 finished, r3 stopped
+▸ r2 reported
+
+  Changed the cache to expire at its deadline. The
+  fixture and the docs agree. The callers' check
+  failed on its model's usage limit.
+
+## 31 r2 edits the comment
+▎ Fix the stale cache test, and have workers check
+▎ the fixture, the docs and the callers.
+
+  I'll start three workers for the checks and fix
+  the comparison myself.
+
+▸ r1 Check that the cache fixture… · 2 calls · 2s
+▸ r2 Read docs/cache.md and the doc comments in s…
+▸ r3 Find every caller of… · failed · 1 call · 2s
+▸ read src/cache.rs · ✓ 3 lines
+▸ edit src/cache.rs · ✓ 1 edit
+▸ r1 reported
+▸ waiting for r2, r3 · ✓ r2 finished, r3 stopped
+▸ r2 reported
+
+  Changed the cache to expire at its deadline. The
+  fixture and the docs agree. The callers' check
+  failed on its model's usage limit.
+
+▎ Ask r2 to fix the doc comment too.
+
+▸ Messaged r2 · running · 2 calls · 2s
+⣷ Working…
+

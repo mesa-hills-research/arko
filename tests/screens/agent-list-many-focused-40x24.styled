@@ -32,23 +32,26 @@ text 7 "  I'll start three workers."
 style 7 0 40 fg=#dedede bg=#131313
 text 8 ""
 style 8 0 40 fg=#dedede bg=#131313
-text 9 "  r1 Check t… · 6 tool calls · 1m · run…"
+text 9 "  r1 Check the… · running · 6 calls · 1m"
 style 9 0 2 fg=#dedede bg=#131313
-style 9 2 4 fg=#dedede bg=#131313 bold
-style 9 4 13 fg=#dedede bg=#131313
-style 9 13 36 fg=#9d9d9d bg=#131313
-style 9 36 40 fg=#419cff bg=#131313
-text 10 "  r2 Read th… · astra high · 5 tool cal…"
+style 9 2 5 fg=#dedede bg=#131313 bold
+style 9 5 15 fg=#dedede bg=#131313
+style 9 15 18 fg=#9d9d9d bg=#131313
+style 9 18 25 fg=#419cff bg=#131313
+style 9 25 40 fg=#9d9d9d bg=#131313
+text 10 "  r2 Read the lexer · 5 calls · 48s"
 style 10 0 2 fg=#dedede bg=#131313
-style 10 2 4 fg=#dedede bg=#131313 bold
-style 10 4 13 fg=#dedede bg=#131313
-style 10 13 40 fg=#9d9d9d bg=#131313
-text 11 "  r3 Update … · 3 tool calls · 9s · fai…"
+style 10 2 5 fg=#dedede bg=#131313 bold
+style 10 5 19 fg=#dedede bg=#131313
+style 10 19 35 fg=#9d9d9d bg=#131313
+style 10 35 40 fg=#dedede bg=#131313
+text 11 "  r3 Update the… · failed · 3 calls · 9s"
 style 11 0 2 fg=#dedede bg=#131313
-style 11 2 4 fg=#dedede bg=#131313 bold
-style 11 4 13 fg=#dedede bg=#131313
-style 11 13 36 fg=#9d9d9d bg=#131313
-style 11 36 40 fg=#ff5257 bg=#131313
+style 11 2 5 fg=#dedede bg=#131313 bold
+style 11 5 16 fg=#dedede bg=#131313
+style 11 16 19 fg=#9d9d9d bg=#131313
+style 11 19 25 fg=#ff5257 bg=#131313
+style 11 25 40 fg=#9d9d9d bg=#131313
 text 12 "▸ r2 reported"
 style 12 0 2 fg=#9d9d9d bg=#131313
 style 12 2 5 fg=#dedede bg=#131313 bold

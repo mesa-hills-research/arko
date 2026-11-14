@@ -122,6 +122,17 @@ pub struct Item {
     /// calls that have it, because the worker's own line stands for them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started: Option<String>,
+    /// For a call that set a worker going, the worker. A start names it once
+    /// its result says it started or queued it, and a message once its
+    /// result says it continued or restarted it. The terminal draws such a
+    /// call as the worker's row. The web page doesn't get it.
+    #[serde(skip)]
+    pub sets: Option<String>,
+    /// A worker start's title, its task's first line, which its row in the
+    /// terminal says until the worker has a title of its own. The web page
+    /// doesn't get it.
+    #[serde(skip)]
+    pub task_title: Option<String>,
     /// For a call's result (a `result`), what its content is, which its
     /// `text` previews, and how a client draws it
     /// ([`content`](super::content)).
@@ -234,6 +245,8 @@ impl Item {
             ended: None,
             act: None,
             started: None,
+            sets: None,
+            task_title: None,
             content: None,
             more: None,
             language: None,
@@ -1594,12 +1607,7 @@ fn set_cache(
 
 /// A worker's title, meaning its task's first line, in brief.
 fn title(task: &str) -> String {
-    let line = task
-        .lines()
-        .map(|line| line.trim().trim_start_matches(['#', '-', '*', ' ']))
-        .find(|line| !line.is_empty())
-        .unwrap_or_default();
-    render::cut(line, 72)
+    render::worker_title(task)
 }
 
 impl Feed {
@@ -1891,6 +1899,7 @@ impl Feed {
         if let Some(item) = lane.change(call.item, |item| {
             item.settle(outcome.status, outcome.text, &outcome.settled, next);
             item.started = outcome.started;
+            item.sets = outcome.sets;
             if let Some(job) = job {
                 item.job = Some(job.to_string());
             }
@@ -2005,6 +2014,7 @@ impl Feed {
                     output: None,
                     job: None,
                     started: None,
+                    sets: None,
                     settled: render::Settled::default(),
                 },
             );
@@ -4408,6 +4418,62 @@ mod tests {
         assert_eq!(sent["started"], "r1");
         let sent = serde_json::to_value(call_item(&feed, "Review the docs")).unwrap();
         assert!(sent.get("started").is_none());
+    }
+
+    /// A call keeps the worker it set going for the terminal, a start's once
+    /// its result says it started or queued it and a message's once its
+    /// result says it continued it, and a start keeps its task's title. The
+    /// web page gets neither.
+    #[test]
+    fn a_call_keeps_the_worker_it_set_going() {
+        let feed = Feed::new("main");
+        let call = |tool: &str, parameters: HashMap<String, serde_json::Value>, output: &str| {
+            let id = Uuid::new_v4();
+            let event_of = |event| feed.event(&self::event("main", event), None);
+            event_of(AgentEvent::ToolCallFormatted {
+                tool_call_id: id,
+                tool_name: tool.into(),
+                parameters,
+            });
+            event_of(AgentEvent::ToolResult {
+                tool_call_id: id,
+                tool_name: tool.into(),
+                output: output.into(),
+                receipt: None,
+            });
+        };
+        let task = [(
+            "task".to_string(),
+            serde_json::json!("# Count\nCount the files."),
+        )]
+        .into();
+        call(
+            crate::crew::START_AGENT,
+            task,
+            "Queued r2 (agent `worker`).",
+        );
+        let to = [
+            ("to".to_string(), serde_json::json!("r1")),
+            ("message".to_string(), serde_json::json!("Go on.")),
+        ]
+        .into();
+        call(
+            crate::crew::MESSAGE_AGENT,
+            to,
+            "Sent: r1 continues its task with your message, with its context; its new report reaches you when it finishes.",
+        );
+        let start = call_item(&feed, "start worker");
+        assert_eq!(
+            (
+                start.sets.as_deref(),
+                start.started.as_deref(),
+                start.task_title.as_deref()
+            ),
+            (Some("r2"), None, Some("Count"))
+        );
+        assert_eq!(call_item(&feed, "message r1").sets.as_deref(), Some("r1"));
+        let sent = serde_json::to_value(&start).unwrap();
+        assert!(sent.get("sets").is_none() && sent.get("task_title").is_none());
     }
 
     /// A reopened session keeps the line of a worker it still has, and a

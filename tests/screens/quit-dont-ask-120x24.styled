@@ -89,8 +89,8 @@ style 9 89 90 fg=#303030 bg=#101010
 style 9 90 120 fg=#dedede bg=#131313
 text 10 "  r1 Check the quoting tests ·│  Yes    No      [x] Don't ask again                      │"
 style 10 0 2 fg=#dedede bg=#131313
-style 10 2 4 fg=#dedede bg=#131313 bold
-style 10 4 28 fg=#dedede bg=#131313
+style 10 2 5 fg=#dedede bg=#131313 bold
+style 10 5 28 fg=#dedede bg=#131313
 style 10 28 30 fg=#9d9d9d bg=#131313
 style 10 30 31 fg=#303030 bg=#101010
 style 10 31 32 fg=#dedede bg=#101010
@@ -102,20 +102,22 @@ style 10 47 68 fg=#f2f9ff bg=#006ee5
 style 10 68 89 fg=#dedede bg=#101010
 style 10 89 90 fg=#303030 bg=#101010
 style 10 90 120 fg=#dedede bg=#131313
-text 11 "  r2 Read the lexer · astra hi│                                                          │"
+text 11 "  r2 Read the lexer · 5 calls │                                                          │"
 style 11 0 2 fg=#dedede bg=#131313
-style 11 2 4 fg=#dedede bg=#131313 bold
-style 11 4 19 fg=#dedede bg=#131313
+style 11 2 5 fg=#dedede bg=#131313 bold
+style 11 5 19 fg=#dedede bg=#131313
 style 11 19 30 fg=#9d9d9d bg=#131313
 style 11 30 31 fg=#303030 bg=#101010
 style 11 31 89 fg=#dedede bg=#101010
 style 11 89 90 fg=#303030 bg=#101010
 style 11 90 120 fg=#dedede bg=#131313
-text 12 "  r3 Update the docs · 3 tool └────────────────── ← →  move   Enter  choose   Esc  stay ─┘"
+text 12 "  r3 Update the docs · failed └────────────────── ← →  move   Enter  choose   Esc  stay ─┘"
 style 12 0 2 fg=#dedede bg=#131313
-style 12 2 4 fg=#dedede bg=#131313 bold
-style 12 4 20 fg=#dedede bg=#131313
-style 12 20 30 fg=#9d9d9d bg=#131313
+style 12 2 5 fg=#dedede bg=#131313 bold
+style 12 5 20 fg=#dedede bg=#131313
+style 12 20 23 fg=#9d9d9d bg=#131313
+style 12 23 29 fg=#ff5257 bg=#131313
+style 12 29 30 fg=#9d9d9d bg=#131313
 style 12 30 49 fg=#303030 bg=#101010
 style 12 49 54 fg=#dedede bg=#232323
 style 12 54 59 fg=#9d9d9d bg=#101010

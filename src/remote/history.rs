@@ -113,6 +113,7 @@ fn items_from(
                             let call = &mut items[index];
                             call.settle(outcome.status, outcome.text, &outcome.settled, next);
                             call.started = outcome.started.clone();
+                            call.sets = outcome.sets.clone();
                             call.output = outcome.output;
                             // The job a moved call went on in, which may
                             // have ended since.

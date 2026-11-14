@@ -1,0 +1,94 @@
+## 05 Third start call, with a profile and a worktree
+▎ Fix the stale cache test, and have workers check the fixture, the docs and the callers.
+
+  I'll start three workers for the checks and fix the comparison myself.
+
+· Check that the cache fixture uses the same deadline as the test, and rep… · starting
+
+· Read docs/cache.md and the doc comments in src/cache.rs, and list each p… · starting
+
+· Find every caller of cache::fresh and say whether any relies on a value … · starting
+
+## 18 r1 reports
+▎ Fix the stale cache test, and have workers check the fixture, the docs and the callers.
+
+  I'll start three workers for the checks and fix the comparison myself.
+
+▾ r1 Check that the cache fixture uses the same deadline as the test, and rep… · 2 calls · 2s
+│ Check that the cache fixture uses the same deadline as the test, and report any value that
+│ differs.
+│
+│ # Your task
+│ Read tests/fixtures/cache.json and src/cache_tests.rs.
+
+▾ r2 Read docs/cache.md and the doc comments in src/cache.rs, and list each… · running · 1 call · 2s
+│ Read docs/cache.md and the doc comments in src/cache.rs, and list each place that says a value
+│ stays fresh at its deadline.
+
+▾ r3 Find every caller of cache::fresh and say whether any relies on a value … · queued
+│ Find every caller of cache::fresh and say whether any relies on a value staying fresh at its
+│ deadline.
+
+▾ Read cache.rs and made 1 edit
+│ ▾ read src/cache.rs · ✓ 3 lines
+│   1  pub fn fresh(now: u64, expires: u64) -> bool {
+│   2      now <= expires
+│   3  }
+│
+│ ▾ edit src/cache.rs · ✓ 1 edit
+│    - now <= expires
+│    + now < expires
+
+▾ r1 reported
+│ The fixture and the assertion both use the deadline 10.
+
+⣷ Working…
+
+## 26 Turn ends
+▎ Fix the stale cache test, and have workers check the fixture, the docs and the callers.
+
+  I'll start three workers for the checks and fix the comparison myself.
+
+▾ r1 Check that the cache fixture uses the same deadline as the test, and rep… · 2 calls · 2s
+│ Check that the cache fixture uses the same deadline as the test, and report any value that
+│ differs.
+│
+│ # Your task
+│ Read tests/fixtures/cache.json and src/cache_tests.rs.
+
+▾ r2 Read docs/cache.md and the doc comments in src/cache.rs, and list each p… · 1 call · 2s
+│ Read docs/cache.md and the doc comments in src/cache.rs, and list each place that says a value
+│ stays fresh at its deadline.
+
+▾ r3 Find every caller of cache::fresh and say whether any relies on a value… · failed · 1 call · 2s
+│ Find every caller of cache::fresh and say whether any relies on a value staying fresh at its
+│ deadline.
+
+▾ Read cache.rs and made 1 edit
+│ ▾ read src/cache.rs · ✓ 3 lines
+│   1  pub fn fresh(now: u64, expires: u64) -> bool {
+│   2      now <= expires
+│   3  }
+│
+│ ▾ edit src/cache.rs · ✓ 1 edit
+│    - now <= expires
+│    + now < expires
+
+▾ r1 reported
+│ The fixture and the assertion both use the deadline 10.
+
+▾ Waited for r2 and r3 · r2 finished, r3 stopped
+│ r2 finished. Its report:
+│
+│ docs/cache.md line 3 says a value expires at its deadline, which matches the fix. The doc comment
+│ of fresh says nothing about the boundary.
+│
+│ r3 stopped (failed).
+
+▾ r2 reported
+│ docs/cache.md line 3 says a value expires at its deadline, which matches the fix. The doc comment
+│ of fresh says nothing about the boundary.
+
+  Changed the cache to expire at its deadline. The fixture and the docs agree. The callers' check
+  failed on its model's usage limit.
+

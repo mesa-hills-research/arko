@@ -35,7 +35,7 @@
   Now check the fixture independently.
 ▸ Changed note 1
 ▸ Ran git worktree add ../fixture-check -b fixtur…
-  r3 Check that the… · 1 tool call · 2s · finished
+  r3 Check that the cache fixture u… · 1 call · 2s
 
 ▾ r3 reported
 │ The fixture and assertion both use the deadline

@@ -44,6 +44,10 @@ struct Step {
     /// The files a `user` step's message carried from the web page.
     #[serde(default)]
     files: Vec<ScriptFile>,
+    /// A name for a call step's call, by which a later `result` step gives
+    /// the call its result (a call made with `running`).
+    #[serde(default)]
+    call: String,
 }
 
 /// A file of a `user` step, at `path`, of `bytes` and the type `mime`.
@@ -77,6 +81,8 @@ pub(crate) fn play(path: &str) -> Feed {
 pub(crate) fn play_each(path: &str, mut draw: impl FnMut(usize, &str, &Feed)) -> Feed {
     let script: Script = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let feed = Feed::new("main");
+    // The calls made with a name, by it, for the `result` steps.
+    let mut named: HashMap<String, Uuid> = HashMap::new();
     for (index, step) in script.steps.into_iter().enumerate() {
         let label = step.label.clone();
         match step.kind.as_str() {
@@ -129,6 +135,23 @@ pub(crate) fn play_each(path: &str, mut draw: impl FnMut(usize, &str, &Feed)) ->
             }
             "job_end" => feed.job_ended(step.job.unwrap(), super::JobState::Finished, None),
             "worker_start" => feed.worker(&step.worker, &step.text, WorkerChange::Started),
+            "worker_queue" => feed.worker(&step.worker, &step.text, WorkerChange::Queued),
+            "worker_fail" => {
+                feed.worker(&step.worker, "", WorkerChange::Failed { error: &step.text })
+            }
+            // The result of the call named `call`, made earlier with `running`.
+            "result" => {
+                let id = named[&step.call];
+                let worker = (!step.worker.is_empty()).then_some(step.worker.as_str());
+                let agent = if worker.is_some() { "worker" } else { "main" };
+                let ended = AgentEvent::ToolResult {
+                    tool_call_id: id,
+                    tool_name: step.tool,
+                    output: step.output.unwrap_or_default(),
+                    receipt: None,
+                };
+                feed.event(&agent_event(agent, ended), worker);
+            }
             "worker_text" => {
                 let chunk = AgentEvent::AssistantResponseChunk(step.text.clone());
                 feed.event(&agent_event("worker", chunk), Some(&step.worker));
@@ -146,6 +169,9 @@ pub(crate) fn play_each(path: &str, mut draw: impl FnMut(usize, &str, &Feed)) ->
                     .unwrap_or_default()
                     .to_string();
                 let id = Uuid::new_v4();
+                if !step.call.is_empty() {
+                    named.insert(step.call.clone(), id);
+                }
                 let call = AgentEvent::ToolCallFormatted {
                     tool_call_id: id,
                     tool_name: step.tool.clone(),

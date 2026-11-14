@@ -64,7 +64,7 @@ of single lines under it.
 | List | The entries |
 | Message to a worker | The message |
 | Wait | The mail that came |
-| Worker start | The task, muted (a worker started at once has the worker's line instead) |
+| Worker start | The task, muted (in the terminal it is the worker's row, and on the page a worker started at once has the worker's line instead) |
 | Note | The note's text |
 | MCP call | The arguments, then the result |
 | Monitor, terminal | One muted line with what the words left out (the whole command and its settings) |
@@ -100,6 +100,24 @@ of single lines under it.
   hides only what happened between its first call and its last. Every other thought is a line of its
   own. The last one stands at the end until the next call comes, and goes in the row above if that
   call joins it. One the reader opened stays where it is, and the next call starts a row of its own.
+
+### Workers in the terminal
+
+- A worker's start is one row, where the call was, in every view. Until the worker has an ID the
+  row says the task's first line and "starting" with its timer. Then the worker's ID leads it, and
+  it says how the worker stands ("running", "queued", "failed" or "stopped"), its calls from the
+  first, and how long it has run ("r1 Fix the flaky test · running · 3 calls · 41s"). A worker that
+  finished says no state, and its report is a row of its own where it came ("r1 reported").
+- It opens to the task.
+- A message that sets a worker that ended going again is that worker's row from then on ("Messaged
+  r2 · running · 3 calls · 52s"). Only a worker's latest row says how it stands, so its earlier rows
+  keep its ID and title alone.
+- A worker that goes on with no call of its lead's in that turn to stand for it (one the user
+  messaged, one that left the queue in a later turn) has a line of its own, which shows the
+  worker's own view.
+- Messages shows these rows, and counts the agent's other calls.
+- The worker's own view opens from the agent list (Ctrl+T, then Enter or a click) and with /watch.
+- The web page and the app keep the worker's own line under its start.
 
 ### Markers, the live line and gaps
 

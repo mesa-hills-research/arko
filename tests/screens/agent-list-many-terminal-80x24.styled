@@ -17,19 +17,19 @@ style 5 0 2 fg=cyan
 text 6 ""
 text 7 "  I'll start three workers."
 text 8 ""
-text 9 "  r1 Check the quoting tests · 6 tool calls · 1m · running · cargo test --test …"
-style 9 2 4 bold
-style 9 28 51 dim
-style 9 51 58 fg=cyan
-style 9 58 80 dim
-text 10 "  r2 Read the lexer · astra high · 5 tool calls · 48s · finished"
-style 10 2 4 bold
-style 10 19 56 dim
-style 10 56 64 fg=green
-text 11 "  r3 Update the docs · 3 tool calls · 9s · failed"
-style 11 2 4 bold
-style 11 20 43 dim
-style 11 43 49 fg=red
+text 9 "  r1 Check the quoting tests · running · 6 calls · 1m"
+style 9 2 5 bold
+style 9 28 31 dim
+style 9 31 38 fg=cyan
+style 9 38 53 dim
+text 10 "  r2 Read the lexer · 5 calls · 48s"
+style 10 2 5 bold
+style 10 19 35 dim
+text 11 "  r3 Update the docs · failed · 3 calls · 9s"
+style 11 2 5 bold
+style 11 20 23 dim
+style 11 23 29 fg=red
+style 11 29 44 dim
 text 12 "▸ r2 reported"
 style 12 0 2 dim
 style 12 2 5 bold

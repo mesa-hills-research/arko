@@ -586,14 +586,6 @@ impl App {
         if reading.models != self.reading.models {
             self.model_names.take();
         }
-        if reading.models.workers != self.transcript.usual.model
-            || reading.models.workers_effort != self.transcript.usual.effort
-        {
-            self.transcript.usual = super::transcript::Usual {
-                model: reading.models.workers.clone(),
-                effort: reading.models.workers_effort.clone(),
-            };
-        }
         let questions = reading.questions != self.reading.questions;
         let approvals = reading.approvals != self.reading.approvals;
         self.reading = reading;

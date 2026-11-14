@@ -64,7 +64,7 @@ style 9 2 3 fg=#303030 bg=#101010
 style 9 3 57 fg=#dedede bg=#101010
 style 9 57 58 fg=#303030 bg=#101010
 style 9 58 60 fg=#dedede bg=#131313
-text 10 "  │  Yes    No      [x] Don't ask again                  │ …"
+text 10 "  │  Yes    No      [x] Don't ask again                  │"
 style 10 0 2 fg=#dedede bg=#131313
 style 10 2 3 fg=#303030 bg=#101010
 style 10 3 4 fg=#dedede bg=#101010
@@ -75,13 +75,13 @@ style 10 15 19 fg=#dedede bg=#101010
 style 10 19 40 fg=#f2f9ff bg=#006ee5
 style 10 40 57 fg=#dedede bg=#101010
 style 10 57 58 fg=#303030 bg=#101010
-style 10 58 60 fg=#9d9d9d bg=#131313
-text 11 "  │                                                      │ed"
+style 10 58 60 fg=#dedede bg=#131313
+text 11 "  │                                                      │"
 style 11 0 2 fg=#dedede bg=#131313
 style 11 2 3 fg=#303030 bg=#101010
 style 11 3 57 fg=#dedede bg=#101010
 style 11 57 58 fg=#303030 bg=#101010
-style 11 58 60 fg=#30d158 bg=#131313
+style 11 58 60 fg=#dedede bg=#131313
 text 12 "  └────────────── ← →  move   Enter  choose   Esc  stay ─┘"
 style 12 0 2 fg=#dedede bg=#131313
 style 12 2 17 fg=#303030 bg=#101010

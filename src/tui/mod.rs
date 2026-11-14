@@ -53,6 +53,7 @@ mod select;
 mod shift_tests;
 pub(crate) mod theme;
 mod transcript;
+mod worker_rows;
 mod working;
 mod wrap;
 

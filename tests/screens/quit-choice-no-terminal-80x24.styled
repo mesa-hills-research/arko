@@ -24,15 +24,14 @@ style 6 63 68 dim
 text 7 "          │                                                          │"
 text 8 "  I'll sta│ Quit now?                                                │"
 text 9 "          │                                                          │"
-text 10 "  r1 Check│  Yes    No      [ ] Don't ask again                      │t --test …"
-style 10 2 4 bold
+text 10 "  r1 Check│  Yes    No      [ ] Don't ask again                      │"
+style 10 2 5 bold
 style 10 12 17 reverse
 style 10 19 23 reverse
-style 10 70 80 dim
 text 11 "  r2 Read │                                                          │"
-style 11 2 4 bold
+style 11 2 5 bold
 text 12 "  r3 Updat└────────────────── ← →  move   Enter  choose   Esc  stay ─┘"
-style 12 2 4 bold
+style 12 2 5 bold
 style 12 29 34 reverse
 style 12 34 39 dim
 style 12 41 48 reverse

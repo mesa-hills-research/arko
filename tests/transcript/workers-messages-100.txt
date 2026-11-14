@@ -1,0 +1,54 @@
+## 05 Third start call, with a profile and a worktree
+▎ Fix the stale cache test, and have workers check the fixture, the docs and the callers.
+
+  I'll start three workers for the checks and fix the comparison myself.
+
+· Check that the cache fixture uses the same deadline as the test, and rep… · starting
+· Read docs/cache.md and the doc comments in src/cache.rs, and list each p… · starting
+· Find every caller of cache::fresh and say whether any relies on a value … · starting
+
+## 11 The third start's result says it queued
+▎ Fix the stale cache test, and have workers check the fixture, the docs and the callers.
+
+  I'll start three workers for the checks and fix the comparison myself.
+
+▸ r1 Check that the cache fixture uses the same deadline as the test, and rep… · running · 2s
+▸ r2 Read docs/cache.md and the doc comments in src/cache.rs, and list each p… · running · 2s
+▸ r3 Find every caller of cache::fresh and say whether any relies on a value … · queued
+⣷ Working…
+
+## 26 Turn ends
+▎ Fix the stale cache test, and have workers check the fixture, the docs and the callers.
+
+  I'll start three workers for the checks and fix the comparison myself.
+
+▸ r1 Check that the cache fixture uses the same deadline as the test, and rep… · 2 calls · 2s
+▸ r2 Read docs/cache.md and the doc comments in src/cache.rs, and list each p… · 1 call · 2s
+▸ r3 Find every caller of cache::fresh and say whether any relies on a value… · failed · 1 call · 2s
+▸ 3 tool calls
+▸ r1 reported
+▸ r2 reported
+
+  Changed the cache to expire at its deadline. The fixture and the docs agree. The callers' check
+  failed on its model's usage limit.
+
+## 31 r2 edits the comment
+▎ Fix the stale cache test, and have workers check the fixture, the docs and the callers.
+
+  I'll start three workers for the checks and fix the comparison myself.
+
+▸ r1 Check that the cache fixture uses the same deadline as the test, and rep… · 2 calls · 2s
+▸ r2 Read docs/cache.md and the doc comments in src/cache.rs, and list each p…
+▸ r3 Find every caller of cache::fresh and say whether any relies on a value… · failed · 1 call · 2s
+▸ 3 tool calls
+▸ r1 reported
+▸ r2 reported
+
+  Changed the cache to expire at its deadline. The fixture and the docs agree. The callers' check
+  failed on its model's usage limit.
+
+▎ Ask r2 to fix the doc comment too.
+
+▸ Messaged r2 · running · 2 calls · 2s
+⣷ Working…
+

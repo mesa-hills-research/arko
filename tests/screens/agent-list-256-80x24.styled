@@ -43,27 +43,28 @@ text 8 "  I'll start three workers."
 style 8 0 80 fg=idx:253 bg=idx:233
 text 9 ""
 style 9 0 80 fg=idx:253 bg=idx:233
-text 10 "  r1 Check the quoting tests · 6 tool calls · 1m · running · cargo test --test …"
+text 10 "  r1 Check the quoting tests · running · 6 calls · 1m"
 style 10 0 2 fg=idx:253 bg=idx:233
-style 10 2 4 fg=idx:253 bg=idx:233 bold
-style 10 4 28 fg=idx:253 bg=idx:233
-style 10 28 51 fg=idx:247 bg=idx:233
-style 10 51 58 fg=idx:75 bg=idx:233
-style 10 58 80 fg=idx:247 bg=idx:233
-text 11 "  r2 Read the lexer · astra high · 5 tool calls · 48s · finished"
+style 10 2 5 fg=idx:253 bg=idx:233 bold
+style 10 5 28 fg=idx:253 bg=idx:233
+style 10 28 31 fg=idx:247 bg=idx:233
+style 10 31 38 fg=idx:75 bg=idx:233
+style 10 38 53 fg=idx:247 bg=idx:233
+style 10 53 80 fg=idx:253 bg=idx:233
+text 11 "  r2 Read the lexer · 5 calls · 48s"
 style 11 0 2 fg=idx:253 bg=idx:233
-style 11 2 4 fg=idx:253 bg=idx:233 bold
-style 11 4 19 fg=idx:253 bg=idx:233
-style 11 19 56 fg=idx:247 bg=idx:233
-style 11 56 64 fg=idx:77 bg=idx:233
-style 11 64 80 fg=idx:253 bg=idx:233
-text 12 "  r3 Update the docs · 3 tool calls · 9s · failed"
+style 11 2 5 fg=idx:253 bg=idx:233 bold
+style 11 5 19 fg=idx:253 bg=idx:233
+style 11 19 35 fg=idx:247 bg=idx:233
+style 11 35 80 fg=idx:253 bg=idx:233
+text 12 "  r3 Update the docs · failed · 3 calls · 9s"
 style 12 0 2 fg=idx:253 bg=idx:233
-style 12 2 4 fg=idx:253 bg=idx:233 bold
-style 12 4 20 fg=idx:253 bg=idx:233
-style 12 20 43 fg=idx:247 bg=idx:233
-style 12 43 49 fg=idx:203 bg=idx:233
-style 12 49 80 fg=idx:253 bg=idx:233
+style 12 2 5 fg=idx:253 bg=idx:233 bold
+style 12 5 20 fg=idx:253 bg=idx:233
+style 12 20 23 fg=idx:247 bg=idx:233
+style 12 23 29 fg=idx:203 bg=idx:233
+style 12 29 44 fg=idx:247 bg=idx:233
+style 12 44 80 fg=idx:253 bg=idx:233
 text 13 "▸ r2 reported"
 style 13 0 2 fg=idx:247 bg=idx:233
 style 13 2 5 fg=idx:253 bg=idx:233 bold

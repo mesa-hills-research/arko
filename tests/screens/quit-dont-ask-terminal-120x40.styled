@@ -35,15 +35,17 @@ text 12 "  I'll start three workers.   │                                      
 text 13 "                              │   cargo watch -x test                                 2m │"
 style 13 86 88 dim
 text 14 "  r1 Check the quoting tests ·│   npm run dev                                      1h 1m │"
-style 14 2 4 bold
+style 14 2 5 bold
 style 14 28 30 dim
 style 14 83 88 dim
-text 15 "  r2 Read the lexer · astra hi│                                                          │"
-style 15 2 4 bold
+text 15 "  r2 Read the lexer · 5 calls │                                                          │"
+style 15 2 5 bold
 style 15 19 30 dim
-text 16 "  r3 Update the docs · 3 tool │ Quit now?                                                │"
-style 16 2 4 bold
-style 16 20 30 dim
+text 16 "  r3 Update the docs · failed │ Quit now?                                                │"
+style 16 2 5 bold
+style 16 20 23 dim
+style 16 23 29 fg=red
+style 16 29 30 dim
 text 17 "▸ r2 reported                 │                                                          │"
 style 17 0 2 dim
 style 17 2 5 bold

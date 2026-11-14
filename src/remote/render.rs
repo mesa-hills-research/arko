@@ -46,6 +46,17 @@ fn flag(parameters: &Parameters, name: &str) -> bool {
     }
 }
 
+/// A worker's title, the first line of its task that has words, without a
+/// heading's or a list's marks.
+pub(crate) fn worker_title(task: &str) -> String {
+    let line = task
+        .lines()
+        .map(|line| line.trim().trim_start_matches(['#', '-', '*', ' ']))
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    cut(line, 72)
+}
+
 /// How a call of an agent (the main one or a worker) shows, and `None` for
 /// calls not shown (a question is shown as Arko asks it, a reply or a
 /// worker's report as it ends). A call's item names its tool and keeps its
@@ -58,6 +69,9 @@ pub fn call(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
     let mut item = line(tool, parameters, lead)?;
     if item.kind == Kind::Call {
         item.tool = Some(tool.to_string());
+        if tool == crew::START_AGENT {
+            item.task_title = Some(worker_title(text(parameters, "task")));
+        }
         // (In the order of their names, because a `HashMap` has none.)
         let sorted: std::collections::BTreeMap<_, _> = parameters.iter().collect();
         item.parameters = serde_json::to_string_pretty(&sorted).ok().map(Into::into);
@@ -867,6 +881,9 @@ pub struct Outcome {
     /// The worker a `start_agent` call started at once (not one that waits
     /// for a place).
     pub started: Option<String>,
+    /// The worker the call set going, which a start started or queued, or
+    /// a message continued or restarted ([`Item::sets`]).
+    pub sets: Option<String>,
     /// What the result adds to the call's act.
     pub settled: Settled,
 }
@@ -895,6 +912,7 @@ impl Outcome {
             output: None,
             job: None,
             started: None,
+            sets: None,
             settled: Settled::default(),
         }
     }
@@ -947,6 +965,7 @@ impl Outcome {
             output: (!message.is_empty()).then(|| message.into()),
             job: None,
             started: None,
+            sets: None,
             settled: Settled::default(),
         }
     }
@@ -1113,6 +1132,7 @@ fn brief(tool: &str, output: &str) -> Outcome {
                     output: None,
                     job: None,
                     started: None,
+                    sets: None,
                     settled: Settled::default(),
                 },
                 _ => Outcome::ok(cut(first, OUTCOME_CHARS)),
@@ -1124,9 +1144,11 @@ fn brief(tool: &str, output: &str) -> Outcome {
             match (words.next(), words.next()) {
                 (Some("Started"), Some(id)) => Outcome {
                     started: Some(id.to_string()),
+                    sets: Some(id.to_string()),
                     ..Outcome::ok(id)
                 },
                 (Some("Queued"), Some(id)) => Outcome {
+                    sets: Some(id.to_string()),
                     settled: Settled {
                         done: Some(format!("Queued {id}")),
                         ..Settled::default()
@@ -1151,7 +1173,25 @@ fn brief(tool: &str, output: &str) -> Outcome {
         }
         // (Its text is its content, so the line needs no words of it.)
         LOAD_SKILL_TOOL_NAME if skill_text(output).is_some() => Outcome::ok(""),
-        crew::MESSAGE_AGENT if output.starts_with("Sent") => Outcome::ok("sent"),
+        // A message that sets a worker that ended going again ("Sent: r2
+        // continues its task", "restarts where it stopped", "goes on with
+        // your message once an agent run ends") names it, as a start does.
+        // shortcut: reads the words the workflow's board writes, as the
+        // start's "Started r2" is read, until the framework gives a tool's
+        // result as data.
+        crew::MESSAGE_AGENT if output.starts_with("Sent") => {
+            let going = [
+                "continues its task",
+                "restarts where it stopped",
+                "goes on with",
+            ]
+            .iter()
+            .any(|words| output.contains(words));
+            Outcome {
+                sets: sent_to(output).filter(|_| going).map(str::to_string),
+                ..Outcome::ok("sent")
+            }
+        }
         // Its result is the mail that came ("[mail 2] r1 ... finished ..."),
         // worded for the agent that waited ("An update for you arrived"), so
         // its line says what came as the user reads it.
@@ -1677,6 +1717,7 @@ fn command_outcome(output: &str) -> Outcome {
         output: None,
         job: None,
         started: None,
+        sets: None,
         settled,
     }
 }
@@ -2101,6 +2142,67 @@ mod tests {
         )
         .unwrap();
         assert_eq!(item.text, "message main “Done?”");
+    }
+
+    /// A start that began or queued its worker sets it going, and so does a
+    /// message that continued or restarted a worker that ended. A refusal, a
+    /// message the worker reads as it runs and a result of another kind set
+    /// none. A start keeps its task's title.
+    #[test]
+    fn a_call_names_the_worker_it_set_going() {
+        let sets = |tool: &str, output: &str| outcome(tool, output).sets;
+        for (output, worker) in [
+            ("Started r5 (agent `worker`).", Some("r5")),
+            (
+                "Started r12 (agent `worker`) in the worktree /tmp/w.",
+                Some("r12"),
+            ),
+            (
+                "Queued r5 (agent `worker`): 4 agent runs are running, the most this workflow allows, so it starts when one ends.",
+                Some("r5"),
+            ),
+            ("The task is empty.", None),
+        ] {
+            assert_eq!(
+                sets(crew::START_AGENT, output).as_deref(),
+                worker,
+                "{output}"
+            );
+        }
+        assert_eq!(Outcome::failed("refused (over budget)").sets, None);
+        assert_eq!(sets("shell", "Started r5"), None);
+        for (output, worker) in [
+            (
+                "Sent: r2 continues its task with your message, with its context; its new report reaches you when it finishes.",
+                Some("r2"),
+            ),
+            (
+                "Sent: r2 restarts where it stopped, with your message; its report reaches you when it finishes.",
+                Some("r2"),
+            ),
+            (
+                "Sent: r2 goes on with your message once an agent run ends (the most are running).",
+                Some("r2"),
+            ),
+            ("Sent: r2 reads it at its next step.", None),
+            ("Sent: r2 reads it when it starts.", None),
+            ("Sent: r2 gets it as the answer to its question.", None),
+            ("Sent to r3.", None),
+        ] {
+            let outcome = outcome(crew::MESSAGE_AGENT, output);
+            assert_eq!(
+                (outcome.sets.as_deref(), outcome.text.as_deref()),
+                (worker, Some("sent")),
+                "{output}"
+            );
+        }
+        let start = super::call(
+            crew::START_AGENT,
+            &params(&[("task", "## Review\n\nRead the diff.".into())]),
+            "main",
+        )
+        .unwrap();
+        assert_eq!(start.task_title.as_deref(), Some("Review"));
     }
 
     /// Only a start that began the worker at once names it as started. One

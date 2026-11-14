@@ -83,10 +83,10 @@ style 9 10 11 fg=#303030 bg=#101010
 style 9 11 69 fg=#dedede bg=#101010
 style 9 69 70 fg=#303030 bg=#101010
 style 9 70 80 fg=#dedede bg=#131313
-text 10 "  r1 Check│  Yes    No      [x] Don't ask again                      │t --test …"
+text 10 "  r1 Check│  Yes    No      [x] Don't ask again                      │"
 style 10 0 2 fg=#dedede bg=#131313
-style 10 2 4 fg=#dedede bg=#131313 bold
-style 10 4 10 fg=#dedede bg=#131313
+style 10 2 5 fg=#dedede bg=#131313 bold
+style 10 5 10 fg=#dedede bg=#131313
 style 10 10 11 fg=#303030 bg=#101010
 style 10 11 12 fg=#dedede bg=#101010
 style 10 12 17 fg=#dedede bg=#232323
@@ -96,19 +96,19 @@ style 10 23 27 fg=#dedede bg=#101010
 style 10 27 48 fg=#f2f9ff bg=#006ee5
 style 10 48 69 fg=#dedede bg=#101010
 style 10 69 70 fg=#303030 bg=#101010
-style 10 70 80 fg=#9d9d9d bg=#131313
+style 10 70 80 fg=#dedede bg=#131313
 text 11 "  r2 Read │                                                          │"
 style 11 0 2 fg=#dedede bg=#131313
-style 11 2 4 fg=#dedede bg=#131313 bold
-style 11 4 10 fg=#dedede bg=#131313
+style 11 2 5 fg=#dedede bg=#131313 bold
+style 11 5 10 fg=#dedede bg=#131313
 style 11 10 11 fg=#303030 bg=#101010
 style 11 11 69 fg=#dedede bg=#101010
 style 11 69 70 fg=#303030 bg=#101010
 style 11 70 80 fg=#dedede bg=#131313
 text 12 "  r3 Updat└────────────────── ← →  move   Enter  choose   Esc  stay ─┘"
 style 12 0 2 fg=#dedede bg=#131313
-style 12 2 4 fg=#dedede bg=#131313 bold
-style 12 4 10 fg=#dedede bg=#131313
+style 12 2 5 fg=#dedede bg=#131313 bold
+style 12 5 10 fg=#dedede bg=#131313
 style 12 10 29 fg=#303030 bg=#101010
 style 12 29 34 fg=#dedede bg=#232323
 style 12 34 39 fg=#9d9d9d bg=#101010

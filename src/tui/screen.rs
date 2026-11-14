@@ -894,6 +894,7 @@ mod tests {
         let steps = std::env::var_os("ARKO_RENDER_STEPS").is_some();
         for (view, name, open, worker) in [
             (View::Full, "full", true, None),
+            (View::Full, "full-closed", false, None),
             (View::Quiet, "quiet-closed", false, None),
             (View::Quiet, "quiet-open", true, None),
             (View::Messages, "messages", false, None),
@@ -907,20 +908,28 @@ mod tests {
             } else {
                 name.to_string()
             };
-            let mut app = app();
-            app.reset(feed.subscribe().0);
-            app.set_view(view);
-            if let Some(worker) = worker {
-                if app.transcript.worker(worker).is_none() {
-                    continue;
-                }
-                app.watching = Some(worker.to_string());
+            let shown = || {
+                let mut app = app();
+                app.reset(feed.subscribe().0);
+                app.set_view(view);
+                app.watching = worker.map(str::to_string);
+                app
+            };
+            let mut app = shown();
+            if let Some(worker) = worker
+                && app.transcript.worker(worker).is_none()
+            {
+                continue;
             }
             // The bottom of a screen 20 rows tall, as it shows before
             // anything opens, its blank rows too.
             let (rows, _) = screen_html(&mut app, width, 20);
             std::fs::write(format!("{out}/terminal-{name}-bottom.txt"), rows.join("\n")).unwrap();
-            if open || (steps && view == View::Full) {
+            // (A screen that grows keeps its lines where they were, so the
+            // whole transcript is drawn on a screen that starts tall.)
+            let mut app = shown();
+            screen_html(&mut app, width, 800);
+            if open || (steps && view == View::Full && worker.is_some()) {
                 if steps {
                     app.transcript.open_all_for_renderings(view, worker);
                 } else {
@@ -966,21 +975,14 @@ mod tests {
     #[test]
     fn the_scripted_session_draws_as_its_goldens() {
         use crate::tui::transcript::View;
-        use std::collections::BTreeMap;
-        let _full = crate::glyphs::tests::choose_symbols(crate::glyphs::Symbols::Full);
-        let root = env!("CARGO_MANIFEST_DIR");
-        let script = format!("{root}/src/remote/scenarios/thinking.json");
-        let dir = std::path::PathBuf::from(root).join("tests/transcript");
-        let closed = ["02", "06", "12", "13", "14", "26", "31", "33"];
-        let open = ["13", "17", "33"];
-        let mut files: BTreeMap<String, String> = BTreeMap::new();
-        crate::remote::scenario::play_each(&script, |step, label, feed| {
-            let step = format!("{step:02}");
+        scripted_goldens("thinking.json", "", |step| {
+            let closed = ["02", "06", "12", "13", "14", "26", "31", "33"];
+            let open = ["13", "17", "33"];
             let mut views = Vec::new();
-            if closed.contains(&step.as_str()) {
+            if closed.contains(&step) {
                 views.push((View::Quiet, "quiet-closed", false, None));
             }
-            if open.contains(&step.as_str()) {
+            if open.contains(&step) {
                 views.push((View::Quiet, "quiet-open", true, None));
             }
             if step == "33" {
@@ -988,12 +990,80 @@ mod tests {
                 views.push((View::Messages, "messages-open", true, None));
                 views.push((View::Quiet, "worker-r3-quiet-open", true, Some("r3")));
             }
-            for (view, name, opened, worker) in views {
+            views
+        });
+    }
+
+    /// The scripted session of `src/remote/scenarios/workers.json` matches
+    /// its files in `tests/transcript/` (`workers-*`), as
+    /// [`the_scripted_session_draws_as_its_goldens`] does. Each start is one
+    /// row in every view, which says "starting" until its worker has an ID,
+    /// then how the worker stands, and opens to its setup and its task. A
+    /// message that set a worker going again is that worker's latest row.
+    #[test]
+    fn the_workers_session_draws_as_its_goldens() {
+        use crate::tui::transcript::View;
+        scripted_goldens("workers.json", "workers-", |step| {
+            let mut views = Vec::new();
+            if ["05", "08", "11", "18", "26", "31"].contains(&step) {
+                views.push((View::Quiet, "quiet-closed", false, None));
+            }
+            if ["05", "18", "26"].contains(&step) {
+                views.push((View::Quiet, "quiet-open", true, None));
+            }
+            if ["05", "11", "26", "31"].contains(&step) {
+                views.push((View::Full, "full", false, None));
+                views.push((View::Messages, "messages", false, None));
+            }
+            if step == "26" {
+                views.push((View::Messages, "messages-open", true, None));
+            }
+            views
+        });
+    }
+
+    /// Draws the session of the script `script` (in `src/remote/scenarios/`)
+    /// in the views `views` gives for each step, at 100 and 50 columns, and
+    /// checks the drawings against `tests/transcript/{prefix}{view}-{width}.txt`
+    /// (`UPDATE_GOLDENS=1` writes them again). Each view is a name, whether
+    /// it opens every fold, and the worker whose own view it is. What the
+    /// clock decides is made steady. Each worker that ran has run 2 s, each
+    /// call that runs started just now, and the spinner shows its first
+    /// frame.
+    fn scripted_goldens(
+        script: &str,
+        prefix: &str,
+        views: impl Fn(
+            &str,
+        ) -> Vec<(
+            crate::tui::transcript::View,
+            &'static str,
+            bool,
+            Option<&'static str>,
+        )>,
+    ) {
+        use std::collections::BTreeMap;
+        let _full = crate::glyphs::tests::choose_symbols(crate::glyphs::Symbols::Full);
+        let root = env!("CARGO_MANIFEST_DIR");
+        let script = format!("{root}/src/remote/scenarios/{script}");
+        let dir = std::path::PathBuf::from(root).join("tests/transcript");
+        let mut files: BTreeMap<String, String> = BTreeMap::new();
+        crate::remote::scenario::play_each(&script, |step, label, feed| {
+            let step = format!("{step:02}");
+            for (view, name, opened, worker) in views(&step) {
                 for width in [100u16, 50] {
                     let mut app = app();
                     let mut snapshot = feed.subscribe().0;
                     for worker in &mut snapshot.workers {
-                        (worker.ran_ms, worker.running_since) = (2000, None);
+                        let ran = worker.started_at.is_some() || worker.ran_ms > 0;
+                        (worker.ran_ms, worker.running_since) = (if ran { 2000 } else { 0 }, None);
+                    }
+                    // (A call that runs says how long it ran from a second on.)
+                    let now = chrono::Utc::now().timestamp_millis();
+                    for item in &mut snapshot.items {
+                        if item.status == Some(crate::remote::CallStatus::Running) {
+                            item.at = now;
+                        }
                     }
                     app.reset(snapshot);
                     app.set_view(view);
@@ -1012,7 +1082,9 @@ mod tests {
                         .iter()
                         .rposition(|row| !row.is_empty())
                         .unwrap_or(first);
-                    let file = files.entry(format!("{name}-{width}.txt")).or_default();
+                    let file = files
+                        .entry(format!("{prefix}{name}-{width}.txt"))
+                        .or_default();
                     file.push_str(&format!("## {step} {label}\n"));
                     for row in &rows[first..=last] {
                         file.push_str(&steady(row));
