@@ -133,18 +133,35 @@ pub fn to_html(text: &str) -> String {
     // A code block's code, gathered to paint it whole, and its language.
     let mut code: Option<String> = None;
     let mut language: Option<String> = None;
+    // The lists open, each a numbered one's tag's place in `html`, its first
+    // number and its items so far, or none for a bulleted one.
+    let mut lists: Vec<Option<(usize, u64, u64)>> = Vec::new();
     for event in TextMergeStream::new(Parser::new_ext(text, options)) {
         match event {
             Event::Start(tag) => {
                 plain += u32::from(matches!(tag, Tag::Link { .. }));
-                if let Tag::CodeBlock(kind) = &tag {
-                    code = Some(String::new());
-                    language = language_of(kind).map(str::to_string);
+                match &tag {
+                    Tag::CodeBlock(kind) => {
+                        code = Some(String::new());
+                        language = language_of(kind).map(str::to_string);
+                    }
+                    Tag::List(start) => lists.push(start.map(|start| (html.len(), start, 0))),
+                    Tag::Item => {
+                        if let Some(Some((_, _, items))) = lists.last_mut() {
+                            *items += 1;
+                        }
+                    }
+                    _ => {}
                 }
                 open(&mut html, tag)
             }
             Event::End(tag) => {
                 plain = plain.saturating_sub(u32::from(matches!(tag, TagEnd::Link)));
+                if matches!(tag, TagEnd::List(_))
+                    && let Some(Some((at, start, items))) = lists.pop()
+                {
+                    number_digits(&mut html, at, start, items);
+                }
                 let block = matches!(tag, TagEnd::CodeBlock);
                 if block && let Some(code) = code.take() {
                     code_html(&mut html, &code);
@@ -257,6 +274,19 @@ fn close(html: &mut String, tag: TagEnd) {
         _ => "",
     };
     html.push_str(end);
+}
+
+/// Gives the numbered list whose `<ol` starts at `at` in `html` the count of
+/// its widest number's digits, when that's more than one, for the page to
+/// keep a column that wide for its numbers (`.md ol` in app.css).
+/// Markdown's numbers have at most 9 digits, so the widest has at most 10.
+fn number_digits(html: &mut String, at: usize, start: u64, items: u64) {
+    let widest = start.saturating_add(items.saturating_sub(1));
+    let digits = widest.checked_ilog10().unwrap_or(0) + 1;
+    if digits > 1 {
+        debug_assert!(html[at..].starts_with("<ol"));
+        html.insert_str(at + "<ol".len(), &format!(" data-digits=\"{digits}\""));
+    }
 }
 
 /// A fenced code block's language, as its fence names it.
@@ -525,6 +555,92 @@ mod tests {
         assert!(html.contains("href=\"https://e.com\""));
         assert!(!html.contains("javascript"));
         assert!(html.contains("&lt;b&gt;raw&lt;/b&gt;"));
+    }
+
+    /// The columns the page keeps for the numbers of the numbered list whose
+    /// tag starts `html`, by app.css's rules, in a monospaced font, where
+    /// every character is 1ch.
+    fn number_columns(html: &str) -> usize {
+        let css = include_str!("../style/app.css");
+        assert!(
+            css.contains(".md ol { --digits: 1; padding-left: calc((var(--digits) + 2) * 1ch); }"),
+            "the list's column rule changed"
+        );
+        let tag = &html[..html.find('>').unwrap()];
+        assert!(tag.starts_with("<ol"), "{html}");
+        let Some((_, digits)) = tag.split_once("data-digits=\"") else {
+            return 1 + 2;
+        };
+        let digits = &digits[..digits.find('"').unwrap()];
+        let rule = format!(".md ol[data-digits=\"{digits}\"] {{ --digits: {digits}; }}");
+        assert!(css.contains(&rule), "no rule for {digits} digits");
+        digits.parse::<usize>().unwrap() + 2
+    }
+
+    /// Checks that the list of `items` numbered from `start` keeps a column
+    /// as wide as its widest number and its ". ".
+    fn numbers_fit(start: u64, items: u64) {
+        let text: String = (start..start + items)
+            .map(|n| format!("{n}. item\n"))
+            .collect();
+        let html = to_html(&text);
+        let widest = format!("{}. ", start + items - 1);
+        assert_eq!(
+            number_columns(&html),
+            widest.len(),
+            "{start}, {items} items: {}",
+            &html[..html.len().min(60)]
+        );
+    }
+
+    #[test]
+    fn nine_numbers_have_a_column_of_one_digit() {
+        numbers_fit(1, 9);
+    }
+
+    /// A list within an item keeps a column of its own.
+    #[test]
+    fn ten_numbers_have_a_column_of_two_digits() {
+        numbers_fit(1, 10);
+        let mut text = "1. outer\n   1. inner\n   2. inner\n".to_string();
+        for n in 2..=10 {
+            text.push_str(&format!("{n}. outer\n"));
+        }
+        let html = to_html(&text);
+        assert!(
+            html.starts_with("<ol data-digits=\"2\"><li>outer<ol><li>"),
+            "{html}"
+        );
+        assert_eq!(number_columns(&html), 4);
+        assert_eq!(
+            number_columns(&html[html.find("<ol><li>inner").unwrap()..]),
+            3
+        );
+    }
+
+    #[test]
+    fn ninety_nine_numbers_have_a_column_of_two_digits() {
+        numbers_fit(1, 99);
+    }
+
+    #[test]
+    fn a_hundred_numbers_have_a_column_of_three_digits() {
+        numbers_fit(1, 100);
+    }
+
+    /// A list's widest number is its last, from where it starts.
+    #[test]
+    fn a_list_from_98_has_a_column_of_three_digits() {
+        numbers_fit(98, 3);
+        numbers_fit(98, 2);
+        assert!(
+            to_html("98. a\n99. b\n100. c\n").starts_with("<ol data-digits=\"3\" start=\"98\">")
+        );
+        // A list's numbers after its first are counted from it, so its last
+        // may have 10 digits, where Markdown writes at most 9.
+        let html = to_html("999999998. a\n1. b\n1. c\n");
+        assert!(html.contains("<li>c</li>"), "{html}");
+        assert_eq!(number_columns(&html), "1000000000. ".len());
     }
 
     #[test]

@@ -338,7 +338,6 @@ pub fn ConnectionLine() -> impl IntoView {
                     {(page.connection.get() != Connection::Live).then(|| view! {
                         <button type="button" class="btn ghost small" on:click=move |_| retry_now(page)>"Retry now"</button>
                     })}
-                    <span class="conn-detail">{move || page.detail.get()}</span>
                 </div>
             </div>
         })}
@@ -372,7 +371,49 @@ pub fn Lock() -> impl IntoView {
                 <input id="key" node_ref=key type="password" autocapitalize="off" spellcheck="false" />
                 <button class="btn primary" type="submit">"Open"</button>
             </form>
-            <p class="conn-detail">{move || page.detail.get()}</p>
         </section>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The text of `html`, without its tags.
+    fn text(html: &str) -> String {
+        let mut text = String::new();
+        let mut in_tag = false;
+        for c in html.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                c if !in_tag => text.push(c),
+                _ => {}
+            }
+        }
+        text
+    }
+
+    /// The connection's line says what's wrong and offers Retry, and the
+    /// lock screen says why it's locked, neither with a request the page
+    /// made ("GET /api/session 401").
+    #[test]
+    fn the_connection_line_and_the_lock_name_no_request() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let page = crate::testing::page();
+            page.connection.set(Connection::Offline);
+            page.problem
+                .set(Some("Not connected. Reconnecting…".into()));
+            let html = view! { <ConnectionLine /> }.to_html();
+            assert_eq!(text(&html), "Not connected. Reconnecting…Retry now");
+            assert!(html.ends_with(">Retry now</button></div></div>"), "{html}");
+            page.locked.set(Some("That key didn’t work."));
+            let html = view! { <Lock /> }.to_html();
+            assert!(html.ends_with("</form></section>"), "{html}");
+            for request in ["GET", "POST", "/api"] {
+                assert!(!html.contains(request), "{html}");
+            }
+        });
     }
 }

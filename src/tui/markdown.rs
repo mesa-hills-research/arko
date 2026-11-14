@@ -14,18 +14,17 @@ use crate::glyphs;
 /// copy of each needs (a gutter isn't text, a wrapped line goes on).
 pub fn render(text: &str, base: Style, theme: &Theme, width: usize) -> Vec<Wrapped> {
     let text = wrap::clean(text);
+    let source: Vec<&str> = text.lines().collect();
+    let numbers = number_columns(&source);
     let mut lines: Vec<Wrapped> = Vec::new();
-    let mut fence: Option<String> = None;
+    let mut fence: Option<&str> = None;
     let mut blank = false;
     let gutter = glyphs::render("│ ").into_owned();
-    for line in text.lines() {
+    for (n, line) in source.iter().copied().enumerate() {
         let trimmed = line.trim_start();
-        let marker = trimmed
-            .strip_prefix("```")
-            .map(|_| "```")
-            .or_else(|| trimmed.strip_prefix("~~~").map(|_| "~~~"));
-        if let Some(open) = &fence {
-            if marker == Some(open.as_str()) && trimmed.trim_end().len() == 3 {
+        let marker = fence_marker(trimmed);
+        if let Some(open) = fence {
+            if closes_fence(trimmed, open) {
                 fence = None;
             } else {
                 // Code is drawn as it is, wrapped anywhere, beside a
@@ -39,7 +38,7 @@ pub fn render(text: &str, base: Style, theme: &Theme, width: usize) -> Vec<Wrapp
             continue;
         }
         if let Some(marker) = marker {
-            fence = Some(marker.to_string());
+            fence = Some(marker);
             continue;
         }
         if trimmed.is_empty() {
@@ -70,16 +69,22 @@ pub fn render(text: &str, base: Style, theme: &Theme, width: usize) -> Vec<Wrapp
             continue;
         }
         if let Some((indent, bullet, item)) = list_item(line) {
-            let bullet = if bullet.ends_with(['.', ')']) {
-                bullet.to_string()
+            // A number stands at the right of its list's column. The room
+            // before it isn't text, so a copy leaves it out.
+            let (bullet, pad) = if bullet.ends_with(['.', ')']) {
+                (bullet.to_string(), numbers[n].saturating_sub(bullet.len()))
             } else {
-                glyphs::render("•").into_owned()
+                (glyphs::render("•").into_owned(), 0)
             };
             let lead = format!("{}{bullet} ", " ".repeat(indent));
             let hang = text_width(&lead);
             let mut spans = vec![Span::styled(lead, base)];
             spans.extend(inline(item, base, theme));
-            lines.extend(wrap::wrap_lines(&spans, width, hang));
+            let wrapped = wrap::wrap_lines(&spans, width.saturating_sub(pad), hang);
+            lines.extend(wrapped.into_iter().map(|line| match pad {
+                0 => line,
+                pad => line.decorated(Span::raw(" ".repeat(pad))),
+            }));
             continue;
         }
         if trimmed.starts_with('|') {
@@ -118,8 +123,21 @@ fn is_rule(line: &str) -> bool {
             .any(|mark| marks.chars().all(|c| c.to_string() == *mark))
 }
 
+/// The code fence (```` ``` ```` or `~~~`) a line, without its indent,
+/// starts with.
+fn fence_marker(trimmed: &str) -> Option<&'static str> {
+    ["```", "~~~"]
+        .into_iter()
+        .find(|marker| trimmed.starts_with(marker))
+}
+
+/// Whether a line, without its indent, closes the fence `open`.
+fn closes_fence(trimmed: &str, open: &str) -> bool {
+    fence_marker(trimmed) == Some(open) && trimmed.trim_end().len() == 3
+}
+
 /// A list item, with its indent, its bullet (`-`, `*`, `+`, `1.`, `1)`) and
-/// its text.
+/// its text. A number has at most 9 digits, as in CommonMark.
 fn list_item(line: &str) -> Option<(usize, &str, &str)> {
     let indent = line.len() - line.trim_start().len();
     let rest = &line[indent..];
@@ -127,13 +145,90 @@ fn list_item(line: &str) -> Option<(usize, &str, &str)> {
         1
     } else {
         let digits = rest.chars().take_while(char::is_ascii_digit).count();
-        if digits == 0 || digits > 3 || !rest[digits..].starts_with(['.', ')']) {
+        if digits == 0 || digits > 9 || !rest[digits..].starts_with(['.', ')']) {
             return None;
         }
         digits + 1
     };
     let text = rest[bullet_end..].strip_prefix(' ')?;
     Some((indent, &rest[..bullet_end], text.trim_start()))
+}
+
+/// For each line that's a numbered list's item, the columns of its list's
+/// widest number ("10." takes 3), else 0. A list is the numbered items at
+/// one indent with one delimiter (`.` or `)`). A bullet there ends it, and
+/// so does any other line there or further left, unless it runs on from
+/// the line before.
+fn number_columns(lines: &[&str]) -> Vec<usize> {
+    /// A numbered list, with the lines of its items so far.
+    struct List {
+        indent: usize,
+        delimiter: char,
+        widest: usize,
+        items: Vec<usize>,
+    }
+    // Innermost last.
+    let mut open: Vec<List> = Vec::new();
+    let mut columns = vec![0; lines.len()];
+    // Ends the lists at `indent` or further right.
+    let mut end = |open: &mut Vec<List>, indent: usize| {
+        while let Some(list) = open.pop_if(|list| list.indent >= indent) {
+            for n in list.items {
+                columns[n] = list.widest;
+            }
+        }
+    };
+    let mut fence: Option<&str> = None;
+    let mut blank = true;
+    for (n, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if let Some(open) = fence {
+            if closes_fence(trimmed, open) {
+                fence = None;
+            }
+            continue;
+        }
+        if trimmed.is_empty() {
+            blank = true;
+            continue;
+        }
+        let after_blank = std::mem::replace(&mut blank, false);
+        match list_item(line) {
+            Some((at, bullet, _)) if bullet.ends_with(['.', ')']) => {
+                let delimiter = if bullet.ends_with('.') { '.' } else { ')' };
+                end(&mut open, at + 1);
+                match open.last_mut() {
+                    Some(list) if list.indent == at && list.delimiter == delimiter => {
+                        list.widest = list.widest.max(bullet.len());
+                        list.items.push(n);
+                    }
+                    _ => {
+                        end(&mut open, at);
+                        open.push(List {
+                            indent: at,
+                            delimiter,
+                            widest: bullet.len(),
+                            items: vec![n],
+                        });
+                    }
+                }
+            }
+            Some((at, ..)) => end(&mut open, at),
+            None => {
+                fence = fence_marker(trimmed);
+                let block = fence.is_some()
+                    || heading(trimmed).is_some()
+                    || is_rule(trimmed)
+                    || trimmed.starts_with(['>', '|']);
+                if after_blank || block {
+                    end(&mut open, indent);
+                }
+            }
+        }
+    }
+    end(&mut open, 0);
+    columns
 }
 
 /// A line's inline markdown as spans, namely `**bold**`, `*italics*`, `` `code` ``
@@ -308,6 +403,99 @@ mod tests {
             lines("1. one two three", 9),
             ["1. one", "   two", "   three"]
         );
+    }
+
+    /// `items` numbered items from `start`, as Markdown.
+    fn numbered(start: u64, items: u64) -> String {
+        (start..start + items)
+            .map(|n| format!("{n}. item\n"))
+            .collect()
+    }
+
+    /// Checks that each of `lines` is an item of the list numbered from
+    /// `start`, its number at the right of a column as wide as `widest`'s,
+    /// so every item's text starts in one place.
+    fn line_up(lines: &[String], start: u64, widest: u64) {
+        let column = format!("{widest}.").len();
+        for (line, n) in lines.iter().zip(start..) {
+            assert_eq!(*line, format!("{:>column$} item", format!("{n}.")));
+        }
+    }
+
+    /// Nine items keep a column of one digit, apart from a list of ten.
+    #[test]
+    fn nine_numbers_keep_a_column_of_one_digit() {
+        let text = numbered(1, 9) + "\nThen:\n\n" + &numbered(1, 10);
+        let lines = lines(&text, 40);
+        line_up(&lines[..9], 1, 9);
+        assert_eq!(lines[9..12], ["", "Then:", ""]);
+        line_up(&lines[12..], 1, 10);
+    }
+
+    /// A list's own lines and a list within it keep its column, and the
+    /// lines of a long item hang under its text.
+    #[test]
+    fn ten_numbers_keep_a_column_of_two_digits() {
+        let lines_of = |text: &str| lines(text, 40);
+        line_up(&lines_of(&numbered(1, 10)), 1, 10);
+        let text = "1. item\nruns on\n\n   more of it\n\n   1. inner\n   2. inner\n\n".to_string()
+            + &numbered(2, 9);
+        let shown = lines_of(&text);
+        assert_eq!(
+            shown[..8],
+            [
+                " 1. item",
+                "runs on",
+                "",
+                "more of it",
+                "",
+                "   1. inner",
+                "   2. inner",
+                "",
+            ]
+        );
+        line_up(&shown[8..], 2, 10);
+        // A bullet ends a list.
+        assert_eq!(
+            lines_of("9. item\n- bullet\n10. item"),
+            ["9. item", "• bullet", "10. item"]
+        );
+        assert_eq!(
+            lines(&format!("{}10. one two three four", numbered(1, 9)), 12)[9..],
+            ["10. one two", "    three", "    four"]
+        );
+        // The room before a number isn't copied.
+        let theme = Theme::terminal();
+        let rendered = render(&numbered(1, 10), theme.text(), &theme, 40);
+        let skips: Vec<usize> = rendered.iter().map(|line| line.skip).collect();
+        assert_eq!(skips, [1, 1, 1, 1, 1, 1, 1, 1, 1, 0]);
+    }
+
+    #[test]
+    fn ninety_nine_numbers_keep_a_column_of_two_digits() {
+        line_up(&lines(&numbered(1, 99), 40), 1, 99);
+    }
+
+    #[test]
+    fn a_hundred_numbers_keep_a_column_of_three_digits() {
+        let lines = lines(&numbered(1, 100), 40);
+        assert_eq!(lines.len(), 100);
+        line_up(&lines, 1, 100);
+    }
+
+    /// A list's widest number may be its last, from where it starts.
+    /// Numbers have up to 9 digits.
+    #[test]
+    fn a_list_from_98_keeps_a_column_of_three_digits() {
+        line_up(&lines(&numbered(98, 3), 40), 98, 100);
+        line_up(&lines(&numbered(98, 2), 40), 98, 99);
+        line_up(&lines(&numbered(998, 3), 40), 998, 1000);
+        line_up(
+            &lines(&numbered(999_999_998, 2), 40),
+            999_999_998,
+            999_999_999,
+        );
+        assert_eq!(lines("1000000000. item", 40), ["1000000000. item"]);
     }
 
     #[test]

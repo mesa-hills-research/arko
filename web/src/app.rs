@@ -77,10 +77,8 @@ pub struct Page {
     pub connection: RwSignal<Connection>,
     /// Why the page can't get in, when it can't.
     pub locked: RwSignal<Option<&'static str>>,
-    /// What went wrong with the connection, in words, and the last
-    /// request's status, for the reader.
+    /// What went wrong with the connection, in words, for the reader.
     pub problem: RwSignal<Option<String>>,
-    pub detail: RwSignal<String>,
     /// Bumped when items come or go (the views lay out again).
     pub version: RwSignal<u64>,
     /// Bumped when a worker's summary changes. A view of one worker
@@ -262,7 +260,6 @@ impl Page {
             connection: RwSignal::new(Connection::Connecting),
             locked: RwSignal::new(None),
             problem: RwSignal::new(None),
-            detail: RwSignal::new(String::new()),
             version: RwSignal::new(0),
             workers: RwSignal::new(0),
             feeds: RwSignal::new(0),
@@ -469,7 +466,6 @@ pub async fn request_with(
             .unwrap_or_default(),
         Err(_) => String::new(),
     };
-    page().detail.set(format!("{method} {path} {status}"));
     Some((status, text))
 }
 
