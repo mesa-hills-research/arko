@@ -63,7 +63,7 @@ These are the patterns that keep turning up, so check for each one by hand.
 | The app asks: Tabs or spaces? | The app asks "Tabs or spaces?" |
 | It chunks files with tree-sitter. It does not call a model or upload your code. | It splits files into chunks with tree-sitter and indexes them, all on your machine. |
 | C, its builds | C builds |
-| Cargo fetches Arko, its framework, GPUI Kit | Cargo fetches Arko, Arko Framework and GPUI Kit |
+| Cargo fetches Example, its framework, the UI kit | Cargo fetches Example, Example Framework and the UI kit |
 | every grammar crate, its upstream crate and constants | every grammar crate with its upstream crate and constants |
 | (the whole command, its settings) | (the whole command and its settings) |
 | Each call's content, its result | Each call's result |
