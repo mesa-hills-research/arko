@@ -1848,7 +1848,12 @@ impl Transcript {
                 match item.kind {
                     Kind::Call => {
                         let detail = item.act.as_ref().map_or("", |act| act.detail.as_str());
-                        if quiet_cut(&row.words, width) {
+                        // Where its line cut its words, the call as written,
+                        // unless the detail is the whole command.
+                        let whole = item.act.as_ref().is_some_and(|act| {
+                            act.kind == ActKind::Command && !act.detail.is_empty()
+                        });
+                        if quiet_cut(&row.words, width) && !whole {
                             rail(&mut lines, detail_lines(&call_words(item), theme, inner), 0);
                         }
                         if !detail.is_empty() {

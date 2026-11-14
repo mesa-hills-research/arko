@@ -29,8 +29,9 @@ characters that follow ("… 1,240 more characters"), the line's rest and every 
   own, and one the reader opened on its own line goes to `quiet::rows` as `Step::Other`, so it
   stays there.
 - Open, a row of one call whose line cut its words shows the call as written, then its detail.
-  A monitor's `Act.detail` is its settings, after its command only where its words leave some of
-  the command out.
+  A command's detail, where it has one, is the whole command, so it shows without the call as
+  written. A monitor's `Act.detail` is its settings, after its command only where its words leave
+  some of the command out.
 
 ## A call's job
 

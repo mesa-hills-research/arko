@@ -526,6 +526,55 @@ fn the_marker_shows_once_output_passes_the_bottom_row() {
     assert!(rows[9].contains("4 new lines"), "{rows:?}");
 }
 
+/// A Quiet row of one command whose line cut its words opens to the command
+/// once. Where the command has a detail, that's the whole command, so the
+/// call as written doesn't show besides.
+#[test]
+fn a_cut_command_opens_to_its_command_once() {
+    let filter = Filter::Main(View::Quiet);
+    let theme = Theme::terminal();
+    let mut twice = Vec::new();
+    let mut seen = 0;
+    for fixture in crate::remote::quiet::fixtures() {
+        if fixture.act.kind != ActKind::Command || fixture.act.detail.is_empty() {
+            continue;
+        }
+        let mut t = Transcript::new();
+        let mut call = item(1, Kind::Call, fixture.full);
+        call.turn = Some(1);
+        call.status = Some(fixture.status);
+        call.outcome = Some(fixture.outcome.to_string()).filter(|outcome| !outcome.is_empty());
+        call.act = Some(fixture.act.clone());
+        call.detail = fixture.full_detail.map(str::to_string);
+        t.apply(Update::Item(call));
+        let width = 30;
+        let closed = screen(&mut t, &filter, width, 30);
+        if !closed[0].contains('…') {
+            continue;
+        }
+        seen += 1;
+        t.toggle(1, 0, &filter, &theme);
+        let open = screen(&mut t, &filter, width, 30);
+        let shown: String = open[1..]
+            .iter()
+            .flat_map(|row| row.chars())
+            .filter(|c| !c.is_whitespace() && *c != '│')
+            .collect();
+        let command: String = fixture
+            .act
+            .detail
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(shown.contains(&command), "{}: {open:#?}", fixture.name);
+        if shown.matches(&command).count() > 1 || shown.contains(&fixture.full.replace(' ', "")) {
+            twice.push(format!("{}: {open:#?}", fixture.name));
+        }
+    }
+    assert!(seen > 0, "no command's line was cut");
+    assert!(twice.is_empty(), "{twice:#?}");
+}
+
 /// A reply's code, three lines of which two are indented.
 fn with_code() -> (Transcript, Vec<String>) {
     let mut t = Transcript::new();
