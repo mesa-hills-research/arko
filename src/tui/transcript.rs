@@ -103,6 +103,10 @@ struct Entry {
     /// A number no other state of an entry had, new each time its lines
     /// change, by which a Quiet row that shows it knows to draw again.
     revision: u64,
+    /// Whether its line leaves out some of what it says, at a width and
+    /// inside a Quiet row's rail or not, once asked ([`Transcript::cuts`]),
+    /// so its text is read for it only when it changes.
+    cuts: std::cell::Cell<Option<(usize, bool, bool)>>,
 }
 
 impl Entry {
@@ -114,6 +118,7 @@ impl Entry {
             open_quiet: false,
             changed: Instant::now(),
             revision: next_revision(),
+            cuts: std::cell::Cell::new(None),
         }
     }
 
@@ -121,6 +126,7 @@ impl Entry {
     fn touch(&mut self) {
         self.cache = None;
         self.revision = next_revision();
+        self.cuts.set(None);
     }
 }
 
@@ -699,11 +705,11 @@ impl Transcript {
     /// leaves some out, at the width the blocks are made for.
     fn folds(&self, item: &Item) -> bool {
         match item.kind {
-            Kind::Thinking => thought_has_more(&item.text, self.width),
+            Kind::Thinking => self.cuts(item, self.width, false),
             Kind::Call => {
                 item.detail.is_some()
                     || self.contents.contains(&item.id)
-                    || call_cut(item, self.width, false)
+                    || self.cuts(item, self.width, false)
             }
             _ => item.whole.is_some(),
         }
@@ -712,15 +718,37 @@ impl Transcript {
     /// [`Transcript::folds`] for `item` inside an open Quiet row, whose
     /// lines are a rail's width narrower.
     fn folds_inside(&self, item: &Item) -> bool {
+        let width = self.width.saturating_sub(MARGIN);
         match item.kind {
-            Kind::Thinking => thought_has_more(&item.text, self.width.saturating_sub(MARGIN)),
+            Kind::Thinking => self.cuts(item, width, true),
             Kind::Call => {
                 item.detail.is_some()
                     || self.contents.contains(&item.id)
-                    || call_cut(item, self.width.saturating_sub(MARGIN), true)
+                    || self.cuts(item, width, true)
             }
             _ => item.whole.is_some(),
         }
+    }
+
+    /// Whether the line of `item`, a thinking or a call, at `width` (inside
+    /// a Quiet row's rail, or not) leaves out some of what it says, kept
+    /// with its entry until the item changes.
+    fn cuts(&self, item: &Item, width: usize, inside: bool) -> bool {
+        let cuts = || match item.kind {
+            Kind::Thinking => thought_has_more(&item.text, width),
+            _ => call_cut(item, width, inside),
+        };
+        let Some(entry) = self.index(item.id).map(|at| &self.entries[at]) else {
+            return cuts();
+        };
+        if let Some((at, within, cut)) = entry.cuts.get()
+            && (at, within) == (width, inside)
+        {
+            return cut;
+        }
+        let cut = cuts();
+        entry.cuts.set(Some((width, inside, cut)));
+        cut
     }
 
     /// Starts over from the feed's `snapshot` (when a client starts, or

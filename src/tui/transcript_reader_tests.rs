@@ -330,3 +330,30 @@ fn a_closed_thought_that_fills_its_row_ends_with_an_ellipsis() {
         assert!(rows[0].ends_with('…'), "{width}: {rows:?}");
     }
 }
+
+/// A frame with nothing on screen changing reads no thought's text, so
+/// it takes as long with thoughts of 2 KB as with thoughts of a line.
+#[test]
+fn a_frame_reads_a_thoughts_text_only_when_it_changes() {
+    let filter = Filter::Main(View::Full);
+    let theme = Theme::terminal();
+    let time = |text: &str| {
+        let mut t = Transcript::new();
+        for id in 1..=KEPT as u64 {
+            t.apply(Update::Item(item(id, Kind::Thinking, text)));
+        }
+        screen(&mut t, &filter, 100, 40);
+        // (The quickest of several, as the machine does other work.)
+        (0..10)
+            .map(|_| {
+                let start = Instant::now();
+                let _ = t.blocks(&filter, &theme, 100);
+                start.elapsed()
+            })
+            .min()
+            .unwrap_or_default()
+    };
+    let short = time("A short thought.");
+    let long = time(&"A thought that goes on for a while, as they do. ".repeat(42));
+    assert!(long < short * 3, "{short:?} against {long:?}");
+}
