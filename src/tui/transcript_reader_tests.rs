@@ -449,6 +449,43 @@ fn a_fold_opened_by_the_keyboard_stays_in_sight() {
     );
 }
 
+/// A reader who follows, opens a fold near the end with the keyboard and
+/// closes it again sees the screen as it was and still follows, as with
+/// the mouse. The fold's line stays on its row both times.
+#[test]
+fn a_fold_opened_and_closed_by_the_keyboard_follows_on() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Full);
+    let theme = Theme::terminal();
+    for id in 1..=20 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+    }
+    let lines: Vec<String> = (1..=30).map(|n| format!("Thought line {n}.")).collect();
+    t.apply(Update::Item(item(21, Kind::Thinking, &lines.join("\n"))));
+    t.apply(Update::Item(item(22, Kind::Text, "Done.")));
+    let before = screen(&mut t, &filter, 40, 12);
+    assert!(t.following());
+    let row = before
+        .iter()
+        .position(|row| row.contains("Thought line 1."))
+        .unwrap();
+    t.focus = Some(Target::Block(21));
+    t.open_focus(Some(true), &filter, &theme);
+    let open = screen(&mut t, &filter, 40, 12);
+    assert!(open[row].contains("Thought line 1."), "{open:?}");
+    assert!(!t.following(), "it opened past the end of the screen");
+    t.open_focus(Some(false), &filter, &theme);
+    let closed = screen(&mut t, &filter, 40, 12);
+    assert_eq!(closed, before);
+    assert!(t.following());
+    // What comes next shows.
+    for id in 23..=40 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("more {id}"))));
+    }
+    let after = screen(&mut t, &filter, 40, 12);
+    assert!(after.iter().any(|row| row.contains("more 40")), "{after:?}");
+}
+
 /// The first wheel step up while a reply streams moves the rows the
 /// reader saw by the whole step.
 #[test]

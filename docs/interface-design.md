@@ -131,7 +131,8 @@ of single lines under it.
   nothing. End, Esc and the "↓ N new lines" marker go to the end and close the blank rows. Scrolled
   up, the row at the top keeps its text through streaming, folds elsewhere and another width. The
   view follows again when the reader scrolls down to the end, goes there with End, or clicks so that
-  the end shows, also on a fold they open or close.
+  the end shows. A fold opened or closed, with a click or a key, keeps its line on its row, and the
+  view follows from there where the end shows.
 - A tag never sits between a message's rows. A message that fits on one row has its tag ("pending",
   "queued", "from the web page") at the right of that row. One that wraps has the tag on a row of
   its own under the last.

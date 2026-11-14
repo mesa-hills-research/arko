@@ -983,12 +983,12 @@ impl Transcript {
     }
 
     /// Opens (`Some(true)`), closes (`Some(false)`) or toggles (`None`) the
-    /// turn's count of calls `key` (Messages).
-    fn open_count(&mut self, key: u64, open: Option<bool>) {
+    /// turn's count of calls `key` (Messages), and returns whether it changed.
+    fn open_count(&mut self, key: u64, open: Option<bool>) -> bool {
         let first = key & !COUNT_KEY;
         let now = self.counts_open.contains(&first);
         if open.unwrap_or(!now) == now {
-            return;
+            return false;
         }
         if now {
             self.counts_open.remove(&first);
@@ -996,6 +996,7 @@ impl Transcript {
             self.counts_open.insert(first);
         }
         self.generation += 1;
+        true
     }
 
     /// Makes the latest item's text look as if it stopped growing a while
@@ -2759,60 +2760,123 @@ impl Transcript {
     }
 
     /// Opens (`Some(true)`), closes (`Some(false)`) or toggles (`None`) the
-    /// block the keyboard is on.
+    /// block the keyboard is on. Its fold's line stays on the row it's on,
+    /// as under the pointer.
     pub fn open_focus(&mut self, open: Option<bool>, filter: &Filter, theme: &Theme) {
         let Some(focus) = self.focus else {
             return;
         };
         self.acted.reveal = true;
+        let (item, inner) = match focus {
+            Target::Block(key) => (key, false),
+            Target::Inner { item, .. } => (item, true),
+        };
+        let held = self.fold_row(item, inner, filter, theme);
+        if self.open_target(focus, open, filter, theme)
+            && let Some(row) = held
+        {
+            let pin = if is_count(item) {
+                self.drawn
+                    .rows
+                    .get(row)
+                    .copied()
+                    .flatten()
+                    .map(|at| (at.key, at.line))
+            } else {
+                self.fold(item, inner, filter, theme)
+                    .map(|fold| (fold.block, fold.line))
+            };
+            self.acted.pin = pin.map(|(key, line)| Pin { key, line, row });
+        }
+    }
+
+    /// The row of the area the fold of `item` (with `inner`, inside its
+    /// Quiet row) was drawn on, or a turn's count's.
+    fn fold_row(
+        &mut self,
+        item: u64,
+        inner: bool,
+        filter: &Filter,
+        theme: &Theme,
+    ) -> Option<usize> {
+        let at = if is_count(item) {
+            None
+        } else {
+            Some(self.fold(item, inner, filter, theme)?)
+        };
+        self.drawn.rows.iter().position(|row| {
+            row.is_some_and(|row| match &at {
+                Some(fold) => (row.key, row.line) == (fold.block, fold.line),
+                None => row.key == item,
+            })
+        })
+    }
+
+    /// Opens, closes or toggles `focus`, and returns whether it changed.
+    fn open_target(
+        &mut self,
+        focus: Target,
+        open: Option<bool>,
+        filter: &Filter,
+        theme: &Theme,
+    ) -> bool {
         let key = match focus {
             Target::Block(key) => key,
             // A call or a thinking inside a Quiet row opens there, a
             // content to its whole.
             Target::Inner { item, .. } => {
                 if !self.item(item).is_some_and(|item| self.folds_inside(item)) {
-                    return;
+                    return false;
                 }
-                if let Some(entry) = self.find_mut(item) {
-                    if matches!(entry.item.kind, Kind::Thinking | Kind::Call) {
-                        entry.open_quiet = open.unwrap_or(!entry.open_quiet);
-                    } else {
-                        entry.open = open.unwrap_or(!entry.open);
-                    }
-                    entry.touch();
-                }
-                return;
+                let Some(entry) = self.find_mut(item) else {
+                    return false;
+                };
+                let field = if matches!(entry.item.kind, Kind::Thinking | Kind::Call) {
+                    &mut entry.open_quiet
+                } else {
+                    &mut entry.open
+                };
+                let was = *field;
+                *field = open.unwrap_or(!was);
+                let changed = *field != was;
+                entry.touch();
+                return changed;
             }
         };
         if is_count(key) {
-            self.open_count(key, open);
-            return;
+            return self.open_count(key, open);
         }
         if self.quiet_row(key, filter, theme).is_some() {
             let now = self.quiet_open.contains(&key);
-            if open.unwrap_or(!now) {
+            let want = open.unwrap_or(!now);
+            if want {
                 self.quiet_open.insert(key);
                 self.seal(key, filter, theme);
             } else {
                 self.quiet_open.remove(&key);
             }
-            return;
+            return want != now;
         }
         let quiet = self.shown_quiet(key, filter);
         if !self
             .item(key)
             .is_some_and(|item| self.folds_in(item, filter))
         {
-            return;
+            return false;
         }
         let owned = self.item(key).is_some_and(|item| filter.owns(item));
         let mut sealed = false;
+        let mut changed = false;
         if let Some(entry) = self.find_mut(key) {
             if quiet && owned && matches!(entry.item.kind, Kind::Thinking | Kind::Call) {
-                entry.open_quiet = open.unwrap_or(!entry.open_quiet);
+                let was = entry.open_quiet;
+                entry.open_quiet = open.unwrap_or(!was);
+                changed = entry.open_quiet != was;
                 sealed = entry.open_quiet && entry.item.kind == Kind::Thinking;
             } else {
-                entry.open = open.unwrap_or(!entry.open);
+                let was = entry.open;
+                entry.open = open.unwrap_or(!was);
+                changed = entry.open != was;
             }
             entry.touch();
         }
@@ -2820,6 +2884,7 @@ impl Transcript {
         if sealed && self.quiet_sealed.insert(key) {
             self.generation += 1;
         }
+        changed
     }
 
     /// The lines of the block `key` in `filter`'s view, with their marks.
