@@ -727,7 +727,22 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .md .mdb:last-child > :last-child { margin-bottom: 0; }
 .md .mdb:first-child > :first-child { margin-top: 0; }
 .md h3, .md h4, .md h5 { margin-top: 1em; font-size: 1em; line-height: 1.3; }
-.md ul, .md ol { padding-left: 1.4em; }
+.md ul { padding-left: 1.4em; }
+/* A numbered list keeps a column for its widest number and its ". ", 1ch
+   each in a monospaced font and narrower in another, so no number reaches
+   past the list's edge (onto a rail) and every item's text starts in one
+   place. Markdown gives the widest number's digits in data-digits. */
+.md ol { --digits: 1; padding-left: calc((var(--digits) + 2) * 1ch); }
+.md ol[data-digits="2"] { --digits: 2; }
+.md ol[data-digits="3"] { --digits: 3; }
+.md ol[data-digits="4"] { --digits: 4; }
+.md ol[data-digits="5"] { --digits: 5; }
+.md ol[data-digits="6"] { --digits: 6; }
+.md ol[data-digits="7"] { --digits: 7; }
+.md ol[data-digits="8"] { --digits: 8; }
+.md ol[data-digits="9"] { --digits: 9; }
+.md ol[data-digits="10"] { --digits: 10; }
+.md ol > li::marker { font-variant-numeric: tabular-nums; }
 .md li { margin: 0.15em 0; }
 .md li > p { margin: 0; }
 .md blockquote { padding-left: 12px; border-left: 3px solid var(--line); color: var(--muted); }
