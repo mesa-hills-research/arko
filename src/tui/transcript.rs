@@ -3162,10 +3162,11 @@ fn reveal(feed: &mut Feed<u64>, shown: &Placement, item: ItemId, line: u32, heig
             _ => height,
         },
     };
+    // (With no rows, the line goes on the first row of those that come back.)
     if row < 0 {
         feed.place(item, line, 0);
     } else if row >= height {
-        feed.place(item, line, height - 1);
+        feed.place(item, line, (height - 1).max(0));
     }
 }
 

@@ -575,6 +575,33 @@ fn a_cut_command_opens_to_its_command_once() {
     assert!(twice.is_empty(), "{twice:#?}");
 }
 
+/// A keyboard move while the transcript has no rows to show leaves its line
+/// on screen when the rows come back.
+#[test]
+fn a_keyboard_move_with_no_rows_shows_its_line_when_they_come_back() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Full);
+    let theme = Theme::terminal();
+    for id in 1..=20 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("line {id}"))));
+    }
+    let lines: Vec<String> = (1..=3).map(|n| format!("Thought line {n}.")).collect();
+    t.apply(Update::Item(item(21, Kind::Thinking, &lines.join("\n"))));
+    for id in 22..=60 {
+        t.apply(Update::Item(item(id, Kind::Output, &format!("after {id}"))));
+    }
+    screen(&mut t, &filter, 40, 10);
+    screen(&mut t, &filter, 40, 0);
+    assert!(t.move_focus(0, &filter, &theme));
+    assert_eq!(t.focus, Some(Target::Block(21)));
+    screen(&mut t, &filter, 40, 0);
+    let rows = screen(&mut t, &filter, 40, 10);
+    assert!(
+        rows.iter().any(|row| row.contains("Thought line 1.")),
+        "{rows:?}"
+    );
+}
+
 /// A reply's code, three lines of which two are indented.
 fn with_code() -> (Transcript, Vec<String>) {
     let mut t = Transcript::new();
