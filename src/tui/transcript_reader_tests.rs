@@ -525,3 +525,495 @@ fn the_menu_closing_leaves_no_blank_rows() {
     );
     assert_eq!(row_of(&after), row_of(&before), "{after:#?}");
 }
+
+// ----- a reader at random over sessions at random -----
+
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.0 >> 33
+    }
+
+    fn below(&mut self, below: u64) -> u64 {
+        self.next() % below
+    }
+}
+
+/// What a frame showed, for the checks.
+struct Frame {
+    rows: Vec<String>,
+    refs: Vec<Option<RowRef>>,
+    following: bool,
+    gap: u32,
+    /// Each block's sig and whether it has a blank line before it, by key.
+    sigs: HashMap<u64, (u64, bool)>,
+    /// The blocks' keys, in order.
+    keys: Vec<u64>,
+    area: (u16, u16),
+    /// The feed's place, for a dump.
+    place: String,
+    /// Each block's height, by key.
+    heights: HashMap<u64, usize>,
+}
+
+fn frame(t: &mut Transcript, filter: &Filter, width: u16, height: u16) -> Frame {
+    let rows = screen(t, filter, width, height);
+    let refs = t.drawn.rows.clone();
+    let following = t.following();
+    let gap = t.view.placement().gap;
+    let theme = Theme::terminal();
+    let blocks = t.blocks(filter, &theme, width as usize);
+    let sigs = blocks
+        .iter()
+        .map(|block| (block.key, (block.sig, block.gap)))
+        .collect();
+    let own = matches!(filter, Filter::Worker(..));
+    let heights = blocks
+        .iter()
+        .map(|block| (block.key, t.height(block, &theme, width as usize, own)))
+        .collect();
+    let placed: Vec<String> = t
+        .view
+        .placement()
+        .items
+        .iter()
+        .map(|placed| {
+            format!(
+                "{}@{}+{}",
+                t.view.feed().key(placed.item).copied().unwrap_or(0),
+                placed.y,
+                placed.height
+            )
+        })
+        .collect();
+    let place = format!(
+        "anchor {:?} outcome {:?} gap {} placed {}",
+        t.view.feed().anchor(),
+        t.view.placement().outcome,
+        gap,
+        placed.join(" ")
+    );
+    Frame {
+        rows,
+        refs,
+        following,
+        gap,
+        sigs,
+        keys: blocks.iter().map(|block| block.key).collect(),
+        area: (width, height),
+        place,
+        heights,
+    }
+}
+
+fn dump(name: &str, shown: &Frame) {
+    eprintln!("--- {name}: following {} {}", shown.following, shown.place);
+    let tail: Vec<String> = shown
+        .keys
+        .iter()
+        .rev()
+        .take(14)
+        .rev()
+        .map(|key| {
+            if *key == WORKING_KEY {
+                "W".to_string()
+            } else if is_count(*key) {
+                format!("c{}", key & !COUNT_KEY)
+            } else {
+                key.to_string()
+            }
+        })
+        .collect();
+    eprintln!("    last blocks {}", tail.join(" "));
+    for (row, text) in shown.rows.iter().enumerate() {
+        let at = shown.refs[row]
+            .map(|at| format!("{}:{}", at.key, at.line))
+            .unwrap_or_default();
+        eprintln!("{row:>3} {at:>10} |{text}");
+    }
+}
+
+/// The checks on one frame. Returns what's wrong.
+fn check(t: &mut Transcript, filter: &Filter, shown: &Frame) -> Vec<String> {
+    let mut wrong = Vec::new();
+    let theme = Theme::terminal();
+    let (width, height) = shown.area;
+    let own = matches!(filter, Filter::Worker(..));
+    let blocks = t.blocks(filter, &theme, width as usize);
+    // The feed's heights are the blocks' heights now.
+    let placed: Vec<(u64, i64, u32)> = t
+        .view
+        .placement()
+        .items
+        .iter()
+        .filter_map(|placed| {
+            t.view
+                .feed()
+                .key(placed.item)
+                .map(|key| (*key, placed.y, placed.height))
+        })
+        .collect();
+    for (key, y, placed_height) in placed {
+        let Some(block) = blocks.iter().find(|block| block.key == key) else {
+            wrong.push(format!("the feed placed {key}, which is no block"));
+            continue;
+        };
+        let now = t.height(block, &theme, width as usize, own);
+        if now != placed_height as usize {
+            wrong.push(format!(
+                "block {key} at row {y} was placed {placed_height} rows high and is {now}"
+            ));
+        }
+    }
+    // Each row shows the line it says it shows.
+    for (row, at) in shown.refs.iter().enumerate() {
+        let Some(at) = at else { continue };
+        let Some(block) = blocks.iter().find(|block| block.key == at.key) else {
+            wrong.push(format!("row {row} shows {}, which is no block", at.key));
+            continue;
+        };
+        // (Their time goes on between the frame and the check.)
+        if matches!(block.shown, Shown::Worker(_) | Shown::Heading(_)) || block.face.clock.is_some()
+        {
+            continue;
+        }
+        let lines = t.block_rows(block, &theme, width as usize, own);
+        let Some(line) = lines.get(at.line) else {
+            wrong.push(format!(
+                "row {row} shows line {} of block {}, which has {}",
+                at.line,
+                at.key,
+                lines.len()
+            ));
+            continue;
+        };
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        // (The marker covers the end of the last row, and a spinner stands
+        // in the markers' column of a line that moves.)
+        let marker = row + 1 == height as usize && t.drawn.marker.is_some();
+        let moves = t.drawn.moving.iter().any(|line| line.at.1 as usize == row);
+        let from = if moves { 2 } else { 0 };
+        let cut: String = termelon::text::graphemes(&text)
+            .scan(0usize, |used, (c, w)| {
+                *used += usize::from(w);
+                (*used <= width as usize).then_some(c)
+            })
+            .skip(from)
+            .collect();
+        let drawn: String = shown.rows[row].chars().skip(from).collect();
+        if !marker && drawn.trim_end() != cut.trim_end() {
+            wrong.push(format!(
+                "row {row} shows {drawn:?}, and line {} of block {} is {cut:?}",
+                at.line, at.key
+            ));
+        }
+    }
+    // Following, the end is in sight.
+    if shown.following && height > 0 && !t.view.feed().is_empty() && !t.end_in_sight() {
+        wrong.push("following with the end out of sight".into());
+    }
+    wrong
+}
+
+/// What must hold between two frames with nothing done by the reader.
+fn check_still(before: &Frame, after: &Frame) -> Vec<String> {
+    let mut wrong = Vec::new();
+    if before.area != after.area {
+        return wrong;
+    }
+    let same = |key: u64| {
+        before
+            .sigs
+            .get(&key)
+            .is_some_and(|sig| after.sigs.get(&key) == Some(sig))
+    };
+    let find = |at: &RowRef| {
+        after.refs.iter().position(|other| {
+            other.is_some_and(|other| (other.key, other.line) == (at.key, at.line))
+        })
+    };
+    let Some(top) = before.refs.iter().flatten().next().copied() else {
+        return wrong;
+    };
+    let was = before
+        .refs
+        .iter()
+        .position(|at| *at == Some(top))
+        .unwrap_or(0);
+    if !same(top.key) {
+        return wrong;
+    }
+    if !before.following && !after.following && was == 0 {
+        // The row at the top is where it was.
+        if find(&top) != Some(0) {
+            wrong.push(format!(
+                "scrolled up, the top row (block {} line {}) went to {:?}",
+                top.key,
+                top.line,
+                find(&top)
+            ));
+        }
+    }
+    if before.following && after.following {
+        // The first row moves down by more than the blank rows allowed, or
+        // not at all.
+        if let Some(now) = find(&top)
+            && now > was
+            && now - was <= GAP_LIMIT as usize
+        {
+            wrong.push(format!(
+                "following, row {was} (block {} line {}) moved down to {now}, gap {} then {}",
+                top.key, top.line, before.gap, after.gap
+            ));
+        }
+    }
+    wrong
+}
+
+/// A reader at random (the wheel, Home, End, clicks, the keyboard's focus,
+/// drags, other views and a worker's, widths 16 to 119 and heights 0 to 33)
+/// over sessions at random, a frame after every step. Each frame places
+/// every block at the height it has now and shows on each row the line its
+/// row table names, a reader who follows has the end in sight, the top row
+/// of a reader who scrolled up and did nothing stays, a row of one who
+/// follows doesn't move down by the gap limit or less, and a fold toggled
+/// under the pointer keeps its line on its row. A block whose lines are
+/// made from something its sig leaves out fails here.
+///
+/// `READER_SEEDS=n` runs n seeds (2), `READER_ONLY=seed,view` one run
+/// (view 0 Full, 1 Quiet, 2 Messages), and `READER_DUMP=step` prints the
+/// frames before and after that step.
+#[test]
+fn a_reader_at_random_sees_every_block_as_it_is() {
+    use crate::remote::Received;
+    use crate::testing::RandomSession;
+    let theme = Theme::terminal();
+    let mut all: Vec<String> = Vec::new();
+    let number = |name: &str| -> Option<Vec<u64>> {
+        let value = std::env::var(name).ok()?;
+        Some(
+            value
+                .split(',')
+                .filter_map(|part| part.parse().ok())
+                .collect(),
+        )
+    };
+    let seeds = number("READER_SEEDS")
+        .and_then(|n| n.first().copied())
+        .unwrap_or(2);
+    let only = number("READER_ONLY");
+    let dump_at = number("READER_DUMP").unwrap_or_default();
+    for seed in 0..seeds {
+        for (index, view) in View::ALL.into_iter().enumerate() {
+            if only
+                .as_ref()
+                .is_some_and(|only| only[..] != [seed, index as u64])
+            {
+                continue;
+            }
+            let mut session = RandomSession::new(seed);
+            let feed = session.feed().clone();
+            let (start, mut updates) = feed.follow();
+            let mut t = Transcript::new();
+            t.reset(start);
+            let mut rng = Rng(seed * 7919 + index as u64 + 1);
+            let (mut width, mut height) = (72u16, 20u16);
+            let mut filter = Filter::Main(view);
+            let mut last = frame(&mut t, &filter, width, height);
+            for step in 0..500u64 {
+                let did = session.step();
+                let mut took = Vec::new();
+                while let Some(received) = updates.try_next() {
+                    match received {
+                        Received::Update(update) => {
+                            took.push(match &update {
+                                Update::Item(item) => format!("item {} {:?}", item.id, item.kind),
+                                Update::Append { id, .. } => format!("append {id}"),
+                                Update::Change(item) => {
+                                    format!("change {} {:?}", item.id, item.kind)
+                                }
+                                Update::Remove { id } => format!("remove {id}"),
+                                Update::Truncate { from } => format!("truncate {from}"),
+                                _ => String::new(),
+                            });
+                            t.apply(update);
+                        }
+                        Received::Reset(snapshot) => t.reset(snapshot),
+                    }
+                }
+                t.working = feed.subscribe().0.activity.working.then_some(0);
+                let mut acted = true;
+                let mut pinned = None;
+                let what = match rng.below(40) {
+                    0 | 1 => {
+                        t.scroll(-(rng.below(30) as i64 + 1));
+                        "scroll up"
+                    }
+                    2 => {
+                        t.scroll(rng.below(30) as i64 + 1);
+                        "scroll down"
+                    }
+                    3 => {
+                        t.top();
+                        "top"
+                    }
+                    4 => {
+                        t.follow();
+                        "follow"
+                    }
+                    5 => {
+                        width = 16 + rng.below(104) as u16;
+                        "width"
+                    }
+                    6 => {
+                        height = rng.below(34) as u16;
+                        "height"
+                    }
+                    7..=10 => {
+                        // A click, as the app makes it.
+                        let (x, y) = (
+                            rng.below(width as u64) as u16,
+                            rng.below(height.max(1) as u64) as u16,
+                        );
+                        let following = t.following();
+                        t.hold();
+                        if rng.below(3) == 0 {
+                            last = frame(&mut t, &filter, width, height);
+                            all.extend(check(&mut t, &filter, &last).into_iter().map(|wrong| {
+                                format!("seed {seed} {view:?} step {step} held: {wrong}")
+                            }));
+                        }
+                        t.release();
+                        if following {
+                            t.follow_on();
+                        }
+                        if let Some(key) = t.drawn.key_at(x, y) {
+                            if t.is_counter(key) {
+                                t.toggle_count(key, y);
+                            } else if let Some(fold) = t.fold_at(x, y, &filter, &theme) {
+                                t.toggle(fold.item, y, &filter, &theme);
+                            }
+                        }
+                        pinned = t.acted.pin;
+                        "click"
+                    }
+                    11 => {
+                        t.move_focus(-((rng.below(3)) as isize), &filter, &theme);
+                        "focus"
+                    }
+                    12 => {
+                        t.open_focus(None, &filter, &theme);
+                        "open focus"
+                    }
+                    13 => {
+                        filter = match &filter {
+                            Filter::Main(view) => Filter::Main(view.next()),
+                            Filter::Worker(id, view) => Filter::Worker(id.clone(), view.next()),
+                        };
+                        "view"
+                    }
+                    14 => {
+                        filter = match (&filter, t.workers().first()) {
+                            (Filter::Main(view), Some(worker)) => {
+                                Filter::Worker(worker.id.clone(), *view)
+                            }
+                            (Filter::Worker(_, view), _) => Filter::Main(*view),
+                            (filter, None) => filter.clone(),
+                        };
+                        t.follow();
+                        "watch"
+                    }
+                    15 => {
+                        t.hold();
+                        "hold"
+                    }
+                    16 => {
+                        t.release();
+                        "release"
+                    }
+                    17 => {
+                        let a = t.point_at(
+                            rng.below(width as u64) as u16,
+                            rng.below(height.max(1) as u64) as u16,
+                        );
+                        let b = t.point_at(
+                            rng.below(width as u64) as u16,
+                            rng.below(height.max(1) as u64) as u16,
+                        );
+                        if let (Some(a), Some(b)) = (a, b) {
+                            t.select(a, b, &filter);
+                        }
+                        let _ = t.selected_text(&filter, &theme);
+                        "select"
+                    }
+                    _ => {
+                        acted = false;
+                        "nothing"
+                    }
+                };
+                let shown = frame(&mut t, &filter, width, height);
+                let mut wrong = check(&mut t, &filter, &shown);
+                if !acted && !t.hold {
+                    wrong.extend(check_still(&last, &shown));
+                }
+                // A fold toggled under the pointer keeps its line on its row,
+                // unless the reader follows and it closed, or the
+                // transcript's start is on the top row, which stops it short
+                // or, following a transcript that fits, shows it from there.
+                let closed = |key: u64| {
+                    let height = |frame: &Frame| frame.heights.get(&key).copied().unwrap_or(0);
+                    height(&shown) < height(&last)
+                };
+                let at_start = shown
+                    .refs
+                    .first()
+                    .copied()
+                    .flatten()
+                    .is_some_and(|at| shown.keys.first() == Some(&at.key) && at.line == 0);
+                if let Some(pin) = pinned
+                    && !(shown.following && closed(pin.key))
+                    && t.view.placement().outcome == termelon::feed::Outcome::Kept
+                    && pin.row < height as usize
+                {
+                    let row = shown.refs.iter().position(|at| {
+                        at.is_some_and(|at| (at.key, at.line) == (pin.key, pin.line))
+                    });
+                    let short =
+                        at_start && (shown.following || row.is_some_and(|row| row < pin.row));
+                    let at = shown.refs.get(pin.row).copied().flatten();
+                    if !short && at.map(|at| (at.key, at.line)) != Some((pin.key, pin.line)) {
+                        wrong.push(format!(
+                            "the fold's line (block {} line {}) isn't on row {}, which shows {at:?}",
+                            pin.key, pin.line, pin.row
+                        ));
+                    }
+                }
+                if dump_at.contains(&step) {
+                    eprintln!(
+                        "=== seed {seed} {view:?} step {step}: {did}, {what}, took {took:?}, filter {filter:?}"
+                    );
+                    dump("before", &last);
+                    dump("after", &shown);
+                }
+                all.extend(wrong.into_iter().map(|wrong| {
+                    format!("seed {seed} {view:?} step {step} ({did}, {what}): {wrong}")
+                }));
+                last = shown;
+            }
+        }
+    }
+    let total = all.len();
+    for line in all.iter().take(80) {
+        eprintln!("{line}");
+    }
+    assert_eq!(total, 0, "{total} wrong");
+}
