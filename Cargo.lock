@@ -3873,9 +3873,9 @@ dependencies = [
 
 [[package]]
 name = "termelon"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0182f7ab3b79d9c99a0a2d7026fddb800ade535e691a3462e00d4cc3b87b751"
+checksum = "b528b2842a3d71386a085c4a714a93879d2901bbf46a600f0da5d87086c682ea"
 dependencies = [
  "rustix",
  "signal-hook",
