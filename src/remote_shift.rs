@@ -207,7 +207,7 @@ fn act(session: &mut Session, request: &Value) -> Value {
         }
         "approval" => {
             let approval = crate::approvals::Approval::Profile(crate::profiles::approval(
-                &crate::profiles::Profile::new(&text(request, "name"), "Reviews code"),
+                &crate::profiles::Profile::new(text(request, "name"), "Reviews code"),
                 crate::profiles::Place::User,
             ));
             let (id, answer) = feed.request_approval(Uuid::nil(), None, approval);
