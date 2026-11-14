@@ -447,9 +447,11 @@ fn place(steps: &[Step], start: usize, end: usize, groups: &[Group], out: &mut V
     // first call and its last. Any other thinking has a line of its own,
     // where it happened. The last one stands at the end until the next call
     // comes, and goes in the row above if that call joins it.
+    // (`calls` is in order, so a search finds the calls on either side.)
     let inside = |index: usize| {
-        let before = calls.iter().rev().find(|call| **call < index)?;
-        let after = calls.iter().find(|call| **call > index)?;
+        let at = calls.partition_point(|call| *call < index);
+        let before = calls.get(at.checked_sub(1)?)?;
+        let after = calls[at..].iter().find(|call| **call > index)?;
         let row = row_of.get(before)?;
         (row_of.get(after) == Some(row)).then_some(*row)
     };
