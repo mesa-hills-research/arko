@@ -426,6 +426,9 @@ struct Face {
 struct WorkerFace {
     /// The worker's ID, which leads the row in bold, once it has one.
     id: Option<String>,
+    /// Before the worker has its ID, the columns the ID will take, kept
+    /// blank so the words don't move when it comes.
+    reserve: usize,
     words: String,
     /// What follows the words ([`worker_facts`]), none for a row that a
     /// later one of its worker stands for.
@@ -826,8 +829,32 @@ impl Transcript {
             }
             _ => Vec::new(),
         };
+        // A start keeps the columns of the ID it will get, the next of the
+        // session's numbers after those of the starts that run before it.
+        let reserve = match going {
+            Going::Start(None) => {
+                let numbered = self
+                    .workers
+                    .iter()
+                    .filter_map(|worker| worker.id.strip_prefix('r')?.parse::<u64>().ok())
+                    .max()
+                    .unwrap_or(0);
+                let before = self
+                    .entries
+                    .iter()
+                    .take_while(|entry| entry.item.id < item.id)
+                    .filter(|entry| {
+                        worker_rows::going(&entry.item) == Some(Going::Start(None))
+                            && entry.item.status == Some(CallStatus::Running)
+                    })
+                    .count() as u64;
+                text_width(&format!("r{}", numbered + before + 1))
+            }
+            _ => 0,
+        };
         WorkerFace {
             id: id.map(str::to_string),
+            reserve,
             words: rendered(&words),
             facts,
         }
@@ -4584,7 +4611,14 @@ fn going_lines(
     // (A failed row's ✗ stands in its last column, two from its words.)
     let cross = if failed { 3 } else { 0 };
     let room = width.saturating_sub(MARGIN + cross).max(1);
-    let spans = worker_spans(face.id.as_deref(), &face.words, &face.facts, theme, room);
+    let spans = worker_spans(
+        face.id.as_deref(),
+        face.reserve,
+        &face.words,
+        &face.facts,
+        theme,
+        room,
+    );
     let fold = look.folds.then_some(look.open);
     let style = if failed { theme.error() } else { theme.dim() };
     let mut lines = vec![Wrapped::line(spans).decorated(marker(fold_symbol(fold), style))];
@@ -4601,21 +4635,25 @@ fn going_lines(
     lines
 }
 
-/// A worker's row in `room` columns, its ID in bold, its words cut to fit
-/// and its facts whole after them, each in its tone.
+/// A worker's row in `room` columns, its ID in bold (or `reserve` blank
+/// columns where the ID will come), its words cut to fit and its facts
+/// whole after them, each in its tone.
 fn worker_spans(
     id: Option<&str>,
+    reserve: usize,
     words: &str,
     facts: &[(String, Tone)],
     theme: &Theme,
     room: usize,
 ) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
-    if let Some(id) = id {
-        spans.push(Span::styled(
+    match id {
+        Some(id) => spans.push(Span::styled(
             format!("{id} "),
             theme.text().add_modifier(Modifier::BOLD),
-        ));
+        )),
+        None if reserve > 0 => spans.push(Span::raw(" ".repeat(reserve + 1))),
+        None => {}
     }
     let mut tail = Vec::new();
     for (fact, tone) in facts {
@@ -5308,6 +5346,7 @@ fn worker_line(
     let mut spans = vec![Span::raw(" ".repeat(MARGIN))];
     spans.extend(worker_spans(
         Some(id),
+        0,
         &rendered(title),
         &facts,
         theme,
@@ -8379,7 +8418,8 @@ mod tests {
             for line in [
                 "▸ r1 Fix flaky test · running · 3 tool calls",
                 "· r2 Update docs · queued",
-                "· Waiting for billing · starting",
+                // (The columns of the ID it will get, r3, stay blank.)
+                "·    Waiting for billing · starting",
             ] {
                 assert_eq!(count(&shown, line), 1, "{view:?} {line}: {shown:?}");
             }
@@ -8387,7 +8427,7 @@ mod tests {
             assert!(
                 shown
                     .iter()
-                    .any(|r| r.starts_with("· Run migration") && r.ends_with('✗')),
+                    .any(|r| r.starts_with("·    Run migration") && r.ends_with('✗')),
                 "{view:?}: {shown:?}"
             );
             assert_eq!(count(&shown, "start worker"), 0, "{view:?}: {shown:?}");

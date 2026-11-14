@@ -3,11 +3,11 @@
 
   I'll start three workers for the checks and fix the comparison myself.
 
-· Check that the cache fixture uses the same deadline as the test, and rep… · starting
+·    Check that the cache fixture uses the same deadline as the test, and rep… · starting
 
-· Read docs/cache.md and the doc comments in src/cache.rs, and list each p… · starting
+·    Read docs/cache.md and the doc comments in src/cache.rs, and list each p… · starting
 
-· Find every caller of cache::fresh and say whether any relies on a value … · starting
+·    Find every caller of cache::fresh and say whether any relies on a value … · starting
 
 ## 18 r1 reports
 ▎ Fix the stale cache test, and have workers check the fixture, the docs and the callers.

@@ -10,7 +10,8 @@
 //! fold comes or goes. "Working…" and the notes waiting at the end go down
 //! as what comes above them takes their rows, into the blank rows below the
 //! end, and while the reader reads on past the bottom row, and up as what
-//! stood above them goes.
+//! stood above them goes. A worker's start keeps its words in their columns
+//! as the worker's ID comes.
 //!
 //! `SHIFT_METER_SEEDS` plays that many sessions at more sizes, and
 //! `SHIFT_METER_OUT` names a file for the tables of every step and view.
@@ -71,10 +72,11 @@ enum Step {
     FoldOpens,
     FoldCloses,
     TurnEnds,
+    WorkerStarts,
 }
 
 impl Step {
-    const ALL: [Step; 20] = [
+    const ALL: [Step; 21] = [
         Step::Asked,
         Step::WorkingCall,
         Step::WorkingThought,
@@ -95,6 +97,7 @@ impl Step {
         Step::FoldOpens,
         Step::FoldCloses,
         Step::TurnEnds,
+        Step::WorkerStarts,
     ];
 
     fn name(self) -> &'static str {
@@ -119,6 +122,7 @@ impl Step {
             Step::FoldOpens => "fold opens near the end",
             Step::FoldCloses => "fold closes near the end",
             Step::TurnEnds => "turn ends",
+            Step::WorkerStarts => "worker start → its ID",
         }
     }
 }
@@ -222,6 +226,9 @@ struct Meter {
     /// The largest move of each cause in each step and view, the screens
     /// before and after.
     examples: BTreeMap<(Cause, Step, usize), (u32, String)>,
+    /// The worker starts whose words moved along their row as the worker's
+    /// ID came, with the rows before and after.
+    sideways: Vec<String>,
 }
 
 impl Meter {
@@ -581,6 +588,19 @@ struct Run<'m> {
     /// A message waiting to be read.
     waiting: Option<(u64, String)>,
     clicks: u16,
+    /// Whether its turns start workers, and how many they started.
+    starts: bool,
+    workers: u64,
+}
+
+/// The row and column of the first word `word` in `rows`.
+fn place_of(rows: &[String], word: &str) -> Option<(usize, usize)> {
+    rows.iter().enumerate().find_map(|(y, row)| {
+        let at = row
+            .find(&format!("{word} "))
+            .or_else(|| row.ends_with(word).then(|| row.len() - word.len()))?;
+        Some((y, row[..at].chars().count()))
+    })
 }
 
 impl<'m> Run<'m> {
@@ -614,6 +634,8 @@ impl<'m> Run<'m> {
             toggled: HashSet::new(),
             waiting: None,
             clicks: 0,
+            starts: false,
+            workers: 0,
         }
     }
 
@@ -1226,6 +1248,75 @@ impl<'m> Run<'m> {
     }
 
     /// A turn, from the user's message to its end.
+    /// A start of a worker, whose row says "starting" until the worker's
+    /// first event and then the start's result, which names it, come. Its
+    /// words keep their columns as its ID comes.
+    fn start_worker(&mut self) {
+        let title = self.some(2, 4);
+        let first = title.split(' ').next().unwrap_or_default().to_string();
+        let mut call = self.item(Kind::Call, &format!("start worker “{title}”"));
+        call.status = Some(CallStatus::Running);
+        call.tool = Some(crate::crew::START_AGENT.into());
+        call.task_title = Some(title.clone());
+        call.act = Some(Act {
+            doing: "Starting a worker".into(),
+            done: "Started a worker".into(),
+            verb: "start a worker".into(),
+            ..Act::default()
+        });
+        self.add(call.clone());
+        self.calls.push((ActKind::Other, title.clone(), true));
+        self.live = Live::Working;
+        self.frame(Step::WorkingCall);
+        self.workers += 1;
+        let worker = format!("r{}", self.workers);
+        // The worker's own event comes first, with the feed's line for it,
+        // then the start's result.
+        let mut line = self.item(Kind::WorkerLine, &title);
+        line.worker = Some(worker.clone());
+        let summary = crate::remote::WorkerSummary {
+            title: title.clone(),
+            state: crate::remote::WorkerState::Running,
+            ..crate::remote::WorkerSummary::new(&worker)
+        };
+        self.worker_step(&first, |run| {
+            run.add(line);
+            run.update(Update::Worker(summary));
+        });
+        call.status = Some(CallStatus::Ok);
+        call.outcome = Some(worker.clone());
+        call.started = Some(worker.clone());
+        call.sets = Some(worker);
+        self.worker_step(&first, |run| run.update(Update::Change(call)));
+    }
+
+    /// A step of a worker's start, `step`, and its frame, noting where the
+    /// start's first word `first` moved along its row.
+    fn worker_step(&mut self, first: &str, step: impl FnOnce(&mut Self)) {
+        let before = self
+            .last
+            .as_ref()
+            .and_then(|last| place_of(&last.rows, first));
+        step(self);
+        self.frame(Step::WorkerStarts);
+        let after = self
+            .last
+            .as_ref()
+            .and_then(|last| place_of(&last.rows, first));
+        if let (Some((_, from)), Some((_, to))) = (before, after)
+            && from != to
+        {
+            let rows = self.last.as_ref().map(|last| last.rows.join("\n"));
+            self.meter.sideways.push(format!(
+                "{}×{} {:?}: {first} went from column {from} to {to}\n{}",
+                self.size.0,
+                self.size.1,
+                View::ALL[self.view],
+                rows.unwrap_or_default()
+            ));
+        }
+    }
+
     fn turn(&mut self) {
         self.scroll_up();
         self.turn += 1;
@@ -1240,6 +1331,9 @@ impl<'m> Run<'m> {
         self.calls.clear();
         self.frame(Step::Asked);
         self.meanwhile();
+        if self.starts && self.rng.chance(40) {
+            self.start_worker();
+        }
         for _ in 0..1 + self.rng.below(3) {
             if self.rng.chance(60) {
                 self.think();
@@ -1286,6 +1380,11 @@ const SIZES: [(u16, u16); 6] = [
 /// `seeds` of them at every size, else one at each of the first three
 /// sizes, its thinking folded or whole by turns.
 fn measure(seeds: Option<u64>) -> Meter {
+    measure_with(seeds, false)
+}
+
+/// [`measure`], with turns that start workers when `starts`.
+fn measure_with(seeds: Option<u64>, starts: bool) -> Meter {
     let _full = choose_symbols(Symbols::Full);
     let mut meter = Meter::default();
     let (sizes, turns) = match seeds {
@@ -1308,6 +1407,7 @@ fn measure(seeds: Option<u64>) -> Meter {
                             + u64::from(thinking) * 2
                             + u64::from(scrolled);
                         let mut run = Run::new(seed, view, *size, scrolled, &mut meter);
+                        run.starts = starts;
                         run.app.transcript.set_open_thinking(thinking);
                         for _ in 0..turns {
                             run.turn();
@@ -1351,4 +1451,27 @@ fn no_line_moves_down_as_an_agent_works() {
     }
     assert!(meter.frames() > 1500, "{} frames", meter.frames());
     assert_eq!(meter.shifted(), 0, "\n{table}\n{}", meter.examples());
+}
+
+/// A worker's start, which says "starting" until the worker's first event
+/// and the start's result come, moves no line down as they come, and its
+/// words keep their columns as the worker's ID comes, in every view, at
+/// every size, following and scrolled up.
+#[test]
+fn a_worker_start_keeps_its_words_in_place() {
+    let meter = measure_with(None, true);
+    let starts: Vec<&Tally> = meter
+        .tallies
+        .iter()
+        .filter(|((step, ..), _)| *step == Step::WorkerStarts)
+        .map(|(_, tally)| tally)
+        .collect();
+    assert!(!starts.is_empty(), "no worker start");
+    assert!(
+        starts.iter().all(|tally| tally.shifted == 0),
+        "\n{}\n{}",
+        meter.table(),
+        meter.examples()
+    );
+    assert!(meter.sideways.is_empty(), "{}", meter.sideways.join("\n\n"));
 }

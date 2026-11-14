@@ -5,9 +5,9 @@
   I'll start three workers for the checks and fix
   the comparison myself.
 
-· Check that the cache fixture uses th… · starting
-· Read docs/cache.md and the doc comme… · starting
-· Find every caller of cache::fresh an… · starting
+·    Check that the cache fixture uses… · starting
+·    Read docs/cache.md and the doc co… · starting
+·    Find every caller of cache::fresh… · starting
 
 ## 08 r3 waits for a place
 ▎ Fix the stale cache test, and have workers check
@@ -16,9 +16,9 @@
   I'll start three workers for the checks and fix
   the comparison myself.
 
-· Check that the cache fixture uses th… · starting
-· Read docs/cache.md and the doc comme… · starting
-· Find every caller of cache::fresh an… · starting
+·    Check that the cache fixture uses… · starting
+·    Read docs/cache.md and the doc co… · starting
+·    Find every caller of cache::fresh… · starting
 
 ## 11 The third start's result says it queued
 ▎ Fix the stale cache test, and have workers check

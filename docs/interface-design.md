@@ -104,11 +104,11 @@ of single lines under it.
 ### Workers in the terminal
 
 - A worker's start is one row, where the call was, in every view. Until the worker has an ID the
-  row says the task's first line and "starting" with its timer. Then the worker's ID leads it, and
-  it says how the worker stands ("running", "queued", "failed" or "stopped"), its calls from the
-  first, and how long it has run ("r1 Fix the flaky test · running · 3 tool calls · 41s"). A
-  worker that finished says no state, and its report is a row of its own where it came ("r1
-  reported").
+  row says the task's first line and "starting" with its timer, with the columns the ID will take
+  left blank. Then the ID comes into them, so the words don't move, and the row says how the
+  worker stands ("running", "queued", "failed" or "stopped"), its calls from the first, and how
+  long it has run ("r1 Fix the flaky test · running · 3 tool calls · 41s"). A worker that finished
+  says no state, and its report is a row of its own where it came ("r1 reported").
 - It opens to the task.
 - A message that sets a worker that ended going again is that worker's row from then on ("Messaged
   r2 · running · 3 tool calls · 52s"). Only a worker's latest row says how it stands, so its

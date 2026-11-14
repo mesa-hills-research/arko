@@ -5,11 +5,11 @@
   I'll start three workers for the checks and fix
   the comparison myself.
 
-· Check that the cache fixture uses th… · starting
+·    Check that the cache fixture uses… · starting
 
-· Read docs/cache.md and the doc comme… · starting
+·    Read docs/cache.md and the doc co… · starting
 
-· Find every caller of cache::fresh an… · starting
+·    Find every caller of cache::fresh… · starting
 
 ## 18 r1 reports
 ▎ Fix the stale cache test, and have workers check
