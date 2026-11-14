@@ -238,3 +238,32 @@ fn the_marker_keeps_what_the_last_block_grew_by_at_another_width() {
     let wider = screen(&mut t, &filter, 50, 8);
     assert_eq!(new(&wider), count, "{wider:?}");
 }
+
+/// A worker's heading wraps again when its time takes another column.
+#[test]
+fn a_heading_wraps_again_as_its_time_grows() {
+    let now = chrono::Utc::now().timestamp_millis();
+    let worker = WorkerSummary {
+        // "r1 " + title + " · running · 9s" fills the 38 columns after the
+        // margin exactly, so "10s" wraps.
+        title: "t".repeat(38 - 3 - " · running · 9s".chars().count()),
+        state: WorkerState::Running,
+        started_at: Some(now - 9_400),
+        running_since: Some(now - 9_400),
+        ..WorkerSummary::new("r1")
+    };
+    let filter = Filter::Worker("r1".into(), View::Full);
+    let mut t = Transcript::new();
+    t.apply(Update::Worker(worker.clone()));
+    t.apply(Update::Item(item(1, Kind::Text, "Its text").agent("r1")));
+    let before = screen(&mut t, &filter, 40, 5);
+    assert!(before[0].ends_with("9s"), "{before:?}");
+    std::thread::sleep(Duration::from_millis(700));
+    let after = screen(&mut t, &filter, 40, 5);
+    // What a transcript that starts now draws.
+    let mut fresh = Transcript::new();
+    fresh.apply(Update::Worker(worker));
+    fresh.apply(Update::Item(item(1, Kind::Text, "Its text").agent("r1")));
+    let expected = screen(&mut fresh, &filter, 40, 5);
+    assert_eq!(after, expected);
+}

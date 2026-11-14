@@ -358,7 +358,7 @@ struct Face {
     open: bool,
     folds: bool,
     status: Option<quiet::WorkerRow>,
-    /// A running call's time.
+    /// A running call's time, or a worker's in its view's heading.
     clock: Option<String>,
 }
 
@@ -1103,7 +1103,10 @@ impl Transcript {
         if let Filter::Worker(id, _) = filter
             && let Some(worker) = self.worker(id)
         {
-            blocks.push(Block::other(0, Shown::Heading(worker.id.clone()), false));
+            // (Its time is one of the things its lines are made from.)
+            let mut heading = Block::other(0, Shown::Heading(worker.id.clone()), false);
+            heading.face.clock = worker_time(worker);
+            blocks.push(heading);
         }
         // The Messages view counts each turn's tool activity on one line,
         // where the activity began. A count that's open shows the turn's
@@ -2348,7 +2351,7 @@ impl Transcript {
             ))],
             Shown::Heading(id) => self
                 .worker(id)
-                .map(|worker| heading_lines(worker, theme, width))
+                .map(|worker| heading_lines(worker, block.face.clock.as_deref(), theme, width))
                 .unwrap_or_default(),
             Shown::Counter {
                 calls,
@@ -4618,8 +4621,14 @@ fn worker_line(
     Line::from(line)
 }
 
-/// A worker view's heading, the worker's ID, task and state.
-fn heading_lines(worker: &WorkerSummary, theme: &Theme, width: usize) -> Vec<Wrapped> {
+/// A worker view's heading, the worker's ID, task and state, and its run
+/// time ([`worker_time`]).
+fn heading_lines(
+    worker: &WorkerSummary,
+    time: Option<&str>,
+    theme: &Theme,
+    width: usize,
+) -> Vec<Wrapped> {
     let inner = width.saturating_sub(MARGIN).max(1);
     let (word, style) = state(worker, theme);
     let mut spans = vec![
@@ -4631,7 +4640,7 @@ fn heading_lines(worker: &WorkerSummary, theme: &Theme, width: usize) -> Vec<Wra
         Span::styled(rendered(" · "), theme.dim()),
         Span::styled(word.to_string(), style),
     ];
-    if let Some(time) = worker_time(worker) {
+    if let Some(time) = time {
         spans.push(Span::styled(rendered(format!(" · {time}")), theme.dim()));
     }
     wrap::prefixed(
