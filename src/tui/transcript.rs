@@ -1008,6 +1008,15 @@ impl Transcript {
         }
     }
 
+    /// Makes the item `id`'s text look as if it stopped growing a while ago
+    /// (tests).
+    #[cfg(test)]
+    pub(super) fn quiet_item(&mut self, id: u64) {
+        if let Some(entry) = self.find_mut(id) {
+            entry.changed -= QUIET;
+        }
+    }
+
     /// Scrolls to the top at the next draw.
     pub fn top(&mut self) {
         self.acted.scroll = Scroll::Top(0);
@@ -2509,6 +2518,31 @@ impl Transcript {
     #[cfg(test)]
     pub(super) fn gap(&self) -> u32 {
         self.view.placement().gap
+    }
+
+    /// The first row of the last frame below the items' lines, where
+    /// "Working…" and the notes waiting to be read stand, and the blank rows
+    /// below the end (tests).
+    #[cfg(test)]
+    pub(super) fn end_starts(&self) -> usize {
+        let waits = |key: u64| self.item(key).is_some_and(|item| item.pending);
+        self.drawn
+            .rows
+            .iter()
+            .rposition(|row| row.is_some_and(|row| !waits(row.key)))
+            .map_or(0, |at| at + 1)
+    }
+
+    /// Whether the last frame showed the transcript's first row on its top
+    /// row (tests).
+    #[cfg(test)]
+    pub(super) fn shows_start(&self) -> bool {
+        let feed = self.view.feed();
+        self.view
+            .placement()
+            .items
+            .first()
+            .is_some_and(|first| first.y == 0 && feed.first() == Some(first.item))
     }
 
     /// Whether the last frame showed the end, with no rows of it below the

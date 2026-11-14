@@ -45,6 +45,8 @@ mod screen;
 #[cfg(test)]
 mod scroll_tests;
 mod select;
+#[cfg(test)]
+mod shift_tests;
 pub(crate) mod theme;
 mod transcript;
 mod working;
