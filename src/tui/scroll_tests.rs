@@ -501,6 +501,32 @@ fn a_scroll_down_after_a_fold_closed_near_the_end_moves_no_line() {
     assert!(gaps.iter().any(|gap| *gap > 3), "{gaps:?}");
 }
 
+/// With blank rows below the end after a fold closed, a notch of the wheel
+/// up and one back down moves no line down, and the view follows again.
+/// Where the end shows after the notch up, the notch down moves nothing.
+#[test]
+fn a_scroll_up_and_down_with_blank_rows_below_the_end_moves_no_line_down() {
+    let _full = choose_symbols(Symbols::Full);
+    for lines in [2, 3, 4, 5, 8, 12] {
+        let what = format!("{lines} lines");
+        let Some((mut s, mut terminal, closed)) = closed_near_the_end(lines, 40) else {
+            continue;
+        };
+        let gap = s.app.transcript.gap();
+        wheel(&mut s.app, MouseEventKind::ScrollUp);
+        let up = frame(&mut terminal, &mut s.app);
+        assert!(!s.app.transcript.following(), "{what}");
+        assert_ne!(up, closed, "{what}");
+        wheel(&mut s.app, MouseEventKind::ScrollDown);
+        let down = frame(&mut terminal, &mut s.app);
+        assert_none_lower(&up, &down, &what);
+        assert!(s.app.transcript.following(), "{what}");
+        if gap > 3 {
+            assert_eq!(down, up, "{what}");
+        }
+    }
+}
+
 /// Scrolled up into a reply as it streams, the screen stays as it is as
 /// more of it comes, a few words at a time and now and then several lines
 /// in one frame, its bold words close and new paragraphs start.

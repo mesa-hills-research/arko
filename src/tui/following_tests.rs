@@ -157,7 +157,13 @@ impl Run {
         let rect = self.s.app.transcript.drawn.marker?;
         let area = self.s.app.transcript.drawn.area;
         let row = &self.rows[usize::from(rect.y - area.y)];
-        Some(row.chars().skip(usize::from(rect.x)).collect::<String>().trim().to_string())
+        Some(
+            row.chars()
+                .skip(usize::from(rect.x))
+                .collect::<String>()
+                .trim()
+                .to_string(),
+        )
     }
 
     /// How many new lines the marker says, 0 for "↓ end".
@@ -230,7 +236,13 @@ enum Moves {
 
 fn check_moves(moves: Moves, before: &[String], after: &[String], y: Option<usize>, what: &str) {
     let deltas = moved(before, after);
-    let show = || format!("{what}: {moves:?}, {deltas:?}\n{}\n----\n{}", before.join("\n"), after.join("\n"));
+    let show = || {
+        format!(
+            "{what}: {moves:?}, {deltas:?}\n{}\n----\n{}",
+            before.join("\n"),
+            after.join("\n")
+        )
+    };
     match moves {
         Moves::Same => assert!(deltas.iter().all(|d| *d == 0), "{}", show()),
         // (No line in both moved them further than the screen.)
@@ -244,7 +256,11 @@ fn check_moves(moves: Moves, before: &[String], after: &[String], y: Option<usiz
         ),
         Moves::Kept => {
             let y = y.expect("the clicked row");
-            let words = before[y].trim_start_matches(['▸', '▾', ' ']).split(" · ").next().unwrap_or("");
+            let words = before[y]
+                .trim_start_matches(['▸', '▾', ' '])
+                .split(" · ")
+                .next()
+                .unwrap_or("");
             assert!(after[y].contains(words), "{}", show());
         }
         Moves::TopKept => {
@@ -274,7 +290,14 @@ enum State {
 }
 
 impl State {
-    const ALL: [State; 6] = [State::F0, State::F4, State::Rv, State::Rh, State::HF, State::HR];
+    const ALL: [State; 6] = [
+        State::F0,
+        State::F4,
+        State::Rv,
+        State::Rh,
+        State::HF,
+        State::HR,
+    ];
 
     fn make(self, view: View) -> Run {
         let mut run = Run::new(view);
@@ -335,6 +358,8 @@ enum Input {
     CtrlG,
     ClickText,
     ClickFold,
+    KeyFold,
+    Send,
     Press,
     Release,
     DragRelease,
@@ -346,7 +371,7 @@ enum Input {
 }
 
 impl Input {
-    const ALL: [Input; 23] = [
+    const ALL: [Input; 25] = [
         Input::Up(1),
         Input::Up(5),
         Input::Down(1),
@@ -362,6 +387,8 @@ impl Input {
         Input::CtrlG,
         Input::ClickText,
         Input::ClickFold,
+        Input::KeyFold,
+        Input::Send,
         Input::Press,
         Input::Release,
         Input::DragRelease,
@@ -376,7 +403,7 @@ impl Input {
     fn applies(self, run: &Run) -> bool {
         match self {
             Input::Marker => run.marker().is_some(),
-            Input::ClickFold => run.fold_row().is_some(),
+            Input::ClickFold | Input::KeyFold => run.fold_row().is_some(),
             Input::ClickText | Input::Press | Input::Release | Input::DragRelease => {
                 run.plain_row().is_some()
             }
@@ -403,8 +430,12 @@ impl Input {
                     MouseEventKind::Down(MouseButton::Left),
                     MouseEventKind::Up(MouseButton::Left),
                 ] {
-                    run.app()
-                        .mouse(MouseEvent::new(kind, rect.x + 1, rect.y, KeyModifiers::NONE));
+                    run.app().mouse(MouseEvent::new(
+                        kind,
+                        rect.x + 1,
+                        rect.y,
+                        KeyModifiers::NONE,
+                    ));
                 }
             }
             Input::CtrlG => run.key(KeyCode::Char('g'), KeyModifiers::CONTROL),
@@ -417,6 +448,16 @@ impl Input {
                 let y = run.fold_row().expect("the command on the screen");
                 run.click(y);
                 return Some(y);
+            }
+            Input::KeyFold => {
+                let y = run.fold_row().expect("the command on the screen");
+                run.key(KeyCode::Char('g'), KeyModifiers::CONTROL);
+                run.key(KeyCode::Enter, KeyModifiers::NONE);
+                return Some(y);
+            }
+            Input::Send => {
+                run.key(KeyCode::Char('h'), KeyModifiers::NONE);
+                run.key(KeyCode::Enter, KeyModifiers::NONE);
             }
             Input::Press => {
                 let y = run.plain_row().expect("plain output on the screen");
@@ -458,9 +499,7 @@ impl Input {
 
     /// What it does from `state`: whether the reader reads after it, whether
     /// the view is held, what the lines do, and whether the end is then on
-    /// the last row with no blank rows. `None` where it doesn't apply, or
-    /// where the table's answer needs termelon 0.2.1 (a scroll down from
-    /// reading with the end in sight, which an ignored test checks).
+    /// the last row with no blank rows. `None` where it doesn't apply.
     fn want(self, state: State) -> Option<(bool, bool, Moves, bool)> {
         use Input::*;
         use State::*;
@@ -472,7 +511,7 @@ impl Input {
             (_, Up(n)) => (true, held, Moves::Down(3 * n as i64), false),
             (_, ShiftUp) => (true, held, Moves::Down(3), false),
             (_, PageUp) => (true, held, Moves::Down(page), false),
-            (Rv, Down(_) | ShiftDown | PageDown) => return None,
+            (Rv, Down(_) | ShiftDown | PageDown) => (false, false, Moves::Same, false),
             (F0 | F4 | HF, Down(_) | ShiftDown | PageDown) => (false, held, Moves::Same, false),
             (Rh | HR, Down(1) | ShiftDown) => (true, held, Moves::Up(3), false),
             (Rh | HR, Down(_) | PageDown) => (false, held, Moves::Up(12), !held),
@@ -484,13 +523,14 @@ impl Input {
             (F0 | F4 | Rv | HF, Esc) => (false, false, Moves::Same, false),
             (Rh, Marker) => (false, false, Moves::Up(12), true),
             (_, Marker) => return None,
-            (HF | HR, CtrlG | ClickText | ClickFold | Press) => return None,
+            (HF | HR, CtrlG | ClickText | ClickFold | KeyFold | Press) => return None,
+            (_, Send) => (false, false, Moves::Any, true),
             // (No line that opens shows there, so the last comes down from
             // above.)
             (Rv, CtrlG) => (true, false, Moves::Any, false),
             (_, CtrlG) => (reading, false, Moves::Same, false),
             (_, ClickText) => (reading, false, Moves::Same, false),
-            (_, ClickFold) => (reading, false, Moves::Kept, false),
+            (_, ClickFold | KeyFold) => (reading, false, Moves::Kept, false),
             (_, Press) => (reading, true, Moves::Same, false),
             (HF | HR, Release | DragRelease) => (reading, false, Moves::Same, false),
             (_, Release | DragRelease) => return None,
@@ -535,7 +575,12 @@ fn every_input_from_every_state() {
                 }
                 let after = run.draw();
                 run.check(&what);
-                assert_eq!(run.reading(), reading, "{what}: reading\n{}", after.join("\n"));
+                assert_eq!(
+                    run.reading(),
+                    reading,
+                    "{what}: reading\n{}",
+                    after.join("\n")
+                );
                 assert_eq!(run.held(), held, "{what}: held");
                 // (Output while following moves the lines up, all alike, and
                 // so does a scroll down to the rows it brought.)
@@ -548,7 +593,10 @@ fn every_input_from_every_state() {
                 };
                 check_moves(moves, &before, &after, y, &what);
                 if end_last {
-                    assert!(run.following() && run.gap() == 0, "{what}: the end on the last row");
+                    assert!(
+                        run.following() && run.gap() == 0,
+                        "{what}: the end on the last row"
+                    );
                 }
                 // Three rows in a frame of their own.
                 let before = after;
@@ -560,10 +608,704 @@ fn every_input_from_every_state() {
                 } else {
                     Moves::Same
                 };
-                check_moves(moves, &before, &after, None, &format!("{what}, then output"));
+                check_moves(
+                    moves,
+                    &before,
+                    &after,
+                    None,
+                    &format!("{what}, then output"),
+                );
                 ran += 1;
             }
         }
     }
     assert!(ran > 200, "{ran} cases");
+}
+
+impl Run {
+    /// A command with `lines` lines of output at the end, before the next
+    /// frame. Returns the words of its line.
+    fn command(&mut self, lines: u64) -> String {
+        let words = self.s.words(2);
+        let call = self.s.command(&words);
+        let call = self.s.add(call);
+        self.s.ends(call, &words, lines);
+        format!("cargo test {words}")
+    }
+
+    /// A thought of `lines` lines at the end, before the next frame.
+    /// Returns its first line.
+    fn thought(&mut self, lines: usize) -> String {
+        let text: Vec<String> = (0..lines).map(|_| self.s.words(4)).collect();
+        let item = self.s.item(Kind::Thinking, &text.join("\n"));
+        self.s.add(item);
+        text[0].clone()
+    }
+
+    /// The row whose text holds `words`.
+    fn row_of(&self, words: &str) -> Option<usize> {
+        self.rows.iter().position(|row| row.contains(words))
+    }
+
+    /// A run with no turns, only what `build` adds, drawn.
+    fn bare(build: impl FnOnce(&mut Run)) -> Run {
+        let _full = choose_symbols(Symbols::Full);
+        let mut run = Run {
+            s: Session::new(9, View::Full),
+            term: crate::tui::golden::terminal(70, 24),
+            rows: Vec::new(),
+            plain: Vec::new(),
+            fold: String::new(),
+        };
+        build(&mut run);
+        run.draw();
+        run
+    }
+}
+
+/// A reader who scrolled up with the end in sight and toggles a fold that
+/// leaves it in sight goes on reading, so what comes next doesn't move the
+/// lines they went back to.
+#[test]
+fn a_fold_toggled_while_reading_keeps_the_reader_reading() {
+    let mut run = Run::new(View::Full);
+    let fold = run.command(3);
+    run.output(4);
+    run.draw();
+    run.shorten_end(6);
+    run.steps(MouseEventKind::ScrollUp, 1);
+    run.draw();
+    assert!(run.reading() && run.s.app.transcript.end_shows());
+    let y = run.row_of(&fold).expect("the command shows");
+    run.click(y);
+    let toggled = run.draw();
+    run.check("toggled");
+    assert!(run.reading(), "{}", toggled.join("\n"));
+    assert!(toggled[y].contains(&fold));
+    run.output(30);
+    let after = run.draw();
+    run.check("output");
+    check_moves(
+        Moves::Same,
+        &toggled,
+        &after,
+        None,
+        "output after the toggle",
+    );
+    assert!(run.marker().is_some());
+}
+
+/// A follower opens a tall thought near the end, which takes the end off
+/// the screen, and the view waits with the marker. Closed again, it
+/// follows from there. Where output came meanwhile and the end still
+/// doesn't show, it waits on, and a scroll down to the end follows.
+#[test]
+fn a_follower_who_opens_and_closes_a_tall_fold_follows_on() {
+    for output in [0, 5] {
+        let what = format!("{output} lines while open");
+        let mut run = Run::new(View::Full);
+        let first = run.thought(30);
+        run.reply(1);
+        run.draw();
+        assert!(run.following());
+        let y = run.row_of(&first).expect("the thought shows");
+        run.click(y);
+        let open = run.draw();
+        run.check(&what);
+        assert!(
+            !run.reading() && !run.following(),
+            "{what}\n{}",
+            open.join("\n")
+        );
+        assert!(open[y].contains(&first));
+        assert_eq!(
+            run.new_lines(),
+            Some(0),
+            "{what}: the thought it opened isn't new"
+        );
+        if output > 0 {
+            run.output(output);
+            let more = run.draw();
+            run.check(&what);
+            check_moves(Moves::Same, &open, &more, None, &what);
+        }
+        run.click(y);
+        let closed = run.draw();
+        run.check(&what);
+        assert!(closed[y].contains(&first), "{what}");
+        assert!(!run.reading(), "{what}");
+        if output == 0 {
+            assert!(run.following(), "{what}\n{}", closed.join("\n"));
+        } else {
+            assert!(run.marker().is_some(), "{what}\n{}", closed.join("\n"));
+            run.steps(MouseEventKind::ScrollDown, 40);
+            run.draw();
+            assert!(run.following(), "{what}");
+        }
+    }
+}
+
+/// A double click on a tall thought's line opens and closes it and selects
+/// a word, and a follower follows on.
+#[test]
+fn a_double_click_on_a_tall_fold_leaves_a_follower_following() {
+    let mut run = Run::new(View::Full);
+    let first = run.thought(30);
+    run.reply(1);
+    run.draw();
+    let y = run.row_of(&first).expect("the thought shows");
+    run.click(y);
+    run.click(y);
+    let after = run.draw();
+    run.check("double click");
+    assert!(run.following(), "{}", after.join("\n"));
+}
+
+/// A flick down to the end and a click in one frame follow.
+#[test]
+fn a_flick_to_the_end_and_a_click_in_one_frame_follow() {
+    let mut run = State::Rh.make(View::Full);
+    run.steps(MouseEventKind::ScrollDown, 40);
+    let y = run.plain_row().expect("plain output");
+    run.click(y);
+    run.draw();
+    run.check("flick and click");
+    assert!(run.following() && run.gap() == 0);
+}
+
+/// A click while output takes a follower's end off the screen catches up
+/// to it at the release. A drag doesn't, so the selection stays in view.
+#[test]
+fn a_click_catches_up_with_the_end_and_a_drag_does_not() {
+    for drag in [false, true] {
+        let mut run = State::F0.make(View::Full);
+        let y = run.plain_row().expect("plain output");
+        run.mouse(MouseEventKind::Down(MouseButton::Left), y);
+        if drag {
+            run.mouse(MouseEventKind::Drag(MouseButton::Left), y + 1);
+        }
+        let held = run.draw();
+        run.output(30);
+        let more = run.draw();
+        run.check("output while held");
+        check_moves(Moves::Same, &held, &more, None, "held");
+        run.mouse(MouseEventKind::Up(MouseButton::Left), y + usize::from(drag));
+        let after = run.draw();
+        run.check("released");
+        assert!(!run.reading(), "drag {drag}");
+        if drag {
+            assert!(!run.following() && run.marker().is_some(), "drag");
+            check_moves(Moves::Same, &more, &after, None, "the drag's release");
+            run.steps(MouseEventKind::ScrollDown, 40);
+            run.draw();
+            assert!(run.following());
+        } else {
+            assert!(run.following() && run.gap() == 0, "{}", after.join("\n"));
+        }
+    }
+}
+
+/// A held view the wheel takes to the end stays held, so output after it
+/// doesn't move the text under the pointer.
+#[test]
+fn a_held_view_at_the_end_stays_held() {
+    let mut run = State::HR.make(View::Full);
+    run.steps(MouseEventKind::ScrollDown, 40);
+    let at_end = run.draw();
+    run.check("at the end");
+    assert!(run.held() && !run.reading());
+    run.output(2);
+    let after = run.draw();
+    run.check("output");
+    check_moves(Moves::Same, &at_end, &after, None, "held at the end");
+}
+
+/// A short transcript whose end got shorter, with rows held above the
+/// screen. A scroll up that brings them down moves lines, so it reads, the
+/// same in one frame or several.
+#[test]
+fn a_scroll_up_that_moves_a_line_reads_however_its_steps_fall() {
+    let make = || {
+        let mut run = Run::bare(|run| {
+            run.output(12);
+            run.output(10);
+        });
+        assert!(run.following());
+        let text: Vec<String> = (0..10).map(|_| run.s.words(3)).collect();
+        let mut item = run.s.item(Kind::Output, &text.join("\n"));
+        let id = run.s.add(item.clone());
+        run.draw();
+        item.text = text[0].clone();
+        item.id = id;
+        run.app().update(Update::Change(item), Activity::default);
+        run.draw();
+        assert!(run.following() && run.gap() > 0);
+        run
+    };
+    let mut one = make();
+    let before = one.rows.clone();
+    one.steps(MouseEventKind::ScrollUp, 1);
+    let after = one.draw();
+    one.check("one step");
+    let deltas = moved(&before, &after);
+    assert!(
+        deltas.iter().any(|d| *d > 0),
+        "the step moved lines\n{}",
+        after.join("\n")
+    );
+    assert!(one.reading() && !one.following());
+    // Six steps in one frame, and in six.
+    let mut together = make();
+    together.steps(MouseEventKind::ScrollUp, 6);
+    together.draw();
+    let mut apart = make();
+    for _ in 0..6 {
+        apart.steps(MouseEventKind::ScrollUp, 1);
+        apart.draw();
+    }
+    assert_eq!(together.rows, apart.rows);
+    assert_eq!(together.reading(), apart.reading());
+    assert_eq!(together.following(), apart.following());
+}
+
+/// In a transcript wholly on the screen from its first row, a scroll up
+/// and Home move nothing, and the view follows on.
+#[test]
+fn a_scroll_up_or_home_that_moves_nothing_changes_nothing() {
+    let mut run = Run::bare(|run| {
+        run.output(3);
+        run.output(2);
+    });
+    let before = run.rows.clone();
+    run.steps(MouseEventKind::ScrollUp, 1);
+    let after = run.draw();
+    run.check("step up");
+    assert!(run.following() && !run.reading());
+    check_moves(Moves::Same, &before, &after, None, "step up");
+    run.key(KeyCode::Home, KeyModifiers::NONE);
+    let after = run.draw();
+    run.check("Home");
+    assert!(run.following() && !run.reading());
+    check_moves(Moves::Same, &before, &after, None, "Home");
+}
+
+/// Output in the frame where following stops counts as new.
+#[test]
+fn output_in_the_frame_following_stops_counts() {
+    let mut run = State::F0.make(View::Full);
+    run.steps(MouseEventKind::ScrollUp, 1);
+    run.output(5);
+    run.draw();
+    run.check("step up and output");
+    // (Output stacks under output.)
+    assert_eq!(run.new_lines(), Some(5));
+}
+
+/// The marker counts the new rows below the last row. The ones the reader
+/// saw fill blank rows aren't, and a step down that shows the rest follows.
+#[test]
+fn the_marker_counts_only_rows_below_the_screen() {
+    let mut run = State::Rv.make(View::Full);
+    run.output(7);
+    run.draw();
+    run.check("output");
+    // (Seven rows, six of them in the blank rows.)
+    assert_eq!(run.new_lines(), Some(1));
+    run.steps(MouseEventKind::ScrollDown, 1);
+    run.draw();
+    run.check("step down");
+    assert!(run.following() && run.marker().is_none());
+}
+
+/// Ctrl+O three times comes back to the block the reader left, and the
+/// marker counts what came across the views.
+#[test]
+fn the_way_back_through_the_views_keeps_the_place_and_the_count() {
+    let mut run = State::Rh.make(View::Full);
+    run.reply(3);
+    let before = run.draw();
+    let count = run.new_lines();
+    assert!(count.is_some_and(|n| n > 0), "{count:?}");
+    for _ in 0..3 {
+        run.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        run.draw();
+        run.check("another view");
+        assert!(run.reading());
+    }
+    assert_eq!(run.rows, before);
+    assert_eq!(run.new_lines(), count);
+}
+
+/// The wheel over an overlay other than the help moves nothing behind it.
+#[test]
+fn the_wheel_over_an_overlay_moves_nothing_behind_it() {
+    let mut run = State::F0.make(View::Full);
+    let before = run.rows.clone();
+    run.app().overlay = Some(crate::tui::overlay::Overlay::Settings {
+        row: 0,
+        picker: None,
+    });
+    run.steps(MouseEventKind::ScrollUp, 3);
+    run.draw();
+    run.app().overlay = None;
+    let after = run.draw();
+    assert!(run.following());
+    check_moves(
+        Moves::Same,
+        &before,
+        &after,
+        None,
+        "the wheel over the settings",
+    );
+}
+
+/// Ctrl+G far up starts on the last row that opens on the screen, so
+/// nothing moves, though one that opens comes below.
+#[test]
+fn ctrl_g_starts_on_the_screen() {
+    let mut run = Run::new(View::Full);
+    run.command(2);
+    run.output(6);
+    run.draw();
+    for _ in 0..4 {
+        run.steps(MouseEventKind::ScrollUp, 1);
+        run.draw();
+    }
+    assert!(run.fold_row().is_some(), "{}", run.rows.join("\n"));
+    let before = run.rows.clone();
+    run.key(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    let after = run.draw();
+    check_moves(Moves::Same, &before, &after, None, "Ctrl+G");
+}
+
+/// Back from a worker's view, the main view is as the reader left it.
+#[test]
+fn back_from_a_worker_the_main_view_is_as_the_reader_left_it() {
+    let mut run = State::Rh.make(View::Full);
+    let before = run.rows.clone();
+    let marker = run.marker();
+    run.app().watch(Some("r1".into()));
+    run.draw();
+    run.key(KeyCode::Esc, KeyModifiers::NONE);
+    let after = run.draw();
+    run.check("back");
+    assert!(run.reading());
+    assert_eq!(after, before);
+    assert_eq!(run.marker(), marker);
+}
+
+/// A slash command leaves the view as it is.
+#[test]
+fn a_slash_command_leaves_the_view_as_it_is() {
+    let mut run = State::Rv.make(View::Full);
+    for c in "/workers".chars() {
+        run.key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    run.key(KeyCode::Enter, KeyModifiers::NONE);
+    run.draw();
+    assert!(run.reading());
+}
+
+/// In one frame, the last input that chooses wins. End and Esc drop a
+/// scroll before them, a scroll after Esc reads, and a fold toggled drops
+/// the frame's scroll.
+#[test]
+fn the_last_input_of_a_frame_wins() {
+    let mut run = State::F0.make(View::Full);
+    let before = run.rows.clone();
+    run.steps(MouseEventKind::ScrollUp, 1);
+    run.key(KeyCode::Esc, KeyModifiers::NONE);
+    let after = run.draw();
+    run.check("step up, Esc");
+    assert!(run.following());
+    check_moves(Moves::Same, &before, &after, None, "step up, Esc");
+    let mut run = State::F0.make(View::Full);
+    let before = run.rows.clone();
+    run.key(KeyCode::Esc, KeyModifiers::NONE);
+    run.steps(MouseEventKind::ScrollUp, 1);
+    let after = run.draw();
+    run.check("Esc, step up");
+    assert!(run.reading());
+    check_moves(Moves::Down(3), &before, &after, None, "Esc, step up");
+    let mut run = State::F0.make(View::Full);
+    let y = run.fold_row().expect("the command");
+    run.steps(MouseEventKind::ScrollUp, 1);
+    run.click(y);
+    let after = run.draw();
+    run.check("step up, fold");
+    assert!(!run.reading());
+    assert!(after[y].contains(&run.fold));
+}
+
+/// Two inputs in one frame: a press and its release, the wheel and a
+/// press, a release and a taller screen, a fold and output.
+#[test]
+fn two_inputs_in_one_frame() {
+    let mut run = State::F0.make(View::Full);
+    let before = run.rows.clone();
+    let y = run.plain_row().unwrap();
+    run.click(y);
+    let after = run.draw();
+    run.check("press and release");
+    assert!(run.following());
+    check_moves(Moves::Same, &before, &after, None, "press and release");
+
+    let mut run = State::F0.make(View::Full);
+    let before = run.rows.clone();
+    run.steps(MouseEventKind::ScrollUp, 1);
+    run.mouse(MouseEventKind::Down(MouseButton::Left), 5);
+    let after = run.draw();
+    run.check("wheel and press");
+    assert!(run.reading() && run.held());
+    check_moves(Moves::Down(3), &before, &after, None, "wheel and press");
+
+    let mut run = State::HR.make(View::Full);
+    let before = run.rows.clone();
+    let y = run.plain_row().unwrap();
+    run.mouse(MouseEventKind::Up(MouseButton::Left), y);
+    let size = run.term.size();
+    run.term.resize(size.width, size.height + 3);
+    let after = run.draw();
+    run.check("release and taller");
+    assert!(run.reading() && !run.held());
+    check_moves(Moves::Same, &before, &after, None, "release and taller");
+
+    let mut run = State::F0.make(View::Full);
+    let y = run.fold_row().unwrap();
+    run.click(y);
+    run.output(3);
+    let after = run.draw();
+    run.check("fold and output");
+    assert!(after[y].contains(&run.fold));
+}
+
+/// A reader at random through the app. Every frame, the view follows
+/// exactly when the reader chose to, nothing holds it and the end shows,
+/// and the marker shows exactly when it doesn't follow and the end is off
+/// the screen. A frame of a scroll down alone has no line lower than
+/// before, output alone changes no choice, and while reading or held it
+/// moves no line on the screen. The marker's count grows only with output.
+#[test]
+fn a_reader_at_random_through_the_app() {
+    let seeds: u64 = std::env::var("READER_SEEDS")
+        .ok()
+        .and_then(|seeds| seeds.parse().ok())
+        .unwrap_or(2);
+    for seed in 0..seeds {
+        let mut run = Run::new(if seed % 2 == 0 {
+            View::Full
+        } else {
+            View::Quiet
+        });
+        let mut rng = super::scroll_tests::Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        for step in 0..300 {
+            let before = run.rows.clone();
+            let reading = run.reading();
+            let new = run.new_lines();
+            let what = format!("seed {seed} step {step}");
+            let kind = rng.below(12);
+            let name = match kind {
+                0 => {
+                    run.steps(MouseEventKind::ScrollUp, 1 + rng.below(3) as usize);
+                    "up"
+                }
+                1 => {
+                    run.steps(MouseEventKind::ScrollDown, 1 + rng.below(8) as usize);
+                    "down"
+                }
+                2..=4 => {
+                    let lines = 1 + rng.below(6) as usize;
+                    run.output(lines);
+                    "output"
+                }
+                5 => {
+                    run.key(KeyCode::End, KeyModifiers::NONE);
+                    "End"
+                }
+                6 => {
+                    run.key(KeyCode::Esc, KeyModifiers::NONE);
+                    "Esc"
+                }
+                7 => {
+                    let y = rng.below(run.rows.len().max(1) as u64) as usize;
+                    run.click(y);
+                    "click"
+                }
+                8 => {
+                    let y = rng.below(run.rows.len().max(1) as u64) as usize;
+                    if run.held() {
+                        run.mouse(MouseEventKind::Up(MouseButton::Left), y);
+                    } else {
+                        run.mouse(MouseEventKind::Down(MouseButton::Left), y);
+                    }
+                    "press or release"
+                }
+                9 => {
+                    run.shorten_end(1 + rng.below(4) as usize);
+                    "shorter end"
+                }
+                10 => {
+                    run.key(KeyCode::PageUp, KeyModifiers::NONE);
+                    "PageUp"
+                }
+                _ => {
+                    run.app().focus_changed(false);
+                    run.app().focus_changed(true);
+                    "focus"
+                }
+            };
+            let after = run.draw();
+            let what = format!("{what} {name}");
+            run.check(&what);
+            match name {
+                "down" => check_moves(Moves::NotLower, &before, &after, None, &what),
+                "output" => {
+                    assert_eq!(run.reading(), reading, "{what}: output chose");
+                    if !run.following() {
+                        check_moves(Moves::Same, &before, &after, None, &what);
+                    }
+                    if let (Some(was), Some(now)) = (new, run.new_lines()) {
+                        assert!(now >= was, "{what}: the count fell from {was} to {now}");
+                    }
+                }
+                "focus" => assert_eq!(run.reading(), reading, "{what}: focus chose"),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Reading with blank rows below the end in sight, a scroll down moves
+/// nothing and follows.
+#[test]
+fn a_scroll_down_from_reading_with_the_end_in_sight_moves_nothing() {
+    for input in [
+        Input::Down(1),
+        Input::Down(40),
+        Input::ShiftDown,
+        Input::PageDown,
+    ] {
+        let mut run = State::Rv.make(View::Full);
+        let before = run.rows.clone();
+        input.act(&mut run);
+        let after = run.draw();
+        run.check(&format!("{input:?}"));
+        assert!(run.following() && !run.reading(), "{input:?}");
+        check_moves(Moves::Same, &before, &after, None, &format!("{input:?}"));
+    }
+}
+
+/// A panel below the transcript opens and closes, and every line is back
+/// on its row, with 0 to 6 blank rows below the end, and with a click or a
+/// fold between. A taller window adds blank rows.
+#[test]
+fn a_panel_that_opens_and_closes_gives_every_line_back_its_row() {
+    use crate::approvals::{Approval, ApprovalRequest, SkillApproval};
+    use crate::remote::{Reading, WorkerState, WorkerSummary};
+    type Toggle = fn(&mut Run, bool);
+    let panels: [(&str, Toggle); 5] = [
+        ("the command menu", |run, open| {
+            run.key(
+                if open {
+                    KeyCode::Char('/')
+                } else {
+                    KeyCode::Backspace
+                },
+                KeyModifiers::NONE,
+            );
+        }),
+        ("the input box", |run, open| {
+            if open {
+                run.key(KeyCode::Char('a'), KeyModifiers::NONE);
+                for _ in 0..3 {
+                    run.key(KeyCode::Enter, KeyModifiers::SHIFT);
+                }
+            } else {
+                for _ in 0..4 {
+                    run.key(KeyCode::Backspace, KeyModifiers::NONE);
+                }
+            }
+        }),
+        ("the approval tray", |run, open| {
+            let approvals = if open {
+                vec![ApprovalRequest {
+                    id: "a1".into(),
+                    batch: 1,
+                    approval: Approval::Skill(SkillApproval {
+                        name: "release-notes".into(),
+                        ..SkillApproval::default()
+                    }),
+                }]
+            } else {
+                Vec::new()
+            };
+            run.app().set_reading(Reading {
+                approvals,
+                ..Reading::default()
+            });
+        }),
+        ("the question chip", |run, open| {
+            let reading = if open {
+                super::app::tests::asking()
+            } else {
+                Reading::default()
+            };
+            run.app().set_reading(reading);
+        }),
+        ("the agent list", |run, open| {
+            let mut worker = WorkerSummary::new("r1");
+            if !open {
+                worker.state = WorkerState::Finished;
+                worker.ended_at = Some(0);
+            }
+            run.app().update(Update::Worker(worker), Activity::default);
+        }),
+    ];
+    for (name, toggle) in panels {
+        for blank in [0, 1, 2, 3, 6] {
+            for between in ["nothing", "a click", "a fold"] {
+                let what = format!("{name}, {blank} blank rows, {between}");
+                let mut run = State::F0.make(View::Full);
+                if blank > 0 {
+                    run.shorten_end(blank);
+                }
+                let before = run.rows.clone();
+                let gap = run.gap();
+                toggle(&mut run, true);
+                run.draw();
+                run.check(&format!("{what}, open"));
+                match between {
+                    "a click" => {
+                        if let Some(y) = run.plain_row() {
+                            run.click(y);
+                            run.draw();
+                        }
+                    }
+                    "a fold" => {
+                        if let Some(y) = run.fold_row() {
+                            run.click(y);
+                            run.draw();
+                            run.click(y);
+                            run.draw();
+                        }
+                    }
+                    _ => {}
+                }
+                toggle(&mut run, false);
+                let after = run.draw();
+                run.check(&format!("{what}, closed"));
+                assert!(run.following(), "{what}");
+                check_moves(Moves::Same, &before, &after, None, &what);
+                assert_eq!(run.gap(), gap, "{what}: blank rows");
+            }
+        }
+    }
+    let mut run = State::F0.make(View::Full);
+    let before = run.rows.clone();
+    let size = run.term.size();
+    run.term.resize(size.width, size.height + 5);
+    let after = run.draw();
+    assert!(run.following());
+    check_moves(Moves::Same, &before, &after, None, "a taller window");
+    assert_eq!(run.gap(), 5, "a taller window's rows are blank");
 }

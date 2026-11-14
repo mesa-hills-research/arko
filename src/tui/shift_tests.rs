@@ -8,8 +8,9 @@
 //! Scrolled up, no line moves. Two moves are allowed. The reader's own click
 //! on a fold moves the lines above it one row, as the blank row above the
 //! fold comes or goes. "Working…" and the notes waiting at the end go down
-//! into the blank rows below the end as what comes above them takes those
-//! rows.
+//! as what comes above them takes their rows, into the blank rows below the
+//! end, and while the reader reads on past the bottom row, and up as what
+//! stood above them goes.
 //!
 //! `SHIFT_METER_SEEDS` plays that many sessions at more sizes, and
 //! `SHIFT_METER_OUT` names a file for the tables of every step and view.
@@ -455,9 +456,8 @@ struct Moved {
     line: Option<(String, usize, usize)>,
     /// The highest line both frames show moved down too, so every line did.
     all: bool,
-    /// The most rows "Working…" or a note waiting at the end went down
-    /// while the reader followed, as what came above them took the blank
-    /// rows below the end.
+    /// The most rows "Working…" or a note waiting at the end went down, as
+    /// what came above them took their rows, or while the reader reads, up.
     room: u32,
 }
 
@@ -487,7 +487,10 @@ fn moves(
         } else {
             0
         };
-        if following && to > from && to >= end {
+        // ("Working…" and the notes waiting go down as what comes above them
+        // takes their rows, and while the reader reads, up as what stood
+        // above them goes.)
+        if to >= end && (to > from || !following) {
             moved.room = moved.room.max(rows);
             continue;
         }
@@ -1335,7 +1338,7 @@ fn no_line_moves_down_as_an_agent_works() {
         meter.cause_table()
     );
     let table = format!(
-        "{table}\nThe moves the test allows. The reader's toggle moves the lines above the fold a row, as the blank row above it comes or goes. \"Working…\" and a note waiting at the end go down into the blank rows below the end as what comes above them takes those rows. Each cell is frames · the most rows / all rows.\n\n{}",
+        "{table}\nThe moves the test allows. The reader's toggle moves the lines above the fold a row, as the blank row above it comes or goes. \"Working…\" and a note waiting at the end go down as what comes above them takes their rows, into the blank rows below the end, and while the reader reads on past the bottom row, and up as what stood above them goes. Each cell is frames · the most rows / all rows.\n\n{}",
         meter.allowed_table()
     );
     if let Ok(path) = std::env::var("SHIFT_METER_OUT") {
