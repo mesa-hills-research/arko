@@ -42,6 +42,8 @@ mod prefs;
 mod questions;
 #[cfg(test)]
 mod recorder_tests;
+#[cfg(all(test, target_os = "linux"))]
+mod redraw_tests;
 mod resume_picker;
 mod screen;
 #[cfg(test)]
