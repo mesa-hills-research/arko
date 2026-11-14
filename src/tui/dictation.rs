@@ -92,7 +92,7 @@ impl App {
             downloaded: (false, false),
         });
         self.effects_push(Effect::Dictate(Dictate::Open { download }));
-        if dictation::over_ssh() {
+        if self.over_ssh {
             self.say(dictation::OVER_SSH);
         }
     }

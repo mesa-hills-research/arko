@@ -93,6 +93,16 @@ fn words_go_in_at_the_cursor_and_tentative_ones_show_dimmed_after_it() {
     assert_eq!(app.editor.text(), "Fix this: Hello");
 }
 
+/// Over SSH, a recording says whose microphone it records from.
+#[test]
+fn over_ssh_a_recording_says_whose_microphone_it_uses() {
+    let mut app = app();
+    app.over_ssh = true;
+    ctrl_r(&mut app);
+    let status = screen(&mut app, 80, 8)[4].clone();
+    assert!(status.contains(dictation::OVER_SSH), "{status}");
+}
+
 #[test]
 fn the_status_line_says_listening_with_the_keys_that_stop_and_cancel() {
     let mut app = app();

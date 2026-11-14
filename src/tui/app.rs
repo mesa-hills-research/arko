@@ -459,6 +459,9 @@ pub struct App {
     openrouter_seen: u64,
     /// The recording `/dictate` or Ctrl+R started, until it ends.
     pub recording: Option<super::dictation::Recording>,
+    /// Arko runs in an SSH session, so a recording says whose microphone it
+    /// records from.
+    pub over_ssh: bool,
     /// The frame drawn last, which Ctrl+S saves.
     #[cfg(feature = "dbg-snapshot")]
     pub drawn_frame: super::dbg_snapshot::Drawn,
@@ -556,6 +559,7 @@ impl App {
             model_names: Default::default(),
             openrouter_seen: crate::openrouter::generation(),
             recording: None,
+            over_ssh: crate::dictation::over_ssh(),
             #[cfg(feature = "dbg-snapshot")]
             drawn_frame: super::dbg_snapshot::Drawn::default(),
         }
@@ -2987,13 +2991,16 @@ pub(super) mod tests {
             handover_at: 250_000,
             ..Info::default()
         };
-        App::new(
+        let mut app = App::new(
             Snapshot::default(),
             Editor::new(History::load(None)),
             info,
             Catalog::load(None),
             Depth::Rgb,
-        )
+        );
+        // Tests run the same over SSH, as on a build server.
+        app.over_ssh = false;
+        app
     }
 
     fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
