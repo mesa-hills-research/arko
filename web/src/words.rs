@@ -247,7 +247,7 @@ pub fn family_cost_words(summary: &WorkerData) -> String {
     }
 }
 
-/// A worker's notice label, its ID, and the worker that started it.
+/// A worker's notice label, with its ID and the worker that started it.
 pub fn notice_label(agent: &str, summary: Option<&WorkerData>) -> String {
     match summary.and_then(|summary| summary.parent.as_deref()) {
         Some(parent) => format!("{agent} (under {parent})"),
@@ -782,7 +782,7 @@ pub fn cache_title(left: f64, cache: &CacheData, until: &str) -> String {
     text
 }
 
-/// An image's caption, its label and its size ("chart.png · 12 KB"), as
+/// An image's caption, with its label and size ("chart.png · 12 KB"), as
 /// Studio says it. A label that already ends with the size says it once.
 /// `read_file` and Claude Code's `Read` label an image "path, 240 KB", and
 /// round anything under 1 KB up to "1 KB" where this says its bytes.

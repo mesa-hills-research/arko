@@ -67,7 +67,7 @@ of single lines under it.
 | Worker start | The task, muted (a worker started at once has the worker's line instead) |
 | Note | The note's text |
 | MCP call | The arguments, then the result |
-| Monitor, terminal | One muted line with what the words left out (the whole command, its settings) |
+| Monitor, terminal | One muted line with what the words left out (the whole command and its settings) |
 | Skill | The skill's text |
 | Any other tool | Its result, muted |
 
