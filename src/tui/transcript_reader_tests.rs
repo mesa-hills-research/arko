@@ -267,3 +267,24 @@ fn a_heading_wraps_again_as_its_time_grows() {
     let expected = screen(&mut fresh, &filter, 40, 5);
     assert_eq!(after, expected);
 }
+
+/// Every block has a row the reader can be on, also one with nothing to
+/// show (a message with no text, first, with no blank line before it).
+#[test]
+fn a_block_with_nothing_to_show_has_a_row() {
+    let mut t = Transcript::new();
+    let filter = Filter::Main(View::Full);
+    let theme = Theme::terminal();
+    t.apply(Update::Item(item(1, Kind::Message, "")));
+    t.apply(Update::Item(item(2, Kind::Text, "After it.")));
+    screen(&mut t, &filter, 40, 6);
+    let blocks = t.blocks(&filter, &theme, 40);
+    assert_eq!(blocks.len(), 2);
+    for block in &blocks {
+        assert!(
+            t.height(block, &theme, 40, false) > 0,
+            "block {} has no row",
+            block.key
+        );
+    }
+}

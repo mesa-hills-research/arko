@@ -1364,7 +1364,7 @@ impl Transcript {
             Cached {
                 width,
                 style,
-                lines: entry_lines(&entry.item, theme, width, own, look),
+                lines: some_line(entry_lines(&entry.item, theme, width, own, look)),
                 clock: face.clock.clone(),
                 open: face.open,
                 folds: face.folds,
@@ -1441,7 +1441,7 @@ impl Transcript {
                     .quiet_rows(block.key, row, &block.face, theme, width)
                     .lines,
             ),
-            _ => Cow::Owned(self.block_lines(block, theme, width)),
+            _ => Cow::Owned(some_line(self.block_lines(block, theme, width))),
         }
     }
 
@@ -1470,7 +1470,9 @@ impl Transcript {
                         .get_or_insert_with(|| body_marks(&cached.lines)),
                 )
             }
-            _ => Cow::Owned(body_marks(&self.block_lines(block, theme, width))),
+            _ => Cow::Owned(body_marks(&some_line(
+                self.block_lines(block, theme, width),
+            ))),
         }
     }
 
@@ -2920,6 +2922,15 @@ fn new_view() -> FeedView<u64> {
     let mut view = FeedView::new();
     view.feed_mut().set_gap_limit(GAP_LIMIT);
     view
+}
+
+/// `lines`, or a blank line in place of none, so every block has a row the
+/// reader can be on.
+fn some_line(mut lines: Vec<Wrapped>) -> Vec<Wrapped> {
+    if lines.is_empty() {
+        lines.push(Wrapped::line(Vec::new()));
+    }
+    lines
 }
 
 /// The blank row after a block. (Not text, so a copy leaves it out.)
