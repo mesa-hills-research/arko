@@ -276,16 +276,11 @@ fn is_count(key: u64) -> bool {
 }
 
 /// A turn's calls as the Messages view counts them, on one line where the
-/// first one came, or the thinking that led to it.
-#[derive(Debug, Default)]
+/// first one came, or the thinking that led to it ([`quiet::counts`]), and
+/// whether the reader opened it.
+#[derive(Debug)]
 struct Counted {
-    /// Its first call, by which it opens.
-    first: u64,
-    /// Where its line stands, the first call or the thinking before it.
-    from: u64,
-    calls: usize,
-    failed: usize,
-    running: usize,
+    count: quiet::Count,
     open: bool,
 }
 
@@ -1141,13 +1136,13 @@ impl Transcript {
             };
             let item = &self.entries[index].item;
             let opens = opened.contains(&index);
-            if let Some(count) = counts.get(&item.turn).filter(|count| count.from == item.id) {
+            if let Some(Counted { count, open }) = counts.get(&item.id) {
                 let gap = last.is_some_and(|(group, open)| open || group != Group::Activity);
                 let counter = Shown::Counter {
                     calls: count.calls,
                     failed: count.failed,
                     running: count.running,
-                    open: count.open,
+                    open: *open,
                 };
                 blocks.push(Block::other(COUNT_KEY | count.first, counter, gap));
                 last = Some((Group::Activity, false));
@@ -1502,7 +1497,7 @@ impl Transcript {
     fn quiet_placed(
         &self,
         filter: &Filter,
-        counts: &HashMap<Option<u64>, Counted>,
+        counts: &HashMap<u64, Counted>,
         opened: &HashSet<usize>,
     ) -> Vec<Placed> {
         let messages = filter.view() == View::Messages;
@@ -1513,9 +1508,7 @@ impl Transcript {
         for index in self.order() {
             let item = &self.entries[index].item;
             let opens = opened.contains(&index);
-            let first = counts
-                .get(&item.turn)
-                .is_some_and(|count| count.from == item.id);
+            let first = counts.contains_key(&item.id);
             let hidden = matches!(
                 self.shows(if opens { &as_quiet } else { filter }, item),
                 Show::Hidden
@@ -1590,51 +1583,50 @@ impl Transcript {
     }
 
     /// The turns' counts of calls in `filter`'s view when it's Messages, by
-    /// turn, and the entries that show as the Quiet view shows them because
-    /// their turn's count is open. A count's line stands at the turn's first
-    /// call, or at the thinking that led to it with nothing Messages shows
-    /// between them, and open it shows that and what came after it in the
-    /// turn, as Quiet does.
-    fn counted(&self, filter: &Filter) -> (HashMap<Option<u64>, Counted>, HashSet<usize>) {
-        let mut counts: HashMap<Option<u64>, Counted> = HashMap::new();
+    /// the item each one's line stands at ([`quiet::counts`]), and the
+    /// entries that show as the Quiet view shows them because their turn's
+    /// count is open. Open, a count shows its turn from its line on, as
+    /// Quiet does.
+    fn counted(&self, filter: &Filter) -> (HashMap<u64, Counted>, HashSet<usize>) {
         let mut opened = HashSet::new();
         if filter.view() != View::Messages {
-            return (counts, opened);
+            return (HashMap::new(), opened);
         }
         let order = self.order();
-        // The thinking since the last thing Messages showed.
-        let mut thought = None;
-        for index in &order {
+        let seen = order.iter().map(|index| {
             let item = &self.entries[*index].item;
             match self.shows(filter, item) {
-                Show::Count => {}
+                Show::Count => quiet::Seen::Call {
+                    id: item.id,
+                    turn: item.turn,
+                    status: item.status,
+                },
                 Show::Hidden if filter.owns(item) && item.kind == Kind::Thinking => {
-                    thought.get_or_insert(item.id);
-                    continue;
+                    quiet::Seen::Thinking {
+                        id: item.id,
+                        turn: item.turn,
+                    }
                 }
-                Show::Hidden => continue,
-                Show::Item | Show::Worker(_) => {
-                    thought = None;
-                    continue;
-                }
+                Show::Hidden => quiet::Seen::Hidden,
+                Show::Item | Show::Worker(_) => quiet::Seen::Shown,
             }
-            let from = thought.take().unwrap_or(item.id);
-            let count = counts.entry(item.turn).or_insert_with(|| Counted {
-                first: item.id,
-                from,
-                open: self.counts_open.contains(&item.id),
-                ..Counted::default()
-            });
-            count.calls += 1;
-            count.failed += usize::from(item.status == Some(CallStatus::Failed));
-            count.running += usize::from(item.status == Some(CallStatus::Running));
-        }
+        });
+        let counts: HashMap<u64, Counted> = quiet::counts(seen)
+            .into_iter()
+            .map(|count| {
+                let open = self.counts_open.contains(&count.first);
+                (count.at, Counted { count, open })
+            })
+            .collect();
+        // Where each open count's line stands, by its turn.
+        let open: HashMap<Option<u64>, u64> = counts
+            .values()
+            .filter(|counted| counted.open)
+            .map(|counted| (counted.count.turn, counted.count.at))
+            .collect();
         for index in order {
             let item = &self.entries[index].item;
-            let open = counts
-                .get(&item.turn)
-                .is_some_and(|count| count.open && item.id >= count.from);
-            if filter.owns(item) && open {
+            if filter.owns(item) && open.get(&item.turn).is_some_and(|at| item.id >= *at) {
                 opened.insert(index);
             }
         }
@@ -1673,7 +1665,7 @@ impl Transcript {
         if view == View::Messages {
             let (counts, _) = self.counted(&Filter::Main(view));
             self.counts_open
-                .extend(counts.values().map(|count| count.first));
+                .extend(counts.values().map(|counted| counted.count.first));
             self.generation += 1;
             return;
         }
@@ -7859,3 +7851,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "transcript_reader_tests.rs"]
+mod reader_tests;

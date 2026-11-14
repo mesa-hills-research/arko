@@ -265,34 +265,37 @@ pub fn layout_sealed(
     let ids: HashSet<u64> = items.iter().map(|item| item.id).collect();
     // A result whose call is gone shows where it came.
     let orphan = |item: &ItemData| item.call.is_some_and(|call| !ids.contains(&call));
-    // Where each turn's count stands (Messages), at its first call, or at
-    // the thinking that led to it with nothing Messages shows between them,
-    // so open it shows the turn's work from its first thought, with that
-    // first call, by which it's known.
-    let mut began: HashMap<u64, u64> = HashMap::new();
-    if view == View::Messages {
-        let mut turns = HashSet::new();
-        let mut thought = None;
-        for item in &items {
-            if item.agent != viewed || (placed.contains(&item.id) && !orphan(item)) {
-                continue;
-            }
-            match place(view, item) {
-                Place::Count => {
-                    if turns.insert(item.turn) {
-                        began.insert(thought.unwrap_or(item.id), item.id);
-                    }
-                    thought = None;
+    // Each turn's count (Messages), by the item its line stands at, as every
+    // client places it ([`quiet::counts`]).
+    let counts: HashMap<u64, quiet::Count> = if view == View::Messages {
+        let seen = items
+            .iter()
+            .filter(|item| !placed.contains(&item.id) || orphan(item))
+            .map(|item| {
+                if item.agent != viewed {
+                    return quiet::Seen::Shown;
                 }
-                Place::Row => thought = None,
-                Place::Hidden if item.kind == Kind::Thinking => {
-                    thought.get_or_insert(item.id);
+                match place(view, item) {
+                    Place::Count => quiet::Seen::Call {
+                        id: item.id,
+                        turn: item.turn,
+                        status: item.status,
+                    },
+                    Place::Row => quiet::Seen::Shown,
+                    Place::Hidden if item.kind == Kind::Thinking => quiet::Seen::Thinking {
+                        id: item.id,
+                        turn: item.turn,
+                    },
+                    Place::Hidden => quiet::Seen::Hidden,
                 }
-                Place::Hidden => {}
-            }
-        }
-    }
-    let mut counts: HashMap<Option<u64>, usize> = HashMap::new();
+            });
+        quiet::counts(seen)
+            .into_iter()
+            .map(|count| (count.at, count))
+            .collect()
+    } else {
+        HashMap::new()
+    };
     let mut opened: HashSet<Option<u64>> = HashSet::new();
     // Whether the turn so far has a row in this view. A turn Arko started
     // for news may end without a reply, and Messages leaves out its opening,
@@ -311,31 +314,25 @@ pub fn layout_sealed(
             rows.push(Row::Status(item.id));
             continue;
         }
-        if let Some(&first) = began.get(&item.id) {
+        if let Some(count) = counts.get(&item.id) {
             turn_shown = true;
+            let number = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
             rows.push(Row::Count {
-                turn: item.turn,
-                id: first,
-                count: Count::default(),
+                turn: count.turn,
+                id: count.first,
+                count: Count {
+                    calls: number(count.calls),
+                    failed: number(count.failed),
+                    running: number(count.running),
+                },
             });
-            counts.insert(item.turn, rows.len() - 1);
-            if counts_open.contains(&first) {
-                opened.insert(item.turn);
+            if counts_open.contains(&count.first) {
+                opened.insert(count.turn);
             }
         }
         let place = place(view, item);
-        if let Place::Count = place
-            && let Some(&at) = counts.get(&item.turn)
-        {
+        if let Place::Count = place {
             turn_shown = true;
-            if let Row::Count { count, .. } = &mut rows[at] {
-                count.calls += 1;
-                match item.status {
-                    Some(CallStatus::Failed) => count.failed += 1,
-                    Some(CallStatus::Running) => count.running += 1,
-                    _ => {}
-                }
-            }
         }
         let place = if opened.contains(&item.turn) {
             self::place(View::Quiet, item)
@@ -1088,6 +1085,30 @@ mod tests {
         assert_eq!(ids(&laid(&[])), ["i1", "c1:3", "i4"]);
         // (A call without an act shows as it is.)
         assert_eq!(ids(&laid(&[3])), ["i1", "c1:3", "i2", "i3", "i4"]);
+    }
+
+    /// A turn that starts with nothing Messages shows (one for news) and
+    /// calls at once has its count after a turn that ended in a thought,
+    /// which leads to no call of another turn.
+    #[test]
+    fn a_count_shows_after_a_thought_of_the_turn_before() {
+        let mut call = item(3, Kind::Call, MAIN, "ls");
+        call.status = Some(CallStatus::Ok);
+        call.turn = Some(2);
+        let items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            item(2, Kind::Thinking, MAIN, "Where to start?"),
+            call,
+        ];
+        let messages = layout(&items, View::Messages, None);
+        assert_eq!(ids(&messages), ["i1", "c2:3"]);
+        assert!(matches!(
+            messages[1],
+            Row::Count {
+                count: Count { calls: 1, .. },
+                ..
+            }
+        ));
     }
 
     /// A thought folds to its first line, without bold marks, which says

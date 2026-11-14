@@ -187,6 +187,79 @@ pub fn doing(act: &Act) -> String {
     phrases(&member).doing
 }
 
+/// An item as the Messages view reads it for its turns' counts of calls
+/// ([`counts`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seen {
+    /// One of the agent's calls, which Messages counts on its turn's line.
+    Call {
+        id: u64,
+        turn: Option<u64>,
+        status: Option<CallStatus>,
+    },
+    /// The agent's thinking, which Messages leaves out.
+    Thinking { id: u64, turn: Option<u64> },
+    /// Anything Messages shows.
+    Shown,
+    /// Anything else it leaves out.
+    Hidden,
+}
+
+/// A turn's calls, which the Messages view counts on one line.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Count {
+    pub turn: Option<u64>,
+    /// Its first call, by which it opens.
+    pub first: u64,
+    /// The item its line stands at, the first call or the thinking of the
+    /// same turn that led to it with nothing Messages shows between them.
+    /// Open, the count shows the turn's work from there.
+    pub at: u64,
+    pub calls: usize,
+    pub failed: usize,
+    pub running: usize,
+}
+
+/// Each turn's count of calls in the Messages view, in order, from what the
+/// view makes of each item in the order shown. A thought leads only to a
+/// call of its own turn, so a turn that starts with nothing Messages shows
+/// (one Arko starts for news) still has its line after a turn that ended in
+/// a thought. Every client places the counts by it, so they agree.
+pub fn counts(seen: impl IntoIterator<Item = Seen>) -> Vec<Count> {
+    let mut counts: Vec<Count> = Vec::new();
+    let mut by_turn: HashMap<Option<u64>, usize> = HashMap::new();
+    // The first thought since the last thing shown, and its turn.
+    let mut thought: Option<(u64, Option<u64>)> = None;
+    for seen in seen {
+        match seen {
+            Seen::Call { id, turn, status } => {
+                let led = thought.take().filter(|(_, of)| *of == turn);
+                let at = *by_turn.entry(turn).or_insert_with(|| {
+                    counts.push(Count {
+                        turn,
+                        first: id,
+                        at: led.map_or(id, |(thought, _)| thought),
+                        ..Count::default()
+                    });
+                    counts.len() - 1
+                });
+                let count = &mut counts[at];
+                count.calls += 1;
+                count.failed += usize::from(status == Some(CallStatus::Failed));
+                count.running += usize::from(status == Some(CallStatus::Running));
+            }
+            Seen::Thinking { id, turn } => {
+                if thought.is_none_or(|(_, of)| of != turn) {
+                    thought = Some((id, turn));
+                }
+            }
+            Seen::Shown => thought = None,
+            Seen::Hidden => {}
+        }
+    }
+    counts
+}
+
 /// A call of a row.
 #[derive(Debug, Clone)]
 struct Member<'a> {
@@ -1613,6 +1686,69 @@ mod tests {
         assert_eq!(
             WorkerRow::of(Kind::Reply, None, None, None, "r1"),
             Some(WorkerRow::Reported)
+        );
+    }
+
+    /// A turn's count stands at the thought of its turn that led to its
+    /// first call with nothing shown between, else at that call.
+    #[test]
+    fn a_turns_count_stands_at_a_thought_of_its_own_turn() {
+        let call = |id, turn, status| Seen::Call {
+            id,
+            turn: Some(turn),
+            status: Some(status),
+        };
+        let thought = |id, turn| Seen::Thinking {
+            id,
+            turn: Some(turn),
+        };
+        let places = |seen: Vec<Seen>| -> Vec<(Option<u64>, u64, u64, usize)> {
+            counts(seen)
+                .into_iter()
+                .map(|count| (count.turn, count.first, count.at, count.calls))
+                .collect()
+        };
+        // A turn that ended in a thought, and one for news that calls at once.
+        assert_eq!(
+            places(vec![
+                Seen::Shown,
+                thought(2, 1),
+                Seen::Hidden,
+                call(4, 2, CallStatus::Ok)
+            ]),
+            vec![(Some(2), 4, 4, 1)]
+        );
+        // The first thought of the turn since the last thing shown leads.
+        assert_eq!(
+            places(vec![
+                thought(1, 1),
+                thought(2, 2),
+                Seen::Hidden,
+                thought(4, 2),
+                call(5, 2, CallStatus::Ok),
+                Seen::Shown,
+                thought(7, 2),
+                call(8, 2, CallStatus::Failed),
+            ]),
+            vec![(Some(2), 5, 2, 2)]
+        );
+        // Something shown between them ends the thought's lead.
+        assert_eq!(
+            places(vec![
+                thought(1, 1),
+                Seen::Shown,
+                call(3, 1, CallStatus::Running)
+            ]),
+            vec![(Some(1), 3, 3, 1)]
+        );
+        let tally = counts(vec![
+            call(1, 1, CallStatus::Failed),
+            call(2, 1, CallStatus::Running),
+            call(3, 1, CallStatus::Ok),
+        ]);
+        assert_eq!(
+            (tally[0].calls, tally[0].failed, tally[0].running),
+            (3, 1, 1)
         );
     }
 
