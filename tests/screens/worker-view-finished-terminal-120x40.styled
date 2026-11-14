@@ -1,0 +1,76 @@
+size 120 40
+cursor 3 33 visible default
+text 0 "  r2 Read the lexer · finished · 48s"
+style 0 2 5 bold
+style 0 19 22 dim
+style 0 22 30 fg=green
+style 0 30 36 dim
+text 1 ""
+text 2 "  The lexer splits on spaces only. Quotes are the parser's job."
+text 3 ""
+text 4 ""
+text 5 ""
+text 6 ""
+text 7 ""
+text 8 ""
+text 9 ""
+text 10 ""
+text 11 ""
+text 12 ""
+text 13 ""
+text 14 ""
+text 15 ""
+text 16 ""
+text 17 ""
+text 18 ""
+text 19 ""
+text 20 ""
+text 21 ""
+text 22 ""
+text 23 ""
+text 24 ""
+text 25 ""
+text 26 ""
+text 27 ""
+text 28 ""
+text 29 ""
+text 30 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 30 0 120 dim
+text 31 " viewing r2 · finished 48s                                                                                    Esc  back"
+style 31 1 11 fg=cyan bold
+style 31 11 14 dim
+style 31 14 22 fg=green
+style 31 22 26 dim
+style 31 109 114 reverse
+style 31 114 119 dim
+text 32 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 32 0 120 dim
+text 33 " › Message r2"
+style 33 1 3 fg=cyan
+style 33 3 13 dim
+text 34 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 34 0 120 dim
+text 35 " ○ main                                                                                                       2 running"
+style 35 1 3 dim
+style 35 110 120 dim
+text 36 " ○ r1    cargo test --test quoting                                                        running  ·  1m · 6 tool calls"
+style 36 1 3 dim
+style 36 7 34 dim
+style 36 90 98 fg=cyan
+style 36 98 120 dim
+text 37 " ○   r4  cargo test                                                                       running  · 20s · 4 tool calls"
+style 37 1 3 dim
+style 37 7 19 dim
+style 37 90 98 fg=cyan
+style 37 98 120 dim
+text 38 " ● r2    astra high  Read the lexer                                                       finished · 48s · 5 tool calls"
+style 38 1 3 fg=green
+style 38 3 7 bold
+style 38 7 35 dim
+style 38 90 98 fg=green
+style 38 98 120 dim
+text 39 " ● r3    Update the docs                                                                  failed   ·  9s · 3 tool calls"
+style 39 1 3 fg=red
+style 39 7 24 dim
+style 39 90 98 fg=red
+style 39 98 120 dim

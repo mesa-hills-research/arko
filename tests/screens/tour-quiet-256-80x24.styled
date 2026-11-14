@@ -1,0 +1,88 @@
+size 80 24
+cursor 3 22 visible default
+text 0 "  │ Session    20261110-101010-abcd                                          │"
+style 0 0 2 fg=idx:253 bg=idx:233
+style 0 2 4 fg=idx:236 bg=idx:233
+style 0 4 15 fg=idx:247 bg=idx:233
+style 0 15 76 fg=idx:253 bg=idx:233
+style 0 76 78 fg=idx:236 bg=idx:233
+style 0 78 80 fg=idx:253 bg=idx:233
+text 1 "  │ Project    AGENTS.md                                                     │"
+style 1 0 2 fg=idx:253 bg=idx:233
+style 1 2 4 fg=idx:236 bg=idx:233
+style 1 4 15 fg=idx:247 bg=idx:233
+style 1 15 76 fg=idx:253 bg=idx:233
+style 1 76 78 fg=idx:236 bg=idx:233
+style 1 78 80 fg=idx:253 bg=idx:233
+text 2 "  │ Tools      2 skills · 1 MCP server                                       │"
+style 2 0 2 fg=idx:253 bg=idx:233
+style 2 2 4 fg=idx:236 bg=idx:233
+style 2 4 15 fg=idx:247 bg=idx:233
+style 2 15 76 fg=idx:253 bg=idx:233
+style 2 76 78 fg=idx:236 bg=idx:233
+style 2 78 80 fg=idx:253 bg=idx:233
+text 3 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 3 0 2 fg=idx:253 bg=idx:233
+style 3 2 78 fg=idx:236 bg=idx:233
+style 3 78 80 fg=idx:253 bg=idx:233
+text 4 ""
+style 4 0 80 fg=idx:253 bg=idx:233
+text 5 "▎ Fix the parser's failing tests"
+style 5 0 2 fg=idx:75 bg=idx:234
+style 5 2 80 fg=idx:253 bg=idx:234
+text 6 ""
+style 6 0 80 fg=idx:253 bg=idx:233
+text 7 "  Planning the fix …"
+style 7 0 2 fg=idx:253 bg=idx:233
+style 7 2 20 fg=idx:247 bg=idx:233 italic
+style 7 20 80 fg=idx:253 bg=idx:233
+text 8 ""
+style 8 0 80 fg=idx:253 bg=idx:233
+text 9 "  I'll read the failing test and the parser first."
+style 9 0 80 fg=idx:253 bg=idx:233
+text 10 ""
+style 10 0 80 fg=idx:253 bg=idx:233
+text 11 "▸ Read parser.rs and made 1 edit"
+style 11 0 2 fg=idx:247 bg=idx:233
+style 11 2 80 fg=idx:253 bg=idx:233
+text 12 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                             ✗"
+style 12 0 2 fg=idx:247 bg=idx:233
+style 12 2 29 fg=idx:253 bg=idx:233
+style 12 29 50 fg=idx:247 bg=idx:233
+style 12 50 79 fg=idx:253 bg=idx:233
+style 12 79 80 fg=idx:203 bg=idx:233
+text 13 "! retrying in 2 s"
+style 13 0 17 fg=idx:220 bg=idx:233
+style 13 17 80 fg=idx:253 bg=idx:233
+text 14 ""
+style 14 0 80 fg=idx:253 bg=idx:233
+text 15 "  The parser skipped the blank line at the end of a file. I changed the loop,"
+style 15 0 80 fg=idx:253 bg=idx:233
+text 16 "  and now I run the tests again."
+style 16 0 80 fg=idx:253 bg=idx:233
+text 17 ""
+style 17 0 80 fg=idx:253 bg=idx:233
+text 18 "· Running cargo test · 41s …"
+style 18 0 2 fg=idx:247 bg=idx:233
+style 18 2 20 fg=idx:253 bg=idx:233
+style 18 20 28 fg=idx:247 bg=idx:233
+style 18 28 80 fg=idx:253 bg=idx:233
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 fg=idx:236 bg=idx:233
+text 20 " ● working 1m00s · 142k/250k · main: $3.20 · quiet                 Ctrl+C  stop"
+style 20 0 1 fg=idx:253 bg=idx:233
+style 20 1 10 fg=idx:75 bg=idx:233
+style 20 10 50 fg=idx:247 bg=idx:233
+style 20 50 66 fg=idx:253 bg=idx:233
+style 20 66 74 fg=idx:253 bg=idx:235
+style 20 74 79 fg=idx:247 bg=idx:233
+style 20 79 80 fg=idx:253 bg=idx:233
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 fg=idx:236 bg=idx:233
+text 22 " › Add to the task"
+style 22 0 1 fg=idx:253 bg=idx:233
+style 22 1 3 fg=idx:75 bg=idx:233
+style 22 3 18 fg=idx:247 bg=idx:233
+style 22 18 80 fg=idx:253 bg=idx:233
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 fg=idx:236 bg=idx:233

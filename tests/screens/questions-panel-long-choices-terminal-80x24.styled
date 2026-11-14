@@ -1,0 +1,87 @@
+size 80 24
+cursor 6 16 visible default
+text 0 "  │ Project    AGENTS.md                                                     │"
+style 0 2 15 dim
+style 0 76 78 dim
+text 1 "  │ Tools      2 skills · 1 MCP server                                       │"
+style 1 2 15 dim
+style 1 76 78 dim
+text 2 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 2 2 78 dim
+text 3 ""
+text 4 "? Arko asked 3 questions"
+style 4 0 2 fg=cyan
+style 4 2 24 dim
+text 5 ""
+text 6 "? Arko asked a question"
+style 6 0 2 fg=cyan
+style 6 2 23 dim
+text 7 "┌ Question 3 of 4 ─────────────────────────────────────────────────────────────┐"
+style 7 0 1 fg=cyan
+style 7 1 18 fg=cyan bold
+style 7 18 80 fg=cyan
+text 8 "│ How should I update the configuration?                                       │"
+style 8 0 1 fg=cyan
+style 8 2 40 bold
+style 8 79 80 fg=cyan
+text 9 "│                                                                              │"
+style 9 0 1 fg=cyan
+style 9 79 80 fg=cyan
+text 10 "│   1 Keep the current configuration and preserve all existing comments and    │"
+style 10 0 1 fg=cyan
+style 10 4 6 dim
+style 10 79 80 fg=cyan
+text 11 "│     ordering                                                                 │"
+style 11 0 1 fg=cyan
+style 11 79 80 fg=cyan
+text 12 "│   2 Write a separate example and let each project choose when to migrate     │"
+style 12 0 1 fg=cyan
+style 12 4 6 dim
+style 12 79 80 fg=cyan
+text 13 "│   3 Migrate automatically after making a backup of the original              │"
+style 13 0 1 fg=cyan
+style 13 4 6 dim
+style 13 79 80 fg=cyan
+text 14 "│     configuration                                                            │"
+style 14 0 1 fg=cyan
+style 14 79 80 fg=cyan
+text 15 "│   4 You decide (Spaces)                                                      │"
+style 15 0 1 fg=cyan
+style 15 4 6 dim
+style 15 16 25 dim
+style 15 79 80 fg=cyan
+text 16 "│   › Type your own answer                                                     │"
+style 16 0 1 fg=cyan
+style 16 4 6 fg=cyan
+style 16 6 26 dim
+style 16 79 80 fg=cyan
+text 17 "│                                                                              │"
+style 17 0 1 fg=cyan
+style 17 79 80 fg=cyan
+text 18 "└───────── 1-4  pick   ↑↓  choose   Enter  next   Shift+Tab  back   Esc  chat ─┘"
+style 18 0 10 fg=cyan
+style 18 10 15 fg=cyan reverse
+style 18 15 20 dim
+style 18 20 22 fg=cyan
+style 18 22 26 fg=cyan reverse
+style 18 26 33 dim
+style 18 33 35 fg=cyan
+style 18 35 42 fg=cyan reverse
+style 18 42 47 dim
+style 18 47 49 fg=cyan
+style 18 49 60 fg=cyan reverse
+style 18 60 65 dim
+style 18 65 67 fg=cyan
+style 18 67 72 fg=cyan reverse
+style 18 72 77 dim
+style 18 77 80 fg=cyan
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 dim
+text 20 " ● asks you"
+style 20 1 11 fg=cyan
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 dim
+text 22 " › Answer the agent's question  / for commands"
+style 22 1 46 dim
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 dim

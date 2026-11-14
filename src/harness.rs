@@ -140,7 +140,7 @@ fn monitor_about(info: &arko_agents::terminal::MonitorInfo) -> String {
 /// full-screen view's margin, or 78 where there is no terminal.
 fn terminal_width() -> usize {
     #[cfg(feature = "tui")]
-    let columns = crossterm::terminal::size().map_or(80, |(columns, _)| usize::from(columns));
+    let columns = termelon::terminal_size().map_or(80, |size| usize::from(size.width));
     #[cfg(not(feature = "tui"))]
     let columns: usize = 80;
     columns.saturating_sub(2)

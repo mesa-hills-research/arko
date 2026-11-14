@@ -1,0 +1,87 @@
+size 120 40
+cursor 3 38 visible default
+text 0 "│  4      let mut tokens = Vec::new();"
+style 0 0 6 dim
+text 1 "│  5      for line in input.lines() {"
+style 1 0 6 dim
+text 2 "│  6          tokens.extend(split(line));"
+style 2 0 6 dim
+text 3 "│  7      }"
+style 3 0 6 dim
+text 4 "│  8      tokens"
+style 4 0 6 dim
+text 5 "│  9  use std::collections::HashMap;"
+style 5 0 6 dim
+text 6 "│ 10"
+style 6 0 6 dim
+text 7 "│ 11  /// Reads lines until the end of the input."
+style 7 0 6 dim
+text 8 "│ 12  pub fn parse(input: &str) -> Vec<Token> {"
+style 8 0 6 dim
+text 9 "│ 13      let mut tokens = Vec::new();"
+style 9 0 6 dim
+text 10 "│ 14      for line in input.lines() {"
+style 10 0 6 dim
+text 11 "│ 15          tokens.extend(split(line));"
+style 11 0 6 dim
+text 12 "│ 16      }"
+style 12 0 6 dim
+text 13 "│ … 38 more lines"
+style 13 0 17 dim
+text 14 ""
+text 15 "▾ edit src/parser.rs · ✓"
+style 15 0 2 dim
+style 15 20 23 dim
+style 15 23 24 fg=green
+text 16 "│ 41       let mut end = start;"
+style 16 0 7 dim
+text 17 "│ 42 -     while self.peek() != '\\n' {"
+style 17 0 2 dim
+style 17 2 38 fg=red
+text 18 "│ 42 +     while self.peek().is_some_and(|c| c != '\\n') {"
+style 18 0 2 dim
+style 18 2 57 fg=green
+text 19 "│ 43           end += 1;"
+style 19 0 7 dim
+text 20 ""
+text 21 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
+style 21 0 2 fg=red
+style 21 27 30 dim
+style 21 30 61 fg=red
+text 22 "│ running 4 tests"
+style 22 0 2 dim
+text 23 "│ test parser::tests::reads ... ok"
+style 23 0 2 dim
+text 24 "│ test parser::tests::skips_blank ... FAILED"
+style 24 0 2 dim
+text 25 "│ test parser::tests::quotes ... ok"
+style 25 0 2 dim
+text 26 "│ test parser::tests::empty ... ok"
+style 26 0 2 dim
+text 27 "│"
+style 27 0 2 dim
+text 28 "│ test result: FAILED. 3 passed; 1 failed"
+style 28 0 2 dim
+text 29 ""
+text 30 "! retrying in 2 s"
+style 30 0 17 fg=yellow
+text 31 ""
+text 32 "  The parser skipped the blank line at the end of a file. I changed the loop, and now I run the tests again."
+text 33 ""
+text 34 "· $ cargo test · 41s …"
+style 34 0 2 dim
+style 34 14 22 dim
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 dim
+text 36 " ● working 1m00s · 142k/250k · main: $3.20                                                                 Ctrl+C  stop"
+style 36 1 10 fg=cyan
+style 36 10 42 dim
+style 36 106 114 reverse
+style 36 114 119 dim
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 dim
+text 38 " › Add to the task"
+style 38 1 3 fg=cyan
+style 38 3 18 dim
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 dim

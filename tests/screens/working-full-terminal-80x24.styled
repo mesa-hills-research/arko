@@ -1,0 +1,52 @@
+size 80 24
+cursor 3 22 visible default
+text 0 "│ running 4 tests"
+style 0 0 2 dim
+text 1 "│ test parser::tests::reads ... ok"
+style 1 0 2 dim
+text 2 "│ test parser::tests::skips_blank ... FAILED"
+style 2 0 2 dim
+text 3 "│ test parser::tests::quotes ... ok"
+style 3 0 2 dim
+text 4 "│ test parser::tests::empty ... ok"
+style 4 0 2 dim
+text 5 "│"
+style 5 0 2 dim
+text 6 "│ test result: FAILED. 3 passed; 1 failed"
+style 6 0 2 dim
+text 7 ""
+text 8 "! retrying in 2 s"
+style 8 0 17 fg=yellow
+text 9 ""
+text 10 "  The parser skipped the blank line at the end of a file. I changed the loop,"
+text 11 "  and now I run the tests again."
+text 12 ""
+text 13 "▾ $ cargo test · ✓ exit 0 · 4 passed"
+style 13 0 2 dim
+style 13 14 17 dim
+style 13 17 18 fg=green
+style 13 18 36 dim
+text 14 "│ running 4 tests"
+style 14 0 2 dim
+text 15 "│ test result: ok. 4 passed; 0 failed"
+style 15 0 2 dim
+text 16 ""
+text 17 "⣟ Working…"
+style 17 0 1 dim
+style 17 2 4 dim
+style 17 8 10 dim
+text 18 ""
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 dim
+text 20 " ● working 1m00s · 142k/250k · main: $3.20                         Ctrl+C  stop"
+style 20 1 10 fg=cyan
+style 20 10 42 dim
+style 20 66 74 reverse
+style 20 74 79 dim
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 dim
+text 22 " › Add to the task"
+style 22 1 3 fg=cyan
+style 22 3 18 dim
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 dim

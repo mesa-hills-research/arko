@@ -1,0 +1,188 @@
+size 120 24
+cursor 0 0 hidden
+text 0 "                     ┌ Help ──────────────────────────────────────────────────────────────────────┐"
+style 0 0 21 fg=#dedede bg=#131313
+style 0 21 22 fg=#303030 bg=#101010
+style 0 22 28 fg=#dedede bg=#101010 bold
+style 0 28 99 fg=#303030 bg=#101010
+style 0 99 120 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ────────────│                                                                            │──────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 21 fg=#303030 bg=#131313
+style 1 21 22 fg=#303030 bg=#101010
+style 1 22 98 fg=#dedede bg=#101010
+style 1 98 99 fg=#303030 bg=#101010
+style 1 99 118 fg=#303030 bg=#131313
+style 1 118 120 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-│  Ctrl+B        move the agent's running call to the background, else back  │                  │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 21 fg=#dedede bg=#131313
+style 2 21 22 fg=#303030 bg=#101010
+style 2 22 23 fg=#dedede bg=#101010
+style 2 23 31 fg=#dedede bg=#232323
+style 2 31 98 fg=#dedede bg=#101010
+style 2 98 99 fg=#303030 bg=#101010
+style 2 99 116 fg=#dedede bg=#131313
+style 2 116 118 fg=#303030 bg=#131313
+style 2 118 120 fg=#dedede bg=#131313
+text 3 "  │ Workers    parall│                a character                                                 │                  │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 21 fg=#dedede bg=#131313
+style 3 21 22 fg=#303030 bg=#101010
+style 3 22 98 fg=#dedede bg=#101010
+style 3 98 99 fg=#303030 bg=#101010
+style 3 99 116 fg=#dedede bg=#131313
+style 3 116 118 fg=#303030 bg=#131313
+style 3 118 120 fg=#dedede bg=#131313
+text 4 "  │ Workspace  /home/│  Ctrl+O        the next view (full, quiet, messages)                       │                  │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 15 fg=#9d9d9d bg=#131313
+style 4 15 21 fg=#dedede bg=#131313
+style 4 21 22 fg=#303030 bg=#101010
+style 4 22 23 fg=#dedede bg=#101010
+style 4 23 31 fg=#dedede bg=#232323
+style 4 31 98 fg=#dedede bg=#101010
+style 4 98 99 fg=#303030 bg=#101010
+style 4 99 116 fg=#dedede bg=#131313
+style 4 116 118 fg=#303030 bg=#131313
+style 4 118 120 fg=#dedede bg=#131313
+text 5 "  │ Session    202611│  Ctrl+G        the transcript's rows that open, where ↑ ↓ move and Enter   │                  │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 15 fg=#9d9d9d bg=#131313
+style 5 15 21 fg=#dedede bg=#131313
+style 5 21 22 fg=#303030 bg=#101010
+style 5 22 23 fg=#dedede bg=#101010
+style 5 23 31 fg=#dedede bg=#232323
+style 5 31 98 fg=#dedede bg=#101010
+style 5 98 99 fg=#303030 bg=#101010
+style 5 99 116 fg=#dedede bg=#131313
+style 5 116 118 fg=#303030 bg=#131313
+style 5 118 120 fg=#dedede bg=#131313
+text 6 "  │ Project    AGENTS│                opens or closes one                                         │                  │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 15 fg=#9d9d9d bg=#131313
+style 6 15 21 fg=#dedede bg=#131313
+style 6 21 22 fg=#303030 bg=#101010
+style 6 22 98 fg=#dedede bg=#101010
+style 6 98 99 fg=#303030 bg=#101010
+style 6 99 116 fg=#dedede bg=#131313
+style 6 116 118 fg=#303030 bg=#131313
+style 6 118 120 fg=#dedede bg=#131313
+text 7 "  │ Tools      2 skil│  Ctrl+R        dictate into the box, and again to stop and edit the words  │                  │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 15 fg=#9d9d9d bg=#131313
+style 7 15 21 fg=#dedede bg=#131313
+style 7 21 22 fg=#303030 bg=#101010
+style 7 22 23 fg=#dedede bg=#101010
+style 7 23 31 fg=#dedede bg=#232323
+style 7 31 98 fg=#dedede bg=#101010
+style 7 98 99 fg=#303030 bg=#101010
+style 7 99 116 fg=#dedede bg=#131313
+style 7 116 118 fg=#303030 bg=#131313
+style 7 118 120 fg=#dedede bg=#131313
+text 8 "  └──────────────────│                (Enter stops too, Esc takes them out)                       │──────────────────┘"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 21 fg=#303030 bg=#131313
+style 8 21 22 fg=#303030 bg=#101010
+style 8 22 98 fg=#dedede bg=#101010
+style 8 98 99 fg=#303030 bg=#101010
+style 8 99 118 fg=#303030 bg=#131313
+style 8 118 120 fg=#dedede bg=#131313
+text 9 "                     │  Ctrl+T        the agent list, where Tab and Shift+Tab move through it and │"
+style 9 0 21 fg=#dedede bg=#131313
+style 9 21 22 fg=#303030 bg=#101010
+style 9 22 23 fg=#dedede bg=#101010
+style 9 23 31 fg=#dedede bg=#232323
+style 9 31 98 fg=#dedede bg=#101010
+style 9 98 99 fg=#303030 bg=#101010
+style 9 99 120 fg=#dedede bg=#131313
+text 10 "▎ Add a README with a│                Enter shows a worker's own work                             │"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 21 fg=#dedede bg=#202020
+style 10 21 22 fg=#303030 bg=#101010
+style 10 22 98 fg=#dedede bg=#101010
+style 10 98 99 fg=#303030 bg=#101010
+style 10 99 120 fg=#dedede bg=#202020
+text 11 "                     │  Alt+Q         open the answer panel for the agent's questions             │"
+style 11 0 21 fg=#dedede bg=#131313
+style 11 21 22 fg=#303030 bg=#101010
+style 11 22 23 fg=#dedede bg=#101010
+style 11 23 30 fg=#dedede bg=#232323
+style 11 30 98 fg=#dedede bg=#101010
+style 11 98 99 fg=#303030 bg=#101010
+style 11 99 120 fg=#dedede bg=#131313
+text 12 "  Done. The README ha│  Alt+A         the approval tray, where Space selects, Enter approves the  │"
+style 12 0 21 fg=#dedede bg=#131313
+style 12 21 22 fg=#303030 bg=#101010
+style 12 22 23 fg=#dedede bg=#101010
+style 12 23 30 fg=#dedede bg=#232323
+style 12 30 98 fg=#dedede bg=#101010
+style 12 98 99 fg=#303030 bg=#101010
+style 12 99 120 fg=#dedede bg=#131313
+text 13 "                     │                selection, R rejects all, V opens a row's details and M     │"
+style 13 0 21 fg=#dedede bg=#131313
+style 13 21 22 fg=#303030 bg=#101010
+style 13 22 98 fg=#dedede bg=#101010
+style 13 98 99 fg=#303030 bg=#101010
+style 13 99 120 fg=#dedede bg=#131313
+text 14 "                     │                flips Include message                                       │"
+style 14 0 21 fg=#dedede bg=#131313
+style 14 21 22 fg=#303030 bg=#101010
+style 14 22 98 fg=#dedede bg=#101010
+style 14 98 99 fg=#303030 bg=#101010
+style 14 99 120 fg=#dedede bg=#131313
+text 15 "                     │  Esc           close, go back, or leave the answer panel to answer in a    │"
+style 15 0 21 fg=#dedede bg=#131313
+style 15 21 22 fg=#303030 bg=#101010
+style 15 22 23 fg=#dedede bg=#101010
+style 15 23 28 fg=#dedede bg=#232323
+style 15 28 98 fg=#dedede bg=#101010
+style 15 98 99 fg=#303030 bg=#101010
+style 15 99 120 fg=#dedede bg=#131313
+text 16 "                     │                message                                                     │"
+style 16 0 21 fg=#dedede bg=#131313
+style 16 21 22 fg=#303030 bg=#101010
+style 16 22 98 fg=#dedede bg=#101010
+style 16 98 99 fg=#303030 bg=#101010
+style 16 99 120 fg=#dedede bg=#131313
+text 17 "                     │                                                                            │"
+style 17 0 21 fg=#dedede bg=#131313
+style 17 21 22 fg=#303030 bg=#101010
+style 17 22 98 fg=#dedede bg=#101010
+style 17 98 99 fg=#303030 bg=#101010
+style 17 99 120 fg=#dedede bg=#131313
+text 18 "                     └───────────────────────────────────────────────── Esc  close   ↑ ↓  scroll ─┘"
+style 18 0 21 fg=#dedede bg=#131313
+style 18 21 71 fg=#303030 bg=#101010
+style 18 71 76 fg=#dedede bg=#232323
+style 18 76 82 fg=#9d9d9d bg=#101010
+style 18 82 84 fg=#303030 bg=#101010
+style 18 84 89 fg=#dedede bg=#232323
+style 18 89 96 fg=#9d9d9d bg=#101010
+style 18 96 99 fg=#303030 bg=#101010
+style 18 99 120 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 19 0 120 fg=#303030 bg=#131313
+text 20 " last turn 34s"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 14 fg=#9d9d9d bg=#131313
+style 20 14 120 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 21 0 120 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 120 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 23 0 120 fg=#303030 bg=#131313

@@ -1,0 +1,56 @@
+size 80 24
+cursor 0 0 hidden
+text 0 ""
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 78 dim
+text 2 "  │ Model      gpt-6-luna (high effort)                                      │"
+style 2 2 15 dim
+style 2 76 78 dim
+text 3 "  │ Workers    parallel workers                                              │"
+style 3 2 15 dim
+style 3 76 78 dim
+text 4 "  │ Workspace  /home/ada/proj                                                │"
+style 4 2 15 dim
+style 4 76 78 dim
+text 5 " ┌ Conversations ─────────────────────────────────────────────────────────────┐"
+style 5 2 17 bold
+text 6 " │                                                                            │"
+text 7 " │   Make the login page remember the user between…  just now         current │"
+style 7 53 68 dim
+style 7 68 77 fg=cyan
+text 8 " │ ▸ Add a README with a usage section               2 hours ago              │"
+style 8 3 5 fg=cyan
+style 8 5 38 fg=cyan bold
+style 8 53 68 dim
+text 9 " │   Fix the build on Windows                        3 hours ago              │"
+style 9 53 68 dim
+text 10 "▎│   Rename the config file                          6 hours ago              │"
+style 10 0 1 fg=cyan
+style 10 53 68 dim
+text 11 " │                                                                            │"
+text 12 " └───────────────────────────────── ↑ ↓  choose   Enter  switch   Esc  close ─┘"
+style 12 35 40 reverse
+style 12 40 47 dim
+style 12 49 56 reverse
+style 12 56 63 dim
+style 12 65 70 reverse
+style 12 70 76 dim
+text 13 ""
+text 14 ""
+text 15 ""
+text 16 ""
+text 17 ""
+text 18 ""
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 dim
+text 20 " last turn 34s"
+style 20 1 14 dim
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 dim
+text 22 " › Message  / for commands"
+style 22 1 3 fg=cyan
+style 22 3 26 dim
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 dim

@@ -10,19 +10,25 @@
 //! everything else is small and quiet. Nothing moves under the reader.
 //! What is unusual shows, not what is normal. The keys are those of
 //! chat apps, pagers and readline.
+//!
+//! termelon has the terminal while the view runs. Its threads read and
+//! write it, and its writer sends the terminal everything.
 
-// While it has the terminal, only its writer writes to it (clippy.toml).
+// While it has the terminal, only termelon's writer writes to it (clippy.toml).
 #![cfg_attr(not(test), deny(clippy::disallowed_methods, clippy::disallowed_macros))]
 
 mod app;
 mod approvals;
-mod backend;
 mod cache;
 mod clipboard;
 #[cfg(feature = "dbg-snapshot")]
 mod dbg_snapshot;
 mod dictation;
+#[cfg(any(test, feature = "dbg-snapshot"))]
+mod golden;
 mod input;
+#[cfg(test)]
+mod inventory_tests;
 mod keys_menu;
 mod markdown;
 mod model_picker;
@@ -32,6 +38,8 @@ mod openrouter_menu;
 mod overlay;
 mod prefs;
 mod questions;
+#[cfg(test)]
+mod recorder_tests;
 mod resume_picker;
 mod screen;
 mod select;
@@ -39,33 +47,23 @@ pub(crate) mod theme;
 mod transcript;
 mod working;
 mod wrap;
-mod writer;
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
-use crossterm::terminal::{
-    BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
-};
-use crossterm::{Command, cursor, execute, queue};
-use futures_util::{FutureExt, StreamExt};
-use ratatui::Terminal;
+use futures_util::FutureExt;
 use tokio::sync::{mpsc, oneshot};
+use termelon::caps::KeyboardSupport;
+use termelon::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use termelon::{Drawn, MouseMode, Options, RestoreHandle, Terminal};
 
 use crate::glyphs;
 use crate::remote;
 use crate::ui::{self, Input, Output};
 use app::{App, Effect, Info, Sending};
-use backend::CursorBackend;
 pub use transcript::Banner;
-use writer::Writer;
 
 /// How long Enter waits to see if more keys follow it. Keys that come
 /// together are a paste the terminal didn't mark (the classic Windows
@@ -105,23 +103,20 @@ pub struct Setup {
 /// The view while it runs.
 pub struct Screen {
     stop: oneshot::Sender<()>,
-    /// The last reply, once the view's loop ends.
-    reply: oneshot::Receiver<Option<String>>,
+    /// Ends once the view gave the terminal back, with the last reply after
+    /// it.
+    closed: oneshot::Receiver<()>,
     output: Arc<Output>,
 }
 
 /// Whether the full-screen view can run, which it does when standard input and output are a
-/// terminal that takes escape codes (not TERM=dumb, nor the classic Windows console without
-/// them).
-#[allow(clippy::disallowed_methods, reason = "before the writer starts")]
+/// terminal that takes escape codes (not TERM=dumb). The classic Windows console without them
+/// gets the line prompt when [`start`] can't open it.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "before the view has the terminal"
+)]
 pub fn available() -> bool {
-    // The classic Windows console without escape codes would carry out some
-    // of the view's commands at once, ahead of the text its writer still
-    // holds, so the line prompt runs there.
-    #[cfg(windows)]
-    if !crossterm::ansi_support::supports_ansi() {
-        return false;
-    }
     std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && std::env::var("TERM").map_or(true, |term| term != "dumb")
@@ -136,11 +131,14 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
     // Settled first, so its warning, if any, prints before the screen is taken.
     glyphs::symbols();
     let catalog = theme::Catalog::load(Some(&setup.root.join("themes")));
-    let depth = theme::depth();
-    let terminal = match open(setup.session_dir.join(crate::session::LOG_FILE)) {
+    let mut terminal = match open() {
         Ok(terminal) => terminal,
         Err(error) => {
-            say_it_didnt_start(&error);
+            // (The classic Windows console without escape codes takes the
+            // line prompt without a word, as it always has.)
+            if !matches!(error, termelon::Error::NoVirtualTerminal) {
+                say_it_didnt_start(&error);
+            }
             if let Some(printer) = ui::spawn_input(
                 setup.root.clone(),
                 setup.input.clone(),
@@ -153,6 +151,7 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
             return None;
         }
     };
+    let depth = theme::depth(terminal.capabilities().colors);
     output.to_feed(setup.feed.clone());
     for warning in &catalog.warnings {
         setup.feed.notice(remote::Level::Warn, warning);
@@ -179,42 +178,35 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
         std::sync::Arc::new(move || keys.login_paths())
     };
     app.transcript.set_open_thinking(setup.show_thinking);
-    let (mut terminal, screen, shift_enter) = terminal;
-    app.shift_enter = shift_enter;
+    app.shift_enter = shift_enter(terminal.capabilities().keyboard);
     if !app.mouse {
-        let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
+        let _ = terminal.set_mouse(MouseMode::Off);
     }
     let (stop, stopped) = oneshot::channel();
     let input = setup.input.clone();
     let ended = input.clone();
     let session = tokio::runtime::Handle::current();
     let view = move || async move {
-        let running = std::panic::AssertUnwindSafe(run(
-            terminal, screen, app, setup, updates, stopped, session,
-        ));
-        match running.catch_unwind().await {
-            Ok(reply) => reply,
-            Err(_) => {
-                // The panic hook restored the terminal and said why. The
-                // session ends as Ctrl-D ends it (it is saved).
-                close();
-                let _ = ended.send(Input::Eof);
-                None
-            }
+        let running =
+            std::panic::AssertUnwindSafe(run(terminal, app, setup, updates, stopped, session));
+        if running.catch_unwind().await.is_err() {
+            // The panic hook gave the terminal back and said why. The
+            // session ends as Ctrl-D ends it (it is saved).
+            let _ = ended.send(Input::Eof);
         }
     };
-    let reply = match on_a_thread(crate::context::handle(), view) {
-        Ok(reply) => reply,
+    let closed = match on_a_thread(crate::context::handle(), view) {
+        Ok(closed) => closed,
         Err(error) => {
-            let said = format!("arko: the full-screen view couldn't start ({error})\n");
-            give_back(said.as_bytes());
+            // (The terminal went back as the view, which had it, was dropped.)
+            say_its_thread_didnt_start(&error);
             let _ = input.send(Input::Eof);
             oneshot::channel().1
         }
     };
     Some(Screen {
         stop,
-        reply,
+        closed,
         output: output.clone(),
     })
 }
@@ -222,8 +214,26 @@ pub fn start(setup: Setup, output: &Arc<Output>) -> Option<Screen> {
 /// Says why the full screen didn't start, on standard error, once the
 /// terminal is as it was.
 #[allow(clippy::disallowed_macros, reason = "the terminal is as it was")]
-fn say_it_didnt_start(error: &std::io::Error) {
-    eprintln!("arko: the full-screen view couldn't start ({error}), so Arko uses the line prompt");
+fn say_it_didnt_start(error: &termelon::Error) {
+    let why = match std::error::Error::source(error) {
+        Some(source) => format!("{error}: {source}"),
+        None => error.to_string(),
+    };
+    eprintln!("arko: the full-screen view couldn't start ({why}), so Arko uses the line prompt");
+}
+
+/// Says why the view's thread didn't start, on standard error, once the
+/// terminal is as it was.
+#[allow(clippy::disallowed_macros, reason = "the terminal is as it was")]
+fn say_its_thread_didnt_start(error: &std::io::Error) {
+    eprintln!("arko: the full-screen view couldn't start ({error})");
+}
+
+/// Whether the terminal tells Shift+Enter from Enter, as it does with the
+/// first flag of the kitty keyboard protocol, which termelon asks for, and
+/// as Windows' console does, whose key records carry Shift with Enter.
+fn shift_enter(keyboard: KeyboardSupport) -> bool {
+    matches!(keyboard, KeyboardSupport::Kitty { flags } if flags & 1 != 0) || cfg!(windows)
 }
 
 /// The name of the view's thread.
@@ -264,157 +274,57 @@ impl Screen {
     /// reply printed where the user can scroll back to it.
     pub async fn close(self) {
         let _ = self.stop.send(());
-        let reply = self.reply.await.ok().flatten();
-        // Whatever happened to the task, the terminal is restored, and the
-        // reply follows on the terminal's own screen.
-        let reply = reply
-            .map(|reply| format!("{}\n\n", glyphs::render(reply.trim())))
-            .unwrap_or_default();
-        let given = give_back(reply.as_bytes());
-        self.output.detach();
+        // The view gives the terminal back as its loop ends, whatever
+        // happened to it.
+        let _ = self.closed.await;
         // (What Arko prints next goes straight to the terminal, after this.)
-        if let Some((writer, ticket)) = given {
-            let _ = tokio::task::spawn_blocking(move || {
-                settle(&writer, ticket, CLOSE_WAIT, writer::standard_output)
-            })
-            .await;
-        }
-    }
-}
-
-/// Mouse reports for buttons, the wheel and drags (motion while a button is
-/// down, to select text), not every motion, which crossterm's own command
-/// asks for too (any-event tracking, crossterm/src/event.rs:329) and which
-/// would wake the view at every move of the mouse.
-struct EnableMouse;
-
-impl Command for EnableMouse {
-    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
-        // Buttons and the wheel, drags, in SGR coordinates.
-        f.write_str("\x1b[?1000h\x1b[?1002h\x1b[?1006h")
-    }
-
-    #[cfg(windows)]
-    fn execute_winapi(&self) -> std::io::Result<()> {
-        // The console reports mouse input records (crossterm's way).
-        crossterm::event::EnableMouseCapture.execute_winapi()
-    }
-
-    #[cfg(windows)]
-    fn is_ansi_code_supported(&self) -> bool {
-        false
+        self.output.detach();
     }
 }
 
 /// The terminal made the view's, namely raw mode, the alternate screen, the
-/// mouse, pastes and focus reported, and Shift+Enter told apart from
-/// Enter where the terminal can (the kitty keyboard protocol). From then on
-/// its writer ([`Writer`]) sends it everything, and its watchdog's lines go
-/// to the log at `log`. Returns the terminal, another handle on its writer,
-/// and whether Shift+Enter is reported. When it fails, the terminal is as it
-/// was.
-fn open(log: PathBuf) -> std::io::Result<(Terminal<CursorBackend<Writer>>, Writer, bool)> {
-    crossterm::terminal::enable_raw_mode()?;
-    // A panic that ends the view restores the terminal before its message
-    // prints (as ratatui's init does, ratatui/src/init.rs:566). Another
-    // thread's, which dictation's thread recovers from (and the speech
-    // engine's workers, whose panics it rethrows there), goes to the log
-    // and leaves the screen.
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let opening = OPENING.with(std::cell::Cell::get);
-        match panic_ends(std::thread::current().name(), opening) {
-            Ends::Nothing => {
+/// mouse (buttons, the wheel and drags, not every motion, which would wake
+/// the view at every move), pastes and focus reported, and Shift+Enter told
+/// apart from Enter where the terminal can (the kitty keyboard protocol).
+/// From then on termelon's writer sends it everything. When it fails, the
+/// terminal is as it was.
+fn open() -> termelon::Result<Terminal> {
+    install_panic_hook();
+    // (The view's own hook gives the terminal back, by its rules.)
+    let terminal = Terminal::open(Options::default().panic_hook(false))?;
+    *crate::lock(&TERMINAL) = Some(terminal.restore_handle());
+    Ok(terminal)
+}
+
+/// Makes a panic that ends the view give the terminal back before its
+/// message prints. Another thread's, which dictation's thread recovers from
+/// (and the speech engine's workers, whose panics it rethrows there), goes to
+/// the log and leaves the screen.
+fn install_panic_hook() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let opening = OPENING.with(std::cell::Cell::get);
+            let writer = termelon::is_writer_thread();
+            if !gives_back(std::thread::current().name(), opening, writer) {
                 log::error!("{info}");
                 return;
             }
-            // (Without waiting for the writer, whose thread this is.)
-            Ends::Writer => {
-                let writer = writer_handle();
-                restore_directly(writer.as_ref(), CLOSE_WAIT, writer::standard_output);
-            }
-            Ends::View => close_and_wait(),
-        }
-        previous(info);
-    }));
-    // Asked once, before events are read, and before the writer starts,
-    // since the question goes to the terminal and its answer comes back as
-    // an event (crossterm/src/terminal/sys/unix.rs:183-267). Windows
-    // answers no (crossterm/src/terminal/sys/windows.rs:75), but its
-    // console's key records carry Shift with Enter anyway.
-    #[allow(clippy::disallowed_methods, reason = "before the writer starts")]
-    let asked = crossterm::terminal::supports_keyboard_enhancement();
-    let enhanced = matches!(asked, Ok(true));
-    let mut reset = Vec::new();
-    write_close(&mut reset, enhanced);
-    let mut writer = match Writer::start(writer::standard_output(), log, reset) {
-        Ok(writer) => writer,
-        Err(error) => {
-            let _ = crossterm::terminal::disable_raw_mode();
-            return Err(error);
-        }
-    };
-    *crate::lock(&WRITER) = Some(writer.handle());
-    let _ = execute!(writer, EnterAlternateScreen, EnableMouse, EnableFocusChange);
-    // Not in the classic Windows console without escape codes
-    // (crossterm/src/event.rs:413-435), so pastes come as keys there.
-    let _ = execute!(writer, EnableBracketedPaste);
-    // The title is saved, to be put back (xterm's title stack, and others
-    // ignore it).
-    if !cfg!(windows) {
-        let _ = write!(writer, "\x1b[22;0t");
-    }
-    if enhanced {
-        let _ = execute!(
-            writer,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        );
-    }
-    let _ = clear_new_screen(&mut writer);
-    let screen = writer.handle();
-    match Terminal::new(CursorBackend::new(writer)) {
-        Ok(terminal) => Ok((terminal, screen, enhanced || cfg!(windows))),
-        Err(error) => {
-            // (Waited for off the runtime's thread, as what's printed next
-            // goes straight to the terminal.)
-            crate::blocking(close_and_wait);
-            Err(error)
-        }
-    }
+            give_back_terminal_at_once(CLOSE_WAIT);
+            previous(info);
+        }));
+    });
 }
 
-fn clear_new_screen(writer: &mut impl Write) -> std::io::Result<()> {
-    // There is no cursor to preserve on a new alternate screen. Ratatui's
-    // clear asks for it, which some terminals cannot report during startup.
-    execute!(
-        writer,
-        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-        cursor::MoveTo(0, 0)
-    )
-}
-
-/// What a panic ends, and so whether it gives the terminal back.
-#[derive(Debug, PartialEq)]
-enum Ends {
-    /// The view, a panic on its thread, on the thread opening it while it
-    /// does, or on the main thread, whose panic ends the process.
-    View,
-    /// The writer, which can't give the terminal back itself.
-    Writer,
-    /// Nothing the view needs, such as a session's task, whose panic tokio
-    /// catches, or dictation's thread, which recovers from its own.
-    Nothing,
-}
-
-/// What a panic on the thread named `thread` ends, `opening` when that
-/// thread is opening the view.
-fn panic_ends(thread: Option<&str>, opening: bool) -> Ends {
-    match thread {
-        Some(writer::THREAD) => Ends::Writer,
-        Some(THREAD | "main") => Ends::View,
-        _ if opening => Ends::View,
-        _ => Ends::Nothing,
-    }
+/// Whether a panic on the thread named `thread` ends the view, so that it
+/// gives the terminal back. The view's thread's, the main thread's (whose
+/// panic ends the process), the thread opening the view while it does
+/// (`opening`), and termelon's writer's (`writer`), which can't give the
+/// terminal back itself. A session's task, whose panic tokio catches, or
+/// dictation's thread, which recovers from its own, leave the view as it is.
+fn gives_back(thread: Option<&str>, opening: bool, writer: bool) -> bool {
+    matches!(thread, Some(THREAD | "main")) || opening || writer
 }
 
 thread_local! {
@@ -438,178 +348,51 @@ impl Drop for Opening {
     }
 }
 
-/// The writer of the view that has or last had the terminal, the one owner
-/// of the terminal's state. Locked only to take a handle, never together
-/// with the writer's own lock.
-static WRITER: std::sync::Mutex<Option<Writer>> = std::sync::Mutex::new(None);
+/// What gives back the terminal that the view has or last had. Locked only
+/// to take or put a handle.
+static TERMINAL: Mutex<Option<RestoreHandle>> = Mutex::new(None);
 /// How long giving the terminal back waits for it to take what is written,
 /// before what follows (a panic's message, the end of the process).
 const CLOSE_WAIT: Duration = Duration::from_secs(1);
-
-/// Gives the terminal back through the view's writer ([`Writer::finish`]),
-/// with `tail` after it, and raw mode off the first time. Safe to call more
-/// than once, and from any thread. Returns the writer and the ticket to
-/// wait on, unless no view had the terminal.
-fn give_back(tail: &[u8]) -> Option<(Writer, writer::Ticket)> {
-    let writer = writer_handle()?;
-    let (ticket, ended) = writer.finish(tail);
-    if ended {
-        let _ = crossterm::terminal::disable_raw_mode();
-    }
-    Some((writer, ticket))
-}
-
-/// Gives the terminal back, without waiting for it to take what does.
-fn close() {
-    give_back(&[]);
-}
-
-/// Gives the terminal back, then waits at most [`CLOSE_WAIT`] for it to take
-/// what does, for what comes next outside the view (a panic's message, the
-/// end of the process).
-fn close_and_wait() {
-    if let Some((writer, ticket)) = give_back(&[]) {
-        settle(&writer, ticket, CLOSE_WAIT, writer::standard_output);
-    }
-}
-
-/// Waits at most `wait` for the writer to write what `ticket` was given
-/// for, and when the writer failed on it, gives the terminal back itself
-/// ([`restore_directly`], to `out`).
-fn settle(
-    writer: &Writer,
-    ticket: writer::Ticket,
-    wait: Duration,
-    out: impl FnOnce() -> Box<dyn Write + Send> + Send + Clone + 'static,
-) -> writer::Finish {
-    let finish = writer.wait(ticket, wait);
-    if finish == writer::Finish::Failed {
-        restore_directly(Some(writer), wait, out);
-    }
-    finish
-}
-
-/// A handle on the view's writer, once it has one.
-fn writer_handle() -> Option<Writer> {
-    let writer = crate::lock(&WRITER);
-    writer.as_ref().map(Writer::handle)
-}
-
-/// What gives the terminal back, written to `out`, with the keyboard protocol
-/// popped (`pop`, when it was pushed), the mouse, focus and paste reports
-/// off, the main screen back, the cursor shown and the title put back.
-fn write_close(out: &mut impl Write, pop: bool) {
-    // A frame cut short leaves its synchronized update open, and the
-    // terminal then holds back what follows.
-    let _ = queue!(out, EndSynchronizedUpdate);
-    if pop {
-        let _ = execute!(out, PopKeyboardEnhancementFlags);
-    }
-    let _ = execute!(
-        out,
-        DisableMouseCapture,
-        DisableFocusChange,
-        DisableBracketedPaste,
-        LeaveAlternateScreen,
-        cursor::Show
-    );
-    if !cfg!(windows) {
-        let _ = write!(out, "\x1b[23;0t");
-    }
-    let _ = out.flush();
-}
 
 /// Gives the terminal back now, as the view does when it closes, for a
 /// process about to end without closing it (a signal). It does nothing
 /// when the view doesn't have the terminal. Only Unix ends on signals.
 #[cfg(unix)]
 pub(crate) fn give_back_terminal() {
-    close_and_wait();
+    give_back_terminal_at_once(CLOSE_WAIT);
 }
 
-/// Gives the terminal back without the writer, for an end that can't count
-/// on it (it failed, or the runtime is stuck), through its record of the
-/// reset written that way ([`Writer::reset_directly`]). Waits `wait` at most
-/// for that reset, written to what `out` opens, then puts the terminal's
-/// modes as they were when Arko started. Without `writer` (the forced end
-/// couldn't get the registry's lock, or no view had the terminal), nothing
-/// records the reset, so it writes one of its own at its own risk of a
-/// second (harmless as Arko ends).
-fn restore_directly(
-    writer: Option<&Writer>,
-    wait: Duration,
-    out: impl FnOnce() -> Box<dyn Write + Send> + Send + Clone + 'static,
-) -> writer::Direct {
-    let direct = match writer {
-        Some(writer) => writer.reset_directly(wait, out.clone(), spawn_reset),
-        None => writer::Direct::Unknown,
-    };
-    if direct == writer::Direct::Unknown {
-        reset_unrecorded(wait, out);
-    }
-    crate::term::restore();
-    direct
-}
-
-/// Starts the thread that writes a reset without the writer.
-fn spawn_reset(run: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
-    std::thread::Builder::new()
-        .name("arko-reset".into())
-        .spawn(run)
-        .map(drop)
-}
-
-/// Writes [`writer::CAN`] and a reset to what `out` opens, on a thread of its
-/// own that it waits `wait` at most for, with no record of it.
-fn reset_unrecorded(wait: Duration, out: impl FnOnce() -> Box<dyn Write + Send> + Send + 'static) {
-    let mut bytes = vec![writer::CAN];
-    // (Popping the keyboard protocol that wasn't pushed is harmless.)
-    write_close(&mut bytes, true);
-    let (written, done) = std::sync::mpsc::channel();
-    let writing = spawn_reset(Box::new(move || {
-        let mut out = out();
-        let _ = out.write_all(&bytes);
-        let _ = out.flush();
-        let _ = written.send(());
-    }));
-    if writing.is_ok() {
-        let _ = done.recv_timeout(wait);
-    }
-}
-
-/// Gives the terminal back now, for a process that ends at once because its
-/// runtime is stuck, where [`give_back_terminal`] may wait for what doesn't
-/// come ([`restore_directly`]). It does nothing when no view had the
-/// terminal.
-#[cfg(unix)]
+/// Gives the terminal back now, for a process that ends at once (a panic,
+/// a signal, a runtime that is stuck), waiting at most `wait` for it to
+/// take the reset. termelon stops its writer and writes the reset from a
+/// thread of its own, once however many ends ask, and puts the terminal's
+/// modes back. It does nothing when no view had the terminal.
 pub(crate) fn give_back_terminal_at_once(wait: Duration) {
-    let found = writer::try_lock_for(&WRITER, writer::LOCK_WAIT)
-        .map(|writer| writer.as_ref().map(Writer::handle));
-    let writer = match found {
-        Some(None) => return,
-        Some(Some(writer)) => Some(writer),
-        None => None,
-    };
-    restore_directly(writer.as_ref(), wait, writer::standard_output);
+    let handle = crate::lock(&TERMINAL).clone();
+    if let Some(handle) = handle {
+        handle.restore_now(wait);
+    }
 }
 
 /// Takes the terminal as the view does, for a test of how it's given back.
 #[cfg(all(test, target_os = "linux"))]
-pub(crate) fn take_terminal() -> std::io::Result<impl Sized> {
-    // (With no log for its writer's watchdog.)
-    open(PathBuf::new())
+pub(crate) fn take_terminal() -> termelon::Result<impl Sized> {
+    open()
 }
 
 /// What giving the terminal back undoes, and its sequence, for tests.
-#[cfg(all(test, unix))]
-pub(crate) const UNDONE: [(&str, &str); 10] = [
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) const UNDONE: [(&str, &str); 12] = [
     ("synchronized update", "\x1b[?2026l"),
     ("keyboard protocol", "\x1b[<1u"),
-    ("button reports", "\x1b[?1000l"),
-    ("drag reports", "\x1b[?1002l"),
-    ("SGR mouse", "\x1b[?1006l"),
-    ("focus reports", "\x1b[?1004l"),
     ("bracketed paste", "\x1b[?2004l"),
+    ("focus reports", "\x1b[?1004l"),
+    ("SGR mouse", "\x1b[?1006l"),
+    ("drag reports", "\x1b[?1002l"),
+    ("button reports", "\x1b[?1000l"),
+    ("colours and attributes", "\x1b[0m"),
+    ("autowrap", "\x1b[?7h"),
     ("alternate screen", "\x1b[?1049l"),
     ("cursor", "\x1b[?25h"),
     ("title", "\x1b[23;0t"),
@@ -636,19 +419,19 @@ fn types(event: &Event) -> bool {
     }
 }
 
-/// The view's loop over terminal events, the feed's updates and the clock, until
-/// `stop`. What it starts for the session runs on the session's runtime
-/// (`session`). Returns the last reply.
+/// The view's loop over terminal events, the feed's updates and the clock,
+/// until `stop`. What it starts for the session runs on the session's
+/// runtime (`session`). Then it gives the terminal back, with the last reply
+/// after it.
 async fn run(
-    mut terminal: Terminal<CursorBackend<Writer>>,
-    screen: Writer,
+    mut terminal: Terminal,
     mut app: App,
     mut setup: Setup,
     mut updates: remote::Following,
     mut stop: oneshot::Receiver<()>,
     session: tokio::runtime::Handle,
-) -> Option<String> {
-    let mut events = EventStream::new();
+) {
+    let mut events = terminal.events();
     let mut events_open = true;
     let mut clock = tokio::time::interval(Duration::from_millis(500));
     let mut frames = tokio::time::interval(FRAME);
@@ -659,6 +442,9 @@ async fn run(
     // Something changed, drawn at the next frame. Keys draw at once.
     let mut dirty = false;
     let mut draw_now = true;
+    // The animation's clock moved the spinner, the highlight and the status
+    // line's timer, which a frame draws alone while nothing else changed.
+    let mut ticked = false;
     let mut title = String::new();
     // The terminal hasn't taken the last frame, so the next waits for it.
     let mut held = false;
@@ -669,17 +455,24 @@ async fn run(
     // What each way of naming sessions by a model lacks, checked off this
     // loop's thread (the check runs Claude Code).
     let (names_found, mut names_checks) = mpsc::unbounded_channel();
+    let log = setup.session_dir.join(crate::session::LOG_FILE);
+    // The terminal's own, which logs a write it hasn't taken for long.
+    let _terminal_watchdog = {
+        let terminal = terminal.restore_handle();
+        crate::watchdog::Watchdog::terminal(log.clone(), move || terminal.writer_waiting())
+    };
     // Its clock turns the loop twice a second, so a loop that doesn't turn
     // for long is stuck, and the log says where. It watches the first read
     // of the status too.
     let watchdog = {
         let feed = setup.feed.clone();
-        let terminal = screen.handle();
-        let log = setup.session_dir.join(crate::session::LOG_FILE);
+        let terminal = terminal.restore_handle();
         let watched = crate::watchdog::Watched::Loop("The full screen's loop");
         crate::watchdog::Watchdog::start(watched, log, move || {
             // (Its frames wait while the terminal doesn't take them.)
-            let waiting = terminal.waiting().filter(|waited| waited.as_secs() >= 1);
+            let waiting = terminal
+                .writer_waiting()
+                .filter(|waited| waited.as_secs() >= 1);
             match waiting {
                 Some(waited) => format!(
                     "{} The terminal hasn't taken a frame for {} s.",
@@ -707,25 +500,31 @@ async fn run(
     let (recording_events, mut recording_received) = mpsc::unbounded_channel();
     loop {
         watchdog.turned();
-        // The writer writes no more, because the terminal closed or the
+        // The terminal takes no more output, because it closed or the
         // writer's thread ended, so the view ends, as when the terminal
-        // closes, and the session with it.
-        if let Some(failure) = screen.failure() {
-            if failure == writer::Failure::Died {
+        // closes, and the session with it. (Closing gives the terminal back
+        // without the writer.)
+        if let Some(failure) = terminal.failure() {
+            if failure == std::io::ErrorKind::Other {
                 log::error!("The full screen's writer stopped, so Arko ends");
             }
-            // (Where the terminal closed, the reset just fails.)
-            restore_directly(Some(&screen), CLOSE_WAIT, writer::standard_output);
             if events_open {
                 give(&setup.requests, &verdict_done, control(Input::Eof));
             }
             break;
         }
-        if draw_now {
+        if !held && (draw_now || ticked) {
             watchdog.stage("drawing");
-            held = !draw_when_written(&mut terminal, &screen, &mut app, &mut title);
-            draw_now = false;
-            dirty = false;
+            let drawn = if draw_now || dirty {
+                draw_when_written(&mut terminal, &mut app, &mut title)
+            } else {
+                draw_moving(&mut terminal, &mut app, &mut title)
+            };
+            // (A frame the terminal holds is drawn once it took the last.)
+            held = !drawn;
+            if drawn {
+                (draw_now, dirty, ticked) = (false, false, false);
+            }
         }
         let enter_at = enter.unwrap_or_else(Instant::now);
         let preview_at = app.preview_due();
@@ -748,7 +547,7 @@ async fn run(
                 draw_now = true;
             }
             event = events.next(), if events_open => {
-                let Some(Ok(event)) = event else {
+                let Ok(event) = event else {
                     // The terminal is gone, as Ctrl-D at the prompt.
                     events_open = false;
                     give(&setup.requests, &verdict_done, control(Input::Eof));
@@ -757,7 +556,7 @@ async fn run(
                 watchdog.stage("taking keys");
                 // What came together comes as one batch.
                 let mut batch = vec![event];
-                batch.extend(waiting(&mut events).await);
+                batch.extend(events.batch());
                 handle(&mut app, batch, &mut enter, &mut burst);
                 draw_now = true;
             }
@@ -797,9 +596,9 @@ async fn run(
                 }
                 draw_now = true;
             }
-            _ = frames.tick(), if dirty => draw_now = true,
-            () = screen.written(), if held => draw_now = true,
-            _ = animation.tick(), if app.transcript.drawn.moving => draw_now = true,
+            _ = frames.tick(), if dirty && !held => draw_now = true,
+            () = terminal.written(), if held => held = false,
+            _ = animation.tick(), if !app.transcript.drawn.moving.is_empty() && !held => ticked = true,
             _ = clock.tick() => {
                 watchdog.stage("reading the status");
                 let reading = setup.meter.read();
@@ -831,7 +630,7 @@ async fn run(
             }
             _ = tokio::time::sleep_until(enter_at.into()), if enter.is_some() => {
                 watchdog.stage("taking keys");
-                let batch = waiting(&mut events).await;
+                let batch = events.batch();
                 if batch.is_empty() {
                     // No key followed the Enter, so it was typed, and sends.
                     enter = None;
@@ -843,7 +642,7 @@ async fn run(
             }
             _ = tokio::time::sleep_until(burst_at.into()), if burst.is_some() => {
                 watchdog.stage("taking keys");
-                let batch = waiting(&mut events).await;
+                let batch = events.batch();
                 if batch.is_empty() {
                     if let Some(burst) = burst.take() {
                         app.editor.fold_paste(burst.start);
@@ -859,9 +658,7 @@ async fn run(
         let _session = session.enter();
         bell |= app.take_ring();
         if bell {
-            let out = terminal.backend_mut();
-            let _ = out.write_all(b"\x07");
-            let _ = out.flush();
+            let _ = terminal.bell();
         }
         // (Carrying out one can ask for another, such as a dictation's
         // notice.)
@@ -873,33 +670,23 @@ async fn run(
                     Effect::Send(sending) => give(&setup.requests, &verdict_done, sending),
                     Effect::Input(input) => give(&setup.requests, &verdict_done, control(input)),
                     Effect::Copy { text, what } => {
-                        // The terminal's clipboard, and the system's. The status
-                        // line says "Copied" only when the system's took it.
-                        let _ = execute!(
-                            terminal.backend_mut(),
-                            crossterm::clipboard::CopyToClipboard::to_clipboard_from(
-                                text.as_bytes()
-                            )
-                        );
-                        app.say(match clipboard::copy(&text) {
-                            clipboard::Copied::System => format!("Copied {what}"),
-                            clipboard::Copied::Terminal => {
-                                "Sent to the terminal's clipboard".into()
-                            }
-                            clipboard::Copied::Failed(why) => why,
-                        });
+                        // The terminal's clipboard, where it takes copies, and
+                        // the system's. The status line says "Copied" only when
+                        // the system's took it.
+                        let sent = matches!(terminal.copy_to_clipboard(&text), Ok(true));
+                        app.say(copy_said(clipboard::copy(&text), sent, &what));
                     }
                     Effect::Mouse(on) => {
-                        let out = terminal.backend_mut();
-                        let _ = if on {
-                            execute!(out, EnableMouse)
+                        let mode = if on {
+                            MouseMode::ButtonsAndDrags
                         } else {
-                            execute!(out, DisableMouseCapture)
+                            MouseMode::Off
                         };
+                        let _ = terminal.set_mouse(mode);
                     }
-                    Effect::Clear => {
-                        let _ = clear_for_redraw(&mut terminal);
-                    }
+                    // The next frame repaints every cell, also those that
+                    // didn't change.
+                    Effect::Clear => terminal.clear(),
                     Effect::AddKey { key, value } => {
                         let outcome = setup.keys.add(key, value);
                         app.keys_done(key, outcome);
@@ -937,8 +724,9 @@ async fn run(
                     }
                     #[cfg(feature = "dbg-snapshot")]
                     Effect::SnapshotNextFrame(note) => {
-                        // Drawn now, also while the terminal hasn't taken
-                        // the last frame, so the saved one is this frame.
+                        // Drawn now, once the terminal took the last frame
+                        // (a second at most), so the saved one is this frame.
+                        let _ = tokio::time::timeout(CLOSE_WAIT, terminal.written()).await;
                         draw(&mut terminal, &mut app);
                         let snapshot = app.snapshot(&note);
                         let root = setup.root.clone();
@@ -951,9 +739,27 @@ async fn run(
             effects = app.take_effects();
         }
     }
-    let reply = app.transcript.last_reply().map(str::to_string);
-    close();
-    reply
+    // The terminal as it was, and then the last reply printed where the
+    // user can scroll back to it. (This thread waits a second at most for
+    // the terminal to take them.)
+    let reply = app
+        .transcript
+        .last_reply()
+        .map(|reply| format!("{}\n\n", glyphs::render(reply.trim())))
+        .unwrap_or_default();
+    let _ = terminal.close_with_tail(reply.as_bytes());
+}
+
+/// What the status line says of a copy of `what`, which the system's
+/// clipboard took or didn't (`copied`), and which went to the terminal's
+/// (`sent`) or didn't.
+fn copy_said(copied: clipboard::Copied, sent: bool, what: &str) -> String {
+    match copied {
+        clipboard::Copied::System => format!("Copied {what}"),
+        clipboard::Copied::Terminal if sent => "Sent to the terminal's clipboard".into(),
+        clipboard::Copied::Terminal => clipboard::NOT_SENT.into(),
+        clipboard::Copied::Failed(why) => why,
+    }
 }
 
 /// Carries out what the view's recording needs of the dictation service
@@ -1021,15 +827,6 @@ fn recording_sink(
     Box::new(move |update| {
         let _ = events.send(update);
     })
-}
-
-fn clear_for_redraw<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-) -> Result<(), B::Error> {
-    // Fullscreen resize clears and invalidates the buffers without asking
-    // for a cursor position to preserve, unlike Terminal::clear.
-    let area = terminal.size()?.into();
-    terminal.resize(area)
 }
 
 /// Takes `received` from the feed and the updates that wait after it,
@@ -1104,18 +901,6 @@ fn asks(update: &remote::Update) -> bool {
     )
 }
 
-/// The events already waiting, without waiting for more. (Polled in this
-/// task, not with a no-op waker, because the stream registers the waker of its
-/// first pending poll only, so a no-op one would leave the next keys unread
-/// until something else woke the loop, crossterm/src/event/stream.rs:112-131.)
-async fn waiting(events: &mut EventStream) -> Vec<Event> {
-    let mut batch = Vec::new();
-    while let Ok(Some(Ok(event))) = tokio::time::timeout(Duration::ZERO, events.next()).await {
-        batch.push(event);
-    }
-    batch
-}
-
 /// A batch of terminal events. Keys that came together are a paste (where
 /// the terminal doesn't mark pastes), so their line breaks are line breaks,
 /// not sends. A lone Enter waits a moment for what follows it.
@@ -1175,7 +960,10 @@ fn handle(
             }
             Event::FocusGained => app.focus_changed(true),
             Event::FocusLost => app.focus_changed(false),
-            Event::Resize(..) => app.resized = true,
+            // (termelon draws the next frame whole.)
+            Event::Resize(..) | Event::Resumed => {}
+            // (Arko doesn't ask for colour scheme reports.)
+            _ => {}
         }
     }
     if pasting && let Some(burst) = burst {
@@ -1185,66 +973,71 @@ fn handle(
 }
 
 /// Draws a frame of `app`, with the window's title when it changed from
-/// `title`, unless the terminal hasn't taken the last frame from `screen`,
-/// the terminal's writer, yet. Then the frame waits, and the changes go in
-/// the next one the terminal gets. After a resize, the frame is drawn
-/// whole. Whether it was drawn.
-fn draw_when_written(
-    terminal: &mut Terminal<CursorBackend<Writer>>,
-    screen: &Writer,
-    app: &mut App,
-    title: &mut String,
-) -> bool {
-    if screen.busy() {
+/// `title`, unless the terminal hasn't taken the last frame yet. Then the
+/// frame waits, and the changes go in the next one the terminal gets.
+/// Whether it was drawn.
+fn draw_when_written(terminal: &mut Terminal, app: &mut App, title: &mut String) -> bool {
+    if !draw(terminal, app) {
         return false;
     }
-    // (Cleared only by a whole frame, which a skipped one isn't.)
-    if app.resized && clear_for_redraw(terminal).is_ok() {
-        app.resized = false;
-    }
-    draw(terminal, app);
     let now = app.title();
     if now != *title {
-        let _ = execute!(terminal.backend_mut(), crossterm::terminal::SetTitle(&now));
+        let _ = terminal.set_title(&now);
         *title = now;
     }
     true
 }
 
-/// A frame, drawn as one update where the terminal can (synchronized
-/// output, CSI ?2026, crossterm/src/terminal.rs:433-450, and others ignore it),
-/// so it doesn't flicker.
-fn draw(terminal: &mut Terminal<CursorBackend<Writer>>, app: &mut App) {
-    let _ = queue!(terminal.backend_mut(), BeginSynchronizedUpdate);
-    #[cfg(not(feature = "dbg-snapshot"))]
-    let _ = terminal.draw(|frame| screen::draw(frame, app));
-    // Kept for Ctrl+S, which saves the frame on the screen without drawing.
-    #[cfg(feature = "dbg-snapshot")]
-    if let Ok(drawn) = terminal.draw(|frame| screen::draw(frame, app)) {
-        app.drawn_frame.clone_from(drawn.buffer);
+/// A frame of `app`, as one update where the terminal can (synchronized
+/// output), so it doesn't flicker, unless the terminal hasn't taken the
+/// last one. Whether it was drawn.
+fn draw(terminal: &mut Terminal, app: &mut App) -> bool {
+    match terminal.draw(|frame| screen::draw(frame, app)) {
+        Ok(Drawn::Held) => false,
+        // Kept for Ctrl+S, which saves the frame on the screen without drawing.
+        #[cfg(feature = "dbg-snapshot")]
+        Ok(Drawn::Written(drawn)) => {
+            app.drawn_frame.keep(&drawn);
+            true
+        }
+        // (A terminal that takes no more output ends the loop at its next
+        // turn.)
+        _ => true,
     }
-    let _ = execute!(terminal.backend_mut(), EndSynchronizedUpdate);
 }
 
-/// The lines a buffer shows, one per row at its full width, with a wide
-/// character's second cell left out, as the terminal shows them.
-#[cfg(any(all(test, unix), feature = "dbg-snapshot"))]
-fn buffer_lines(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
-    let area = buffer.area;
+/// Draws over the last frame only what the animation's clock moves
+/// ([`screen::moving`]), where nothing else changed, and the whole frame
+/// where that can't be drawn alone or the terminal needs a whole one.
+/// Whether it was drawn.
+fn draw_moving(terminal: &mut Terminal, app: &mut App, title: &mut String) -> bool {
+    let Some(regions) = screen::moving(app) else {
+        return draw_when_written(terminal, app, title);
+    };
+    match terminal.draw_regions(&regions, |frame| screen::draw_moving(frame, app)) {
+        Ok(Drawn::Held) => false,
+        Ok(Drawn::FullFrameDue) => draw_when_written(terminal, app, title),
+        #[cfg(feature = "dbg-snapshot")]
+        Ok(Drawn::Written(drawn)) => {
+            app.drawn_frame.keep(&drawn);
+            true
+        }
+        // (A terminal that takes no more output ends the loop at its next
+        // turn.)
+        _ => true,
+    }
+}
+
+/// The lines a buffer shows, one per row at its full width, as the terminal
+/// shows them (the cells a wide character covers are empty).
+#[cfg(any(test, feature = "dbg-snapshot"))]
+fn buffer_lines(buffer: &termelon::Buffer) -> Vec<String> {
+    let area = buffer.area();
     (area.top()..area.bottom())
         .map(|y| {
-            let mut line = String::new();
-            let mut skip = 0;
-            for x in area.left()..area.right() {
-                let symbol = buffer[(x, y)].symbol();
-                if skip > 0 {
-                    skip -= 1;
-                    continue;
-                }
-                skip = unicode_width::UnicodeWidthStr::width(symbol).saturating_sub(1);
-                line.push_str(symbol);
-            }
-            line
+            (area.left()..area.right())
+                .map(|x| buffer.symbol((x, y)))
+                .collect()
         })
         .collect()
 }
@@ -1252,44 +1045,10 @@ fn buffer_lines(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEventState, MouseEvent};
+    use termelon::event::{MouseEvent, MouseEventKind};
 
     fn key(code: KeyCode) -> Event {
-        Event::Key(KeyEvent {
-            code,
-            modifiers: KeyModifiers::NONE,
-            kind: KeyEventKind::Press,
-            state: KeyEventState::NONE,
-        })
-    }
-
-    #[test]
-    fn a_new_alternate_screen_clears_without_asking_for_the_cursor() {
-        let mut bytes = Vec::new();
-        clear_new_screen(&mut bytes).unwrap();
-        assert_eq!(bytes, b"\x1b[2J\x1b[1;1H");
-    }
-
-    #[test]
-    fn clearing_for_redraw_repaints_unchanged_cells() {
-        use ratatui::backend::{Backend, TestBackend};
-
-        let mut terminal = Terminal::new(TestBackend::new(20, 3)).unwrap();
-        let draw = |terminal: &mut Terminal<TestBackend>| {
-            terminal
-                .draw(|frame| frame.render_widget("Still here", frame.area()))
-                .unwrap();
-        };
-        draw(&mut terminal);
-        // A corrupted screen needs repainting even when no cells changed.
-        terminal.backend_mut().clear().unwrap();
-        clear_for_redraw(&mut terminal).unwrap();
-        draw(&mut terminal);
-        terminal.backend().assert_buffer_lines([
-            "Still here          ",
-            "                    ",
-            "                    ",
-        ]);
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
     /// A paste that comes as keys doesn't send at its line breaks, and a
@@ -1321,12 +1080,12 @@ mod tests {
         assert!(enter.is_some());
         handle(
             &mut app,
-            vec![Event::Mouse(MouseEvent {
-                kind: crossterm::event::MouseEventKind::Moved,
-                column: 0,
-                row: 0,
-                modifiers: KeyModifiers::NONE,
-            })],
+            vec![Event::Mouse(MouseEvent::new(
+                MouseEventKind::Moved,
+                0,
+                0,
+                KeyModifiers::NONE,
+            ))],
             &mut enter,
             &mut burst,
         );
@@ -1361,17 +1120,16 @@ mod tests {
     }
 
     /// Only panics that end the view or the process give the terminal
-    /// back, the view's thread's, the main thread's, and the opening
-    /// thread's while it opens the view. The writer's thread's gives it back
-    /// without the writer. A panic in a session's task, which tokio catches,
-    /// leaves the view as it is, and so do dictation's and the speech
-    /// engine's, which recover.
+    /// back, the view's thread's, the main thread's, the opening thread's
+    /// while it opens the view, and the writer's, which can't itself. A
+    /// panic in a session's task, which tokio catches, leaves the view as it
+    /// is, and so do dictation's and the speech engine's, which recover.
     #[test]
     fn only_panics_that_end_the_view_give_the_terminal_back() {
-        assert_eq!(panic_ends(Some(THREAD), false), Ends::View);
-        assert_eq!(panic_ends(Some("main"), false), Ends::View);
-        assert_eq!(panic_ends(Some(writer::THREAD), false), Ends::Writer);
-        assert_eq!(panic_ends(Some("tokio-rt-worker"), true), Ends::View);
+        assert!(gives_back(Some(THREAD), false, false));
+        assert!(gives_back(Some("main"), false, false));
+        assert!(gives_back(Some("tokio-rt-worker"), true, false));
+        assert!(gives_back(None, false, true));
         for other in [
             Some("tokio-rt-worker"),
             Some("arko-dictation"),
@@ -1379,8 +1137,9 @@ mod tests {
             Some("arko-microphone"),
             None,
         ] {
-            assert_eq!(panic_ends(other, false), Ends::Nothing, "{other:?}");
+            assert!(!gives_back(other, false, false), "{other:?}");
         }
+        assert!(!termelon::is_writer_thread());
         // The names the threads have, and what opening says.
         let dictation = std::thread::Builder::new()
             .name("arko-dictation".into())
@@ -1394,14 +1153,32 @@ mod tests {
         let worker = runtime
             .block_on(runtime.spawn(async { std::thread::current().name().map(str::to_string) }))
             .unwrap();
-        assert_eq!(panic_ends(worker.as_deref(), false), Ends::Nothing);
-        assert_eq!(panic_ends(worker.as_deref(), true), Ends::View);
+        assert!(!gives_back(worker.as_deref(), false, false));
+        assert!(gives_back(worker.as_deref(), true, false));
         assert!(!OPENING.with(std::cell::Cell::get));
         {
             let _opening = Opening::new();
             assert!(OPENING.with(std::cell::Cell::get));
         }
         assert!(!OPENING.with(std::cell::Cell::get));
+    }
+
+    /// A copy that only the terminal could take says it went there only
+    /// when it did.
+    #[test]
+    fn a_copy_says_where_it_went() {
+        use clipboard::Copied;
+        assert_eq!(copy_said(Copied::System, false, "a line"), "Copied a line");
+        assert_eq!(
+            copy_said(Copied::Terminal, true, "a line"),
+            "Sent to the terminal's clipboard"
+        );
+        assert_eq!(
+            copy_said(Copied::Terminal, false, "a line"),
+            clipboard::NOT_SENT
+        );
+        let failed = Copied::Failed("Couldn't copy".into());
+        assert_eq!(copy_said(failed, true, "a line"), "Couldn't copy");
     }
 
     /// When the feed's subscription lags and the view starts over from the
@@ -1492,24 +1269,6 @@ mod tests {
         assert!(matches!(&after, remote::Received::Update(_)));
         take_updates(&mut app, after, &mut updates, &feed);
         assert_eq!(shown(&app).as_deref(), Some("after"));
-    }
-
-    /// Giving the terminal back undoes all the view did to it, namely a
-    /// frame's synchronized update, the keyboard protocol, the mouse, focus
-    /// and paste reports, the alternate screen, the cursor and the title.
-    #[cfg(unix)]
-    #[test]
-    fn the_terminal_is_given_back_whole() {
-        let mut out = Vec::new();
-        write_close(&mut out, true);
-        let written = String::from_utf8(out).unwrap();
-        for (what, sequence) in UNDONE {
-            assert!(written.contains(sequence), "{what}: {written:?}");
-        }
-        // The protocol is popped only when it was pushed.
-        let mut unpushed = Vec::new();
-        write_close(&mut unpushed, false);
-        assert!(!String::from_utf8(unpushed).unwrap().contains("\x1b[<1u"));
     }
 
     /// The view runs on a thread of its own, so a view that waits without
@@ -1603,495 +1362,5 @@ mod tests {
             }
         }
         assert_eq!(closed, Some(crate::Verdict::closed()));
-    }
-
-    /// A terminal's screen as the bytes sent to it draw it. Characters go at
-    /// the cursor, which moves (`CSI row;col H`), and the screen clears
-    /// (`CSI 2J`, and `CSI K` to the line's end). The other sequences
-    /// (colours, modes, the title) change nothing here.
-    #[cfg(unix)]
-    struct Grid {
-        rows: Vec<Vec<String>>,
-        at: (usize, usize),
-    }
-
-    #[cfg(unix)]
-    impl Grid {
-        fn new(width: usize, height: usize) -> Self {
-            Self {
-                rows: vec![vec![" ".to_string(); width]; height],
-                at: (0, 0),
-            }
-        }
-
-        /// The terminal took a new size, with its cells left as they were
-        /// where they still fit.
-        fn resize(&mut self, width: usize, height: usize) {
-            self.rows.resize(height, Vec::new());
-            for row in &mut self.rows {
-                row.resize(width, " ".to_string());
-            }
-        }
-
-        fn feed(&mut self, bytes: &[u8]) {
-            let text = String::from_utf8_lossy(bytes);
-            let mut chars = text.chars().peekable();
-            while let Some(c) = chars.next() {
-                match c {
-                    '\x1b' => match chars.next() {
-                        Some('[') => {
-                            let mut params = String::new();
-                            for c in chars.by_ref() {
-                                if ('\x40'..='\x7e').contains(&c) {
-                                    self.sequence(&params, c);
-                                    break;
-                                }
-                                params.push(c);
-                            }
-                        }
-                        // An OSC (the title), to its BEL or ST.
-                        Some(']') => {
-                            while let Some(c) = chars.next() {
-                                if c == '\x07' || (c == '\x1b' && chars.next() == Some('\\')) {
-                                    break;
-                                }
-                            }
-                        }
-                        _ => {}
-                    },
-                    c if c < ' ' => {}
-                    c => {
-                        let width = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
-                        let (x, y) = self.at;
-                        if let Some(row) = self.rows.get_mut(y) {
-                            if let Some(cell) = row.get_mut(x) {
-                                *cell = c.to_string();
-                            }
-                            for covered in 1..width {
-                                if let Some(cell) = row.get_mut(x + covered) {
-                                    cell.clear();
-                                }
-                            }
-                        }
-                        self.at.0 += width;
-                    }
-                }
-            }
-        }
-
-        fn sequence(&mut self, params: &str, last: char) {
-            match last {
-                'H' => {
-                    let mut parts = params
-                        .split(';')
-                        .map(|part| part.parse::<usize>().unwrap_or(1));
-                    let row = parts.next().unwrap_or(1);
-                    let column = parts.next().unwrap_or(1);
-                    self.at = (column - 1, row - 1);
-                }
-                'J' if params == "2" => {
-                    for row in &mut self.rows {
-                        row.fill(" ".to_string());
-                    }
-                }
-                'K' => {
-                    let (x, y) = self.at;
-                    if let Some(row) = self.rows.get_mut(y) {
-                        for cell in row.iter_mut().skip(x) {
-                            *cell = " ".to_string();
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        fn lines(&self) -> Vec<String> {
-            self.rows.iter().map(|row| row.concat()).collect()
-        }
-    }
-
-    /// While the terminal doesn't read, the view takes keys and the feed's
-    /// updates, and its frames wait without holding it up. A resize comes
-    /// meanwhile. Once the terminal reads again, it takes the waiting frame,
-    /// and the next frame leaves the screen as the view shows it now.
-    #[cfg(unix)]
-    #[test]
-    fn the_view_goes_on_while_the_terminal_doesnt_read_and_catches_up() {
-        use crate::remote::{Activity, Item, Kind, Update};
-        use ratatui::backend::TestBackend;
-        use ratatui::layout::Rect;
-        use ratatui::{TerminalOptions, Viewport};
-
-        let temp = tempfile::tempdir().unwrap();
-        let (mut read, write, filled) = writer::tests::full_pipe();
-        // What the writer sent the terminal, so the test waits until the
-        // terminal read all of it.
-        struct Counted(std::fs::File, Arc<std::sync::atomic::AtomicUsize>);
-        impl Write for Counted {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                let count = self.0.write(bytes)?;
-                self.1.fetch_add(count, std::sync::atomic::Ordering::SeqCst);
-                Ok(count)
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                self.0.flush()
-            }
-        }
-        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let writer = Writer::start(
-            Counted(write, sent.clone()),
-            temp.path().join("arko.log"),
-            Vec::new(),
-        )
-        .unwrap();
-        let screen = writer.handle();
-        let small = Rect::new(0, 0, 80, 24);
-        let mut terminal = Terminal::with_options(
-            CursorBackend::new(writer),
-            TerminalOptions {
-                viewport: Viewport::Fixed(small),
-            },
-        )
-        .unwrap();
-        let mut app = app::tests::app();
-        let mut title = String::new();
-        // The first frame goes to the writer, which waits for the terminal.
-        assert!(draw_when_written(
-            &mut terminal,
-            &screen,
-            &mut app,
-            &mut title
-        ));
-        let started = Instant::now();
-        for c in "typed while it waits".chars() {
-            app.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-            assert!(!draw_when_written(
-                &mut terminal,
-                &screen,
-                &mut app,
-                &mut title
-            ));
-        }
-        for id in 1..=5 {
-            let mut item = Item::new(Kind::Text, format!("Update {id} from the feed"));
-            item.id = id;
-            app.update(Update::Item(item), Activity::default);
-            assert!(!draw_when_written(
-                &mut terminal,
-                &screen,
-                &mut app,
-                &mut title
-            ));
-        }
-        let large = Rect::new(0, 0, 100, 30);
-        terminal.resize(large).unwrap();
-        assert!(started.elapsed() < Duration::from_secs(1));
-        assert_eq!(app.editor.text(), "typed while it waits");
-        assert!(screen.busy());
-
-        // The terminal reads again, and takes the first frame.
-        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let reading = received.clone();
-        std::thread::spawn(move || {
-            let mut chunk = [0; 65536];
-            while let Ok(count) = std::io::Read::read(&mut read, &mut chunk) {
-                if count == 0 {
-                    break;
-                }
-                reading.lock().unwrap().extend_from_slice(&chunk[..count]);
-            }
-        });
-        let taken = || {
-            let count = filled + sent.load(std::sync::atomic::Ordering::SeqCst);
-            let started = Instant::now();
-            while received.lock().unwrap().len() < count {
-                assert!(started.elapsed() < Duration::from_secs(5), "read");
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            count
-        };
-        assert!(screen.wait_written(Duration::from_secs(5)));
-        let first = taken();
-        assert!(draw_when_written(
-            &mut terminal,
-            &screen,
-            &mut app,
-            &mut title
-        ));
-        assert!(screen.wait_written(Duration::from_secs(5)));
-        taken();
-
-        let bytes = received.lock().unwrap().clone();
-        let mut grid = Grid::new(80, 24);
-        grid.feed(&bytes[filled..first]);
-        grid.resize(100, 30);
-        grid.feed(&bytes[first..]);
-        let mut reference = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        reference
-            .draw(|frame| screen::draw(frame, &mut app))
-            .unwrap();
-        let expected = buffer_lines(reference.backend().buffer());
-        assert_eq!(grid.lines(), expected);
-        assert!(
-            expected
-                .iter()
-                .any(|line| line.contains("Update 5 from the feed"))
-        );
-        assert!(
-            expected
-                .iter()
-                .any(|line| line.contains("typed while it waits"))
-        );
-    }
-
-    /// A frame that panics after it began leaves its first bytes in the
-    /// backend, which flushes them as the panic unwinds, after the panic hook
-    /// gave the terminal back. They are dropped, so the reset is the last
-    /// thing the terminal gets.
-    #[cfg(unix)]
-    #[test]
-    fn a_frame_cut_by_a_panic_writes_nothing_after_the_reset() {
-        use ratatui::layout::Rect;
-        use ratatui::{TerminalOptions, Viewport};
-        let gate = writer::tests::Gate::default();
-        let mut reset = Vec::new();
-        write_close(&mut reset, true);
-        let writer = Writer::start(gate.clone(), PathBuf::new(), reset.clone()).unwrap();
-        let hook = writer.handle();
-        let mut terminal = Terminal::with_options(
-            CursorBackend::new(writer),
-            TerminalOptions {
-                viewport: Viewport::Fixed(Rect::new(0, 0, 20, 5)),
-            },
-        )
-        .unwrap();
-        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = queue!(terminal.backend_mut(), BeginSynchronizedUpdate);
-            let _ = terminal.draw(|_| {
-                // What the panic hook does, before the panic unwinds.
-                let (ticket, _) = hook.finish(&[]);
-                assert_eq!(
-                    hook.wait(ticket, Duration::from_secs(5)),
-                    writer::Finish::Written
-                );
-                panic!("a frame that breaks");
-            });
-        }));
-        assert!(panicked.is_err());
-        drop(terminal);
-        assert!(hook.wait_written(Duration::from_secs(5)));
-        assert_eq!(gate.taken(), reset);
-    }
-
-    /// The window shrinks and comes back to its size while a frame waits
-    /// for the terminal, which cuts the cells outside the smaller size. The
-    /// next frame is drawn whole, so the screen is right again, although the
-    /// size is the one the last frame had.
-    #[cfg(unix)]
-    #[test]
-    fn a_resize_while_a_frame_waits_draws_the_next_whole() {
-        use crate::remote::{Activity, Item, Kind, Update};
-        use ratatui::backend::TestBackend;
-        use ratatui::layout::Size;
-        let gate = writer::tests::Gate::default();
-        let writer = Writer::start(gate.clone(), PathBuf::new(), Vec::new()).unwrap();
-        let screen = writer.handle();
-        let mut backend = CursorBackend::new(writer);
-        backend.size = Some(Size::new(40, 8));
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = app::tests::app();
-        let mut title = String::new();
-        let (mut enter, mut burst) = (None, None);
-        let item = |id: u64| {
-            let mut item = Item::new(
-                Kind::Text,
-                format!("Line {id} of what the agent said, long enough to reach the edge"),
-            );
-            item.id = id;
-            Update::Item(item)
-        };
-        for id in 1..=3 {
-            app.update(item(id), Activity::default);
-        }
-        assert!(draw_when_written(
-            &mut terminal,
-            &screen,
-            &mut app,
-            &mut title
-        ));
-        assert!(screen.wait_written(Duration::from_secs(5)));
-        let mut grid = Grid::new(40, 8);
-        let first = gate.taken().len();
-        grid.feed(&gate.taken());
-        // The terminal stops taking output, and a frame waits.
-        gate.hold(true);
-        app.update(item(4), Activity::default);
-        assert!(draw_when_written(
-            &mut terminal,
-            &screen,
-            &mut app,
-            &mut title
-        ));
-        for (width, height) in [(25, 4), (40, 8)] {
-            terminal.backend_mut().size = Some(Size::new(width, height));
-            handle(
-                &mut app,
-                vec![Event::Resize(width, height)],
-                &mut enter,
-                &mut burst,
-            );
-            assert!(!draw_when_written(
-                &mut terminal,
-                &screen,
-                &mut app,
-                &mut title
-            ));
-            grid.resize(usize::from(width), usize::from(height));
-        }
-        // It takes output again, the waiting frame first.
-        gate.hold(false);
-        assert!(screen.wait_written(Duration::from_secs(5)));
-        assert!(draw_when_written(
-            &mut terminal,
-            &screen,
-            &mut app,
-            &mut title
-        ));
-        assert!(screen.wait_written(Duration::from_secs(5)));
-        grid.feed(&gate.taken()[first..]);
-        let mut reference = Terminal::new(TestBackend::new(40, 8)).unwrap();
-        reference
-            .draw(|frame| screen::draw(frame, &mut app))
-            .unwrap();
-        assert_eq!(grid.lines(), buffer_lines(reference.backend().buffer()));
-    }
-
-    /// When the writer dies on the reset, whoever gave the terminal back
-    /// and waits writes the reset itself, after a CAN, also once the view
-    /// has ended. Giving it back again writes no second one.
-    #[cfg(unix)]
-    #[test]
-    fn a_reset_the_writer_died_on_is_written_by_whoever_waits() {
-        let direct = writer::tests::Gate::default();
-        let out = {
-            let direct = direct.clone();
-            move || -> Box<dyn Write + Send> { Box::new(direct) }
-        };
-        let writer =
-            Writer::start(writer::tests::Breaks, PathBuf::new(), b"[reset]".to_vec()).unwrap();
-        let (ticket, _) = writer.finish(&[]);
-        assert_eq!(
-            settle(&writer, ticket, Duration::from_secs(5), out.clone()),
-            writer::Finish::Failed
-        );
-        assert_eq!(direct.taken(), b"\x18[reset]");
-        let (again, _) = writer.finish(b"the reply");
-        assert_eq!(
-            settle(&writer, again, Duration::from_secs(5), out),
-            writer::Finish::Failed
-        );
-        assert_eq!(direct.taken(), b"\x18[reset]");
-    }
-
-    /// A second end that gives the terminal back without the writer, while
-    /// the first one's reset waits for the terminal, waits for that reset
-    /// too, up to its own deadline, rather than taking it as done.
-    #[cfg(unix)]
-    #[test]
-    fn a_second_direct_reset_waits_for_the_first() {
-        let held = writer::tests::Gate::default();
-        held.hold(true);
-        let writer =
-            Writer::start(writer::tests::Breaks, PathBuf::new(), b"[reset]".to_vec()).unwrap();
-        let (ticket, _) = writer.finish(&[]);
-        assert_eq!(
-            writer.wait(ticket, Duration::from_secs(5)),
-            writer::Finish::Failed
-        );
-        let first = {
-            let (writer, held) = (writer.handle(), held.clone());
-            std::thread::spawn(move || {
-                settle(&writer, ticket, Duration::from_secs(5), || Box::new(held))
-            })
-        };
-        // (The first one's reset waits for the terminal.)
-        let started = Instant::now();
-        while held.waiting() == 0 {
-            assert!(started.elapsed() < Duration::from_secs(5));
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        let second = Instant::now();
-        let out = held.clone();
-        settle(&writer, ticket, Duration::from_millis(200), || {
-            Box::new(out)
-        });
-        let waited = second.elapsed();
-        let written = held.taken();
-        held.hold(false);
-        first.join().unwrap();
-        assert!(
-            waited >= Duration::from_millis(200) || !written.is_empty(),
-            "the second returned after {waited:?} with nothing written"
-        );
-        assert_eq!(held.taken(), b"\x18[reset]");
-    }
-
-    /// A reset whose thread to write it couldn't start is written by the
-    /// next end that gives the terminal back, once threads start again.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_direct_reset_whose_thread_didnt_start_is_tried_again() {
-        const CHILD: &str = "ARKO_TEST_NO_RESET_THREAD";
-        if std::env::var_os(CHILD).is_none() {
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "tui::tests::a_direct_reset_whose_thread_didnt_start_is_tried_again",
-                    "--nocapture",
-                    "--test-threads",
-                    "1",
-                ])
-                .env(CHILD, "1")
-                .status()
-                .unwrap();
-            assert!(status.success());
-            return;
-        }
-        let taken = writer::tests::Gate::default();
-        let out = {
-            let taken = taken.clone();
-            move || -> Box<dyn Write + Send> { Box::new(taken) }
-        };
-        let writer =
-            Writer::start(writer::tests::Breaks, PathBuf::new(), b"[reset]".to_vec()).unwrap();
-        let (ticket, _) = writer.finish(&[]);
-        assert_eq!(
-            writer.wait(ticket, Duration::from_secs(5)),
-            writer::Finish::Failed
-        );
-        // No thread starts for a while.
-        let mut before = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: reads and sets this process's limit on threads.
-        unsafe {
-            assert_eq!(libc::getrlimit(libc::RLIMIT_NPROC, &mut before), 0);
-            let none = libc::rlimit {
-                rlim_cur: 0,
-                rlim_max: before.rlim_max,
-            };
-            assert_eq!(libc::setrlimit(libc::RLIMIT_NPROC, &none), 0);
-        }
-        assert!(std::thread::Builder::new().spawn(|| {}).is_err());
-        settle(&writer, ticket, Duration::from_millis(200), out.clone());
-        // SAFETY: puts the limit back.
-        unsafe {
-            assert_eq!(libc::setrlimit(libc::RLIMIT_NPROC, &before), 0);
-        }
-        assert!(taken.taken().is_empty());
-        settle(&writer, ticket, Duration::from_secs(5), out);
-        assert_eq!(taken.taken(), b"\x18[reset]");
     }
 }

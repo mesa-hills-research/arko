@@ -1,0 +1,103 @@
+size 120 40
+cursor 3 38 visible default
+text 0 "│ ▾ read src/parser.rs · ✓"
+style 0 0 25 dim
+style 0 25 26 fg=green
+text 1 "│    1"
+style 1 0 2 dim
+style 1 4 8 dim
+text 2 "│    2  /// Reads lines until the end of the input."
+style 2 0 2 dim
+style 2 4 8 dim
+text 3 "│    3  pub fn parse(input: &str) -> Vec<Token> {"
+style 3 0 2 dim
+style 3 4 8 dim
+text 4 "│    4      let mut tokens = Vec::new();"
+style 4 0 2 dim
+style 4 4 8 dim
+text 5 "│    5      for line in input.lines() {"
+style 5 0 2 dim
+style 5 4 8 dim
+text 6 "│    6          tokens.extend(split(line));"
+style 6 0 2 dim
+style 6 4 8 dim
+text 7 "│    7      }"
+style 7 0 2 dim
+style 7 4 8 dim
+text 8 "│    8      tokens"
+style 8 0 2 dim
+style 8 4 8 dim
+text 9 "│    9  use std::collections::HashMap;"
+style 9 0 2 dim
+style 9 4 8 dim
+text 10 "│   10"
+style 10 0 2 dim
+style 10 4 8 dim
+text 11 "│   11  /// Reads lines until the end of the input."
+style 11 0 2 dim
+style 11 4 8 dim
+text 12 "│   12  pub fn parse(input: &str) -> Vec<Token> {"
+style 12 0 2 dim
+style 12 4 8 dim
+text 13 "│   13      let mut tokens = Vec::new();"
+style 13 0 2 dim
+style 13 4 8 dim
+text 14 "│   14      for line in input.lines() {"
+style 14 0 2 dim
+style 14 4 8 dim
+text 15 "│   15          tokens.extend(split(line));"
+style 15 0 2 dim
+style 15 4 8 dim
+text 16 "│   16      }"
+style 16 0 2 dim
+style 16 4 8 dim
+text 17 "│   … 38 more lines"
+style 17 0 2 dim
+style 17 4 19 dim
+text 18 "│"
+style 18 0 2 dim
+text 19 "│ ▸ edit src/parser.rs · ✓"
+style 19 0 25 dim
+style 19 25 26 fg=green
+text 20 ""
+text 21 "▾ Ran cargo test --lib parser (1 failed, 3 passed)                                                                     ✗"
+style 21 0 2 dim
+style 21 29 50 dim
+style 21 119 120 fg=red
+text 22 "│ running 4 tests"
+style 22 0 2 dim
+text 23 "│ test parser::tests::reads ... ok"
+style 23 0 2 dim
+text 24 "│ test parser::tests::skips_blank ... FAILED"
+style 24 0 2 dim
+text 25 "│ test parser::tests::quotes ... ok"
+style 25 0 2 dim
+text 26 "│ test parser::tests::empty ... ok"
+style 26 0 2 dim
+text 27 "│"
+style 27 0 2 dim
+text 28 "│ test result: FAILED. 3 passed; 1 failed"
+style 28 0 2 dim
+text 29 ""
+text 30 "! retrying in 2 s"
+style 30 0 17 fg=yellow
+text 31 ""
+text 32 "  The parser skipped the blank line at the end of a file. I changed the loop, and now I run the tests again."
+text 33 ""
+text 34 "· Running cargo test · 41s …"
+style 34 0 2 dim
+style 34 20 28 dim
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 dim
+text 36 " ● working 1m00s · 142k/250k · main: $3.20 · quiet                                                         Ctrl+C  stop"
+style 36 1 10 fg=cyan
+style 36 10 50 dim
+style 36 106 114 reverse
+style 36 114 119 dim
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 dim
+text 38 " › Add to the task"
+style 38 1 3 fg=cyan
+style 38 3 18 dim
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 dim

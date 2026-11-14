@@ -21,10 +21,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use termelon::buffer::Buffer;
+use termelon::layout::Rect;
+use termelon::style::{Modifier, Style};
+use termelon::text::{Line, Span};
 
 use super::markdown;
 use super::motion;
@@ -371,8 +371,24 @@ pub struct Drawn {
     pub marker: Option<Rect>,
     /// The keys of the counted turns' lines.
     counters: Vec<u64>,
-    /// Something on the screen moves, so it is drawn again at the next frame.
-    pub moving: bool,
+    /// The lines on the screen that move, drawn again at the next frame.
+    pub moving: Vec<Moving>,
+}
+
+/// A line that moves, its spinner at `at` and the highlight over the word
+/// of `width` columns after it ([`motion::paint`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Moving {
+    pub at: (u16, u16),
+    pub width: usize,
+}
+
+impl Moving {
+    /// The cells it paints.
+    pub fn area(&self) -> Rect {
+        let width = u16::try_from(self.width.saturating_add(2)).unwrap_or(u16::MAX);
+        Rect::new(self.at.0, self.at.1, width, 1)
+    }
 }
 
 impl Drawn {
@@ -384,7 +400,7 @@ impl Drawn {
     /// The block's line on the screen's row `y` (not the blank line
     /// before it).
     fn row_at(&self, x: u16, y: u16) -> Option<RowRef> {
-        if !self.area.contains(ratatui::layout::Position { x, y }) {
+        if !self.area.contains(termelon::layout::Position { x, y }) {
             return None;
         }
         self.rows
@@ -1877,7 +1893,7 @@ impl Transcript {
             .saturating_sub(1);
         let mut y = 0usize;
         let mut skip = top.saturating_sub(starts.get(first).copied().unwrap_or(0));
-        let mut moving = false;
+        let mut moving = Vec::new();
         let ms = motion::clock();
         for (index, block) in blocks.iter().enumerate().skip(first) {
             if y >= height {
@@ -1908,7 +1924,9 @@ impl Transcript {
                     range.and_then(|range| selected_columns(range, (index, line), wrapped))
                 {
                     for x in from..to.min(width) {
-                        buffer[(area.x + x as u16, row)].set_style(highlight);
+                        if let Some(mut cell) = buffer.cell_mut((area.x + x as u16, row)) {
+                            cell.set_style(highlight);
+                        }
                     }
                 }
                 let gap = block.gap && line == 0;
@@ -1918,17 +1936,22 @@ impl Transcript {
                     && self.motion.thinking == Some(self.entries[entry].item.id)
                     && line == usize::from(block.gap)
                 {
-                    let x = area.x + SPINNER as u16;
-                    motion::paint(buffer, (x, row), 0, theme, ms);
-                    moving = true;
+                    let line = Moving {
+                        at: (area.x + SPINNER as u16, row),
+                        width: 0,
+                    };
+                    motion::paint(buffer, line.at, line.width, theme, ms);
+                    moving.push(line);
                 }
                 if block.shown == Shown::Working {
                     // (Not text, so the mouse finds the line above it.)
                     if line == usize::from(block.gap) {
-                        let label = text_width(&glyphs::render(self.working_label()));
-                        let x = area.x + SPINNER as u16;
-                        motion::paint(buffer, (x, row), label, theme, ms);
-                        moving = true;
+                        let line = Moving {
+                            at: (area.x + SPINNER as u16, row),
+                            width: text_width(&glyphs::render(self.working_label())),
+                        };
+                        motion::paint(buffer, line.at, line.width, theme, ms);
+                        moving.push(line);
                     }
                 } else {
                     rows[y] = Some(RowRef {
@@ -2541,10 +2564,10 @@ impl Transcript {
 pub(super) fn word_columns(line: &Wrapped, col: usize) -> Option<(usize, usize)> {
     let cells = cells(line);
     let at = cells.iter().position(|(_, start, w)| col < start + w)?;
-    if at < line_skip(line, &cells) || cells[at].0.is_whitespace() {
+    if at < line_skip(line, &cells) || blank(cells[at].0) {
         return None;
     }
-    let word = |c: char| !c.is_whitespace();
+    let word = |c: &str| !blank(c);
     let mut start = at;
     while start > 0 && word(cells[start - 1].0) && cells[start - 1].1 >= line.skip {
         start -= 1;
@@ -2617,13 +2640,13 @@ pub(super) fn highlight(theme: &Theme) -> Style {
     }
 }
 
-/// A line's characters, with the column each starts at and its width.
-fn cells(line: &Wrapped) -> Vec<(char, usize, usize)> {
+/// A line's grapheme clusters, with the column each starts at and its width.
+fn cells(line: &Wrapped) -> Vec<(&str, usize, usize)> {
     let mut cells = Vec::new();
     let mut col = 0;
     for span in &line.spans {
-        for c in span.content.chars() {
-            let w = wrap::char_width(c);
+        for (c, w) in termelon::text::graphemes(&span.content) {
+            let w = usize::from(w);
             cells.push((c, col, w));
             col += w;
         }
@@ -2631,8 +2654,13 @@ fn cells(line: &Wrapped) -> Vec<(char, usize, usize)> {
     cells
 }
 
+/// Whether the cluster `c` is white space.
+fn blank(c: &str) -> bool {
+    c.chars().all(char::is_whitespace)
+}
+
 /// The index of a line's first cell of text (after its decoration).
-fn line_skip(line: &Wrapped, cells: &[(char, usize, usize)]) -> usize {
+fn line_skip(line: &Wrapped, cells: &[(&str, usize, usize)]) -> usize {
     cells
         .iter()
         .position(|(_, col, _)| *col >= line.skip)
@@ -2673,7 +2701,7 @@ fn text_end(line: &Wrapped) -> usize {
     cells(line)
         .iter()
         .rev()
-        .find(|(c, _, _)| !c.is_whitespace())
+        .find(|(c, _, _)| !blank(c))
         .map_or(0, |(_, col, w)| col + w)
         .saturating_sub(line.tail)
 }
@@ -3736,7 +3764,7 @@ fn record_lines(
     // Settled questions need nothing more from the user, so the box is
     // drawn as quietly as an overlay's, not in the open panel's accent.
     let border = Style::new().fg(if theme.is_terminal() {
-        ratatui::style::Color::Reset
+        termelon::style::Color::Reset
     } else {
         theme.border
     });
@@ -3823,12 +3851,12 @@ pub(super) fn cut_end(text: &str, width: usize) -> String {
     }
     let mut cut = String::new();
     let mut used = 0;
-    for c in text.chars() {
-        let w = wrap::char_width(c);
+    for (c, w) in termelon::text::graphemes(text) {
+        let w = usize::from(w);
         if used + w + 1 > width {
             break;
         }
-        cut.push(c);
+        cut.push_str(c);
         used += w;
     }
     // (The ellipsis follows the last word, not a space after it.)
@@ -3954,12 +3982,12 @@ fn fit(text: &str, room: usize) -> String {
     let ellipsis = glyphs::render("…");
     let mut fitted = String::new();
     let mut taken = text_width(&ellipsis);
-    for c in text.chars() {
-        let width = wrap::char_width(c);
+    for (c, width) in termelon::text::graphemes(text) {
+        let width = usize::from(width);
         if taken + width > room {
             break;
         }
-        fitted.push(c);
+        fitted.push_str(c);
         taken += width;
     }
     fitted + &ellipsis
@@ -4015,12 +4043,12 @@ fn worker_line(
             let room = width.saturating_sub(used);
             let mut cut = String::new();
             let mut cut_width = 0;
-            for c in span.content.chars() {
-                let cw = wrap::char_width(c);
+            for (c, cw) in termelon::text::graphemes(&span.content) {
+                let cw = usize::from(cw);
                 if cut_width + cw + 1 > room {
                     break;
                 }
-                cut.push(c);
+                cut.push_str(c);
                 cut_width += cw;
             }
             if room > 0 {
@@ -4088,7 +4116,7 @@ mod tests {
         (0..height)
             .map(|y| {
                 (0..width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .map(|x| buffer.symbol((x, y)).to_string())
                     .collect::<String>()
                     .trim_end()
                     .to_string()
@@ -4575,9 +4603,13 @@ mod tests {
         let area = Rect::new(0, 0, 40, 3);
         let mut buffer = Buffer::empty(area);
         t.draw(&mut buffer, area, &full(), &theme);
-        let cell = &buffer[(2, 0)];
-        assert!(cell.modifier.contains(Modifier::ITALIC), "{cell:?}");
-        assert_eq!(cell.fg, theme.dim().fg.unwrap());
+        let cell = buffer.cell((2, 0)).unwrap();
+        assert!(
+            cell.modifier().contains(Modifier::ITALIC),
+            "{:?}",
+            cell.modifier()
+        );
+        assert_eq!(cell.fg(), theme.dim().fg.unwrap());
 
         let mut shown = Transcript::new();
         shown.set_open_thinking(true);
@@ -4945,7 +4977,7 @@ mod tests {
         let shown = rows(&mut t, &quiet, 40, 4);
         assert_eq!(shown[0], "· Read a.rs", "{shown:?}");
         assert_eq!(after_spinner(&shown[1]), Some(" Which next?"), "{shown:?}");
-        assert!(t.drawn.moving);
+        assert!(!t.drawn.moving.is_empty());
         // The row's line stays where it was when the next read joins.
         t.apply(Update::Item(read(3, "b.rs")));
         let shown = rows(&mut t, &quiet, 40, 4);
@@ -4984,7 +5016,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 1);
         let mut buffer = Buffer::empty(area);
         t.draw(&mut buffer, area, &quiet, &theme);
-        let fg = |x: u16| buffer[(x, 0)].fg;
+        let fg = |x: u16| buffer.cell((x, 0)).unwrap().fg();
         assert_eq!(fg(0), theme.dim().fg.unwrap(), "the marker");
         assert_eq!(fg(MARGIN as u16), theme.text().fg.unwrap(), "the words");
         assert_eq!(fg(18), theme.dim().fg.unwrap(), "the news");
@@ -5097,7 +5129,7 @@ mod tests {
             Some(" Where to start?"),
             "{thinking:?}"
         );
-        assert!(t.drawn.moving);
+        assert!(!t.drawn.moving.is_empty());
         assert!(is_working(&last(&mut t, View::Messages)));
         // A call runs, then ends, so the model has its result.
         let mut call = item(3, Kind::Call, "$ cargo test");
@@ -5183,19 +5215,19 @@ mod tests {
         let shown = rows(&mut t, &own, 40, 5);
         assert_eq!(after_spinner(&shown[2]), Some(" Plan."), "{shown:?}");
         assert_eq!(shown[3..], ["", ""], "nothing below it");
-        assert!(t.drawn.moving);
+        assert!(!t.drawn.moving.is_empty());
         t.apply(Update::Item(
             item(2, Kind::Text, "Done planning.").agent("r1"),
         ));
         let shown = rows(&mut t, &own, 40, 9);
         assert_eq!(shown[2], "  Plan.", "{shown:?}");
-        assert!(!t.drawn.moving);
+        assert!(t.drawn.moving.is_empty());
         t.apply(Update::Item(item(3, Kind::Thinking, "More.").agent("r1")));
         rows(&mut t, &own, 40, 12);
-        assert!(t.drawn.moving);
+        assert!(!t.drawn.moving.is_empty());
         t.apply(Update::Worker(worker("r1", WorkerState::Finished)));
         let shown = rows(&mut t, &own, 40, 12);
-        assert!(!t.drawn.moving, "{shown:?}");
+        assert!(t.drawn.moving.is_empty(), "{shown:?}");
     }
 
     /// Text the agent writes beside a `wait_for_agents` call, and a message
@@ -5592,10 +5624,10 @@ mod tests {
         t.draw(&mut buffer, area, &full(), &theme);
         let text = |y| {
             (0..width)
-                .map(|x| buffer[(x, y)].symbol().to_string())
+                .map(|x| buffer.symbol((x, y)).to_string())
                 .collect::<String>()
         };
-        let on = |y, color| (0..width).all(|x| buffer[(x, y)].bg == color);
+        let on = |y, color| (0..width).all(|x| buffer.cell((x, y)).unwrap().bg() == color);
         let mut user_rows = 0;
         for y in 0..height {
             if text(y).contains('▎') {
@@ -5642,7 +5674,7 @@ mod tests {
             t.draw(&mut buffer, area, &full(), &theme);
             let rows: Vec<String> = (0..height)
                 .map(|y| {
-                    let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                    let row: String = (0..width).map(|x| buffer.symbol((x, y))).collect();
                     row.trim_end().to_string()
                 })
                 .collect();
@@ -5651,7 +5683,7 @@ mod tests {
                 .iter()
                 .position(|row| row.contains("Keep the old name."));
             let colours = note.map(|y| {
-                let at = |x: usize| buffer[(x as u16, y as u16)].fg;
+                let at = |x: usize| buffer.cell((x as u16, y as u16)).unwrap().fg();
                 (at(0), at(MARGIN))
             });
             (rows, colours)
@@ -5765,7 +5797,7 @@ mod tests {
             t.draw(&mut buffer, area, &full(), &theme);
             let rows: Vec<String> = (0..height)
                 .map(|y| {
-                    let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                    let row: String = (0..width).map(|x| buffer.symbol((x, y))).collect();
                     row.trim_end().to_string()
                 })
                 .collect();
@@ -5775,10 +5807,18 @@ mod tests {
             assert_eq!(warned.len(), 1, "{rows:?}");
             let y = warned[0];
             let x = rows[y].split(note).next().unwrap().chars().count() as u16;
-            assert_eq!(buffer[(x, y as u16)].fg, theme.warning, "{rows:?}");
+            assert_eq!(
+                buffer.cell((x, y as u16)).unwrap().fg(),
+                theme.warning,
+                "{rows:?}"
+            );
             let reply = rows.iter().position(|row| row.trim() == "The answer is");
             let reply = reply.unwrap_or_else(|| panic!("the reply is alone in its row: {rows:?}"));
-            assert_eq!(buffer[(2, reply as u16)].fg, theme.text, "{rows:?}");
+            assert_eq!(
+                buffer.cell((2, reply as u16)).unwrap().fg(),
+                theme.text,
+                "{rows:?}"
+            );
         }
     }
 
@@ -5934,7 +5974,13 @@ mod tests {
         let area = Rect::new(0, 0, 30, 12);
         let mut buffer = Buffer::empty(area);
         t.draw(&mut buffer, area, &filter, &Theme::terminal());
-        let reversed = |x: u16| buffer[(x, 0)].modifier.contains(Modifier::REVERSED);
+        let reversed = |x: u16| {
+            buffer
+                .cell((x, 0))
+                .unwrap()
+                .modifier()
+                .contains(Modifier::REVERSED)
+        };
         assert!(!reversed(3) && reversed(4) && reversed(12) && !reversed(13));
         // Text added to an item keeps it. Another width (lines wrapped
         // otherwise) takes it away.

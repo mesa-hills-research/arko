@@ -127,22 +127,10 @@ fn alt_a(app: &mut App) {
 }
 
 fn screen(app: &mut App, width: u16, height: u16) -> String {
-    use ratatui::{Terminal, backend::TestBackend};
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| super::super::screen::draw(frame, app))
-        .unwrap();
-    let buffer = terminal.backend().buffer();
-    (0..height)
-        .map(|y| {
-            (0..width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::tui::golden::rows(width, height, |frame| {
+        super::super::screen::draw(frame, app)
+    })
+    .join("\n")
 }
 
 /// The screen's words with single spaces between them, for the keys, whose
@@ -338,7 +326,6 @@ fn a_window_without_room_explains_why_answers_wait() {
 
 #[test]
 fn unfocused_and_covered_requests_are_not_marked_seen() {
-    use ratatui::{Terminal, backend::TestBackend};
     for covered in [false, true] {
         let mut app = with(vec![request("a1", skill())]);
         app.focused = covered;
@@ -348,7 +335,7 @@ fn unfocused_and_covered_requests_are_not_marked_seen() {
                 since: Instant::now(),
             });
         }
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut terminal = crate::tui::golden::terminal(100, 24);
         terminal
             .draw(|frame| {
                 draw_tray(frame, &mut app, Rect::new(0, 0, 100, 20));

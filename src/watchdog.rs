@@ -27,7 +27,8 @@ pub(crate) enum Watched {
     /// which stalls when it hasn't turned for [`STALL`].
     Loop(&'static str),
     /// The terminal, which stalls when a write to it hasn't ended for
-    /// [`STALL`]. It may rest between writes.
+    /// [`STALL`]. It may rest between writes. The watchdog asks how long the
+    /// write going on has waited ([`Watchdog::terminal`]).
     Terminal,
 }
 
@@ -48,7 +49,13 @@ struct Shared {
     stage: Mutex<&'static str>,
     /// What the owner adds to the line about a stall.
     more: Box<dyn Fn() -> String + Send + Sync>,
+    /// How long the terminal's write going on has waited, for
+    /// [`Watched::Terminal`].
+    waiting: Option<Waiting>,
 }
+
+/// How long a write going on has waited, if one is.
+type Waiting = Box<dyn Fn() -> Option<Duration> + Send + Sync>;
 
 impl Watchdog {
     /// Starts watching `watched`, a loop that turns from now on or the
@@ -59,13 +66,33 @@ impl Watchdog {
         log: PathBuf,
         more: impl Fn() -> String + Send + Sync + 'static,
     ) -> Self {
+        Self::start_with(watched, log, Box::new(more), None)
+    }
+
+    /// Starts watching the terminal, with lines added to the log at `log`.
+    /// `waiting` says how long the write going on has waited, if one is.
+    pub(crate) fn terminal(
+        log: PathBuf,
+        waiting: impl Fn() -> Option<Duration> + Send + Sync + 'static,
+    ) -> Self {
+        let more = Box::new(String::new);
+        Self::start_with(Watched::Terminal, log, more, Some(Box::new(waiting)))
+    }
+
+    fn start_with(
+        watched: Watched,
+        log: PathBuf,
+        more: Box<dyn Fn() -> String + Send + Sync>,
+        waiting: Option<Waiting>,
+    ) -> Self {
         let shared = Arc::new(Shared {
             watched,
             started: Instant::now(),
             turned: AtomicU64::new(0),
             resting: AtomicBool::new(matches!(watched, Watched::Terminal)),
             stage: Mutex::new("starting"),
-            more: Box::new(more),
+            more,
+            waiting,
         });
         let watched = Arc::downgrade(&shared);
         if matches!(shared.watched, Watched::Loop(_)) {
@@ -82,18 +109,6 @@ impl Watchdog {
     pub(crate) fn turned(&self) {
         let now = millis(self.shared.started.elapsed());
         self.shared.turned.store(now, Ordering::Relaxed);
-    }
-
-    /// A write to the terminal starts.
-    pub(crate) fn writing(&self) {
-        self.turned();
-        self.shared.resting.store(false, Ordering::Relaxed);
-    }
-
-    /// The write to the terminal ended.
-    pub(crate) fn written(&self) {
-        self.turned();
-        self.shared.resting.store(true, Ordering::Relaxed);
     }
 
     /// What the loop does from now on, for the log should it stall.
@@ -123,6 +138,8 @@ fn watch(watched: &Weak<Shared>, log: &Path) {
     let mut resumed = 0;
     let mut woke = Instant::now();
     let mut asleep = computer_asleep();
+    // How long the terminal's write had waited at the last check.
+    let mut writing: Option<Duration> = None;
     loop {
         std::thread::sleep(EVERY);
         let slept = woke.elapsed();
@@ -133,6 +150,9 @@ fn watch(watched: &Weak<Shared>, log: &Path) {
         };
         // (The loop's watchdog says what the process went through, once.)
         let says = matches!(shared.watched, Watched::Loop(_));
+        if let Some(waiting) = &shared.waiting {
+            note_write(&shared, &mut writing, waiting());
+        }
         let computer_slept = asleep.saturating_sub(before);
         if says && computer_slept >= STALL {
             write(
@@ -182,6 +202,29 @@ fn watch(watched: &Weak<Shared>, log: &Path) {
         };
         write(log, &line);
     }
+}
+
+/// Takes what the terminal's write going on has waited, `now`, as the
+/// watchdog of a loop takes its turns. A write that started since the last
+/// check (it waited less than the one then) turns it, and so does the end
+/// of one. `last` is what the last check found.
+fn note_write(shared: &Shared, last: &mut Option<Duration>, now: Option<Duration>) {
+    let started = |waited: Duration| millis(shared.started.elapsed().saturating_sub(waited));
+    match (*last, now) {
+        (Some(before), Some(waited)) if waited >= before => {}
+        (_, Some(waited)) => {
+            shared.turned.store(started(waited), Ordering::Relaxed);
+            shared.resting.store(false, Ordering::Relaxed);
+        }
+        (Some(_), None) => {
+            shared
+                .turned
+                .store(started(Duration::ZERO), Ordering::Relaxed);
+            shared.resting.store(true, Ordering::Relaxed);
+        }
+        (None, None) => {}
+    }
+    *last = now;
 }
 
 fn millis(duration: Duration) -> u64 {
@@ -379,6 +422,37 @@ mod tests {
             Some(Check::Turned(15 * SECOND))
         );
         assert_eq!(check(105_000, 75_000, true), None);
+    }
+
+    /// The terminal's watchdog takes a write's start from how long it has
+    /// waited, so one write that goes on keeps its start, a new one counts
+    /// from its own, and the end of one is a turn.
+    #[test]
+    fn a_write_counts_from_its_start() {
+        let shared = Shared {
+            watched: Watched::Terminal,
+            started: Instant::now() - 100 * SECOND,
+            turned: AtomicU64::new(0),
+            resting: AtomicBool::new(true),
+            stage: Mutex::new("starting"),
+            more: Box::new(String::new),
+            waiting: None,
+        };
+        let turned = |shared: &Shared| shared.turned.load(Ordering::Relaxed);
+        let resting = |shared: &Shared| shared.resting.load(Ordering::Relaxed);
+        let mut last = None;
+        note_write(&shared, &mut last, Some(30 * SECOND));
+        let first = turned(&shared);
+        assert!((69_000..=71_000).contains(&first), "{first}");
+        assert!(!resting(&shared));
+        note_write(&shared, &mut last, Some(31 * SECOND));
+        assert_eq!(turned(&shared), first, "the same write");
+        note_write(&shared, &mut last, Some(SECOND));
+        let second = turned(&shared);
+        assert!(second > first + 20_000, "a new write, {second}");
+        note_write(&shared, &mut last, None);
+        assert!(resting(&shared));
+        assert!(turned(&shared) >= second);
     }
 
     /// The computer's sleep is measured where the clocks tell it, and is

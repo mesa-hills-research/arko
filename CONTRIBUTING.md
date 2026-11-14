@@ -12,6 +12,11 @@ scripted stand-in for the `claude` CLI, `tests/fixtures/fake_claude_agent.py`, a
 (`ARKO_TEST_PYTHON` picks the interpreter). The stand-in is a copy of arko_agents' test fixture,
 so update it when arko_agents changes the protocol it speaks.
 
+The terminal view's screens are checked against goldens in `tests/screens/`, a text file for each
+screen at each size with the characters, colours and attributes of every cell. After a change to
+what the view draws, write them again with `UPDATE_GOLDENS=1 cargo test --lib tui::inventory` and
+commit the files that changed.
+
 ## Building against a local arko_framework
 
 `Cargo.toml` takes the framework crates from crates.io. To work on Arko and the framework together,
@@ -28,6 +33,18 @@ arko_index = { path = "../arko_framework/arko_index" }
 
 The checkout's crate versions must match the ones `Cargo.toml` asks for. Cargo records the
 override in `Cargo.lock`, so regenerate the lock without the override before committing.
+
+## Building against a local termelon
+
+The full-screen view draws and runs on
+[termelon](https://github.com/mesa-hills-research/termelon), which comes from its GitHub repository
+at a fixed commit until it's on crates.io. To build against a local checkout, clone it beside this
+repository and add this override to `.cargo/config.toml`, which git ignores.
+
+```toml
+[patch."https://github.com/mesa-hills-research/termelon"]
+termelon = { path = "../termelon/crates/termelon" }
+```
 
 ## Dictation
 

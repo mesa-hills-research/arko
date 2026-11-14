@@ -1,0 +1,104 @@
+size 40 24
+cursor 3 22 visible default
+text 0 ""
+style 0 0 40 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ────────────────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 38 fg=#303030 bg=#131313
+style 1 38 40 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-luna (high eff… │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 36 fg=#dedede bg=#131313
+style 2 36 38 fg=#303030 bg=#131313
+style 2 38 40 fg=#dedede bg=#131313
+text 3 "  │ Workers    parallel workers      │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 36 fg=#dedede bg=#131313
+style 3 36 38 fg=#303030 bg=#131313
+style 3 38 40 fg=#dedede bg=#131313
+text 4 "  │ Workspace  /home/ada/proj        │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 15 fg=#9d9d9d bg=#131313
+style 4 15 36 fg=#dedede bg=#131313
+style 4 36 38 fg=#303030 bg=#131313
+style 4 38 40 fg=#dedede bg=#131313
+text 5 "  │ Session    20261110-101010-abcd  │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 15 fg=#9d9d9d bg=#131313
+style 5 15 36 fg=#dedede bg=#131313
+style 5 36 38 fg=#303030 bg=#131313
+style 5 38 40 fg=#dedede bg=#131313
+text 6 "  │ Project    AGENTS.md             │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 15 fg=#9d9d9d bg=#131313
+style 6 15 36 fg=#dedede bg=#131313
+style 6 36 38 fg=#303030 bg=#131313
+style 6 38 40 fg=#dedede bg=#131313
+text 7 "  │ Tools      2 skills · 1 MCP      │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 15 fg=#9d9d9d bg=#131313
+style 7 15 36 fg=#dedede bg=#131313
+style 7 36 38 fg=#303030 bg=#131313
+style 7 38 40 fg=#dedede bg=#131313
+text 8 "  │            server                │"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 4 fg=#303030 bg=#131313
+style 8 4 15 fg=#9d9d9d bg=#131313
+style 8 15 36 fg=#dedede bg=#131313
+style 8 36 38 fg=#303030 bg=#131313
+style 8 38 40 fg=#dedede bg=#131313
+text 9 "  └──────────────────────────────────┘"
+style 9 0 2 fg=#dedede bg=#131313
+style 9 2 38 fg=#303030 bg=#131313
+style 9 38 40 fg=#dedede bg=#131313
+text 10 ""
+style 10 0 40 fg=#dedede bg=#131313
+text 11 "▎ Fix the parser's failing tests"
+style 11 0 2 fg=#419cff bg=#202020
+style 11 2 40 fg=#dedede bg=#202020
+text 12 ""
+style 12 0 40 fg=#dedede bg=#131313
+text 13 "  I'll read the failing test and the"
+style 13 0 40 fg=#dedede bg=#131313
+text 14 "  parser first."
+style 14 0 40 fg=#dedede bg=#131313
+text 15 ""
+style 15 0 40 fg=#dedede bg=#131313
+text 16 "▸ 4 tool calls · 1 failed · running"
+style 16 0 2 fg=#9d9d9d bg=#131313
+style 16 2 14 fg=#dedede bg=#131313
+style 16 14 25 fg=#ff5257 bg=#131313
+style 16 25 35 fg=#9d9d9d bg=#131313
+style 16 35 40 fg=#dedede bg=#131313
+text 17 "! retrying in 2 s"
+style 17 0 17 fg=#ffc600 bg=#131313
+style 17 17 40 fg=#dedede bg=#131313
+text 18 "                                 ↓ end"
+style 18 0 32 fg=#dedede bg=#131313
+style 18 32 39 fg=#dedede bg=#232323
+style 18 39 40 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────"
+style 19 0 40 fg=#303030 bg=#131313
+text 20 " ● working 1m00s · 142k/250k · main: $3."
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 10 fg=#419cff bg=#131313
+style 20 10 40 fg=#9d9d9d bg=#131313
+text 21 "────────────────────────────────────────"
+style 21 0 40 fg=#303030 bg=#131313
+text 22 " › Add to the task"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 18 fg=#9d9d9d bg=#131313
+style 22 18 40 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────"
+style 23 0 40 fg=#303030 bg=#131313

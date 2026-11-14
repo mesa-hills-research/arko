@@ -1,0 +1,129 @@
+size 40 24
+cursor 0 0 hidden
+text 0 ""
+style 0 0 40 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ────────────────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 38 fg=#303030 bg=#131313
+style 1 38 40 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-luna (high eff… │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 36 fg=#dedede bg=#131313
+style 2 36 38 fg=#303030 bg=#131313
+style 2 38 40 fg=#dedede bg=#131313
+text 3 " ┌ API keys ──────────────────────────┐"
+style 3 0 1 fg=#dedede bg=#131313
+style 3 1 2 fg=#303030 bg=#101010
+style 3 2 12 fg=#dedede bg=#101010 bold
+style 3 12 39 fg=#303030 bg=#101010
+style 3 39 40 fg=#dedede bg=#131313
+text 4 " │                                    │"
+style 4 0 1 fg=#dedede bg=#131313
+style 4 1 2 fg=#303030 bg=#101010
+style 4 2 38 fg=#dedede bg=#101010
+style 4 38 39 fg=#303030 bg=#101010
+style 4 39 40 fg=#dedede bg=#131313
+text 5 " │ ▸ Anthropic      sk-ant-…a1b2    s │"
+style 5 0 1 fg=#dedede bg=#131313
+style 5 1 2 fg=#303030 bg=#101010
+style 5 2 3 fg=#dedede bg=#101010
+style 5 3 5 fg=#419cff bg=#101010
+style 5 5 20 fg=#419cff bg=#101010 bold
+style 5 20 36 fg=#dedede bg=#101010
+style 5 36 37 fg=#9d9d9d bg=#101010
+style 5 37 38 fg=#dedede bg=#101010
+style 5 38 39 fg=#303030 bg=#101010
+style 5 39 40 fg=#dedede bg=#131313
+text 6 " │                  Saved by Arko in  │"
+style 6 0 1 fg=#dedede bg=#131313
+style 6 1 2 fg=#303030 bg=#101010
+style 6 2 20 fg=#dedede bg=#101010
+style 6 20 36 fg=#9d9d9d bg=#101010
+style 6 36 38 fg=#dedede bg=#101010
+style 6 38 39 fg=#303030 bg=#101010
+style 6 39 40 fg=#dedede bg=#131313
+text 7 " │                  /home/me/.local/s │"
+style 7 0 1 fg=#dedede bg=#131313
+style 7 1 2 fg=#303030 bg=#101010
+style 7 2 20 fg=#dedede bg=#101010
+style 7 20 37 fg=#9d9d9d bg=#101010
+style 7 37 38 fg=#dedede bg=#101010
+style 7 38 39 fg=#303030 bg=#101010
+style 7 39 40 fg=#dedede bg=#131313
+text 8 " │                  hare/arko/.env.   │"
+style 8 0 1 fg=#dedede bg=#131313
+style 8 1 2 fg=#303030 bg=#101010
+style 8 2 20 fg=#dedede bg=#101010
+style 8 20 35 fg=#9d9d9d bg=#101010
+style 8 35 38 fg=#dedede bg=#101010
+style 8 38 39 fg=#303030 bg=#101010
+style 8 39 40 fg=#dedede bg=#131313
+text 9 " │   OpenAI         not set           │"
+style 9 0 1 fg=#dedede bg=#131313
+style 9 1 2 fg=#303030 bg=#101010
+style 9 2 20 fg=#dedede bg=#101010
+style 9 20 36 fg=#9d9d9d bg=#101010
+style 9 36 38 fg=#dedede bg=#101010
+style 9 38 39 fg=#303030 bg=#101010
+style 9 39 40 fg=#dedede bg=#131313
+text 10 " │   Google Gemini  AIza…x9Yz       e │"
+style 10 0 1 fg=#dedede bg=#131313
+style 10 1 2 fg=#303030 bg=#101010
+style 10 2 36 fg=#dedede bg=#101010
+style 10 36 37 fg=#9d9d9d bg=#101010
+style 10 37 38 fg=#dedede bg=#101010
+style 10 38 39 fg=#303030 bg=#101010
+style 10 39 40 fg=#dedede bg=#131313
+text 11 "▎│   OpenRouter     sk-or-…77aa     . │"
+style 11 0 1 fg=#419cff bg=#202020
+style 11 1 2 fg=#303030 bg=#101010
+style 11 2 36 fg=#dedede bg=#101010
+style 11 36 37 fg=#9d9d9d bg=#101010
+style 11 37 38 fg=#dedede bg=#101010
+style 11 38 39 fg=#303030 bg=#101010
+style 11 39 40 fg=#dedede bg=#202020
+text 12 " │   Voyage         not set           │"
+style 12 0 1 fg=#dedede bg=#131313
+style 12 1 2 fg=#303030 bg=#101010
+style 12 2 20 fg=#dedede bg=#101010
+style 12 20 36 fg=#9d9d9d bg=#101010
+style 12 36 38 fg=#dedede bg=#101010
+style 12 38 39 fg=#303030 bg=#101010
+style 12 39 40 fg=#dedede bg=#131313
+text 13 " │                                    │"
+style 13 0 1 fg=#dedede bg=#131313
+style 13 1 2 fg=#303030 bg=#101010
+style 13 2 38 fg=#dedede bg=#101010
+style 13 38 39 fg=#303030 bg=#101010
+style 13 39 40 fg=#dedede bg=#131313
+text 14 " └────────────────────────────────────┘"
+style 14 0 1 fg=#dedede bg=#131313
+style 14 1 39 fg=#303030 bg=#101010
+style 14 39 40 fg=#dedede bg=#131313
+text 15 ""
+style 15 0 40 fg=#dedede bg=#131313
+text 16 ""
+style 16 0 40 fg=#dedede bg=#131313
+text 17 ""
+style 17 0 40 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 40 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────"
+style 19 0 40 fg=#303030 bg=#131313
+text 20 " last turn 34s"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 14 fg=#9d9d9d bg=#131313
+style 20 14 40 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────"
+style 21 0 40 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 40 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────"
+style 23 0 40 fg=#303030 bg=#131313

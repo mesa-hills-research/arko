@@ -3,8 +3,8 @@
 //! highlights it and copies it when the button is let go, a double click
 //! takes a word, and a triple click a line.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::{Position, Rect};
+use termelon::buffer::Buffer;
+use termelon::layout::{Position, Rect};
 
 use super::theme::Theme;
 use super::transcript::{Range, copied, highlight, selected_columns, text_line, word_columns};
@@ -88,7 +88,9 @@ impl Docked {
             if let Some((from, to)) = selected_columns(range, (0, line), wrapped) {
                 for x in from..to.min(self.area.width as usize) {
                     let at = (self.area.x + x as u16, self.area.y + line as u16);
-                    buffer[at].set_style(highlight(theme));
+                    if let Some(mut cell) = buffer.cell_mut(at) {
+                        cell.set_style(highlight(theme));
+                    }
                 }
             }
         }

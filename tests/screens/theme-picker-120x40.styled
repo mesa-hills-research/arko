@@ -1,0 +1,278 @@
+size 120 40
+cursor 0 0 hidden
+text 0 ""
+style 0 0 120 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ───────────────────────────┌ Theme ───────────────────────────────────────┐─────────────────────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 36 fg=#303030 bg=#131313
+style 1 36 37 fg=#303030 bg=#101010
+style 1 37 44 fg=#dedede bg=#101010 bold
+style 1 44 84 fg=#303030 bg=#101010
+style 1 84 118 fg=#303030 bg=#131313
+style 1 118 120 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-luna (high effo│                                              │                                 │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 36 fg=#dedede bg=#131313
+style 2 36 37 fg=#303030 bg=#101010
+style 2 37 83 fg=#dedede bg=#101010
+style 2 83 84 fg=#303030 bg=#101010
+style 2 84 116 fg=#dedede bg=#131313
+style 2 116 118 fg=#303030 bg=#131313
+style 2 118 120 fg=#dedede bg=#131313
+text 3 "  │ Workers    parallel workers     │                                              │                                 │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 36 fg=#dedede bg=#131313
+style 3 36 37 fg=#303030 bg=#101010
+style 3 37 83 fg=#dedede bg=#101010
+style 3 83 84 fg=#303030 bg=#101010
+style 3 84 116 fg=#dedede bg=#131313
+style 3 116 118 fg=#303030 bg=#131313
+style 3 118 120 fg=#dedede bg=#131313
+text 4 "  │ Workspace  /home/ada/proj       │ Kibble                                       │                                 │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 15 fg=#9d9d9d bg=#131313
+style 4 15 36 fg=#dedede bg=#131313
+style 4 36 37 fg=#303030 bg=#101010
+style 4 37 38 fg=#dedede bg=#101010
+style 4 38 44 fg=#9d9d9d bg=#101010 bold
+style 4 44 83 fg=#dedede bg=#101010
+style 4 83 84 fg=#303030 bg=#101010
+style 4 84 116 fg=#dedede bg=#131313
+style 4 116 118 fg=#303030 bg=#131313
+style 4 118 120 fg=#dedede bg=#131313
+text 5 "  │ Session    20261110-101010-abcd │  Kibble                                      │                                 │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 15 fg=#9d9d9d bg=#131313
+style 5 15 36 fg=#dedede bg=#131313
+style 5 36 37 fg=#303030 bg=#101010
+style 5 37 83 fg=#dedede bg=#101010
+style 5 83 84 fg=#303030 bg=#101010
+style 5 84 116 fg=#dedede bg=#131313
+style 5 116 118 fg=#303030 bg=#131313
+style 5 118 120 fg=#dedede bg=#131313
+text 6 "  │ Project    AGENTS.md            │                                              │                                 │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 15 fg=#9d9d9d bg=#131313
+style 6 15 36 fg=#dedede bg=#131313
+style 6 36 37 fg=#303030 bg=#101010
+style 6 37 83 fg=#dedede bg=#101010
+style 6 83 84 fg=#303030 bg=#101010
+style 6 84 116 fg=#dedede bg=#131313
+style 6 116 118 fg=#303030 bg=#131313
+style 6 118 120 fg=#dedede bg=#131313
+text 7 "  │ Tools      2 skills · 1 MCP serv│ Kiln                                         │                                 │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 15 fg=#9d9d9d bg=#131313
+style 7 15 36 fg=#dedede bg=#131313
+style 7 36 37 fg=#303030 bg=#101010
+style 7 37 38 fg=#dedede bg=#101010
+style 7 38 42 fg=#9d9d9d bg=#101010 bold
+style 7 42 83 fg=#dedede bg=#101010
+style 7 83 84 fg=#303030 bg=#101010
+style 7 84 116 fg=#dedede bg=#131313
+style 7 116 118 fg=#303030 bg=#131313
+style 7 118 120 fg=#dedede bg=#131313
+text 8 "  └─────────────────────────────────│  Kiln Light                                  │─────────────────────────────────┘"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 36 fg=#303030 bg=#131313
+style 8 36 37 fg=#303030 bg=#101010
+style 8 37 83 fg=#dedede bg=#101010
+style 8 83 84 fg=#303030 bg=#101010
+style 8 84 118 fg=#303030 bg=#131313
+style 8 118 120 fg=#dedede bg=#131313
+text 9 "                                    │  Kiln Dark                                   │"
+style 9 0 36 fg=#dedede bg=#131313
+style 9 36 37 fg=#303030 bg=#101010
+style 9 37 83 fg=#dedede bg=#101010
+style 9 83 84 fg=#303030 bg=#101010
+style 9 84 120 fg=#dedede bg=#131313
+text 10 "▎ Add a README with a usage section │                                              │"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 36 fg=#dedede bg=#202020
+style 10 36 37 fg=#303030 bg=#101010
+style 10 37 83 fg=#dedede bg=#101010
+style 10 83 84 fg=#303030 bg=#101010
+style 10 84 120 fg=#dedede bg=#202020
+text 11 "                                    │ Lantern                                      │"
+style 11 0 36 fg=#dedede bg=#131313
+style 11 36 37 fg=#303030 bg=#101010
+style 11 37 38 fg=#dedede bg=#101010
+style 11 38 45 fg=#9d9d9d bg=#101010 bold
+style 11 45 83 fg=#dedede bg=#101010
+style 11 83 84 fg=#303030 bg=#101010
+style 11 84 120 fg=#dedede bg=#131313
+text 12 "  Done. The README has an install se│  Lantern Light                               │"
+style 12 0 36 fg=#dedede bg=#131313
+style 12 36 37 fg=#303030 bg=#101010
+style 12 37 83 fg=#dedede bg=#101010
+style 12 83 84 fg=#303030 bg=#101010
+style 12 84 120 fg=#dedede bg=#131313
+text 13 "                                    │  Lantern Dark                                │"
+style 13 0 36 fg=#dedede bg=#131313
+style 13 36 37 fg=#303030 bg=#101010
+style 13 37 83 fg=#dedede bg=#101010
+style 13 83 84 fg=#303030 bg=#101010
+style 13 84 120 fg=#dedede bg=#131313
+text 14 "                                    │                                              │"
+style 14 0 36 fg=#dedede bg=#131313
+style 14 36 37 fg=#303030 bg=#101010
+style 14 37 83 fg=#dedede bg=#101010
+style 14 83 84 fg=#303030 bg=#101010
+style 14 84 120 fg=#dedede bg=#131313
+text 15 "                                    │ macOS Classic                                │"
+style 15 0 36 fg=#dedede bg=#131313
+style 15 36 37 fg=#303030 bg=#101010
+style 15 37 38 fg=#dedede bg=#101010
+style 15 38 51 fg=#9d9d9d bg=#101010 bold
+style 15 51 83 fg=#dedede bg=#101010
+style 15 83 84 fg=#303030 bg=#101010
+style 15 84 120 fg=#dedede bg=#131313
+text 16 "                                    │  macOS Classic Light                         │"
+style 16 0 36 fg=#dedede bg=#131313
+style 16 36 37 fg=#303030 bg=#101010
+style 16 37 83 fg=#dedede bg=#101010
+style 16 83 84 fg=#303030 bg=#101010
+style 16 84 120 fg=#dedede bg=#131313
+text 17 "                                    │  macOS Classic Dark                          │"
+style 17 0 36 fg=#dedede bg=#131313
+style 17 36 37 fg=#303030 bg=#101010
+style 17 37 38 fg=#dedede bg=#101010
+style 17 38 58 fg=#f2f9ff bg=#006ee5
+style 17 58 83 fg=#dedede bg=#101010
+style 17 83 84 fg=#303030 bg=#101010
+style 17 84 120 fg=#dedede bg=#131313
+text 18 "                                    │                                              │"
+style 18 0 36 fg=#dedede bg=#131313
+style 18 36 37 fg=#303030 bg=#101010
+style 18 37 83 fg=#dedede bg=#101010
+style 18 83 84 fg=#303030 bg=#101010
+style 18 84 120 fg=#dedede bg=#131313
+text 19 "                                    │ macOS                                        │"
+style 19 0 36 fg=#dedede bg=#131313
+style 19 36 37 fg=#303030 bg=#101010
+style 19 37 38 fg=#dedede bg=#101010
+style 19 38 43 fg=#9d9d9d bg=#101010 bold
+style 19 43 83 fg=#dedede bg=#101010
+style 19 83 84 fg=#303030 bg=#101010
+style 19 84 120 fg=#dedede bg=#131313
+text 20 "                                    │  macOS Light                                 │"
+style 20 0 36 fg=#dedede bg=#131313
+style 20 36 37 fg=#303030 bg=#101010
+style 20 37 83 fg=#dedede bg=#101010
+style 20 83 84 fg=#303030 bg=#101010
+style 20 84 120 fg=#dedede bg=#131313
+text 21 "                                    │  macOS Dark                                  │"
+style 21 0 36 fg=#dedede bg=#131313
+style 21 36 37 fg=#303030 bg=#101010
+style 21 37 83 fg=#dedede bg=#101010
+style 21 83 84 fg=#303030 bg=#101010
+style 21 84 120 fg=#dedede bg=#131313
+text 22 "                                    │                                              │"
+style 22 0 36 fg=#dedede bg=#131313
+style 22 36 37 fg=#303030 bg=#101010
+style 22 37 83 fg=#dedede bg=#101010
+style 22 83 84 fg=#303030 bg=#101010
+style 22 84 120 fg=#dedede bg=#131313
+text 23 "                                    │ Mellifluous                                  │"
+style 23 0 36 fg=#dedede bg=#131313
+style 23 36 37 fg=#303030 bg=#101010
+style 23 37 38 fg=#dedede bg=#101010
+style 23 38 49 fg=#9d9d9d bg=#101010 bold
+style 23 49 83 fg=#dedede bg=#101010
+style 23 83 84 fg=#303030 bg=#101010
+style 23 84 120 fg=#dedede bg=#131313
+text 24 "                                    │  Mellifluous Light                           │"
+style 24 0 36 fg=#dedede bg=#131313
+style 24 36 37 fg=#303030 bg=#101010
+style 24 37 83 fg=#dedede bg=#101010
+style 24 83 84 fg=#303030 bg=#101010
+style 24 84 120 fg=#dedede bg=#131313
+text 25 "                                    │  Mellifluous Dark                            │"
+style 25 0 36 fg=#dedede bg=#131313
+style 25 36 37 fg=#303030 bg=#101010
+style 25 37 83 fg=#dedede bg=#101010
+style 25 83 84 fg=#303030 bg=#101010
+style 25 84 120 fg=#dedede bg=#131313
+text 26 "                                    │                                              │"
+style 26 0 36 fg=#dedede bg=#131313
+style 26 36 37 fg=#303030 bg=#101010
+style 26 37 83 fg=#dedede bg=#101010
+style 26 83 84 fg=#303030 bg=#101010
+style 26 84 120 fg=#dedede bg=#131313
+text 27 "                                    │ Mesa                                         │"
+style 27 0 36 fg=#dedede bg=#131313
+style 27 36 37 fg=#303030 bg=#101010
+style 27 37 38 fg=#dedede bg=#101010
+style 27 38 42 fg=#9d9d9d bg=#101010 bold
+style 27 42 83 fg=#dedede bg=#101010
+style 27 83 84 fg=#303030 bg=#101010
+style 27 84 120 fg=#dedede bg=#131313
+text 28 "                                    │  Mesa Light                                  │"
+style 28 0 36 fg=#dedede bg=#131313
+style 28 36 37 fg=#303030 bg=#101010
+style 28 37 83 fg=#dedede bg=#101010
+style 28 83 84 fg=#303030 bg=#101010
+style 28 84 120 fg=#dedede bg=#131313
+text 29 "                                    │  Mesa Dark                                   │"
+style 29 0 36 fg=#dedede bg=#131313
+style 29 36 37 fg=#303030 bg=#101010
+style 29 37 83 fg=#dedede bg=#101010
+style 29 83 84 fg=#303030 bg=#101010
+style 29 84 120 fg=#dedede bg=#131313
+text 30 "                                    │                                              │"
+style 30 0 36 fg=#dedede bg=#131313
+style 30 36 37 fg=#303030 bg=#101010
+style 30 37 83 fg=#dedede bg=#101010
+style 30 83 84 fg=#303030 bg=#101010
+style 30 84 120 fg=#dedede bg=#131313
+text 31 "                                    │ Midnight                                     │"
+style 31 0 36 fg=#dedede bg=#131313
+style 31 36 37 fg=#303030 bg=#101010
+style 31 37 38 fg=#dedede bg=#101010
+style 31 38 46 fg=#9d9d9d bg=#101010 bold
+style 31 46 83 fg=#dedede bg=#101010
+style 31 83 84 fg=#303030 bg=#101010
+style 31 84 120 fg=#dedede bg=#131313
+text 32 "                                    │                                              │"
+style 32 0 36 fg=#dedede bg=#131313
+style 32 36 37 fg=#303030 bg=#101010
+style 32 37 83 fg=#dedede bg=#101010
+style 32 83 84 fg=#303030 bg=#101010
+style 32 84 120 fg=#dedede bg=#131313
+text 33 "                                    └──────────────────── Enter  keep   Esc  back ─┘"
+style 33 0 36 fg=#dedede bg=#131313
+style 33 36 57 fg=#303030 bg=#101010
+style 33 57 64 fg=#dedede bg=#232323
+style 33 64 69 fg=#9d9d9d bg=#101010
+style 33 69 71 fg=#303030 bg=#101010
+style 33 71 76 fg=#dedede bg=#232323
+style 33 76 81 fg=#9d9d9d bg=#101010
+style 33 81 84 fg=#303030 bg=#101010
+style 33 84 120 fg=#dedede bg=#131313
+text 34 ""
+style 34 0 120 fg=#dedede bg=#131313
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 fg=#303030 bg=#131313
+text 36 " last turn 34s"
+style 36 0 1 fg=#dedede bg=#131313
+style 36 1 14 fg=#9d9d9d bg=#131313
+style 36 14 120 fg=#dedede bg=#131313
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 fg=#303030 bg=#131313
+text 38 " › Message  / for commands"
+style 38 0 1 fg=#dedede bg=#131313
+style 38 1 3 fg=#419cff bg=#131313
+style 38 3 26 fg=#9d9d9d bg=#131313
+style 38 26 120 fg=#dedede bg=#131313
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 fg=#303030 bg=#131313

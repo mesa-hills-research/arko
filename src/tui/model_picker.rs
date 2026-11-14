@@ -11,11 +11,11 @@
 //! picker change models one way.
 
 pub use crate::models::{menu, names, needs};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::Modifier;
-use ratatui::text::{Line, Span};
+use termelon::Frame;
+use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
+use termelon::layout::Rect;
+use termelon::style::Modifier;
+use termelon::text::{Line, Span};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;
@@ -897,26 +897,13 @@ fn fit(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
 
     /// The picker as an 80-column screen shows it, row by row.
     fn screen(picker: &ModelPicker) -> Vec<String> {
         let (width, height) = (80, 40);
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| draw(frame, &Theme::terminal(), frame.area(), picker))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
+        crate::tui::golden::rows(width, height, |frame| {
+            draw(frame, &Theme::terminal(), frame.area(), picker)
+        })
     }
 
     #[test]

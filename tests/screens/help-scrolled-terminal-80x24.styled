@@ -1,0 +1,46 @@
+size 80 24
+cursor 0 0 hidden
+text 0 " ┌ Help ──────────────────────────────────────────────────────────────────────┐"
+style 0 2 8 bold
+text 1 " │                                                                            │"
+text 2 " │  Ctrl+B        move the agent's running call to the background, else back  │"
+style 2 3 11 reverse
+text 3 " │                a character                                                 │"
+text 4 " │  Ctrl+O        the next view (full, quiet, messages)                       │"
+style 4 3 11 reverse
+text 5 " │  Ctrl+G        the transcript's rows that open, where ↑ ↓ move and Enter   │"
+style 5 3 11 reverse
+text 6 " │                opens or closes one                                         │"
+text 7 " │  Ctrl+R        dictate into the box, and again to stop and edit the words  │"
+style 7 3 11 reverse
+text 8 " │                (Enter stops too, Esc takes them out)                       │"
+text 9 " │  Ctrl+T        the agent list, where Tab and Shift+Tab move through it and │"
+style 9 3 11 reverse
+text 10 "▎│                Enter shows a worker's own work                             │"
+style 10 0 1 fg=cyan
+text 11 " │  Alt+Q         open the answer panel for the agent's questions             │"
+style 11 3 10 reverse
+text 12 " │  Alt+A         the approval tray, where Space selects, Enter approves the  │"
+style 12 3 10 reverse
+text 13 " │                selection, R rejects all, V opens a row's details and M     │"
+text 14 " │                flips Include message                                       │"
+text 15 " │  Esc           close, go back, or leave the answer panel to answer in a    │"
+style 15 3 8 reverse
+text 16 " │                message                                                     │"
+text 17 " │                                                                            │"
+text 18 " └───────────────────────────────────────────────── Esc  close   ↑ ↓  scroll ─┘"
+style 18 51 56 reverse
+style 18 56 62 dim
+style 18 64 69 reverse
+style 18 69 76 dim
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 dim
+text 20 " last turn 34s"
+style 20 1 14 dim
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 dim
+text 22 " › Message  / for commands"
+style 22 1 3 fg=cyan
+style 22 3 26 dim
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 dim

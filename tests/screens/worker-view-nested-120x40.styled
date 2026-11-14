@@ -1,0 +1,135 @@
+size 120 40
+cursor 3 33 visible default
+text 0 "  r4 Run the quoting test · running · 20s"
+style 0 0 2 fg=#dedede bg=#131313
+style 0 2 5 fg=#dedede bg=#131313 bold
+style 0 5 25 fg=#dedede bg=#131313
+style 0 25 28 fg=#9d9d9d bg=#131313
+style 0 28 35 fg=#419cff bg=#131313
+style 0 35 41 fg=#9d9d9d bg=#131313
+style 0 41 120 fg=#dedede bg=#131313
+text 1 ""
+style 1 0 120 fg=#dedede bg=#131313
+text 2 "⣟ Working…"
+style 2 0 1 fg=#9d9d9d bg=#131313
+style 2 1 2 fg=#dedede bg=#131313
+style 2 2 3 fg=#9d9d9d bg=#131313
+style 2 3 4 fg=#a1a1a1 bg=#131313
+style 2 4 5 fg=#bebebe bg=#131313
+style 2 5 7 fg=#dadada bg=#131313
+style 2 7 8 fg=#bebebe bg=#131313
+style 2 8 9 fg=#a1a1a1 bg=#131313
+style 2 9 10 fg=#9d9d9d bg=#131313
+style 2 10 120 fg=#dedede bg=#131313
+text 3 ""
+style 3 0 120 fg=#dedede bg=#131313
+text 4 ""
+style 4 0 120 fg=#dedede bg=#131313
+text 5 ""
+style 5 0 120 fg=#dedede bg=#131313
+text 6 ""
+style 6 0 120 fg=#dedede bg=#131313
+text 7 ""
+style 7 0 120 fg=#dedede bg=#131313
+text 8 ""
+style 8 0 120 fg=#dedede bg=#131313
+text 9 ""
+style 9 0 120 fg=#dedede bg=#131313
+text 10 ""
+style 10 0 120 fg=#dedede bg=#131313
+text 11 ""
+style 11 0 120 fg=#dedede bg=#131313
+text 12 ""
+style 12 0 120 fg=#dedede bg=#131313
+text 13 ""
+style 13 0 120 fg=#dedede bg=#131313
+text 14 ""
+style 14 0 120 fg=#dedede bg=#131313
+text 15 ""
+style 15 0 120 fg=#dedede bg=#131313
+text 16 ""
+style 16 0 120 fg=#dedede bg=#131313
+text 17 ""
+style 17 0 120 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 120 fg=#dedede bg=#131313
+text 19 ""
+style 19 0 120 fg=#dedede bg=#131313
+text 20 ""
+style 20 0 120 fg=#dedede bg=#131313
+text 21 ""
+style 21 0 120 fg=#dedede bg=#131313
+text 22 ""
+style 22 0 120 fg=#dedede bg=#131313
+text 23 ""
+style 23 0 120 fg=#dedede bg=#131313
+text 24 ""
+style 24 0 120 fg=#dedede bg=#131313
+text 25 ""
+style 25 0 120 fg=#dedede bg=#131313
+text 26 ""
+style 26 0 120 fg=#dedede bg=#131313
+text 27 ""
+style 27 0 120 fg=#dedede bg=#131313
+text 28 ""
+style 28 0 120 fg=#dedede bg=#131313
+text 29 ""
+style 29 0 120 fg=#dedede bg=#131313
+text 30 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 30 0 120 fg=#303030 bg=#131313
+text 31 " viewing r4 (under r1) · ● working 20s · 12k/190k                                                             Esc  back"
+style 31 0 1 fg=#dedede bg=#131313
+style 31 1 22 fg=#419cff bg=#131313 bold
+style 31 22 25 fg=#9d9d9d bg=#131313
+style 31 25 34 fg=#419cff bg=#131313
+style 31 34 49 fg=#9d9d9d bg=#131313
+style 31 49 109 fg=#dedede bg=#131313
+style 31 109 114 fg=#dedede bg=#232323
+style 31 114 119 fg=#9d9d9d bg=#131313
+style 31 119 120 fg=#dedede bg=#131313
+text 32 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 32 0 120 fg=#303030 bg=#131313
+text 33 " › Message r4"
+style 33 0 1 fg=#dedede bg=#131313
+style 33 1 3 fg=#419cff bg=#131313
+style 33 3 13 fg=#9d9d9d bg=#131313
+style 33 13 120 fg=#dedede bg=#131313
+text 34 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 34 0 120 fg=#303030 bg=#131313
+text 35 " ○ main                                                                                                       2 running"
+style 35 0 1 fg=#dedede bg=#131313
+style 35 1 3 fg=#9d9d9d bg=#131313
+style 35 3 110 fg=#dedede bg=#131313
+style 35 110 120 fg=#9d9d9d bg=#131313
+text 36 " ○ r1    cargo test --test quoting                                                        running  ·  1m · 6 tool calls"
+style 36 0 1 fg=#dedede bg=#131313
+style 36 1 3 fg=#9d9d9d bg=#131313
+style 36 3 7 fg=#dedede bg=#131313
+style 36 7 34 fg=#9d9d9d bg=#131313
+style 36 34 90 fg=#dedede bg=#131313
+style 36 90 98 fg=#419cff bg=#131313
+style 36 98 120 fg=#9d9d9d bg=#131313
+text 37 " ●   r4  cargo test                                                                       running  · 20s · 4 tool calls"
+style 37 0 1 fg=#dedede bg=#131313
+style 37 1 3 fg=#419cff bg=#131313
+style 37 3 7 fg=#dedede bg=#131313 bold
+style 37 7 19 fg=#9d9d9d bg=#131313
+style 37 19 90 fg=#dedede bg=#131313
+style 37 90 98 fg=#419cff bg=#131313
+style 37 98 120 fg=#9d9d9d bg=#131313
+text 38 " ● r2    astra high  Read the lexer                                                       finished · 48s · 5 tool calls"
+style 38 0 1 fg=#dedede bg=#131313
+style 38 1 3 fg=#30d158 bg=#131313
+style 38 3 7 fg=#dedede bg=#131313
+style 38 7 35 fg=#9d9d9d bg=#131313
+style 38 35 90 fg=#dedede bg=#131313
+style 38 90 98 fg=#30d158 bg=#131313
+style 38 98 120 fg=#9d9d9d bg=#131313
+text 39 " ● r3    Update the docs                                                                  failed   ·  9s · 3 tool calls"
+style 39 0 1 fg=#dedede bg=#131313
+style 39 1 3 fg=#ff5257 bg=#131313
+style 39 3 7 fg=#dedede bg=#131313
+style 39 7 24 fg=#9d9d9d bg=#131313
+style 39 24 90 fg=#dedede bg=#131313
+style 39 90 98 fg=#ff5257 bg=#131313
+style 39 98 120 fg=#9d9d9d bg=#131313

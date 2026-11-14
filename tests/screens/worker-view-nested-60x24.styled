@@ -1,0 +1,100 @@
+size 60 24
+cursor 3 17 visible default
+text 0 "  r4 Run the quoting test · running · 20s"
+style 0 0 2 fg=#dedede bg=#131313
+style 0 2 5 fg=#dedede bg=#131313 bold
+style 0 5 25 fg=#dedede bg=#131313
+style 0 25 28 fg=#9d9d9d bg=#131313
+style 0 28 35 fg=#419cff bg=#131313
+style 0 35 41 fg=#9d9d9d bg=#131313
+style 0 41 60 fg=#dedede bg=#131313
+text 1 ""
+style 1 0 60 fg=#dedede bg=#131313
+text 2 "⣟ Working…"
+style 2 0 1 fg=#9d9d9d bg=#131313
+style 2 1 2 fg=#dedede bg=#131313
+style 2 2 3 fg=#9d9d9d bg=#131313
+style 2 3 4 fg=#a1a1a1 bg=#131313
+style 2 4 5 fg=#bebebe bg=#131313
+style 2 5 7 fg=#dadada bg=#131313
+style 2 7 8 fg=#bebebe bg=#131313
+style 2 8 9 fg=#a1a1a1 bg=#131313
+style 2 9 10 fg=#9d9d9d bg=#131313
+style 2 10 60 fg=#dedede bg=#131313
+text 3 ""
+style 3 0 60 fg=#dedede bg=#131313
+text 4 ""
+style 4 0 60 fg=#dedede bg=#131313
+text 5 ""
+style 5 0 60 fg=#dedede bg=#131313
+text 6 ""
+style 6 0 60 fg=#dedede bg=#131313
+text 7 ""
+style 7 0 60 fg=#dedede bg=#131313
+text 8 ""
+style 8 0 60 fg=#dedede bg=#131313
+text 9 ""
+style 9 0 60 fg=#dedede bg=#131313
+text 10 ""
+style 10 0 60 fg=#dedede bg=#131313
+text 11 ""
+style 11 0 60 fg=#dedede bg=#131313
+text 12 ""
+style 12 0 60 fg=#dedede bg=#131313
+text 13 ""
+style 13 0 60 fg=#dedede bg=#131313
+text 14 "────────────────────────────────────────────────────────────"
+style 14 0 60 fg=#303030 bg=#131313
+text 15 " viewing r4 (under r1) · ● working 20s · 12k/190k"
+style 15 0 1 fg=#dedede bg=#131313
+style 15 1 22 fg=#419cff bg=#131313 bold
+style 15 22 25 fg=#9d9d9d bg=#131313
+style 15 25 34 fg=#419cff bg=#131313
+style 15 34 49 fg=#9d9d9d bg=#131313
+style 15 49 60 fg=#dedede bg=#131313
+text 16 "────────────────────────────────────────────────────────────"
+style 16 0 60 fg=#303030 bg=#131313
+text 17 " › Message r4"
+style 17 0 1 fg=#dedede bg=#131313
+style 17 1 3 fg=#419cff bg=#131313
+style 17 3 13 fg=#9d9d9d bg=#131313
+style 17 13 60 fg=#dedede bg=#131313
+text 18 "────────────────────────────────────────────────────────────"
+style 18 0 60 fg=#303030 bg=#131313
+text 19 " ○ main                                           2 running"
+style 19 0 1 fg=#dedede bg=#131313
+style 19 1 3 fg=#9d9d9d bg=#131313
+style 19 3 50 fg=#dedede bg=#131313
+style 19 50 60 fg=#9d9d9d bg=#131313
+text 20 " ○ r1    cargo test --test    running  ·  1m · 6 tool calls"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 3 fg=#9d9d9d bg=#131313
+style 20 3 7 fg=#dedede bg=#131313
+style 20 7 26 fg=#9d9d9d bg=#131313
+style 20 26 30 fg=#dedede bg=#131313
+style 20 30 38 fg=#419cff bg=#131313
+style 20 38 60 fg=#9d9d9d bg=#131313
+text 21 " ●   r4  cargo test           running  · 20s · 4 tool calls"
+style 21 0 1 fg=#dedede bg=#131313
+style 21 1 3 fg=#419cff bg=#131313
+style 21 3 7 fg=#dedede bg=#131313 bold
+style 21 7 19 fg=#9d9d9d bg=#131313
+style 21 19 30 fg=#dedede bg=#131313
+style 21 30 38 fg=#419cff bg=#131313
+style 21 38 60 fg=#9d9d9d bg=#131313
+text 22 " ● r2    astra high  Read the finished · 48s · 5 tool calls"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#30d158 bg=#131313
+style 22 3 7 fg=#dedede bg=#131313
+style 22 7 29 fg=#9d9d9d bg=#131313
+style 22 29 30 fg=#dedede bg=#131313
+style 22 30 38 fg=#30d158 bg=#131313
+style 22 38 60 fg=#9d9d9d bg=#131313
+text 23 " ● r3    Update the docs      failed   ·  9s · 3 tool calls"
+style 23 0 1 fg=#dedede bg=#131313
+style 23 1 3 fg=#ff5257 bg=#131313
+style 23 3 7 fg=#dedede bg=#131313
+style 23 7 24 fg=#9d9d9d bg=#131313
+style 23 24 30 fg=#dedede bg=#131313
+style 23 30 38 fg=#ff5257 bg=#131313
+style 23 38 60 fg=#9d9d9d bg=#131313

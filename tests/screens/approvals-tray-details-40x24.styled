@@ -1,0 +1,96 @@
+size 40 24
+cursor 0 0 hidden
+text 0 "  │            server                │"
+style 0 0 2 fg=#dedede bg=#131313
+style 0 2 4 fg=#303030 bg=#131313
+style 0 4 15 fg=#9d9d9d bg=#131313
+style 0 15 36 fg=#dedede bg=#131313
+style 0 36 38 fg=#303030 bg=#131313
+style 0 38 40 fg=#dedede bg=#131313
+text 1 "  └──────────────────────────────────┘"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 38 fg=#303030 bg=#131313
+style 1 38 40 fg=#dedede bg=#131313
+text 2 ""
+style 2 0 40 fg=#dedede bg=#131313
+text 3 "▎ Add a README with a usage section"
+style 3 0 2 fg=#419cff bg=#202020
+style 3 2 40 fg=#dedede bg=#202020
+text 4 ""
+style 4 0 40 fg=#dedede bg=#131313
+text 5 "  Done. The README has an install"
+style 5 0 40 fg=#dedede bg=#131313
+text 6 "  section and a usage example."
+style 6 0 40 fg=#dedede bg=#131313
+text 7 " 4 approvals    Space  select   A  all"
+style 7 0 12 fg=#419cff bg=#101010 bold
+style 7 12 15 bg=#101010
+style 7 15 22 fg=#dedede bg=#232323
+style 7 22 29 fg=#9d9d9d bg=#101010
+style 7 29 31 bg=#101010
+style 7 31 34 fg=#dedede bg=#232323
+style 7 34 38 fg=#9d9d9d bg=#101010
+style 7 38 40 bg=#101010
+text 8 " › [x] skill    release-notes  every pro"
+style 8 0 3 fg=#419cff bg=#101010
+style 8 3 7 fg=#dedede bg=#101010
+style 8 7 16 fg=#9d9d9d bg=#101010
+style 8 16 31 fg=#419cff bg=#101010 bold
+style 8 31 40 fg=#ffc600 bg=#101010
+text 9 "      Save the skill release-notes for"
+style 9 0 6 bg=#101010
+style 9 6 38 fg=#dedede bg=#101010 bold
+style 9 38 40 bg=#101010
+text 10 "      every project?"
+style 10 0 6 bg=#101010
+style 10 6 20 fg=#dedede bg=#101010 bold
+style 10 20 40 bg=#101010
+text 11 "      How this project writes release"
+style 11 0 6 bg=#101010
+style 11 6 37 fg=#dedede bg=#101010
+style 11 37 40 bg=#101010
+text 12 "      notes."
+style 12 0 6 bg=#101010
+style 12 6 12 fg=#dedede bg=#101010
+style 12 12 40 bg=#101010
+text 13 "      Written by the agent."
+style 13 0 6 bg=#101010
+style 13 6 27 fg=#dedede bg=#101010
+style 13 27 40 bg=#101010
+text 14 "      Workers get it too."
+style 14 0 6 bg=#101010
+style 14 6 25 fg=#dedede bg=#101010
+style 14 25 40 bg=#101010
+text 15 "      Why"
+style 15 0 6 bg=#101010
+style 15 6 9 fg=#9d9d9d bg=#101010
+style 15 9 40 bg=#101010
+text 16 "      The checklist changed."
+style 16 0 6 bg=#101010
+style 16 6 28 fg=#dedede bg=#101010
+style 16 28 40 bg=#101010
+text 17 "   [x] server   github         this proj"
+style 17 0 3 bg=#101010
+style 17 3 7 fg=#dedede bg=#101010
+style 17 7 16 fg=#9d9d9d bg=#101010
+style 17 16 40 fg=#dedede bg=#101010
+text 18 "   [x] profile  3d-judge       every pro"
+style 18 0 3 bg=#101010
+style 18 3 7 fg=#dedede bg=#101010
+style 18 7 16 fg=#9d9d9d bg=#101010
+style 18 16 31 fg=#dedede bg=#101010
+style 18 31 40 fg=#ffc600 bg=#101010
+text 19 "────────────────────────────────────────"
+style 19 0 40 fg=#303030 bg=#131313
+text 20 " ● needs approval"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 17 fg=#419cff bg=#131313
+style 20 17 40 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────"
+style 21 0 40 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 26 fg=#9d9d9d bg=#131313
+style 22 26 40 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────"
+style 23 0 40 fg=#303030 bg=#131313

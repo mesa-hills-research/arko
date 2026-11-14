@@ -1,0 +1,59 @@
+size 80 24
+cursor 0 0 hidden
+text 0 ""
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 78 dim
+text 2 "  │ Model      gpt-6-luna (high effort)                                      │"
+style 2 2 15 dim
+style 2 76 78 dim
+text 3 "  │ Workers    parallel workers                                              │"
+style 3 2 15 dim
+style 3 76 78 dim
+text 4 "  │ Workspace  /home/ada/proj                                                │"
+style 4 2 15 dim
+style 4 76 78 dim
+text 5 "  │ Sessio┌ Download a speech model? ────────────────────────────────┐       │"
+style 5 2 10 dim
+style 5 11 37 bold
+style 5 76 78 dim
+text 6 "  │ Projec│                                                          │       │"
+style 6 2 10 dim
+style 6 76 78 dim
+text 7 "  │ Tools │ Dictation runs on this computer with Granite Speech 5.0  │       │"
+style 7 2 10 dim
+style 7 76 78 dim
+text 8 "  └───────│ by IBM (948 MB download, 477 MB on disk, Apache 2.0).    │───────┘"
+style 8 2 10 dim
+style 8 70 78 dim
+text 9 "          │                                                          │"
+text 10 "▎ Add a RE│  Download    Cancel                                      │"
+style 10 0 2 fg=cyan
+style 10 12 22 reverse
+style 10 24 32 reverse
+text 11 "          │                                                          │"
+text 12 "  Done. Th└─────────────── ← →  choose   Enter  go on   Esc  cancel ─┘"
+style 12 26 31 reverse
+style 12 31 38 dim
+style 12 40 47 reverse
+style 12 47 53 dim
+style 12 55 60 reverse
+style 12 60 67 dim
+text 13 ""
+text 14 ""
+text 15 ""
+text 16 ""
+text 17 ""
+text 18 ""
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 dim
+text 20 " last turn 34s"
+style 20 1 14 dim
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 dim
+text 22 " › Message  / for commands"
+style 22 1 3 fg=cyan
+style 22 3 26 dim
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 dim

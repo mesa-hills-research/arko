@@ -1,0 +1,150 @@
+size 120 40
+cursor 3 38 visible default
+text 0 ""
+style 0 0 120 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 118 fg=#303030 bg=#131313
+style 1 118 120 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-luna (high effort)                                                                              │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 116 fg=#dedede bg=#131313
+style 2 116 118 fg=#303030 bg=#131313
+style 2 118 120 fg=#dedede bg=#131313
+text 3 "  │ Workers    parallel workers                                                                                      │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 116 fg=#dedede bg=#131313
+style 3 116 118 fg=#303030 bg=#131313
+style 3 118 120 fg=#dedede bg=#131313
+text 4 "  │ Workspace  /home/ada/proj                                                                                        │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 15 fg=#9d9d9d bg=#131313
+style 4 15 116 fg=#dedede bg=#131313
+style 4 116 118 fg=#303030 bg=#131313
+style 4 118 120 fg=#dedede bg=#131313
+text 5 "  │ Session    20261110-101010-abcd                                                                                  │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 15 fg=#9d9d9d bg=#131313
+style 5 15 116 fg=#dedede bg=#131313
+style 5 116 118 fg=#303030 bg=#131313
+style 5 118 120 fg=#dedede bg=#131313
+text 6 "  │ Project    AGENTS.md                                                                                             │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 15 fg=#9d9d9d bg=#131313
+style 6 15 116 fg=#dedede bg=#131313
+style 6 116 118 fg=#303030 bg=#131313
+style 6 118 120 fg=#dedede bg=#131313
+text 7 "  │ Tools      2 skills · 1 MCP server                                                                               │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 15 fg=#9d9d9d bg=#131313
+style 7 15 116 fg=#dedede bg=#131313
+style 7 116 118 fg=#303030 bg=#131313
+style 7 118 120 fg=#dedede bg=#131313
+text 8 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 118 fg=#303030 bg=#131313
+style 8 118 120 fg=#dedede bg=#131313
+text 9 ""
+style 9 0 120 fg=#dedede bg=#131313
+text 10 "▎ Add a README with a usage section"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 120 fg=#dedede bg=#202020
+text 11 ""
+style 11 0 120 fg=#dedede bg=#131313
+text 12 "  Done. The README has an install section and a usage example."
+style 12 0 120 fg=#dedede bg=#131313
+text 13 ""
+style 13 0 120 fg=#dedede bg=#131313
+text 14 ""
+style 14 0 120 fg=#dedede bg=#131313
+text 15 ""
+style 15 0 120 fg=#dedede bg=#131313
+text 16 ""
+style 16 0 120 fg=#dedede bg=#131313
+text 17 ""
+style 17 0 120 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 120 fg=#dedede bg=#131313
+text 19 ""
+style 19 0 120 fg=#dedede bg=#131313
+text 20 ""
+style 20 0 120 fg=#dedede bg=#131313
+text 21 ""
+style 21 0 120 fg=#dedede bg=#131313
+text 22 ""
+style 22 0 120 fg=#dedede bg=#131313
+text 23 ""
+style 23 0 120 fg=#dedede bg=#131313
+text 24 ""
+style 24 0 120 fg=#dedede bg=#131313
+text 25 ""
+style 25 0 120 fg=#dedede bg=#131313
+text 26 ""
+style 26 0 120 fg=#dedede bg=#131313
+text 27 ""
+style 27 0 120 fg=#dedede bg=#131313
+text 28 ""
+style 28 0 120 fg=#dedede bg=#131313
+text 29 ""
+style 29 0 120 fg=#dedede bg=#131313
+text 30 " 4 approvals                                                                                             Alt+A  answer"
+style 30 0 12 fg=#419cff bg=#101010 bold
+style 30 12 104 bg=#101010
+style 30 104 111 fg=#dedede bg=#232323
+style 30 111 118 fg=#9d9d9d bg=#101010
+style 30 118 120 bg=#101010
+text 31 "   [x] skill    release-notes  every project     How this project writes release notes."
+style 31 0 3 bg=#101010
+style 31 3 7 fg=#dedede bg=#101010
+style 31 7 16 fg=#9d9d9d bg=#101010
+style 31 16 31 fg=#dedede bg=#101010
+style 31 31 49 fg=#ffc600 bg=#101010
+style 31 49 87 fg=#9d9d9d bg=#101010
+style 31 87 120 bg=#101010
+text 32 "   [x] server   github         this project      npx -y @modelcontextprotocol/server-github"
+style 32 0 3 bg=#101010
+style 32 3 7 fg=#dedede bg=#101010
+style 32 7 16 fg=#9d9d9d bg=#101010
+style 32 16 49 fg=#dedede bg=#101010
+style 32 49 91 fg=#9d9d9d bg=#101010
+style 32 91 120 bg=#101010
+text 33 "   [x] profile  3d-judge       every project     sol xhigh"
+style 33 0 3 bg=#101010
+style 33 3 7 fg=#dedede bg=#101010
+style 33 7 16 fg=#9d9d9d bg=#101010
+style 33 16 31 fg=#dedede bg=#101010
+style 33 31 49 fg=#ffc600 bg=#101010
+style 33 49 58 fg=#9d9d9d bg=#101010
+style 33 58 120 bg=#101010
+text 34 "   [x] worker   Opus 5.5       billed per token  $5/$25 per million tokens, $3.20 spent today"
+style 34 0 3 bg=#101010
+style 34 3 7 fg=#dedede bg=#101010
+style 34 7 16 fg=#9d9d9d bg=#101010
+style 34 16 49 fg=#dedede bg=#101010
+style 34 49 93 fg=#9d9d9d bg=#101010
+style 34 93 120 bg=#101010
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 fg=#303030 bg=#131313
+text 36 " ● needs approval"
+style 36 0 1 fg=#dedede bg=#131313
+style 36 1 17 fg=#419cff bg=#131313
+style 36 17 120 fg=#dedede bg=#131313
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 fg=#303030 bg=#131313
+text 38 " › Message  / for commands"
+style 38 0 1 fg=#dedede bg=#131313
+style 38 1 3 fg=#419cff bg=#131313
+style 38 3 26 fg=#9d9d9d bg=#131313
+style 38 26 120 fg=#dedede bg=#131313
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 fg=#303030 bg=#131313

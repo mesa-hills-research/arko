@@ -1,0 +1,178 @@
+size 120 24
+cursor 0 0 hidden
+text 0 ""
+style 0 0 120 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ─────────────┌ OpenRouter ──────────────────────────────────────────────────────────────┐───────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 22 fg=#303030 bg=#131313
+style 1 22 23 fg=#303030 bg=#101010
+style 1 23 35 fg=#dedede bg=#101010 bold
+style 1 35 98 fg=#303030 bg=#101010
+style 1 98 118 fg=#303030 bg=#131313
+style 1 118 120 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-l│                                                                          │                   │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 22 fg=#dedede bg=#131313
+style 2 22 23 fg=#303030 bg=#101010
+style 2 23 97 fg=#dedede bg=#101010
+style 2 97 98 fg=#303030 bg=#101010
+style 2 98 116 fg=#dedede bg=#131313
+style 2 116 118 fg=#303030 bg=#131313
+style 2 118 120 fg=#dedede bg=#131313
+text 3 "  │ Workers    paralle│ ▸ Zero data retention    Off                                             │                   │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 22 fg=#dedede bg=#131313
+style 3 22 23 fg=#303030 bg=#101010
+style 3 23 24 fg=#dedede bg=#101010
+style 3 24 26 fg=#419cff bg=#101010
+style 3 26 49 fg=#419cff bg=#101010 bold
+style 3 49 97 fg=#dedede bg=#101010
+style 3 97 98 fg=#303030 bg=#101010
+style 3 98 116 fg=#dedede bg=#131313
+style 3 116 118 fg=#303030 bg=#131313
+style 3 118 120 fg=#dedede bg=#131313
+text 4 "  │ Workspace  /home/a│                          Only providers that keep no data. The model     │                   │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 15 fg=#9d9d9d bg=#131313
+style 4 15 22 fg=#dedede bg=#131313
+style 4 22 23 fg=#303030 bg=#101010
+style 4 23 49 fg=#dedede bg=#101010
+style 4 49 92 fg=#9d9d9d bg=#101010
+style 4 92 97 fg=#dedede bg=#101010
+style 4 97 98 fg=#303030 bg=#101010
+style 4 98 116 fg=#dedede bg=#131313
+style 4 116 118 fg=#303030 bg=#131313
+style 4 118 120 fg=#dedede bg=#131313
+text 5 "  │ Session    2026111│                          list shows only the models that offer it.       │                   │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 15 fg=#9d9d9d bg=#131313
+style 5 15 22 fg=#dedede bg=#131313
+style 5 22 23 fg=#303030 bg=#101010
+style 5 23 49 fg=#dedede bg=#101010
+style 5 49 90 fg=#9d9d9d bg=#101010
+style 5 90 97 fg=#dedede bg=#101010
+style 5 97 98 fg=#303030 bg=#101010
+style 5 98 116 fg=#dedede bg=#131313
+style 5 116 118 fg=#303030 bg=#131313
+style 5 118 120 fg=#dedede bg=#131313
+text 6 "  │ Project    AGENTS.│   No data collection     Off                                             │                   │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 15 fg=#9d9d9d bg=#131313
+style 6 15 22 fg=#dedede bg=#131313
+style 6 22 23 fg=#303030 bg=#101010
+style 6 23 97 fg=#dedede bg=#101010
+style 6 97 98 fg=#303030 bg=#101010
+style 6 98 116 fg=#dedede bg=#131313
+style 6 116 118 fg=#303030 bg=#131313
+style 6 118 120 fg=#dedede bg=#131313
+text 7 "  │ Tools      2 skill│   Region                 Any                                             │                   │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 15 fg=#9d9d9d bg=#131313
+style 7 15 22 fg=#dedede bg=#131313
+style 7 22 23 fg=#303030 bg=#101010
+style 7 23 97 fg=#dedede bg=#101010
+style 7 97 98 fg=#303030 bg=#101010
+style 7 98 116 fg=#dedede bg=#131313
+style 7 116 118 fg=#303030 bg=#131313
+style 7 118 120 fg=#dedede bg=#131313
+text 8 "  └───────────────────│   Providers by           Default                                         │───────────────────┘"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 22 fg=#303030 bg=#131313
+style 8 22 23 fg=#303030 bg=#101010
+style 8 23 97 fg=#dedede bg=#101010
+style 8 97 98 fg=#303030 bg=#101010
+style 8 98 118 fg=#303030 bg=#131313
+style 8 118 120 fg=#dedede bg=#131313
+text 9 "                      │   Precision              Any                                             │"
+style 9 0 22 fg=#dedede bg=#131313
+style 9 22 23 fg=#303030 bg=#101010
+style 9 23 97 fg=#dedede bg=#101010
+style 9 97 98 fg=#303030 bg=#101010
+style 9 98 120 fg=#dedede bg=#131313
+text 10 "▎ Add a README with a │   Only these providers   Any                                             │"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 22 fg=#dedede bg=#202020
+style 10 22 23 fg=#303030 bg=#101010
+style 10 23 97 fg=#dedede bg=#101010
+style 10 97 98 fg=#303030 bg=#101010
+style 10 98 120 fg=#dedede bg=#202020
+text 11 "                      │   Never these providers  None                                            │"
+style 11 0 22 fg=#dedede bg=#131313
+style 11 22 23 fg=#303030 bg=#101010
+style 11 23 97 fg=#dedede bg=#101010
+style 11 97 98 fg=#303030 bg=#101010
+style 11 98 120 fg=#dedede bg=#131313
+text 12 "  Done. The README has│   Models                 not loaded                                      │"
+style 12 0 22 fg=#dedede bg=#131313
+style 12 22 23 fg=#303030 bg=#101010
+style 12 23 97 fg=#dedede bg=#101010
+style 12 97 98 fg=#303030 bg=#101010
+style 12 98 120 fg=#dedede bg=#131313
+text 13 "                      │                                                                          │"
+style 13 0 22 fg=#dedede bg=#131313
+style 13 22 23 fg=#303030 bg=#101010
+style 13 23 97 fg=#dedede bg=#101010
+style 13 97 98 fg=#303030 bg=#101010
+style 13 98 120 fg=#dedede bg=#131313
+text 14 "                      │ Your OpenRouter account's own privacy settings at openrouter.ai apply    │"
+style 14 0 22 fg=#dedede bg=#131313
+style 14 22 23 fg=#303030 bg=#101010
+style 14 23 24 fg=#dedede bg=#101010
+style 14 24 93 fg=#9d9d9d bg=#101010
+style 14 93 97 fg=#dedede bg=#101010
+style 14 97 98 fg=#303030 bg=#101010
+style 14 98 120 fg=#dedede bg=#131313
+text 15 "                      │ too. Open sessions use a change from their next request.                 │"
+style 15 0 22 fg=#dedede bg=#131313
+style 15 22 23 fg=#303030 bg=#101010
+style 15 23 24 fg=#dedede bg=#101010
+style 15 24 80 fg=#9d9d9d bg=#101010
+style 15 80 97 fg=#dedede bg=#101010
+style 15 97 98 fg=#303030 bg=#101010
+style 15 98 120 fg=#dedede bg=#131313
+text 16 "                      │                                                                          │"
+style 16 0 22 fg=#dedede bg=#131313
+style 16 22 23 fg=#303030 bg=#101010
+style 16 23 97 fg=#dedede bg=#101010
+style 16 97 98 fg=#303030 bg=#101010
+style 16 98 120 fg=#dedede bg=#131313
+text 17 "                      └─────────────────────────────── ↑ ↓  choose   Enter  switch   Esc  close ─┘"
+style 17 0 22 fg=#dedede bg=#131313
+style 17 22 54 fg=#303030 bg=#101010
+style 17 54 59 fg=#dedede bg=#232323
+style 17 59 66 fg=#9d9d9d bg=#101010
+style 17 66 68 fg=#303030 bg=#101010
+style 17 68 75 fg=#dedede bg=#232323
+style 17 75 82 fg=#9d9d9d bg=#101010
+style 17 82 84 fg=#303030 bg=#101010
+style 17 84 89 fg=#dedede bg=#232323
+style 17 89 95 fg=#9d9d9d bg=#101010
+style 17 95 98 fg=#303030 bg=#101010
+style 17 98 120 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 120 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 19 0 120 fg=#303030 bg=#131313
+text 20 " last turn 34s"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 14 fg=#9d9d9d bg=#131313
+style 20 14 120 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 21 0 120 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 120 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 23 0 120 fg=#303030 bg=#131313

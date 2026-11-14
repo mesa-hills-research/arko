@@ -1,0 +1,64 @@
+size 40 24
+cursor 3 22 visible default
+text 0 "▎ Update the dependencies"
+style 0 0 2 fg=#419cff bg=#202020
+style 0 2 40 fg=#dedede bg=#202020
+text 1 ""
+style 1 0 40 fg=#dedede bg=#131313
+text 2 "  Checking which crates are old."
+style 2 0 40 fg=#dedede bg=#131313
+text 3 ""
+style 3 0 40 fg=#dedede bg=#131313
+text 4 "· handed over to a fresh conversation"
+style 4 0 37 fg=#9d9d9d bg=#131313
+style 4 37 40 fg=#dedede bg=#131313
+text 5 "! retrying in 2 s"
+style 5 0 17 fg=#ffc600 bg=#131313
+style 5 17 40 fg=#dedede bg=#131313
+text 6 ""
+style 6 0 40 fg=#dedede bg=#131313
+text 7 "✗ The model server answered 500 three"
+style 7 0 37 fg=#ff5257 bg=#131313
+style 7 37 40 fg=#dedede bg=#131313
+text 8 "  times in a row"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 16 fg=#ff5257 bg=#131313
+style 8 16 40 fg=#dedede bg=#131313
+text 9 ""
+style 9 0 40 fg=#dedede bg=#131313
+text 10 "  make: Nothing to be done for 'all'."
+style 10 0 40 fg=#dedede bg=#131313
+text 11 ""
+style 11 0 40 fg=#dedede bg=#131313
+text 12 "✉ Halfway there. Two crates are left."
+style 12 0 2 fg=#9d9d9d bg=#131313
+style 12 2 40 fg=#dedede bg=#131313
+text 13 ""
+style 13 0 40 fg=#dedede bg=#131313
+text 14 "▎ Then update the lock file       queued"
+style 14 0 2 fg=#419cff bg=#202020
+style 14 2 27 fg=#dedede bg=#202020
+style 14 27 40 fg=#9d9d9d bg=#202020 italic
+text 15 ""
+style 15 0 40 fg=#dedede bg=#131313
+text 16 "▎ Keep the old name for the config file"
+style 16 0 39 fg=#9d9d9d bg=#202020
+style 16 39 40 fg=#dedede bg=#202020
+text 17 "▎            pending · from the web page"
+style 17 0 2 fg=#9d9d9d bg=#202020
+style 17 2 40 fg=#9d9d9d bg=#202020 italic
+text 18 ""
+style 18 0 40 fg=#dedede bg=#202020
+text 19 "────────────────────────────────────────"
+style 19 0 40 fg=#303030 bg=#131313
+text 20 ""
+style 20 0 40 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────"
+style 21 0 40 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 40 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────"
+style 23 0 40 fg=#303030 bg=#131313

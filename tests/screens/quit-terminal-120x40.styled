@@ -1,0 +1,107 @@
+size 120 40
+cursor 0 0 hidden
+text 0 ""
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 118 dim
+text 2 "  │ Model      gpt-6-luna (high effort)                                                                              │"
+style 2 2 15 dim
+style 2 116 118 dim
+text 3 "  │ Workers    parallel workers                                                                                      │"
+style 3 2 15 dim
+style 3 116 118 dim
+text 4 "  │ Workspace  /home/ada/proj                                                                                        │"
+style 4 2 15 dim
+style 4 116 118 dim
+text 5 "  │ Session    20261110-101010-abcd                                                                                  │"
+style 5 2 15 dim
+style 5 116 118 dim
+text 6 "  │ Project    AGENTS.md                                                                                             │"
+style 6 2 15 dim
+style 6 116 118 dim
+text 7 "  │ Tools      2 skills · 1 MCP server                                                                               │"
+style 7 2 15 dim
+style 7 116 118 dim
+text 8 "  └───────────────────────────┌ Quit Arko ───────────────────────────────────────────────┐───────────────────────────┘"
+style 8 2 30 dim
+style 8 31 42 bold
+style 8 90 118 dim
+text 9 "                              │                                                          │"
+text 10 "▎ Check the quoting and the le│ 2 background jobs are running. They stop when Arko       │"
+style 10 0 2 fg=cyan
+text 11 "                              │ exits.                                                   │"
+text 12 "  I'll start three workers.   │                                                          │"
+text 13 "                              │   cargo watch -x test                                 2m │"
+style 13 86 88 dim
+text 14 "  r1 Check the quoting tests ·│   npm run dev                                      1h 1m │"
+style 14 2 4 bold
+style 14 28 30 dim
+style 14 83 88 dim
+text 15 "  r2 Read the lexer · astra hi│                                                          │"
+style 15 2 4 bold
+style 15 19 30 dim
+text 16 "  r3 Update the docs · 3 tool │ Quit now?                                                │"
+style 16 2 4 bold
+style 16 20 30 dim
+text 17 "▸ r2 reported                 │                                                          │"
+style 17 0 2 dim
+style 17 2 5 bold
+text 18 "                              │  Yes    No      [ ] Don't ask again                      │"
+style 18 32 37 reverse
+style 18 39 43 reverse
+text 19 "                              │                                                          │"
+text 20 "                              └────────────────── ← →  move   Enter  choose   Esc  stay ─┘"
+style 20 49 54 reverse
+style 20 54 59 dim
+style 20 61 68 reverse
+style 20 68 75 dim
+style 20 77 82 reverse
+style 20 82 87 dim
+text 21 ""
+text 22 ""
+text 23 ""
+text 24 ""
+text 25 ""
+text 26 ""
+text 27 ""
+text 28 ""
+text 29 ""
+text 30 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 30 0 120 dim
+text 31 " ● working 1m00s · 142k/250k · main: $3.20                                                                 Ctrl+C  stop"
+style 31 1 10 fg=cyan
+style 31 10 42 dim
+style 31 106 114 reverse
+style 31 114 119 dim
+text 32 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 32 0 120 dim
+text 33 " › Add to the task"
+style 33 1 3 fg=cyan
+style 33 3 18 dim
+text 34 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 34 0 120 dim
+text 35 " ● main                                                                                                       2 running"
+style 35 1 3 fg=cyan
+style 35 3 7 bold
+style 35 110 120 dim
+text 36 " ○ r1    cargo test --test quoting                                                        running  ·  1m · 6 tool calls"
+style 36 1 3 dim
+style 36 7 34 dim
+style 36 90 98 fg=cyan
+style 36 98 120 dim
+text 37 " ○   r4  cargo test                                                                       running  · 20s · 4 tool calls"
+style 37 1 3 dim
+style 37 7 19 dim
+style 37 90 98 fg=cyan
+style 37 98 120 dim
+text 38 " ● r2    astra high  Read the lexer                                                       finished · 48s · 5 tool calls"
+style 38 1 3 fg=green
+style 38 7 35 dim
+style 38 90 98 fg=green
+style 38 98 120 dim
+text 39 " ● r3    Update the docs                                                                  failed   ·  9s · 3 tool calls"
+style 39 1 3 fg=red
+style 39 7 24 dim
+style 39 90 98 fg=red
+style 39 98 120 dim

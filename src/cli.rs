@@ -859,10 +859,10 @@ mod tests {
         }
     }
 
-    /// Runs [`be_stuck`] in a terminal of its own, answers its question
-    /// about the keyboard, and sends it SIGTERM once it is stuck. Returns
-    /// what it wrote, its exit code, and the terminal's local modes before
-    /// and after.
+    /// Runs [`be_stuck`] in a terminal of its own, answers its questions
+    /// about the keyboard and the device's attributes, and sends it SIGTERM
+    /// once it is stuck. Returns what it wrote, its exit code, and the
+    /// terminal's local modes before and after.
     #[cfg(target_os = "linux")]
     fn run_stuck() -> (Vec<u8>, Option<i32>, libc::tcflag_t, libc::tcflag_t) {
         use std::io::{Read, Write};
@@ -911,6 +911,10 @@ mod tests {
                 "--test-threads",
                 "1",
             ])
+            // (What the terminal is taken to support comes from its answers
+            // alone, as an unknown xterm's.)
+            .env_clear()
+            .env("TERM", "xterm-256color")
             .env(STUCK, "1")
             .stdin(slave.try_clone().unwrap())
             .stdout(slave.try_clone().unwrap())
@@ -955,7 +959,8 @@ mod tests {
             }
             let shown = String::from_utf8_lossy(&output);
             if !answered && shown.contains("\x1b[c") {
-                // The kitty keyboard protocol, and the device's attributes.
+                // The kitty keyboard protocol, and the device's attributes,
+                // which end the questions.
                 master.write_all(b"\x1b[?1u\x1b[?62c").unwrap();
                 answered = true;
             }

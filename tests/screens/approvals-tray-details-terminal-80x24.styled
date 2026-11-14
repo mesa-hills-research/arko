@@ -1,0 +1,62 @@
+size 80 24
+cursor 0 0 hidden
+text 0 "  │ Session    20261110-101010-abcd                                          │"
+style 0 2 15 dim
+style 0 76 78 dim
+text 1 "  │ Project    AGENTS.md                                                     │"
+style 1 2 15 dim
+style 1 76 78 dim
+text 2 "  │ Tools      2 skills · 1 MCP server                                       │"
+style 2 2 15 dim
+style 2 76 78 dim
+text 3 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 3 2 78 dim
+text 4 ""
+text 5 "▎ Add a README with a usage section"
+style 5 0 2 fg=cyan
+text 6 ""
+text 7 "  Done. The README has an install section and a usage example."
+text 8 " 4 approvals       Space  select   A  all   Enter  approve all   R  reject all"
+style 8 0 12 fg=cyan bold
+style 8 18 25 reverse
+style 8 25 32 dim
+style 8 34 37 reverse
+style 8 37 41 dim
+style 8 43 50 reverse
+style 8 50 62 dim
+style 8 64 67 reverse
+style 8 67 78 dim
+text 9 " › [x] skill    release-notes  every project     How this project writes relea…"
+style 9 0 3 fg=cyan
+style 9 7 16 dim
+style 9 16 31 fg=cyan bold
+style 9 31 49 fg=yellow
+style 9 49 79 dim
+text 10 "      Save the skill release-notes for every project?"
+style 10 6 53 bold
+text 11 "      How this project writes release notes."
+text 12 "      Written by the agent."
+text 13 "      Workers get it too."
+text 14 "      Why"
+style 14 6 9 dim
+text 15 "      The checklist changed."
+text 16 "   [x] server   github         this project      npx -y @modelcontextprotocol/…"
+style 16 7 16 dim
+style 16 49 79 dim
+text 17 "   [x] profile  3d-judge       every project     sol xhigh"
+style 17 7 16 dim
+style 17 31 49 fg=yellow
+style 17 49 58 dim
+text 18 "   [x] worker   Opus 5.5       billed per token  $5/$25 per million tokens, $3…"
+style 18 7 16 dim
+style 18 49 79 dim
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 dim
+text 20 " ● needs approval"
+style 20 1 17 fg=cyan
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 dim
+text 22 " › Message  / for commands"
+style 22 1 26 dim
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 dim

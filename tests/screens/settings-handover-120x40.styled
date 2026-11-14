@@ -1,0 +1,357 @@
+size 120 40
+cursor 0 0 hidden
+text 0 "                        ┌ Settings ────────────────────────────────────────────────────────────┐"
+style 0 0 24 fg=#dedede bg=#131313
+style 0 24 25 fg=#303030 bg=#101010
+style 0 25 35 fg=#dedede bg=#101010 bold
+style 0 35 96 fg=#303030 bg=#101010
+style 0 96 120 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ───────────────│                                                                      │─────────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 24 fg=#303030 bg=#131313
+style 1 24 25 fg=#303030 bg=#101010
+style 1 25 95 fg=#dedede bg=#101010
+style 1 95 96 fg=#303030 bg=#101010
+style 1 96 118 fg=#303030 bg=#131313
+style 1 118 120 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-lun│ Transcript                                                           │                     │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 24 fg=#dedede bg=#131313
+style 2 24 25 fg=#303030 bg=#101010
+style 2 25 26 fg=#dedede bg=#101010
+style 2 26 36 fg=#9d9d9d bg=#101010 bold
+style 2 36 95 fg=#dedede bg=#101010
+style 2 95 96 fg=#303030 bg=#101010
+style 2 96 116 fg=#dedede bg=#131313
+style 2 116 118 fg=#303030 bg=#131313
+style 2 118 120 fg=#dedede bg=#131313
+text 3 "  │ Workers    parallel │   View               full   quiet   messages                         │                     │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 24 fg=#dedede bg=#131313
+style 3 24 25 fg=#303030 bg=#101010
+style 3 25 46 fg=#dedede bg=#101010
+style 3 46 52 fg=#f2f9ff bg=#006ee5
+style 3 52 53 fg=#dedede bg=#101010
+style 3 53 60 fg=#9d9d9d bg=#101010
+style 3 60 61 fg=#dedede bg=#101010
+style 3 61 71 fg=#9d9d9d bg=#101010
+style 3 71 95 fg=#dedede bg=#101010
+style 3 95 96 fg=#303030 bg=#101010
+style 3 96 116 fg=#dedede bg=#131313
+style 3 116 118 fg=#303030 bg=#131313
+style 3 118 120 fg=#dedede bg=#131313
+text 4 "  │ Workspace  /home/ada│                                                                      │                     │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 15 fg=#9d9d9d bg=#131313
+style 4 15 24 fg=#dedede bg=#131313
+style 4 24 25 fg=#303030 bg=#101010
+style 4 25 95 fg=#dedede bg=#101010
+style 4 95 96 fg=#303030 bg=#101010
+style 4 96 116 fg=#dedede bg=#131313
+style 4 116 118 fg=#303030 bg=#131313
+style 4 118 120 fg=#dedede bg=#131313
+text 5 "  │ Session    20261110-│ Look                                                                 │                     │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 15 fg=#9d9d9d bg=#131313
+style 5 15 24 fg=#dedede bg=#131313
+style 5 24 25 fg=#303030 bg=#101010
+style 5 25 26 fg=#dedede bg=#101010
+style 5 26 30 fg=#9d9d9d bg=#101010 bold
+style 5 30 95 fg=#dedede bg=#101010
+style 5 95 96 fg=#303030 bg=#101010
+style 5 96 116 fg=#dedede bg=#131313
+style 5 116 118 fg=#303030 bg=#131313
+style 5 118 120 fg=#dedede bg=#131313
+text 6 "  │ Project    AGENTS.md│   Theme              macOS Classic Dark ›                            │                     │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 15 fg=#9d9d9d bg=#131313
+style 6 15 24 fg=#dedede bg=#131313
+style 6 24 25 fg=#303030 bg=#101010
+style 6 25 66 fg=#dedede bg=#101010
+style 6 66 67 fg=#9d9d9d bg=#101010
+style 6 67 95 fg=#dedede bg=#101010
+style 6 95 96 fg=#303030 bg=#101010
+style 6 96 116 fg=#dedede bg=#131313
+style 6 116 118 fg=#303030 bg=#131313
+style 6 118 120 fg=#dedede bg=#131313
+text 7 "  │ Tools      2 skills │   Previews           on   off                                        │                     │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 15 fg=#9d9d9d bg=#131313
+style 7 15 24 fg=#dedede bg=#131313
+style 7 24 25 fg=#303030 bg=#101010
+style 7 25 46 fg=#dedede bg=#101010
+style 7 46 50 fg=#f2f9ff bg=#006ee5
+style 7 50 51 fg=#dedede bg=#101010
+style 7 51 56 fg=#9d9d9d bg=#101010
+style 7 56 95 fg=#dedede bg=#101010
+style 7 95 96 fg=#303030 bg=#101010
+style 7 96 116 fg=#dedede bg=#131313
+style 7 116 118 fg=#303030 bg=#131313
+style 7 118 120 fg=#dedede bg=#131313
+text 8 "  └─────────────────────│   Mouse              on   off                                        │─────────────────────┘"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 24 fg=#303030 bg=#131313
+style 8 24 25 fg=#303030 bg=#101010
+style 8 25 46 fg=#dedede bg=#101010
+style 8 46 50 fg=#f2f9ff bg=#006ee5
+style 8 50 51 fg=#dedede bg=#101010
+style 8 51 56 fg=#9d9d9d bg=#101010
+style 8 56 95 fg=#dedede bg=#101010
+style 8 95 96 fg=#303030 bg=#101010
+style 8 96 118 fg=#303030 bg=#131313
+style 8 118 120 fg=#dedede bg=#131313
+text 9 "                        │                                                                      │"
+style 9 0 24 fg=#dedede bg=#131313
+style 9 24 25 fg=#303030 bg=#101010
+style 9 25 95 fg=#dedede bg=#101010
+style 9 95 96 fg=#303030 bg=#101010
+style 9 96 120 fg=#dedede bg=#131313
+text 10 "▎ Add a README with a us│ Quitting                                                             │"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 24 fg=#dedede bg=#202020
+style 10 24 25 fg=#303030 bg=#101010
+style 10 25 26 fg=#dedede bg=#101010
+style 10 26 34 fg=#9d9d9d bg=#101010 bold
+style 10 34 95 fg=#dedede bg=#101010
+style 10 95 96 fg=#303030 bg=#101010
+style 10 96 120 fg=#dedede bg=#202020
+text 11 "                        │   Ask first          on   off                                        │"
+style 11 0 24 fg=#dedede bg=#131313
+style 11 24 25 fg=#303030 bg=#101010
+style 11 25 46 fg=#dedede bg=#101010
+style 11 46 50 fg=#f2f9ff bg=#006ee5
+style 11 50 51 fg=#dedede bg=#101010
+style 11 51 56 fg=#9d9d9d bg=#101010
+style 11 56 95 fg=#dedede bg=#101010
+style 11 95 96 fg=#303030 bg=#101010
+style 11 96 120 fg=#dedede bg=#131313
+text 12 "  Done. The README has a│                                                                      │"
+style 12 0 24 fg=#dedede bg=#131313
+style 12 24 25 fg=#303030 bg=#101010
+style 12 25 95 fg=#dedede bg=#101010
+style 12 95 96 fg=#303030 bg=#101010
+style 12 96 120 fg=#dedede bg=#131313
+text 13 "                        │ Status line                                                          │"
+style 13 0 24 fg=#dedede bg=#131313
+style 13 24 25 fg=#303030 bg=#101010
+style 13 25 26 fg=#dedede bg=#101010
+style 13 26 37 fg=#9d9d9d bg=#101010 bold
+style 13 37 95 fg=#dedede bg=#101010
+style 13 95 96 fg=#303030 bg=#101010
+style 13 96 120 fg=#dedede bg=#131313
+text 14 "                        │   API prices         on   off                                        │"
+style 14 0 24 fg=#dedede bg=#131313
+style 14 24 25 fg=#303030 bg=#101010
+style 14 25 46 fg=#dedede bg=#101010
+style 14 46 50 fg=#9d9d9d bg=#101010
+style 14 50 51 fg=#dedede bg=#101010
+style 14 51 56 fg=#f2f9ff bg=#006ee5
+style 14 56 95 fg=#dedede bg=#101010
+style 14 95 96 fg=#303030 bg=#101010
+style 14 96 120 fg=#dedede bg=#131313
+text 15 "                        │                                                                      │"
+style 15 0 24 fg=#dedede bg=#131313
+style 15 24 25 fg=#303030 bg=#101010
+style 15 25 95 fg=#dedede bg=#101010
+style 15 95 96 fg=#303030 bg=#101010
+style 15 96 120 fg=#dedede bg=#131313
+text 16 "                        │ Session                                                              │"
+style 16 0 24 fg=#dedede bg=#131313
+style 16 24 25 fg=#303030 bg=#101010
+style 16 25 26 fg=#dedede bg=#101010
+style 16 26 33 fg=#9d9d9d bg=#101010 bold
+style 16 33 95 fg=#dedede bg=#101010
+style 16 95 96 fg=#303030 bg=#101010
+style 16 96 120 fg=#dedede bg=#131313
+text 17 "                        │   Outside            on   off                                        │"
+style 17 0 24 fg=#dedede bg=#131313
+style 17 24 25 fg=#303030 bg=#101010
+style 17 25 46 fg=#dedede bg=#101010
+style 17 46 50 fg=#9d9d9d bg=#101010
+style 17 50 51 fg=#dedede bg=#101010
+style 17 51 56 fg=#f2f9ff bg=#006ee5
+style 17 56 95 fg=#dedede bg=#101010
+style 17 95 96 fg=#303030 bg=#101010
+style 17 96 120 fg=#dedede bg=#131313
+text 18 "                        │   Background        ←  off  →                                        │"
+style 18 0 24 fg=#dedede bg=#131313
+style 18 24 25 fg=#303030 bg=#101010
+style 18 25 46 fg=#dedede bg=#101010
+style 18 46 48 fg=#9d9d9d bg=#101010
+style 18 48 53 fg=#f2f9ff bg=#006ee5
+style 18 53 55 fg=#9d9d9d bg=#101010
+style 18 55 95 fg=#dedede bg=#101010
+style 18 95 96 fg=#303030 bg=#101010
+style 18 96 120 fg=#dedede bg=#131313
+text 19 "                        │   Monitor wakes     ←  auto  →                                       │"
+style 19 0 24 fg=#dedede bg=#131313
+style 19 24 25 fg=#303030 bg=#101010
+style 19 25 46 fg=#dedede bg=#101010
+style 19 46 48 fg=#9d9d9d bg=#101010
+style 19 48 54 fg=#f2f9ff bg=#006ee5
+style 19 54 56 fg=#9d9d9d bg=#101010
+style 19 56 95 fg=#dedede bg=#101010
+style 19 95 96 fg=#303030 bg=#101010
+style 19 96 120 fg=#dedede bg=#131313
+text 20 "                        │   Text replies       on   off                                        │"
+style 20 0 24 fg=#dedede bg=#131313
+style 20 24 25 fg=#303030 bg=#101010
+style 20 25 46 fg=#dedede bg=#101010
+style 20 46 50 fg=#9d9d9d bg=#101010
+style 20 50 51 fg=#dedede bg=#101010
+style 20 51 56 fg=#f2f9ff bg=#006ee5
+style 20 56 95 fg=#dedede bg=#101010
+style 20 95 96 fg=#303030 bg=#101010
+style 20 96 120 fg=#dedede bg=#131313
+text 21 "                        │   Extra rules        small   all   off                               │"
+style 21 0 24 fg=#dedede bg=#131313
+style 21 24 25 fg=#303030 bg=#101010
+style 21 25 46 fg=#dedede bg=#101010
+style 21 46 53 fg=#9d9d9d bg=#101010
+style 21 53 54 fg=#dedede bg=#101010
+style 21 54 59 fg=#9d9d9d bg=#101010
+style 21 59 60 fg=#dedede bg=#101010
+style 21 60 65 fg=#f2f9ff bg=#006ee5
+style 21 65 95 fg=#dedede bg=#101010
+style 21 95 96 fg=#303030 bg=#101010
+style 21 96 120 fg=#dedede bg=#131313
+text 22 "                        │   Keep warm         ←  off  →                                        │"
+style 22 0 24 fg=#dedede bg=#131313
+style 22 24 25 fg=#303030 bg=#101010
+style 22 25 46 fg=#dedede bg=#101010
+style 22 46 48 fg=#9d9d9d bg=#101010
+style 22 48 53 fg=#f2f9ff bg=#006ee5
+style 22 53 55 fg=#9d9d9d bg=#101010
+style 22 55 95 fg=#dedede bg=#101010
+style 22 95 96 fg=#303030 bg=#101010
+style 22 96 120 fg=#dedede bg=#131313
+text 23 "                        │   Web page           on   off                                        │"
+style 23 0 24 fg=#dedede bg=#131313
+style 23 24 25 fg=#303030 bg=#101010
+style 23 25 46 fg=#dedede bg=#101010
+style 23 46 50 fg=#9d9d9d bg=#101010
+style 23 50 51 fg=#dedede bg=#101010
+style 23 51 56 fg=#f2f9ff bg=#006ee5
+style 23 56 95 fg=#dedede bg=#101010
+style 23 95 96 fg=#303030 bg=#101010
+style 23 96 120 fg=#dedede bg=#131313
+text 24 "                        │                                                                      │"
+style 24 0 24 fg=#dedede bg=#131313
+style 24 24 25 fg=#303030 bg=#101010
+style 24 25 95 fg=#dedede bg=#101010
+style 24 95 96 fg=#303030 bg=#101010
+style 24 96 120 fg=#dedede bg=#131313
+text 25 "                        │ Handover                                                             │"
+style 25 0 24 fg=#dedede bg=#131313
+style 25 24 25 fg=#303030 bg=#101010
+style 25 25 26 fg=#dedede bg=#101010
+style 25 26 34 fg=#9d9d9d bg=#101010 bold
+style 25 34 95 fg=#dedede bg=#101010
+style 25 95 96 fg=#303030 bg=#101010
+style 25 96 120 fg=#dedede bg=#131313
+text 26 "                        │ ▸ Main agent        ←  250k  →                                       │"
+style 26 0 24 fg=#dedede bg=#131313
+style 26 24 25 fg=#303030 bg=#101010
+style 26 25 26 fg=#dedede bg=#101010
+style 26 26 28 fg=#419cff bg=#101010
+style 26 28 46 fg=#419cff bg=#101010 bold
+style 26 46 48 fg=#9d9d9d bg=#101010
+style 26 48 54 fg=#f2f9ff bg=#006ee5
+style 26 54 56 fg=#9d9d9d bg=#101010
+style 26 56 95 fg=#dedede bg=#101010
+style 26 95 96 fg=#303030 bg=#101010
+style 26 96 120 fg=#dedede bg=#131313
+text 27 "                        │                     The input size at which the main agent writes    │"
+style 27 0 24 fg=#dedede bg=#131313
+style 27 24 25 fg=#303030 bg=#101010
+style 27 25 46 fg=#dedede bg=#101010
+style 27 46 91 fg=#9d9d9d bg=#101010
+style 27 91 95 fg=#dedede bg=#101010
+style 27 95 96 fg=#303030 bg=#101010
+style 27 96 120 fg=#dedede bg=#131313
+text 28 "                        │                     a report of its work and goes on from it,        │"
+style 28 0 24 fg=#dedede bg=#131313
+style 28 24 25 fg=#303030 bg=#101010
+style 28 25 46 fg=#dedede bg=#101010
+style 28 46 87 fg=#9d9d9d bg=#101010
+style 28 87 95 fg=#dedede bg=#101010
+style 28 95 96 fg=#303030 bg=#101010
+style 28 96 120 fg=#dedede bg=#131313
+text 29 "                        │                     fresh. /handover does it now.                    │"
+style 29 0 24 fg=#dedede bg=#131313
+style 29 24 25 fg=#303030 bg=#101010
+style 29 25 46 fg=#dedede bg=#101010
+style 29 46 75 fg=#9d9d9d bg=#101010
+style 29 75 95 fg=#dedede bg=#101010
+style 29 95 96 fg=#303030 bg=#101010
+style 29 96 120 fg=#dedede bg=#131313
+text 30 "                        │                                                                      │"
+style 30 0 24 fg=#dedede bg=#131313
+style 30 24 25 fg=#303030 bg=#101010
+style 30 25 95 fg=#dedede bg=#101010
+style 30 95 96 fg=#303030 bg=#101010
+style 30 96 120 fg=#dedede bg=#131313
+text 31 "                        │ Project instructions                                                 │"
+style 31 0 24 fg=#dedede bg=#131313
+style 31 24 25 fg=#303030 bg=#101010
+style 31 25 26 fg=#dedede bg=#101010
+style 31 26 46 fg=#9d9d9d bg=#101010 bold
+style 31 46 95 fg=#dedede bg=#101010
+style 31 95 96 fg=#303030 bg=#101010
+style 31 96 120 fg=#dedede bg=#131313
+text 32 "                        │   Files              one   both   off                                │"
+style 32 0 24 fg=#dedede bg=#131313
+style 32 24 25 fg=#303030 bg=#101010
+style 32 25 46 fg=#dedede bg=#101010
+style 32 46 51 fg=#f2f9ff bg=#006ee5
+style 32 51 52 fg=#dedede bg=#101010
+style 32 52 58 fg=#9d9d9d bg=#101010
+style 32 58 59 fg=#dedede bg=#101010
+style 32 59 64 fg=#9d9d9d bg=#101010
+style 32 64 95 fg=#dedede bg=#101010
+style 32 95 96 fg=#303030 bg=#101010
+style 32 96 120 fg=#dedede bg=#131313
+text 33 "                        │                                                                      │"
+style 33 0 24 fg=#dedede bg=#131313
+style 33 24 25 fg=#303030 bg=#101010
+style 33 25 95 fg=#dedede bg=#101010
+style 33 95 96 fg=#303030 bg=#101010
+style 33 96 120 fg=#dedede bg=#131313
+text 34 "                        └───────────────────────────── ↑ ↓  choose   ← →  change   Esc  close ─┘"
+style 34 0 24 fg=#dedede bg=#131313
+style 34 24 54 fg=#303030 bg=#101010
+style 34 54 59 fg=#dedede bg=#232323
+style 34 59 66 fg=#9d9d9d bg=#101010
+style 34 66 68 fg=#303030 bg=#101010
+style 34 68 73 fg=#dedede bg=#232323
+style 34 73 80 fg=#9d9d9d bg=#101010
+style 34 80 82 fg=#303030 bg=#101010
+style 34 82 87 fg=#dedede bg=#232323
+style 34 87 93 fg=#9d9d9d bg=#101010
+style 34 93 96 fg=#303030 bg=#101010
+style 34 96 120 fg=#dedede bg=#131313
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 fg=#303030 bg=#131313
+text 36 " last turn 34s"
+style 36 0 1 fg=#dedede bg=#131313
+style 36 1 14 fg=#9d9d9d bg=#131313
+style 36 14 120 fg=#dedede bg=#131313
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 fg=#303030 bg=#131313
+text 38 " › Message  / for commands"
+style 38 0 1 fg=#dedede bg=#131313
+style 38 1 3 fg=#419cff bg=#131313
+style 38 3 26 fg=#9d9d9d bg=#131313
+style 38 26 120 fg=#dedede bg=#131313
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 fg=#303030 bg=#131313

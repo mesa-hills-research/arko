@@ -1,0 +1,122 @@
+size 80 24
+cursor 6 16 visible default
+text 0 "  │ Project    AGENTS.md                                                     │"
+style 0 0 2 fg=#dedede bg=#131313
+style 0 2 4 fg=#303030 bg=#131313
+style 0 4 15 fg=#9d9d9d bg=#131313
+style 0 15 76 fg=#dedede bg=#131313
+style 0 76 78 fg=#303030 bg=#131313
+style 0 78 80 fg=#dedede bg=#131313
+text 1 "  │ Tools      2 skills · 1 MCP server                                       │"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 4 fg=#303030 bg=#131313
+style 1 4 15 fg=#9d9d9d bg=#131313
+style 1 15 76 fg=#dedede bg=#131313
+style 1 76 78 fg=#303030 bg=#131313
+style 1 78 80 fg=#dedede bg=#131313
+text 2 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 78 fg=#303030 bg=#131313
+style 2 78 80 fg=#dedede bg=#131313
+text 3 ""
+style 3 0 80 fg=#dedede bg=#131313
+text 4 "? Arko asked 3 questions"
+style 4 0 2 fg=#419cff bg=#131313
+style 4 2 24 fg=#9d9d9d bg=#131313
+style 4 24 80 fg=#dedede bg=#131313
+text 5 ""
+style 5 0 80 fg=#dedede bg=#131313
+text 6 "? Arko asked a question"
+style 6 0 2 fg=#419cff bg=#131313
+style 6 2 23 fg=#9d9d9d bg=#131313
+style 6 23 80 fg=#dedede bg=#131313
+text 7 "┌ Question 3 of 4 ─────────────────────────────────────────────────────────────┐"
+style 7 0 1 fg=#419cff bg=#131313
+style 7 1 18 fg=#419cff bg=#131313 bold
+style 7 18 80 fg=#419cff bg=#131313
+text 8 "│ How should I update the configuration?                                       │"
+style 8 0 1 fg=#419cff bg=#131313
+style 8 1 2 fg=#dedede bg=#131313
+style 8 2 40 fg=#dedede bg=#131313 bold
+style 8 40 79 fg=#dedede bg=#131313
+style 8 79 80 fg=#419cff bg=#131313
+text 9 "│                                                                              │"
+style 9 0 1 fg=#419cff bg=#131313
+style 9 1 79 fg=#dedede bg=#131313
+style 9 79 80 fg=#419cff bg=#131313
+text 10 "│   1 Keep the current configuration and preserve all existing comments and    │"
+style 10 0 1 fg=#419cff bg=#131313
+style 10 1 4 fg=#dedede bg=#131313
+style 10 4 6 fg=#9d9d9d bg=#131313
+style 10 6 79 fg=#dedede bg=#131313
+style 10 79 80 fg=#419cff bg=#131313
+text 11 "│     ordering                                                                 │"
+style 11 0 1 fg=#419cff bg=#131313
+style 11 1 79 fg=#dedede bg=#131313
+style 11 79 80 fg=#419cff bg=#131313
+text 12 "│   2 Write a separate example and let each project choose when to migrate     │"
+style 12 0 1 fg=#419cff bg=#131313
+style 12 1 4 fg=#dedede bg=#131313
+style 12 4 6 fg=#9d9d9d bg=#131313
+style 12 6 79 fg=#dedede bg=#131313
+style 12 79 80 fg=#419cff bg=#131313
+text 13 "│   3 Migrate automatically after making a backup of the original              │"
+style 13 0 1 fg=#419cff bg=#131313
+style 13 1 4 fg=#dedede bg=#131313
+style 13 4 6 fg=#9d9d9d bg=#131313
+style 13 6 79 fg=#dedede bg=#131313
+style 13 79 80 fg=#419cff bg=#131313
+text 14 "│     configuration                                                            │"
+style 14 0 1 fg=#419cff bg=#131313
+style 14 1 79 fg=#dedede bg=#131313
+style 14 79 80 fg=#419cff bg=#131313
+text 15 "│   4 You decide (Spaces)                                                      │"
+style 15 0 1 fg=#419cff bg=#131313
+style 15 1 4 fg=#dedede bg=#131313
+style 15 4 6 fg=#9d9d9d bg=#131313
+style 15 6 16 fg=#dedede bg=#131313
+style 15 16 25 fg=#9d9d9d bg=#131313
+style 15 25 79 fg=#dedede bg=#131313
+style 15 79 80 fg=#419cff bg=#131313
+text 16 "│   › Type your own answer                                                     │"
+style 16 0 1 fg=#419cff bg=#131313
+style 16 1 4 fg=#dedede bg=#131313
+style 16 4 6 fg=#419cff bg=#131313
+style 16 6 26 fg=#9d9d9d bg=#131313
+style 16 26 79 fg=#dedede bg=#131313
+style 16 79 80 fg=#419cff bg=#131313
+text 17 "│                                                                              │"
+style 17 0 1 fg=#419cff bg=#131313
+style 17 1 79 fg=#dedede bg=#131313
+style 17 79 80 fg=#419cff bg=#131313
+text 18 "└───────── 1-4  pick   ↑↓  choose   Enter  next   Shift+Tab  back   Esc  chat ─┘"
+style 18 0 10 fg=#419cff bg=#131313
+style 18 10 15 fg=#dedede bg=#232323
+style 18 15 20 fg=#9d9d9d bg=#131313
+style 18 20 22 fg=#419cff bg=#131313
+style 18 22 26 fg=#dedede bg=#232323
+style 18 26 33 fg=#9d9d9d bg=#131313
+style 18 33 35 fg=#419cff bg=#131313
+style 18 35 42 fg=#dedede bg=#232323
+style 18 42 47 fg=#9d9d9d bg=#131313
+style 18 47 49 fg=#419cff bg=#131313
+style 18 49 60 fg=#dedede bg=#232323
+style 18 60 65 fg=#9d9d9d bg=#131313
+style 18 65 67 fg=#419cff bg=#131313
+style 18 67 72 fg=#dedede bg=#232323
+style 18 72 77 fg=#9d9d9d bg=#131313
+style 18 77 80 fg=#419cff bg=#131313
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 fg=#303030 bg=#131313
+text 20 " ● asks you"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 11 fg=#419cff bg=#131313
+style 20 11 80 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 fg=#303030 bg=#131313
+text 22 " › Answer the agent's question  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 46 fg=#9d9d9d bg=#131313
+style 22 46 80 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 fg=#303030 bg=#131313

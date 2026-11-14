@@ -1,0 +1,107 @@
+size 120 40
+cursor 50 28 visible default
+text 0 ""
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 118 dim
+text 2 "  │ Model      gpt-6-luna (high effort)                                                                              │"
+style 2 2 15 dim
+style 2 116 118 dim
+text 3 "  │ Workers    parallel workers                                                                                      │"
+style 3 2 15 dim
+style 3 116 118 dim
+text 4 "  │ Workspace  /home/ada/proj                                                                                        │"
+style 4 2 15 dim
+style 4 116 118 dim
+text 5 "  │ Session    20261110-101010-abcd                                                                                  │"
+style 5 2 15 dim
+style 5 116 118 dim
+text 6 "  │ Project    AGENTS.md                                                                                             │"
+style 6 2 15 dim
+style 6 116 118 dim
+text 7 "  │ Tools      2 skills · 1 MCP server                                                                               │"
+style 7 2 15 dim
+style 7 116 118 dim
+text 8 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+style 8 2 118 dim
+text 9 ""
+text 10 "? Arko asked 3 questions"
+style 10 0 2 fg=cyan
+style 10 2 24 dim
+text 11 ""
+text 12 "? Arko asked a question"
+style 12 0 2 fg=cyan
+style 12 2 23 dim
+text 13 ""
+text 14 ""
+text 15 ""
+text 16 ""
+text 17 ""
+text 18 ""
+text 19 ""
+text 20 ""
+text 21 ""
+text 22 ""
+text 23 "┌ Question 4 of 4 ─────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 23 0 1 fg=cyan
+style 23 1 18 fg=cyan bold
+style 23 18 120 fg=cyan
+text 24 "│ Anything else I should know?                                                                                         │"
+style 24 0 1 fg=cyan
+style 24 2 30 bold
+style 24 119 120 fg=cyan
+text 25 "│                                                                                                                      │"
+style 25 0 1 fg=cyan
+style 25 119 120 fg=cyan
+text 26 "│   1 You decide (Spaces)                                                                                              │"
+style 26 0 1 fg=cyan
+style 26 4 6 dim
+style 26 16 25 dim
+style 26 119 120 fg=cyan
+text 27 "│   › Keep the branch local until the tests pass on Linux and Windows. Preserve the configuration comments and show    │"
+style 27 0 1 fg=cyan
+style 27 4 6 fg=cyan
+style 27 119 120 fg=cyan
+text 28 "│     the migration diff before writing any files.                                                                     │"
+style 28 0 1 fg=cyan
+style 28 119 120 fg=cyan
+text 29 "│                                                                                                                      │"
+style 29 0 1 fg=cyan
+style 29 119 120 fg=cyan
+text 30 "│                                                                                                                      │"
+style 30 0 1 fg=cyan
+style 30 119 120 fg=cyan
+text 31 "│                                                                                                                      │"
+style 31 0 1 fg=cyan
+style 31 119 120 fg=cyan
+text 32 "│                                                                                                                      │"
+style 32 0 1 fg=cyan
+style 32 119 120 fg=cyan
+text 33 "│                                                                                                                      │"
+style 33 0 1 fg=cyan
+style 33 119 120 fg=cyan
+text 34 "└──────────────────────────────────────────────────────── Enter  next   Shift+Tab  back   Esc  chat   Ctrl+N  not now ─┘"
+style 34 0 57 fg=cyan
+style 34 57 64 fg=cyan reverse
+style 34 64 69 dim
+style 34 69 71 fg=cyan
+style 34 71 82 fg=cyan reverse
+style 34 82 87 dim
+style 34 87 89 fg=cyan
+style 34 89 94 fg=cyan reverse
+style 34 94 99 dim
+style 34 99 101 fg=cyan
+style 34 101 109 fg=cyan reverse
+style 34 109 117 dim
+style 34 117 120 fg=cyan
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 dim
+text 36 " ● asks you"
+style 36 1 11 fg=cyan
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 dim
+text 38 " › Answer the agent's question  / for commands"
+style 38 1 46 dim
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 dim

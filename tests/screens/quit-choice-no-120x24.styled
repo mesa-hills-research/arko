@@ -1,0 +1,188 @@
+size 120 24
+cursor 0 0 hidden
+text 0 "  │ Workspace  /home/ada/proj ┌ Quit Arko ───────────────────────────────────────────────┐                           │"
+style 0 0 2 fg=#dedede bg=#131313
+style 0 2 4 fg=#303030 bg=#131313
+style 0 4 15 fg=#9d9d9d bg=#131313
+style 0 15 30 fg=#dedede bg=#131313
+style 0 30 31 fg=#303030 bg=#101010
+style 0 31 42 fg=#dedede bg=#101010 bold
+style 0 42 90 fg=#303030 bg=#101010
+style 0 90 116 fg=#dedede bg=#131313
+style 0 116 118 fg=#303030 bg=#131313
+style 0 118 120 fg=#dedede bg=#131313
+text 1 "  │ Session    20261110-101010│                                                          │                           │"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 4 fg=#303030 bg=#131313
+style 1 4 15 fg=#9d9d9d bg=#131313
+style 1 15 30 fg=#dedede bg=#131313
+style 1 30 31 fg=#303030 bg=#101010
+style 1 31 89 fg=#dedede bg=#101010
+style 1 89 90 fg=#303030 bg=#101010
+style 1 90 116 fg=#dedede bg=#131313
+style 1 116 118 fg=#303030 bg=#131313
+style 1 118 120 fg=#dedede bg=#131313
+text 2 "  │ Project    AGENTS.md      │ 2 background jobs are running. They stop when Arko       │                           │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 30 fg=#dedede bg=#131313
+style 2 30 31 fg=#303030 bg=#101010
+style 2 31 89 fg=#dedede bg=#101010
+style 2 89 90 fg=#303030 bg=#101010
+style 2 90 116 fg=#dedede bg=#131313
+style 2 116 118 fg=#303030 bg=#131313
+style 2 118 120 fg=#dedede bg=#131313
+text 3 "  │ Tools      2 skills · 1 MC│ exits.                                                   │                           │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 30 fg=#dedede bg=#131313
+style 3 30 31 fg=#303030 bg=#101010
+style 3 31 89 fg=#dedede bg=#101010
+style 3 89 90 fg=#303030 bg=#101010
+style 3 90 116 fg=#dedede bg=#131313
+style 3 116 118 fg=#303030 bg=#131313
+style 3 118 120 fg=#dedede bg=#131313
+text 4 "  └───────────────────────────│                                                          │───────────────────────────┘"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 30 fg=#303030 bg=#131313
+style 4 30 31 fg=#303030 bg=#101010
+style 4 31 89 fg=#dedede bg=#101010
+style 4 89 90 fg=#303030 bg=#101010
+style 4 90 118 fg=#303030 bg=#131313
+style 4 118 120 fg=#dedede bg=#131313
+text 5 "                              │   cargo watch -x test                                 2m │"
+style 5 0 30 fg=#dedede bg=#131313
+style 5 30 31 fg=#303030 bg=#101010
+style 5 31 86 fg=#dedede bg=#101010
+style 5 86 88 fg=#9d9d9d bg=#101010
+style 5 88 89 fg=#dedede bg=#101010
+style 5 89 90 fg=#303030 bg=#101010
+style 5 90 120 fg=#dedede bg=#131313
+text 6 "▎ Check the quoting and the le│   npm run dev                                      1h 1m │"
+style 6 0 2 fg=#419cff bg=#202020
+style 6 2 30 fg=#dedede bg=#202020
+style 6 30 31 fg=#303030 bg=#101010
+style 6 31 83 fg=#dedede bg=#101010
+style 6 83 88 fg=#9d9d9d bg=#101010
+style 6 88 89 fg=#dedede bg=#101010
+style 6 89 90 fg=#303030 bg=#101010
+style 6 90 120 fg=#dedede bg=#202020
+text 7 "                              │                                                          │"
+style 7 0 30 fg=#dedede bg=#131313
+style 7 30 31 fg=#303030 bg=#101010
+style 7 31 89 fg=#dedede bg=#101010
+style 7 89 90 fg=#303030 bg=#101010
+style 7 90 120 fg=#dedede bg=#131313
+text 8 "  I'll start three workers.   │ Quit now?                                                │"
+style 8 0 30 fg=#dedede bg=#131313
+style 8 30 31 fg=#303030 bg=#101010
+style 8 31 89 fg=#dedede bg=#101010
+style 8 89 90 fg=#303030 bg=#101010
+style 8 90 120 fg=#dedede bg=#131313
+text 9 "                              │                                                          │"
+style 9 0 30 fg=#dedede bg=#131313
+style 9 30 31 fg=#303030 bg=#101010
+style 9 31 89 fg=#dedede bg=#101010
+style 9 89 90 fg=#303030 bg=#101010
+style 9 90 120 fg=#dedede bg=#131313
+text 10 "  r1 Check the quoting tests ·│  Yes    No      [ ] Don't ask again                      │"
+style 10 0 2 fg=#dedede bg=#131313
+style 10 2 4 fg=#dedede bg=#131313 bold
+style 10 4 28 fg=#dedede bg=#131313
+style 10 28 30 fg=#9d9d9d bg=#131313
+style 10 30 31 fg=#303030 bg=#101010
+style 10 31 32 fg=#dedede bg=#101010
+style 10 32 37 fg=#dedede bg=#232323
+style 10 37 39 fg=#dedede bg=#101010
+style 10 39 43 fg=#f2f9ff bg=#006ee5
+style 10 43 89 fg=#dedede bg=#101010
+style 10 89 90 fg=#303030 bg=#101010
+style 10 90 120 fg=#dedede bg=#131313
+text 11 "  r2 Read the lexer · astra hi│                                                          │"
+style 11 0 2 fg=#dedede bg=#131313
+style 11 2 4 fg=#dedede bg=#131313 bold
+style 11 4 19 fg=#dedede bg=#131313
+style 11 19 30 fg=#9d9d9d bg=#131313
+style 11 30 31 fg=#303030 bg=#101010
+style 11 31 89 fg=#dedede bg=#101010
+style 11 89 90 fg=#303030 bg=#101010
+style 11 90 120 fg=#dedede bg=#131313
+text 12 "  r3 Update the docs · 3 tool └────────────────── ← →  move   Enter  choose   Esc  stay ─┘"
+style 12 0 2 fg=#dedede bg=#131313
+style 12 2 4 fg=#dedede bg=#131313 bold
+style 12 4 20 fg=#dedede bg=#131313
+style 12 20 30 fg=#9d9d9d bg=#131313
+style 12 30 49 fg=#303030 bg=#101010
+style 12 49 54 fg=#dedede bg=#232323
+style 12 54 59 fg=#9d9d9d bg=#101010
+style 12 59 61 fg=#303030 bg=#101010
+style 12 61 68 fg=#dedede bg=#232323
+style 12 68 75 fg=#9d9d9d bg=#101010
+style 12 75 77 fg=#303030 bg=#101010
+style 12 77 82 fg=#dedede bg=#232323
+style 12 82 87 fg=#9d9d9d bg=#101010
+style 12 87 90 fg=#303030 bg=#101010
+style 12 90 120 fg=#dedede bg=#131313
+text 13 "▸ r2 reported"
+style 13 0 2 fg=#9d9d9d bg=#131313
+style 13 2 5 fg=#dedede bg=#131313 bold
+style 13 5 120 fg=#dedede bg=#131313
+text 14 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 14 0 120 fg=#303030 bg=#131313
+text 15 " ● working 1m00s · 142k/250k · main: $3.20                                                                 Ctrl+C  stop"
+style 15 0 1 fg=#dedede bg=#131313
+style 15 1 10 fg=#419cff bg=#131313
+style 15 10 42 fg=#9d9d9d bg=#131313
+style 15 42 106 fg=#dedede bg=#131313
+style 15 106 114 fg=#dedede bg=#232323
+style 15 114 119 fg=#9d9d9d bg=#131313
+style 15 119 120 fg=#dedede bg=#131313
+text 16 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 16 0 120 fg=#303030 bg=#131313
+text 17 " › Add to the task"
+style 17 0 1 fg=#dedede bg=#131313
+style 17 1 3 fg=#419cff bg=#131313
+style 17 3 18 fg=#9d9d9d bg=#131313
+style 17 18 120 fg=#dedede bg=#131313
+text 18 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 18 0 120 fg=#303030 bg=#131313
+text 19 " ● main                                                                                                       2 running"
+style 19 0 1 fg=#dedede bg=#131313
+style 19 1 3 fg=#419cff bg=#131313
+style 19 3 7 fg=#dedede bg=#131313 bold
+style 19 7 110 fg=#dedede bg=#131313
+style 19 110 120 fg=#9d9d9d bg=#131313
+text 20 " ○ r1    cargo test --test quoting                                                        running  ·  1m · 6 tool calls"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 3 fg=#9d9d9d bg=#131313
+style 20 3 7 fg=#dedede bg=#131313
+style 20 7 34 fg=#9d9d9d bg=#131313
+style 20 34 90 fg=#dedede bg=#131313
+style 20 90 98 fg=#419cff bg=#131313
+style 20 98 120 fg=#9d9d9d bg=#131313
+text 21 " ○   r4  cargo test                                                                       running  · 20s · 4 tool calls"
+style 21 0 1 fg=#dedede bg=#131313
+style 21 1 3 fg=#9d9d9d bg=#131313
+style 21 3 7 fg=#dedede bg=#131313
+style 21 7 19 fg=#9d9d9d bg=#131313
+style 21 19 90 fg=#dedede bg=#131313
+style 21 90 98 fg=#419cff bg=#131313
+style 21 98 120 fg=#9d9d9d bg=#131313
+text 22 " ● r2    astra high  Read the lexer                                                       finished · 48s · 5 tool calls"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#30d158 bg=#131313
+style 22 3 7 fg=#dedede bg=#131313
+style 22 7 35 fg=#9d9d9d bg=#131313
+style 22 35 90 fg=#dedede bg=#131313
+style 22 90 98 fg=#30d158 bg=#131313
+style 22 98 120 fg=#9d9d9d bg=#131313
+text 23 " ● r3    Update the docs                                                                  failed   ·  9s · 3 tool calls"
+style 23 0 1 fg=#dedede bg=#131313
+style 23 1 3 fg=#ff5257 bg=#131313
+style 23 3 7 fg=#dedede bg=#131313
+style 23 7 24 fg=#9d9d9d bg=#131313
+style 23 24 90 fg=#dedede bg=#131313
+style 23 90 98 fg=#ff5257 bg=#131313
+style 23 98 120 fg=#9d9d9d bg=#131313

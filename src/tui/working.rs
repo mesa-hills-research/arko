@@ -4,9 +4,6 @@
 
 #[cfg(test)]
 mod tests {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
     use crate::glyphs::{Symbols, tests::choose_symbols};
     use crate::remote::{Activity, CallStatus, Delivery, Item, Kind, Level, Update, WorkerState};
     use crate::tui::app::{App, Info, tests::worker};
@@ -39,18 +36,7 @@ mod tests {
     }
 
     fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
+        crate::tui::golden::rows(width, height, |frame| draw(frame, app))
     }
 
     /// What is right above the "Working…" line, or (`Nothing`) nothing is.

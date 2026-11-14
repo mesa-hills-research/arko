@@ -6,11 +6,11 @@
 //! removes a key Arko saved. A key never reaches the input box, its history or the clipboard, because
 //! the menu keeps it as a [`Secret`] until it goes to the session.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::Modifier;
-use ratatui::text::{Line, Span};
+use termelon::Frame;
+use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
+use termelon::layout::Rect;
+use termelon::style::Modifier;
+use termelon::text::{Line, Span};
 
 use super::overlay::{centred, footer, frame_box, put};
 use super::theme::Theme;
@@ -437,8 +437,6 @@ pub fn draw(frame: &mut Frame, theme: &Theme, area: Rect, menu: &KeysMenu) {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
 
     /// Keys as a machine might have them, namely one Arko saved, one from the
     /// environment under Gemini's older name, one from a project's `.env`.
@@ -477,20 +475,9 @@ pub(super) mod tests {
     /// The menu as an 80-column screen shows it, row by row.
     pub fn screen(menu: &KeysMenu, theme: &Theme) -> Vec<String> {
         let (width, height) = (80, 24);
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| draw(frame, theme, frame.area(), menu))
-            .unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
+        crate::tui::golden::rows(width, height, |frame| {
+            draw(frame, theme, frame.area(), menu)
+        })
     }
 
     fn press(menu: &mut KeysMenu, code: KeyCode) -> Action {

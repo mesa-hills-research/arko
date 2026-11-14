@@ -1,0 +1,92 @@
+size 80 24
+cursor 3 22 visible default
+text 0 "  │ Project    AGENTS.md                                                     │"
+style 0 0 2 fg=#dedede bg=#131313
+style 0 2 4 fg=#303030 bg=#131313
+style 0 4 15 fg=#9d9d9d bg=#131313
+style 0 15 76 fg=#dedede bg=#131313
+style 0 76 78 fg=#303030 bg=#131313
+style 0 78 80 fg=#dedede bg=#131313
+text 1 "  │ Tools      2 skills · 1 MCP server                                       │"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 4 fg=#303030 bg=#131313
+style 1 4 15 fg=#9d9d9d bg=#131313
+style 1 15 76 fg=#dedede bg=#131313
+style 1 76 78 fg=#303030 bg=#131313
+style 1 78 80 fg=#dedede bg=#131313
+text 2 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 78 fg=#303030 bg=#131313
+style 2 78 80 fg=#dedede bg=#131313
+text 3 ""
+style 3 0 80 fg=#dedede bg=#131313
+text 4 "▎ Fix the parser's failing tests"
+style 4 0 2 fg=#419cff bg=#202020
+style 4 2 80 fg=#dedede bg=#202020
+text 5 ""
+style 5 0 80 fg=#dedede bg=#131313
+text 6 "  Planning the fix …"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 20 fg=#9d9d9d bg=#131313 italic
+style 6 20 80 fg=#dedede bg=#131313
+text 7 ""
+style 7 0 80 fg=#dedede bg=#131313
+text 8 "  I'll read the failing test and the parser first."
+style 8 0 80 fg=#dedede bg=#131313
+text 9 ""
+style 9 0 80 fg=#dedede bg=#131313
+text 10 "▸ Read parser.rs and made 1 edit"
+style 10 0 2 fg=#9d9d9d bg=#131313
+style 10 2 80 fg=#dedede bg=#131313
+text 11 "▸ Ran cargo test --lib parser (1 failed, 3 passed)                             ✗"
+style 11 0 2 fg=#9d9d9d bg=#131313
+style 11 2 29 fg=#dedede bg=#131313
+style 11 29 50 fg=#9d9d9d bg=#131313
+style 11 50 79 fg=#dedede bg=#131313
+style 11 79 80 fg=#ff5257 bg=#131313
+text 12 "! retrying in 2 s"
+style 12 0 17 fg=#ffc600 bg=#131313
+style 12 17 80 fg=#dedede bg=#131313
+text 13 ""
+style 13 0 80 fg=#dedede bg=#131313
+text 14 "  The parser skipped the blank line at the end of a file. I changed the loop,"
+style 14 0 80 fg=#dedede bg=#131313
+text 15 "  and now I run the tests again."
+style 15 0 80 fg=#dedede bg=#131313
+text 16 ""
+style 16 0 80 fg=#dedede bg=#131313
+text 17 "▸ Ran cargo test (4 passed)"
+style 17 0 2 fg=#9d9d9d bg=#131313
+style 17 2 16 fg=#dedede bg=#131313
+style 17 16 27 fg=#9d9d9d bg=#131313
+style 17 27 80 fg=#dedede bg=#131313
+text 18 "⣟ Working…"
+style 18 0 1 fg=#9d9d9d bg=#131313
+style 18 1 2 fg=#dedede bg=#131313
+style 18 2 3 fg=#9d9d9d bg=#131313
+style 18 3 4 fg=#a1a1a1 bg=#131313
+style 18 4 5 fg=#bebebe bg=#131313
+style 18 5 7 fg=#dadada bg=#131313
+style 18 7 8 fg=#bebebe bg=#131313
+style 18 8 9 fg=#a1a1a1 bg=#131313
+style 18 9 10 fg=#9d9d9d bg=#131313
+style 18 10 80 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 fg=#303030 bg=#131313
+text 20 " ● working 1m00s · 142k/250k · main: $3.20 · quiet                 Ctrl+C  stop"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 10 fg=#419cff bg=#131313
+style 20 10 50 fg=#9d9d9d bg=#131313
+style 20 50 66 fg=#dedede bg=#131313
+style 20 66 74 fg=#dedede bg=#232323
+style 20 74 79 fg=#9d9d9d bg=#131313
+style 20 79 80 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 fg=#303030 bg=#131313
+text 22 " › Add to the task"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 18 fg=#9d9d9d bg=#131313
+style 22 18 80 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 fg=#303030 bg=#131313

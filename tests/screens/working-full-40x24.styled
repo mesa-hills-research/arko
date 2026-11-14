@@ -1,0 +1,78 @@
+size 40 24
+cursor 3 22 visible default
+text 0 "│ FAILED"
+style 0 0 2 fg=#9d9d9d bg=#131313
+style 0 2 40 fg=#dedede bg=#131313
+text 1 "│ test parser::tests::quotes ... ok"
+style 1 0 2 fg=#9d9d9d bg=#131313
+style 1 2 40 fg=#dedede bg=#131313
+text 2 "│ test parser::tests::empty ... ok"
+style 2 0 2 fg=#9d9d9d bg=#131313
+style 2 2 40 fg=#dedede bg=#131313
+text 3 "│"
+style 3 0 2 fg=#9d9d9d bg=#131313
+style 3 2 40 fg=#dedede bg=#131313
+text 4 "│ test result: FAILED. 3 passed; 1"
+style 4 0 2 fg=#9d9d9d bg=#131313
+style 4 2 40 fg=#dedede bg=#131313
+text 5 "│ failed"
+style 5 0 2 fg=#9d9d9d bg=#131313
+style 5 2 40 fg=#dedede bg=#131313
+text 6 ""
+style 6 0 40 fg=#dedede bg=#131313
+text 7 "! retrying in 2 s"
+style 7 0 17 fg=#ffc600 bg=#131313
+style 7 17 40 fg=#dedede bg=#131313
+text 8 ""
+style 8 0 40 fg=#dedede bg=#131313
+text 9 "  The parser skipped the blank line at"
+style 9 0 40 fg=#dedede bg=#131313
+text 10 "  the end of a file. I changed the loop,"
+style 10 0 40 fg=#dedede bg=#131313
+text 11 "  and now I run the tests again."
+style 11 0 40 fg=#dedede bg=#131313
+text 12 ""
+style 12 0 40 fg=#dedede bg=#131313
+text 13 "▾ $ cargo test · ✓ exit 0 · 4 passed"
+style 13 0 2 fg=#9d9d9d bg=#131313
+style 13 2 14 fg=#dedede bg=#131313
+style 13 14 17 fg=#9d9d9d bg=#131313
+style 13 17 18 fg=#30d158 bg=#131313
+style 13 18 36 fg=#9d9d9d bg=#131313
+style 13 36 40 fg=#dedede bg=#131313
+text 14 "│ running 4 tests"
+style 14 0 2 fg=#9d9d9d bg=#131313
+style 14 2 40 fg=#dedede bg=#131313
+text 15 "│ test result: ok. 4 passed; 0 failed"
+style 15 0 2 fg=#9d9d9d bg=#131313
+style 15 2 40 fg=#dedede bg=#131313
+text 16 ""
+style 16 0 40 fg=#dedede bg=#131313
+text 17 "⣟ Working…"
+style 17 0 1 fg=#9d9d9d bg=#131313
+style 17 1 2 fg=#dedede bg=#131313
+style 17 2 3 fg=#9d9d9d bg=#131313
+style 17 3 4 fg=#a1a1a1 bg=#131313
+style 17 4 5 fg=#bebebe bg=#131313
+style 17 5 7 fg=#dadada bg=#131313
+style 17 7 8 fg=#bebebe bg=#131313
+style 17 8 9 fg=#a1a1a1 bg=#131313
+style 17 9 10 fg=#9d9d9d bg=#131313
+style 17 10 40 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 40 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────"
+style 19 0 40 fg=#303030 bg=#131313
+text 20 " ● working 1m00s · 142k/250k · main: $3."
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 10 fg=#419cff bg=#131313
+style 20 10 40 fg=#9d9d9d bg=#131313
+text 21 "────────────────────────────────────────"
+style 21 0 40 fg=#303030 bg=#131313
+text 22 " › Add to the task"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 18 fg=#9d9d9d bg=#131313
+style 22 18 40 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────"
+style 23 0 40 fg=#303030 bg=#131313

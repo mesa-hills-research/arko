@@ -1,0 +1,351 @@
+size 120 40
+cursor 0 0 hidden
+text 0 "                        ┌ Settings ────────────────────────────────────────────────────────────┐"
+style 0 0 24 fg=idx:253 bg=idx:233
+style 0 24 25 fg=idx:236 bg=idx:233
+style 0 25 35 fg=idx:253 bg=idx:233 bold
+style 0 35 96 fg=idx:236 bg=idx:233
+style 0 96 120 fg=idx:253 bg=idx:233
+text 1 "  ┌ Arko ───────────────│                                                                      │─────────────────────┐"
+style 1 0 2 fg=idx:253 bg=idx:233
+style 1 2 3 fg=idx:236 bg=idx:233
+style 1 3 9 fg=idx:253 bg=idx:233 bold
+style 1 9 25 fg=idx:236 bg=idx:233
+style 1 25 95 fg=idx:253 bg=idx:233
+style 1 95 118 fg=idx:236 bg=idx:233
+style 1 118 120 fg=idx:253 bg=idx:233
+text 2 "  │ Model      gpt-6-lun│ Transcript                                                           │                     │"
+style 2 0 2 fg=idx:253 bg=idx:233
+style 2 2 4 fg=idx:236 bg=idx:233
+style 2 4 15 fg=idx:247 bg=idx:233
+style 2 15 24 fg=idx:253 bg=idx:233
+style 2 24 25 fg=idx:236 bg=idx:233
+style 2 25 26 fg=idx:253 bg=idx:233
+style 2 26 36 fg=idx:247 bg=idx:233 bold
+style 2 36 95 fg=idx:253 bg=idx:233
+style 2 95 96 fg=idx:236 bg=idx:233
+style 2 96 116 fg=idx:253 bg=idx:233
+style 2 116 118 fg=idx:236 bg=idx:233
+style 2 118 120 fg=idx:253 bg=idx:233
+text 3 "  │ Workers    parallel │ ▸ View               full   quiet   messages                         │                     │"
+style 3 0 2 fg=idx:253 bg=idx:233
+style 3 2 4 fg=idx:236 bg=idx:233
+style 3 4 15 fg=idx:247 bg=idx:233
+style 3 15 24 fg=idx:253 bg=idx:233
+style 3 24 25 fg=idx:236 bg=idx:233
+style 3 25 26 fg=idx:253 bg=idx:233
+style 3 26 28 fg=idx:75 bg=idx:233
+style 3 28 46 fg=idx:75 bg=idx:233 bold
+style 3 46 52 fg=idx:231 bg=idx:26
+style 3 52 53 fg=idx:253 bg=idx:233
+style 3 53 60 fg=idx:247 bg=idx:233
+style 3 60 61 fg=idx:253 bg=idx:233
+style 3 61 71 fg=idx:247 bg=idx:233
+style 3 71 95 fg=idx:253 bg=idx:233
+style 3 95 96 fg=idx:236 bg=idx:233
+style 3 96 116 fg=idx:253 bg=idx:233
+style 3 116 118 fg=idx:236 bg=idx:233
+style 3 118 120 fg=idx:253 bg=idx:233
+text 4 "  │ Workspace  /home/ada│                     Everything, with the workers' calls inline.      │                     │"
+style 4 0 2 fg=idx:253 bg=idx:233
+style 4 2 4 fg=idx:236 bg=idx:233
+style 4 4 15 fg=idx:247 bg=idx:233
+style 4 15 24 fg=idx:253 bg=idx:233
+style 4 24 25 fg=idx:236 bg=idx:233
+style 4 25 46 fg=idx:253 bg=idx:233
+style 4 46 89 fg=idx:247 bg=idx:233
+style 4 89 95 fg=idx:253 bg=idx:233
+style 4 95 96 fg=idx:236 bg=idx:233
+style 4 96 116 fg=idx:253 bg=idx:233
+style 4 116 118 fg=idx:236 bg=idx:233
+style 4 118 120 fg=idx:253 bg=idx:233
+text 5 "  │ Session    20261110-│                                                                      │                     │"
+style 5 0 2 fg=idx:253 bg=idx:233
+style 5 2 4 fg=idx:236 bg=idx:233
+style 5 4 15 fg=idx:247 bg=idx:233
+style 5 15 24 fg=idx:253 bg=idx:233
+style 5 24 25 fg=idx:236 bg=idx:233
+style 5 25 95 fg=idx:253 bg=idx:233
+style 5 95 96 fg=idx:236 bg=idx:233
+style 5 96 116 fg=idx:253 bg=idx:233
+style 5 116 118 fg=idx:236 bg=idx:233
+style 5 118 120 fg=idx:253 bg=idx:233
+text 6 "  │ Project    AGENTS.md│ Look                                                                 │                     │"
+style 6 0 2 fg=idx:253 bg=idx:233
+style 6 2 4 fg=idx:236 bg=idx:233
+style 6 4 15 fg=idx:247 bg=idx:233
+style 6 15 24 fg=idx:253 bg=idx:233
+style 6 24 25 fg=idx:236 bg=idx:233
+style 6 25 26 fg=idx:253 bg=idx:233
+style 6 26 30 fg=idx:247 bg=idx:233 bold
+style 6 30 95 fg=idx:253 bg=idx:233
+style 6 95 96 fg=idx:236 bg=idx:233
+style 6 96 116 fg=idx:253 bg=idx:233
+style 6 116 118 fg=idx:236 bg=idx:233
+style 6 118 120 fg=idx:253 bg=idx:233
+text 7 "  │ Tools      2 skills │   Theme              macOS Classic Dark ›                            │                     │"
+style 7 0 2 fg=idx:253 bg=idx:233
+style 7 2 4 fg=idx:236 bg=idx:233
+style 7 4 15 fg=idx:247 bg=idx:233
+style 7 15 24 fg=idx:253 bg=idx:233
+style 7 24 25 fg=idx:236 bg=idx:233
+style 7 25 66 fg=idx:253 bg=idx:233
+style 7 66 67 fg=idx:247 bg=idx:233
+style 7 67 95 fg=idx:253 bg=idx:233
+style 7 95 96 fg=idx:236 bg=idx:233
+style 7 96 116 fg=idx:253 bg=idx:233
+style 7 116 118 fg=idx:236 bg=idx:233
+style 7 118 120 fg=idx:253 bg=idx:233
+text 8 "  └─────────────────────│   Previews           on   off                                        │─────────────────────┘"
+style 8 0 2 fg=idx:253 bg=idx:233
+style 8 2 25 fg=idx:236 bg=idx:233
+style 8 25 46 fg=idx:253 bg=idx:233
+style 8 46 50 fg=idx:231 bg=idx:26
+style 8 50 51 fg=idx:253 bg=idx:233
+style 8 51 56 fg=idx:247 bg=idx:233
+style 8 56 95 fg=idx:253 bg=idx:233
+style 8 95 118 fg=idx:236 bg=idx:233
+style 8 118 120 fg=idx:253 bg=idx:233
+text 9 "                        │   Mouse              on   off                                        │"
+style 9 0 24 fg=idx:253 bg=idx:233
+style 9 24 25 fg=idx:236 bg=idx:233
+style 9 25 46 fg=idx:253 bg=idx:233
+style 9 46 50 fg=idx:231 bg=idx:26
+style 9 50 51 fg=idx:253 bg=idx:233
+style 9 51 56 fg=idx:247 bg=idx:233
+style 9 56 95 fg=idx:253 bg=idx:233
+style 9 95 96 fg=idx:236 bg=idx:233
+style 9 96 120 fg=idx:253 bg=idx:233
+text 10 "▎ Add a README with a us│                                                                      │"
+style 10 0 2 fg=idx:75 bg=idx:234
+style 10 2 24 fg=idx:253 bg=idx:234
+style 10 24 25 fg=idx:236 bg=idx:233
+style 10 25 95 fg=idx:253 bg=idx:233
+style 10 95 96 fg=idx:236 bg=idx:233
+style 10 96 120 fg=idx:253 bg=idx:234
+text 11 "                        │ Quitting                                                             │"
+style 11 0 24 fg=idx:253 bg=idx:233
+style 11 24 25 fg=idx:236 bg=idx:233
+style 11 25 26 fg=idx:253 bg=idx:233
+style 11 26 34 fg=idx:247 bg=idx:233 bold
+style 11 34 95 fg=idx:253 bg=idx:233
+style 11 95 96 fg=idx:236 bg=idx:233
+style 11 96 120 fg=idx:253 bg=idx:233
+text 12 "  Done. The README has a│   Ask first          on   off                                        │"
+style 12 0 24 fg=idx:253 bg=idx:233
+style 12 24 25 fg=idx:236 bg=idx:233
+style 12 25 46 fg=idx:253 bg=idx:233
+style 12 46 50 fg=idx:231 bg=idx:26
+style 12 50 51 fg=idx:253 bg=idx:233
+style 12 51 56 fg=idx:247 bg=idx:233
+style 12 56 95 fg=idx:253 bg=idx:233
+style 12 95 96 fg=idx:236 bg=idx:233
+style 12 96 120 fg=idx:253 bg=idx:233
+text 13 "                        │                                                                      │"
+style 13 0 24 fg=idx:253 bg=idx:233
+style 13 24 25 fg=idx:236 bg=idx:233
+style 13 25 95 fg=idx:253 bg=idx:233
+style 13 95 96 fg=idx:236 bg=idx:233
+style 13 96 120 fg=idx:253 bg=idx:233
+text 14 "                        │ Status line                                                          │"
+style 14 0 24 fg=idx:253 bg=idx:233
+style 14 24 25 fg=idx:236 bg=idx:233
+style 14 25 26 fg=idx:253 bg=idx:233
+style 14 26 37 fg=idx:247 bg=idx:233 bold
+style 14 37 95 fg=idx:253 bg=idx:233
+style 14 95 96 fg=idx:236 bg=idx:233
+style 14 96 120 fg=idx:253 bg=idx:233
+text 15 "                        │   API prices         on   off                                        │"
+style 15 0 24 fg=idx:253 bg=idx:233
+style 15 24 25 fg=idx:236 bg=idx:233
+style 15 25 46 fg=idx:253 bg=idx:233
+style 15 46 50 fg=idx:247 bg=idx:233
+style 15 50 51 fg=idx:253 bg=idx:233
+style 15 51 56 fg=idx:231 bg=idx:26
+style 15 56 95 fg=idx:253 bg=idx:233
+style 15 95 96 fg=idx:236 bg=idx:233
+style 15 96 120 fg=idx:253 bg=idx:233
+text 16 "                        │                                                                      │"
+style 16 0 24 fg=idx:253 bg=idx:233
+style 16 24 25 fg=idx:236 bg=idx:233
+style 16 25 95 fg=idx:253 bg=idx:233
+style 16 95 96 fg=idx:236 bg=idx:233
+style 16 96 120 fg=idx:253 bg=idx:233
+text 17 "                        │ Session                                                              │"
+style 17 0 24 fg=idx:253 bg=idx:233
+style 17 24 25 fg=idx:236 bg=idx:233
+style 17 25 26 fg=idx:253 bg=idx:233
+style 17 26 33 fg=idx:247 bg=idx:233 bold
+style 17 33 95 fg=idx:253 bg=idx:233
+style 17 95 96 fg=idx:236 bg=idx:233
+style 17 96 120 fg=idx:253 bg=idx:233
+text 18 "                        │   Outside            on   off                                        │"
+style 18 0 24 fg=idx:253 bg=idx:233
+style 18 24 25 fg=idx:236 bg=idx:233
+style 18 25 46 fg=idx:253 bg=idx:233
+style 18 46 50 fg=idx:247 bg=idx:233
+style 18 50 51 fg=idx:253 bg=idx:233
+style 18 51 56 fg=idx:231 bg=idx:26
+style 18 56 95 fg=idx:253 bg=idx:233
+style 18 95 96 fg=idx:236 bg=idx:233
+style 18 96 120 fg=idx:253 bg=idx:233
+text 19 "                        │   Background        ←  off  →                                        │"
+style 19 0 24 fg=idx:253 bg=idx:233
+style 19 24 25 fg=idx:236 bg=idx:233
+style 19 25 46 fg=idx:253 bg=idx:233
+style 19 46 48 fg=idx:247 bg=idx:233
+style 19 48 53 fg=idx:231 bg=idx:26
+style 19 53 55 fg=idx:247 bg=idx:233
+style 19 55 95 fg=idx:253 bg=idx:233
+style 19 95 96 fg=idx:236 bg=idx:233
+style 19 96 120 fg=idx:253 bg=idx:233
+text 20 "                        │   Monitor wakes     ←  auto  →                                       │"
+style 20 0 24 fg=idx:253 bg=idx:233
+style 20 24 25 fg=idx:236 bg=idx:233
+style 20 25 46 fg=idx:253 bg=idx:233
+style 20 46 48 fg=idx:247 bg=idx:233
+style 20 48 54 fg=idx:231 bg=idx:26
+style 20 54 56 fg=idx:247 bg=idx:233
+style 20 56 95 fg=idx:253 bg=idx:233
+style 20 95 96 fg=idx:236 bg=idx:233
+style 20 96 120 fg=idx:253 bg=idx:233
+text 21 "                        │   Text replies       on   off                                        │"
+style 21 0 24 fg=idx:253 bg=idx:233
+style 21 24 25 fg=idx:236 bg=idx:233
+style 21 25 46 fg=idx:253 bg=idx:233
+style 21 46 50 fg=idx:247 bg=idx:233
+style 21 50 51 fg=idx:253 bg=idx:233
+style 21 51 56 fg=idx:231 bg=idx:26
+style 21 56 95 fg=idx:253 bg=idx:233
+style 21 95 96 fg=idx:236 bg=idx:233
+style 21 96 120 fg=idx:253 bg=idx:233
+text 22 "                        │   Extra rules        small   all   off                               │"
+style 22 0 24 fg=idx:253 bg=idx:233
+style 22 24 25 fg=idx:236 bg=idx:233
+style 22 25 46 fg=idx:253 bg=idx:233
+style 22 46 53 fg=idx:247 bg=idx:233
+style 22 53 54 fg=idx:253 bg=idx:233
+style 22 54 59 fg=idx:247 bg=idx:233
+style 22 59 60 fg=idx:253 bg=idx:233
+style 22 60 65 fg=idx:231 bg=idx:26
+style 22 65 95 fg=idx:253 bg=idx:233
+style 22 95 96 fg=idx:236 bg=idx:233
+style 22 96 120 fg=idx:253 bg=idx:233
+text 23 "                        │   Keep warm         ←  off  →                                        │"
+style 23 0 24 fg=idx:253 bg=idx:233
+style 23 24 25 fg=idx:236 bg=idx:233
+style 23 25 46 fg=idx:253 bg=idx:233
+style 23 46 48 fg=idx:247 bg=idx:233
+style 23 48 53 fg=idx:231 bg=idx:26
+style 23 53 55 fg=idx:247 bg=idx:233
+style 23 55 95 fg=idx:253 bg=idx:233
+style 23 95 96 fg=idx:236 bg=idx:233
+style 23 96 120 fg=idx:253 bg=idx:233
+text 24 "                        │   Web page           on   off                                        │"
+style 24 0 24 fg=idx:253 bg=idx:233
+style 24 24 25 fg=idx:236 bg=idx:233
+style 24 25 46 fg=idx:253 bg=idx:233
+style 24 46 50 fg=idx:247 bg=idx:233
+style 24 50 51 fg=idx:253 bg=idx:233
+style 24 51 56 fg=idx:231 bg=idx:26
+style 24 56 95 fg=idx:253 bg=idx:233
+style 24 95 96 fg=idx:236 bg=idx:233
+style 24 96 120 fg=idx:253 bg=idx:233
+text 25 "                        │                                                                      │"
+style 25 0 24 fg=idx:253 bg=idx:233
+style 25 24 25 fg=idx:236 bg=idx:233
+style 25 25 95 fg=idx:253 bg=idx:233
+style 25 95 96 fg=idx:236 bg=idx:233
+style 25 96 120 fg=idx:253 bg=idx:233
+text 26 "                        │ Handover                                                             │"
+style 26 0 24 fg=idx:253 bg=idx:233
+style 26 24 25 fg=idx:236 bg=idx:233
+style 26 25 26 fg=idx:253 bg=idx:233
+style 26 26 34 fg=idx:247 bg=idx:233 bold
+style 26 34 95 fg=idx:253 bg=idx:233
+style 26 95 96 fg=idx:236 bg=idx:233
+style 26 96 120 fg=idx:253 bg=idx:233
+text 27 "                        │   Main agent        ←  250k  →                                       │"
+style 27 0 24 fg=idx:253 bg=idx:233
+style 27 24 25 fg=idx:236 bg=idx:233
+style 27 25 46 fg=idx:253 bg=idx:233
+style 27 46 48 fg=idx:247 bg=idx:233
+style 27 48 54 fg=idx:231 bg=idx:26
+style 27 54 56 fg=idx:247 bg=idx:233
+style 27 56 95 fg=idx:253 bg=idx:233
+style 27 95 96 fg=idx:236 bg=idx:233
+style 27 96 120 fg=idx:253 bg=idx:233
+text 28 "                        │                                                                      │"
+style 28 0 24 fg=idx:253 bg=idx:233
+style 28 24 25 fg=idx:236 bg=idx:233
+style 28 25 95 fg=idx:253 bg=idx:233
+style 28 95 96 fg=idx:236 bg=idx:233
+style 28 96 120 fg=idx:253 bg=idx:233
+text 29 "                        │ Project instructions                                                 │"
+style 29 0 24 fg=idx:253 bg=idx:233
+style 29 24 25 fg=idx:236 bg=idx:233
+style 29 25 26 fg=idx:253 bg=idx:233
+style 29 26 46 fg=idx:247 bg=idx:233 bold
+style 29 46 95 fg=idx:253 bg=idx:233
+style 29 95 96 fg=idx:236 bg=idx:233
+style 29 96 120 fg=idx:253 bg=idx:233
+text 30 "                        │   Files              one   both   off                                │"
+style 30 0 24 fg=idx:253 bg=idx:233
+style 30 24 25 fg=idx:236 bg=idx:233
+style 30 25 46 fg=idx:253 bg=idx:233
+style 30 46 51 fg=idx:231 bg=idx:26
+style 30 51 52 fg=idx:253 bg=idx:233
+style 30 52 58 fg=idx:247 bg=idx:233
+style 30 58 59 fg=idx:253 bg=idx:233
+style 30 59 64 fg=idx:247 bg=idx:233
+style 30 64 95 fg=idx:253 bg=idx:233
+style 30 95 96 fg=idx:236 bg=idx:233
+style 30 96 120 fg=idx:253 bg=idx:233
+text 31 "                        │                                                                      │"
+style 31 0 24 fg=idx:253 bg=idx:233
+style 31 24 25 fg=idx:236 bg=idx:233
+style 31 25 95 fg=idx:253 bg=idx:233
+style 31 95 96 fg=idx:236 bg=idx:233
+style 31 96 120 fg=idx:253 bg=idx:233
+text 32 "                        │ Skills                                                               │"
+style 32 0 24 fg=idx:253 bg=idx:233
+style 32 24 25 fg=idx:236 bg=idx:233
+style 32 25 26 fg=idx:253 bg=idx:233
+style 32 26 32 fg=idx:247 bg=idx:233 bold
+style 32 32 95 fg=idx:253 bg=idx:233
+style 32 95 96 fg=idx:236 bg=idx:233
+style 32 96 120 fg=idx:253 bg=idx:233
+text 33 "                        │                                                                      │"
+style 33 0 24 fg=idx:253 bg=idx:233
+style 33 24 25 fg=idx:236 bg=idx:233
+style 33 25 95 fg=idx:253 bg=idx:233
+style 33 95 96 fg=idx:236 bg=idx:233
+style 33 96 120 fg=idx:253 bg=idx:233
+text 34 "                        └───────────────────────────── ↑ ↓  choose   ← →  change   Esc  close ─┘"
+style 34 0 24 fg=idx:253 bg=idx:233
+style 34 24 54 fg=idx:236 bg=idx:233
+style 34 54 59 fg=idx:253 bg=idx:235
+style 34 59 66 fg=idx:247 bg=idx:233
+style 34 66 68 fg=idx:236 bg=idx:233
+style 34 68 73 fg=idx:253 bg=idx:235
+style 34 73 80 fg=idx:247 bg=idx:233
+style 34 80 82 fg=idx:236 bg=idx:233
+style 34 82 87 fg=idx:253 bg=idx:235
+style 34 87 93 fg=idx:247 bg=idx:233
+style 34 93 96 fg=idx:236 bg=idx:233
+style 34 96 120 fg=idx:253 bg=idx:233
+text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 35 0 120 fg=idx:236 bg=idx:233
+text 36 " last turn 34s"
+style 36 0 1 fg=idx:253 bg=idx:233
+style 36 1 14 fg=idx:247 bg=idx:233
+style 36 14 120 fg=idx:253 bg=idx:233
+text 37 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 37 0 120 fg=idx:236 bg=idx:233
+text 38 " › Message  / for commands"
+style 38 0 1 fg=idx:253 bg=idx:233
+style 38 1 3 fg=idx:75 bg=idx:233
+style 38 3 26 fg=idx:247 bg=idx:233
+style 38 26 120 fg=idx:253 bg=idx:233
+text 39 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+style 39 0 120 fg=idx:236 bg=idx:233

@@ -2,23 +2,53 @@
 //! build before release. Ctrl+S saves the frame on the screen, and
 //! `/snapshot [NOTE]` the frame drawn once the command has run, as text in
 //! `snapshots/` in Arko's folder. Whoever reads `screen.txt` then reads the
-//! characters the screen showed, cell for cell.
+//! characters the screen showed, cell for cell, `screen.styled` adds their
+//! colours and attributes, and `meta.json` says where the cursor was.
 
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
-use ratatui::buffer::Buffer;
 use serde::Serialize;
+use termelon::buffer::Buffer;
+use termelon::{CompletedFrame, CursorShape};
 
 use super::app::{App, Effect};
 use super::overlay::Overlay;
 use crate::remote::Level;
+
+/// The frame the terminal took last, its cells and its cursor.
+#[derive(Debug, Clone)]
+pub struct Drawn {
+    pub buffer: Buffer,
+    /// Where the frame put the cursor, `None` when it hid it.
+    pub cursor: Option<termelon::Cursor>,
+}
+
+impl Default for Drawn {
+    fn default() -> Self {
+        Self {
+            buffer: Buffer::empty(termelon::Rect::ZERO),
+            cursor: None,
+        }
+    }
+}
+
+impl Drawn {
+    /// Keeps `frame`, which the terminal took.
+    pub fn keep(&mut self, frame: &CompletedFrame) {
+        self.buffer.clone_from(frame.buffer());
+        self.cursor = frame.cursor();
+    }
+}
 
 /// A frame of the view as text, with what the view showed with it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     /// The frame, for `screen.txt` ([`screen_text`]).
     pub screen: String,
+    /// The frame with its colours, attributes and cursor, for
+    /// `screen.styled`, in the screen goldens' format.
+    pub styled: String,
     pub meta: Meta,
 }
 
@@ -47,6 +77,8 @@ pub struct Meta {
     pub window_focused: bool,
     /// The cursor in the input box, by row and column of its text.
     pub input_cursor: Option<Cursor>,
+    /// The terminal's cursor, as the frame left it.
+    pub screen_cursor: ScreenCursor,
     pub transcript: Scroll,
     pub session_id: Option<String>,
     pub session_folder: PathBuf,
@@ -64,6 +96,35 @@ pub struct Terminal {
 pub struct Cursor {
     pub row: usize,
     pub column: usize,
+}
+
+/// The terminal's cursor, its cell and its shape while it shows.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct ScreenCursor {
+    pub visible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row: Option<u16>,
+    /// `default` (the user's own), `block`, `underline` or `bar`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape: Option<&'static str>,
+}
+
+impl ScreenCursor {
+    fn of(cursor: Option<termelon::Cursor>) -> Self {
+        Self {
+            visible: cursor.is_some(),
+            column: cursor.map(|cursor| cursor.position.x),
+            row: cursor.map(|cursor| cursor.position.y),
+            shape: cursor.map(|cursor| match cursor.shape {
+                CursorShape::Default => "default",
+                CursorShape::Block => "block",
+                CursorShape::Underline => "underline",
+                CursorShape::Bar => "bar",
+            }),
+        }
+    }
 }
 
 /// Where the transcript is scrolled to.
@@ -91,7 +152,8 @@ impl App {
     /// A snapshot of the frame drawn last, with what the view shows now and
     /// `note` (none when empty).
     pub fn snapshot(&self, note: &str) -> Snapshot {
-        let area = self.drawn_frame.area;
+        let Drawn { buffer, cursor } = &self.drawn_frame;
+        let area = buffer.area();
         let anchor = self.transcript.reading_position();
         let meta = Meta {
             time: Local::now(),
@@ -120,6 +182,7 @@ impl App {
                 let (row, column) = self.editor.position(self.input_width);
                 Cursor { row, column }
             }),
+            screen_cursor: ScreenCursor::of(*cursor),
             transcript: Scroll {
                 follows_bottom: anchor.is_none(),
                 top_block: anchor.map(|(key, _)| key),
@@ -133,7 +196,8 @@ impl App {
             session_folder: self.info.session_dir.clone(),
         };
         Snapshot {
-            screen: screen_text(&self.drawn_frame),
+            screen: screen_text(buffer),
+            styled: super::golden::styled(buffer, cursor.map(|cursor| cursor.position)),
             meta,
         }
     }
@@ -221,7 +285,12 @@ pub fn save(root: &Path, mut snapshot: Snapshot) -> Result<PathBuf, String> {
         .and_then(|path| path.metadata().ok()?.modified().ok())
         .map(DateTime::from);
     let json = serde_json::to_string_pretty(meta).map_err(|error| error.to_string())? + "\n";
-    for (file, text) in [("screen.txt", &snapshot.screen), ("meta.json", &json)] {
+    let files = [
+        ("screen.txt", &snapshot.screen),
+        ("screen.styled", &snapshot.styled),
+        ("meta.json", &json),
+    ];
+    for (file, text) in files {
         let path = folder.join(file);
         std::fs::write(&path, text).map_err(|error| failed(&path, error))?;
     }
@@ -274,18 +343,17 @@ fn link_latest(snapshots: &Path, name: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::tui::app::tests::app;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::Terminal as Screen;
-    use ratatui::backend::TestBackend;
-    use ratatui::layout::Rect;
-    use ratatui::style::Style;
+    use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
+    use termelon::layout::Rect;
+    use termelon::style::Style;
+    use termelon::testing::TestTerminal;
 
     /// Draws a frame of `app` and keeps it, as the view's loop does.
-    fn draw(terminal: &mut Screen<TestBackend>, app: &mut App) {
+    fn draw(terminal: &mut TestTerminal, app: &mut App) {
         let drawn = terminal
             .draw(|frame| super::super::screen::draw(frame, app))
             .unwrap();
-        app.drawn_frame.clone_from(drawn.buffer);
+        app.drawn_frame.keep(&drawn);
     }
 
     fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
@@ -310,13 +378,13 @@ mod tests {
     #[test]
     fn ctrl_s_saves_the_frame_on_the_screen_and_changes_nothing() {
         let mut app = app();
-        let mut terminal = Screen::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = crate::tui::golden::terminal(80, 24);
         for c in "draft".chars() {
             press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
         app.overlay = Some(Overlay::Help { scroll: 0 });
         draw(&mut terminal, &mut app);
-        let shown = screen_text(terminal.backend().buffer());
+        let shown = screen_text(&app.drawn_frame.buffer);
 
         press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert_eq!(app.overlay, Some(Overlay::Help { scroll: 0 }));
@@ -328,7 +396,7 @@ mod tests {
         assert_eq!(snapshot.screen, shown);
         assert!(shown.contains("Keys"));
         draw(&mut terminal, &mut app);
-        assert_eq!(screen_text(terminal.backend().buffer()), shown);
+        assert_eq!(screen_text(&app.drawn_frame.buffer), shown);
 
         let temp = tempfile::tempdir().unwrap();
         let folder = save(temp.path(), (**snapshot).clone()).unwrap();
@@ -337,7 +405,22 @@ mod tests {
             std::fs::read_to_string(folder.join("screen.txt")).unwrap(),
             shown
         );
+        // The help has the keys, so the terminal's cursor is hidden.
+        let styled = std::fs::read_to_string(folder.join("screen.styled")).unwrap();
+        assert_eq!(styled, snapshot.styled);
+        assert!(
+            styled.starts_with("size 80 24\ncursor 0 0 hidden\n"),
+            "{styled}"
+        );
+        assert!(
+            styled.lines().any(|line| line.starts_with("style ")),
+            "{styled}"
+        );
         let meta = meta_json(&folder);
+        assert_eq!(
+            meta["screen_cursor"],
+            serde_json::json!({ "visible": false })
+        );
         assert_eq!(meta["overlay"], "help");
         assert_eq!(meta["focus"], "overlay");
         assert_eq!(meta["note"], serde_json::Value::Null);
@@ -351,12 +434,12 @@ mod tests {
     #[test]
     fn the_command_saves_the_next_frame_with_its_note() {
         let mut app = app();
-        let mut terminal = Screen::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = crate::tui::golden::terminal(80, 24);
         for c in "/snapshot gap after the tick".chars() {
             press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
         }
         draw(&mut terminal, &mut app);
-        assert!(screen_text(&app.drawn_frame).contains("/snapshot gap"));
+        assert!(screen_text(&app.drawn_frame.buffer).contains("/snapshot gap"));
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.editor.is_empty());
         assert_eq!(
@@ -368,9 +451,28 @@ mod tests {
         draw(&mut terminal, &mut app);
         let snapshot = app.snapshot("gap after the tick");
         assert!(!snapshot.screen.contains("/snapshot"));
+        // The cursor is in the empty box, where the terminal shows it.
+        let shown = terminal.cursor().unwrap().position;
         let temp = tempfile::tempdir().unwrap();
         let folder = save(temp.path(), snapshot).unwrap();
-        assert_eq!(meta_json(&folder)["note"], "gap after the tick");
+        let meta = meta_json(&folder);
+        assert_eq!(meta["note"], "gap after the tick");
+        assert_eq!(
+            meta["screen_cursor"],
+            serde_json::json!({
+                "visible": true,
+                "column": shown.x,
+                "row": shown.y,
+                "shape": "default",
+            })
+        );
+        assert_eq!(
+            meta["input_cursor"],
+            serde_json::json!({ "row": 0, "column": 0 })
+        );
+        let styled = std::fs::read_to_string(folder.join("screen.styled")).unwrap();
+        let line = format!("cursor {} {} visible default\n", shown.x, shown.y);
+        assert!(styled.contains(&line), "{styled}");
 
         // Its folder goes to the transcript and the clipboard.
         app.snapshot_saved(Ok(folder.clone()));

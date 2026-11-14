@@ -1,0 +1,117 @@
+size 40 24
+cursor 0 0 hidden
+text 0 "  ┌ Arko ────────────────────────────┐"
+style 0 0 2 fg=#dedede bg=#131313
+style 0 2 3 fg=#303030 bg=#131313
+style 0 3 9 fg=#dedede bg=#131313 bold
+style 0 9 38 fg=#303030 bg=#131313
+style 0 38 40 fg=#dedede bg=#131313
+text 1 "  │ Model      gpt-6-luna (high eff… │"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 4 fg=#303030 bg=#131313
+style 1 4 15 fg=#9d9d9d bg=#131313
+style 1 15 36 fg=#dedede bg=#131313
+style 1 36 38 fg=#303030 bg=#131313
+style 1 38 40 fg=#dedede bg=#131313
+text 2 "  │ Workers    parallel workers      │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 36 fg=#dedede bg=#131313
+style 2 36 38 fg=#303030 bg=#131313
+style 2 38 40 fg=#dedede bg=#131313
+text 3 "  │ Workspace  /home/ada/proj        │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 36 fg=#dedede bg=#131313
+style 3 36 38 fg=#303030 bg=#131313
+style 3 38 40 fg=#dedede bg=#131313
+text 4 "  │ Session    20261110-101010-abcd  │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 15 fg=#9d9d9d bg=#131313
+style 4 15 36 fg=#dedede bg=#131313
+style 4 36 38 fg=#303030 bg=#131313
+style 4 38 40 fg=#dedede bg=#131313
+text 5 "  │ Project    AGENTS.md             │"
+style 5 0 2 fg=#dedede bg=#131313
+style 5 2 4 fg=#303030 bg=#131313
+style 5 4 15 fg=#9d9d9d bg=#131313
+style 5 15 36 fg=#dedede bg=#131313
+style 5 36 38 fg=#303030 bg=#131313
+style 5 38 40 fg=#dedede bg=#131313
+text 6 "  │ Tools      2 skills · 1 MCP      │"
+style 6 0 2 fg=#dedede bg=#131313
+style 6 2 4 fg=#303030 bg=#131313
+style 6 4 15 fg=#9d9d9d bg=#131313
+style 6 15 36 fg=#dedede bg=#131313
+style 6 36 38 fg=#303030 bg=#131313
+style 6 38 40 fg=#dedede bg=#131313
+text 7 "  │            server                │"
+style 7 0 2 fg=#dedede bg=#131313
+style 7 2 4 fg=#303030 bg=#131313
+style 7 4 15 fg=#9d9d9d bg=#131313
+style 7 15 36 fg=#dedede bg=#131313
+style 7 36 38 fg=#303030 bg=#131313
+style 7 38 40 fg=#dedede bg=#131313
+text 8 "  └──────────────────────────────────┘"
+style 8 0 2 fg=#dedede bg=#131313
+style 8 2 38 fg=#303030 bg=#131313
+style 8 38 40 fg=#dedede bg=#131313
+text 9 ""
+style 9 0 40 fg=#dedede bg=#131313
+text 10 "▎ Add a README with a usage section"
+style 10 0 2 fg=#419cff bg=#202020
+style 10 2 40 fg=#dedede bg=#202020
+text 11 ""
+style 11 0 40 fg=#dedede bg=#131313
+text 12 "  Done. The README has an install"
+style 12 0 40 fg=#dedede bg=#131313
+text 13 "  section and a usage example."
+style 13 0 40 fg=#dedede bg=#131313
+text 14 " 4 approvals    Space  select   A  all"
+style 14 0 12 fg=#419cff bg=#101010 bold
+style 14 12 15 bg=#101010
+style 14 15 22 fg=#dedede bg=#232323
+style 14 22 29 fg=#9d9d9d bg=#101010
+style 14 29 31 bg=#101010
+style 14 31 34 fg=#dedede bg=#232323
+style 14 34 38 fg=#9d9d9d bg=#101010
+style 14 38 40 bg=#101010
+text 15 " › [x] skill    release-notes  every pro"
+style 15 0 3 fg=#419cff bg=#101010
+style 15 3 7 fg=#dedede bg=#101010
+style 15 7 16 fg=#9d9d9d bg=#101010
+style 15 16 31 fg=#419cff bg=#101010 bold
+style 15 31 40 fg=#ffc600 bg=#101010
+text 16 "   [x] server   github         this proj"
+style 16 0 3 bg=#101010
+style 16 3 7 fg=#dedede bg=#101010
+style 16 7 16 fg=#9d9d9d bg=#101010
+style 16 16 40 fg=#dedede bg=#101010
+text 17 "   [x] profile  3d-judge       every pro"
+style 17 0 3 bg=#101010
+style 17 3 7 fg=#dedede bg=#101010
+style 17 7 16 fg=#9d9d9d bg=#101010
+style 17 16 31 fg=#dedede bg=#101010
+style 17 31 40 fg=#ffc600 bg=#101010
+text 18 "   [x] worker   Opus 5.5       billed pe"
+style 18 0 3 bg=#101010
+style 18 3 7 fg=#dedede bg=#101010
+style 18 7 16 fg=#9d9d9d bg=#101010
+style 18 16 40 fg=#dedede bg=#101010
+text 19 "────────────────────────────────────────"
+style 19 0 40 fg=#303030 bg=#131313
+text 20 " ● needs approval"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 17 fg=#419cff bg=#131313
+style 20 17 40 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────"
+style 21 0 40 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 26 fg=#9d9d9d bg=#131313
+style 22 26 40 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────"
+style 23 0 40 fg=#303030 bg=#131313

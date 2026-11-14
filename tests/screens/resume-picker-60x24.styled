@@ -1,0 +1,125 @@
+size 60 24
+cursor 0 0 hidden
+text 0 ""
+style 0 0 60 fg=#dedede bg=#131313
+text 1 "  ┌ Arko ────────────────────────────────────────────────┐"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 3 fg=#303030 bg=#131313
+style 1 3 9 fg=#dedede bg=#131313 bold
+style 1 9 58 fg=#303030 bg=#131313
+style 1 58 60 fg=#dedede bg=#131313
+text 2 "  │ Model      gpt-6-luna (high effort)                  │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 56 fg=#dedede bg=#131313
+style 2 56 58 fg=#303030 bg=#131313
+style 2 58 60 fg=#dedede bg=#131313
+text 3 "  │ Workers    parallel workers                          │"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 4 fg=#303030 bg=#131313
+style 3 4 15 fg=#9d9d9d bg=#131313
+style 3 15 56 fg=#dedede bg=#131313
+style 3 56 58 fg=#303030 bg=#131313
+style 3 58 60 fg=#dedede bg=#131313
+text 4 "  │ Workspace  /home/ada/proj                            │"
+style 4 0 2 fg=#dedede bg=#131313
+style 4 2 4 fg=#303030 bg=#131313
+style 4 4 15 fg=#9d9d9d bg=#131313
+style 4 15 56 fg=#dedede bg=#131313
+style 4 56 58 fg=#303030 bg=#131313
+style 4 58 60 fg=#dedede bg=#131313
+text 5 " ┌ Conversations ─────────────────────────────────────────┐"
+style 5 0 1 fg=#dedede bg=#131313
+style 5 1 2 fg=#303030 bg=#101010
+style 5 2 17 fg=#dedede bg=#101010 bold
+style 5 17 59 fg=#303030 bg=#101010
+style 5 59 60 fg=#dedede bg=#131313
+text 6 " │                                                        │"
+style 6 0 1 fg=#dedede bg=#131313
+style 6 1 2 fg=#303030 bg=#101010
+style 6 2 58 fg=#dedede bg=#101010
+style 6 58 59 fg=#303030 bg=#101010
+style 6 59 60 fg=#dedede bg=#131313
+text 7 " │   Make the login page remem…  just now         current │"
+style 7 0 1 fg=#dedede bg=#131313
+style 7 1 2 fg=#303030 bg=#101010
+style 7 2 33 fg=#dedede bg=#101010
+style 7 33 48 fg=#9d9d9d bg=#101010
+style 7 48 57 fg=#419cff bg=#101010
+style 7 57 58 fg=#dedede bg=#101010
+style 7 58 59 fg=#303030 bg=#101010
+style 7 59 60 fg=#dedede bg=#131313
+text 8 " │ ▸ Add a README with a usage…  2 hours ago              │"
+style 8 0 1 fg=#dedede bg=#131313
+style 8 1 2 fg=#303030 bg=#101010
+style 8 2 3 fg=#dedede bg=#101010
+style 8 3 5 fg=#419cff bg=#101010
+style 8 5 31 fg=#419cff bg=#101010 bold
+style 8 31 33 fg=#dedede bg=#101010
+style 8 33 48 fg=#9d9d9d bg=#101010
+style 8 48 58 fg=#dedede bg=#101010
+style 8 58 59 fg=#303030 bg=#101010
+style 8 59 60 fg=#dedede bg=#131313
+text 9 " │   Fix the build on Windows    3 hours ago              │"
+style 9 0 1 fg=#dedede bg=#131313
+style 9 1 2 fg=#303030 bg=#101010
+style 9 2 33 fg=#dedede bg=#101010
+style 9 33 48 fg=#9d9d9d bg=#101010
+style 9 48 58 fg=#dedede bg=#101010
+style 9 58 59 fg=#303030 bg=#101010
+style 9 59 60 fg=#dedede bg=#131313
+text 10 "▎│   Rename the config file      6 hours ago              │"
+style 10 0 1 fg=#419cff bg=#202020
+style 10 1 2 fg=#303030 bg=#101010
+style 10 2 33 fg=#dedede bg=#101010
+style 10 33 48 fg=#9d9d9d bg=#101010
+style 10 48 58 fg=#dedede bg=#101010
+style 10 58 59 fg=#303030 bg=#101010
+style 10 59 60 fg=#dedede bg=#202020
+text 11 " │                                                        │"
+style 11 0 1 fg=#dedede bg=#131313
+style 11 1 2 fg=#303030 bg=#101010
+style 11 2 58 fg=#dedede bg=#101010
+style 11 58 59 fg=#303030 bg=#101010
+style 11 59 60 fg=#dedede bg=#131313
+text 12 " └───────────── ↑ ↓  choose   Enter  switch   Esc  close ─┘"
+style 12 0 1 fg=#dedede bg=#131313
+style 12 1 15 fg=#303030 bg=#101010
+style 12 15 20 fg=#dedede bg=#232323
+style 12 20 27 fg=#9d9d9d bg=#101010
+style 12 27 29 fg=#303030 bg=#101010
+style 12 29 36 fg=#dedede bg=#232323
+style 12 36 43 fg=#9d9d9d bg=#101010
+style 12 43 45 fg=#303030 bg=#101010
+style 12 45 50 fg=#dedede bg=#232323
+style 12 50 56 fg=#9d9d9d bg=#101010
+style 12 56 59 fg=#303030 bg=#101010
+style 12 59 60 fg=#dedede bg=#131313
+text 13 "  example."
+style 13 0 60 fg=#dedede bg=#131313
+text 14 ""
+style 14 0 60 fg=#dedede bg=#131313
+text 15 ""
+style 15 0 60 fg=#dedede bg=#131313
+text 16 ""
+style 16 0 60 fg=#dedede bg=#131313
+text 17 ""
+style 17 0 60 fg=#dedede bg=#131313
+text 18 ""
+style 18 0 60 fg=#dedede bg=#131313
+text 19 "────────────────────────────────────────────────────────────"
+style 19 0 60 fg=#303030 bg=#131313
+text 20 " last turn 34s"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 14 fg=#9d9d9d bg=#131313
+style 20 14 60 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────────────────────────"
+style 21 0 60 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 3 fg=#419cff bg=#131313
+style 22 3 26 fg=#9d9d9d bg=#131313
+style 22 26 60 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────"
+style 23 0 60 fg=#303030 bg=#131313

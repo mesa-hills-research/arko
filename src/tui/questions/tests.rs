@@ -66,24 +66,14 @@ fn press(app: &mut App, code: KeyCode) {
     app.key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
-fn capture(app: &mut App, width: u16, height: u16) -> (String, Position) {
-    use ratatui::{Terminal, backend::TestBackend};
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+/// The screen's rows, joined, and the cursor, unless it's hidden.
+fn capture(app: &mut App, width: u16, height: u16) -> (String, Option<Position>) {
+    let mut terminal = crate::tui::golden::terminal(width, height);
     terminal
         .draw(|frame| super::super::screen::draw(frame, app))
         .unwrap();
-    let buffer = terminal.backend().buffer();
-    let text = (0..height)
-        .map(|y| {
-            (0..width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    (text, terminal.get_cursor_position().unwrap())
+    let cursor = terminal.cursor().map(|cursor| cursor.position);
+    (terminal.screen().rows().join("\n"), cursor)
 }
 
 #[test]
@@ -191,6 +181,7 @@ fn questions_and_summary_keep_their_height_and_long_fields_stay_visible() {
         app.panel_paste(&text);
         let (rows, cursor) = capture(&mut app, width, height);
         assert!(rows.contains("VISIBLE_END"), "{width}x{height}\n{rows}");
+        let cursor = cursor.expect("the cursor shows");
         assert!(cursor.x < width && cursor.y < height, "{cursor:?}");
         press(&mut app, KeyCode::Home);
         let (rows, _) = capture(&mut app, width, height);

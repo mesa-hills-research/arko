@@ -5,11 +5,11 @@
 
 use std::time::Instant;
 
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear};
+use termelon::Frame;
+use termelon::layout::Rect;
+use termelon::style::{Color, Modifier, Style};
+use termelon::text::{Line, Span};
+use termelon::widgets::{Block, Borders, Clear};
 
 use super::app::App;
 use super::theme::{Depth, Theme};

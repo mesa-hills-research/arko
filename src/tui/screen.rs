@@ -5,13 +5,15 @@
 //! the transcript takes the rest. The transcript is what the reader is
 //! there for. Everything else stays small.
 
-use ratatui::Frame;
-use ratatui::layout::{Position, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use termelon::Frame;
+use termelon::layout::{Position, Rect};
+use termelon::style::{Modifier, Style};
+use termelon::text::{Line, Span};
+use termelon::widgets::Clear;
 
 use super::app::{AgentState, App, ListRow};
 use super::cache;
+use super::motion;
 use super::overlay::{self, hints};
 use super::theme::Theme;
 use super::transcript::{self, View};
@@ -35,6 +37,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.buffer_mut().set_style(area, theme.base());
     if area.height < 6 || area.width < 16 {
         app.approvals_hidden();
+        // (Nothing moves on it.)
+        app.transcript.drawn.moving.clear();
+        app.status_drawn = None;
         return;
     }
 
@@ -74,7 +79,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.list_drawn = Default::default();
     }
     let status_y = input_area.y - 1;
-    draw_status(frame, app, Rect::new(area.x, status_y, area.width, 1));
+    let status = Rect::new(area.x, status_y, area.width, 1);
+    draw_status(frame, app, status);
+    app.status_drawn = Some(status);
     let rule_y = status_y - 1;
     frame
         .buffer_mut()
@@ -101,6 +108,45 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .draw(frame.buffer_mut(), transcript, &filter, &theme);
     overlay::draw(frame, app, transcript, area);
     app.after_draw();
+}
+
+/// What moves while nothing else on the screen changes, as the last frame
+/// drew it, namely the spinner and the highlight of each moving line in the
+/// transcript, and the status line, whose timer counts. `None` where they
+/// can't be drawn alone, because an overlay may cover them, or the "new
+/// lines" marker sits on one.
+pub fn moving(app: &App) -> Option<Vec<Rect>> {
+    if app.overlay.is_some() {
+        return None;
+    }
+    let drawn = &app.transcript.drawn;
+    let mut regions: Vec<Rect> = drawn
+        .moving
+        .iter()
+        .map(|line| line.area().intersection(drawn.area))
+        .collect();
+    if let Some(marker) = drawn.marker
+        && regions.iter().any(|region| region.intersects(marker))
+    {
+        return None;
+    }
+    regions.push(app.status_drawn?);
+    Some(regions)
+}
+
+/// Draws over the last frame what [`moving`] gives, as a whole frame draws
+/// it.
+pub fn draw_moving(frame: &mut Frame, app: &App) {
+    let theme = &app.theme;
+    let ms = motion::clock();
+    for line in &app.transcript.drawn.moving {
+        motion::paint(frame.buffer_mut(), line.at, line.width, theme, ms);
+    }
+    if let Some(area) = app.status_drawn {
+        frame.render_widget(Clear, area);
+        frame.buffer_mut().set_style(area, theme.base());
+        draw_status(frame, app, area);
+    }
 }
 
 /// A rule `width` columns wide, as the input box and the status line have.
@@ -814,9 +860,8 @@ mod tests {
     use super::*;
     use crate::remote::{Activity, AgentStatus, Item, Kind, Question, Update, WorkerState};
     use crate::tui::app::App;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use crate::tui::golden;
+    use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
 
     /// The transcript's views of the session `ARKO_SCENARIO` names, at 100
     /// columns, in the folder `ARKO_RENDERINGS` names (`remote::scenario`):
@@ -1022,9 +1067,9 @@ mod tests {
     }
 
     /// A colour as CSS writes it, where it's one of red, green and blue.
-    fn css(color: ratatui::style::Color) -> Option<String> {
+    fn css(color: termelon::style::Color) -> Option<String> {
         match color {
-            ratatui::style::Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
+            termelon::style::Color::Rgb(r, g, b) => Some(format!("#{r:02x}{g:02x}{b:02x}")),
             _ => None,
         }
     }
@@ -1032,10 +1077,8 @@ mod tests {
     /// The screen at `width` by `height`, its rows as text and as HTML in
     /// their cells' colours.
     fn screen_html(app: &mut App, width: u16, height: u16) -> (Vec<String>, Vec<String>) {
-        use ratatui::style::Modifier;
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
+        use termelon::style::Modifier;
+        let (_, buffer) = golden::drawn(width, height, |frame| draw(frame, app));
         let mut text = Vec::new();
         let mut html = Vec::new();
         for y in 0..height {
@@ -1044,13 +1087,13 @@ mod tests {
             let mut x = 0;
             while x < width {
                 let look = |x: u16| {
-                    let cell = &buffer[(x, y)];
-                    (cell.fg, cell.bg, cell.modifier)
+                    let cell = buffer.cell((x, y)).unwrap();
+                    (cell.fg(), cell.bg(), cell.modifier())
                 };
                 let (fg, bg, modifier) = look(x);
                 let mut run = String::new();
                 while x < width && look(x) == (fg, bg, modifier) {
-                    run.push_str(buffer[(x, y)].symbol());
+                    run.push_str(buffer.symbol((x, y)));
                     x += 1;
                 }
                 row.push_str(&run);
@@ -1100,18 +1143,7 @@ mod tests {
     }
 
     fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|frame| draw(frame, app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect()
+        golden::rows(width, height, |frame| draw(frame, app))
     }
 
     /// The API keys menu over an 80-column screen, and the settings' row
@@ -1253,19 +1285,12 @@ mod tests {
         for c in "Please explain the Methodology".chars() {
             app.editor.insert(c);
         }
-        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        let mut terminal = golden::terminal(30, 12);
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let row = |y: u16| {
-            (0..30)
-                .map(|x| buffer[(x, y)].symbol().to_string())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        };
-        assert_eq!(row(9), " › Please explain the");
-        assert_eq!(row(10), "   Methodology");
-        let cursor = terminal.get_cursor_position().unwrap();
+        let rows = terminal.screen().rows();
+        assert_eq!(rows[9], " › Please explain the");
+        assert_eq!(rows[10], "   Methodology");
+        let cursor = terminal.cursor().unwrap().position;
         assert_eq!((cursor.x, cursor.y), (14, 10));
     }
 
@@ -1279,19 +1304,12 @@ mod tests {
         for c in "abcdefghijklmnopqrstuvwxyz".chars() {
             app.editor.insert(c);
         }
-        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        let mut terminal = golden::terminal(30, 12);
         let mut drawn = |app: &mut App| {
             terminal.draw(|frame| draw(frame, app)).unwrap();
-            let buffer = terminal.backend().buffer().clone();
-            let row = |y: u16| {
-                (0..30)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            };
-            let cursor = terminal.get_cursor_position().unwrap();
-            (row(9), row(10), (cursor.x, cursor.y))
+            let mut rows = terminal.screen().rows();
+            let cursor = terminal.cursor().unwrap().position;
+            (rows.remove(9), rows.remove(9), (cursor.x, cursor.y))
         };
         assert_eq!(
             drawn(&mut app),
@@ -1444,20 +1462,27 @@ mod tests {
         }
         let theme = app.theme.clone();
         assert_ne!(theme.success().fg, theme.accent().fg);
-        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+        let mut terminal = golden::terminal(80, 40);
         let mut look = |app: &mut App| {
-            terminal.draw(|frame| draw(frame, app)).unwrap();
-            let buffer = terminal.backend().buffer().clone();
+            let buffer = terminal
+                .draw(|frame| draw(frame, app))
+                .unwrap()
+                .buffer()
+                .clone();
             // Each agent's bullet, its colour, and whether its name is bold.
             (35..40)
                 .map(|y| {
-                    let name: String = (3..7).map(|x| buffer[(x, y)].symbol()).collect();
-                    let bullet = &buffer[(1, y)];
-                    let bold = buffer[(3, y)].modifier.contains(Modifier::BOLD);
+                    let name: String = (3..7).map(|x| buffer.symbol((x, y))).collect();
+                    let bullet = buffer.cell((1, y)).unwrap();
+                    let bold = buffer
+                        .cell((3, y))
+                        .unwrap()
+                        .modifier()
+                        .contains(Modifier::BOLD);
                     (
                         name.trim().to_string(),
                         bullet.symbol().to_string(),
-                        bullet.fg,
+                        bullet.fg(),
                         bold,
                     )
                 })
@@ -1764,22 +1789,12 @@ mod tests {
         }
     }
 
-    fn status_buffer(app: &App, width: u16) -> ratatui::buffer::Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
-        terminal
-            .draw(|frame| draw_status(frame, app, frame.area()))
-            .unwrap();
-        terminal.backend().buffer().clone()
+    fn status_buffer(app: &App, width: u16) -> termelon::buffer::Buffer {
+        golden::drawn(width, 1, |frame| draw_status(frame, app, frame.area())).1
     }
 
     fn bar(app: &App, width: u16) -> String {
-        status_buffer(app, width)
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>()
-            .trim_end()
-            .to_string()
+        golden::rows(width, 1, |frame| draw_status(frame, app, frame.area())).remove(0)
     }
 
     #[test]
@@ -1811,15 +1826,27 @@ mod tests {
             assert_eq!(text, " Claude 5h: 0% · 7d: 98% · ChatGPT 5h: 12% · 7d: 40%");
             let buffer = status_buffer(&app, width);
             let at = text.chars().position(|c| c == '7').unwrap() as u16;
-            assert_eq!(buffer[(at, 0)].fg, app.theme.warning().fg.unwrap());
-            assert_eq!(buffer[(8, 0)].fg, app.theme.dim().fg.unwrap());
+            assert_eq!(
+                buffer.cell((at, 0)).unwrap().fg(),
+                app.theme.warning().fg.unwrap()
+            );
+            assert_eq!(
+                buffer.cell((8, 0)).unwrap().fg(),
+                app.theme.dim().fg.unwrap()
+            );
         }
         app.reading.plans[1].windows[0].used_percent = 80.0;
         let buffer = status_buffer(&app, 80);
-        assert_eq!(buffer[(8, 0)].fg, app.theme.warning().fg.unwrap());
+        assert_eq!(
+            buffer.cell((8, 0)).unwrap().fg(),
+            app.theme.warning().fg.unwrap()
+        );
         app.reading.plans[1].windows[0].used_percent = 79.0;
         let buffer = status_buffer(&app, 80);
-        assert_eq!(buffer[(8, 0)].fg, app.theme.dim().fg.unwrap());
+        assert_eq!(
+            buffer.cell((8, 0)).unwrap().fg(),
+            app.theme.dim().fg.unwrap()
+        );
     }
 
     #[test]
@@ -1934,7 +1961,6 @@ mod tests {
 
     #[test]
     fn status_bar_goldens() {
-        use ratatui::backend::{Backend, CrosstermBackend};
         use std::path::PathBuf;
         let golden_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/status-bar");
         for case in [
@@ -1989,19 +2015,15 @@ mod tests {
                 if let Some(dir) = std::env::var_os("ARKO_STATUS_CAPTURES") {
                     let dir = PathBuf::from(dir);
                     std::fs::create_dir_all(&dir).unwrap();
-                    let file = std::fs::File::create(dir.join(format!("{name}.ansi"))).unwrap();
-                    let mut backend = CrosstermBackend::new(file);
-                    let buffer = status_buffer(&app, width);
-                    backend
-                        .draw(
-                            buffer
-                                .content
-                                .iter()
-                                .enumerate()
-                                .map(|(x, cell)| (x as u16, 0, cell)),
-                        )
+                    // The bytes of the line's cells, after a blank frame.
+                    let mut terminal = golden::terminal(width, 1);
+                    terminal.draw(|_| {}).unwrap();
+                    terminal.take_output();
+                    terminal
+                        .draw(|frame| draw_status(frame, &app, frame.area()))
                         .unwrap();
-                    backend.flush().unwrap();
+                    let path = dir.join(format!("{name}.ansi"));
+                    std::fs::write(path, terminal.take_output()).unwrap();
                 }
             }
         }
@@ -2343,26 +2365,38 @@ mod tests {
                 .starts_with(" viewing r1 · ● main asks you · ● working 1m05s · 171k/190k"),
             "{rows:#?}"
         );
-        let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
+        let mut terminal = golden::terminal(100, 14);
+        let buffer = terminal
+            .draw(|frame| draw(frame, &mut app))
+            .unwrap()
+            .buffer()
+            .clone();
         let row = (0..14u16)
             .find(|y| {
                 (0..100u16)
-                    .map(|x| buffer[(x, *y)].symbol())
+                    .map(|x| buffer.symbol((x, *y)))
                     .collect::<String>()
                     .contains("viewing r1")
             })
             .unwrap();
         let at = (0..100u16)
-            .find(|x| buffer[(*x, row)].symbol() == "1" && buffer[(*x + 1, row)].symbol() == "7")
+            .find(|x| buffer.symbol((*x, row)) == "1" && buffer.symbol((*x + 1, row)) == "7")
             .unwrap();
-        assert_eq!(buffer[(at, row)].fg, app.theme.warning().fg.unwrap());
+        assert_eq!(
+            buffer.cell((at, row)).unwrap().fg(),
+            app.theme.warning().fg.unwrap()
+        );
         // Below nine tenths it isn't one.
         app.reading.agents = vec![context_of("r1", 170_000, 190_000)];
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        assert_ne!(buffer[(at, row)].fg, app.theme.warning().fg.unwrap());
+        let buffer = terminal
+            .draw(|frame| draw(frame, &mut app))
+            .unwrap()
+            .buffer()
+            .clone();
+        assert_ne!(
+            buffer.cell((at, row)).unwrap().fg(),
+            app.theme.warning().fg.unwrap()
+        );
     }
 
     /// A session on the mock model whose main agent started a worker that
@@ -2777,7 +2811,7 @@ mod tests {
     /// on a line of its own words.
     #[test]
     fn quiet_rows_merge_calls_and_a_click_opens_one() {
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         app.set_view(crate::tui::transcript::View::Quiet);
         quiet_calls(&mut app);
@@ -2823,7 +2857,7 @@ mod tests {
     #[test]
     fn opening_a_tall_quiet_row_keeps_its_line_in_place() {
         use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Update};
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         app.set_view(crate::tui::transcript::View::Quiet);
         let mut user = Item::new(Kind::User, "Edit it");
@@ -2867,7 +2901,7 @@ mod tests {
     #[test]
     fn a_commands_output_opens_inside_a_quiet_row() {
         use crate::remote::{Act, ActKind, CallStatus, Item, Kind, Update};
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         app.set_view(crate::tui::transcript::View::Quiet);
         let mut user = Item::new(Kind::User, "List it");
@@ -2997,7 +3031,7 @@ mod tests {
     #[test]
     fn a_click_on_an_open_cards_line_opens_the_panel() {
         use crate::remote::{Item, Kind, Update};
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+        use termelon::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
         let mut app = app();
         let questions = crate::tui::app::tests::asking().questions;
         let mut card = Item::new(Kind::Question, "Arko asked 2 questions");
@@ -3192,7 +3226,8 @@ mod tests {
     }
 
     /// Not a test. It measures how long a frame of a long transcript takes while
-    /// Working… or the thinking that streams moves on it, and how much of a
+    /// Working… or the thinking that streams moves on it, drawn whole and as
+    /// the animation draws it (what moves alone), by turns, and how much of a
     /// core the frames take at ten a second. Run it with
     /// `cargo test --lib animation_cost -- --ignored --nocapture`, and
     /// with `--release` for a release build's numbers.
@@ -3279,69 +3314,82 @@ mod tests {
             since: Some(now),
             question: None,
         });
-        // A terminal of 120 by 40 that the frames' escape codes go to, as
-        // they would to the screen, counting what changed since the last frame.
-        struct Count(std::rc::Rc<std::cell::Cell<usize>>);
-        impl std::io::Write for Count {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.set(self.0.get() + bytes.len());
-                Ok(bytes.len())
+        // A terminal of 120 by 40 in memory, which reads each frame's escape
+        // codes as a terminal would (its time is in the frame's).
+        let mut terminal = golden::terminal(120, 40);
+        // Draws a frame, whole or (`alone`) what moves alone, and returns how
+        // many bytes it wrote.
+        let mut frame = |app: &mut App, alone: bool| {
+            if alone && let Some(regions) = moving(app) {
+                let drawn = terminal.draw_regions(&regions, |frame| draw_moving(frame, app));
+                if let termelon::Drawn::Written(drawn) = drawn.unwrap() {
+                    return drawn.stats().bytes;
+                }
             }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let bytes = std::rc::Rc::new(std::cell::Cell::new(0));
-        let backend = ratatui::backend::CrosstermBackend::new(Count(bytes.clone()));
-        let viewport = ratatui::Viewport::Fixed(Rect::new(0, 0, 120, 40));
-        let mut terminal =
-            Terminal::with_options(backend, ratatui::TerminalOptions { viewport }).unwrap();
-        // Draws a frame, and returns how many bytes it wrote.
-        let mut frame = |app: &mut App| {
-            terminal.draw(|frame| draw(frame, app)).unwrap();
-            bytes.replace(0)
+            let drawn = terminal.draw(|frame| draw(frame, app)).unwrap();
+            drawn.stats().bytes
         };
         let mut measure = |app: &mut App, what: &str| {
             // The first frame fills the lines' caches.
-            frame(app);
-            assert!(app.transcript.drawn.moving, "{what} moves");
-            let mut times: Vec<Duration> = (0..300)
-                .map(|_| {
-                    let start = Instant::now();
-                    frame(app);
-                    start.elapsed()
-                })
-                .collect();
-            times.sort();
-            let mean = times.iter().sum::<Duration>() / times.len() as u32;
-            // Ten frames a second for three seconds, as the screen draws
-            // them, to find the share of a core they take.
-            let (wall, used) = (Instant::now(), cpu());
-            let mut written = 0;
-            for tick in 1..=30 {
-                written += frame(app);
-                std::thread::sleep(
-                    (wall + Duration::from_millis(100 * tick))
-                        .saturating_duration_since(Instant::now()),
-                );
+            frame(app, false);
+            assert!(!app.transcript.drawn.moving.is_empty(), "{what} moves");
+            assert!(moving(app).is_some(), "{what} moves alone");
+            // Whole frames and frames of what moves, 30 of each by turns.
+            let mut times: [Vec<Duration>; 2] = Default::default();
+            for _ in 0..10 {
+                for (alone, times) in [false, true].into_iter().zip(times.iter_mut()) {
+                    for _ in 0..30 {
+                        let start = Instant::now();
+                        frame(app, alone);
+                        times.push(start.elapsed());
+                    }
+                }
             }
-            let share = (cpu() - used).as_secs_f64() / wall.elapsed().as_secs_f64();
-            // Of a frame, the transcript's part.
+            // Ten frames a second for three seconds, as the screen draws
+            // them, to find the share of a core they take. The animation
+            // draws what moves alone, and the clock draws the whole frame
+            // twice a second while the agent works.
+            let mut at_ten = |whole: fn(u32) -> bool| {
+                let (wall, used) = (Instant::now(), cpu());
+                let mut written = 0;
+                for tick in 1..=30 {
+                    written += frame(app, !whole(tick));
+                    std::thread::sleep(
+                        (wall + Duration::from_millis(100 * u64::from(tick)))
+                            .saturating_duration_since(Instant::now()),
+                    );
+                }
+                let share = (cpu() - used).as_secs_f64() / wall.elapsed().as_secs_f64();
+                (share, written / 30)
+            };
+            let before = at_ten(|_| true);
+            let after = at_ten(|tick| tick % 5 == 0);
+            // Of a whole frame, the transcript's part.
             let area = Rect::new(0, 0, 120, 30);
-            let mut buffer = ratatui::buffer::Buffer::empty(area);
+            let mut buffer = termelon::buffer::Buffer::empty(area);
             let (filter, theme) = (app.filter(), app.theme.clone());
             let start = Instant::now();
             for _ in 0..300 {
                 app.transcript.draw(&mut buffer, area, &filter, &theme);
             }
             let transcript = start.elapsed() / 300;
-            println!(
-                "{what}: a frame {mean:.2?} on average ({transcript:.2?} of it the transcript), {:.2?} at the median, {:.2?} at most, {} bytes to the terminal; {:.1}% of a core at 10 frames a second",
-                times[times.len() / 2],
-                times[times.len() - 1],
-                written / 30,
-                share * 100.0,
-            );
+            for (alone, times) in [false, true].into_iter().zip(times.iter_mut()) {
+                times.sort();
+                let mean = times.iter().sum::<Duration>() / times.len() as u32;
+                let (share, written) = if alone { after } else { before };
+                println!(
+                    "{what}, {}: a frame {mean:.2?} on average, {:.2?} at the median, {:.2?} at most; {written} bytes a frame and {:.1}% of a core at 10 frames a second{}",
+                    if alone { "what moves alone" } else { "whole" },
+                    times[times.len() / 2],
+                    times[times.len() - 1],
+                    share * 100.0,
+                    if alone {
+                        String::from(", with a whole frame every 500 ms")
+                    } else {
+                        format!(" ({transcript:.2?} of a frame the transcript)")
+                    },
+                );
+            }
         };
         measure(&mut app, "Working… on 4000 items");
         let mut thinking = Item::new(Kind::Thinking, "**Checking the docs**\nThe README first.");
@@ -3359,7 +3407,7 @@ mod tests {
         let mut app = app();
         let working = |rows: &[String]| rows.iter().any(|row| row.ends_with(" Working…"));
         assert!(!working(&screen(&mut app, 50, 10)));
-        assert!(!app.transcript.drawn.moving);
+        assert!(app.transcript.drawn.moving.is_empty());
         let mut activity = Activity {
             reporting: false,
             working: true,
@@ -3369,7 +3417,7 @@ mod tests {
         app.set_activity(activity.clone());
         let rows = screen(&mut app, 50, 10);
         assert!(working(&rows), "{rows:?}");
-        assert!(app.transcript.drawn.moving);
+        assert!(!app.transcript.drawn.moving.is_empty());
         activity.question = Some(Question {
             id: 1,
             text: "Tabs or spaces?".into(),
@@ -3381,7 +3429,59 @@ mod tests {
         app.set_activity(activity);
         let rows = screen(&mut app, 50, 10);
         assert!(!working(&rows), "{rows:?}");
-        assert!(!app.transcript.drawn.moving);
+        assert!(app.transcript.drawn.moving.is_empty());
+    }
+
+    /// A frame of what moves alone (the spinner, the highlight over
+    /// "Working…" and the status line's timer) leaves the screen as a whole
+    /// frame at that moment draws it, in the default theme and in the
+    /// terminal's own colours. Under an overlay it isn't drawn alone.
+    #[test]
+    fn what_moves_alone_draws_as_a_whole_frame_would() {
+        use crate::tui::theme::Theme;
+        use std::time::{Duration, Instant};
+        for terminal_theme in [false, true] {
+            let mut app = app();
+            if terminal_theme {
+                app.theme = Theme::terminal();
+            }
+            app.set_activity(Activity {
+                reporting: false,
+                working: true,
+                since: Some(0),
+                question: None,
+            });
+            // (Halfway through a second, so a draw doesn't cross into the next.)
+            let since = |secs: u64| Some(Instant::now() - Duration::from_millis(secs * 1000 + 500));
+            app.working_since = since(64);
+            crate::tui::motion::CHOSEN.set(Some(1_000));
+            let mut terminal = golden::terminal(60, 12);
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            for (ms, secs) in [(1_100, 64), (1_350, 65), (2_000, 65), (2_650, 66)] {
+                crate::tui::motion::CHOSEN.set(Some(ms));
+                app.working_since = since(secs);
+                let regions = moving(&app).expect("it moves alone");
+                let drawn = terminal
+                    .draw_regions(&regions, |frame| draw_moving(frame, &app))
+                    .unwrap();
+                let termelon::Drawn::Written(drawn) = drawn else {
+                    panic!("{drawn:?}");
+                };
+                let alone = drawn.buffer().clone();
+                let (rows, whole) = golden::drawn(60, 12, |frame| draw(frame, &mut app));
+                assert_eq!(alone, whole, "at {ms} ms");
+                assert_eq!(terminal.screen().rows(), rows, "at {ms} ms");
+                let status = rows.iter().find(|row| row.contains("working")).unwrap();
+                assert!(
+                    status.contains(&format!("working 1m0{}s", secs - 60)),
+                    "{status}"
+                );
+            }
+            crate::tui::motion::CHOSEN.set(None);
+            app.overlay = Some(crate::tui::overlay::Overlay::Help { scroll: 0 });
+            screen(&mut app, 60, 12);
+            assert_eq!(moving(&app), None);
+        }
     }
 
     #[test]
@@ -3477,13 +3577,13 @@ mod tests {
         );
     }
 
-    fn mouse(app: &mut App, kind: crossterm::event::MouseEventKind, x: u16, y: u16) {
-        app.mouse(crossterm::event::MouseEvent {
+    fn mouse(app: &mut App, kind: termelon::event::MouseEventKind, x: u16, y: u16) {
+        app.mouse(termelon::event::MouseEvent::new(
             kind,
-            column: x,
-            row: y,
-            modifiers: KeyModifiers::NONE,
-        });
+            x,
+            y,
+            KeyModifiers::NONE,
+        ));
     }
 
     /// Letting go of a drag copies what it highlighted, and says how much;
@@ -3491,7 +3591,7 @@ mod tests {
     #[test]
     fn a_drag_copies_and_a_click_does_not() {
         use crate::tui::app::Effect;
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let mut item = Item::new(Kind::Reply, "Hello there, reader.");
         item.id = 1;
@@ -3553,7 +3653,7 @@ mod tests {
     #[test]
     fn the_answer_panels_text_selects_and_copies() {
         use crate::tui::app::Effect;
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let text = "Tabs or spaces for the **new** files? The old ones use tabs, so I'd keep them.";
         app.set_reading(crate::remote::Reading {
@@ -3579,10 +3679,8 @@ mod tests {
             [copy("Tabs or spaces", "14 characters")]
         );
         // It is highlighted, from its first cell to its last.
-        let mut terminal = Terminal::new(TestBackend::new(50, 20)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer().clone();
-        let lit = |dx: u16| buffer[(x + dx, y)].bg == app.theme.selection;
+        let (_, buffer) = golden::drawn(50, 20, |frame| draw(frame, &mut app));
+        let lit = |dx: u16| buffer.cell((x + dx, y)).unwrap().bg() == app.theme.selection;
         assert!(lit(0) && lit(13) && !lit(14));
         app.key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         assert_eq!(app.docked.as_ref().unwrap().selection, None);
@@ -3630,7 +3728,7 @@ mod tests {
     fn a_settled_ask_is_a_boxed_record_in_the_transcript() {
         use crate::questions::QuestionState;
         use crate::tui::app::Effect;
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let reading = crate::tui::app::tests::asking();
         let mut card = Item::new(Kind::Question, "Arko asked 2 questions");
@@ -3702,7 +3800,7 @@ mod tests {
     #[test]
     fn a_click_on_a_thinkings_text_folds_it() {
         use crate::tui::app::Effect;
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         for (id, kind, text) in [
             (1, Kind::Thinking, "Read the parser first.\nThen the tests."),
@@ -3757,7 +3855,7 @@ mod tests {
     fn a_click_opens_and_closes_a_commands_output() {
         use crate::remote::CallStatus;
         use crate::tui::app::Effect;
-        use crossterm::event::{MouseButton, MouseEventKind};
+        use termelon::event::{MouseButton, MouseEventKind};
         let mut app = app();
         let mut call = Item::new(Kind::Call, "$ seq 10");
         call.status = Some(CallStatus::Ok);

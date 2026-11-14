@@ -1,7 +1,7 @@
 # Interface design
 
 Arko has three interfaces, Arko Studio (GPUI and GPUI Kit), the web page (Rust and Leptos, in
-`web/`) and the terminal view (ratatui). This guide keeps them one product. It follows GPUI Kit's
+`web/`) and the terminal view (termelon). This guide keeps them one product. It follows GPUI Kit's
 [design guide](https://github.com/mesa-hills-research/gpui_kit/blob/main/website/docs/design-guides.md),
 and where the two differ for Arko, this guide wins. When something isn't covered, do what Studio
 does. Every choice here has a reason, and a change to a rule comes with a rendering of what it

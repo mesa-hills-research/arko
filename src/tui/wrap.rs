@@ -1,21 +1,21 @@
 //! Word wrapping of styled text by display width. The view wraps each item
-//! itself, once per width, instead of leaving it to ratatui's paragraphs, because
-//! their wrapping and line counts are marked unstable
-//! (ratatui-widgets/src/paragraph.rs:308-331), and the transcript needs
-//! every item's height to scroll without drawing it.
+//! itself, once per width, because the transcript needs every item's height
+//! to scroll without drawing it. Widths are those of grapheme clusters, as
+//! the cells take them (`termelon::text`), so a wrapped line fills its
+//! cells exactly.
 
-use ratatui::style::Style;
-use ratatui::text::Span;
-use unicode_width::UnicodeWidthChar;
+use termelon::style::Style;
+use termelon::text::{self, Span};
 
-/// The display width of `c`, which is 0 for marks that join the character before.
+/// The display width of `c` on its own, which is 0 for marks that join the
+/// character before. (For the input box, which moves by character.)
 pub fn char_width(c: char) -> usize {
-    c.width().unwrap_or(0)
+    text::width(c.encode_utf8(&mut [0; 4]))
 }
 
-/// The display width of `text`.
+/// The display width of `text`, the cells it takes.
 pub fn width(text: &str) -> usize {
-    text.chars().map(char_width).sum()
+    text::width(text)
 }
 
 /// `text` safe to draw, with tabs as spaces, and no control characters (an
@@ -108,51 +108,54 @@ pub fn wrap(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Vec<Span<'stat
 /// [`wrap`], with how each line joins the one before it, for copying.
 pub fn wrap_lines(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Wrapped> {
     let width = width.max(1);
-    let chars: Vec<(char, Style)> = spans
+    // Each grapheme cluster, with its width and style. (A span's clusters are
+    // its own, as the cells take them.)
+    let clusters: Vec<Cluster> = spans
         .iter()
-        .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+        .flat_map(|span| {
+            text::graphemes(&span.content).map(move |(c, w)| (c, usize::from(w), span.style))
+        })
         .collect();
     // Each line, and how it follows the one before.
-    let mut lines: Vec<(Vec<(char, Style)>, Join)> = Vec::new();
-    let mut line: Vec<(char, Style)> = Vec::new();
+    let mut lines: Vec<(Vec<Cluster>, Join)> = Vec::new();
+    let mut line: Vec<Cluster> = Vec::new();
     let mut join = Join::Break;
     let mut used = 0;
     // Where the line can break, after its last space, with the width
     // before it.
     let mut last_space: Option<(usize, usize)> = None;
-    let room = |lines: &Vec<(Vec<(char, Style)>, Join)>| {
+    let room = |lines: &Vec<(Vec<Cluster>, Join)>| {
         if lines.is_empty() {
             width
         } else {
             width.saturating_sub(hang).max(1)
         }
     };
-    for (c, style) in chars {
-        let w = char_width(c);
+    for (c, w, style) in clusters {
         if used + w > room(&lines) && !line.is_empty() {
             let (rest, next) = match last_space {
                 // Break after the space. The next line starts with the
                 // word that didn't fit.
-                Some((at, _)) if c != ' ' => (line.split_off(at), Join::Space),
-                _ if c == ' ' => (Vec::new(), Join::Space),
+                Some((at, _)) if c != " " => (line.split_off(at), Join::Space),
+                _ if c == " " => (Vec::new(), Join::Space),
                 _ => (Vec::new(), Join::Direct),
             };
             // Spaces at the end of a line aren't drawn.
-            while line.last().is_some_and(|(c, _)| *c == ' ') {
+            while line.last().is_some_and(|(c, _, _)| *c == " ") {
                 line.pop();
             }
             lines.push((std::mem::take(&mut line), join));
             join = next;
             line = rest;
-            used = line.iter().map(|(c, _)| char_width(*c)).sum();
+            used = line.iter().map(|(_, w, _)| w).sum();
             last_space = None;
-            if c == ' ' && line.is_empty() {
+            if c == " " && line.is_empty() {
                 continue;
             }
         }
-        line.push((c, style));
+        line.push((c, w, style));
         used += w;
-        if c == ' ' {
+        if c == " " {
             last_space = Some((line.len(), used));
         }
     }
@@ -160,9 +163,9 @@ pub fn wrap_lines(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Wrapped>
     lines
         .into_iter()
         .enumerate()
-        .map(|(n, (chars, join))| {
+        .map(|(n, (clusters, join))| {
             let line = Wrapped {
-                spans: merge(&chars),
+                spans: merge(&clusters),
                 join,
                 skip: 0,
                 tail: 0,
@@ -178,19 +181,22 @@ pub fn wrap_lines(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Wrapped>
         .collect()
 }
 
-/// Runs of characters of one style, as spans.
-fn merge(chars: &[(char, Style)]) -> Vec<Span<'static>> {
+/// A grapheme cluster, the cells it takes, and its style.
+type Cluster<'a> = (&'a str, usize, Style);
+
+/// Runs of clusters of one style, as spans.
+fn merge(clusters: &[Cluster]) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut text = String::new();
     let mut style: Option<Style> = None;
-    for (c, s) in chars {
+    for (c, _, s) in clusters {
         if style != Some(*s) {
             if let Some(style) = style {
                 spans.push(Span::styled(std::mem::take(&mut text), style));
             }
             style = Some(*s);
         }
-        text.push(*c);
+        text.push_str(c);
     }
     if let Some(style) = style {
         spans.push(Span::styled(text, style));
@@ -240,7 +246,7 @@ mod tests {
 
     #[test]
     fn styles_survive_a_break_and_wide_characters_count_twice() {
-        let bold = Style::new().add_modifier(ratatui::style::Modifier::BOLD);
+        let bold = Style::new().add_modifier(termelon::style::Modifier::BOLD);
         let line = [Span::raw("see "), Span::styled("this word", bold)];
         let lines = wrap(&line, 8, 0);
         assert_eq!(text(&lines), ["see this", "word"]);

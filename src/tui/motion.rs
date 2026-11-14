@@ -6,7 +6,7 @@
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use ratatui::buffer::Buffer;
+use termelon::buffer::Buffer;
 
 use super::theme::Theme;
 use crate::glyphs;
@@ -18,8 +18,19 @@ const SWEEP_MS: u64 = 2000;
 /// How far the highlight reaches each side of its middle, in columns.
 const REACH: f64 = 3.0;
 
+#[cfg(test)]
+thread_local! {
+    /// The time a test chose for its thread, in milliseconds, in place of the
+    /// clock's, so the spinner and the highlight stand still where it says.
+    pub(super) static CHOSEN: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 /// The animations' clock, in milliseconds since the first frame.
 pub fn clock() -> u64 {
+    #[cfg(test)]
+    if let Some(ms) = CHOSEN.get() {
+        return ms;
+    }
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
@@ -47,19 +58,19 @@ pub fn shimmer(col: usize, width: usize, ms: u64) -> f64 {
 /// its margin's first column, and the highlight over the word of `width`
 /// columns after the margin.
 pub fn paint(buffer: &mut Buffer, (x, y): (u16, u16), width: usize, theme: &Theme, ms: u64) {
-    let area = buffer.area;
-    if !area.contains(ratatui::layout::Position { x, y }) {
+    let area = buffer.area();
+    let Some(mut margin) = buffer.cell_mut((x, y)) else {
         return;
-    }
-    buffer[(x, y)]
-        .set_symbol(spinner(ms))
-        .set_style(theme.dim());
+    };
+    margin.set_symbol(spinner(ms)).set_style(theme.dim());
     for col in 0..width {
         let at = x as usize + 2 + col;
         if at >= area.right() as usize {
             break;
         }
-        buffer[(at as u16, y)].set_style(theme.lit(shimmer(col, width, ms)));
+        if let Some(mut cell) = buffer.cell_mut((at as u16, y)) {
+            cell.set_style(theme.lit(shimmer(col, width, ms)));
+        }
     }
 }
 
@@ -95,9 +106,9 @@ mod tests {
     #[test]
     fn a_frame_paints_the_spinner_and_the_highlight() {
         use crate::tui::theme::{Catalog, DEFAULT, Depth};
-        use ratatui::layout::Rect;
-        use ratatui::style::Color;
-        use ratatui::text::Line;
+        use termelon::layout::Rect;
+        use termelon::style::Color;
+        use termelon::text::Line;
         let theme = Catalog::load(None).theme(DEFAULT, Depth::Rgb);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 1));
         let line = Line::styled("  Working… and more", theme.dim());
@@ -106,13 +117,13 @@ mod tests {
         // columns.
         let ms = SWEEP_MS / 2;
         paint(&mut buffer, (0, 0), 8, &theme, ms);
-        assert_eq!(buffer[(0, 0)].symbol(), spinner(ms));
-        assert_eq!(buffer[(1, 0)].symbol(), " ");
-        let fg = |x: u16| buffer[(x, 0)].fg;
+        assert_eq!(buffer.symbol((0, 0)), spinner(ms));
+        assert_eq!(buffer.symbol((1, 0)), " ");
+        let fg = |x: u16| buffer.cell((x, 0)).unwrap().fg();
         let lit = |x: u16| fg(x) != theme.dim && matches!(fg(x), Color::Rgb(..));
         assert!(!lit(2) && lit(5) && lit(6) && !lit(9), "the word's middle");
         assert_eq!(fg(12), theme.dim, "past the word");
-        assert_eq!(buffer[(2, 0)].symbol(), "W", "the word stays");
+        assert_eq!(buffer.symbol((2, 0)), "W", "the word stays");
     }
 
     /// The spinner turns as the clock goes.

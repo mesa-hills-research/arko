@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{
+use termelon::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
@@ -393,10 +393,6 @@ pub struct App {
     last_interrupt: Option<Instant>,
     /// The terminal window has the focus (as far as it says).
     pub focused: bool,
-    /// The terminal was resized since the last frame, which may have cut or
-    /// moved its cells, so the next frame is drawn whole, even when the size
-    /// came back to what it was.
-    pub resized: bool,
     /// The terminal reports Shift+Enter apart from Enter.
     pub shift_enter: bool,
     pub mouse: bool,
@@ -419,7 +415,9 @@ pub struct App {
     /// in the text it clicked.
     folded: Option<(u64, super::transcript::Point)>,
     /// Where the agent list was drawn, and its rows, for the mouse.
-    pub list_drawn: (ratatui::layout::Rect, Vec<ListRow>),
+    pub list_drawn: (termelon::layout::Rect, Vec<ListRow>),
+    /// Where the status line was drawn, which its timer redraws alone.
+    pub status_drawn: Option<termelon::layout::Rect>,
     /// How many workers the agent list is scrolled past, and the farthest
     /// it scrolls, as last drawn.
     list_scroll: (usize, usize),
@@ -455,7 +453,7 @@ pub struct App {
     pub recording: Option<super::dictation::Recording>,
     /// The frame drawn last, which Ctrl+S saves.
     #[cfg(feature = "dbg-snapshot")]
-    pub drawn_frame: ratatui::buffer::Buffer,
+    pub drawn_frame: super::dbg_snapshot::Drawn,
 }
 
 /// The argument being typed on a command line, and what it may be.
@@ -525,13 +523,13 @@ impl App {
             continue_asked: None,
             last_interrupt: None,
             focused: true,
-            resized: false,
             shift_enter: false,
             mouse,
             effects: Vec::new(),
             input_width: 80,
             list_focus: None,
             list_drawn: Default::default(),
+            status_drawn: None,
             list_scroll: (0, 0),
             list_followed: None,
             list_wheeled: false,
@@ -551,7 +549,7 @@ impl App {
             openrouter_seen: crate::openrouter::generation(),
             recording: None,
             #[cfg(feature = "dbg-snapshot")]
-            drawn_frame: Default::default(),
+            drawn_frame: super::dbg_snapshot::Drawn::default(),
         }
     }
 
@@ -2624,7 +2622,7 @@ impl App {
     /// triple click a line), and a click (no drag) opens what it is on.
     pub fn mouse(&mut self, event: MouseEvent) {
         let (x, y) = (event.column, event.row);
-        let at = ratatui::layout::Position { x, y };
+        let at = termelon::layout::Position { x, y };
         match event.kind {
             // Over the help, the wheel scrolls it.
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -2841,7 +2839,7 @@ impl App {
     /// opens to its Quiet rows, a command's fold line opens or closes its
     /// whole output, and a worker's line opens its transcript. Elsewhere it
     /// does nothing.
-    fn click(&mut self, at: ratatui::layout::Position) {
+    fn click(&mut self, at: termelon::layout::Position) {
         if self.overlay.is_some() {
             return;
         }
@@ -3737,7 +3735,7 @@ pub(super) mod tests {
         // A click on a row of the list (pressed and let go) shows that
         // agent, and copies nothing.
         app.list_drawn = (
-            ratatui::layout::Rect::new(0, 20, 80, 2),
+            termelon::layout::Rect::new(0, 20, 80, 2),
             vec![ListRow::Agent(0), ListRow::Agent(1)],
         );
         click(&mut app, 5, 21);
@@ -3849,12 +3847,7 @@ pub(super) mod tests {
             MouseEventKind::Down(MouseButton::Left),
             MouseEventKind::Up(MouseButton::Left),
         ] {
-            app.mouse(MouseEvent {
-                kind,
-                column: x,
-                row: y,
-                modifiers: KeyModifiers::NONE,
-            });
+            app.mouse(MouseEvent::new(kind, x, y, KeyModifiers::NONE));
         }
     }
 
@@ -3992,14 +3985,14 @@ pub(super) mod tests {
         // The wheel moves the list away from it, and it stays where the
         // wheel left it, until the selection moves.
         let rows = app.list_rows(7);
-        app.list_drawn = (ratatui::layout::Rect::new(0, 30, 80, 7), rows);
+        app.list_drawn = (termelon::layout::Rect::new(0, 30, 80, 7), rows);
         for _ in 0..5 {
-            app.mouse(MouseEvent {
-                kind: MouseEventKind::ScrollUp,
-                column: 5,
-                row: 32,
-                modifiers: KeyModifiers::NONE,
-            });
+            app.mouse(MouseEvent::new(
+                MouseEventKind::ScrollUp,
+                5,
+                32,
+                KeyModifiers::NONE,
+            ));
         }
         assert!(!app.list_rows(7).contains(&ListRow::Agent(6)));
         add(&mut app, 8);
@@ -4071,7 +4064,7 @@ pub(super) mod tests {
         assert_eq!(app.list_rows(7), bottom);
         // A click on the count above moves back to the worker before those
         // shown, and one on the count below on to the next after them.
-        let area = ratatui::layout::Rect::new(0, 30, 80, 7);
+        let area = termelon::layout::Rect::new(0, 30, 80, 7);
         app.list_drawn = (area, app.list_rows(7));
         click(&mut app, 5, 31);
         assert_eq!(app.list_focus, Some(2));
@@ -4093,14 +4086,8 @@ pub(super) mod tests {
         assert_eq!(app.watching, None);
         assert_eq!(app.list_rows(7), bottom);
         // The wheel over the list scrolls it, as far as it goes.
-        let wheel = |app: &mut App, kind| {
-            app.mouse(MouseEvent {
-                kind,
-                column: 5,
-                row: 32,
-                modifiers: KeyModifiers::NONE,
-            })
-        };
+        let wheel =
+            |app: &mut App, kind| app.mouse(MouseEvent::new(kind, 5, 32, KeyModifiers::NONE));
         app.list_drawn = (area, app.list_rows(7));
         for _ in 0..3 {
             wheel(&mut app, MouseEventKind::ScrollUp);
@@ -5123,7 +5110,7 @@ pub(super) mod tests {
     /// again, as the terminal may never report the release.
     #[test]
     fn losing_the_focus_mid_drag_lets_the_view_follow() {
-        use ratatui::{buffer::Buffer, layout::Rect};
+        use termelon::{buffer::Buffer, layout::Rect};
         let mut app = app();
         let line = |id: u64| {
             let mut item = Item::new(Kind::Output, format!("line {id}"));
@@ -5142,7 +5129,7 @@ pub(super) mod tests {
             (0..area.height)
                 .map(|y| {
                     (0..area.width)
-                        .map(|x| buffer[(x, y)].symbol().to_string())
+                        .map(|x| buffer.symbol((x, y)).to_string())
                         .collect::<String>()
                         .trim_end()
                         .to_string()
@@ -5150,12 +5137,12 @@ pub(super) mod tests {
                 .collect()
         };
         rows(&mut app);
-        app.mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 3,
-            row: 1,
-            modifiers: KeyModifiers::NONE,
-        });
+        app.mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            3,
+            1,
+            KeyModifiers::NONE,
+        ));
         app.focus_changed(false);
         rows(&mut app);
         app.transcript.apply(crate::remote::Update::Item(line(6)));

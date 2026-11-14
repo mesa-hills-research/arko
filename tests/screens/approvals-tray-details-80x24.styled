@@ -1,0 +1,119 @@
+size 80 24
+cursor 0 0 hidden
+text 0 "  │ Session    20261110-101010-abcd                                          │"
+style 0 0 2 fg=#dedede bg=#131313
+style 0 2 4 fg=#303030 bg=#131313
+style 0 4 15 fg=#9d9d9d bg=#131313
+style 0 15 76 fg=#dedede bg=#131313
+style 0 76 78 fg=#303030 bg=#131313
+style 0 78 80 fg=#dedede bg=#131313
+text 1 "  │ Project    AGENTS.md                                                     │"
+style 1 0 2 fg=#dedede bg=#131313
+style 1 2 4 fg=#303030 bg=#131313
+style 1 4 15 fg=#9d9d9d bg=#131313
+style 1 15 76 fg=#dedede bg=#131313
+style 1 76 78 fg=#303030 bg=#131313
+style 1 78 80 fg=#dedede bg=#131313
+text 2 "  │ Tools      2 skills · 1 MCP server                                       │"
+style 2 0 2 fg=#dedede bg=#131313
+style 2 2 4 fg=#303030 bg=#131313
+style 2 4 15 fg=#9d9d9d bg=#131313
+style 2 15 76 fg=#dedede bg=#131313
+style 2 76 78 fg=#303030 bg=#131313
+style 2 78 80 fg=#dedede bg=#131313
+text 3 "  └──────────────────────────────────────────────────────────────────────────┘"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 78 fg=#303030 bg=#131313
+style 3 78 80 fg=#dedede bg=#131313
+text 4 ""
+style 4 0 80 fg=#dedede bg=#131313
+text 5 "▎ Add a README with a usage section"
+style 5 0 2 fg=#419cff bg=#202020
+style 5 2 80 fg=#dedede bg=#202020
+text 6 ""
+style 6 0 80 fg=#dedede bg=#131313
+text 7 "  Done. The README has an install section and a usage example."
+style 7 0 80 fg=#dedede bg=#131313
+text 8 " 4 approvals       Space  select   A  all   Enter  approve all   R  reject all"
+style 8 0 12 fg=#419cff bg=#101010 bold
+style 8 12 18 bg=#101010
+style 8 18 25 fg=#dedede bg=#232323
+style 8 25 32 fg=#9d9d9d bg=#101010
+style 8 32 34 bg=#101010
+style 8 34 37 fg=#dedede bg=#232323
+style 8 37 41 fg=#9d9d9d bg=#101010
+style 8 41 43 bg=#101010
+style 8 43 50 fg=#dedede bg=#232323
+style 8 50 62 fg=#9d9d9d bg=#101010
+style 8 62 64 bg=#101010
+style 8 64 67 fg=#dedede bg=#232323
+style 8 67 78 fg=#9d9d9d bg=#101010
+style 8 78 80 bg=#101010
+text 9 " › [x] skill    release-notes  every project     How this project writes relea…"
+style 9 0 3 fg=#419cff bg=#101010
+style 9 3 7 fg=#dedede bg=#101010
+style 9 7 16 fg=#9d9d9d bg=#101010
+style 9 16 31 fg=#419cff bg=#101010 bold
+style 9 31 49 fg=#ffc600 bg=#101010
+style 9 49 79 fg=#9d9d9d bg=#101010
+style 9 79 80 bg=#101010
+text 10 "      Save the skill release-notes for every project?"
+style 10 0 6 bg=#101010
+style 10 6 53 fg=#dedede bg=#101010 bold
+style 10 53 80 bg=#101010
+text 11 "      How this project writes release notes."
+style 11 0 6 bg=#101010
+style 11 6 44 fg=#dedede bg=#101010
+style 11 44 80 bg=#101010
+text 12 "      Written by the agent."
+style 12 0 6 bg=#101010
+style 12 6 27 fg=#dedede bg=#101010
+style 12 27 80 bg=#101010
+text 13 "      Workers get it too."
+style 13 0 6 bg=#101010
+style 13 6 25 fg=#dedede bg=#101010
+style 13 25 80 bg=#101010
+text 14 "      Why"
+style 14 0 6 bg=#101010
+style 14 6 9 fg=#9d9d9d bg=#101010
+style 14 9 80 bg=#101010
+text 15 "      The checklist changed."
+style 15 0 6 bg=#101010
+style 15 6 28 fg=#dedede bg=#101010
+style 15 28 80 bg=#101010
+text 16 "   [x] server   github         this project      npx -y @modelcontextprotocol/…"
+style 16 0 3 bg=#101010
+style 16 3 7 fg=#dedede bg=#101010
+style 16 7 16 fg=#9d9d9d bg=#101010
+style 16 16 49 fg=#dedede bg=#101010
+style 16 49 79 fg=#9d9d9d bg=#101010
+style 16 79 80 bg=#101010
+text 17 "   [x] profile  3d-judge       every project     sol xhigh"
+style 17 0 3 bg=#101010
+style 17 3 7 fg=#dedede bg=#101010
+style 17 7 16 fg=#9d9d9d bg=#101010
+style 17 16 31 fg=#dedede bg=#101010
+style 17 31 49 fg=#ffc600 bg=#101010
+style 17 49 58 fg=#9d9d9d bg=#101010
+style 17 58 80 bg=#101010
+text 18 "   [x] worker   Opus 5.5       billed per token  $5/$25 per million tokens, $3…"
+style 18 0 3 bg=#101010
+style 18 3 7 fg=#dedede bg=#101010
+style 18 7 16 fg=#9d9d9d bg=#101010
+style 18 16 49 fg=#dedede bg=#101010
+style 18 49 79 fg=#9d9d9d bg=#101010
+style 18 79 80 bg=#101010
+text 19 "────────────────────────────────────────────────────────────────────────────────"
+style 19 0 80 fg=#303030 bg=#131313
+text 20 " ● needs approval"
+style 20 0 1 fg=#dedede bg=#131313
+style 20 1 17 fg=#419cff bg=#131313
+style 20 17 80 fg=#dedede bg=#131313
+text 21 "────────────────────────────────────────────────────────────────────────────────"
+style 21 0 80 fg=#303030 bg=#131313
+text 22 " › Message  / for commands"
+style 22 0 1 fg=#dedede bg=#131313
+style 22 1 26 fg=#9d9d9d bg=#131313
+style 22 26 80 fg=#dedede bg=#131313
+text 23 "────────────────────────────────────────────────────────────────────────────────"
+style 23 0 80 fg=#303030 bg=#131313

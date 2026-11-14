@@ -1,8 +1,6 @@
 //! The view's dictation flows, with the service's events given by hand.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
+use termelon::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
 use crate::dictation::models::GRANITE;
@@ -51,20 +49,7 @@ fn dictates(app: &mut App) -> Vec<Dictate> {
 
 /// The screen's rows, drawn `width` columns wide.
 fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| crate::tui::screen::draw(frame, app))
-        .unwrap();
-    let buffer = terminal.backend().buffer().clone();
-    (0..height)
-        .map(|y| {
-            (0..width)
-                .map(|x| buffer[(x, y)].symbol().to_string())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect()
+    crate::tui::golden::rows(width, height, |frame| crate::tui::screen::draw(frame, app))
 }
 
 /// An app recording as dictation 7, listening, with `typed` in the box
