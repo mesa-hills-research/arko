@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use speech::disfluency::{Guards, PACK_DOWNLOAD, Punctuation, Tagger};
 use speech::model::ModelType;
 use speech::stream::{Event, StreamConfig, Streamer};
-use speech::{Fillers, Model, Options, SpecialWords};
+use speech::{Fillers, Model, Options, PathLimits, Paths, SpecialWords, Symbols};
 
 use super::capture::{self, Capture};
 use super::download;
@@ -69,6 +69,9 @@ struct Job {
     session_words: bool,
     /// What to take out of the speech, for its language.
     cleanup: Cleanup,
+    /// The spoken symbols to write, for its language, which dictated paths
+    /// snap with.
+    symbols: Option<Symbols>,
 }
 
 enum Message {
@@ -82,6 +85,9 @@ enum Message {
     CaptureFailed(String),
     /// The words to favour, from the next utterance on ([`WordsSender`]).
     Words(Vec<SessionWord>),
+    /// The workspace's paths, which dictated paths snap to from the next
+    /// utterance on ([`WordsSender::send_paths_in`]).
+    Paths(Arc<Paths>),
     Finish,
 }
 
@@ -213,12 +219,14 @@ impl DictationService {
             idle: settings.idle(),
             session_words: settings.session_words,
             cleanup: cleanup(&settings),
+            symbols: symbols(&settings),
         };
         let dictation = Dictation {
             id,
             sender,
             intake,
             busy: self.busy.clone(),
+            snaps_paths: job.symbols.is_some(),
         };
         if self.jobs.send(job).is_err() {
             return Err(DictationError::Stopped);
@@ -265,6 +273,18 @@ fn cleanup(settings: &Settings) -> Cleanup {
     }
 }
 
+/// The spoken symbols `settings` write, for the language spoken. Telmo's
+/// are for English, so another language gets none, and a language neither
+/// the settings nor the system name counts as English, as for the cleanup.
+/// The message box is prose with code in it, so these are prose's symbols,
+/// which leave "a dot on the map" as words.
+fn symbols(settings: &Settings) -> Option<Symbols> {
+    if !settings.workspace_paths {
+        return None;
+    }
+    Symbols::for_language(&settings.language().unwrap_or_else(|| "en".into()))
+}
+
 /// The engine's name for a model family.
 pub(super) fn engine_type(family: Family) -> ModelType {
     match family {
@@ -281,6 +301,8 @@ pub struct Dictation {
     sender: mpsc::Sender<Message>,
     intake: Arc<Intake>,
     busy: Arc<AtomicBool>,
+    /// The settings write spoken symbols, so dictated paths snap.
+    snaps_paths: bool,
 }
 
 impl Dictation {
@@ -317,6 +339,7 @@ impl Dictation {
         WordsSender {
             sender: self.sender.clone(),
             intake: self.intake.clone(),
+            paths: self.snaps_paths,
         }
     }
 
@@ -337,6 +360,8 @@ impl Dictation {
 pub(crate) struct WordsSender {
     sender: mpsc::Sender<Message>,
     intake: Arc<Intake>,
+    /// The dictation snaps dictated paths.
+    paths: bool,
 }
 
 impl WordsSender {
@@ -345,9 +370,25 @@ impl WordsSender {
         !self.intake.is_cancelled()
     }
 
-    pub(crate) fn send(self, words: Vec<SessionWord>) {
+    pub(crate) fn send(&self, words: Vec<SessionWord>) {
         if self.wanted() {
             let _ = self.sender.send(Message::Words(words));
+        }
+    }
+
+    /// Lists the files and folders in `workspace` and gives them to the
+    /// dictation, whose dictated paths snap to them, when its settings
+    /// snap paths. Listing reads the folders (half a second for 20,000
+    /// names the first time), so it runs on the thread that builds the
+    /// words. A workspace that can't be listed snaps nothing.
+    pub(crate) fn send_paths_in(&self, workspace: &Path) {
+        if !self.paths || !self.wanted() || workspace.as_os_str().is_empty() {
+            return;
+        }
+        if let Ok(paths) = Paths::scan(workspace, &PathLimits::default())
+            && self.wanted()
+        {
+            let _ = self.sender.send(Message::Paths(Arc::new(paths)));
         }
     }
 }
@@ -498,13 +539,13 @@ fn run(
         return;
     }
     send(DictationEvent::Listening);
-    let base = cleaned(job.cleanup, tagger.clone());
+    let base = cleaned(job.cleanup, job.symbols, tagger.clone());
     listen(
         &job.audio,
         &intake,
         model,
         job.session_words,
-        &base,
+        base,
         &mut send,
     );
 }
@@ -542,13 +583,19 @@ fn load_tagger(root: &Path, slot: &mut Option<Arc<Tagger>>) -> Result<(), String
     Ok(())
 }
 
-/// The list every pass starts from, which leaves out what `cleanup` takes
-/// out, full cleanup with `tagger`. Every level keeps what Telmo's guards
-/// protect, such as a spoken symbol or a unit after a number, and tidies
-/// the punctuation and capitals the words that went leave, joining more
-/// sentences a pause split ("a release. Build." is "a release build").
-fn cleaned(cleanup: Cleanup, tagger: Option<Arc<Tagger>>) -> SpecialWords {
+/// The list every pass starts from, which writes `symbols` and leaves out
+/// what `cleanup` takes out, full cleanup with `tagger`. Every level keeps
+/// what Telmo's guards protect, such as a spoken symbol or a unit after a
+/// number, and tidies the punctuation and capitals the words that went
+/// leave, joining more sentences a pause split ("a release. Build." is "a
+/// release build").
+fn cleaned(
+    cleanup: Cleanup,
+    symbols: Option<Symbols>,
+    tagger: Option<Arc<Tagger>>,
+) -> SpecialWords {
     let mut list = SpecialWords::new();
+    list.set_symbols(symbols);
     match cleanup {
         Cleanup::Off => return list,
         Cleanup::Light => list.set_fillers(Fillers::for_language("en")),
@@ -558,6 +605,16 @@ fn cleaned(cleanup: Cleanup, tagger: Option<Arc<Tagger>>) -> SpecialWords {
     list.set_guards(Guards::for_language("en"));
     list.set_punctuation(Punctuation::for_language("en").map(Punctuation::joining_more));
     list
+}
+
+/// Gives `base` the workspace's `paths` to snap to, when it writes spoken
+/// symbols (paths alone would turn them on), and says whether it did.
+fn take_paths(base: &mut SpecialWords, paths: Arc<Paths>) -> bool {
+    let takes = base.symbols().is_some();
+    if takes {
+        base.set_paths(Some(paths));
+    }
+    takes
 }
 
 /// `base` with the words added, best first. Those Telmo refuses are left
@@ -586,17 +643,19 @@ fn wait_for(next_pass: Option<Instant>, now: Instant) -> Duration {
 /// Takes the audio, running passes as Telmo's `Stream` does, until the
 /// dictation finishes, fails or is cancelled. The passes use the list
 /// `base`, with the words that come if the settings favour the session's
-/// words (`session_words`).
+/// words (`session_words`), and the paths that come if `base` writes
+/// spoken symbols.
 fn listen(
     audio: &mpsc::Receiver<Message>,
     intake: &Intake,
     model: Arc<Model>,
     session_words: bool,
-    base: &SpecialWords,
+    mut base: SpecialWords,
     send: &mut dyn FnMut(DictationEvent),
 ) {
     let mut streamer: Option<Streamer> = None;
     let mut words = base.clone();
+    let mut favoured: Vec<SessionWord> = Vec::new();
     let mut shown = Shown::default();
     let mut lag = Lag::default();
     let mut next_pass: Option<Instant> = None;
@@ -631,12 +690,21 @@ fn listen(
                     lag.took(samples.len() as f64 / f64::from(rate.max(1)), &events);
                 }
                 Ok(Message::Words(given)) if session_words => {
-                    words = special_words(base, &given);
+                    favoured = given;
+                    words = special_words(&base, &favoured);
                     if let Some(streamer) = &mut streamer {
                         streamer.set_special_words(&words);
                     }
                 }
                 Ok(Message::Words(_)) => {}
+                Ok(Message::Paths(paths)) => {
+                    if take_paths(&mut base, paths) {
+                        words = special_words(&base, &favoured);
+                        if let Some(streamer) = &mut streamer {
+                            streamer.set_special_words(&words);
+                        }
+                    }
+                }
                 Ok(Message::Overloaded) => return send(DictationEvent::Failed(OVERLOADED.into())),
                 Ok(Message::CaptureFailed(why)) => {
                     return send(DictationEvent::Failed(format!(

@@ -31,6 +31,12 @@ pub struct Settings {
     /// Leave out of the session's words the values that context marks as
     /// secret, such as what follows `PASSWORD=` or `--token`.
     pub leave_out_secrets: bool,
+    /// Write spoken symbols as code where the words read as code ("dash
+    /// dash force" as `--force`), and a dictated path as the file or folder
+    /// of the session's workspace it names ("source slash engine dot rs" as
+    /// `src/engine.rs`), in English speech. Off leaves them as the model
+    /// writes them.
+    pub workspace_paths: bool,
     /// What to take out of English speech, a [`Cleanup`]'s name. A value it
     /// doesn't know means none, and leaves the other settings as they are.
     #[serde(deserialize_with = "any_value_as_name")]
@@ -55,6 +61,7 @@ impl Default for Settings {
             download: "ask".into(),
             session_words: true,
             leave_out_secrets: false,
+            workspace_paths: true,
             cleanup: Cleanup::Off.name().into(),
         }
     }
@@ -184,10 +191,15 @@ mod tests {
         assert_eq!(settings.model, "automatic");
         assert!(settings.session_words);
         assert!(!settings.leave_out_secrets);
-        let settings: Settings =
-            serde_json::from_str(r#"{"session_words": false, "leave_out_secrets": true}"#).unwrap();
+        assert!(settings.workspace_paths);
+        let settings: Settings = serde_json::from_str(
+            r#"{"session_words": false, "leave_out_secrets": true, "workspace_paths": false}"#,
+        )
+        .unwrap();
         assert!(!settings.session_words);
         assert!(settings.leave_out_secrets);
+        assert!(!settings.workspace_paths);
+        assert_eq!(settings.model, "automatic");
     }
 
     #[test]

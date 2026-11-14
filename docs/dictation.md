@@ -40,6 +40,28 @@ still comes out as the model hears it.
 With `session_words` off, nothing is favoured, the names included, so the model's own spelling
 stands.
 
+## Paths and symbols
+
+In English, a spoken symbol is written as its character where the words read as code, and a
+dictated path is written as the workspace's file or folder it names.
+
+```text
+So in source slash engine dot rs, add a dash dash dry dash run flag.
+So in src/engine.rs, add a --dry-run flag.
+```
+
+The symbols are slash, backslash, dot, underscore, dash, hyphen, colon and tilde, and "double"
+or "triple" before one. In prose they stay words, so "a dot on the map" and "and slash or" come
+out as said. A run is code when something shows it is, such as a listed path, a file extension
+or a domain after a dot, a flag, two symbols or more, or a word beside it such as "file". A path
+snaps when a symbol in it is said and its words spell the end of a listed path, with "source"
+for `src`, "rust" for `rs` and other common names for a part.
+
+Each recording lists the workspace's files and folders on the thread that builds the favoured
+words, up to 20,000 names and 12 folders deep, keeping to `.gitignore` and leaving out hidden
+folders. It starts at once, and paths snap as soon as the list is ready. `workspace_paths` off
+leaves the symbols and paths as the model writes them.
+
 ## Cleanup
 
 Cleanup takes hesitations, repeats and false starts out of what you dictate in English. Set
@@ -96,7 +118,8 @@ left out.
   "language": "fr",
   "idle_minutes": 10,
   "download": "ask",
-  "session_words": true
+  "session_words": true,
+  "workspace_paths": true
 }
 ```
 
@@ -108,6 +131,7 @@ left out.
 | `download` | `ask` before downloading a missing model (the speech model or full cleanup's), or `automatic` |
 | `session_words` | `true` to favour [these words](#favoured-words), or `false` to favour none |
 | `leave_out_secrets` | `true` to leave secrets out of the favoured words, `false` by default |
+| `workspace_paths` | `true` to write [spoken symbols and paths](#paths-and-symbols) as code, or `false` to leave them as the model writes them |
 | `cleanup` | `off`, `light`, `medium` or `full`, for what [cleanup](#cleanup) takes out |
 
 `leave_out_secrets` leaves out the values that context marks as secret and keeps the names. Those
@@ -131,6 +155,6 @@ WAV file, played in real time, in place of the microphone.
 An app opens a dictation with `arko::dictation::DictationService::shared`, giving it a `Sink` that
 takes the events to the recording client, and hands it audio with `Dictation::push` or
 `Dictation::record`. It keeps the `Dictation` until `Done` or `Failed` comes, since dropping it
-cancels the dictation. `arko::dictation::favour_session_words` gives the dictation its favoured words once they're built,
-on a thread of their own. `favour_session_words_with` also takes a closure that returns an app's
+cancels the dictation. `arko::dictation::favour_session_words` gives the dictation its favoured words and the
+workspace's paths once they're ready, on a thread of their own. `favour_session_words_with` also takes a closure that returns an app's
 own words, such as a user dictionary, best first, and runs it on that thread.

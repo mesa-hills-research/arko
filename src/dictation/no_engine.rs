@@ -72,7 +72,11 @@ impl WordsSender {
         match self.0 {}
     }
 
-    pub(crate) fn send(self, _words: Vec<SessionWord>) {
+    pub(crate) fn send(&self, _words: Vec<SessionWord>) {
+        match self.0 {}
+    }
+
+    pub(crate) fn send_paths_in(&self, _workspace: &Path) {
         match self.0 {}
     }
 }

@@ -302,6 +302,7 @@ fn words_go_to_their_dictation_while_it_lasts() {
     let words = || WordsSender {
         sender: sender.clone(),
         intake: intake.clone(),
+        paths: false,
     };
     let word = vec![SessionWord {
         text: "Telmo".into(),
@@ -314,6 +315,124 @@ fn words_go_to_their_dictation_while_it_lasts() {
     assert!(!words().wanted());
     words().send(word);
     assert!(received.try_recv().is_err());
+}
+
+/// A workspace with `src/engine.rs` and `docs/paths.md`.
+fn workspace() -> tempfile::TempDir {
+    let workspace = tempfile::tempdir().unwrap();
+    for (folder, file) in [("src", "engine.rs"), ("docs", "paths.md")] {
+        std::fs::create_dir(workspace.path().join(folder)).unwrap();
+        std::fs::write(workspace.path().join(folder).join(file), "").unwrap();
+    }
+    workspace
+}
+
+/// A dictation that snaps paths gets the workspace's, and one that doesn't,
+/// or that ended, gets none. Neither does a workspace that can't be
+/// listed.
+#[test]
+fn the_workspace_paths_go_to_a_dictation_that_snaps_them() {
+    let workspace = workspace();
+    let (sender, received) = mpsc::channel();
+    let intake = Arc::new(Intake::default());
+    let words = |paths| WordsSender {
+        sender: sender.clone(),
+        intake: intake.clone(),
+        paths,
+    };
+    words(true).send_paths_in(workspace.path());
+    let Ok(Message::Paths(paths)) = received.try_recv() else {
+        panic!("no paths came");
+    };
+    let listed: Vec<&str> = paths.iter().collect();
+    assert!(listed.contains(&"src/engine.rs"), "{listed:?}");
+    words(false).send_paths_in(workspace.path());
+    words(true).send_paths_in(Path::new(""));
+    words(true).send_paths_in(&workspace.path().join("missing"));
+    assert!(received.try_recv().is_err());
+    intake.cancelled.store(true, Ordering::SeqCst);
+    words(true).send_paths_in(workspace.path());
+    assert!(received.try_recv().is_err());
+}
+
+/// Telmo's spoken symbols are English's, and prose's, since the message box
+/// is prose with code in it. The setting turns them off, and the paths with
+/// them.
+#[test]
+fn spoken_symbols_are_for_english_unless_the_setting_turns_them_off() {
+    let settings = |text: &str| -> Settings { serde_json::from_str(text).unwrap() };
+    let prose = Symbols::for_language("en");
+    assert!(prose.is_some_and(|symbols| !symbols.is_for_code()));
+    assert_eq!(symbols(&settings(r#"{"language": "en"}"#)), prose);
+    assert_eq!(symbols(&settings(r#"{"language": "en_GB"}"#)), prose);
+    assert_eq!(symbols(&settings(r#"{"language": "fr"}"#)), None);
+    let off = r#"{"language": "en", "workspace_paths": false}"#;
+    assert_eq!(symbols(&settings(off)), None);
+}
+
+/// A dictation snaps paths when its settings write spoken symbols as it
+/// opens.
+#[test]
+fn a_dictation_snaps_paths_as_its_settings_say() {
+    for (settings, snaps) in [
+        (r#"{"model": "granite", "language": "en"}"#, true),
+        (r#"{"model": "granite", "language": "fr"}"#, false),
+        (
+            r#"{"model": "granite", "language": "en", "workspace_paths": false}"#,
+            false,
+        ),
+    ] {
+        let root = root_with(settings);
+        let service = DictationService::downloading_from(root.path(), NO_SERVER);
+        let (sink, updates) = sink();
+        let dictation = service
+            .open(DictationOptions { download: true }, sink)
+            .unwrap();
+        assert_eq!(dictation.words_sender().paths, snaps, "{settings}");
+        // The download fails before the folder goes.
+        let failed = updates.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            matches!(failed.event, DictationEvent::Failed(_)),
+            "{failed:?}"
+        );
+    }
+}
+
+/// With the setting on, the list the passes use writes a dictated path as
+/// the workspace's file, alongside the session's words and the cleanup.
+/// Off, or in another language, it has neither symbols nor paths.
+#[test]
+fn a_dictated_path_snaps_to_the_workspace() {
+    let workspace = workspace();
+    let paths = Arc::new(Paths::scan(workspace.path(), &PathLimits::default()).unwrap());
+    let list = |settings: &str| {
+        let settings: Settings = serde_json::from_str(settings).unwrap();
+        let mut base = cleaned(cleanup(&settings), symbols(&settings), None);
+        let took = take_paths(&mut base, paths.clone());
+        let favoured = [SessionWord {
+            text: "Telmo".into(),
+            code: false,
+        }];
+        (took, special_words(&base, &favoured))
+    };
+    let (took, on) = list(r#"{"language": "en", "cleanup": "light"}"#);
+    assert!(took);
+    assert!(on.words().any(|word| word == "Telmo"));
+    assert_eq!(on.fillers(), Fillers::for_language("en"));
+    let said = "So in source slash engine dot rs, add a dash dash dry dash run flag.";
+    let written = on
+        .symbols()
+        .unwrap()
+        .write(said, on.paths().map(Arc::as_ref));
+    assert_eq!(written, "So in src/engine.rs, add a --dry-run flag.");
+    for off in [
+        r#"{"language": "en", "workspace_paths": false}"#,
+        r#"{"language": "fr"}"#,
+    ] {
+        let (took, list) = list(off);
+        assert!(!took, "{off}");
+        assert!(list.symbols().is_none() && list.paths().is_none(), "{off}");
+    }
 }
 
 #[test]
@@ -374,8 +493,8 @@ fn cleanup_is_for_english() {
 /// the session's words are added to it.
 #[test]
 fn the_list_leaves_out_what_the_cleanup_takes_out() {
-    assert_eq!(cleaned(Cleanup::Off, None), SpecialWords::new());
-    let base = cleaned(Cleanup::Light, None);
+    assert_eq!(cleaned(Cleanup::Off, None, None), SpecialWords::new());
+    let base = cleaned(Cleanup::Light, None, None);
     assert_eq!(base.fillers(), Fillers::for_language("en"));
     let word = SessionWord {
         text: "Telmo".into(),
@@ -385,13 +504,20 @@ fn the_list_leaves_out_what_the_cleanup_takes_out() {
     assert_eq!(list.fillers(), Fillers::for_language("en"));
     assert_eq!(list.words().collect::<Vec<_>>(), ["Telmo"]);
     // Medium's tagger is built in.
-    assert!(cleaned(Cleanup::Medium, None).disfluencies().is_some());
+    assert!(
+        cleaned(Cleanup::Medium, None, None)
+            .disfluencies()
+            .is_some()
+    );
     // Every level keeps what the guards protect, and tidies the
     // punctuation.
     let punctuation = Punctuation::for_language("en").map(Punctuation::joining_more);
     for level in [Cleanup::Light, Cleanup::Medium, Cleanup::Full] {
-        assert_eq!(cleaned(level, None).guards(), Guards::for_language("en"));
-        assert_eq!(cleaned(level, None).punctuation(), punctuation);
+        assert_eq!(
+            cleaned(level, None, None).guards(),
+            Guards::for_language("en")
+        );
+        assert_eq!(cleaned(level, None, None).punctuation(), punctuation);
     }
 }
 

@@ -85,7 +85,9 @@ pub struct SessionWord {
 
 /// Gives `dictation` the words to favour ([`favoured_words`]), built on a
 /// thread of their own, unless the settings in Arko's folder `root` turn
-/// session words off. The recording goes on meanwhile and favours them
+/// session words off. Then, unless the settings turn `workspace_paths` off,
+/// it lists the workspace's files and folders on that thread, which
+/// dictated paths snap to. The recording goes on meanwhile and takes each
 /// from the next utterance, or from the first when they come before it. A
 /// dictation that ended or was cancelled drops them.
 pub fn favour_session_words(
@@ -123,6 +125,8 @@ pub fn favour_session_words_with(
                     &learned(),
                 ));
             }
+            let workspace = details.session().workspace;
+            words.send_paths_in(&workspace);
         });
 }
 
