@@ -486,7 +486,7 @@ pub fn Composer() -> impl IntoView {
                         hold_send();
                     }
                     // What one sends is what one wants to see next.
-                    scroll::jump_to_latest();
+                    scroll::to_end();
                 }
                 Some(Posted::Confirm(why)) => continue_asked
                     .set(draft_now().and_then(|now| ContinueAsk::new(why, sent, &now))),
@@ -519,7 +519,7 @@ pub fn Composer() -> impl IntoView {
             }
             if sender.take(outcome) == Some(Posted::Taken) && draft_now() == Some(asked.draft) {
                 clear_sent(&area);
-                scroll::jump_to_latest();
+                scroll::to_end();
             }
             sending.set(false);
             refresh_menu();
@@ -875,29 +875,27 @@ pub async fn gloo_wait(ms: i32) {
 /// narrower box (a rotation) still fits, and this only notes
 /// whether the text is past the cap.
 fn fit(area: &HtmlTextAreaElement, tall: RwSignal<bool>, expanded: bool) {
-    // (Sizing shrinks the box for a moment, which would scroll the
-    // transcript up.)
-    scroll::keeping_bottom(|| {
-        let sizes_itself = window()
-            .get_computed_style(area)
-            .ok()
-            .flatten()
-            .and_then(|style| style.get_property_value("field-sizing").ok())
-            .is_some_and(|value| value == "content");
-        let style = web_sys::HtmlElement::style(area);
-        if !sizes_itself {
-            let _ = style.set_property("height", "auto");
-            let needed = area.scroll_height();
-            let _ = style.set_property("height", &format!("{needed}px"));
-        }
-        // `height` is capped by `max-height`, so a box that holds less than
-        // it needs is past the cap.
-        let over = area.scroll_height() > area.client_height() + 1;
-        if !sizes_itself {
-            let _ = style.set_property("overflow-y", if over { "auto" } else { "hidden" });
-        }
-        tall.set(over || expanded);
-    });
+    let sizes_itself = window()
+        .get_computed_style(area)
+        .ok()
+        .flatten()
+        .and_then(|style| style.get_property_value("field-sizing").ok())
+        .is_some_and(|value| value == "content");
+    let style = web_sys::HtmlElement::style(area);
+    // (Sizing shrinks the box for a moment, which the transcript's own
+    // place undoes before the paint.)
+    if !sizes_itself {
+        let _ = style.set_property("height", "auto");
+        let needed = area.scroll_height();
+        let _ = style.set_property("height", &format!("{needed}px"));
+    }
+    // `height` is capped by `max-height`, so a box that holds less than
+    // it needs is past the cap.
+    let over = area.scroll_height() > area.client_height() + 1;
+    if !sizes_itself {
+        let _ = style.set_property("overflow-y", if over { "auto" } else { "hidden" });
+    }
+    tall.set(over || expanded);
 }
 
 #[cfg(test)]

@@ -149,8 +149,8 @@ of single lines under it.
   waiting to be read. Such a message has a blank row above it and one below it, before the status
   line. The page keeps the line's room at the end while a call or a thinking shows that the agent
   works.
-- In the terminal the reader chooses to follow the end or to read, and only their own way toward
-  or away from the end changes that. A scroll up or Home that moves a line, or Ctrl+G's line going
+- In the terminal and on the page the reader chooses to follow the end or to read, and only their
+  own way toward or away from the end changes that. A scroll up or Home that moves a line, or Ctrl+G's line going
   above the screen, chooses to read, even with the end in sight, so what comes next doesn't move
   the lines they went back to. A scroll down that reaches the end, End, Esc, the "↓ N new lines"
   marker and sending a message choose to follow. A press holds the view while the button is down,
@@ -165,7 +165,10 @@ of single lines under it.
   another view, and output fills the blank rows. Once it passes the bottom row, the marker counts
   the new rows below the last row. A fold opened or closed, with a click or a key, keeps its line
   on its row, and a follower follows from there where the end shows. A plain click while output
-  takes a follower's end off the screen catches up to it.
+  takes a follower's end off the screen catches up to it. The page reads these rules in device
+  pixels. It applies the wheel, a touchpad and the keys that scroll the transcript itself, in the
+  frame they come, with no glide and no bounce at either end, and its marker counts lines of body
+  text.
 - A tag never sits between a message's rows. A message that fits on one row has its tag ("pending",
   "queued", "from the web page") at the right of that row. One that wraps has the tag on a row of
   its own under the last.
@@ -323,11 +326,11 @@ Each web component matches a GPUI Kit component and its variants.
 | `.menu` | `PopupMenu` | Rows 32 px, a check slot on the leading side |
 | `.popover` | `Popover` | `lg` radius, the popover surface, a shadow |
 | `.answers` | Studio's answer panel | Above the message box, non-modal, at most 60 % of the screen with its questions scrolling, numbered in their ask, never by id |
-| `.record-box` | The terminal's settled ask | A question card once any of its questions is settled, boxed as the panel is but in the hairline, its text as a muted heading, then each settled question with its outcome |
+| `.record-box` | The terminal's settled ask | Under a question card's line once any of its questions is settled, so the line keeps its place. Boxed as the panel is but in the hairline, each settled question with its outcome |
 | `.sheet` | `Sheet` | From the bottom on phones, centered on wide screens, with a hairline in `--line` as the popovers have |
 | `.card` | `GroupBox` | Surface and hairline, no shadow |
 | `.copy` | `Clipboard` | A ghost icon button. Under a message or reply it shows on hover or focus, and always on touch screens. A code block has one in its corner, after its language |
-| `.jump` | Studio's jump-to-latest button | Says "N new" for what came while the reader was up the page, counting each reply, text, thinking, message, question, user message, call and turn-starting notice once, with a call's results in the call. A view counts what it shows, so Messages counts a turn's calls as one. With none new it says "New text" if text grew, else "Latest" |
+| `.jump` | Studio's new-lines marker | Shows while the view doesn't follow and the end is off the screen. Says "↓ 7 new lines", the lines of body text that came below the bottom edge since the view last followed, rounded up, or "↓ end" with none. A click goes to the end |
 | `.thumb` | Studio's image tile | 160 by 120 px, the image contained in it, loaded as it nears the view |
 | `.md .table` | Markdown table | Keeps the width its cells ask for and scrolls sideways inside its row, as in Studio. A cell wraps past 40 characters. A table that fits has no scrollbar |
 | `dialog.viewer` | `ImageViewer` | One image as large as the screen allows, with its name and size |
@@ -370,7 +373,7 @@ when its meaning, scope or shortcut needs one.
 | Send, Answer | `ArrowUp` |
 | Expand and collapse the message field | `Maximize2`, `Minimize2` |
 | A question | `MessageCircleQuestion` |
-| Latest | `ArrowDown` |
+| The new-lines marker | `ArrowDown` |
 | Close | `X` |
 | Selected | `Check` |
 | Disclosure | `ChevronRight`, `ChevronDown` |
@@ -424,11 +427,11 @@ the default). The terminal has no switch for it. Nothing needs motion to be unde
 | Working, thinking | A shimmer across the label, one sweep every 2 s. On the web page and in the terminal a band about 60 % of the label wide, in the text color, sweeps over the muted label. In Studio the band's half-width is 30 % of the label and its color the text's mixed 20 % toward the background (light themes) or the text color (dark ones), at most 12 frames a second |
 | A call running | A spinner on its row. Studio's is GPUI Kit's eased spokes at 1.2 s a turn, the web page's two arcs at 1.2 s a turn, the terminal's the balanced braille frames ⣷⣯⣟⡿⢿⣻⣽⣾ at 100 ms each |
 | Streaming text | Appears as it comes, with no fade. Smooth typing in text fields is on by default |
-| A new row arriving | Appears in place. The view follows only if the reader is at the bottom |
-| Latest | Jumps to the bottom at once |
-| Mouse wheel (Windows, Linux, Android) | A critically damped spring, about 0.2 s. Apple systems keep their own momentum |
+| A new row arriving | Appears in place. The view follows only where the reader chose to and the end shows |
+| The marker, End | Go to the end at once |
+| Mouse wheel, touchpad, the keys that scroll | Move the lines in the frame they come, by whole device pixels, with no glide |
 | Moving to the background, done, failed | The row changes in place, with no motion |
-| Menus, popovers, the Latest button | A fade of 150 ms |
+| Menus, popovers, the marker | A fade of 150 ms |
 | Send and Stop trading places on the web page | A cross-fade of 150 ms |
 | Copied | The copy icon cross-fades to a check in `--success` (120 ms), which holds for a second, then fades back |
 | The context ring | Its value changes smoothly |

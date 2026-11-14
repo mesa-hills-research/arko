@@ -34,6 +34,7 @@ const OUT = process.env.SHIFT_METER_OUT;
 const ONLY = process.env.SHIFT_METER_ONLY; // "size:view:reader", for one session
 const VERBOSE = process.env.SHIFT_METER_VERBOSE === '1';
 const PAGE = arg('page');
+const TRACE = process.env.SHIFT_METER_TRACE;
 
 // ----- Chromium over the DevTools protocol -----
 
@@ -168,6 +169,51 @@ const INSTRUMENT = `(() => {
     return every(callback, ms, ...rest);
   };
   meter.tick = (ms) => { meter.ahead += ms; for (const tick of meter.ticks) tick(); };
+  if (__TRACE__) {
+    for (const name of ['scrollHeight', 'clientHeight']) {
+      const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, name);
+      Object.defineProperty(Element.prototype, name, {
+        get() {
+          const value = descriptor.get.call(this);
+          if (this.tagName === 'TEXTAREA') {
+            const log = document.getElementById('log');
+            console.log('TRACE read textarea ' + name + ' ' + value + ' value ' + JSON.stringify(this.value) + ' log ' + (log && log.scrollTop) + '/' + (log && descriptor.get.call(log)) + ' ' + new Error().stack.split('\\n').slice(2, 4).join(' | '));
+          }
+          return value;
+        },
+        configurable: true,
+      });
+    }
+    window.addEventListener('keydown', () => {
+      const log = document.getElementById('log');
+      const header = document.querySelector('header');
+      console.log('TRACE keydown first: log ' + (log && log.scrollTop) + ' header ' + (header && header.getBoundingClientRect().height) + ' log top ' + (log && log.getBoundingClientRect().top) + ' height ' + (log && log.getBoundingClientRect().height));
+    }, true);
+    const watch = () => {
+      const footer = document.querySelector('footer.bottom');
+      if (!footer) { setTimeout(watch, 200); return; }
+      new MutationObserver((records) => {
+        const log = document.getElementById('log');
+        for (const record of records) console.log('TRACE footer ' + record.type + ' ' + (record.target.className || record.target.nodeName) + ' ' + (record.attributeName || '') + ' added ' + record.addedNodes.length + ' removed ' + record.removedNodes.length + ' log ' + log.scrollTop + '/' + log.clientHeight);
+      }).observe(footer, { subtree: true, childList: true, attributes: true });
+    };
+    watch();
+    document.addEventListener('scroll', (event) => {
+      const log = document.getElementById('log');
+      if (event.target !== log) return;
+      const floor = log.querySelector('.floor');
+      console.log('TRACE scroll ' + log.scrollTop + ' of ' + log.scrollHeight + '-' + log.clientHeight + ' floor ' + (floor && floor.style.top) + ' rows ' + document.getElementById('rows').getBoundingClientRect().height);
+    }, true);
+
+    for (const name of ['scrollTo', 'scrollBy', 'scrollIntoView', 'focus']) {
+      const original = Element.prototype[name] || HTMLElement.prototype[name];
+      const owner = Element.prototype[name] ? Element.prototype : HTMLElement.prototype;
+      owner[name] = function (...args) {
+        if (name !== 'scrollTo' || this.id !== 'log') console.log('TRACE ' + name + ' on ' + this.tagName + '.' + this.className + ' ' + JSON.stringify(args) + ' ' + new Error().stack.split('\\n').slice(2, 6).join(' | '));
+        return original.apply(this, args);
+      };
+    }
+  }
   const Source = window.EventSource;
   window.EventSource = class extends Source {
     addEventListener(type, listen, options) {
@@ -199,22 +245,27 @@ const INSTRUMENT = `(() => {
     const box = log.getBoundingClientRect();
     const top = box.top;
     const bottom = box.top + log.clientHeight;
-    const lines = new Map();
-    let first = null;
+    const lines = [];
     let endZone = null;
     const children = rows.children;
-    // From the end, "Working…" and the notes waiting.
+    // "Working…", which rides on the end, and the notes waiting after the
+    // rest.
     for (let at = children.length - 1; at >= 0; at--) {
       const row = children[at];
-      if (row.matches('.working, .user.pending')) endZone = row.getBoundingClientRect().top;
+      if (row.matches('.user.pending')) endZone = row.getBoundingClientRect().top;
       else break;
     }
+    const working = rows.querySelector(':scope > .working');
+    if (working) endZone = Math.min(endZone ?? Infinity, working.getBoundingClientRect().top);
     let last = null;
     for (const row of children) {
       const rect = row.getBoundingClientRect();
       if (rect.height > 0) last = { bottom: rect.bottom + parseFloat(getComputedStyle(row).marginBottom || '0') };
       if (rect.bottom <= top || rect.top >= bottom) continue;
       const key = row.getAttribute('data-row') || (row.classList.contains('working') ? 'working' : row.className);
+      // The row's lines as drawn. A word joins the line its middle is on,
+      // and a line stands where its first word does.
+      const mine = [];
       const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
         const text = node.nodeValue;
@@ -231,20 +282,23 @@ const INSTRUMENT = `(() => {
           if (!rects.length) continue;
           const word = rects[0];
           if (word.bottom <= top || word.top >= bottom || word.width === 0) continue;
-          const y = Math.round(word.top * dpr);
-          let line = lines.get(key + '@' + y);
-          if (!line) { line = { y, key, words: [], x: Infinity }; lines.set(key + '@' + y, line); }
-          line.words.push(match[0]);
-          line.x = Math.min(line.x, Math.round(word.left * dpr));
+          const middle = (word.top + word.bottom) / 2;
+          let line = mine.find((line) => middle >= line.top && middle <= line.bottom);
+          if (!line) {
+            line = { top: word.top, bottom: word.bottom, y: Math.round(word.top * dpr), x: Math.round(word.left * dpr), key, words: [] };
+            mine.push(line);
+          }
+          line.words.push([match[0], Math.round(word.top * dpr), Math.round(word.left * dpr), word.top * dpr]);
         }
       }
+      lines.push(...mine);
     }
     const jump = document.querySelector('.jump');
     const marker = jump && jump.classList.contains('shown') ? jump.textContent.trim() : '';
     const following = log.classList.contains('pinned') || log.classList.contains('following');
     const dataset = log.dataset;
     return {
-      lines: [...lines.values()].map((line) => [line.y, line.words, line.x, line.key]),
+      lines: lines.map((line) => [line.y, line.words, line.x, line.key]),
       following,
       choice: dataset.choice || (log.classList.contains('pinned') ? 'follow' : 'read'),
       marker,
@@ -279,18 +333,24 @@ function lineIds(shot) {
   const texts = new Map();
   // (Within its row, as the same words can show in two rows, a worker's
   // task in its card and in its report.)
+  // A line stands where its own word does, else where its first word
+  // does, so a marker glyph that changes beside it doesn't move it.
   const all = shot.lines.map(([y, words, x, key]) => {
-    const mine = [...new Set(words.map(clean).filter(sessionWord))];
+    const mine = [...new Set(words.map(([word]) => clean(word)).filter(sessionWord))];
     for (const word of mine) seen.set(`${key}|${word}`, (seen.get(`${key}|${word}`) ?? 0) + 1);
-    const text = words.join(' ');
+    const text = words.map(([word]) => word).join(' ');
     texts.set(`${key}|${text}`, (texts.get(`${key}|${text}`) ?? 0) + 1);
-    return { y, x, key, words: words.map(clean).filter(sessionWord), text };
+    return { y, x, key, words, text };
   });
   const out = new Map();
   for (const { y, x, key, words, text } of all) {
-    const word = words.find((word) => seen.get(`${key}|${word}`) === 1);
-    if (word) out.set(`${key}|w:${word}`, { y, x, text });
-    else if (texts.get(`${key}|${text}`) === 1) out.set(`${key}|t:${text}`, { y, x, text });
+    const own = words.find(([word]) => sessionWord(clean(word)) && seen.get(`${key}|${clean(word)}`) === 1);
+    if (own) out.set(`${key}|w:${clean(own[0])}`, { y: own[1], x: own[2], raw: own[3], text });
+    else if (texts.get(`${key}|${text}`) === 1) {
+      // (Where its first word, a marker, is drawn in another glyph.)
+      const word = words.find(([word]) => /[A-Za-z0-9]/.test(word)) ?? words[0];
+      out.set(`${key}|t:${text}`, { y: word ? word[1] : y, x: word ? word[2] : x, raw: word ? word[3] : y, text });
+    }
   }
   return out;
 }
@@ -539,6 +599,7 @@ class Run {
       this.failures.push(`page exception: ${event.exceptionDetails?.exception?.description ?? event.exceptionDetails?.text}`);
     });
     this.cdp.on(sessionId, 'Runtime.consoleAPICalled', (event) => {
+      if (TRACE && event.type === 'log' && (TRACE === '*' || String(event.args[0]?.value).startsWith('TRACE') || this.step === TRACE || String(this.step).startsWith(TRACE.split('|')[0]))) console.log(`   console [${this.step}]: ${event.args.map((arg) => arg.value ?? arg.description).join(" ")}`);
       if (event.type === 'error') this.failures.push(`console: ${event.args.map((arg) => arg.value ?? arg.description).join(' ')}`);
     });
     await this.metrics(this.size.width, this.size.height);
@@ -548,7 +609,7 @@ class Run {
         userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Mobile Safari/537.36',
       }, sessionId);
     }
-    await this.cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INSTRUMENT.replace('__VIEW__', this.view) }, sessionId);
+    await this.cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INSTRUMENT.replace('__VIEW__', this.view).replace('__TRACE__', TRACE ? 'true' : 'false') }, sessionId);
     if (PAGE) {
       // The page's files as built in this tree, whatever the server was
       // built with.
@@ -612,6 +673,15 @@ class Run {
     await this.beginFrame();
     const shot = await this.shot();
     if (!shot) return false;
+    if (TRACE && String(this.step).startsWith(TRACE) && this.last && this.traced !== this.last) {
+      console.log(`-- before, top ${this.last.scrollTop} end ${this.last.end} bottom ${this.last.bottom}`);
+      for (const [y, words, x, key] of [...this.last.lines].sort((a, b) => a[0] - b[0])) console.log(`   ${y} ${x} ${key} ${words.map(([word]) => word).join(' ').slice(0, 60)}`);
+    }
+    if (TRACE && String(this.step).startsWith(TRACE)) {
+      this.traced = shot;
+      console.log(`-- ${this.step} top ${shot.scrollTop} range ${shot.scrollHeight}-${shot.clientHeight} end ${shot.end} bottom ${shot.bottom} following ${shot.following} choice ${shot.choice} marker "${shot.marker}"`);
+      for (const [y, words, x, key] of [...shot.lines].sort((a, b) => a[0] - b[0])) console.log(`   ${y} ${x} ${key} ${words.map(([word]) => word).join(' ').slice(0, 60)}`);
+    }
     const moved = this.last ? this.compare(this.last, shot) : 0;
     const same = this.last && moved === 0 && sameLines(this.last, shot) && this.last.scrollTop === shot.scrollTop;
     this.last = shot;
@@ -686,7 +756,11 @@ class Run {
   /// The highest device pixel row of `before` at which a line changed, went
   /// or came between the two frames, inside the screen.
   changeAt(before, after) {
-    const inside = (y, shot) => y >= shot.top + this.lineHeight && y < shot.bottom - this.lineHeight;
+    // (Where the view scrolled, a line at an edge may only have come into
+    // sight.)
+    const still = before.scrollTop === after.scrollTop && before.clientHeight === after.clientHeight;
+    const margin = still ? 0 : this.lineHeight;
+    const inside = (y, shot) => y >= shot.top - this.lineHeight + margin && y < shot.bottom - margin;
     let at = Infinity;
     for (const [id, line] of before.ids) {
       const now = after.ids.get(id);
@@ -705,6 +779,7 @@ class Run {
   /// Counts how the lines of `after` moved from `before`.
   compare(before, after) {
     const { step, below, viewport } = this;
+    if (before.choice === 'read' && after.choice === 'follow') this.owed = 0;
     const following = before.following && after.following;
     const changed = this.changeAt(before, after);
     const blank = Math.max(0, before.bottom - before.end);
@@ -717,10 +792,12 @@ class Run {
     let up = 0;
     let sideways = 0;
     let sidewaysLine = null;
-    for (const [id, { y: from, x, text }] of before.ids) {
+    for (const [id, { y: from, x, raw, text }] of before.ids) {
       const now = after.ids.get(id);
       if (!now) continue;
-      const to = now.y;
+      // (By how far its rectangle moved, as a line on a half device pixel
+      // rounds either way with float noise that moves nothing drawn.)
+      const to = from + Math.round(now.raw - raw);
       if (below !== null && from > below) continue;
       if (to < from) up = Math.max(up, from - to);
       // (A line that keeps its text and its row keeps its column too.)
@@ -730,8 +807,11 @@ class Run {
           sidewaysLine = { id, from: x, to: now.x, text };
         }
       }
+      // (A line whose text changed is the change itself, such as a word
+      // that becomes code as its closing mark comes.)
+      if (now.text !== text) continue;
       // ("Working…" and the notes waiting at the end make room below.)
-      if (after.endZone !== null && to >= after.endZone && (to > from || !following)) {
+      if (after.endZone !== null && now.y >= after.endZone && (to > from || !following)) {
         room = Math.max(room, Math.abs(to - from));
         continue;
       }
@@ -760,14 +840,18 @@ class Run {
     if (toggle > 0) this.meter.tally(this.meter.allowed, key("the reader's toggle")).add(toggle);
     if (pushed > 0) this.meter.tally(this.meter.allowed, key('below a change on the screen')).add(pushed);
     // While following, a shorter view moves the lines up, and a taller one
-    // gives that back first.
+    // gives that back first. What is owed starts at none when following
+    // starts, and a taller view while reading takes from it.
+    const taller = after.clientHeight - before.clientHeight;
     if (viewport && following) {
-      if (up > 0) this.owed += up;
-      if (rows > 0 && rows <= this.owed) {
+      if (up > 0 && taller < 0) this.owed += up;
+      if (rows > 0 && rows <= this.owed + 1) {
         this.meter.tally(this.meter.allowed, key('a taller view gives back')).add(rows);
-        this.owed -= rows;
+        this.owed = Math.max(0, this.owed - rows);
         rows = 0;
       }
+    } else if (taller > 0) {
+      this.owed = Math.max(0, this.owed - taller * after.dpr);
     }
     if (sideways > rows) {
       rows = sideways;
@@ -794,12 +878,12 @@ class Run {
       if (!known || rows > known[0]) {
         this.meter.examples.set(exampleKey, [rows, describe(this, before, after, line, rows)]);
       }
-      if (VERBOSE) console.log(`moved ${rows}px: ${step} ${this.view} ${this.size.name} ${cause} ${line.id} ${line.from}→${line.to}`);
+      if (VERBOSE) console.log(`moved ${rows}px: ${step} ${this.view} ${this.size.name} ${cause} ${line.id} ${line.from}→${line.to} raw ${before.ids.get(line.id)?.raw} → ${after.ids.get(line.id)?.raw}`);
     }
     return rows;
   }
 
-  /// A round trip: the screen after `back` against the one before `out`,
+  /// A round trip, the screen after `back` against the one before `out`,
   /// with nothing between. A panel's is checked where the reader is as
   /// before, and `any` checks it whatever they are.
   async trip(kind, out, back, { any = false } = {}) {
@@ -815,10 +899,10 @@ class Run {
     trip.trips++;
     let worst = 0;
     let worstLine = null;
-    for (const [id, { y, text }] of before.ids) {
+    for (const [id, { y, raw, text }] of before.ids) {
       const now = after.ids.get(id);
       if (!now) continue;
-      const moved = Math.abs(now.y - y);
+      const moved = Math.abs(Math.round(now.raw - raw));
       if (moved > worst) { worst = moved; worstLine = { id, from: y, to: now.y, text }; }
     }
     if (worst > 0 && (any || wasFollowing === after.following)) {
@@ -1150,7 +1234,10 @@ class Run {
         await this.during(() => this.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'q', code: 'KeyQ', windowsVirtualKeyCode: 81, modifiers: 1 }, this.session));
         await this.settle();
       }, async () => {
-        this.begin('answer panel closes', { viewport: true });
+        // (Esc closes the panel, where it opened, and otherwise follows,
+        // which is the reader's own move.)
+        const open = await this.evaluate(`!!document.querySelector('section.answers')`);
+        this.begin(open ? 'answer panel closes' : null, { viewport: true });
         await this.key('Escape', 'Escape');
         await this.settle();
       });
@@ -1182,7 +1269,9 @@ class Run {
         await this.settle();
       });
     } else if (pick === 4) {
-      const by = Math.round(this.height * 0.15);
+      // (Not below 510 px, where the page takes a landscape phone's
+      // smaller chrome, which is another look.)
+      const by = Math.max(0, Math.min(Math.round(this.height * 0.15), this.height - 510));
       await this.trip('window', async () => {
         await this.metrics(this.width, this.height - by);
         await this.settle('window shorter', { viewport: true });
@@ -1274,14 +1363,17 @@ class Run {
     await this.focusBox();
     await this.type(`Then ${this.words(3 + this.rng.below(8))}`);
     const before = await this.events();
-    await this.key('Enter', 'Enter', '\r');
+    // (Ctrl+Enter sends on any device, as Enter makes a new line without a
+    // fine pointer.)
+    await this.key('Enter', 'Enter', '\r', 2);
     await this.delivered(before, 1500);
     await this.settle(null);
     this.owed = 0;
   }
 
   async focusBox() {
-    await this.evaluate(`(() => { const area = document.querySelector('.field textarea'); area && area.focus(); })()`);
+    // (As a tap or a click puts the focus there, without scrolling.)
+    await this.evaluate(`(() => { const area = document.querySelector('.field textarea'); area && area.focus({ preventScroll: true }); })()`);
   }
 
   // ----- a turn -----
@@ -1333,8 +1425,8 @@ function sameLines(a, b) {
 }
 
 function describe(run, before, after, line, px) {
-  const head = `${run.size.name}, ${run.view}: ${line.id} went from ${line.sideways ? 'column' : 'row'} ${line.from} to ${line.to} (device px, ${px} px), scrollTop ${before.scrollTop} → ${after.scrollTop}, range ${before.scrollHeight}−${before.clientHeight} → ${after.scrollHeight}−${after.clientHeight}, marker "${before.marker}" → "${after.marker}"\n`;
-  const show = ([y, words, x]) => `${String(y).padStart(5)} ${String(x).padStart(4)} ${words.join(' ').slice(0, 56)}`;
+  const head = `${run.size.name}, ${run.view}: ${line.id} went from ${line.sideways ? 'column' : 'row'} ${line.from} to ${line.to} (device px, ${px} px), scrollTop ${before.scrollTop} → ${after.scrollTop}, range ${before.scrollHeight}−${before.clientHeight} → ${after.scrollHeight}−${after.clientHeight}, the end at ${before.end} → ${after.end} and the bottom edge at ${before.bottom} → ${after.bottom}, marker "${before.marker}" → "${after.marker}"\n`;
+  const show = ([y, words, x, key]) => `${String(y).padStart(5)} ${String(x).padStart(4)} ${key.slice(0, 6).padEnd(6)} ${words.map(([word]) => word).join(' ').slice(0, 50)}`;
   const rows = [...before.lines].sort((a, b) => a[0] - b[0]).map(show);
   const now = [...after.lines].sort((a, b) => a[0] - b[0]).map(show);
   let out = head;

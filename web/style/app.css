@@ -354,12 +354,16 @@ button.cache { padding: 0; border: 0; background: none; }
   inset: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  /* The page keeps its own place (scroll.rs), so the browser's anchoring
+     is off. Nothing bounces at either end, and the scrollbar's room is
+     kept on both sides, so the column stays put when it comes. */
+  overflow-anchor: none;
+  overscroll-behavior: none;
+  scrollbar-gutter: stable both-edges;
 }
-/* At the bottom the page keeps the end in view itself. A browser's scroll
-   anchoring would move the view up as the oldest rows are trimmed, which
-   reads as the reader leaving the end, so following would stop. */
-.log.pinned { overflow-anchor: none; }
+/* The floor under the content at the view's bottom edge, so an end that
+   gets shorter leaves blank below it. */
+.log > .floor { position: absolute; left: 0; width: 1px; height: 1px; visibility: hidden; pointer-events: none; }
 
 .rows { padding: 16px 0 24px; }
 .empty { max-width: 520px; margin: 30vh auto 0; padding: 0 var(--gutter); color: var(--muted); text-align: center; white-space: pre-wrap; }
@@ -392,8 +396,8 @@ button.cache { padding: 0; border: 0; background: none; }
 .label { display: block; margin-bottom: 2px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .row.message .label { color: var(--link); }
 /* A question card, one quiet line where the agent asked, which opens the
-   answer panel while all its questions are open, then the record of those
-   settled, boxed as the panel is. */
+   answer panel while any of its questions is open, and under it the record
+   of those settled, boxed as the panel is. */
 .asked { display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; border: 0; background: none; color: var(--muted); font-size: 14px; cursor: pointer; }
 .asked svg { color: var(--warn-mark); }
 .asked:disabled { cursor: default; }
@@ -402,9 +406,8 @@ button.cache { padding: 0; border: 0; background: none; }
   .asked:not(:disabled):hover { color: var(--text); }
 }
 /* The hairline, not the accent, since a record needs nothing from the user. */
-.record-box { padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); }
-.record-title { margin: 0; color: var(--muted); font-size: 14px; font-weight: 600; }
-.record { display: flex; flex-direction: column; gap: 12px; margin: 12px 0 0; padding: 0; list-style: none; }
+.record-box { margin-top: 6px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); }
+.record { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
 .record li { display: flex; gap: 6px; }
 .record-number { flex: none; min-width: 16px; color: var(--muted); }
 .record-outcome { color: var(--muted); font-size: 14px; }
@@ -566,6 +569,7 @@ pre.block {
   margin: 4px 0 8px;
   padding: 6px 10px;
   overflow: auto;
+  overscroll-behavior: contain;
   border-radius: var(--r-md);
   background: var(--code);
   color: var(--muted);
@@ -750,7 +754,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .md blockquote { padding-left: 12px; border-left: 3px solid var(--line); color: var(--muted); }
 .md hr { margin: 1em 0; border: 0; border-top: 1px solid var(--line); }
 .md a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
-.md code { padding: 1px 4px; border-radius: var(--r-sm); background: var(--code); font: 0.88em var(--mono); }
+.md code { padding: 1px 4px; border-radius: var(--r-sm); background: var(--code); font: 0.88em/1 var(--mono); }
 /* A code block is on the editor's surface, as GPUI Kit draws one, where every
    theme's syntax colors read. Its hairline keeps it apart from a page of the
    same color (macOS Classic Dark). */
