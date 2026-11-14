@@ -435,7 +435,9 @@ button.cache { padding: 0; border: 0; background: none; }
 }
 .call-line .what { min-width: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
 .call-line .news { flex: none; white-space: nowrap; }
-.call-line .outcome { flex: none; max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The words give way first, down to about 8 characters, and only then the
+   outcome, as in the terminal. */
+.call-line .outcome { flex: none; max-width: calc(100% - 8ch - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .call-line .outcome::before { content: "· "; color: var(--muted); }
 .call-line .ok { color: var(--success); }
 .call-line .failed { color: var(--error); }

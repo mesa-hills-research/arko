@@ -43,16 +43,24 @@ thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
 }
 
-/// Starts managing `log`, the transcript's scroller, and keeps `pinned`
-/// true while it is at the bottom.
-pub fn attach(log: Element, pinned: RwSignal<bool>) {
+/// Starts managing `log`, the transcript's scroller, keeps `pinned` true
+/// while it is at the bottom, and `width` its width.
+pub fn attach(log: Element, pinned: RwSignal<bool>, width: RwSignal<i32>) {
     let frame = Closure::<dyn FnMut(f64)>::new(tick);
     let follow_frame = Closure::<dyn FnMut(f64)>::new(|_| follow_now());
     let wheel = Closure::<dyn FnMut(WheelEvent)>::new(on_wheel);
     // The scroller or its rows changed size (another view, rows added or
     // gone, the message box grew, the keyboard opened), so where the reader
-    // is against the end is decided again.
-    let resized = Closure::<dyn FnMut()>::new(settle);
+    // is against the end is decided again, and another width may cut other
+    // lines.
+    let measured = log.clone();
+    let resized = Closure::<dyn FnMut()>::new(move || {
+        settle();
+        let now = measured.client_width();
+        if width.get_untracked() != now {
+            width.set(now);
+        }
+    });
     if let Ok(observer) = web_sys::ResizeObserver::new(resized.as_ref().unchecked_ref()) {
         observer.observe(&log);
         if let Ok(Some(rows)) = log.query_selector("#rows") {

@@ -21,7 +21,7 @@ use crate::{contents, scroll, words};
 pub fn Transcript() -> impl IntoView {
     let page = page();
     let log: NodeRef<leptos::html::Main> = NodeRef::new();
-    log.on_load(move |log| scroll::attach(log.into(), page.pinned));
+    log.on_load(move |log| scroll::attach(log.into(), page.pinned, page.width));
     let laid_out = laid_out(page.version, page.view, page.worker);
     // What shows the agent is under way.
     let motion = Memo::new(move |_| {
@@ -301,17 +301,17 @@ fn handler_element(event: &web_sys::Event) -> Option<web_sys::Element> {
 
 /// Whether the words (`.what`) of the line `summary` holds are cut, as
 /// drawn, measured once the line shows and again whenever `words` say
-/// something else. A line that cuts its words opens to them whole.
-/// (shortcut: measured when the words change and not when the page's width
-/// does, until a turned phone leaves a line marked wrongly, when the
-/// transcript's resize should measure it too.)
+/// something else or the transcript's width changes. A line that cuts its
+/// words opens to them whole.
 fn cut_words(
     summary: NodeRef<leptos::html::Summary>,
     words: impl Fn() -> String + Send + Sync + 'static,
 ) -> RwSignal<bool> {
     let cut = RwSignal::new(false);
+    let width = page().width;
     Effect::new(move |_| {
         words();
+        width.track();
         let measure = move || {
             if let Some(summary) = summary.get_untracked() {
                 cut.try_set(overflows(&summary, ".what"));
@@ -607,7 +607,15 @@ fn thought_row(
 ) -> AnyView {
     let page = page();
     let text = cell.text;
-    let open = RwSignal::new(false);
+    // (Full keeps its thoughts open apart from the other views.)
+    let opened = move || {
+        if !inside && page.view.get() == View::Full {
+            page.thoughts_open
+        } else {
+            page.thoughts_open_quiet
+        }
+    };
+    let open = Memo::new(move |_| opened().contains(id));
     let first = move || {
         text.with(|text| {
             let (first, more) = layout::first_line(text);
@@ -628,7 +636,12 @@ fn thought_row(
                 });
             }
         }
-        open.set(opening);
+        let opened = if !inside && page.view.get_untracked() == View::Full {
+            page.thoughts_open
+        } else {
+            page.thoughts_open_quiet
+        };
+        opened.set(id, opening);
     };
     let words = move || {
         if open.get() {

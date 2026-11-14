@@ -118,6 +118,9 @@ pub struct Page {
     /// says "New text" when the rows of the view show one of them.
     pub grown: RwSignal<HashSet<u64>>,
     pub pinned: RwSignal<bool>,
+    /// The transcript's width in pixels, as last laid out, which decides
+    /// what a line cuts.
+    pub width: RwSignal<i32>,
     /// The agent's questions as the page shows them.
     pub ask: crate::questions::Asking,
     /// The Quiet view's rows the reader opened, by their first call.
@@ -137,6 +140,12 @@ pub struct Page {
     pub calls_open: Opened,
     /// The contents the reader opened whole, by their result.
     pub doors_open: Opened,
+    /// The thoughts the reader opened in Full, and in the other views and
+    /// on an open Quiet row's rail, each kept apart as the terminal keeps
+    /// them, so a thought stays open in its view whatever the reader views
+    /// between.
+    pub thoughts_open: Opened,
+    pub thoughts_open_quiet: Opened,
 }
 
 thread_local! {
@@ -269,6 +278,7 @@ impl Page {
             seen: RwSignal::new(0),
             grown: RwSignal::new(HashSet::new()),
             pinned: RwSignal::new(true),
+            width: RwSignal::new(0),
             ask: crate::questions::Asking::new(),
             quiet_open: Opened::new(),
             attached: RwSignal::new(Vec::new()),
@@ -277,6 +287,8 @@ impl Page {
             flipped: Opened::new(),
             calls_open: Opened::new(),
             doors_open: Opened::new(),
+            thoughts_open: Opened::new(),
+            thoughts_open_quiet: Opened::new(),
         };
         PAGE.with(|cell| cell.set(Some(page)));
         page
@@ -357,6 +369,8 @@ fn forget_opened(page: Page, id: u64) {
         page.flipped,
         page.calls_open,
         page.doors_open,
+        page.thoughts_open,
+        page.thoughts_open_quiet,
     ] {
         opened.forget(id);
     }
@@ -1172,6 +1186,8 @@ fn start_feed(page: Page) {
     page.flipped.clear();
     page.calls_open.clear();
     page.doors_open.clear();
+    page.thoughts_open.clear();
+    page.thoughts_open_quiet.clear();
     crate::contents::forget();
     crate::files::forget();
 }
