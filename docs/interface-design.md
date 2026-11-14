@@ -127,18 +127,23 @@ of single lines under it.
   waiting to be read. Such a message has a blank row above it and one below it, before the status
   line. The page keeps the line's room at the end while a call or a thinking shows that the agent
   works.
-- In the terminal only the reader's own scroll moves the view. While it follows the end, nothing
-  above moves down. When the end gets shorter (Working… giving way to a shorter row, a closing mark
-  re-wrapping a line, a fold closing), blank rows stand below it until more comes. A scroll down
-  stops where the end reaches the last row and never moves a line down, so at the end it moves
-  nothing. A scroll up stops following, even with the end in sight, so what comes next doesn't
-  move the lines the reader went back to. Output then fills the blank rows, and once it passes the
-  bottom row "↓ N new lines" counts all that came. End goes to the end and closes the blank rows,
-  as Esc and the marker do for a reader who scrolled up. Scrolled up, the row at the top keeps its
-  text through streaming, folds elsewhere and another width. The view follows again when the reader
-  scrolls down to the end, goes there with End, or clicks so that the end shows. A fold opened or
-  closed, with a click or a key, keeps its line on its row, and the view follows from there where
-  the end shows.
+- In the terminal the reader chooses to follow the end or to read, and only their own way toward
+  or away from the end changes that. A scroll up or Home that moves a line, or Ctrl+G's line going
+  above the screen, chooses to read, even with the end in sight, so what comes next doesn't move
+  the lines they went back to. A scroll down that reaches the end, End, Esc, the "↓ N new lines"
+  marker and sending a message choose to follow. A press holds the view while the button is down,
+  and a click, a fold, another view or losing the focus leaves the choice as it was. The view
+  follows when the reader chose to, nothing holds it and the end shows. Following, nothing above
+  moves down. When the end gets shorter (Working… giving way to a shorter row, a closing mark
+  re-wrapping a line, a fold closing), blank rows stand below it until more comes, and only End,
+  the marker, sending, another width or another view close them. A scroll down stops where the
+  end reaches the last row, so at the end it moves nothing. A panel below the transcript that
+  opens and closes again puts every line back on its row, and a taller window adds blank rows.
+  Reading, the row at the top keeps its text through streaming, folds elsewhere, another width and
+  another view, and output fills the blank rows. Once it passes the bottom row, the marker counts
+  the new rows below the last row. A fold opened or closed, with a click or a key, keeps its line
+  on its row, and a follower follows from there where the end shows. A plain click while output
+  takes a follower's end off the screen catches up to it.
 - A tag never sits between a message's rows. A message that fits on one row has its tag ("pending",
   "queued", "from the web page") at the right of that row. One that wraps has the tag on a row of
   its own under the last.
