@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.22.2 (2026-11-14)
+
+### The web page
+
+- Opening a fold no longer moves the lines above it, as in the terminal since 0.22.1. An open
+  item has its 12 px gap below it only, and a running command in the Full view stacks with the
+  calls around it until its output shows.
+
 ## 0.22.1 (2026-11-14)
 
 ### The transcript
