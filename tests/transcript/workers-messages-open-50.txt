@@ -26,13 +26,11 @@
 
 ▾ 3 tool calls
 ▸ Read cache.rs and made 1 edit
-
 ▾ r1 reported
 │ The fixture and the assertion both use the
 │ deadline 10.
 
 ▸ Waited for r2 and r3 · r2 finished, r3 stopped
-
 ▾ r2 reported
 │ docs/cache.md line 3 says a value expires at its
 │ deadline, which matches the fix. The doc comment

@@ -2,7 +2,6 @@
   r3 Check that the cache fixture uses the same deadline as the test. · finished · 2s
 
   I’ll compare the fixture with the deadline assertion.
-
 ▾ Read cache.json
 │ 1  {
 │ 2    "now": 10,

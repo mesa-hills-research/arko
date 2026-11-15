@@ -5,12 +5,11 @@
 //! up. Every word of the session is a word no other has, so each line on the
 //! screen is found again in the next frame by its first word. Following, a
 //! line may move up, as what comes at the end pushes it, and never down.
-//! Scrolled up, no line moves. Two moves are allowed. The reader's own click
-//! on a fold moves the lines above it one row, as the blank row above the
-//! fold comes or goes. "Working…" and the notes waiting at the end go down
-//! as what comes above them takes their rows, into the blank rows below the
-//! end, and while the reader reads on past the bottom row, and up as what
-//! stood above them goes. A worker's start keeps its words in their columns
+//! Scrolled up, no line moves. A fold the reader opens or closes moves no
+//! line above it, up or down. One move is allowed. "Working…" and the notes
+//! waiting at the end go down as what comes above them takes their rows,
+//! into the blank rows below the end, and while the reader reads on past the
+//! bottom row, and up as what stood above them goes. A worker's start keeps its words in their columns
 //! as the worker's ID comes.
 //!
 //! `SHIFT_METER_SEEDS` plays that many sessions at more sizes, and
@@ -204,9 +203,6 @@ type Cause = (How, What);
 /// A move the meter allows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Allowed {
-    /// The reader toggled a fold, and the lines above it moved a row, as
-    /// the blank row above it came or went.
-    Toggle,
     /// "Working…" or a note waiting at the end went down into the blank
     /// rows below the end, as what came above them took those rows.
     Room,
@@ -361,7 +357,6 @@ impl Meter {
                 })
                 .collect();
             let kind = match kind {
-                Allowed::Toggle => "the reader's toggle",
                 Allowed::Room => "the end makes room",
             };
             let _ = writeln!(out, "| {kind} | {} | {} |", step.name(), cells.join(" | "));
@@ -457,7 +452,7 @@ fn lines(rows: &[String]) -> HashMap<String, usize> {
 #[derive(Default)]
 struct Moved {
     /// The most rows any line moved, down, and up too when the reader didn't
-    /// follow in both frames.
+    /// follow in both frames or toggled a fold.
     rows: u32,
     /// The line that moved most, from where to where.
     line: Option<(String, usize, usize)>,
@@ -468,10 +463,11 @@ struct Moved {
     room: u32,
 }
 
-/// How the lines of `before` that `after` shows again moved. Rows of
-/// `before` below `below` are left out (the fold a click toggled there
-/// moves them). From `end` on, `after` shows "Working…", the notes waiting
-/// to be read and the blank rows below the end.
+/// How the lines of `before` that `after` shows again moved, where a line
+/// going up counts only when `following` is false. Rows of `before` below
+/// `below` are left out (the fold a click toggled there moves them). From
+/// `end` on, `after` shows "Working…", the notes waiting to be read and the
+/// blank rows below the end.
 fn moves(
     before: &[String],
     after: &[String],
@@ -711,12 +707,16 @@ impl<'m> Run<'m> {
 
     /// Draws a frame and counts it under `step`, with how far its lines
     /// moved from the last frame's. Rows below `below` of the last frame
-    /// aren't counted (a fold toggled on that row moves them).
+    /// aren't counted (a fold toggled on that row moves them), and every
+    /// line above it counts that moves, up as well as down.
     fn frame_below(&mut self, step: Step, below: Option<usize>) {
         let shot = self.shot();
         if let Some(last) = &self.last {
             let following = shot.following && last.following;
-            let moved = moves(&last.rows, &shot.rows, following, below, shot.end);
+            // (Following, a line may go up as what comes at the end pushes
+            // it, but not in the frame of a toggle.)
+            let rises = following && below.is_none();
+            let moved = moves(&last.rows, &shot.rows, rises, below, shot.end);
             if moved.room > 0 {
                 self.meter
                     .allowed
@@ -724,17 +724,7 @@ impl<'m> Run<'m> {
                     .or_default()
                     .add(moved.room);
             }
-            // (The reader's own toggle moves the lines above the fold by the
-            // blank row that comes or goes above it.)
-            let toggle = below.is_some() && moved.rows == 1;
-            if toggle {
-                self.meter
-                    .allowed
-                    .entry((Allowed::Toggle, step, self.view))
-                    .or_default()
-                    .add(1);
-            }
-            let rows = if toggle { 0 } else { moved.rows };
+            let rows = moved.rows;
             let reader = if following {
                 Reader::Following
             } else {
@@ -1438,7 +1428,7 @@ fn no_line_moves_down_as_an_agent_works() {
         meter.cause_table()
     );
     let table = format!(
-        "{table}\nThe moves the test allows. The reader's toggle moves the lines above the fold a row, as the blank row above it comes or goes. \"Working…\" and a note waiting at the end go down as what comes above them takes their rows, into the blank rows below the end, and while the reader reads on past the bottom row, and up as what stood above them goes. Each cell is frames · the most rows / all rows.\n\n{}",
+        "{table}\nThe moves the test allows. \"Working…\" and a note waiting at the end go down as what comes above them takes their rows, into the blank rows below the end, and while the reader reads on past the bottom row, and up as what stood above them goes. Each cell is frames · the most rows / all rows.\n\n{}",
         meter.allowed_table()
     );
     if let Ok(path) = std::env::var("SHIFT_METER_OUT") {

@@ -6,7 +6,6 @@
 · background $ cargo-locked test cache · ✓ finished
   The cache test is running in the background. I can record the expected result while it runs.
 ▸ keep_note · ✓ Changed note 1.
-
 ▾ $ git worktree add ../cache-check -b cache-check · ✓ 0.1 s
 │ Preparing worktree (new branch 'cache-check')
 │ HEAD is now at abc1234 Keep cached values until expiry
@@ -20,19 +19,16 @@
 ▸ edit src/cache.rs · ✓ 1 edit
   Now check the fixture independently.
 ▸ keep_note · ✓ Changed note 1.
-
 ▾ $ git worktree add ../fixture-check -b fixture-check · ✓ 0.1 s
 │ Preparing worktree (new branch 'fixture-check')
 │ HEAD is now at abc1234 Keep cached values until expiry
 
 · r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s
 ▸ r3 reported
-
 ▾ $ cargo-locked test cache -- --excat · ✗ exit 101
 │ error: Unrecognized option: 'excat'
 
   I misspelled the exact-test option. I should use the full test path instead of changing the test.
-
 ▾ $ cargo-locked test cache_tests::expires_at_the_deadline -- --exact · ✓ 1 passed
 │ running 1 test
 │ test cache_tests::expires_at_the_deadline ... ok

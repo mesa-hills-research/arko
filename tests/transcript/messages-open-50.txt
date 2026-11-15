@@ -6,14 +6,12 @@
   I’ll clear the scratch build first.
 · Ran rm -rf target/x
 ▸ Started cargo-locked test cache in a… · finished
-
   The cache test is running in the background. I
   can record the expected result while it runs.
 
 ▸ Changed note 1
 ▸ Ran git worktree add ../cache-check -b cache-ch…
 ▸ Read 3 files in src
-
   The clock and the cache use the same units, so
   this looks like a boundary error rather than a
   timing problem. I should change the comparison
@@ -36,18 +34,15 @@
 ▸ Changed note 1
 ▸ Ran git worktree add ../fixture-check -b fixtur…
 · r3 Check that the cache fixt… · 1 tool call · 2s
-
 ▾ r3 reported
 │ The fixture and assertion both use the deadline
 │ 10.
 
 ▸ Ran cargo-locked test cache -- --excat         ✗
-
   I misspelled the exact-test option. I should use
   the full test path instead of changing the test.
 
 ▸ Ran cargo-locked test cache_tests::e… (1 passed)
-
   The focused check passes. The worker agrees with
   the fixture, and the background run has
   finished. The reply can explain the boundary

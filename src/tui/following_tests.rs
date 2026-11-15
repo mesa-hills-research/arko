@@ -227,7 +227,7 @@ enum Moves {
     NotLower,
     /// Every line by the same rows, no further down than this.
     AtMost(i64),
-    /// The clicked line kept its row.
+    /// The clicked line kept its row, and every line above it.
     Kept,
     /// The top line's first word is still on the top row.
     TopKept,
@@ -262,6 +262,9 @@ fn check_moves(moves: Moves, before: &[String], after: &[String], y: Option<usiz
                 .next()
                 .unwrap_or("");
             assert!(after[y].contains(words), "{}", show());
+            // (And no line above it moved, up or down.)
+            let above = moved(&before[..y], after);
+            assert!(above.iter().all(|d| *d == 0), "{}", show());
         }
         Moves::TopKept => {
             let word = before[0].split_whitespace().find(|w| w.starts_with('w'));

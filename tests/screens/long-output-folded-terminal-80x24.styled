@@ -1,6 +1,9 @@
 size 80 24
 cursor 3 22 visible default
-text 0 ""
+text 0 "▸ read src/parser.rs · ✓"
+style 0 0 2 dim
+style 0 20 23 dim
+style 0 23 24 fg=green
 text 1 "▾ $ cargo build · ✓ exit 0"
 style 1 0 2 dim
 style 1 15 18 dim

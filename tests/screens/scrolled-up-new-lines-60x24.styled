@@ -1,34 +1,34 @@
 size 60 24
 cursor 3 22 visible default
-text 0 "▎ Fix the parser's failing tests"
-style 0 0 2 fg=#419cff bg=#202020
-style 0 2 60 fg=#dedede bg=#202020
-text 1 ""
-style 1 0 60 fg=#dedede bg=#131313
-text 2 "  Planning the fix …"
-style 2 0 2 fg=#dedede bg=#131313
-style 2 2 20 fg=#9d9d9d bg=#131313 italic
-style 2 20 60 fg=#dedede bg=#131313
-text 3 ""
-style 3 0 60 fg=#dedede bg=#131313
-text 4 "  I'll read the failing test and the parser first."
+text 0 ""
+style 0 0 60 fg=#dedede bg=#131313
+text 1 "▎ Fix the parser's failing tests"
+style 1 0 2 fg=#419cff bg=#202020
+style 1 2 60 fg=#dedede bg=#202020
+text 2 ""
+style 2 0 60 fg=#dedede bg=#131313
+text 3 "  Planning the fix …"
+style 3 0 2 fg=#dedede bg=#131313
+style 3 2 20 fg=#9d9d9d bg=#131313 italic
+style 3 20 60 fg=#dedede bg=#131313
+text 4 ""
 style 4 0 60 fg=#dedede bg=#131313
-text 5 ""
+text 5 "  I'll read the failing test and the parser first."
 style 5 0 60 fg=#dedede bg=#131313
-text 6 "▸ read src/parser.rs · ✓"
-style 6 0 2 fg=#9d9d9d bg=#131313
-style 6 2 20 fg=#dedede bg=#131313
-style 6 20 23 fg=#9d9d9d bg=#131313
-style 6 23 24 fg=#30d158 bg=#131313
-style 6 24 60 fg=#dedede bg=#131313
-text 7 "▸ edit src/parser.rs · ✓"
+text 6 ""
+style 6 0 60 fg=#dedede bg=#131313
+text 7 "▸ read src/parser.rs · ✓"
 style 7 0 2 fg=#9d9d9d bg=#131313
 style 7 2 20 fg=#dedede bg=#131313
 style 7 20 23 fg=#9d9d9d bg=#131313
 style 7 23 24 fg=#30d158 bg=#131313
 style 7 24 60 fg=#dedede bg=#131313
-text 8 ""
-style 8 0 60 fg=#dedede bg=#131313
+text 8 "▸ edit src/parser.rs · ✓"
+style 8 0 2 fg=#9d9d9d bg=#131313
+style 8 2 20 fg=#dedede bg=#131313
+style 8 20 23 fg=#9d9d9d bg=#131313
+style 8 23 24 fg=#30d158 bg=#131313
+style 8 24 60 fg=#dedede bg=#131313
 text 9 "▾ $ cargo test --lib pars… · ✗ exit 101 · 1 failed, 3 passed"
 style 9 0 2 fg=#ff5257 bg=#131313
 style 9 2 26 fg=#dedede bg=#131313

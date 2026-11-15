@@ -1,23 +1,24 @@
 size 120 40
 cursor 3 38 visible default
-text 0 ""
-text 1 "▎ Fix the parser's failing tests"
-style 1 0 2 fg=cyan
-text 2 ""
-text 3 "  Planning the fix …"
-style 3 2 20 dim italic
-text 4 ""
-text 5 "  I'll read the failing test and the parser first."
-text 6 ""
-text 7 "▸ read src/parser.rs · ✓"
-style 7 0 2 dim
-style 7 20 23 dim
-style 7 23 24 fg=green
-text 8 "▸ edit src/parser.rs · ✓"
+text 0 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+style 0 2 118 dim
+text 1 ""
+text 2 "▎ Fix the parser's failing tests"
+style 2 0 2 fg=cyan
+text 3 ""
+text 4 "  Planning the fix …"
+style 4 2 20 dim italic
+text 5 ""
+text 6 "  I'll read the failing test and the parser first."
+text 7 ""
+text 8 "▸ read src/parser.rs · ✓"
 style 8 0 2 dim
 style 8 20 23 dim
 style 8 23 24 fg=green
-text 9 ""
+text 9 "▸ edit src/parser.rs · ✓"
+style 9 0 2 dim
+style 9 20 23 dim
+style 9 23 24 fg=green
 text 10 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
 style 10 0 2 fg=red
 style 10 27 30 dim

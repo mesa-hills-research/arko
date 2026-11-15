@@ -381,8 +381,7 @@ struct Block {
     gap: bool,
     /// A blank line after it (the "Working…" line has one, at the end).
     tail: bool,
-    /// It's open, so it stands apart from its neighbours by a blank line on
-    /// each side.
+    /// It's open, so a blank line sets it apart from what follows.
     open: bool,
     /// What its lines are drawn from, besides its items.
     face: Face,
@@ -1434,8 +1433,8 @@ impl Transcript {
         let (counts, opened) = self.counted(filter);
         let as_quiet = filter.in_view(View::Quiet);
         // The group of the block before, and whether it's open. A blank line
-        // stands between what is said and the work, and on both sides of
-        // anything open, and lines of work stack.
+        // stands between what is said and the work, and below anything open,
+        // and lines of work stack.
         let mut last: Option<(Group, bool)> = blocks.first().map(|_| (Group::Prose, false));
         let now = chrono::Utc::now().timestamp_millis();
         let quiet = filter.view() == View::Quiet;
@@ -1528,21 +1527,15 @@ impl Transcript {
                     // opened to, and a thinking or a worker's row is open
                     // when it shows more than its line. (Only the work's
                     // lines stand apart by it, so the rest aren't wrapped
-                    // for it.) What opens by itself stands apart from the
-                    // start, so nothing moves when it opens. A command does
-                    // while it runs (its output shows once it ends), and a
-                    // thinking shown whole while it streams. One that ends
-                    // with nothing to show, or on its one line, stacks again.
-                    let live = self.motion.thinking == Some(entry.item.id);
+                    // for it.) The blank line comes below it, so what opens
+                    // by itself (a command's output once it ends, a thinking
+                    // shown whole as it streams) moves nothing above it.
                     let open = match entry.item.kind {
-                        Kind::Call if status.is_none() => {
-                            face.open && (folds || entry.item.status == Some(CallStatus::Running))
-                        }
+                        Kind::Call if status.is_none() => face.open && folds,
                         Kind::Result => true,
                         _ if group != Group::Activity => false,
                         // (Closed, a thinking and a worker's row are a line.)
                         Kind::Thinking if !face.open => false,
-                        Kind::Thinking if live => true,
                         _ if status.is_some() && !(folds && face.open) => false,
                         _ => {
                             let rows = self.entry_rows(*index, &face, theme, width, own);
@@ -1566,12 +1559,14 @@ impl Transcript {
                 }
                 _ => (Face::default(), false),
             };
+            // (Never above an open block, so opening or closing one leaves
+            // every line above it where it was.)
             let gap = match last {
                 None => false,
                 _ if content => false,
                 Some((Group::Output, _)) if output => false,
                 Some((last, was_open)) => {
-                    was_open || open || !(last == Group::Activity && group == Group::Activity)
+                    was_open || !(last == Group::Activity && group == Group::Activity)
                 }
             };
             last = Some((group, open));
@@ -2112,8 +2107,8 @@ impl Transcript {
     /// call's detail and content, after the call as Full writes it where the
     /// row's line cut its words. A row of several shows each call's Full
     /// line, which opens to the call's detail and content under it, and the
-    /// thinking between them. On the rail, anything open stands apart from
-    /// its neighbours by a blank line.
+    /// thinking between them. On the rail, a blank line follows anything
+    /// open.
     fn quiet_lines(
         &self,
         row: &QuietRow,
@@ -2168,7 +2163,7 @@ impl Transcript {
         // Whether the item before on the rail is open, none before the first.
         let mut before: Option<bool> = None;
         let mut gap = |lines: &mut Vec<Wrapped>, open: bool| {
-            if before.is_some_and(|before| before || open) {
+            if before == Some(true) {
                 lines.push(Wrapped::line(Vec::new()).decorated(bar()));
             }
             before = Some(open);
@@ -5604,7 +5599,7 @@ mod tests {
             );
             t.toggle(4, 2, &filter, &theme);
             t.toggle(7, 3, &filter, &theme);
-            // (Open, each stands apart from the other by a blank line.)
+            // (Open, a blank line follows each.)
             t.follow();
             assert_eq!(
                 rows(&mut t, &filter, 40, 7),
@@ -5622,7 +5617,8 @@ mod tests {
             t.toggle(4, 2, &filter, &theme);
             t.toggle(7, 3, &filter, &theme);
         }
-        // Its own view has all of it.
+        // Its own view has all of it. (It opens at its end, following.)
+        t.follow();
         let own = rows(&mut t, &Filter::Worker("r3".into(), View::Full), 40, 12);
         assert!(own.iter().any(|row| row.contains("Looking.")), "{own:?}");
         assert!(own.iter().any(|row| row.contains("read a.rs")), "{own:?}");
@@ -5872,8 +5868,8 @@ mod tests {
     /// label or marker, in Full and Quiet and in its worker's own view, and
     /// none in Messages. A click on any of its lines opens it whole and
     /// closes it again, and one that fits on its line has nothing to open.
-    /// Open, it stands apart from its neighbours by a blank line on each
-    /// side. With `--show-thinking` it starts whole.
+    /// Open, a blank line follows it. With `--show-thinking` it starts
+    /// whole.
     #[test]
     fn thinking_is_its_first_line_and_opens_whole() {
         let theme = Theme::terminal();
@@ -6015,9 +6011,8 @@ mod tests {
 
     /// A thinking between two calls of a Quiet row is inside it, between
     /// them. Open, the row shows it on its rail in the text column of its
-    /// calls, with no label or marker. Opened, it stands apart from the
-    /// calls by a blank rail line on each side, and a click on its text
-    /// folds it.
+    /// calls, with no label or marker. Opened, a blank rail line sets it
+    /// apart from the call after it, and a click on its text folds it.
     #[test]
     fn a_thinking_in_an_open_quiet_row_stays_on_the_rail() {
         use crate::remote::{Act, ActKind};
@@ -6054,25 +6049,21 @@ mod tests {
         let open = [
             "▾ Read a.rs and b.rs",
             "│ · a.rs · ✓ 3 lines",
-            "│",
             "│   Which one?",
             "│   The second.",
             "│",
             "│ · b.rs · ✓ 3 lines",
         ];
-        // (Its first line stays on the row clicked, so the row's line goes
-        // up one row.)
+        // (Its first line stays on the row clicked, and the lines above it
+        // with it.)
         let shown = rows(&mut t, &quiet, 40, 8);
-        assert_eq!(shown[..6], open[1..], "{shown:?}");
-        t.scroll(-1);
-        let shown = rows(&mut t, &quiet, 40, 8);
-        assert_eq!(shown[..7], open);
+        assert_eq!(shown[..6], open, "{shown:?}");
         // A click on its text folds it.
         assert_eq!(
-            t.fold_at(10, 4, &quiet, &theme).map(|fold| fold.item),
+            t.fold_at(10, 3, &quiet, &theme).map(|fold| fold.item),
             Some(2)
         );
-        t.toggle(2, 4, &quiet, &theme);
+        t.toggle(2, 3, &quiet, &theme);
         assert_eq!(rows(&mut t, &quiet, 40, 8)[..4], closed);
     }
 
@@ -6377,10 +6368,15 @@ mod tests {
         t.apply(Update::Item(read(3, "b.rs")));
         t.follow();
         assert_eq!(
-            rows(&mut t, &quiet, 40, 6)[..5],
-            ["· Read a.rs", "", "  Which next?", "  The other one.", ""]
+            rows(&mut t, &quiet, 40, 5),
+            [
+                "· Read a.rs",
+                "  Which next?",
+                "  The other one.",
+                "",
+                "· Read b.rs"
+            ]
         );
-        assert_eq!(rows(&mut t, &quiet, 40, 6)[5], "· Read b.rs");
     }
 
     /// Times read in whole units, as the terminal and the page both say
@@ -7149,12 +7145,11 @@ mod tests {
         }
     }
 
-    /// Lines of work stack. Anything open stands apart from its neighbours
-    /// by a blank line on each side, and the line the reader opened stays
-    /// on its row of the screen, so the blank line above it comes from what
-    /// is above moving up.
+    /// Lines of work stack. A blank line follows anything open, and none
+    /// comes above it, so the line the reader opened stays on its row of
+    /// the screen with every line above it.
     #[test]
-    fn an_open_item_stands_apart_and_its_line_stays_put() {
+    fn an_open_item_has_a_blank_line_below_and_nothing_above_moves() {
         use crate::remote::{Act, ActKind};
         let quiet = Filter::Main(View::Quiet);
         let theme = Theme::terminal();
@@ -7197,12 +7192,19 @@ mod tests {
             "",
         ];
         assert_eq!(rows(&mut t, &quiet, 40, 6), closed);
-        // The thinking opens on its row, a blank line on each side, and the
-        // command above moves up.
+        // The thinking opens on its row, with a blank line below it.
         t.toggle(3, 3, &quiet, &theme);
         assert_eq!(
-            rows(&mut t, &quiet, 40, 6)[..5],
-            ["", "· Ran make", "", "  First this.", "  Then that."]
+            rows(&mut t, &quiet, 40, 7),
+            [
+                "▎ Go",
+                "",
+                "· Ran make",
+                "  First this.",
+                "  Then that.",
+                "",
+                "▸ Ran make test"
+            ]
         );
         t.toggle(3, 3, &quiet, &theme);
         assert_eq!(rows(&mut t, &quiet, 40, 6), closed);
@@ -7211,23 +7213,23 @@ mod tests {
         assert_eq!(
             rows(&mut t, &quiet, 40, 6),
             [
+                "▎ Go",
                 "",
                 "· Ran make",
                 "  First this. …",
-                "",
                 "▾ Ran make test",
                 "│ ok"
             ]
         );
     }
 
-    /// What opens by itself stands apart from when it shows, so its line
-    /// stays where it is when it opens. In the Full view a command does
-    /// while it runs, and stacks again when it ends with nothing to show. A
-    /// thought shown whole does while it streams, and stacks again when it
-    /// ends on its one line.
+    /// What opens by itself grows downward, so its line and every line
+    /// above it stay where they are. In the Full view a command stacks while
+    /// it runs, and its output comes under it once it ends, with a blank
+    /// line below. A thought shown whole grows under its first line as it
+    /// streams.
     #[test]
-    fn what_opens_by_itself_stands_apart_from_when_it_shows() {
+    fn what_opens_by_itself_moves_nothing_above_it() {
         use crate::remote::{Act, ActKind};
         let mut t = Transcript::new();
         t.set_open_thinking(true);
@@ -7256,8 +7258,8 @@ mod tests {
         let quiet = call(3, ActKind::Command, "$ true");
         t.apply(Update::Item(quiet.clone()));
         assert_eq!(
-            rows(&mut t, &filter, 40, 20)[..6],
-            ["▎ Go", "", "· read a.rs · ✓ 3 lines", "", "· $ true …", ""]
+            rows(&mut t, &filter, 40, 20)[..4],
+            ["▎ Go", "", "· read a.rs · ✓ 3 lines", "· $ true …"]
         );
         t.apply(Update::Change(ended(quiet, "exit 0")));
         assert_eq!(rows(&mut t, &filter, 40, 20)[3], "· $ true · ✓ exit 0");
@@ -7265,57 +7267,46 @@ mod tests {
         let make = call(4, ActKind::Command, "$ make");
         t.apply(Update::Item(make.clone()));
         let running = rows(&mut t, &filter, 40, 20);
-        assert_eq!(running[3..6], ["· $ true · ✓ exit 0", "", "· $ make …"]);
+        assert_eq!(running[3..5], ["· $ true · ✓ exit 0", "· $ make …"]);
         t.apply(Update::Change(ended(make, "exit 0")));
         let mut output = item(5, Kind::Result, "ok");
         output.content = Some(ContentKind::Plain);
         output.call = Some(4);
         t.apply(Update::Item(output));
         let done = rows(&mut t, &filter, 40, 20);
-        assert_eq!(
-            done[..7],
-            [
-                "▎ Go",
-                "",
-                "· read a.rs · ✓ 3 lines",
-                "· $ true · ✓ exit 0",
-                "",
-                "▾ $ make · ✓ exit 0",
-                "│ ok"
-            ]
-        );
+        assert_eq!(done[..4], running[..4]);
+        assert_eq!(done[4..7], ["▾ $ make · ✓ exit 0", "│ ok", ""]);
         // A thought shown whole, after a call.
         let list = call(6, ActKind::List, "list src");
         t.apply(Update::Item(list.clone()));
         t.apply(Update::Change(ended(list, "2 entries")));
         t.apply(Update::Item(item(7, Kind::Thinking, "Plan.")));
         let streams = rows(&mut t, &filter, 40, 20);
-        assert_eq!(
-            streams[8..10],
-            ["· list src · ✓ 2 entries", ""],
-            "{streams:?}"
-        );
-        assert_eq!(after_spinner(&streams[10]), Some(" Plan."), "{streams:?}");
+        assert_eq!(streams[..7], done[..7], "{streams:?}");
+        assert_eq!(streams[7], "· list src · ✓ 2 entries", "{streams:?}");
+        assert_eq!(after_spinner(&streams[8]), Some(" Plan."), "{streams:?}");
         t.apply(Update::Append {
             id: 7,
             text: "\n\nThen more.".into(),
         });
         let grown = rows(&mut t, &filter, 40, 20);
-        assert_eq!(grown[8..10], streams[8..10], "{grown:?}");
-        assert_eq!(after_spinner(&grown[10]), Some(" Plan."), "{grown:?}");
-        // One that ends on its line stacks again.
+        assert_eq!(grown[..8], streams[..8], "{grown:?}");
+        assert_eq!(after_spinner(&grown[8]), Some(" Plan."), "{grown:?}");
+        assert_eq!(grown[9..11], ["", "  Then more."], "{grown:?}");
+        // One that ends on its line stacks, as it did while it streamed.
         let read = call(8, ActKind::Read, "read b.rs");
         t.apply(Update::Item(read.clone()));
         t.apply(Update::Change(ended(read, "1 line")));
         t.apply(Update::Item(item(9, Kind::Thinking, "Short.")));
         let live = rows(&mut t, &filter, 40, 20);
-        assert_eq!(live[14..16], ["· read b.rs · ✓ 1 line", ""], "{live:?}");
-        assert_eq!(after_spinner(&live[16]), Some(" Short."), "{live:?}");
+        assert_eq!(live[11..13], ["", "· read b.rs · ✓ 1 line"], "{live:?}");
+        assert_eq!(after_spinner(&live[13]), Some(" Short."), "{live:?}");
         t.apply(Update::Item(call(10, ActKind::Read, "read c.rs")));
         let stacked = rows(&mut t, &filter, 40, 20);
+        assert_eq!(stacked[..13], live[..13], "{stacked:?}");
         assert_eq!(
-            stacked[14..17],
-            ["· read b.rs · ✓ 1 line", "  Short.", "· read c.rs …"],
+            stacked[13..15],
+            ["  Short.", "· read c.rs …"],
             "{stacked:?}"
         );
     }

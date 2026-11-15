@@ -9,7 +9,6 @@
 ▸ Changed note 1
 ▸ Ran git worktree add ../cache-check -b cache-check
 ▸ Read 3 files in src
-
   The clock and the cache use the same units, so this looks like a boundary error rather than a
   timing problem. I should change the comparison and leave the clock alone.
 
@@ -26,14 +25,12 @@
 ▸ Changed note 1
 ▸ Ran git worktree add ../fixture-check -b fixture-check
 · r3 Check that the cache fixture uses the same deadline as the test. · 1 tool call · 2s
-
 ▾ r3 reported
 │ The fixture and assertion both use the deadline 10.
 
 ▸ Ran cargo-locked test cache -- --excat                                                           ✗
   I misspelled the exact-test option. I should use the full test path instead of changing the test.
 ▸ Ran cargo-locked test cache_tests::expires_at_the_deadline -- --exact (1 passed)
-
   The focused check passes. The worker agrees with the fixture, and the background run has finished.
   The reply can explain the boundary change in one sentence.
 

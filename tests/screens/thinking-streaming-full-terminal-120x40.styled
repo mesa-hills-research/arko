@@ -1,43 +1,46 @@
 size 120 40
 cursor 3 38 visible default
-text 0 "  │ Model      gpt-6-luna (high effort)                                                                              │"
-style 0 2 15 dim
-style 0 116 118 dim
-text 1 "  │ Workers    parallel workers                                                                                      │"
+text 0 "  ┌ Arko ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 0 2 3 dim
+style 0 3 9 bold
+style 0 9 118 dim
+text 1 "  │ Model      gpt-6-luna (high effort)                                                                              │"
 style 1 2 15 dim
 style 1 116 118 dim
-text 2 "  │ Workspace  /home/ada/proj                                                                                        │"
+text 2 "  │ Workers    parallel workers                                                                                      │"
 style 2 2 15 dim
 style 2 116 118 dim
-text 3 "  │ Session    20261110-101010-abcd                                                                                  │"
+text 3 "  │ Workspace  /home/ada/proj                                                                                        │"
 style 3 2 15 dim
 style 3 116 118 dim
-text 4 "  │ Project    AGENTS.md                                                                                             │"
+text 4 "  │ Session    20261110-101010-abcd                                                                                  │"
 style 4 2 15 dim
 style 4 116 118 dim
-text 5 "  │ Tools      2 skills · 1 MCP server                                                                               │"
+text 5 "  │ Project    AGENTS.md                                                                                             │"
 style 5 2 15 dim
 style 5 116 118 dim
-text 6 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
-style 6 2 118 dim
-text 7 ""
-text 8 "▎ Fix the parser's failing tests"
-style 8 0 2 fg=cyan
-text 9 ""
-text 10 "  Planning the fix …"
-style 10 2 20 dim italic
-text 11 ""
-text 12 "  I'll read the failing test and the parser first."
-text 13 ""
-text 14 "▸ read src/parser.rs · ✓"
-style 14 0 2 dim
-style 14 20 23 dim
-style 14 23 24 fg=green
-text 15 "▸ edit src/parser.rs · ✓"
+text 6 "  │ Tools      2 skills · 1 MCP server                                                                               │"
+style 6 2 15 dim
+style 6 116 118 dim
+text 7 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+style 7 2 118 dim
+text 8 ""
+text 9 "▎ Fix the parser's failing tests"
+style 9 0 2 fg=cyan
+text 10 ""
+text 11 "  Planning the fix …"
+style 11 2 20 dim italic
+text 12 ""
+text 13 "  I'll read the failing test and the parser first."
+text 14 ""
+text 15 "▸ read src/parser.rs · ✓"
 style 15 0 2 dim
 style 15 20 23 dim
 style 15 23 24 fg=green
-text 16 ""
+text 16 "▸ edit src/parser.rs · ✓"
+style 16 0 2 dim
+style 16 20 23 dim
+style 16 23 24 fg=green
 text 17 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
 style 17 0 2 fg=red
 style 17 27 30 dim

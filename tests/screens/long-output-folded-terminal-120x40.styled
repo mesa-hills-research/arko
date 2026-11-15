@@ -33,46 +33,46 @@ text 12 "▸ read src/parser.rs · ✓"
 style 12 0 2 dim
 style 12 20 23 dim
 style 12 23 24 fg=green
-text 13 ""
-text 14 "▾ $ cargo build · ✓ exit 0"
+text 13 "▾ $ cargo build · ✓ exit 0"
+style 13 0 2 dim
+style 13 15 18 dim
+style 13 18 19 fg=green
+style 13 19 26 dim
+text 14 "│    Compiling crate1 v0.1.0"
 style 14 0 2 dim
-style 14 15 18 dim
-style 14 18 19 fg=green
-style 14 19 26 dim
-text 15 "│    Compiling crate1 v0.1.0"
+text 15 "│    Compiling crate2 v0.1.0"
 style 15 0 2 dim
-text 16 "│    Compiling crate2 v0.1.0"
+text 16 "│    Compiling crate3 v0.1.0"
 style 16 0 2 dim
-text 17 "│    Compiling crate3 v0.1.0"
+text 17 "│    Compiling crate4 v0.1.0"
 style 17 0 2 dim
-text 18 "│    Compiling crate4 v0.1.0"
+text 18 "│    Compiling crate5 v0.1.0"
 style 18 0 2 dim
-text 19 "│    Compiling crate5 v0.1.0"
+text 19 "│    Compiling crate6 v0.1.0"
 style 19 0 2 dim
-text 20 "│    Compiling crate6 v0.1.0"
+text 20 "│    Compiling crate7 v0.1.0"
 style 20 0 2 dim
-text 21 "│    Compiling crate7 v0.1.0"
+text 21 "│    Compiling crate8 v0.1.0"
 style 21 0 2 dim
-text 22 "│    Compiling crate8 v0.1.0"
+text 22 "│    Compiling crate9 v0.1.0"
 style 22 0 2 dim
-text 23 "│    Compiling crate9 v0.1.0"
+text 23 "│    Compiling crate10 v0.1.0"
 style 23 0 2 dim
-text 24 "│    Compiling crate10 v0.1.0"
+text 24 "│    Compiling crate11 v0.1.0"
 style 24 0 2 dim
-text 25 "│    Compiling crate11 v0.1.0"
+text 25 "│    Compiling crate12 v0.1.0"
 style 25 0 2 dim
-text 26 "│    Compiling crate12 v0.1.0"
+text 26 "│    Compiling crate13 v0.1.0"
 style 26 0 2 dim
-text 27 "│    Compiling crate13 v0.1.0"
+text 27 "│    Compiling crate14 v0.1.0"
 style 27 0 2 dim
-text 28 "│    Compiling crate14 v0.1.0"
+text 28 "│    Compiling crate15 v0.1.0"
 style 28 0 2 dim
-text 29 "│    Compiling crate15 v0.1.0"
+text 29 "│    Compiling crate16 v0.1.0"
 style 29 0 2 dim
-text 30 "│    Compiling crate16 v0.1.0"
-style 30 0 2 dim
-text 31 "│ … 97 more lines"
-style 31 0 17 dim
+text 30 "│ … 97 more lines"
+style 30 0 17 dim
+text 31 ""
 text 32 ""
 text 33 ""
 text 34 ""

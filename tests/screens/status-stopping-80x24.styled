@@ -1,21 +1,21 @@
 size 80 24
 cursor 3 22 visible default
-text 0 ""
+text 0 "  I'll read the failing test and the parser first."
 style 0 0 80 fg=#dedede bg=#131313
-text 1 "▸ read src/parser.rs · ✓"
-style 1 0 2 fg=#9d9d9d bg=#131313
-style 1 2 20 fg=#dedede bg=#131313
-style 1 20 23 fg=#9d9d9d bg=#131313
-style 1 23 24 fg=#30d158 bg=#131313
-style 1 24 80 fg=#dedede bg=#131313
-text 2 "▸ edit src/parser.rs · ✓"
+text 1 ""
+style 1 0 80 fg=#dedede bg=#131313
+text 2 "▸ read src/parser.rs · ✓"
 style 2 0 2 fg=#9d9d9d bg=#131313
 style 2 2 20 fg=#dedede bg=#131313
 style 2 20 23 fg=#9d9d9d bg=#131313
 style 2 23 24 fg=#30d158 bg=#131313
 style 2 24 80 fg=#dedede bg=#131313
-text 3 ""
-style 3 0 80 fg=#dedede bg=#131313
+text 3 "▸ edit src/parser.rs · ✓"
+style 3 0 2 fg=#9d9d9d bg=#131313
+style 3 2 20 fg=#dedede bg=#131313
+style 3 20 23 fg=#9d9d9d bg=#131313
+style 3 23 24 fg=#30d158 bg=#131313
+style 3 24 80 fg=#dedede bg=#131313
 text 4 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
 style 4 0 2 fg=#ff5257 bg=#131313
 style 4 2 27 fg=#dedede bg=#131313

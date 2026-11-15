@@ -6,9 +6,7 @@
   the comparison myself.
 
 ·    Check that the cache fixture uses… · starting
-
 ·    Read docs/cache.md and the doc co… · starting
-
 ·    Find every caller of cache::fresh… · starting
 
 ## 18 r1 reports

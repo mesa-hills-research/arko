@@ -83,43 +83,43 @@ style 17 2 20 fg=#dedede bg=#131313
 style 17 20 23 fg=#9d9d9d bg=#131313
 style 17 23 24 fg=#30d158 bg=#131313
 style 17 24 120 fg=#dedede bg=#131313
-text 18 ""
-style 18 0 120 fg=#dedede bg=#131313
-text 19 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
-style 19 0 2 fg=#ff5257 bg=#131313
-style 19 2 27 fg=#dedede bg=#131313
-style 19 27 30 fg=#9d9d9d bg=#131313
-style 19 30 61 fg=#ff5257 bg=#131313
-style 19 61 120 fg=#dedede bg=#131313
-text 20 "│ running 4 tests"
+text 18 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
+style 18 0 2 fg=#ff5257 bg=#131313
+style 18 2 27 fg=#dedede bg=#131313
+style 18 27 30 fg=#9d9d9d bg=#131313
+style 18 30 61 fg=#ff5257 bg=#131313
+style 18 61 120 fg=#dedede bg=#131313
+text 19 "│ running 4 tests"
+style 19 0 2 fg=#9d9d9d bg=#131313
+style 19 2 120 fg=#dedede bg=#131313
+text 20 "│ test parser::tests::reads ... ok"
 style 20 0 2 fg=#9d9d9d bg=#131313
 style 20 2 120 fg=#dedede bg=#131313
-text 21 "│ test parser::tests::reads ... ok"
+text 21 "│ test parser::tests::skips_blank ... FAILED"
 style 21 0 2 fg=#9d9d9d bg=#131313
 style 21 2 120 fg=#dedede bg=#131313
-text 22 "│ test parser::tests::skips_blank ... FAILED"
+text 22 "│ test parser::tests::quotes ... ok"
 style 22 0 2 fg=#9d9d9d bg=#131313
 style 22 2 120 fg=#dedede bg=#131313
-text 23 "│ test parser::tests::quotes ... ok"
+text 23 "│ test parser::tests::empty ... ok"
 style 23 0 2 fg=#9d9d9d bg=#131313
 style 23 2 120 fg=#dedede bg=#131313
-text 24 "│ test parser::tests::empty ... ok"
+text 24 "│"
 style 24 0 2 fg=#9d9d9d bg=#131313
 style 24 2 120 fg=#dedede bg=#131313
-text 25 "│"
+text 25 "│ test result: FAILED. 3 passed; 1 failed"
 style 25 0 2 fg=#9d9d9d bg=#131313
 style 25 2 120 fg=#dedede bg=#131313
-text 26 "│ test result: FAILED. 3 passed; 1 failed"
-style 26 0 2 fg=#9d9d9d bg=#131313
-style 26 2 120 fg=#dedede bg=#131313
-text 27 ""
-style 27 0 120 fg=#dedede bg=#131313
-text 28 "! retrying in 2 s"
-style 28 0 17 fg=#ffc600 bg=#131313
-style 28 17 120 fg=#dedede bg=#131313
-text 29 ""
+text 26 ""
+style 26 0 120 fg=#dedede bg=#131313
+text 27 "! retrying in 2 s"
+style 27 0 17 fg=#ffc600 bg=#131313
+style 27 17 120 fg=#dedede bg=#131313
+text 28 ""
+style 28 0 120 fg=#dedede bg=#131313
+text 29 "  The parser skipped the blank line at the end of a file, so the last test failed. I changed the loop to"
 style 29 0 120 fg=#dedede bg=#131313
-text 30 "  The parser skipped the blank line at the end of a file, so the last test failed. I changed the loop to"
+text 30 ""
 style 30 0 120 fg=#dedede bg=#131313
 text 31 ""
 style 31 0 120 fg=#dedede bg=#131313
