@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.22.1 (2026-11-14)
+
+### The transcript
+
+- Opening a fold no longer moves the lines above it. An open item has its blank line below it
+  only, so the item and what follows grow downward, as a file tree does. A command's output in the
+  Full view and a thought shown whole grow the same way as they come.
+
+### Skills
+
+- The built-in arko-taste skill is now ui-taste, for any interface, graphical or terminal. It puts
+  the fewest layout shifts first and has sixteen checks. Agents load it when a task calls for it,
+  as before. `--no-builtin-skill arko-taste` and `ARKO_BUILTIN_SKILLS_OFF=arko-taste` now get the
+  answer for a name that isn't a built-in skill, so name `ui-taste` there.
+
 ## 0.22.0 (2026-11-14)
 
 ### The transcript
