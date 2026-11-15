@@ -41,8 +41,8 @@ pub(crate) const BUILTIN: [Builtin; 3] = [
         pre_loaded: false,
     },
     Builtin {
-        name: "arko-taste",
-        text: include_str!("builtin_skills/arko-taste/SKILL.md"),
+        name: "ui-taste",
+        text: include_str!("builtin_skills/ui-taste/SKILL.md"),
         pre_loaded: false,
     },
 ];
@@ -429,7 +429,7 @@ mod tests {
         let (none, warnings) = BuiltinSkills::new(true, &[], "x");
         assert!(warnings.is_empty());
         assert!(!none.is_all());
-        assert_eq!(none.left_out(), ["prose", "ponytail", "arko-taste"]);
+        assert_eq!(none.left_out(), ["prose", "ponytail", "ui-taste"]);
         assert!(!none.gives("prose"));
         let (one, _) =
             BuiltinSkills::new(false, &[" prose".into(), "prose".into(), "".into()], "x");
@@ -451,7 +451,17 @@ mod tests {
         assert_eq!(
             warnings,
             [
-                "--no-builtin-skill names `pros`, which isn't a built-in skill (they are prose, ponytail, and arko-taste), so Arko skips it"
+                "--no-builtin-skill names `pros`, which isn't a built-in skill (they are prose, ponytail, and ui-taste), so Arko skips it"
+            ]
+        );
+        // (The interface skill's old name.)
+        let (old, warnings) =
+            BuiltinSkills::new(false, &["arko-taste".into()], "ARKO_BUILTIN_SKILLS_OFF");
+        assert!(old.off.is_empty());
+        assert_eq!(
+            warnings,
+            [
+                "ARKO_BUILTIN_SKILLS_OFF names `arko-taste`, which isn't a built-in skill (they are prose, ponytail, and ui-taste), so Arko skips it"
             ]
         );
     }

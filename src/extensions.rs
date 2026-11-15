@@ -374,13 +374,10 @@ mod tests {
                 .map(|skill| skill.name)
                 .collect()
         };
-        assert_eq!(
-            builtin(Some(true), &[]),
-            ["prose", "ponytail", "arko-taste"]
-        );
+        assert_eq!(builtin(Some(true), &[]), ["prose", "ponytail", "ui-taste"]);
         assert_eq!(
             builtin(Some(true), &["ponytail", "pros"]),
-            ["prose", "arko-taste"]
+            ["prose", "ui-taste"]
         );
         assert!(builtin(Some(false), &[]).is_empty());
     }

@@ -9,4 +9,4 @@ Arko is a general-purpose agent for the terminal, with a remote web page in `web
 - A conversation's tool list and system prompt never change while it runs, so a prompt cache stays warm. Anything that may change mid-session goes in a message, as the project's instructions do.
 - After changing `web/`, rebuild the page with `web/build.sh` and commit `src/remote/page/` with the change.
 - Saved sessions must stay loadable. Give new fields serde defaults and keep reading old ones.
-- The interfaces (terminal, web page, Studio) follow `docs/interface-design.md` and the `arko-taste` skill.
+- The interfaces (terminal, web page, Studio) follow `docs/interface-design.md` and the built-in `ui-taste` skill.

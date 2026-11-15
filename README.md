@@ -37,7 +37,7 @@ models, and on your Claude plan through an installed Claude Code.
   prompt cache holds, which the agent can add with your OK
 - [Skills](docs/skills.md) from `.agents/skills` or `.claude/skills`, for some models or for the
   main agent only, which the agent can save with your OK, and three built in (prose for writing,
-  ponytail for coding tasks and running workers, and arko-taste for anything a user sees)
+  ponytail for coding tasks and running workers, and ui-taste for anything a user sees)
 - What the agent saves in a project goes in a [`.arko` folder](docs/arko-folder.md) that git
   ignores by default
 - Themes for the full-screen view, and your own in GPUI Kit's format

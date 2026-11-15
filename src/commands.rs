@@ -817,7 +817,7 @@ mod tests {
         assert!(dynamic_choices(&reading, "/session-names", &["words"]).is_empty());
         assert_eq!(
             dynamic_choices(&reading, "/builtin-skills", &[]),
-            ["on", "off", "prose", "ponytail", "arko-taste"]
+            ["on", "off", "prose", "ponytail", "ui-taste"]
         );
         assert_eq!(
             dynamic_choices(&reading, "/builtin-skills", &["prose"]),

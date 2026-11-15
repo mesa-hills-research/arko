@@ -82,7 +82,7 @@ Arko has three skills built in, so no files are needed.
 |---|---|
 | `prose` | Everything the agents write, from UI text and messages to READMEs, docs and commit messages |
 | `ponytail` | Any coding task, and running workers |
-| `arko-taste` | Anything a person sees in an interface, designed, built or reviewed against twelve checks |
+| `ui-taste` | Anything a person sees in an interface, graphical or terminal, designed, built or reviewed against sixteen checks |
 
 `prose` is always in the agents' instructions. They load the others on demand like any other
 skill, and `/skills` lists them all as built in.

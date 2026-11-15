@@ -100,7 +100,7 @@ async fn the_built_in_skills_are_offered_and_load_by_name() {
     )
     .await;
     assert_eq!(bodies.len(), 2);
-    for name in ["ponytail", "arko-taste"] {
+    for name in ["ponytail", "ui-taste"] {
         assert!(bodies[0].contains(&format!("**{name}**")), "{name}");
     }
     assert!(
@@ -213,7 +213,7 @@ async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {
         [
             ("ponytail", false, Some(folder.join("ponytail"))),
             ("review", false, None),
-            ("arko-taste", true, None),
+            ("ui-taste", true, None),
         ]
     );
     assert_eq!(facts.skills[1].path, Some(folder.join("review")));
@@ -234,7 +234,7 @@ async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {
         skills,
         [
             ("ponytail", true, false),
-            ("arko-taste", true, false),
+            ("ui-taste", true, false),
             ("prose", true, true)
         ]
     );
@@ -271,7 +271,7 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     let printed = Printed::default();
     harness.output = Arc::new(Output::new(Some(Box::new(printed.clone())), false));
     let folder = temp.path().join("skills");
-    own_skill(&folder, "arko-taste", "Mine.");
+    own_skill(&folder, "ui-taste", "Mine.");
     let skill_file = |name: &str, description: &str, extra: &str| {
         let dir = folder.join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -294,17 +294,17 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     let text = printed.0.lock().unwrap().join("\n");
     let lines: Vec<&str> = text.lines().collect();
     // By name, the names in a column of their own, and no line over the width.
-    let names = ["always-on", "arko-taste", "prose", "wide"];
+    let names = ["always-on", "prose", "ui-taste", "wide"];
     for (line, name) in lines.iter().zip(names) {
-        assert!(line.starts_with(&format!("{name:<10}  ")), "{text}");
+        assert!(line.starts_with(&format!("{name:<9}  ")), "{text}");
     }
     assert!(lines.iter().all(|line| line.width() <= 160), "{text}");
     // Each says where it is, in a column of its own (the built-in ones that
     // they are built in), and nothing says what replaces what.
     let places = [
         format!("{}, always loaded", always.display()),
-        folder.join("arko-taste").display().to_string(),
         "built in, always loaded".to_string(),
+        folder.join("ui-taste").display().to_string(),
         wide.display().to_string(),
     ];
     for (line, place) in lines.iter().zip(&places) {
@@ -313,8 +313,8 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     }
     // A description is whole or cut with an ellipsis, wide characters too.
     assert!(lines[0].contains("  My always-on skill. "), "{text}");
-    assert!(lines[1].contains("  My arko-taste skill. "), "{text}");
-    assert!(lines[2].contains("…  built in"), "{text}");
+    assert!(lines[1].contains("…  built in"), "{text}");
+    assert!(lines[2].contains("  My ui-taste skill. "), "{text}");
     assert!(lines[3].contains("…  "), "{text}");
     assert!(!lines[3].contains(&"日本語".repeat(34)), "{text}");
     assert_eq!(lines[4], "Built-in skills left out (ponytail).", "{text}");
@@ -347,7 +347,7 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     let text = printed.0.lock().unwrap().join("\n");
     assert!(text.starts_with("No skills."), "{text}");
     assert!(
-        text.contains("Built-in skills left out (prose, ponytail, arko-taste)."),
+        text.contains("Built-in skills left out (prose, ponytail, ui-taste)."),
         "{text}"
     );
     assert!(harness.header(None).tools.is_empty());
@@ -463,27 +463,27 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
     assert_eq!(last_said(&harness.feed), "Built-in skills are now on.");
     assert_eq!(
         given(&harness.main_config),
-        ["prose", "ponytail", "arko-taste"]
+        ["prose", "ponytail", "ui-taste"]
     );
     assert!(harness.live_command("/builtin-skills prose off", Source::Terminal));
     assert_eq!(last_said(&harness.feed), "prose is now off.");
-    assert_eq!(given(&harness.main_config), ["ponytail", "arko-taste"]);
-    assert_eq!(given(&harness.worker_config), ["ponytail", "arko-taste"]);
+    assert_eq!(given(&harness.main_config), ["ponytail", "ui-taste"]);
+    assert_eq!(given(&harness.worker_config), ["ponytail", "ui-taste"]);
     assert!(harness.live_command("/builtin-skills", Source::Terminal));
     assert!(
         last_said(&harness.feed).starts_with(
-            "Built-in skills are on, so the agents get ponytail and arko-taste. prose is left out. /builtin-skills"
+            "Built-in skills are on, so the agents get ponytail and ui-taste. prose is left out. /builtin-skills"
         ),
         "{}",
         last_said(&harness.feed)
     );
     assert!(harness.live_command("/builtin-skills ponytail off", Source::Terminal));
     assert_eq!(last_said(&harness.feed), "ponytail is now off.");
-    assert_eq!(given(&harness.main_config), ["arko-taste"]);
+    assert_eq!(given(&harness.main_config), ["ui-taste"]);
     assert!(harness.live_command("/builtin-skills", Source::Terminal));
     assert!(
         last_said(&harness.feed).starts_with(
-            "Built-in skills are on, so the agents get arko-taste. prose and ponytail are left out."
+            "Built-in skills are on, so the agents get ui-taste. prose and ponytail are left out."
         ),
         "{}",
         last_said(&harness.feed)
@@ -500,7 +500,7 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
         .collect();
     assert_eq!(
         listed,
-        [("prose", false), ("ponytail", false), ("arko-taste", true)]
+        [("prose", false), ("ponytail", false), ("ui-taste", true)]
     );
     assert!(harness.live_command("/builtin-skills prose off", Source::Terminal));
     assert_eq!(last_said(&harness.feed), "prose is off already.");
@@ -511,21 +511,21 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
         last_said(&harness.feed)
     );
     // Off for all leaves each name's own switch as it was.
-    assert!(harness.live_command("/builtin-skills arko-taste off", Source::Terminal));
+    assert!(harness.live_command("/builtin-skills ui-taste off", Source::Terminal));
     assert!(harness.live_command("/builtin-skills off", Source::Terminal));
     assert!(given(&harness.main_config).is_empty());
     assert!(harness.live_command("/builtin-skills prose on", Source::Terminal));
     assert_eq!(last_said(&harness.feed), "prose is on already.");
-    assert!(harness.live_command("/builtin-skills arko-taste on", Source::Terminal));
+    assert!(harness.live_command("/builtin-skills ui-taste on", Source::Terminal));
     assert_eq!(
         last_said(&harness.feed),
-        "arko-taste is now on. Built-in skills are off, so the agents get none until you turn them on."
+        "ui-taste is now on. Built-in skills are off, so the agents get none until you turn them on."
     );
     assert!(harness.settings.builtin_skills.none);
     for (bad, said) in [
         (
             "pros off",
-            "pros isn't a built-in skill. They are prose, ponytail, and arko-taste.",
+            "pros isn't a built-in skill. They are prose, ponytail, and ui-taste.",
         ),
         (
             "maybe",
@@ -572,7 +572,7 @@ async fn a_change_to_the_built_in_skills_after_the_start_reaches_the_next_conver
     harness.new_conversation();
     let new = say(&mut harness, "Third.").await;
     assert!(!new.contains("**ponytail**"), "left out");
-    assert!(new.contains("**arko-taste**"));
+    assert!(new.contains("**ui-taste**"));
     assert_eq!(
         harness.session.load_settings().unwrap().builtin_skills.off,
         ["ponytail"]

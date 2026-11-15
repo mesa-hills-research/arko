@@ -5782,13 +5782,13 @@ pub(crate) mod tests {
             );
         }
         // A typo, and a name an older version had.
-        for unknown in ["pros", "user-facing-prose"] {
+        for unknown in ["pros", "user-facing-prose", "arko-taste"] {
             let error = parse(&["--no-builtin-skill", unknown])
                 .unwrap_err()
                 .to_string();
             assert!(error.contains(unknown), "{error}");
             assert!(
-                error.contains("prose") && error.contains("arko-taste"),
+                error.contains("prose") && error.contains("ui-taste"),
                 "{error}"
             );
         }
