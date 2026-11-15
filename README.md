@@ -1,6 +1,9 @@
-<img src="src/remote/page/icon.svg" alt="" width="96" align="right">
-
-# Arko
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mesa-hills-research/arko/master/assets/readme-header-dark.svg">
+    <img src="https://raw.githubusercontent.com/mesa-hills-research/arko/master/assets/readme-header-light.svg" alt="Arko" width="247">
+  </picture>
+</h1>
 
 Arko is a general-purpose agent for the terminal. It works in your project with a shell, background
 jobs and file tools, and it can start workers that run in parallel while it carries on, each in the
