@@ -7,6 +7,11 @@ jobs and file tools, and it can start workers that run in parallel while it carr
 working directory or in a git worktree of its own. It runs on Claude, OpenAI, Gemini and OpenRouter
 models, and on your Claude plan through an installed Claude Code.
 
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="https://raw.githubusercontent.com/mesa-hills-research/arko/master/docs/images/arko-demo-still.png">
+  <img src="https://raw.githubusercontent.com/mesa-hills-research/arko/master/docs/images/arko-demo.gif" alt="Arko's lead agent runs a project's tests, starts three workers that fix the three failing modules in parallel, and reports all seven tests passing once their results come back." width="830">
+</picture>
+
 - A full-screen view of the session and its workers, a line prompt (`--repl`), or one prompt and
   its reply (`-p`)
 - Saved sessions you can continue or resume, with handovers to a fresh conversation as the
