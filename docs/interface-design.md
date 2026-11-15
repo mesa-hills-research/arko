@@ -139,17 +139,15 @@ of single lines under it.
   is the thought itself, whose words grow in place. While a call runs, its row says so with its
   timer, and there is no Working line beside it. The spinner turns in the marker column.
 - Lines of work stack. A gap stands between what is said and the work, and after anything open,
-  also on a rail, and gaps never add up. In the terminal the gap is one blank line, and it comes
-  only below what is open, so opening or closing a fold leaves every line above it where it was. The
-  item and what follows it grow downward, as a file tree does, and so does what opens by itself (a
-  command's output in the Full view, a thought shown whole as it streams). On the page work stacks
-  4 px apart, what is said stands 12 px apart, anything open has 12 px on both sides, the user's
-  message is 24 px below what's above it, and an open thought's paragraphs are 8 px apart. A rail
-  never starts or ends with a gap. The line the reader opened stays where it is on screen, so on
-  the page the gap above it comes from what is above moving up. What opens by itself on the page
-  stands apart from when it shows, so nothing moves when it opens. A command in the Full view has
-  its gaps while it runs, and a thought shown whole has them while it streams. One that ends with
-  nothing to show, or on its one line, stacks again.
+  also on a rail, and gaps never add up. The gap comes only below what is open, so opening or
+  closing a fold leaves every line above it where it was, in all three interfaces. The item and
+  what follows it grow downward, as a file tree does, and so does what opens by itself (a command's
+  output in the Full view, a thought shown whole as it streams). In the terminal the gap is one
+  blank line. On the page work stacks 4 px apart, what is said stands 12 px apart, anything open
+  has 12 px below it, the user's message is 24 px below what's above it, and an open thought's
+  paragraphs are 8 px apart. A rail never starts or ends with a gap. The line the reader opened
+  stays where it is on screen. A command that ends with nothing to show, or a thought that ends on
+  its one line, stacks again, and the gap below it goes.
 - Working… has as much space below it as above. In the terminal it has no blank row among the
   agent's calls, and one on each side after what was said, after anything open, or above a message
   waiting to be read. Such a message has a blank row above it and one below it, before the status

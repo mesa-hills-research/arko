@@ -5,13 +5,13 @@
 // found again in the next frame by its first word that no other line has.
 //
 // Following, a line may move up as what comes at the end pushes it, and
-// never down. Scrolled up, no line moves. The moves the rules allow are the
+// never down. Scrolled up, no line moves. A fold the reader opens or closes
+// moves no line above it, up or down. The moves the rules allow are the
 // reader's own (a scroll, End, the marker, sending, another view or width),
-// the lines above a fold the reader toggles by less than a line, "Working…"
-// and a note waiting at the end going down into the blank below the end as
-// what comes above them takes it, and a taller view giving back what a
-// shorter one took while following. A panel opened and closed with nothing
-// between puts every line back on its pixel.
+// "Working…" and a note waiting at the end going down into the blank below
+// the end as what comes above them takes it, and a taller view giving back
+// what a shorter one took while following. A panel opened and closed with
+// nothing between puts every line back on its pixel.
 //
 // Then it plays the pixel cases, each in a session of its own at ratios 1,
 // 1.25, 1.5 and 2, with the inputs' times set.
@@ -699,8 +699,8 @@ class Run {
 
   /// Starts counting frames under `step` (none for the reader's own
   /// moves). `below` is the device pixel row of a fold the reader toggled,
-  /// below which lines aren't counted, and `viewport` says the transcript's
-  /// height changes.
+  /// below which lines aren't counted and above which a line counts that
+  /// moves at all, and `viewport` says the transcript's height changes.
   begin(step, { below = null, viewport = false } = {}) {
     this.step = step;
     this.below = below;
@@ -751,7 +751,6 @@ class Run {
     let rows = 0;
     let line = null;
     let room = 0;
-    let toggle = 0;
     let pushed = 0;
     let highest = null;
     let up = 0;
@@ -775,22 +774,21 @@ class Run {
       // (A line whose text changed is the change itself, such as a word
       // that becomes code as its closing mark comes.)
       if (now.text !== text) continue;
+      // (In the frame of a toggle, the clicked line and every line above it
+      // stay where they were, and the moves below don't apply.)
+      const toggled = below !== null;
       // ("Working…" and the notes waiting at the end make room below.)
-      if (after.endZone !== null && now.y >= after.endZone && (to > from || !following)) {
+      if (!toggled && after.endZone !== null && now.y >= after.endZone && (to > from || !following)) {
         room = Math.max(room, Math.abs(to - from));
         continue;
       }
-      let moved = to > from || !following ? Math.abs(to - from) : 0;
+      // (Following, a line may go up as what comes at the end pushes it,
+      // but not in the frame of a toggle.)
+      let moved = to > from || !following || toggled ? Math.abs(to - from) : 0;
       // (Lines below a change on the screen move with it. Following, they
       // go down into the blank below the end and no further.)
-      if (from > changed && moved > 0 && (!following || moved <= blank)) {
+      if (!toggled && from > changed && moved > 0 && (!following || moved <= blank)) {
         pushed = Math.max(pushed, moved);
-        moved = 0;
-      }
-      // (The lines above a fold the reader toggled move by the space an open
-      // item stands apart by, less than a line.)
-      if (below !== null && from < below && moved > 0 && moved <= this.lineHeight) {
-        toggle = Math.max(toggle, moved);
         moved = 0;
       }
       if (highest === null || from < highest.from) highest = { from, to };
@@ -802,7 +800,6 @@ class Run {
     if (step === null || step === undefined) return 0;
     const key = (kind) => `${kind}|${step}|${this.view}`;
     if (room > 0) this.meter.tally(this.meter.allowed, key('the end makes room')).add(room);
-    if (toggle > 0) this.meter.tally(this.meter.allowed, key("the reader's toggle")).add(toggle);
     if (pushed > 0) this.meter.tally(this.meter.allowed, key('below a change on the screen')).add(pushed);
     // While following, a shorter view moves the lines up, and a taller one
     // gives that back first. What is owed starts at none when following
@@ -1682,9 +1679,10 @@ async function pixelCases(cdp, agent) {
       await play(ratio, `a fold clicked ${where} keeps the clicked line's row`, async (run) => {
         await run.feed({ do: 'user', text: `Please ${run.words(6)}` });
         for (let at = 0; at < 12; at++) await run.feed({ do: 'text', text: `${run.some(12, 8)}\n\n` });
+        // (Reads, closed in Full, so the click opens one under closed ones.)
         for (let at = 0; at < 3; at++) {
-          const { call } = await run.feed({ do: 'call', tool: 'shell', parameters: { command: `cargo test ${run.words(2)}` } });
-          await run.feed({ do: 'result', call, tool: 'shell', output: `Exit code: 0\n${run.some(3, 3)} ok\n${run.some(3, 3)} ok` });
+          const { call } = await run.feed({ do: 'call', tool: 'read_file', parameters: { path: `src/${run.words(1)}.rs` } });
+          await run.feed({ do: 'result', call, tool: 'read_file', output: `1\t${run.some(3, 3)}\n2\t${run.some(3, 3)}` });
         }
         await run.feed({ do: 'end' });
         await run.settle(null);
@@ -1708,6 +1706,10 @@ async function pixelCases(cdp, agent) {
           return s ? s.getBoundingClientRect().top * devicePixelRatio : null;
         })()`);
         if (top === null || Math.round(top - fold.top) !== 0) return `the line moved ${top === null ? 'away' : Math.round(top - fold.top)}`;
+        for (const [id, line] of before.ids) {
+          const now = after.ids.get(id);
+          if (now && line.y < fold.top && Math.round(now.raw - line.raw) !== 0) return `"${line.text}" above it moved ${Math.round(now.raw - line.raw)}`;
+        }
         return after.choice === before.choice ? null : `the choice went ${before.choice} → ${after.choice}`;
       });
     }
