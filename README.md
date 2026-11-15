@@ -1,4 +1,4 @@
-<h1>
+<h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mesa-hills-research/arko/master/assets/readme-header-dark.svg">
     <img src="https://raw.githubusercontent.com/mesa-hills-research/arko/master/assets/readme-header-light.svg" alt="Arko" width="247">
