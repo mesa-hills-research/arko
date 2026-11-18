@@ -1533,7 +1533,19 @@ fn blocks_of(diff: &str) -> Vec<(String, String)> {
         Some(rest) if MARKERS.contains(&rest.trim_start_matches('\\').trim_end()) => {
             rest.to_string()
         }
-        _ => line.to_string(),
+        // (Before the backslash, a marker was written after `AD_ESC::`,
+        // anywhere in a line.)
+        _ => [
+            MARKERS[0],
+            MARKERS[1],
+            MARKERS[2],
+            "-------",
+            ":start_line:",
+        ]
+        .iter()
+        .fold(line.to_string(), |line, marker| {
+            line.replace(&format!("AD_ESC::{marker}"), marker)
+        }),
     };
     let (mut blocks, mut part) = (Vec::new(), Part::Outside);
     let (mut search, mut replace): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
@@ -1963,6 +1975,34 @@ mod tests {
             .block_on(run)
             .unwrap();
         output.receipt.expect("apply_diff gives a receipt")
+    }
+
+    /// An apply_diff call saved before receipts shows each block's lines,
+    /// removed and added, without the old form's header. A marker line of
+    /// the file shows as the tool wrote it, whether the call escaped it
+    /// with `AD_ESC::`, as calls before the backslash did, or with a
+    /// backslash.
+    #[test]
+    fn a_saved_apply_diff_call_without_a_receipt_shows_its_blocks() {
+        let parameters = params(&[
+            ("path", "a.txt".into()),
+            (
+                "diff",
+                "<<<<<<< SEARCH\n:start_line:2\n-------\nold\n=======\nAD_ESC::=======\nnew\n>>>>>>> REPLACE\n\
+                 <<<<<<< SEARCH\n\\=======\n=======\n>>>>>>> REPLACE"
+                    .into(),
+            ),
+        ]);
+        let shown = content(
+            APPLY_DIFF_TOOL_NAME,
+            &parameters,
+            "Successfully applied all 2 diff block(s) to 'a.txt'.",
+            None,
+        )
+        .unwrap();
+        let expected = [bare_diff("old", "=======\nnew"), bare_diff("=======", "")].join("\n");
+        assert_eq!(shown.text, expected);
+        assert_eq!(shown.kind, ContentKind::Diff);
     }
 
     /// An edit's diff is the tool's receipt of it, the whole lines it
