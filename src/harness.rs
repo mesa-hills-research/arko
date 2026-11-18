@@ -3602,7 +3602,8 @@ impl Harness {
                 }
                 if let Some((tokens, dollars)) = report.embeddings {
                     out.line(&format!(
-                        "${dollars:.3} for embeddings (Voyage) while Arko ran · {} tokens",
+                        "{} for embeddings (Voyage) while Arko ran · {} tokens",
+                        crate::cache_timer::dollars(dollars),
                         remote::protocol::tokens(tokens)
                     ));
                 }
@@ -5364,11 +5365,7 @@ impl Harness {
         let stats = self.stats.lock().unwrap().clone();
         let mut parts = vec![format!("{:.0} s", started.elapsed().as_secs_f64())];
         if spent > 0.0 {
-            parts.push(format!(
-                "${:.3} (session {})",
-                (spent - spent_before).max(0.0),
-                remote::protocol::dollars(spent)
-            ));
+            parts.push(cost_part((spent - spent_before).max(0.0), spent));
         }
         if let Some(tokens) = stats.context_tokens {
             parts.push(format!(
@@ -5388,6 +5385,17 @@ impl Harness {
         self.output.echo(&self.output.dim(&format!("── {line} ──")));
         self.feed.turn_ended(&parts, stats.plan_usage.as_deref());
     }
+}
+
+/// What the turn's footer says of cost, such as `$0.42 (session $4,007.05)`.
+/// Both amounts read as dollars do everywhere else, and a turn under half a
+/// cent is `< $0.01`.
+fn cost_part(turn: f64, session: f64) -> String {
+    format!(
+        "{} (session {})",
+        crate::cache_timer::dollars(turn),
+        remote::protocol::dollars(session)
+    )
 }
 
 /// The latest reply of the conversation whose latest run is `result`. A turn
@@ -11404,5 +11412,20 @@ pub(crate) mod tests {
         assert!(reading.api_price.unwrap() > reading.cost && reading.cost > 0.0);
         harness.crew.as_ref().unwrap().shutdown().await;
         managers.shutdown().await;
+    }
+
+    /// A turn's footer says its cost and the session's the same way, with
+    /// thousands marked, and a turn under half a cent is less than a cent.
+    #[test]
+    fn the_footer_says_the_turns_cost_as_dollars_are_said_everywhere() {
+        for (turn, session, text) in [
+            (4_007.05, 4_007.05, "$4,007.05 (session $4,007.05)"),
+            (0.42, 1_234.5, "$0.42 (session $1,234.50)"),
+            (0.004, 12.0, "< $0.01 (session $12.00)"),
+            (0.0, 12.0, "$0.00 (session $12.00)"),
+            (1.0, f64::INFINITY, "$1.00 (session —)"),
+        ] {
+            assert_eq!(cost_part(turn, session), text, "{turn} {session}");
+        }
     }
 }

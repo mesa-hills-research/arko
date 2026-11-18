@@ -27,6 +27,8 @@
 - `/cost` puts each line one step in under the line it belongs to, and says a plan's usage as a
   sentence, such as "95% of the Claude plan's week used" instead of `Claude plan 7 d 95%`.
 - An amount of dollars that isn't a real number, or is a trillion dollars or more, shows as `—`.
+- The turn's footer and the embeddings line of `/cost` say dollars as the rest do, with a turn
+  under half a cent as `< $0.01`.
 
 ### Skills
 
