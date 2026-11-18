@@ -9,7 +9,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use arko_agents::{NestedOutcome, NestedRecord, NestedState, StopSignal, StopSource, ToolOutput};
+#[cfg(target_os = "linux")]
+use arko_agents::StopSource;
+use arko_agents::{NestedOutcome, NestedRecord, NestedState, StopSignal, ToolOutput};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -23,6 +25,7 @@ use crate::code_mode::{
 /// Set in the runner's environment, to what the runner does.
 const RUNNER_TEST_ENV: &str = "ARKO_TEST_CODE_RUNNER";
 /// Set in a runner's environment to tell it from the other tests'.
+#[cfg(target_os = "linux")]
 const MARK_ENV: &str = "ARKO_TEST_RUNNER_MARK";
 const MB: u64 = 1024 * 1024;
 
@@ -464,6 +467,7 @@ fn alive(pid: u32) -> bool {
 }
 
 /// The runner, marked with `mark`.
+#[cfg(target_os = "linux")]
 fn marked(mark: &str) -> Runner {
     let mut runner = Runner::this_program().unwrap();
     runner.env.push((MARK_ENV.into(), mark.into()));
