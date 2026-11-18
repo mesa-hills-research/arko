@@ -1388,6 +1388,12 @@ impl EventPrinter {
                 self.output.bold("background"),
                 command_line(text("command"))
             ),
+            "terminal_control" if text("action") == "wait" => {
+                format!(
+                    "{bullet} {}",
+                    self.output.bold(&waiting_for_job(parameters))
+                )
+            }
             "terminal_control" => format!("{bullet} terminal {}", text("action")),
             "monitor_start" => format!(
                 "{bullet} {} {}",
@@ -1523,6 +1529,22 @@ pub fn waiting_for(parameters: &HashMap<String, serde_json::Value>, own: &[Strin
     }
 }
 
+/// A job as the transcript names it, by the start of its ID ("job 4d2c1a9b").
+pub fn job_name(id: &str) -> String {
+    let id = id.trim();
+    format!("job {}", id.get(..8).unwrap_or(id))
+}
+
+/// What a `terminal_control wait` call waits for, in words ("waiting for
+/// job 4d2c1a9b"), as a `wait_for_agents` call says its runs.
+fn waiting_for_job(parameters: &HashMap<String, serde_json::Value>) -> String {
+    let id = parameters
+        .get("job_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    format!("waiting for {}", job_name(id))
+}
+
 /// A worker's call, briefly.
 pub fn brief(tool: &str, parameters: &HashMap<String, serde_json::Value>) -> String {
     brief_waiting_for(tool, parameters, &[], MAIN)
@@ -1563,6 +1585,7 @@ pub fn brief_waiting_for(
         HANDOVER_REPORT_TOOL_NAME => "handover report".to_string(),
         crew::WAIT_FOR_AGENTS => waiting_for(parameters, own),
         "terminal_start" => format!("background {}", command_line(text("command"))),
+        "terminal_control" if text("action") == "wait" => waiting_for_job(parameters),
         tool if TerminalTool::NAMES.contains(&tool) => tool.replace('_', " "),
         "monitor_start" => format!("monitor {}", command_line(text("command"))),
         "monitor_control" => format!("monitor {}", text("action")),
@@ -1956,6 +1979,23 @@ mod tests {
             )
             .unwrap(),
             "● waiting for r2, r3"
+        );
+        // A wait on a job reads as one too, and the job's other calls don't.
+        let job: [(&str, serde_json::Value); 2] = [
+            ("action", "wait".into()),
+            ("job_id", "4d2c1a9b-0000".into()),
+        ];
+        assert_eq!(
+            line("terminal_control", &job).unwrap(),
+            "● waiting for job 4d2c1a9b"
+        );
+        assert_eq!(
+            brief("terminal_control", &params(&job)),
+            "waiting for job 4d2c1a9b"
+        );
+        assert_eq!(
+            line("terminal_control", &[("action", "list".into())]).unwrap(),
+            "● terminal list"
         );
         let mut running = EventPrinter::new(
             Arc::new(Output::new(None, true)),

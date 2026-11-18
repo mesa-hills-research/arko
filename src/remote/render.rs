@@ -138,10 +138,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
             path
         }
     };
-    let job = || {
-        let id = text("job_id");
-        format!("job {}", id.get(..8).unwrap_or(&id))
-    };
+    let job = || ui::job_name(&text("job_id"));
     match tool {
         READ_FILE_TOOL_NAME | "Read" => {
             let name = if tool == "Read" { "file_path" } else { "path" };
@@ -187,7 +184,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         crew::WAIT_FOR_AGENTS => on(ActKind::Wait, ui::waited_runs(parameters, &[]).join(", ")),
         "terminal_status" => on(ActKind::Check, job()),
         "terminal_control" => match text("action").as_str() {
-            "wait" => on(ActKind::Check, job()),
+            "wait" => on(ActKind::Wait, job()),
             "list" => other(
                 "Listing jobs".into(),
                 "Listed jobs".into(),
@@ -2081,6 +2078,36 @@ mod tests {
                 .as_deref(),
             Some("1 update")
         );
+    }
+
+    /// A wait on a job reads as a wait, not as a look at the job.
+    #[test]
+    fn a_wait_on_a_job_reads_as_a_wait() {
+        let parameters = params(&[
+            ("action", "wait".into()),
+            ("job_id", "4d2c1a9b-0000".into()),
+            ("wait_ms", "60000".into()),
+        ]);
+        let item = super::call("terminal_control", &parameters, "main").unwrap();
+        assert_eq!(item.text, "waiting for job 4d2c1a9b");
+        let act = item.act.unwrap();
+        assert_eq!(
+            (act.kind, act.target.as_str()),
+            (ActKind::Wait, "job 4d2c1a9b")
+        );
+        assert_eq!(quiet::doing(&act), "Waiting for job 4d2c1a9b");
+        // Its other actions and a look at the job stay as they were.
+        let status = super::act("terminal_status", &parameters, "main");
+        assert_eq!(
+            (status.kind, status.target.as_str()),
+            (ActKind::Check, "job 4d2c1a9b")
+        );
+        let list = super::call(
+            "terminal_control",
+            &params(&[("action", "list".into())]),
+            "main",
+        );
+        assert_eq!(list.unwrap().text, "terminal control");
     }
 
     #[test]

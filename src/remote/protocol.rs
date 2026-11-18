@@ -318,8 +318,10 @@ pub enum ActKind {
     Search,
     Skill,
     Message,
+    /// A wait for agent runs (`wait_for_agents`) or for a job
+    /// (`terminal_control wait`).
     Wait,
-    /// A look at a job (`terminal_status`, a wait on it).
+    /// A look at a job (`terminal_status`).
     Check,
     Note,
     /// A call of an MCP server's tool.
