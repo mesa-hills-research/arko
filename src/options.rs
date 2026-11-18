@@ -86,6 +86,12 @@ pub struct Options {
     pub cc_compact: Option<bool>,
     /// Who gets the extra rules, by default the agents on small models.
     pub extra_rules: Option<ExtraRules>,
+    /// Which tools the agents are offered, by default as `ARKO_TOOLS` says,
+    /// else [`Tools::NEW_SESSION`](crate::code_mode::Tools::NEW_SESSION). A
+    /// resumed session takes it for the conversations and workers that
+    /// start after. With `both`, a program built on this library calls
+    /// [`run_if_asked`](crate::code_mode::run_if_asked) first in `main`.
+    pub tools: Option<crate::code_mode::Tools>,
     /// Whether the agents get Arko's built-in skills, by default as
     /// `ARKO_BUILTIN_SKILLS` says (on unless it is 0). With `Some(false)`
     /// they get none. A resumed session takes it for its new conversations.
@@ -227,6 +233,7 @@ impl Default for Options {
             text_replies: None,
             cc_compact: None,
             extra_rules: None,
+            tools: None,
             builtin_skills: None,
             builtin_skills_off: None,
             project_instructions: None,

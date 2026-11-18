@@ -595,6 +595,9 @@ pub(crate) struct Harness {
     pub(crate) main_config: arko_agents::AgentConfig,
     pub(crate) worker_config: arko_agents::AgentConfig,
     pub(crate) tools: Vec<Arc<dyn Tool>>,
+    /// `run_code`, offered to the conversations whose configuration lists
+    /// it (see `Settings::tools`) and kept for those saved with it.
+    pub(crate) run_code: Arc<dyn Tool>,
     /// Tools Arko has that this session doesn't give (a chat's, the
     /// monitors with -p). A saved run offered one gets a stand-in with its
     /// definition.
@@ -824,8 +827,10 @@ impl Harness {
             Arc::new(mcp::Access::new(self.crew.as_ref()));
         builder = builder.resume_only_agent_tool(MAIN, self.mcp.lead_tool(access.clone()));
         let direct = self.mcp.servers.hub.direct_tools(access.clone());
+        builder = builder.resume_only_agent_tool(MAIN, self.run_code.clone());
         let mut registered: std::collections::HashSet<String> =
             self.tools.iter().map(|tool| tool.name()).collect();
+        registered.insert(self.run_code.name());
         // The definitions of those a saved run offers are kept with the
         // session, for a later session in which their server doesn't run.
         if let Some(saved) = &saved {
@@ -912,6 +917,7 @@ impl Harness {
             for tool in &self.tools {
                 builder = builder.agent_tool(WORKER, tool.clone());
             }
+            builder = builder.resume_only_agent_tool(WORKER, self.run_code.clone());
             // A worker answers the user who writes to it (a worker saved
             // before workers had it isn't offered it).
             builder = builder.agent_tool(WORKER, Arc::new(message::MessageUser { worker: true }));
@@ -5573,6 +5579,13 @@ pub(crate) mod tests {
         include!("live_tests.rs");
     }
 
+    /// Sessions that run code, in their own file.
+    #[cfg(feature = "code-mode")]
+    mod code_mode_sessions {
+        use super::*;
+        include!("code_mode_session_tests.rs");
+    }
+
     /// The end-to-end tests of commands moving to the background, in their
     /// own file. Most run only on Unix.
     #[cfg_attr(not(unix), allow(dead_code))]
@@ -6808,6 +6821,9 @@ pub(crate) mod tests {
             main_config,
             worker_config,
             tools: Vec::new(),
+            run_code: Arc::new(crate::code_mode::RunCodeTool::new(
+                &crate::code_mode::CALLABLE,
+            )),
             withheld: Vec::new(),
             root,
             mcp: Default::default(),

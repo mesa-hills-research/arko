@@ -611,6 +611,11 @@ impl Engine {
                 let copies = options.message_copies.is_some_and(|copies| {
                     std::mem::replace(&mut settings.message_copies, copies) != copies
                 });
+                // So can the tools, for the conversations and workers that
+                // start after it.
+                let tools = options
+                    .tools
+                    .is_some_and(|tools| std::mem::replace(&mut settings.tools, tools) != tools);
                 // So can how workers are paid for.
                 let billing = options.worker_billing.is_some_and(|billing| {
                     std::mem::replace(&mut settings.worker_billing, billing) != billing
@@ -630,6 +635,7 @@ impl Engine {
                     | cap
                     | skills
                     | copies
+                    | tools
                     | billing
                     | budget
                 {
@@ -916,6 +922,13 @@ impl Engine {
         if let Some(indexes) = &indexes {
             tools.extend(indexes.tools());
         }
+        // `run_code` calls the tools of the seven the session has.
+        let callable: Vec<&'static str> = crate::code_mode::CALLABLE
+            .into_iter()
+            .filter(|name| indexes.is_some() || !index::TOOL_NAMES.contains(name))
+            .collect();
+        let run_code: Arc<dyn arko_agents::Tool> =
+            Arc::new(crate::code_mode::RunCodeTool::new(&callable));
         let (input_sender, input) = mpsc::unbounded_channel();
         let (requests_sender, requests) = mpsc::unbounded_channel();
         // Someone answers the agent's questions, and what they type while it
@@ -1064,6 +1077,7 @@ impl Engine {
             main_config,
             worker_config,
             tools,
+            run_code,
             withheld,
             root: root.clone(),
             mcp,

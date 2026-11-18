@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use crate::agents::{DEFAULT_WORKER_DEPTH, ExtraRules, ModelSettings, NO_LIMIT, resolve_model};
 use crate::billing::WorkerBilling;
 use crate::builtin_skills::BuiltinSkills;
+use crate::code_mode::Tools;
 use crate::credentials::Need;
 use crate::options::Options;
 use crate::prompter::Prompter;
@@ -57,6 +58,19 @@ pub(crate) fn background_after_for(options: &Options, saved: u64) -> u64 {
 /// small models.
 pub(crate) fn extra_rules_for(options: &Options) -> ExtraRules {
     options.extra_rules.unwrap_or(ExtraRules::Small)
+}
+
+/// The tools a new session's agents are offered, as the options say, else
+/// as ARKO_TOOLS does (classic or both), else [`Tools::NEW_SESSION`].
+pub(crate) fn tools_for(options: &Options) -> Result<Tools, String> {
+    if let Some(tools) = options.tools {
+        return Ok(tools);
+    }
+    match credentials::var(credentials::TOOLS) {
+        None => Ok(Tools::NEW_SESSION),
+        Some(value) => Tools::parse(&value)
+            .ok_or_else(|| format!("ARKO_TOOLS is `{value}`. Set it to classic or both")),
+    }
 }
 
 /// The built-in skills a new session gives its agents, as the options say,
@@ -307,6 +321,7 @@ pub(crate) fn new_settings(
         api_budget: api_budget_for(options)?,
         nested_start: true,
         builtin_skills,
+        tools: tools_for(options)?,
     };
     project_from_options(options, &mut settings);
     if settings.mode == crate::session::Mode::Chat {

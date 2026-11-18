@@ -194,6 +194,11 @@ pub struct Settings {
     /// turned off. All in sessions saved before they existed.
     #[serde(default, skip_serializing_if = "BuiltinSkills::is_all")]
     pub builtin_skills: BuiltinSkills,
+    /// Which tools the agents are offered (`--tools`), for the
+    /// conversations and workers that start after it changes. Classic in
+    /// sessions saved before code mode.
+    #[serde(default, skip_serializing_if = "crate::code_mode::Tools::is_classic")]
+    pub tools: crate::code_mode::Tools,
 }
 
 fn default_background_after() -> u64 {
@@ -262,6 +267,7 @@ impl Settings {
                 none: true,
                 off: Vec::new(),
             },
+            tools: Default::default(),
         }
     }
 

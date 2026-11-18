@@ -339,6 +339,8 @@ pub struct AgentSettings<'a> {
     pub builtin_skills: &'a BuiltinSkills,
     /// The search index tools, offered to both agents.
     pub index_tools: &'a [&'a str],
+    /// Which tools both agents are offered, with `run_code` or not.
+    pub tools: crate::code_mode::Tools,
     /// The indexes when the session started, named in the instructions
     /// when there are index tools.
     pub indexes: &'a [index::Known],
@@ -401,6 +403,7 @@ impl<'a> AgentSettings<'a> {
             skill_folders: &[],
             builtin_skills: &settings.builtin_skills,
             index_tools: &[],
+            tools: settings.tools,
             indexes: &[],
             text_replies: settings.text_replies,
             cc_compact: !settings.cc_handover,
@@ -431,6 +434,7 @@ impl<'a> AgentSettings<'a> {
             skill_folders: &[],
             builtin_skills: &NO_BUILTIN_SKILLS,
             index_tools: &[],
+            tools: crate::code_mode::Tools::Classic,
             indexes: &[],
             text_replies: false,
             cc_compact: true,
@@ -580,6 +584,9 @@ fn shared_tool_names(settings: &AgentSettings) -> Vec<String> {
     let mut tools = terminal_tool_names(settings.monitors);
     tools.extend(FILE_TOOL_NAMES.iter().map(|name| name.to_string()));
     tools.extend(settings.index_tools.iter().map(|name| name.to_string()));
+    if settings.tools.offers_code() {
+        tools.push(crate::code_mode::RUN_CODE.into());
+    }
     tools
 }
 
