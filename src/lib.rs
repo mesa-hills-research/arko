@@ -84,6 +84,7 @@ mod openings;
 pub mod openrouter;
 mod options;
 mod outside;
+mod peers;
 pub mod profiles;
 mod project;
 mod prompter;

@@ -1615,8 +1615,34 @@ impl Crew {
         if let Some(feed) = &self.setup.feed {
             self.tell_feed(feed, &event.handle, event.run_id, &event.kind);
         }
+        self.tell_peers(&event);
         let _ = self.wake.send(());
         true
+    }
+
+    /// Tells the peers of the worker `event` is about when it ended (see
+    /// [`crate::peers`]). While the workflow stops, its workers stop with it
+    /// and are told nothing, and those that run again after a resume are told
+    /// then ([`crate::peers::tell_of_ended`]).
+    fn tell_peers(&self, event: &arko_workflows::subagents::SubagentEvent) {
+        if !matches!(
+            event.kind,
+            SubagentEventKind::Finished { .. }
+                | SubagentEventKind::Failed { .. }
+                | SubagentEventKind::Stopped { .. }
+        ) {
+            return;
+        }
+        let Some(workflow) = self.workflow() else {
+            return;
+        };
+        if workflow.is_stopping() || workflow.is_cancelled() {
+            return;
+        }
+        let runs = workflow.subagents();
+        if let Some(ended) = runs.iter().find(|run| run.run_id == event.run_id) {
+            crate::blocking(|| crate::peers::tell(&workflow, &runs, ended, &event.kind, false));
+        }
     }
 
     /// The worker `handle` (run `run`) as a notice names it, such as `r2`, or `r2

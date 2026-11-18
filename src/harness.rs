@@ -1150,6 +1150,7 @@ impl Harness {
             crew.attach(&workflow, lead);
             if resume {
                 workflow.resume_subagents();
+                crate::blocking(|| crate::peers::tell_of_ended(&workflow));
             }
         }
         self.workflow = Some(workflow);
@@ -5631,6 +5632,13 @@ pub(crate) mod tests {
     mod openrouter {
         use super::*;
         include!("openrouter_tests.rs");
+    }
+
+    /// What linked workers hear of each other's ends, end to end, in their
+    /// own file.
+    mod peer_notices {
+        use super::*;
+        include!("peer_tests.rs");
     }
 
     /// `/resume`'s end-to-end tests, in their own file.
