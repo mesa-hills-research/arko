@@ -160,7 +160,7 @@ mod words_of_a_run {
         };
         assert_eq!(
             result(&run, 300).unwrap_err(),
-            "The code threw on line 3: Error: boom Before it ended, the code edited 2 files and ran 1 command.\nIts log so far:\nbefore"
+            "The code threw on line 3: Error: boom\nBefore it ended, the code edited 2 files and ran 1 command.\nIts log so far:\nbefore"
         );
         let run = done(
             Ended::Threw {
@@ -175,6 +175,20 @@ mod words_of_a_run {
         assert_eq!(
             result(&run, 300).unwrap_err(),
             "The code has a syntax error on line 1 (SyntaxError: unexpected token). It runs as JavaScript."
+        );
+        let run = done(
+            Ended::Threw {
+                message: "null".into(),
+                line: None,
+                compiling: false,
+                refused: false,
+                tool: None,
+            },
+            &[],
+        );
+        assert_eq!(
+            result(&run, 300).unwrap_err(),
+            "The code threw: null\nThe engine also throws null when the heap passes the 64 MB a run may hold."
         );
         let mut run = done(Ended::ComputeLimit, &[]);
         run.outcome = Outcome::TimedOut;

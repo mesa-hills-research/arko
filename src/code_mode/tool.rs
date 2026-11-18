@@ -246,7 +246,7 @@ pub(super) mod words {
             ended => {
                 let mut text = ended_words(ended);
                 if let Some(changed) = changed(&run.changes) {
-                    text.push(' ');
+                    text.push('\n');
                     text.push_str(&changed);
                 }
                 let lines = log_lines(done);
@@ -295,7 +295,16 @@ pub(super) mod words {
                     (Some(tool), false) => format!(", at a call of {tool} that failed"),
                     (None, _) => String::new(),
                 };
-                format!("The code threw{}{call}: {message}", on_line(*line))
+                let mut text = format!("The code threw{}{call}: {message}", on_line(*line));
+                // QuickJS-ng throws null when it has no memory left for an
+                // Error, which a thrown value can't tell from code's own.
+                if message == "null" {
+                    text.push_str(&format!(
+                        "\nThe engine also throws null when the heap passes the {} MB a run may hold.",
+                        HEAP_BYTES / (1024 * 1024)
+                    ));
+                }
+                text
             }
             Ended::OutOfMemory { line } => format!(
                 "The code ran out of memory{}. A run may hold {} MB.",
@@ -349,7 +358,7 @@ pub(super) mod words {
             Outcome::Broken(message) => message.clone(),
         };
         if let Some(changed) = changed(changes) {
-            text.push(' ');
+            text.push('\n');
             text.push_str(&changed);
         }
         text
