@@ -91,68 +91,47 @@ fn ending(record: &SubagentRecord) -> Option<SubagentEventKind> {
     }
 }
 
-/// How far run `run` had got when it ended, as its recorded result says,
-/// meaning its model calls and the messages of its conversation. A run that
-/// goes on gains a message (the one it goes on with) even when it fails again
-/// before a model call, and one that hands over made a model call for its
-/// report.
-fn generation(workflow: &Workflow, run: Uuid) -> (usize, usize) {
-    workflow.agent_result(run).map_or((0, 0), |result| {
-        let messages = result
-            .task()
-            .map_or(0, |task| task.conversation.messages.len());
-        (result.info().model_calls, messages)
-    })
-}
-
-/// The note's key for `peer` about one end of `ended`, made of the run, how
-/// it ended and how far it had got ([`generation`]). Its event and the check
-/// after a resume ([`tell_of_ended`]) make the same key, so the note is
-/// posted once.
-fn key(ended: Uuid, kind: &SubagentEventKind, generation: (usize, usize), peer: Uuid) -> Uuid {
-    let how = match kind {
-        SubagentEventKind::Finished { .. } => "finished",
-        SubagentEventKind::Failed { .. } => "failed",
-        _ => "stopped",
-    };
-    let (calls, messages) = generation;
+/// The note's key for `peer` about the end `ended` records, made of the
+/// run, how it ended and when (its record's `since`, which a checkpoint keeps
+/// as it is). Its event and the check after a resume ([`tell_of_ended`]) make
+/// the same key, so the note is posted once, and a later end, even one just
+/// like it, makes another.
+// shortcut: a record the checkpoint saved running whose result says it ended
+// is settled again as the workflow is built, with a fresh `since`. When that
+// result is an end its peers were told of (Arko died just after the run was
+// continued), they're told again. Telling ends apart by their words would
+// lose a new end that reads like an old one. An end generation that
+// arko_workflows keeps would make the key exact.
+fn key(ended: &SubagentRecord, peer: Uuid) -> Uuid {
+    let since = ended
+        .since
+        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
     let digest = sha2::Sha256::digest(format!(
-        "peer notice {ended} {how} {calls} {messages} {peer}"
+        "peer notice {} {:?} {since} {peer}",
+        ended.run_id, ended.state
     ));
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest[..16]);
     Uuid::from_bytes(bytes)
 }
 
-/// Tells the peers of `ended` among `runs` that it ended as `kind`, those
-/// running or waiting to run only with `active_only`. It posts notes, which
-/// writes the workflow's event log, so a caller on the runtime calls it
-/// through [`crate::blocking`].
-pub(crate) fn tell(
-    workflow: &Workflow,
-    runs: &[SubagentRecord],
-    ended: &SubagentRecord,
-    kind: &SubagentEventKind,
-    active_only: bool,
-) {
-    let Some(text) = notice(&ended.handle, kind) else {
+/// Tells the peers of `ended` among `runs` how it ended, as its record says,
+/// and nothing while it hasn't. An end's event that is handled late finds
+/// the record as it is by then, so it tells of the latest end, if any, and
+/// that end's own event makes the same key. A peer that isn't running reads
+/// the note when it runs again. It posts notes, which writes the workflow's
+/// event log, so a caller on the runtime calls it through
+/// [`crate::blocking`].
+pub(crate) fn tell(workflow: &Workflow, runs: &[SubagentRecord], ended: &SubagentRecord) {
+    let Some(text) = ending(ended).and_then(|kind| notice(&ended.handle, &kind)) else {
         return;
     };
-    let peers: Vec<_> = peers_of(runs, ended)
-        .into_iter()
-        .filter(|peer| !active_only || peer.state.is_active())
-        .collect();
-    if peers.is_empty() {
-        return;
-    }
-    let generation = generation(workflow, ended.run_id);
-    for peer in peers {
+    for peer in peers_of(runs, ended) {
         let note = Note::new(text.clone())
             .source(NoteSource::Host)
             .to([peer.agent.clone()])
             .for_run(peer.run_id);
-        let key = key(ended.run_id, kind, generation, peer.run_id);
-        if let Err(error) = workflow.post_note_once(key, note) {
+        if let Err(error) = workflow.post_note_once(key(ended, peer.run_id), note) {
             log::warn!(
                 "could not tell {} that {} ended: {error}",
                 peer.handle,
@@ -162,18 +141,15 @@ pub(crate) fn tell(
     }
 }
 
-/// Tells the peers running again after a resume of the workers that ended
-/// without their peers being told, such as one that the checkpoint saved
-/// running and whose result says it ended, or one whose note was lost when
-/// Arko stopped. A peer told before isn't told again. Called after the
-/// workers are relaunched, so a worker relaunched with them isn't counted as
-/// ended.
+/// After a resume, tells the peers of each worker that ended what they
+/// weren't told, such as of one that the checkpoint saved running and whose
+/// result says it ended, or of one whose note was lost when Arko stopped. A
+/// peer told before isn't told again. Called after the workers are
+/// relaunched, so a worker relaunched with them isn't counted as ended.
 pub(crate) fn tell_of_ended(workflow: &Workflow) {
     let runs = workflow.subagents();
     for ended in &runs {
-        if let Some(kind) = ending(ended) {
-            tell(workflow, &runs, ended, &kind, true);
-        }
+        tell(workflow, &runs, ended);
     }
 }
 
@@ -307,47 +283,33 @@ mod tests {
         );
     }
 
-    /// One end of a run gives each peer one key, whichever way it's told,
-    /// and another end or another peer another.
+    /// One end of a run gives each peer one key, also after a checkpoint
+    /// kept its record, and another end or another peer another.
     #[test]
     fn one_end_gives_each_peer_one_key() {
-        let (ended, peer, other) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-        let finished = SubagentEventKind::Finished {
-            summary: "Done.".into(),
-        };
-        let restored = ending(&SubagentRecord {
-            run_id: ended,
-            state: SubagentState::Finished,
-            report: Some("Done, as restored.".into()),
-            ..record("r1", Uuid::new_v4())
-        })
-        .unwrap();
-        let at = (7, 20);
-        assert_eq!(
-            key(ended, &finished, at, peer),
-            key(ended, &restored, at, peer)
-        );
-        assert_ne!(
-            key(ended, &finished, at, peer),
-            key(ended, &finished, (9, 24), peer)
-        );
-        assert_ne!(
-            key(ended, &finished, at, peer),
-            key(ended, &finished, at, other)
-        );
-        let failed = SubagentEventKind::Failed {
-            error: "Usage limit reached.".into(),
-        };
-        assert_ne!(
-            key(ended, &finished, at, peer),
-            key(ended, &failed, at, peer)
-        );
-        // Continued into the same limit, it fails again before a model call,
-        // with one message more.
-        assert_ne!(
-            key(ended, &failed, at, peer),
-            key(ended, &failed, (7, 21), peer)
-        );
+        let (peer, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut ended = record("r1", Uuid::new_v4());
+        ended.state = SubagentState::Failed;
+        ended.error = Some("Usage limit reached.".into());
+        let saved: SubagentRecord =
+            serde_json::from_str(&serde_json::to_string(&ended).unwrap()).unwrap();
+        assert_eq!(key(&ended, peer), key(&saved, peer));
+        assert_ne!(key(&ended, peer), key(&ended, other));
+        // Continued into the same limit, it fails again just the same.
+        let mut again = ended.clone();
+        again.since += chrono::Duration::milliseconds(1);
+        assert_ne!(key(&ended, peer), key(&again, peer));
+        let mut finished = ended.clone();
+        finished.state = SubagentState::Finished;
+        assert_ne!(key(&ended, peer), key(&finished, peer));
+        // A record tells how it ended while it has.
         assert_eq!(ending(&record("r1", Uuid::new_v4())), None, "it runs");
+        finished.report = Some("Done.".into());
+        assert_eq!(
+            ending(&finished),
+            Some(SubagentEventKind::Finished {
+                summary: "Done.".into()
+            })
+        );
     }
 }

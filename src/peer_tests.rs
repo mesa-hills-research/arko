@@ -164,7 +164,23 @@ async fn a_waiting_peer_hears_its_peer_finished_and_a_finished_one_stays_finishe
             arko_workflows::subagents::SubagentState::Finished
         ]
     );
-    harness.crew.as_ref().unwrap().shutdown().await;
+    // An end's event handled late finds r1's record as it is by then, so it
+    // can't tell r2 of an end r1 no longer has.
+    let crew = harness.crew.clone().unwrap();
+    assert!(crew.worker_event(Ok(arko_workflows::subagents::SubagentEvent {
+        timestamp: r1.created,
+        workflow_run_id: uuid::Uuid::nil(),
+        run_id: r1.run_id,
+        handle: "r1".into(),
+        agent_name: WORKER.into(),
+        caller_run_id: r1.caller_run_id,
+        caller_agent: MAIN.into(),
+        kind: arko_workflows::subagents::SubagentEventKind::Failed {
+            error: "An old error.".into(),
+        },
+    })));
+    assert_eq!(notes_for(&harness, r2.run_id).len(), 1);
+    crew.shutdown().await;
 }
 
 /// The checkpoint saved r1 running, though its result says it finished, and
@@ -238,6 +254,114 @@ async fn a_relaunched_peer_hears_of_a_worker_that_ended_unseen_once() {
     until(|| requests(&seen, "r2").len() == 4).await;
     assert_eq!(notes_for(&harness, r2).len(), 1);
     assert_eq!(requests(&seen, "r2")[3].matches(told).count(), 1);
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// Both workers had finished when Arko died, before the checkpoint saved
+/// r1's end or the notes. When the session resumes, each is told of the
+/// other's end, to read when something continues it, and neither runs for it.
+#[tokio::test]
+async fn an_ended_peer_is_told_of_an_end_it_missed_without_running() {
+    let seen: Seen = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let seen = seen.clone();
+        move |index, body: String| {
+            let who = sender(&body);
+            seen.lock().unwrap().push((who.clone(), body.clone()));
+            Box::pin(async move {
+                match who.as_str() {
+                    "main" if results(&body) == 0 => start_pair(index),
+                    "main" => complete(&format!("m{index}"), "Started."),
+                    "r1" => complete(&format!("a{index}"), "Reviewed."),
+                    "r2" => complete(&format!("b{index}"), "Made it."),
+                    other => panic!("an unexpected agent {other}"),
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    harness.start_new_workers();
+    turn(&mut harness, &mut inputs, "Change it, with a review.").await;
+    let _ =
+        tokio::time::timeout(Duration::from_secs(30), harness.finish_workers(&mut inputs)).await;
+    let runs = harness.workflow().subagents();
+    let (r1, r2) = (runs[0].run_id, runs[1].run_id);
+    until(|| harness.workflow().notes().len() == 2).await;
+    harness.crew.as_ref().unwrap().shutdown().await;
+
+    let run_dir = harness.session.run_dir();
+    let latest = harness.session.latest_checkpoint().unwrap();
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&latest).unwrap()).unwrap();
+    saved["subagents"]["runs"][0]["state"] = "running".into();
+    saved["notes"] = serde_json::Value::Null;
+    std::fs::write(run_dir.join("edited-checkpoint.json"), saved.to_string()).unwrap();
+    std::fs::write(run_dir.join("latest-checkpoint"), "edited-checkpoint.json").unwrap();
+
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    assert_eq!(
+        notes_for(&harness, r2),
+        ["r1 finished, and its report went to your lead. It begins:\n\nReviewed."]
+    );
+    assert_eq!(
+        notes_for(&harness, r1),
+        ["r2 finished, and its report went to your lead. It begins:\n\nMade it."]
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(requests(&seen, "r1").len(), 1);
+    assert_eq!(requests(&seen, "r2").len(), 1);
+    assert!(harness.crew.as_ref().unwrap().running().is_empty());
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// The checkpoint saved r1 running while its result was the end r2 was told
+/// of, as when Arko dies just after r1 is continued, before its run starts.
+/// The resume settles r1 again, as ended now, so r2 is told of that end a
+/// second time. That duplicate is accepted (see `peers::key`).
+#[tokio::test]
+async fn an_end_the_resume_settles_again_is_told_again() {
+    let seen: Seen = Arc::default();
+    let server = ModelServer::start(Arc::new({
+        let seen = seen.clone();
+        move |index, body: String| {
+            let who = sender(&body);
+            seen.lock().unwrap().push((who.clone(), body.clone()));
+            Box::pin(async move {
+                match who.as_str() {
+                    "main" if results(&body) == 0 => start_pair(index),
+                    "main" => complete(&format!("m{index}"), "Started."),
+                    "r1" => complete(&format!("a{index}"), "Reviewed."),
+                    "r2" => std::future::pending::<String>().await,
+                    other => panic!("an unexpected agent {other}"),
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    harness.start_new_workers();
+    turn(&mut harness, &mut inputs, "Change it, with a review.").await;
+    let crew = harness.crew.clone().unwrap();
+    let r2 = harness.workflow().subagents()[1].run_id;
+    until(|| crew.running() == ["r2"] && notes_for(&harness, r2).len() == 1).await;
+    crew.shutdown().await;
+
+    let run_dir = harness.session.run_dir();
+    let latest = harness.session.latest_checkpoint().unwrap();
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&latest).unwrap()).unwrap();
+    saved["subagents"]["runs"][0]["state"] = "running".into();
+    std::fs::write(run_dir.join("edited-checkpoint.json"), saved.to_string()).unwrap();
+    std::fs::write(run_dir.join("latest-checkpoint"), "edited-checkpoint.json").unwrap();
+
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    let told = "r1 finished, and its report went to your lead. It begins:\n\nReviewed.";
+    assert_eq!(notes_for(&harness, r2), [told, told]);
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
