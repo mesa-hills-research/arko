@@ -27,7 +27,9 @@ fn the_description_is_its_golden() {
         std::fs::create_dir_all(golden.parent().unwrap()).unwrap();
         std::fs::write(&golden, &shown).unwrap();
     }
-    assert_eq!(shown, std::fs::read_to_string(&golden).unwrap());
+    // (A checkout on Windows may end its lines with \r\n.)
+    let expected = std::fs::read_to_string(&golden).unwrap().replace("\r\n", "\n");
+    assert_eq!(shown, expected);
     assert!(!definition.read_only && !definition.parallel_safe);
 }
 
