@@ -7028,6 +7028,7 @@ pub(crate) mod tests {
     /// The lines of the turns Arko started, as a session that reopens shows
     /// them, read back from the conversation. Only the notices marked as
     /// opening a turn are in it.
+    #[cfg(unix)]
     fn reopened_openings(harness: &Harness) -> Vec<String> {
         reopened_openings_beside(harness)
             .into_iter()
@@ -7055,6 +7056,7 @@ pub(crate) mod tests {
 
     /// The lines of the turns Arko started in the page's history, those
     /// its items mark as opening a turn.
+    #[cfg(unix)]
     fn live_openings(feed: &remote::Feed) -> Vec<String> {
         live_openings_beside(feed)
             .into_iter()

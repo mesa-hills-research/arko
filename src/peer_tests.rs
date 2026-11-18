@@ -369,6 +369,7 @@ async fn an_end_the_resume_settles_again_is_told_again() {
 /// it starts the monitor, then waits for mail (when `waits`) or stays on
 /// its request. Its first request after the session resumes waits a second
 /// for mail, and it stays on the others.
+#[cfg(unix)]
 async fn monitoring_worker(seen: Seen, waits: bool) -> ModelServer {
     ModelServer::start(Arc::new(move |index, body: String| {
         let who = sender(&body);
@@ -408,6 +409,7 @@ async fn monitoring_worker(seen: Seen, waits: bool) -> ModelServer {
 
 /// A session whose worker r1 started a monitor of `sleep 60` and waits,
 /// with the shell and terminal tools, and the monitor's job.
+#[cfg(unix)]
 async fn monitoring_session(
     temp: &Path,
     server: &ModelServer,
@@ -431,6 +433,7 @@ async fn monitoring_session(
 /// The session opens again (`arko -c`) with its jobs as the closed Arko
 /// left them. r1 runs again and reads the note of its stopped jobs, which
 /// names the monitor, once, also when the workflow opens again.
+#[cfg(unix)]
 async fn resume_and_check(harness: &mut Harness, seen: &Seen, monitor: uuid::Uuid) {
     let shell = Shell::detect(WindowsShell::Cmd);
     let managers = Managers::open(&harness.session, &shell).unwrap();
