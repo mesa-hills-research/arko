@@ -102,8 +102,8 @@ pub fn requested_text(run: Uuid, input_tokens: usize) -> String {
         ""
     };
     format!(
-        "the agent is writing a handover report ({asked}at {}k tokens)",
-        input_tokens / 1000
+        "the agent is writing a handover report ({asked}at {} tokens)",
+        about(input_tokens)
     )
 }
 
@@ -489,15 +489,15 @@ impl Handover {
         }
         let text = if self.compacts() {
             format!(
-                "The main agent's compacted conversation started at {}k tokens, over the handover size ({}k), so Claude Code doesn't compact it again. /handover-at sets a larger size.",
-                first / 1000,
-                at / 1000
+                "The main agent's compacted conversation started at {} tokens, over the handover size ({}), so Claude Code doesn't compact it again. /handover-at sets a larger size.",
+                about(first),
+                about(at)
             )
         } else {
             format!(
-                "The main agent's fresh conversation started at {}k tokens, over the handover size ({}k), so it doesn't hand over again in it. /handover-at sets a larger size.",
-                first / 1000,
-                at / 1000
+                "The main agent's fresh conversation started at {} tokens, over the handover size ({}), so it doesn't hand over again in it. /handover-at sets a larger size.",
+                about(first),
+                about(at)
             )
         };
         self.output.line(&self.output.warn(&text));
@@ -593,10 +593,10 @@ pub fn shown(tokens: usize) -> String {
     grouped
 }
 
-/// A measured size, such as a request's input, in whole thousands, as
-/// `642k` for 642,400.
+/// A measured size, such as a request's input, as `642k` for 642,400 and
+/// `1.2M` for 1,200,000.
 pub fn about(tokens: usize) -> String {
-    format!("{}k", tokens / 1000)
+    remote::protocol::tokens(tokens as u64)
 }
 
 #[cfg(test)]
@@ -886,7 +886,7 @@ mod tests {
     fn a_compaction_is_told_with_its_sizes() {
         assert_eq!(
             compacted_text(642_400, Some(38_100)),
-            "Claude Code compacted the conversation from 642k to 38k tokens"
+            "Claude Code compacted the conversation from 642k to 38.1k tokens"
         );
         assert_eq!(
             compacted_text(642_400, None),

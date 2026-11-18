@@ -1727,20 +1727,7 @@ fn sentence(text: &str) -> String {
 
 /// A token count, short, as "820", "8.2k", "142k", "1.2M".
 fn short(count: usize) -> String {
-    let value = count as f64;
-    let trimmed = |value: f64| {
-        let text = format!("{value:.1}");
-        text.strip_suffix(".0").map_or(text.clone(), str::to_string)
-    };
-    if count < 1_000 {
-        count.to_string()
-    } else if count < 9_950 {
-        format!("{}k", trimmed(value / 1_000.))
-    } else if count < 999_500 {
-        format!("{}k", (value / 1_000.).round())
-    } else {
-        format!("{}M", trimmed(value / 1_000_000.))
-    }
+    remote::protocol::tokens(count as u64)
 }
 
 /// `5312` as `5,312`.

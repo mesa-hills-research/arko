@@ -314,7 +314,7 @@ fn efforts_range(model: &Model) -> String {
 
 /// `950000` as `950k`.
 fn thousands(tokens: usize) -> String {
-    format!("{}k", tokens / 1000)
+    crate::remote::protocol::tokens(tokens as u64)
 }
 
 fn model_line(

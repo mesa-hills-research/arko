@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 
 use crate::details::SwitchCost;
 use crate::providers::{self, OpenAiAuth};
+use crate::remote::protocol;
 
 /// Below this many tokens, re-reading a worker's conversation without its
 /// cache costs little, so continuing it asks nothing.
@@ -68,7 +69,7 @@ impl WorkerCache {
     pub fn warning(&self, now: DateTime<Utc>) -> String {
         let tokens = short_tokens(self.cost.tokens);
         let cost = match (self.cost.dollars, self.cost.plan) {
-            (Some(dollars), _) => format!(" (≈ ${dollars:.2} at API prices)"),
+            (Some(dollars), _) => format!(" (≈ {} at API prices)", protocol::dollars(dollars)),
             (None, Some(plan)) => format!(", using {plan}"),
             (None, None) => String::new(),
         };
@@ -229,20 +230,7 @@ pub fn message_parts(line: &str) -> Option<(&str, &str)> {
 
 /// A count of tokens, short, as "820", "8.2k", "340k", "1.2M".
 pub fn short_tokens(tokens: usize) -> String {
-    let value = tokens as f64;
-    let trimmed = |value: f64| {
-        let text = format!("{value:.1}");
-        text.strip_suffix(".0").map_or(text.clone(), str::to_string)
-    };
-    if tokens < 1_000 {
-        tokens.to_string()
-    } else if tokens < 9_950 {
-        format!("{}k", trimmed(value / 1_000.))
-    } else if tokens < 999_500 {
-        format!("{}k", (value / 1_000.).round())
-    } else {
-        format!("{}M", trimmed(value / 1_000_000.))
-    }
+    protocol::tokens(tokens as u64)
 }
 
 /// How long ago `span` was, as a sentence says it, such as "just now", "5 minutes

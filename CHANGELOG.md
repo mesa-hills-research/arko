@@ -17,6 +17,16 @@
   review. A change applies at once before the conversation starts, and otherwise when the session
   opens again.
 
+### Costs
+
+- Token counts read in the largest unit that is at least 1, with one decimal below 100 (`820`,
+  `8.2k`, `940k`, `32.8M`, `11.2B`), and dollars have their thousands marked and their cents
+  (`$4,007.05`). `/cost`, the status line in the terminal and on the web page, the turn's footer, a
+  worker's cost, and the handover, compaction and cache notices all say them this way. `/cost` used
+  to print `11151855k input and 32800k output tokens` and `$4007.05`.
+- `/cost` puts each line one step in under the line it belongs to, and says a plan's usage as a
+  sentence, such as "95% of the Claude plan's week used" instead of `Claude plan 7 d 95%`.
+
 ## 0.23.0 (2026-11-18)
 
 ### Models

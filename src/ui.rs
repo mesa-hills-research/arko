@@ -1089,7 +1089,8 @@ impl EventPrinter {
                     self.flush();
                 }
                 self.output.echo(&self.output.warn(&format!(
-                    "  ! the reply reached the model's output limit ({output_tokens} tokens)"
+                    "  ! the reply reached the model's output limit ({} tokens)",
+                    remote::protocol::tokens(output_tokens as u64)
                 )));
             }
             AgentEvent::ReasoningSummariesRefused { .. } if !self.thinking_refused => {

@@ -1464,7 +1464,7 @@ fn and_list(items: &[String]) -> String {
 }
 
 /// A count with its thousands marked, as `3,210`.
-fn thousands(count: u64) -> String {
+pub fn thousands(count: u64) -> String {
     let digits = count.to_string();
     let mut out = String::new();
     for (at, digit) in digits.chars().enumerate() {
@@ -1517,13 +1517,56 @@ pub fn duration(ms: i64) -> String {
     }
 }
 
-/// Dollars as people write them, such as `$12`, `$3.20`.
+/// A count of tokens as people read it, in the largest unit that is at least
+/// 1 (`k`, `M` or `B`), with one decimal below 100 and none from there:
+/// `820`, `8.2k`, `940k`, `1M`, `32.8M`, `11.2B`. Every place that shows a
+/// token count uses it.
+pub fn tokens(count: u64) -> String {
+    const UNITS: [(u128, &str); 3] = [(1_000, "k"), (1_000_000, "M"), (1_000_000_000, "B")];
+    if count < 1_000 {
+        return count.to_string();
+    }
+    let count = u128::from(count);
+    let mut at = UNITS
+        .iter()
+        .rposition(|(size, _)| count >= *size)
+        .unwrap_or(0);
+    loop {
+        let (size, unit) = UNITS[at];
+        // The count in tenths of the unit, rounded. Below 100 units it shows
+        // them, and the tenth unless it's 0.
+        let tenths = (count * 10 + size / 2) / size;
+        if tenths < 1_000 {
+            return match tenths % 10 {
+                0 => format!("{}{unit}", tenths / 10),
+                tenth => format!("{}.{tenth}{unit}", tenths / 10),
+            };
+        }
+        // From 100 on, whole units, and the next unit when they reach 1,000
+        // (999,600 is `1M`, not `1000k`).
+        let whole = (count + size / 2) / size;
+        if whole < 1_000 || at == UNITS.len() - 1 {
+            return format!("{whole}{unit}");
+        }
+        at += 1;
+    }
+}
+
+/// Dollars to the cent with thousands marked, such as `$0.00`, `$12.50`,
+/// `$4,007.05`. Every place that shows what something cost uses it.
+pub fn dollars(amount: f64) -> String {
+    let cents = (amount.abs() * 100.0).round() as u64;
+    let sign = if amount < 0.0 && cents > 0 { "-" } else { "" };
+    format!("{sign}${}.{:02}", thousands(cents / 100), cents % 100)
+}
+
+/// Dollars as people write them, such as `$12`, `$3.20`, `$1,200`: whole
+/// dollars without cents.
 pub fn money(amount: f64) -> String {
-    let cents = (amount * 100.0).round();
-    if cents % 100.0 == 0.0 {
-        format!("${:.0}", cents / 100.0)
-    } else {
-        format!("${:.2}", cents / 100.0)
+    let text = dollars(amount);
+    match text.strip_suffix(".00") {
+        Some(whole) => whole.to_string(),
+        None => text,
     }
 }
 
@@ -1948,6 +1991,68 @@ mod tests {
         assert_eq!(noun(0_usize, "file", "files"), "files");
         assert_eq!(noun(1_usize, "file", "files"), "file");
         assert_eq!(noun(2_usize, "file", "files"), "files");
+    }
+
+    /// A token count takes the largest unit that is at least 1, with one
+    /// decimal below 100 and whole units from there, and a count that rounds
+    /// up to 1,000 units takes the next unit.
+    #[test]
+    fn token_counts_read_in_the_largest_unit() {
+        for (count, text) in [
+            (0, "0"),
+            (820, "820"),
+            (999, "999"),
+            (1_000, "1k"),
+            (1_040, "1k"),
+            (1_050, "1.1k"),
+            (8_200, "8.2k"),
+            (9_949, "9.9k"),
+            (9_960, "10k"),
+            (99_949, "99.9k"),
+            (99_950, "100k"),
+            (142_318, "142k"),
+            (801_000, "801k"),
+            (940_300, "940k"),
+            (999_499, "999k"),
+            (999_500, "1M"),
+            (1_020_000, "1M"),
+            (1_200_000, "1.2M"),
+            (32_800_000, "32.8M"),
+            (999_950_000, "1B"),
+            (11_151_855_000, "11.2B"),
+            (118_000_000_000, "118B"),
+            (u64::MAX, "18446744074B"),
+        ] {
+            assert_eq!(tokens(count), text, "{count}");
+        }
+    }
+
+    /// Dollars have their thousands marked and their cents, and `money` drops
+    /// the cents of whole dollars.
+    #[test]
+    fn dollars_have_thousands_and_cents() {
+        for (amount, text) in [
+            (0.0, "$0.00"),
+            (0.004, "$0.00"),
+            (0.005, "$0.01"),
+            (3.2, "$3.20"),
+            (999.994, "$999.99"),
+            (999.995, "$1,000.00"),
+            (4_007.05, "$4,007.05"),
+            (1_234_567.8, "$1,234,567.80"),
+            (-12.5, "-$12.50"),
+        ] {
+            assert_eq!(dollars(amount), text, "{amount}");
+        }
+        for (amount, text) in [
+            (12.0, "$12"),
+            (7.5, "$7.50"),
+            (0.254, "$0.25"),
+            (1_200.0, "$1,200"),
+            (1_200.5, "$1,200.50"),
+        ] {
+            assert_eq!(money(amount), text, "{amount}");
+        }
     }
 
     /// Sizes, the tray's heading and a skill's card count one or many.

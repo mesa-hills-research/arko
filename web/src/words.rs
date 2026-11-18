@@ -2,7 +2,7 @@
 
 pub use crate::protocol::plural;
 use crate::protocol::{
-    CacheData, Delivery, ItemData, KeepWarmData, KeepWarmSettingData, ModelsData, StatusData,
+    self, CacheData, Delivery, ItemData, KeepWarmData, KeepWarmSettingData, ModelsData, StatusData,
     WorkerData, WorkerState,
 };
 
@@ -19,20 +19,9 @@ pub fn duration(ms: f64) -> String {
     format!("{}h{:02}m", m / 60, m % 60)
 }
 
-/// 142k, 1.2M.
+/// A token count, like 820, 8.2k, 142k, 32.8M, 11.2B.
 pub fn tokens(n: u64) -> String {
-    if n >= 1_000_000 {
-        let m = n as f64 / 1e6;
-        return if n >= 10_000_000 {
-            format!("{m:.0}M")
-        } else {
-            format!("{m:.1}M")
-        };
-    }
-    if n >= 1000 {
-        return format!("{}k", (n as f64 / 1000.0).round());
-    }
-    n.to_string()
+    protocol::tokens(n)
 }
 
 /// A time in seconds as settings say it, like `10 min`, `90 s`, `1 h`.
@@ -121,15 +110,10 @@ pub fn budget_about(budget: Option<f64>) -> String {
     }
 }
 
-/// An amount of dollars as people write it, like `$20`, `$7.50` (the library's
-/// `workers::money`).
+/// An amount of dollars as people write it, like `$20`, `$7.50`, `$1,200` (the
+/// library's `workers::money`).
 pub fn money(amount: f64) -> String {
-    let cents = (amount * 100.0).round();
-    if cents % 100.0 == 0.0 {
-        format!("${:.0}", cents / 100.0)
-    } else {
-        format!("${:.2}", cents / 100.0)
-    }
+    protocol::money(amount)
 }
 
 /// What the worker depth setting does (the library's `workers::depth_about`).
@@ -223,9 +207,9 @@ pub fn cost_words(billed: f64, list: f64) -> String {
     if list < 0.005 || list.is_nan() {
         String::new()
     } else if list > billed + 0.005 {
-        format!("≈ ${list:.2} at API prices")
+        format!("≈ {} at API prices", protocol::dollars(list))
     } else {
-        format!("${billed:.2}")
+        protocol::dollars(billed)
     }
 }
 
@@ -238,9 +222,9 @@ pub fn family_cost_words(summary: &WorkerData) -> String {
     }
     let billed = summary.family_cost_billed;
     if list > billed + 0.005 {
-        format!("≈ ${list:.2} with its workers")
+        format!("≈ {} with its workers", protocol::dollars(list))
     } else {
-        format!("${billed:.2} with its workers")
+        format!("{} with its workers", protocol::dollars(billed))
     }
 }
 
@@ -548,10 +532,10 @@ pub fn figures(status: &StatusData, viewing: Option<&WorkerData>) -> Vec<String>
         parts.push(rest.to_string());
     }
     if cost > 0.0 {
-        parts.push(format!("${cost:.2}"));
+        parts.push(protocol::dollars(cost));
     }
     if api > 0.0 {
-        parts.push(format!("≈ ${api:.2}"));
+        parts.push(format!("≈ {}", protocol::dollars(api)));
     }
     parts
 }
@@ -670,34 +654,18 @@ pub fn cache_warns(left: f64) -> bool {
     left > 0.0 && left <= 60_000.0
 }
 
-/// A token count, short, like 820, 8.2k, 142k, 1.02M.
+/// A token count, short, like 820, 8.2k, 142k, 1M.
 pub fn cache_tokens(count: u64) -> String {
-    let trimmed = |value: f64, decimals: usize| {
-        let text = format!("{value:.decimals$}");
-        if text.contains('.') {
-            text.trim_end_matches('0').trim_end_matches('.').to_string()
-        } else {
-            text
-        }
-    };
-    if count < 1000 {
-        return count.to_string();
-    }
-    let thousands = count as f64 / 1000.0;
-    if (thousands * 10.0).round() / 10.0 < 10.0 {
-        return format!("{}k", trimmed(thousands, 1));
-    }
-    if thousands.round() < 1000.0 {
-        return format!("{}k", thousands.round());
-    }
-    format!("{}M", trimmed(count as f64 / 1e6, 2))
+    protocol::tokens(count)
 }
 
+/// Dollars to the cent, like "$1.20" or "$4,007.05", and "< $0.01" for less
+/// than a cent.
 pub fn dollars(amount: f64) -> String {
     if amount > 0.0 && amount < 0.005 {
         "< $0.01".into()
     } else {
-        format!("${amount:.2}")
+        protocol::dollars(amount)
     }
 }
 
@@ -1198,7 +1166,7 @@ mod tests {
         assert_eq!(cache_tokens(820), "820");
         assert_eq!(cache_tokens(8_240), "8.2k");
         assert_eq!(cache_tokens(142_318), "142k");
-        assert_eq!(cache_tokens(1_020_000), "1.02M");
+        assert_eq!(cache_tokens(1_020_000), "1M");
         let at = |day_number, weekday, hour| Local {
             year: 2026,
             month: 9,
@@ -1224,6 +1192,28 @@ mod tests {
         assert_eq!(delivery_tag(&item), Some("pending"));
         item.delivery = Some(Delivery::Answer);
         assert_eq!(delivery_tag(&item), Some("answer"));
+    }
+
+    /// The page reads figures as the terminal does, tokens in the largest unit
+    /// and dollars with their thousands marked.
+    #[test]
+    fn big_figures_read_in_units_and_with_thousands_marked() {
+        assert_eq!(tokens(940_300), "940k");
+        assert_eq!(tokens(32_800_000), "32.8M");
+        assert_eq!(tokens(11_151_855_000), "11.2B");
+        assert_eq!(cache_tokens(999_600), "1M");
+        assert_eq!(dollars(4_007.05), "$4,007.05");
+        assert_eq!(dollars(0.001), "< $0.01");
+        assert_eq!(money(1_200.0), "$1,200");
+        assert_eq!(cost_words(0.0, 4_007.05), "≈ $4,007.05 at API prices");
+        assert_eq!(cost_words(1_234.5, 1_234.5), "$1,234.50");
+        let status = StatusData {
+            context_tokens: Some(1_200_000),
+            cost: 1_234.5,
+            api_price: Some(4_007.05),
+            ..StatusData::default()
+        };
+        assert_eq!(figures(&status, None), ["1.2M", "$1,234.50", "≈ $4,007.05"]);
     }
 
     #[test]

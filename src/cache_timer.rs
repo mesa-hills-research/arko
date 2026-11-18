@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Datelike as _, Local, TimeZone};
 
+use crate::remote::protocol;
 use crate::remote::{Activity, CacheStatus, plural};
 
 /// The cache timer, while idle with a known lifetime.
@@ -286,39 +287,18 @@ pub fn headline(left: i64) -> String {
     }
 }
 
-/// A token count, short, as "820", "8.2k", "142k", "1.02M", "1M".
+/// A token count, short, as "820", "8.2k", "142k", "1M".
 pub(crate) fn token_count(count: usize) -> String {
-    /// `value` with at most `decimals` decimals, trailing zeros dropped.
-    fn trimmed(value: f64, decimals: usize) -> String {
-        let text = format!("{value:.decimals$}");
-        if text.contains('.') {
-            text.trim_end_matches('0').trim_end_matches('.').to_string()
-        } else {
-            text
-        }
-    }
-    let count = count as f64;
-    if count < 1_000. {
-        return format!("{count}");
-    }
-    // Rounded first, so that 9,960 reads "10k", not "10.0k", and 999,600
-    // reads "1M", not "1000k".
-    let thousands = count / 1_000.;
-    if (thousands * 10.).round() / 10. < 10. {
-        return format!("{}k", trimmed(thousands, 1));
-    }
-    if thousands.round() < 1_000. {
-        return format!("{}k", thousands.round());
-    }
-    format!("{}M", trimmed(count / 1_000_000., 2))
+    protocol::tokens(count as u64)
 }
 
-/// Dollars, to the cent, as "$1.20", and "< $0.01" for less than a cent.
+/// Dollars, to the cent, as "$1.20" or "$4,007.05", and "< $0.01" for less
+/// than a cent.
 pub(crate) fn dollars(amount: f64) -> String {
     if amount > 0. && amount < 0.005 {
         "< $0.01".to_string()
     } else {
-        format!("${amount:.2}")
+        protocol::dollars(amount)
     }
 }
 
@@ -584,11 +564,13 @@ mod tests {
             (9_960, "10k"),
             (142_000, "142k"),
             (999_600, "1M"),
-            (1_020_000, "1.02M"),
+            (1_020_000, "1M"),
+            (32_800_000, "32.8M"),
         ] {
             assert_eq!(token_count(count), text);
         }
         assert_eq!(dollars(0.001), "< $0.01");
         assert_eq!(dollars(1.2), "$1.20");
+        assert_eq!(dollars(4_007.05), "$4,007.05");
     }
 }

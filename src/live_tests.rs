@@ -657,7 +657,7 @@ async fn a_handover_asked_for_while_the_agent_works_happens_at_its_next_step() {
     assert!(says(
         &harness.feed,
         "notice",
-        "the agent is writing a handover report (you asked, at 0k tokens)"
+        "the agent is writing a handover report (you asked, at 0 tokens)"
     ));
 }
 
@@ -726,7 +726,7 @@ async fn a_handover_asked_for_while_idle_happens_when_the_next_turn_starts() {
     assert!(says(
         &harness.feed,
         "notice",
-        "the agent is writing a handover report (you asked, at 0k tokens)"
+        "the agent is writing a handover report (you asked, at 10 tokens)"
     ));
     // The report was asked for with the message, before the agent acted on
     // it, and the fresh conversation starts from the conversation's first
@@ -1700,7 +1700,7 @@ async fn handover_compacts_a_main_agent_in_claude_code() {
     assert!(says(
         &harness.feed,
         "notice",
-        "Claude Code compacted the conversation from 1k to 0k tokens"
+        "Claude Code compacted the conversation from 1.5k to 400 tokens"
     ));
     let sent = sent_to_claude_code(&fake);
     assert_eq!(sent.len(), 3, "{sent:#?}");

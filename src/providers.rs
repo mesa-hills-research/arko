@@ -36,6 +36,7 @@ use crate::agents::{Effort, ModelSettings, default_handover};
 use crate::claude_code;
 use crate::credentials::{self, Need};
 use crate::logins;
+use crate::remote::protocol;
 use crate::session::Settings;
 
 /// The prefix of a model on OpenRouter, as `openrouter:<slug>`.
@@ -1594,11 +1595,11 @@ fn extra_usage_words(extra: &arko_ai::ExtraUsage, label: &str) -> Option<String>
         Some(code) => ("", format!(" {code}")),
     };
     let amount = |minor: f64| {
-        format!(
-            "{before}{:.*}",
-            places as usize,
-            minor / 10_f64.powi(places as i32)
-        )
+        let major = minor / 10_f64.powi(places as i32);
+        if before == "$" && places == 2 {
+            return protocol::dollars(major);
+        }
+        format!("{before}{:.*}", places as usize, major)
     };
     Some(match (extra.used_credits, extra.monthly_limit) {
         (Some(used), Some(limit)) => {
@@ -1761,11 +1762,23 @@ pub fn api_price(ledger: &CostLedger) -> Option<f64> {
     })
 }
 
-/// One line of `/cost`, and a `detail` line is indented and dim.
+/// One line of `/cost`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CostLine {
     pub text: String,
+    /// How many steps in it is shown, 0 for the headline, 1 for what belongs
+    /// to it, 2 for what belongs to that.
+    pub level: usize,
+    /// It tells a part of what the line above it totals, so the terminal
+    /// dims it.
     pub detail: bool,
+}
+
+impl CostLine {
+    /// The line as it is printed, two spaces in for each level.
+    pub fn indented(&self) -> String {
+        format!("{}{}", "  ".repeat(self.level), self.text)
+    }
 }
 
 /// Some agents' part of the costs (the main agent's, or the workers'), as
@@ -1782,13 +1795,19 @@ pub struct CostShare {
     pub plan: Option<&'static str>,
 }
 
+/// A part's token counts as `/cost` says them, such as "11.2B input and
+/// 32.8M output tokens".
+fn tokens_words(input: usize, output: usize) -> String {
+    format!(
+        "{} input and {} output tokens",
+        protocol::tokens(input as u64),
+        protocol::tokens(output as u64)
+    )
+}
+
 impl CostShare {
     fn tokens(&self) -> String {
-        format!(
-            "{}k input and {}k output tokens",
-            self.input / 1000,
-            self.output / 1000
-        )
+        tokens_words(self.input, self.output)
     }
 
     /// Adds a call that billed `billed`.
@@ -1874,11 +1893,7 @@ pub(crate) fn run_usage_line(
             _ => SubscriptionPlan::ChatGpt,
         })));
     }
-    // (A short run's few tokens are told whole, not as "0k".)
-    let count = |tokens: usize| match tokens {
-        0..1000 => tokens.to_string(),
-        _ => format!("{}k", tokens / 1000),
-    };
+    let count = |tokens: usize| protocol::tokens(tokens as u64);
     let cached = match usage.cached_tokens.unwrap_or(0) {
         0 => String::new(),
         tokens => format!(" ({} cached)", count(tokens)),
@@ -1890,10 +1905,13 @@ pub(crate) fn run_usage_line(
     );
     Some(match used.plan {
         Some(plan) => format!(
-            "{handle} ran on the {plan}, so nothing was billed per token. It used {tokens}, ≈ ${:.2} at API prices.",
-            used.api
+            "{handle} ran on the {plan}, so nothing was billed per token. It used {tokens}, ≈ {} at API prices.",
+            protocol::dollars(used.api)
         ),
-        None => format!("{handle} used {tokens}, ${:.2}.", used.billed),
+        None => format!(
+            "{handle} used {tokens}, {}.",
+            protocol::dollars(used.billed)
+        ),
     })
 }
 
@@ -1906,7 +1924,7 @@ pub fn cost_report(
     ledger: &CostLedger,
     settings: &Settings,
     main_runs: &[RunCost],
-    plans: &std::collections::BTreeMap<String, String>,
+    plans: &[crate::remote::PlanStatus],
 ) -> Vec<CostLine> {
     let (main, workers) = cost_shares(ledger, settings, main_runs, None);
     cost_lines(&main, &workers, plans)
@@ -2022,25 +2040,30 @@ pub fn cost_shares(
 }
 
 /// `/cost`'s lines for the main agent's parts `main` (see [`cost_shares`])
-/// and the workers' part `workers`, with the plans' usage windows
-/// (`plans`, by plan).
+/// and the workers' part `workers`, with the plans' usage (`plans`). The
+/// headline comes first, and each line below it that belongs to another
+/// (what the session would cost at API prices, its parts, the plan's usage)
+/// is one level further in.
 pub fn cost_lines(
     main: &[CostShare],
     workers: &CostShare,
-    plans: &std::collections::BTreeMap<String, String>,
+    plans: &[crate::remote::PlanStatus],
 ) -> Vec<CostLine> {
-    let line = |text: String| CostLine {
+    let line = |level: usize, detail: bool, text: String| CostLine {
         text,
-        detail: false,
+        level,
+        detail,
     };
-    let detail = |text: String| CostLine { text, detail: true };
     let total = CostShare::sum(main);
-    let mut lines = vec![line(format!(
-        "${:.2} billed in this session · {}k input and {}k output tokens",
-        total.billed + workers.billed,
-        (total.input + workers.input) / 1000,
-        (total.output + workers.output) / 1000
-    ))];
+    let mut lines = vec![line(
+        0,
+        false,
+        format!(
+            "{} billed in this session · {}",
+            protocol::dollars(total.billed + workers.billed),
+            tokens_words(total.input + workers.input, total.output + workers.output)
+        ),
+    )];
     let parts: Vec<(&str, &CostShare)> = main
         .iter()
         .map(|part| ("main agent", part))
@@ -2051,52 +2074,121 @@ pub fn cost_lines(
     if paid_alike {
         let plan = parts.iter().find_map(|(_, part)| part.plan);
         if let Some(plan) = plan {
-            lines.push(line(format!(
-                "≈ ${:.2} at API prices, which the {plan} covers",
-                total.api + workers.api
-            )));
+            lines.push(line(
+                1,
+                false,
+                format!(
+                    "≈ {} at API prices, which the {plan} covers",
+                    protocol::dollars(total.api + workers.api)
+                ),
+            ));
         }
         if workers.used() {
-            lines.push(detail(match plan {
-                Some(_) => format!(
-                    "the workers' share ≈ ${:.2} at API prices · {}",
-                    workers.api,
-                    workers.tokens()
-                ),
-                None => format!(
-                    "the workers' share is ${:.2} · {}",
-                    workers.billed,
-                    workers.tokens()
-                ),
-            }));
+            // (Under the line it is a part of.)
+            let level = if plan.is_some() { 2 } else { 1 };
+            lines.push(line(
+                level,
+                true,
+                match plan {
+                    Some(_) => format!(
+                        "the workers' share ≈ {} at API prices · {}",
+                        protocol::dollars(workers.api),
+                        workers.tokens()
+                    ),
+                    None => format!(
+                        "the workers' share is {} · {}",
+                        protocol::dollars(workers.billed),
+                        workers.tokens()
+                    ),
+                },
+            ));
         }
     } else {
         // (Each part the main agent's runs were paid for in, on a plan or
         // per token, has a line of its own.)
         for (name, part) in &used {
-            lines.push(detail(match part.plan {
-                Some(plan) => format!(
-                    "{name} ≈ ${:.2} at API prices, on the {plan} · {}",
-                    part.api,
-                    part.tokens()
-                ),
-                None => format!(
-                    "{name} ${:.2}, billed per token · {}",
-                    part.billed,
-                    part.tokens()
-                ),
-            }));
+            lines.push(line(
+                1,
+                true,
+                match part.plan {
+                    Some(plan) => format!(
+                        "{name} ≈ {} at API prices, on the {plan} · {}",
+                        protocol::dollars(part.api),
+                        part.tokens()
+                    ),
+                    None => format!(
+                        "{name} {}, billed per token · {}",
+                        protocol::dollars(part.billed),
+                        part.tokens()
+                    ),
+                },
+            ));
         }
     }
-    // The plans' usage windows, as last reported.
+    // The plans' usage, as last reported.
     for (_, part) in &parts {
-        if let Some(windows) = part.plan.and_then(|plan| plans.get(plan))
-            && !lines.iter().any(|line| &line.text == windows)
+        if let Some(status) = part
+            .plan
+            .and_then(|plan| plans.iter().find(|status| status.plan == plan))
         {
-            lines.push(line(windows.clone()));
+            let words = plan_used_words(status);
+            if !lines.iter().any(|line| line.text == words) {
+                lines.push(line(1, false, words));
+            }
         }
     }
     lines
+}
+
+/// A plan's usage windows as a sentence, such as "95% of the Claude plan's
+/// week used", "12% of the Claude plan's 5 hours used and 3% of its week
+/// used", with its credits, extra usage and set-aside logins after them.
+fn plan_used_words(status: &crate::remote::PlanStatus) -> String {
+    let windows: Vec<String> = status
+        .windows
+        .iter()
+        .enumerate()
+        .map(|(at, window)| {
+            let whose = match at {
+                0 => format!("the {}'s", status.plan),
+                _ => "its".to_string(),
+            };
+            format!(
+                "{:.0}% of {whose} {} used",
+                window.used_percent,
+                window_words(&window.label)
+            )
+        })
+        .collect();
+    let mut text = crate::and_list(&windows);
+    for part in status
+        .credits
+        .as_ref()
+        .and_then(credits_text)
+        .into_iter()
+        .chain(status.extra_usage.as_ref().and_then(extra_usage_text))
+    {
+        text.push_str(", ");
+        text.push_str(&part);
+    }
+    text.push_str(&crate::logins::set_aside_note(status.set_aside));
+    text
+}
+
+/// A usage window's length in words, from its label (`7 d`, `5 h`, `90 min`)
+/// as `window_name` gives it, such as "week", "5 hours", "90 minutes".
+fn window_words(label: &str) -> String {
+    let count_of = |count: &str, one: &str, many: &str| match count {
+        "1" => one.to_string(),
+        count => format!("{count} {many}"),
+    };
+    match label.split_once(' ') {
+        Some(("7", "d")) => "week".to_string(),
+        Some((count, "d")) => count_of(count, "day", "days"),
+        Some((count, "h")) => count_of(count, "hour", "hours"),
+        Some((count, "min")) => count_of(count, "minute", "minutes"),
+        _ => label.to_string(),
+    }
 }
 
 /// What the agents' configurations take from the session's providers
@@ -3378,6 +3470,25 @@ mod tests {
         }
     }
 
+    /// A plan's usage with the windows `(label, percent used)`.
+    fn plan_status_of(plan: &str, windows: &[(&str, f64)]) -> crate::remote::PlanStatus {
+        crate::remote::PlanStatus {
+            plan: plan.to_string(),
+            windows: windows
+                .iter()
+                .map(|(label, used_percent)| crate::remote::PlanWindow {
+                    label: label.to_string(),
+                    used_percent: *used_percent,
+                    resets_at: None,
+                })
+                .collect(),
+            credits: None,
+            set_aside: 0,
+            extra_usage: None,
+            text: String::new(),
+        }
+    }
+
     fn report(
         session: &Settings,
         entries: Vec<arko_workflows::budget::CostEntry>,
@@ -3391,19 +3502,14 @@ mod tests {
         entries: Vec<arko_workflows::budget::CostEntry>,
         runs: &[RunCost],
     ) -> Vec<(bool, String)> {
-        let plans = std::collections::BTreeMap::from([
-            (
-                "Claude plan".to_string(),
-                "Claude plan 5 h 12%, 7 d 3%".to_string(),
-            ),
-            (
-                "ChatGPT plan".to_string(),
-                "ChatGPT plan 7 d 40%".to_string(),
-            ),
-        ]);
+        let plans = [
+            plan_status_of("Claude plan", &[("5 h", 12.0), ("7 d", 3.0)]),
+            plan_status_of("ChatGPT plan", &[("7 d", 40.0)]),
+        ];
+        // (Each line indented by its level.)
         cost_report(&CostLedger { entries }, session, runs, &plans)
             .into_iter()
-            .map(|line| (line.detail, line.text))
+            .map(|line| (line.detail, line.indented()))
             .collect()
     }
 
@@ -3428,7 +3534,7 @@ mod tests {
         let metered = usage(55_000, Some(20_000), 2_500, 0.3, BillingKind::Metered);
         assert_eq!(
             run_usage_line("r2", &metered, &Provider::Anthropic).as_deref(),
-            Some("r2 used 55k input (20k cached) and 2k output tokens, $0.30.")
+            Some("r2 used 55k input (20k cached) and 2.5k output tokens, $0.30.")
         );
         let plan = usage(
             120_000,
@@ -3460,6 +3566,107 @@ mod tests {
         );
     }
 
+    /// A week of work on a plan reads in the largest unit, with its dollars
+    /// grouped by thousands, and each line sits one level in under the line
+    /// it belongs to.
+    #[test]
+    fn a_big_cost_reads_as_people_read_it() {
+        let share = |billed, api, input, output, plan| CostShare {
+            billed,
+            api,
+            input,
+            output,
+            plan,
+        };
+        let main = share(
+            0.0,
+            3_807.05,
+            11_100_000_000,
+            1_800_000,
+            Some("Claude plan"),
+        );
+        let workers = share(0.0, 200.0, 51_855_000, 31_000_000, Some("Claude plan"));
+        let plans = [plan_status_of("Claude plan", &[("7 d", 95.0)])];
+        let lines = cost_lines(&[main], &workers, &plans);
+        assert_eq!(
+            lines.iter().map(CostLine::indented).collect::<Vec<_>>(),
+            [
+                "$0.00 billed in this session · 11.2B input and 32.8M output tokens",
+                "  ≈ $4,007.05 at API prices, which the Claude plan covers",
+                "    the workers' share ≈ $200.00 at API prices · 51.9M input and 31M output tokens",
+                "  95% of the Claude plan's week used",
+            ]
+        );
+        assert_eq!(
+            lines.iter().map(|line| line.level).collect::<Vec<_>>(),
+            [0, 1, 2, 1]
+        );
+        // Billed per token, its dollars are grouped too.
+        let billed = share(1_234.5, 1_234.5, 940_300, 8_200, None);
+        let lines = cost_lines(std::slice::from_ref(&billed), &billed, &[]);
+        assert_eq!(
+            lines.iter().map(CostLine::indented).collect::<Vec<_>>(),
+            [
+                "$2,469.00 billed in this session · 1.9M input and 16.4k output tokens",
+                "  the workers' share is $1,234.50 · 940k input and 8.2k output tokens",
+            ]
+        );
+        // A run's own line reads the same way.
+        let usage = UsageInfo {
+            input_tokens: 2_400_000,
+            output_tokens: 940_300,
+            cached_tokens: Some(2_000_000),
+            total_cost: 1_500.0,
+            billing: BillingKind::Metered,
+            billed_cost: Some(1_500.0),
+            ..UsageInfo::default()
+        };
+        assert_eq!(
+            run_usage_line("r9", &usage, &Provider::Anthropic).as_deref(),
+            Some("r9 used 2.4M input (2M cached) and 940k output tokens, $1,500.00.")
+        );
+    }
+
+    /// A plan's usage is a sentence, with its windows by length, and its
+    /// credits, extra usage and logins set aside after them.
+    #[test]
+    fn a_plans_usage_reads_as_a_sentence() {
+        let used =
+            |windows: &[(&str, f64)]| plan_used_words(&plan_status_of("Claude plan", windows));
+        assert_eq!(used(&[("7 d", 95.0)]), "95% of the Claude plan's week used");
+        assert_eq!(
+            used(&[("5 h", 12.0), ("7 d", 3.4)]),
+            "12% of the Claude plan's 5 hours used and 3% of its week used"
+        );
+        assert_eq!(
+            used(&[("1 h", 50.0), ("1 d", 10.0), ("90 min", 1.0), ("2 d", 20.0)]),
+            "50% of the Claude plan's hour used, 10% of its day used, 1% of its 90 minutes used, and 20% of its 2 days used"
+        );
+        let mut status = plan_status_of("ChatGPT plan", &[("5 h", 12.0), ("7 d", 40.0)]);
+        status.credits = Some(arko_ai::PlanCredits {
+            has_credits: true,
+            unlimited: false,
+            balance: Some("12.50".into()),
+        });
+        status.set_aside = 1;
+        assert_eq!(
+            plan_used_words(&status),
+            "12% of the ChatGPT plan's 5 hours used and 40% of its week used, credits left 12.50, 1 set aside"
+        );
+        let mut status = plan_status_of("Claude plan", &[("7 d", 3.0)]);
+        status.extra_usage = Some(arko_ai::ExtraUsage {
+            enabled: Some(true),
+            used_credits: Some(1_127_140.0),
+            monthly_limit: Some(5_000_000.0),
+            decimal_places: Some(2),
+            ..Default::default()
+        });
+        assert_eq!(
+            plan_used_words(&status),
+            "3% of the Claude plan's week used, extra usage $11,271.40 of $50,000.00"
+        );
+    }
+
     /// `/cost` on a plan shows what was billed, the API price and the
     /// plan's windows, per token what was billed, and mixed each part.
     #[test]
@@ -3480,14 +3687,17 @@ mod tests {
                 ),
                 (
                     false,
-                    "≈ $3.40 at API prices, which the Claude plan covers".to_string()
+                    "  ≈ $3.40 at API prices, which the Claude plan covers".to_string()
                 ),
                 (
                     true,
-                    "the workers' share ≈ $0.40 at API prices · 30k input and 2k output tokens"
+                    "    the workers' share ≈ $0.40 at API prices · 30k input and 2k output tokens"
                         .to_string()
                 ),
-                (false, "Claude plan 5 h 12%, 7 d 3%".to_string()),
+                (
+                    false,
+                    "  12% of the Claude plan's 5 hours used and 3% of its week used".to_string()
+                ),
             ]
         );
         assert!((api_price(&CostLedger { entries }).unwrap() - 3.4).abs() < 1e-9);
@@ -3497,9 +3707,9 @@ mod tests {
         let lines = report(&sol, vec![call(MAIN, 50_000, 1_000, 0.9, 0.0)]);
         assert_eq!(
             lines[1].1,
-            "≈ $0.90 at API prices, which the ChatGPT plan covers"
+            "  ≈ $0.90 at API prices, which the ChatGPT plan covers"
         );
-        assert_eq!(lines[2].1, "ChatGPT plan 7 d 40%");
+        assert_eq!(lines[2].1, "  40% of the ChatGPT plan's week used");
 
         // Per token, the cost, as before, and no API price line.
         let opus = settings(model("opus"), model("opus"));
@@ -3516,7 +3726,7 @@ mod tests {
                 ),
                 (
                     true,
-                    "the workers' share is $0.20 · 30k input and 2k output tokens".to_string()
+                    "  the workers' share is $0.20 · 30k input and 2k output tokens".to_string()
                 ),
             ]
         );
@@ -3538,9 +3748,9 @@ mod tests {
             ),
             [
                 (false, "$0.50 billed in this session · 150k input and 10k output tokens".to_string()),
-                (true, "main agent ≈ $3.00 at API prices, on the Claude plan · 120k input and 8k output tokens".to_string()),
-                (true, "workers $0.50, billed per token · 30k input and 2k output tokens".to_string()),
-                (false, "Claude plan 5 h 12%, 7 d 3%".to_string()),
+                (true, "  main agent ≈ $3.00 at API prices, on the Claude plan · 120k input and 8k output tokens".to_string()),
+                (true, "  workers $0.50, billed per token · 30k input and 2k output tokens".to_string()),
+                (false, "  12% of the Claude plan's 5 hours used and 3% of its week used".to_string()),
             ]
         );
         // Nothing yet.
@@ -3548,7 +3758,7 @@ mod tests {
             report(&cc, Vec::new()),
             [(
                 false,
-                "$0.00 billed in this session · 0k input and 0k output tokens".to_string()
+                "$0.00 billed in this session · 0 input and 0 output tokens".to_string()
             )]
         );
     }
@@ -3581,18 +3791,18 @@ mod tests {
             ),
             [
                 (false, "$0.00 billed in this session · 200k input and 11k output tokens".to_string()),
-                (true, "main agent ≈ $3.00 at API prices, on the Claude plan · 120k input and 8k output tokens".to_string()),
-                (true, "main agent ≈ $0.90 at API prices, on the ChatGPT plan · 50k input and 1k output tokens".to_string()),
-                (true, "workers ≈ $0.40 at API prices, on the Claude plan · 30k input and 2k output tokens".to_string()),
-                (false, "Claude plan 5 h 12%, 7 d 3%".to_string()),
-                (false, "ChatGPT plan 7 d 40%".to_string()),
+                (true, "  main agent ≈ $3.00 at API prices, on the Claude plan · 120k input and 8k output tokens".to_string()),
+                (true, "  main agent ≈ $0.90 at API prices, on the ChatGPT plan · 50k input and 1k output tokens".to_string()),
+                (true, "  workers ≈ $0.40 at API prices, on the Claude plan · 30k input and 2k output tokens".to_string()),
+                (false, "  12% of the Claude plan's 5 hours used and 3% of its week used".to_string()),
+                (false, "  40% of the ChatGPT plan's week used".to_string()),
             ]
         );
         // Without the runs, the session's main model named the plan.
         assert!(
             report(&switched, vec![on_claude.clone(), on_chatgpt.clone()])
                 .iter()
-                .any(|(_, line)| line == "≈ $3.90 at API prices, which the ChatGPT plan covers")
+                .any(|(_, line)| line == "  ≈ $3.90 at API prices, which the ChatGPT plan covers")
         );
         // Runs of one plan, one of them before a switch, read as one part.
         let ledger = |entries: &[&arko_workflows::budget::CostEntry]| CostLedger {

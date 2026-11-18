@@ -19,6 +19,7 @@ use super::theme::Theme;
 use super::transcript::{self, View};
 use super::wrap::{self, width as text_width};
 use crate::glyphs;
+use crate::remote::protocol;
 use crate::remote::{AgentStatus, WorkerState, WorkerSummary};
 
 /// The input box grows to this many lines, then scrolls.
@@ -580,9 +581,13 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         let near = handover > 0 && tokens * 10 >= handover * 9;
         left.push(sep());
         let text = if handover > 0 {
-            format!("{}k/{}k", tokens / 1000, handover / 1000)
+            format!(
+                "{}/{}",
+                protocol::tokens(tokens as u64),
+                protocol::tokens(handover as u64)
+            )
         } else {
-            format!("{}k", tokens / 1000)
+            protocol::tokens(tokens as u64)
         };
         left.push(Span::styled(
             text,
@@ -621,14 +626,21 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     };
     for (who, cost) in billed.into_iter().filter(|(_, cost)| *cost >= 0.005) {
         after.push(sep());
-        after.push(Span::styled(format!("{who}: ${cost:.2}"), theme.dim()));
+        after.push(Span::styled(
+            format!("{who}: {}", protocol::dollars(cost)),
+            theme.dim(),
+        ));
     }
     if app.prefs.api_prices
         && let Some(api) = api_price.filter(|api| *api >= 0.005)
     {
         after.push(sep());
         after.push(Span::styled(
-            format!("{} ${api:.2} at API prices", glyphs::render("≈")),
+            format!(
+                "{} {} at API prices",
+                glyphs::render("≈"),
+                protocol::dollars(api)
+            ),
             theme.dim(),
         ));
     }
@@ -2001,6 +2013,23 @@ mod tests {
         assert!(!bar(&app, 80).contains("API prices"));
     }
 
+    /// A long session's figures read as people say them, the context in the
+    /// largest unit and the dollars with their thousands marked.
+    #[test]
+    fn big_figures_read_in_units_and_with_thousands_marked() {
+        let mut app = app();
+        app.reading.context_tokens = Some(1_200_000);
+        app.reading.cost = 1_234.5;
+        app.reading.costs.workers.billed = 1_000.0;
+        app.reading.api_price = Some(4_007.05);
+        app.prefs.api_prices = true;
+        let text = bar(&app, 200);
+        assert!(text.contains(" 1.2M"), "{text}");
+        assert!(text.contains("main: $234.50"), "{text}");
+        assert!(text.contains("workers: $1,000.00"), "{text}");
+        assert!(text.contains("≈ $4,007.05 at API prices"), "{text}");
+    }
+
     #[test]
     fn narrow_bars_drop_other_windows_then_credits_then_the_main_short_window() {
         let mut app = app();
@@ -2503,14 +2532,14 @@ mod tests {
         let rows = screen(&mut app, 100, 20);
         let status = status_row(&rows);
         assert!(status.starts_with(" viewing r1 · finished"), "{status}");
-        assert!(status.contains(" · 7k/200k"), "{status}");
+        assert!(status.contains(" · 7.8k/200k"), "{status}");
 
         app.watch(None);
         let rows = screen(&mut app, 100, 20);
         let status = status_row(&rows);
         assert!(!status.contains("viewing"), "{status}");
         assert!(
-            status.contains(&format!(" {}k/200k", main_tokens / 1000)),
+            status.contains(&format!(" {}/200k", protocol::tokens(main_tokens as u64))),
             "{status}"
         );
     }

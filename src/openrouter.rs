@@ -1421,12 +1421,7 @@ impl Listed {
 
 /// `262k` and `1M` are numbers of tokens in few characters.
 fn tokens(count: u64) -> String {
-    if count >= 1_000_000 {
-        let millions = format!("{:.1}", count as f64 / 1_000_000.0);
-        format!("{}M", millions.trim_end_matches('0').trim_end_matches('.'))
-    } else {
-        format!("{}k", (count + 500) / 1000)
-    }
+    crate::remote::protocol::tokens(count)
 }
 
 /// `$0.60`, `$15.00` and `$0.075` are prices in dollars with at least cents.
@@ -2831,7 +2826,7 @@ mod tests {
         assert_eq!(kimi.input_price, Some(0.6));
         assert_eq!(kimi.output_price, Some(2.5));
         assert_eq!(kimi.zone, None);
-        assert_eq!(catalog.models[1].details(), "33k context, free");
+        assert_eq!(catalog.models[1].details(), "32.8k context, free");
 
         let requests = server.requests();
         assert_eq!(server.paths(), ["/models?supported_parameters=tools"]);

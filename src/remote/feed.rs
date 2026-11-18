@@ -2376,8 +2376,10 @@ impl Feed {
                 self.push(&mut state, notice(text, Level::Warn));
             }
             AgentEvent::OutputTokenLimitReached { output_tokens, .. } if main => {
-                let text =
-                    format!("the reply reached the model's output limit ({output_tokens} tokens)");
+                let text = format!(
+                    "the reply reached the model's output limit ({} tokens)",
+                    super::protocol::tokens(*output_tokens as u64)
+                );
                 self.push(&mut state, notice(text, Level::Warn));
             }
             // Once, in the main transcript, and it holds for every agent.

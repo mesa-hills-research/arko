@@ -3588,21 +3588,18 @@ impl Harness {
             "/cost" => {
                 self.publish_details();
                 let report = self.details.cost();
-                let plans = report
-                    .plans
-                    .iter()
-                    .map(|plan| (plan.plan.clone(), plan.text.clone()))
-                    .collect();
-                for line in providers::cost_lines(&report.main_parts, &report.workers, &plans) {
+                for line in providers::cost_lines(&report.main_parts, &report.workers, &report.plans)
+                {
+                    let text = line.indented();
                     match line.detail {
-                        true => out.line(&out.dim(&format!("  {}", line.text))),
-                        false => out.line(&line.text),
+                        true => out.line(&out.dim(&text)),
+                        false => out.line(&text),
                     }
                 }
                 if let Some((tokens, dollars)) = report.embeddings {
                     out.line(&format!(
-                        "${dollars:.3} for embeddings (Voyage) while Arko ran · {}k tokens",
-                        tokens.div_ceil(1000)
+                        "${dollars:.3} for embeddings (Voyage) while Arko ran · {} tokens",
+                        remote::protocol::tokens(tokens)
                     ));
                 }
             }
@@ -5364,13 +5361,16 @@ impl Harness {
         let mut parts = vec![format!("{:.0} s", started.elapsed().as_secs_f64())];
         if spent > 0.0 {
             parts.push(format!(
-                "${:.3} (session ${:.2})",
+                "${:.3} (session {})",
                 (spent - spent_before).max(0.0),
-                spent
+                remote::protocol::dollars(spent)
             ));
         }
         if let Some(tokens) = stats.context_tokens {
-            parts.push(format!("context {}k", tokens / 1000));
+            parts.push(format!(
+                "context {}",
+                remote::protocol::tokens(tokens as u64)
+            ));
         }
         let running = self.crew.as_ref().map_or(0, |crew| crew.running().len());
         if running > 0 {
@@ -11168,7 +11168,14 @@ pub(crate) mod tests {
         // What the same calls would cost at Claude Opus 5.5's list prices.
         let api_price = reading.api_price.unwrap();
         assert!(api_price > 0.0, "{api_price}");
-        let plans = harness.stats.lock().unwrap().plans.clone();
+        let plans: Vec<_> = harness
+            .stats
+            .lock()
+            .unwrap()
+            .plan_status
+            .values()
+            .cloned()
+            .collect();
         let lines = providers::cost_report(
             &harness.workflow().cost_ledger(),
             &harness.settings,
@@ -11181,9 +11188,12 @@ pub(crate) mod tests {
                 .map(|line| line.text.as_str())
                 .collect::<Vec<_>>(),
             [
-                "$0.00 billed in this session · 1k input and 0k output tokens",
-                &format!("≈ ${api_price:.2} at API prices, which the Claude plan covers"),
-                "Claude plan 5 h 12%, 7 d 3%",
+                "$0.00 billed in this session · 1.2k input and 20 output tokens",
+                &format!(
+                    "≈ {} at API prices, which the Claude plan covers",
+                    remote::protocol::dollars(api_price)
+                ),
+                "12% of the Claude plan's 5 hours used and 3% of its week used",
             ]
         );
         assert_eq!(
@@ -11295,15 +11305,18 @@ pub(crate) mod tests {
             &harness.workflow().cost_ledger(),
             &harness.settings,
             &providers::main_run_costs(harness.workflow()),
-            &Default::default(),
+            &[],
         );
         assert_eq!(
             lines[0].text,
-            "$0.00 billed in this session · 0k input and 0k output tokens"
+            "$0.00 billed in this session · 10 input and 5 output tokens"
         );
         assert_eq!(
             lines[1].text,
-            format!("≈ ${api_price:.2} at API prices, which the ChatGPT plan covers")
+            format!(
+                "≈ {} at API prices, which the ChatGPT plan covers",
+                remote::protocol::dollars(api_price)
+            )
         );
         harness.crew.as_ref().unwrap().shutdown().await;
     }
@@ -11367,7 +11380,7 @@ pub(crate) mod tests {
             &harness.workflow().cost_ledger(),
             &harness.settings,
             &providers::main_run_costs(harness.workflow()),
-            &Default::default(),
+            &[],
         );
         let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
         assert_eq!(texts.len(), 3, "{texts:?}");
@@ -11382,6 +11395,7 @@ pub(crate) mod tests {
             "{texts:?}"
         );
         assert!(lines[1].detail && lines[2].detail);
+        assert_eq!((lines[1].level, lines[2].level), (1, 1));
         let reading = remote::Meter::read(harness.gauges.as_ref());
         assert!(reading.api_price.unwrap() > reading.cost && reading.cost > 0.0);
         harness.crew.as_ref().unwrap().shutdown().await;

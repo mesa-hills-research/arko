@@ -26,7 +26,7 @@ use crate::agents::NO_LIMIT;
 use crate::billing;
 use crate::chooser;
 use crate::kept_notes::KeptNotes;
-use crate::remote;
+use crate::remote::{self, protocol};
 use crate::ui::{self, Output};
 use crate::worker_cache::WorkerCacheState;
 
@@ -1171,10 +1171,12 @@ fn describe_lines(worker: &WorkerFacts) -> String {
     if let Some((billed, list)) = worker.cost.filter(|(_, list)| *list >= 0.005) {
         if list > billed + 0.005 {
             line.push_str(&format!(
-                "\n  ≈ ${list:.2} at API prices, ${billed:.2} billed"
+                "\n  ≈ {} at API prices, {} billed",
+                protocol::dollars(list),
+                protocol::dollars(billed)
             ));
         } else {
-            line.push_str(&format!("\n  cost ${billed:.2}"));
+            line.push_str(&format!("\n  cost {}", protocol::dollars(billed)));
         }
     }
     // What it cost with its workers, once that is more than its own.
@@ -1185,9 +1187,9 @@ fn describe_lines(worker: &WorkerFacts) -> String {
         line.push_str(&format!(
             "\n  {} with its workers",
             if list > billed + 0.005 {
-                format!("≈ ${list:.2}")
+                format!("≈ {}", protocol::dollars(list))
             } else {
-                format!("${billed:.2}")
+                protocol::dollars(billed)
             }
         ));
     }
