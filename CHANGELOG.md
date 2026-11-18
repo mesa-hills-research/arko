@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Editing files
+
+- The agents change files with `apply_diff` in place of `edit_file`. One call makes several
+  changes to a file, a SEARCH/REPLACE block for each, so an edit of many places takes one call
+  instead of one a place. Every block applies or none does, and when one doesn't, the error says
+  which block and why, and the file is left as it was.
+- A block's search lines must match whole lines of the file exactly and be found once, or with
+  `replace_all`, everywhere. The file is replaced in one step and keeps its permissions, owner,
+  group, ACL and other properties. A file with one that can't be kept, such as a second hard
+  link, is refused unchanged.
+- An edit's row says how many edits it made ("2 edits") and opens to the changes. The line prompt
+  says how many edits a call of several makes, and in Quiet each block counts as an edit ("Made 3
+  edits to app.rs").
+- `run_code` calls `apply_diff` in place of `edit_file`.
+- A session saved with `edit_file` resumes with it.
+
 ## 0.23.1 (2026-11-18)
 
 ### The transcript
