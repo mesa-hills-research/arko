@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Workers
+
+- Workers linked with each other (started in one group, with `peers` or with `link_agents`) hear
+  when one of them finishes, fails or is stopped. A finish gives the first lines of the report, and
+  a failure or a stop gives the reason. A worker waiting for a peer that had ended used to wait on,
+  since nothing told it. The note reaches a worker at work at its next step and ends its
+  `wait_for_agents`, and one that has ended reads it when it runs again, without being started.
+- When a session resumes, a worker whose monitors, moved calls or commands stopped with Arko is
+  told which, as the main agent is. A worker's monitor, such as a reviewer's watch of the commits
+  it reads, used to stay gone after a restart without a word.
+- `/peer-messages N` sets how many messages two linked workers may send each other before their
+  lead writes to either, 200 by default. It was 20, which stopped a reviewer in the middle of a
+  review. A change applies at once before the conversation starts, and otherwise when the session
+  opens again.
+
 ## 0.23.0 (2026-11-18)
 
 ### Models

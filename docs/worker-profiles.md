@@ -122,6 +122,7 @@ in your Arko folder once you turn outside access on. So treat a project's profil
 | `/worker-depth 1` to `4` | How many levels of workers the session allows |
 | `/worker-retry-cap off`, `on` or a number | How many failed model requests in a row stop a worker |
 | `/message-copies on` or `off` | Whether the agent that started a worker gets a copy of the messages you send the worker |
+| `/peer-messages N` | How many messages two linked workers may send each other before their lead writes to either |
 
 `/worker-models` (also `--worker-models`) takes three values. It is the "Models for workers" row in
 `/settings` and the setting of that name on the web page. With `agent`, the default, the main agent chooses a profile, model and effort for
@@ -148,6 +149,19 @@ web page. With it on, the agent that started a worker gets a copy of each messag
 worker, with its next news and without a turn of its own. With it off, that agent doesn't see your
 messages. A change applies from the next message, and a session saved before the setting existed has
 it on.
+
+`/peer-messages` is saved with the session and is 200 by default. Workers linked with each other
+(started in one group, with `peers`, or with `link_agents`) may send each other that many messages,
+and a message from their lead to either starts the count again. The framework takes the limit as
+the session's workflow is built, so a change applies at once before the conversation starts, and
+otherwise when the session opens again. A worker refused for the limit is told to ask its lead.
+
+A worker linked with others hears when one of them finishes, fails or is stopped, in a note for it
+alone. A finish gives the first lines of the report, and a failure or a stop gives the reason, so a
+worker waiting for its reviewer goes on. A worker at work reads the note at its next step, and a
+`wait_for_agents` returns on it. One that has ended reads it when it runs again, and the note
+doesn't start it. When the session resumes, a worker whose monitors, moved calls or commands
+stopped with Arko is told which, so it starts again those it still needs.
 
 A worker answers your message with `message_user`, as the main agent answers what you type while it
 works, and tells the agent that started it only what that agent needs. The answer shows in the
