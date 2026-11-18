@@ -29,6 +29,7 @@ mod census;
 mod cli;
 mod embed;
 mod engine;
+mod lexical;
 mod monitor;
 mod store;
 mod tools;
@@ -39,7 +40,7 @@ mod tests;
 #[cfg(feature = "tui")]
 pub use cli::{IndexCommand, run_command};
 pub(crate) use engine::WatchState;
-pub use engine::{Indexes, Known};
+pub use engine::{Indexes, Known, LIMITS_SETTING};
 pub(crate) use store::Kind;
 pub use tools::{
     TOOL_NAMES, definitions as tool_definitions, read_search_header, read_search_hits,

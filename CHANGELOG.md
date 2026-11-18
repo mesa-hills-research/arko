@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Search indexes
+
+- A lexical search is now an exact search of names and words. It lists every chunk that holds the
+  query as written (case-sensitive, or with `ignore_case=true` in any case of the ASCII letters),
+  grouped by file, with each chunk's lines and scope and the lines that hold the query. It used to
+  rank the chunks that held any word of the query and show the top 10 whole, so `search_blocking`
+  also found every chunk with `search`, and a list of callers lost all but the first few.
+- Lexical search returns 100 results by default and any number asked for, and `exhaustive=true`
+  lists every match. A list cut short says how many there are in all ("100 of 340 results").
+  Semantic and hybrid search keep 10 by default and at most 50. `ARKO_INDEX_LIMITS` (such as
+  `lexical=50,semantic=5`) changes each mode's default.
+- The agents use lexical search for every use of a name or an exact string, such as a function's
+  callers or an error message, and hybrid for a name's definition and for words in docs. rg stays
+  for regexes, and for punctuation alone and text inside a longer name, which lexical search
+  doesn't find.
+- `arko index search` takes `--exhaustive` and `--ignore-case`, and lists lexical matches the same
+  way.
+
 ## 0.22.2 (2026-11-14)
 
 ### The web page

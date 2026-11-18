@@ -49,6 +49,9 @@ pub enum Detail {
     /// The whole definition (function, type, doc section) of the top results,
     /// with line numbers, up to [`FULL_BUDGET`], and the rest as `Brief`.
     Full,
+    /// Grouped by file, each result's lines and scope and the lines that
+    /// hold the query (an exact search's matches).
+    Lines,
 }
 
 /// The definitions of the tools, which don't depend on the indexes, meaning what a
@@ -276,16 +279,27 @@ async fn blocking<T: Send + 'static>(
 
 // ----- parsed arguments -----
 
-/// `detail` is `full` (the default) or `brief`.
-pub(crate) fn parse_detail(params: &HashMap<String, Value>) -> Result<Detail, ToolError> {
+/// `detail` is `full` or `brief`, or None for the mode's own.
+pub(crate) fn parse_detail(params: &HashMap<String, Value>) -> Result<Option<Detail>, ToolError> {
     match str_param(params, "detail").map(|text| text.to_ascii_lowercase()) {
-        None => Ok(Detail::Full),
-        Some(text) if matches!(text.as_str(), "full" | "whole" | "code") => Ok(Detail::Full),
+        None => Ok(None),
+        Some(text) if matches!(text.as_str(), "full" | "whole" | "code") => Ok(Some(Detail::Full)),
         Some(text) if matches!(text.as_str(), "brief" | "short" | "snippet" | "snippets") => {
-            Ok(Detail::Brief(SNIPPET_LINES))
+            Ok(Some(Detail::Brief(SNIPPET_LINES)))
         }
         Some(text) => Err(invalid("detail", format!("{text:?}: use full or brief"))),
     }
+}
+
+/// How a search in `mode` shows its results unless `detail` says. An exact
+/// search lists its matches' lines, and the others show the top results
+/// whole.
+pub(crate) fn detail_for(mode: Option<ModeArg>, detail: Option<Detail>) -> Detail {
+    detail.unwrap_or(if mode == Some(ModeArg::Lexical) {
+        Detail::Lines
+    } else {
+        Detail::Full
+    })
 }
 
 pub(crate) fn parse_search(
@@ -297,15 +311,26 @@ pub(crate) fn parse_search(
     let mode = ModeArg::parse(&mode)
         .ok_or_else(|| invalid("mode", format!("{mode:?}: use semantic, lexical or hybrid")))?;
     let limit = count_param(params, "limit")?
-        .map(|limit| (limit as usize).clamp(1, engine::MAX_LIMIT))
-        .unwrap_or(engine::DEFAULT_LIMIT);
+        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX).max(1));
+    let exhaustive = bool_param(params, "exhaustive")?.unwrap_or(false);
+    let ignore_case = bool_param(params, "ignore_case")?.unwrap_or(false);
+    for (name, given) in [("exhaustive", exhaustive), ("ignore_case", ignore_case)] {
+        if given && mode != ModeArg::Lexical {
+            return Err(invalid(
+                name,
+                "it is for mode lexical, whose results hold the query as written",
+            ));
+        }
+    }
     Ok(SearchArgs {
         query,
         index: str_param(params, "index"),
         mode: Some(mode),
         limit,
+        exhaustive,
         path_prefix: str_param(params, "path_prefix"),
         language: str_param(params, "language"),
+        ignore_case,
         cwd: cwd.to_path_buf(),
     })
 }
@@ -550,9 +575,10 @@ const NO_RESULTS: &str = "No results for ";
 const NO_RESULTS_HINT: &str = ". Try other words, a broader path_prefix, or rg for exact text.";
 
 /// The first line of a search's result, which says how many results it had
-/// from which indexes (`searched`, each `name (kind, mode)`).
+/// from which indexes (`searched`, each `name (kind, mode)`), and of how many
+/// in all when the list is cut ("100 of 340 results").
 /// [`read_search_header`] reads it back.
-fn search_header(query: &str, searched: &[String], hits: usize) -> String {
+fn search_header(query: &str, searched: &[String], hits: usize, total: Option<usize>) -> String {
     if hits == 0 {
         let within = if searched.is_empty() {
             String::new()
@@ -561,19 +587,24 @@ fn search_header(query: &str, searched: &[String], hits: usize) -> String {
         };
         format!("{NO_RESULTS}{query:?}{within}{NO_RESULTS_HINT}")
     } else {
-        format!(
-            "{} from {}:",
-            crate::remote::plural(hits, "result", "results"),
-            searched.join(", ")
-        )
+        let count = match total {
+            Some(total) if total > hits => format!(
+                "{} of {}",
+                fmt_count(hits as u64),
+                fmt_counted(total as u64, "result", "results")
+            ),
+            _ => fmt_counted(hits as u64, "result", "results"),
+        };
+        format!("{count} from {}:", searched.join(", "))
     }
 }
 
 /// The hits of a search's result, as [`format_search_detail`] writes it,
 /// for a person: its first line ("6 results from arko (code, hybrid)"),
-/// then each result's header ("src/engine.rs:96-105 · fn branched")
-/// without the notes the agent reads (where the rest of a definition is, the
-/// lines that matched). `None` when it found nothing.
+/// then each result's header ("src/engine.rs:96-105 · fn branched", also
+/// for results grouped by file) without the notes the agent reads (where the
+/// rest of a definition is, the lines that matched). `None` when it found
+/// nothing.
 pub fn read_search_hits(output: &str) -> Option<Vec<String>> {
     let mut lines = output.lines();
     let first = lines.next()?;
@@ -581,7 +612,23 @@ pub fn read_search_hits(output: &str) -> Option<Vec<String>> {
         return None;
     }
     let mut hits = vec![first.trim_end_matches(':').to_string()];
+    // The last line that could be a file of grouped results, and where it went.
+    let mut file: Option<(usize, &str)> = None;
     for line in lines {
+        // A result of grouped ones ("  12-30 · fn x" under its file), which
+        // makes the line above its file rather than a result.
+        if let Some(result) = line.strip_prefix("  ")
+            && result.starts_with(|c: char| c.is_ascii_digit())
+        {
+            if let Some((at, path)) = file {
+                if hits.get(at).is_some_and(|hit| hit == path) {
+                    hits.remove(at);
+                    file = Some((usize::MAX, path));
+                }
+                hits.push(format!("{path}:{result}"));
+            }
+            continue;
+        }
         // (A whole result's numbered lines, a snippet's indented ones, and
         // the notes after the results.)
         let numbered = line
@@ -600,6 +647,7 @@ pub fn read_search_hits(output: &str) -> Option<Vec<String>> {
                 hit = before;
             }
         }
+        file = Some((hits.len(), line));
         hits.push(hit.to_string());
     }
     Some(hits)
@@ -631,7 +679,12 @@ pub fn read_search_header(line: &str) -> Option<(Vec<String>, usize)> {
         return Some((names(list), 0));
     }
     let (count, rest) = line.split_once(' ')?;
-    let hits = count.parse().ok()?;
+    let hits = count.replace(',', "").parse().ok()?;
+    // ("100 of 340 results", a cut list.)
+    let rest = match rest.strip_prefix("of ") {
+        Some(cut) => cut.split_once(' ')?.1,
+        None => rest,
+    };
     let list = rest
         .strip_prefix("results from ")
         .or_else(|| rest.strip_prefix("result from "))?
@@ -646,6 +699,66 @@ pub fn format_search(query: &str, output: &SearchOutput, snippet_lines: usize) -
     format_search_detail(query, output, Detail::Brief(snippet_lines))
 }
 
+/// `hits` grouped by file, in the order of each file's first, after a blank
+/// line. Each group is the file (`[index] path` when `several` indexes were
+/// searched), then each result as its lines and scope (`  774-877 · fn x`),
+/// then the lines that hold the query (`    804 | text`).
+fn grouped_results(hits: &[engine::Hit], several: bool) -> String {
+    let mut files: Vec<(&engine::Hit, Vec<&engine::Hit>)> = Vec::new();
+    let mut at: HashMap<(&str, &Path), usize> = HashMap::new();
+    for hit in hits {
+        let key = (hit.index.as_str(), hit.file.as_path());
+        match at.get(&key) {
+            Some(&group) => files[group].1.push(hit),
+            None => {
+                at.insert(key, files.len());
+                files.push((hit, vec![hit]));
+            }
+        }
+    }
+    let mut out = String::new();
+    if !files.is_empty() {
+        out.push('\n');
+    }
+    for (first, mut results) in files {
+        results.sort_by_key(|hit| hit.start_line);
+        if several {
+            out.push_str(&format!("[{}] ", first.index));
+        }
+        out.push_str(&first.display);
+        out.push('\n');
+        for hit in results {
+            out.push_str(&format!("  {}-{}", hit.start_line, hit.end_line));
+            let context = if hit.scope.is_empty() {
+                &hit.symbol
+            } else {
+                &hit.scope
+            };
+            if !context.is_empty() {
+                out.push_str(&format!(" · {context}"));
+            }
+            if hit.changed {
+                out.push_str(" (file changed since indexed)");
+            }
+            out.push('\n');
+            let Some(lines) = &hit.lines else {
+                continue;
+            };
+            for (number, line) in &lines.shown {
+                out.push_str(&format!("    {number} | {line}\n"));
+            }
+            if lines.more > 0 {
+                out.push_str(&format!(
+                    "    and {} more {}\n",
+                    fmt_count(lines.more as u64),
+                    crate::remote::noun(lines.more, "line", "lines")
+                ));
+            }
+        }
+    }
+    out
+}
+
 /// A search's results with `detail`, meaning a header line, then per result
 /// `path:start-end · scope` and its lines, then notes.
 pub fn format_search_detail(query: &str, output: &SearchOutput, detail: Detail) -> String {
@@ -656,9 +769,16 @@ pub fn format_search_detail(query: &str, output: &SearchOutput, detail: Detail) 
         .map(|(name, kind, mode)| format!("{name} ({}, {})", kind.as_str(), mode_name(*mode)))
         .collect();
     let several = output.searched.len() > 1;
-    out.push_str(&search_header(query, &searched, output.hits.len()));
+    out.push_str(&search_header(
+        query,
+        &searched,
+        output.hits.len(),
+        output.total,
+    ));
     out.push('\n');
-    if !output.hits.is_empty() {
+    if detail == Detail::Lines {
+        out.push_str(&grouped_results(&output.hits, several));
+    } else if !output.hits.is_empty() {
         let kinds: HashMap<&str, Kind> = output
             .searched
             .iter()
@@ -670,6 +790,8 @@ pub fn format_search_detail(query: &str, output: &SearchOutput, detail: Detail) 
         for hit in &output.hits {
             let lines = match detail {
                 Detail::Brief(lines) => lines,
+                // (Shown above.)
+                Detail::Lines => 0,
                 Detail::Full => {
                     out.push('\n');
                     let kind = kinds.get(hit.index.as_str()).copied().unwrap_or(Kind::Code);
@@ -910,9 +1032,10 @@ pub fn format_create(outcome: &CreateOutcome) -> String {
 // ----- the tools -----
 
 const SEARCH_DESCRIPTION: &str = "Searches Arko's indexes of code and docs by meaning and by words (syntax-aware chunks, keyword BM25 plus Voyage embeddings). \
-Before you commit to grep or rg, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you want (\"where are failed requests retried\", \"code that validates config paths\") and search with mode `semantic`. A name's definition or an exact string takes `hybrid`. Results come back whole where rg gives one line, so one search often replaces several rounds of rg, sed and read_file. \
-Use rg/grep for every use of a name, for regexes, and for exact strings in files no index covers. \
-Returns ranked `path:start-end · scope` results. The top ones come whole: the entire function, type or doc section, with line numbers as read_file shows them, so there's no need to read them again or grep around them; the rest show their first lines (read those with read_file if they look promising). detail=brief returns only locations and short snippets: more results in less space. \
+Before you commit to grep or rg, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you want (\"where are failed requests retried\", \"code that validates config paths\") and search with mode `semantic`. A name's definition takes `hybrid`. Every use of a name or an exact string (a function's callers, an error message) takes `lexical`. Results come back whole where rg gives one line, so one search often replaces several rounds of rg, sed and read_file. \
+Use rg/grep for regexes, punctuation alone, text inside a longer name, and files no index covers. \
+Semantic and hybrid return ranked `path:start-end · scope` results. The top ones come whole: the entire function, type or doc section, with line numbers as read_file shows them, so there's no need to read them again or grep around them; the rest show their first lines (read those with read_file if they look promising). detail=brief returns only locations and short snippets: more results in less space. \
+Lexical lists every chunk that holds the query as written, in path order and grouped by file, each with its scope and the lines that hold the query. Its first line says how many there are in all (\"100 of 340 results\"), and exhaustive=true lists them all. \
 Works for any directory with an index, not just the current one: name it in `index` (an index name, or any directory or file inside it) or give a `path_prefix` inside it. Without either, searches the indexes covering the current directory; index_status lists them all.";
 
 const STATUS_DESCRIPTION: &str = "Shows Arko's semantic search indexes (all, or the one named): root, kind, chunks, embedding coverage and cost, monitoring and pending changes, errors. Check it before index_create.";
@@ -944,7 +1067,7 @@ impl Tool for SearchTool {
         params: HashMap<String, Value>,
     ) -> Result<String, ToolError> {
         let args = parse_search(&params, context.current_working_directory)?;
-        let detail = parse_detail(&params)?;
+        let detail = detail_for(args.mode, parse_detail(&params)?);
         let indexes = Arc::clone(&self.indexes);
         let query = args.query.clone();
         // Chunking the results' files again is blocking work too.
@@ -1070,6 +1193,24 @@ impl Tool for ManageTool {
     }
 }
 
+/// What `limit` says, meaning the results by default in each mode (`limits`)
+/// and the most in semantic and hybrid mode.
+fn limit_description(limits: engine::Limits) -> String {
+    let ranked = if limits.semantic == limits.hybrid {
+        format!("{} in semantic and hybrid mode", limits.semantic)
+    } else {
+        format!(
+            "{} in semantic mode and {} in hybrid",
+            limits.semantic, limits.hybrid
+        )
+    };
+    format!(
+        "Results, by default {} in lexical mode and {ranked}, where {} is the most.",
+        limits.lexical,
+        engine::MAX_LIMIT
+    )
+}
+
 /// The definition of `SearchTool`'s tool.
 fn search_definition() -> ToolDefinition {
     definition(
@@ -1090,14 +1231,26 @@ fn search_definition() -> ToolDefinition {
             ),
             param(
                 "mode",
-                "Pick it from what you're looking for. `semantic` when you don't know the symbols or strings and describe the behaviour in your own words (\"where is the session saved to disk\"). `hybrid` for where an exact name is defined (`ARKO_HOME`), an exact string such as an error message, or a name together with words about it (\"Session::save error handling\"). `lexical` is rarely needed because rg does the same, but the docs and Markdown files of a code index are found by words, so use it for those. An index without embeddings always searches by words.",
+                "Pick it from what you're looking for. `semantic` when you don't know the symbols or strings and describe the behaviour in your own words (\"where is the session saved to disk\"). `hybrid` for where a name is defined (`ARKO_HOME`), a name together with words about it (\"Session::save error handling\"), and words in the docs and Markdown files of a code index. `lexical` for every place that holds a name or an exact string as written (`search_blocking` for its callers, an error message), case-sensitive unless ignore_case=true. It finds names and words, so rg is for punctuation alone (`->`) and for text inside a longer name (`block` in `search_blocking`). An index without embeddings searches by words in semantic and hybrid mode too.",
                 ToolParameterType::String,
                 true,
             ),
             param(
                 "limit",
-                "Results, 1-50 (default 10).",
+                &limit_description(engine::limits()),
                 ToolParameterType::Integer,
+                false,
+            ),
+            param(
+                "exhaustive",
+                "Lexical mode only. true lists every match, whatever the limit.",
+                ToolParameterType::Bool,
+                false,
+            ),
+            param(
+                "ignore_case",
+                "Lexical mode only. true matches the query's ASCII letters in any case.",
+                ToolParameterType::Bool,
                 false,
             ),
             param(
@@ -1108,7 +1261,7 @@ fn search_definition() -> ToolDefinition {
             ),
             param(
                 "detail",
-                "full (default): the top results' whole definitions with line numbers; brief: locations and 3-line snippets only.",
+                "full (default in semantic and hybrid mode): the top results' whole definitions with line numbers; brief: locations and 3-line snippets only. Lexical mode lists the lines that hold the query unless detail is given.",
                 ToolParameterType::String,
                 false,
             ),

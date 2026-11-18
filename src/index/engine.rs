@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use arko_index::bench_v1::Options;
+use arko_index::bench_v1::{Chunk, Options};
 use arko_index::dense::{DenseBuild, DenseIndexInfo, EmbedProgress, EmbedState, StopSignal};
 use arko_index::hybrid::{self, Mode, SearchRequest};
 use arko_index::index2::{self, BuildOptions};
@@ -36,6 +36,7 @@ use tokio::runtime::Handle;
 
 use super::census::{self, Census};
 use super::embed::{self, Backend};
+use super::lexical::{Lines, Literal};
 use super::monitor::{self, OpenError};
 use super::store::{self, BuildRecord, Kind, Layout, Manifest, Rules};
 
@@ -51,10 +52,90 @@ pub type Events = Arc<dyn Fn(&str) + Send + Sync>;
 /// since the last build up to date (about $0.02 with voyage-code-4). The rest stay
 /// lexical until Arko monitors the index or `arko index embed` runs.
 pub const FRESHEN_EMBED_TOKENS: u64 = 200_000;
-/// The most results a search returns.
+/// The most results a semantic or hybrid search returns. A lexical search
+/// returns any number.
 pub const MAX_LIMIT: usize = 50;
-/// Results by default.
-pub const DEFAULT_LIMIT: usize = 10;
+/// Results by default, per mode.
+pub const DEFAULT_LIMITS: Limits = Limits {
+    semantic: 10,
+    hybrid: 10,
+    lexical: 100,
+};
+/// The setting that changes [`DEFAULT_LIMITS`] for the process, such as
+/// `lexical=50,semantic=5`.
+pub const LIMITS_SETTING: &str = "ARKO_INDEX_LIMITS";
+
+/// The results a search returns by default, per mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    pub semantic: usize,
+    pub hybrid: usize,
+    pub lexical: usize,
+}
+
+impl Limits {
+    /// The default results of a search in `mode` (None is hybrid where it
+    /// can be).
+    pub fn of(&self, mode: Option<ModeArg>) -> usize {
+        match mode {
+            Some(ModeArg::Semantic) => self.semantic,
+            Some(ModeArg::Lexical) => self.lexical,
+            Some(ModeArg::Hybrid) | None => self.hybrid,
+        }
+    }
+
+    /// These limits with those `text` sets (`lexical=50,semantic=5`), each 1
+    /// or more, and semantic and hybrid at most [`MAX_LIMIT`].
+    pub fn with(mut self, text: &str) -> Result<Self, String> {
+        for part in text
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
+            let (mode, count) = part
+                .split_once('=')
+                .ok_or_else(|| format!("{part:?} isn't MODE=COUNT, such as lexical=50"))?;
+            let mode = ModeArg::parse(mode)
+                .filter(|_| !mode.trim().is_empty())
+                .ok_or_else(|| format!("{:?} isn't semantic, hybrid or lexical", mode.trim()))?;
+            let count: usize = count
+                .trim()
+                .parse()
+                .ok()
+                .filter(|count| *count > 0)
+                .ok_or_else(|| format!("{part:?} needs a count of 1 or more"))?;
+            if mode != ModeArg::Lexical && count > MAX_LIMIT {
+                return Err(format!(
+                    "{part:?} is over {MAX_LIMIT}, the most in that mode"
+                ));
+            }
+            match mode {
+                ModeArg::Semantic => self.semantic = count,
+                ModeArg::Hybrid => self.hybrid = count,
+                ModeArg::Lexical => self.lexical = count,
+            }
+        }
+        Ok(self)
+    }
+}
+
+/// The default results of this process, meaning [`DEFAULT_LIMITS`] with what
+/// `ARKO_INDEX_LIMITS` (in the environment or a `.env` file) sets. A setting
+/// that doesn't parse is logged and left out.
+pub fn limits() -> Limits {
+    static LIMITS: std::sync::OnceLock<Limits> = std::sync::OnceLock::new();
+    *LIMITS.get_or_init(|| {
+        let Some(text) = crate::credentials::var(LIMITS_SETTING) else {
+            return DEFAULT_LIMITS;
+        };
+        DEFAULT_LIMITS.with(&text).unwrap_or_else(|error| {
+            log::warn!("{LIMITS_SETTING} is left out: {error}");
+            DEFAULT_LIMITS
+        })
+    })
+}
+/// The files a lexical search's note names of those it couldn't read.
+const UNREAD_NAMED: usize = 5;
 /// Why a watcher thread ended when it panicked (the log has the panic).
 const PANICKED_WATCHER: &str = "an unexpected error, which the log shows";
 /// The last background run's line when its thread panicked.
@@ -260,12 +341,19 @@ pub struct SearchArgs {
     pub query: String,
     /// An index name, id or root path. None means every index of the directory.
     pub index: Option<String>,
-    /// None means hybrid where the index has vectors and a key is set, else lexical.
+    /// None means hybrid where the index has vectors and a key is set, else
+    /// lexical. Only `Lexical` asked for is an exact search (see
+    /// [`lexical`](super::lexical)).
     pub mode: Option<ModeArg>,
-    pub limit: usize,
+    /// Results, by default the mode's in [`limits`].
+    pub limit: Option<usize>,
+    /// An exact search returns every match, whatever `limit` says.
+    pub exhaustive: bool,
     /// A path (relative to `cwd`, or absolute) results must be under.
     pub path_prefix: Option<String>,
     pub language: Option<String>,
+    /// An exact search matches any case of the query's ASCII letters.
+    pub ignore_case: bool,
     pub cwd: PathBuf,
 }
 
@@ -285,12 +373,16 @@ pub struct Hit {
     pub symbol: String,
     /// The file changed after the index was built.
     pub changed: bool,
+    /// The lines that hold the query, for a match of an exact search.
+    pub lines: Option<Lines>,
 }
 
 /// What a search found, and how.
 #[derive(Clone, Debug, Default)]
 pub struct SearchOutput {
     pub hits: Vec<Hit>,
+    /// The matches in all, for an exact search, which `hits` may cut.
+    pub total: Option<usize>,
     /// Each index searched, meaning its name, kind and the mode used.
     pub searched: Vec<(String, Kind, Mode)>,
     pub notes: Vec<String>,
@@ -1581,7 +1673,21 @@ impl Indexes {
             return Err("the query is empty".into());
         }
         let cwd = args.cwd.canonicalize().unwrap_or_else(|_| args.cwd.clone());
-        let limit = args.limit.clamp(1, MAX_LIMIT);
+        // Lexical asked for is an exact search, whose matches are all
+        // equally right, so it has no most.
+        let exact = args.mode == Some(ModeArg::Lexical);
+        if !exact && (args.exhaustive || args.ignore_case) {
+            return Err(
+                "exhaustive and ignore_case are for mode lexical, whose results hold the query as written"
+                    .into(),
+            );
+        }
+        let limit = args.limit.unwrap_or_else(|| limits().of(args.mode)).max(1);
+        let limit = match exact {
+            true if args.exhaustive => usize::MAX,
+            true => limit,
+            false => limit.min(MAX_LIMIT),
+        };
         let prefix = args
             .path_prefix
             .as_deref()
@@ -1607,6 +1713,7 @@ impl Indexes {
             .as_deref()
             .map(str::trim)
             .filter(|language| !language.is_empty());
+        let literal = exact.then(|| Literal::new(query, args.ignore_case));
         let mut output = SearchOutput::default();
         let mut lists: Vec<Vec<Hit>> = Vec::new();
         for target in &targets {
@@ -1649,18 +1756,32 @@ impl Indexes {
                 filter,
                 cwd: &cwd,
             };
-            lists.push(self.search_one(&entry, &manifest, &query, &mut output)?);
+            lists.push(match &literal {
+                Some(literal) => {
+                    self.search_exact(&entry, &manifest, &query, literal, &mut output)?
+                }
+                None => self.search_one(&entry, &manifest, &query, &mut output)?,
+            });
         }
-        // Interleaved by rank, so each index's best results come first.
-        let longest = lists.iter().map(Vec::len).max().unwrap_or(0);
-        for rank in 0..longest {
-            for list in &lists {
-                if let Some(hit) = list.get(rank) {
-                    output.hits.push(hit.clone());
+        if literal.is_some() {
+            output.total = Some(lists.iter().map(Vec::len).sum());
+        }
+        // Interleaved by rank, so each index's best results come first (and
+        // each index keeps its share of a cut list), up to the limit.
+        let mut lists: Vec<_> = lists.into_iter().map(Vec::into_iter).collect();
+        while output.hits.len() < limit {
+            let before = output.hits.len();
+            for list in &mut lists {
+                if output.hits.len() < limit
+                    && let Some(hit) = list.next()
+                {
+                    output.hits.push(hit);
                 }
             }
+            if output.hits.len() == before {
+                break;
+            }
         }
-        output.hits.truncate(limit);
         // A language that matched nothing was often a wrong guess (`rust` in
         // a Python project). The search goes on without it, and says so.
         if output.hits.is_empty()
@@ -1677,6 +1798,21 @@ impl Indexes {
                 ));
                 return Ok(wider);
             }
+        }
+        match output.total {
+            Some(total) if total > output.hits.len() => output.notes.push(format!(
+                "exhaustive=true lists all {}, and path_prefix narrows the search",
+                fmt_count(total as u64)
+            )),
+            Some(0) => output.notes.push(format!(
+                "lexical finds the chunks that hold the query as written{}. hybrid finds its words in any order, and rg finds punctuation alone and text inside a longer name",
+                if args.ignore_case {
+                    ""
+                } else {
+                    " (ignore_case=true matches its ASCII letters in any case)"
+                }
+            )),
+            _ => {}
         }
         Ok(output)
     }
@@ -1756,15 +1892,7 @@ impl Indexes {
                 fmt_count(info.docs)
             ));
         }
-        {
-            let live = lock(&entry.live);
-            if live.dirty && live.changes > 0 {
-                output.notes.push(format!(
-                    "Files of {name} changed since the last build, so a rebuild is pending ({})",
-                    live.watch.describe()
-                ));
-            }
-        }
+        note_pending(entry, name, output);
         let embedder = match (&info, mode) {
             (Some(info), Mode::Dense | Mode::Hybrid) => Some(self.backend().embedder(
                 &info.embedder,
@@ -1809,28 +1937,114 @@ impl Indexes {
             .hits
             .into_iter()
             .map(|hit| {
-                let chunk = hit.chunk;
-                let file = manifest.root.join(&chunk.path);
-                let display = match file.strip_prefix(query.cwd) {
-                    Ok(relative) if !relative.as_os_str().is_empty() => {
-                        relative.to_string_lossy().into_owned()
-                    }
-                    _ => file.to_string_lossy().into_owned(),
-                };
-                Hit {
-                    index: name.clone(),
-                    changed: changed_since(&file, built_at),
-                    display,
-                    file,
-                    start_line: chunk.start_line,
-                    end_line: chunk.end_line,
-                    start_byte: chunk.start_byte,
-                    end_byte: chunk.end_byte,
-                    scope: chunk.scope,
-                    symbol: chunk.symbol_path,
-                }
+                let mut hit = hit_of(manifest, hit.chunk, query.cwd);
+                hit.changed = changed_since(&hit.file, built_at);
+                hit
             })
             .collect())
+    }
+
+    /// The matches of an exact search in one index (see
+    /// [`lexical`](super::lexical)), in path and line order, meaning the
+    /// candidates arko_index finds by the query's words whose text holds the
+    /// query as written, as their file is now.
+    fn search_exact(
+        &self,
+        entry: &Entry,
+        manifest: &Manifest,
+        query: &Query<'_>,
+        literal: &Literal,
+        output: &mut SearchOutput,
+    ) -> Result<Vec<Hit>, String> {
+        let name = &manifest.name;
+        let state = entry.layout.state();
+        let docs = match index2::status(&state) {
+            Ok(status) => status.docs,
+            Err(error) => {
+                output.notes.push(format!(
+                    "{name} isn't built yet ({error}), and index_manage action=rebuild builds it"
+                ));
+                return Ok(Vec::new());
+            }
+        };
+        note_pending(entry, name, output);
+        let candidates = every_candidate(&state, query.text, &query.filter, docs)
+            .map_err(|error| format!("{name} couldn't be searched ({error})"))?;
+        output
+            .searched
+            .push((name.clone(), manifest.kind, Mode::Lexical));
+        let mut files: std::collections::BTreeMap<String, Vec<Chunk>> = Default::default();
+        for hit in candidates {
+            files
+                .entry(hit.chunk.path.clone())
+                .or_default()
+                .push(hit.chunk);
+        }
+        let built_at = manifest.last_build.as_ref().and_then(|record| record.at);
+        let mut hits = Vec::new();
+        // The files that couldn't be checked, each with why.
+        let mut unread: Vec<String> = Vec::new();
+        for (path, mut chunks) in files {
+            let file = manifest.root.join(&path);
+            let text = match std::fs::read_to_string(&file) {
+                // (A NUL makes a file binary, as the index reads it.)
+                Ok(text) if text.contains('\0') => continue,
+                Ok(text) => text,
+                // (A file gone, or no longer text, holds nothing.)
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => {
+                    unread.push(format!("{path} ({error})"));
+                    continue;
+                }
+            };
+            // The index's chunks of a file changed since may not fit it any
+            // more, so it is chunked again, and all its chunks are checked.
+            let changed = changed_since(&file, built_at);
+            if changed {
+                match arko_index::bench_v1::chunk_str(
+                    Path::new(&path),
+                    &text,
+                    &chunk_options(manifest.kind),
+                ) {
+                    Ok(now) => {
+                        chunks = now
+                            .into_iter()
+                            .filter(|chunk| query.filter.matches(&chunk.path, &chunk.language))
+                            .collect();
+                    }
+                    Err(error) => {
+                        unread.push(format!("{path} ({error})"));
+                        continue;
+                    }
+                }
+            }
+            chunks.sort_by_key(|chunk| chunk.start_byte);
+            for (chunk, lines) in literal.matches(&text, &chunks) {
+                let mut hit = hit_of(manifest, chunk.clone(), query.cwd);
+                hit.changed = changed;
+                hit.lines = Some(lines);
+                hits.push(hit);
+            }
+        }
+        if !unread.is_empty() {
+            let count = fmt_counted(unread.len() as u64, "file", "files");
+            let shown = unread.len().min(UNREAD_NAMED);
+            let mut which = unread[..shown].join(", ");
+            if unread.len() > shown {
+                which.push_str(&format!(" and {} more", unread.len() - shown));
+            }
+            output.notes.push(format!(
+                "The results and their count leave out {count} of {name} that couldn't be read, {which}"
+            ));
+        }
+        Ok(hits)
     }
 
     // ----- status -----
@@ -2330,7 +2544,64 @@ struct Query<'a> {
     cwd: &'a Path,
 }
 
-/// Whether `file` was modified after `built` (or is gone).
+/// Every chunk of the index at `state` that holds a word of `query` (and
+/// passes `filter`), by BM25, when its generation had `docs` chunks as last
+/// read. A build may have published a larger one since, so a list that comes
+/// back full is asked for again with twice as many.
+pub(crate) fn every_candidate(
+    state: &Path,
+    query: &str,
+    filter: &Filter,
+    docs: u64,
+) -> Result<Vec<hybrid::SearchHit>, arko_index::bench_v1::Error> {
+    let mut depth = usize::try_from(docs).unwrap_or(usize::MAX / 4) + 1;
+    loop {
+        let request = SearchRequest::new(query)
+            .with_mode(Mode::Lexical)
+            .with_limit(depth)
+            .with_filter(filter.clone());
+        let results = hybrid::search(state, &request, None)?;
+        if results.hits.len() < depth {
+            return Ok(results.hits);
+        }
+        depth = depth.saturating_mul(2);
+    }
+}
+
+/// Notes that the index's files changed since its last build, when they did.
+fn note_pending(entry: &Entry, name: &str, output: &mut SearchOutput) {
+    let live = lock(&entry.live);
+    if live.dirty && live.changes > 0 {
+        output.notes.push(format!(
+            "Files of {name} changed since the last build, so a rebuild is pending ({})",
+            live.watch.describe()
+        ));
+    }
+}
+
+/// The result of `chunk` of the index `manifest` describes, shown relative to
+/// `cwd` when it lies under it.
+fn hit_of(manifest: &Manifest, chunk: Chunk, cwd: &Path) -> Hit {
+    let file = manifest.root.join(&chunk.path);
+    let display = match file.strip_prefix(cwd) {
+        Ok(relative) if !relative.as_os_str().is_empty() => relative.to_string_lossy().into_owned(),
+        _ => file.to_string_lossy().into_owned(),
+    };
+    Hit {
+        index: manifest.name.clone(),
+        changed: false,
+        display,
+        file,
+        start_line: chunk.start_line,
+        end_line: chunk.end_line,
+        start_byte: chunk.start_byte,
+        end_byte: chunk.end_byte,
+        scope: chunk.scope,
+        symbol: chunk.symbol_path,
+        lines: None,
+    }
+}
+
 /// How the indexes of `kind` chunk their files.
 pub(crate) fn chunk_options(kind: Kind) -> Options {
     Options {

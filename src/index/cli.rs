@@ -9,7 +9,7 @@ use arko_index::dense::{EmbedProgress, StopSignal};
 
 use super::embed::{self, Backend};
 use super::engine::{
-    self, Action, CreateArgs, EmbedSummary, Events, Found, Indexes, ModeArg, SearchArgs, Timing,
+    Action, CreateArgs, EmbedSummary, Events, Found, Indexes, ModeArg, SearchArgs, Timing,
     chunks_in_files, fmt_count, fmt_counted, fmt_dollars,
 };
 use super::tools::{self, format_create, format_search_detail, format_status};
@@ -64,9 +64,16 @@ pub enum IndexCommand {
         /// hybrid, semantic or lexical (by default hybrid when the index has embeddings)
         #[arg(long, short)]
         mode: Option<String>,
-        /// Results, 1-50
-        #[arg(long, short = 'n', default_value_t = engine::DEFAULT_LIMIT)]
-        limit: usize,
+        /// Results (by default 10, and 100 in lexical mode, or as
+        /// ARKO_INDEX_LIMITS says), at most 50 in semantic and hybrid mode
+        #[arg(long, short = 'n')]
+        limit: Option<usize>,
+        /// Every match of a lexical search, whatever --limit says
+        #[arg(long)]
+        exhaustive: bool,
+        /// A lexical search matches the query's ASCII letters in any case
+        #[arg(long)]
+        ignore_case: bool,
         /// Only results under this path (absolute, or relative to the current
         /// directory). Without --index, it picks the indexes too
         #[arg(long)]
@@ -74,9 +81,10 @@ pub enum IndexCommand {
         /// Only chunks of this language (rust, python, markdown, ...)
         #[arg(long)]
         language: Option<String>,
-        /// Snippet lines per result
-        #[arg(long, default_value_t = tools::SNIPPET_LINES)]
-        lines: usize,
+        /// Snippet lines per result (3 by default, and lexical search lists
+        /// the lines that matched)
+        #[arg(long)]
+        lines: Option<usize>,
         /// Show the top results' whole definitions (functions, types, doc
         /// sections) with line numbers, as the agents get them
         #[arg(long, conflicts_with = "lines")]
@@ -163,7 +171,7 @@ pub(crate) async fn run_command_with(
 }
 
 /// The text the tools share, with the tools' hints turned into commands.
-fn cli_text(text: &str) -> String {
+pub(super) fn cli_text(text: &str) -> String {
     let text = [
         ("index_manage action=embed", "`arko index embed`"),
         ("index_manage action=rebuild", "`arko index update --force`"),
@@ -173,12 +181,32 @@ fn cli_text(text: &str) -> String {
             "`arko index create PATH`",
         ),
         ("index_create", "`arko index create PATH`"),
+        ("exhaustive=true", "--exhaustive"),
+        ("ignore_case=true", "--ignore-case"),
+        ("path_prefix narrows", "--path-prefix narrows"),
+        ("hybrid finds", "--mode hybrid finds"),
     ]
     .iter()
     .fold(text.to_string(), |text, (tool, command)| {
         text.replace(tool, command)
     });
     crate::glyphs::render(&text).into_owned()
+}
+
+/// A search's result for the command, meaning its notes with the tools' hints
+/// turned into commands, and the results as they are, since a matched line
+/// may hold the same words.
+pub(super) fn cli_search_text(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            if line.starts_with("note: ") {
+                cli_text(line)
+            } else {
+                crate::glyphs::render(line).into_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 async fn blocking<T: Send + 'static>(
@@ -320,6 +348,8 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             index,
             mode,
             limit,
+            exhaustive,
+            ignore_case,
             path_prefix,
             language,
             lines,
@@ -335,22 +365,29 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                 query: query.join(" "),
                 index,
                 mode,
-                limit: limit.clamp(1, engine::MAX_LIMIT),
+                limit,
+                exhaustive,
                 path_prefix,
                 language,
+                ignore_case,
                 cwd: cwd.to_path_buf(),
             };
             let text = args.query.clone();
             let worker = Arc::clone(indexes);
-            let detail = if full {
-                tools::Detail::Full
-            } else {
-                tools::Detail::Brief(lines)
+            let detail = match (full, lines) {
+                (true, _) => Some(tools::Detail::Full),
+                (false, Some(lines)) => Some(tools::Detail::Brief(lines)),
+                // The agents' search, but with snippets for whole results.
+                (false, None) if mode != Some(ModeArg::Lexical) => {
+                    Some(tools::Detail::Brief(tools::SNIPPET_LINES))
+                }
+                (false, None) => None,
             };
+            let detail = tools::detail_for(mode, detail);
             let output = blocking(move || worker.search_blocking(&args)).await?;
             println!(
                 "{}",
-                cli_text(&format_search_detail(&text, &output, detail))
+                cli_search_text(&format_search_detail(&text, &output, detail))
             );
             Ok(ExitCode::SUCCESS)
         }

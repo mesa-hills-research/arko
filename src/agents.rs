@@ -887,7 +887,7 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
     if !settings.index_tools.is_empty() {
         text.push_str(
             "\n# Search indexes\n\
-             When the code you work on has an index (see the list below), begin every task with `index_search`, before anything else. Before you reach for `rg`, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you're looking for and search with mode `semantic`. It finds the code even when the words differ from yours (a user's \"handoff\" for code that says \"handover\", which `rg` misses), and the results show where it lives and how it works. Use mode `hybrid` for where an exact name is defined, an exact string such as an error message, or a name together with words about it. `rg` is for every use of a name, regexes, and exact strings in files no index covers. Read files once the searches have shown you where to look.\n\n",
+             When the code you work on has an index (see the list below), begin every task with `index_search`, before anything else. Before you reach for `rg`, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you're looking for and search with mode `semantic`. It finds the code even when the words differ from yours (a user's \"handoff\" for code that says \"handover\", which `rg` misses), and the results show where it lives and how it works. Use mode `hybrid` for where a name is defined, or a name together with words about it. Use mode `lexical` for every use of a name or an exact string, such as a function's callers or an error message. It lists each place that holds it as written, grouped by file. `rg` is for regexes, punctuation alone, text inside a longer name, and files no index covers. Read files once the searches have shown you where to look.\n\n",
         );
         text.push_str(&known_indexes(settings.indexes));
         // A worker's worktree is a checkout elsewhere, so the index of the
@@ -1830,9 +1830,9 @@ mod tests {
 
     /// Before `rg`, both agents ask whether they know the symbols or exact
     /// strings they look for, and describe the behaviour in `semantic` mode
-    /// when they don't. `hybrid` is for definitions and exact strings, and
-    /// `rg` for every use of a name and for regexes. The search tool says
-    /// the same in its description and its `mode`.
+    /// when they don't. `hybrid` is for definitions, `lexical` for every use
+    /// of a name and for exact strings, and `rg` for regexes. The search tool
+    /// says the same in its description and its `mode`.
     #[tokio::test]
     async fn the_search_rule_is_the_same_in_both_prompts_and_the_tool() {
         let opus = model("opus", false);
@@ -1847,7 +1847,7 @@ mod tests {
             let prompt = &config.instructions;
             for rule in [
                 "begin every task with `index_search`, before anything else. Before you reach for `rg`, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you're looking for and search with mode `semantic`.",
-                "Use mode `hybrid` for where an exact name is defined, an exact string such as an error message, or a name together with words about it. `rg` is for every use of a name, regexes, and exact strings in files no index covers.",
+                "Use mode `hybrid` for where a name is defined, or a name together with words about it. Use mode `lexical` for every use of a name or an exact string, such as a function's callers or an error message. It lists each place that holds it as written, grouped by file. `rg` is for regexes, punctuation alone, text inside a longer name, and files no index covers.",
             ] {
                 assert!(prompt.contains(rule), "{rule}");
             }
@@ -1864,11 +1864,12 @@ mod tests {
             "Before you commit to grep or rg, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you want"
         ));
         assert!(definition.description.contains("with mode `semantic`"));
-        assert!(
-            definition
-                .description
-                .contains("Use rg/grep for every use of a name, for regexes, and for exact strings in files no index covers.")
-        );
+        assert!(definition.description.contains(
+            "Every use of a name or an exact string (a function's callers, an error message) takes `lexical`."
+        ));
+        assert!(definition.description.contains(
+            "Use rg/grep for regexes, punctuation alone, text inside a longer name, and files no index covers."
+        ));
         let mode = definition
             .parameters
             .iter()
@@ -1876,9 +1877,9 @@ mod tests {
             .unwrap();
         for rule in [
             "`semantic` when you don't know the symbols or strings and describe the behaviour in your own words",
-            "`hybrid` for where an exact name is defined",
-            "`lexical` is rarely needed because rg does the same",
-            "docs and Markdown files of a code index",
+            "`hybrid` for where a name is defined",
+            "`lexical` for every place that holds a name or an exact string as written",
+            "words in the docs and Markdown files of a code index",
         ] {
             assert!(mode.description.contains(rule), "{rule}");
         }

@@ -15,7 +15,7 @@ use clap::Parser;
 use serde_json::{Value, json};
 
 use super::census::{self, Census, Class};
-use super::cli::{IndexCommand, run_command_with};
+use super::cli::{IndexCommand, cli_search_text, cli_text, run_command_with};
 use super::embed::{self, Backend};
 use super::engine::{
     Action, CreateArgs, CreateOutcome, EmbedPlan, Events, Hit, Indexes, ModeArg, SearchArgs,
@@ -217,9 +217,11 @@ fn search_args(cwd: &Path, query: &str, mode: Option<ModeArg>) -> SearchArgs {
         query: query.into(),
         index: None,
         mode,
-        limit: 10,
+        limit: Some(10),
+        exhaustive: false,
         path_prefix: None,
         language: None,
+        ignore_case: false,
         cwd: cwd.to_path_buf(),
     }
 }
@@ -794,14 +796,15 @@ fn dense_and_hybrid_search_with_the_test_embedder() {
     assert_eq!(manifest.embed_tokens, summary.tokens);
     assert!(manifest.last_build.is_some() && manifest.build_error.is_none());
 
-    for (mode, expected) in [
-        (Some(ModeArg::Semantic), Mode::Dense),
-        (Some(ModeArg::Hybrid), Mode::Hybrid),
-        (None, Mode::Hybrid),
-        (Some(ModeArg::Lexical), Mode::Lexical),
+    // (Lexical search is exact, so it gets a name.)
+    for (mode, expected, query) in [
+        (Some(ModeArg::Semantic), Mode::Dense, "retry backoff delay"),
+        (Some(ModeArg::Hybrid), Mode::Hybrid, "retry backoff delay"),
+        (None, Mode::Hybrid, "retry backoff delay"),
+        (Some(ModeArg::Lexical), Mode::Lexical, "retry_with_backoff"),
     ] {
         let output = indexes
-            .search_blocking(&search_args(&root, "retry backoff delay", mode))
+            .search_blocking(&search_args(&root, query, mode))
             .unwrap();
         assert_eq!(output.searched[0].2, expected, "{mode:?}");
         assert_eq!(hit_files(&output)[0], "src/net.rs", "{mode:?}: {output:?}");
@@ -823,7 +826,7 @@ fn dense_and_hybrid_search_with_the_test_embedder() {
         output.hits.iter().all(|hit| hit.display == "config.rs"),
         "{output:?}"
     );
-    let mut args = search_args(&root, "proj helpers", Some(ModeArg::Lexical));
+    let mut args = search_args(&root, "Helpers for configs", Some(ModeArg::Lexical));
     args.language = Some("Markdown".into());
     let output = indexes.search_blocking(&args).unwrap();
     assert!(!output.hits.is_empty());
@@ -833,7 +836,7 @@ fn dense_and_hybrid_search_with_the_test_embedder() {
     );
     // A language that matches nothing gives the results from every
     // language, and says so.
-    let mut args = search_args(&root, "retry backoff delay", Some(ModeArg::Lexical));
+    let mut args = search_args(&root, "retry_with_backoff", Some(ModeArg::Lexical));
     args.language = Some("python".into());
     let output = indexes.search_blocking(&args).unwrap();
     assert_eq!(hit_files(&output)[0], "src/net.rs", "{output:?}");
@@ -844,9 +847,13 @@ fn dense_and_hybrid_search_with_the_test_embedder() {
     let mut args = search_args(&root, "zzqqxx", Some(ModeArg::Lexical));
     args.language = Some("python".into());
     let output = indexes.search_blocking(&args).unwrap();
+    assert!(output.hits.is_empty(), "{output:?}");
+    // What lexical search finds, and what finds the rest.
+    assert_eq!(output.notes.len(), 1, "{output:?}");
     assert!(
-        output.hits.is_empty() && output.notes.is_empty(),
-        "{output:?}"
+        output.notes[0].starts_with(
+            "lexical finds the chunks that hold the query as written (ignore_case=true"
+        )
     );
     let mut args = search_args(&root, "retry", None);
     args.path_prefix = Some(
@@ -1279,13 +1286,13 @@ fn an_index_moved_with_fins_data_folder_still_works() {
     wait_for("the watcher of the moved index", || {
         second.watch_state(&moved).active()
     });
-    for (mode, searched) in [
-        (ModeArg::Semantic, Mode::Dense),
-        (ModeArg::Hybrid, Mode::Hybrid),
-        (ModeArg::Lexical, Mode::Lexical),
+    for (mode, searched, query) in [
+        (ModeArg::Semantic, Mode::Dense, "retry backoff delay"),
+        (ModeArg::Hybrid, Mode::Hybrid, "retry backoff delay"),
+        (ModeArg::Lexical, Mode::Lexical, "retry_with_backoff"),
     ] {
         let output = second
-            .search_blocking(&search_args(&root, "retry backoff delay", Some(mode)))
+            .search_blocking(&search_args(&root, query, Some(mode)))
             .unwrap();
         assert_eq!(output.searched[0].2, searched, "{mode:?}");
         assert_eq!(hit_files(&output)[0], "src/net.rs", "{mode:?}: {output:?}");
@@ -1365,13 +1372,26 @@ fn tool_parameters_are_parsed_leniently() {
     assert_eq!(tools::parse_count("lots"), None);
 
     let detail = |value: Value| tools::parse_detail(&params(json!({ "detail": value })));
+    assert_eq!(tools::parse_detail(&params(json!({}))).unwrap(), None);
     assert_eq!(
-        tools::parse_detail(&params(json!({}))).unwrap(),
+        detail(json!(" Brief ")).unwrap(),
+        Some(tools::Detail::Brief(3))
+    );
+    assert_eq!(detail(json!("full")).unwrap(), Some(tools::Detail::Full));
+    assert!(detail(json!("everything")).is_err());
+    // Lexical search lists its matches' lines, and the others show the top
+    // results whole, unless detail says.
+    assert_eq!(
+        tools::detail_for(Some(ModeArg::Lexical), None),
+        tools::Detail::Lines
+    );
+    for mode in [None, Some(ModeArg::Hybrid), Some(ModeArg::Semantic)] {
+        assert_eq!(tools::detail_for(mode, None), tools::Detail::Full);
+    }
+    assert_eq!(
+        tools::detail_for(Some(ModeArg::Lexical), Some(tools::Detail::Full)),
         tools::Detail::Full
     );
-    assert_eq!(detail(json!(" Brief ")).unwrap(), tools::Detail::Brief(3));
-    assert_eq!(detail(json!("full")).unwrap(), tools::Detail::Full);
-    assert!(detail(json!("everything")).is_err());
 
     let p = params(json!({
         "yes": "Yes", "no": "off", "num": 1, "flag": true, "bad": "maybe", "blank": "",
@@ -1404,7 +1424,8 @@ fn tool_parameters_are_parsed_leniently() {
     )
     .unwrap();
     assert_eq!(search.query, "retry logic");
-    assert_eq!(search.limit, 50);
+    // (The search keeps semantic and hybrid ones to 50.)
+    assert_eq!(search.limit, Some(500));
     assert_eq!(search.mode, Some(ModeArg::Hybrid));
     assert_eq!(search.cwd, cwd);
     let search = tools::parse_search(
@@ -1415,15 +1436,40 @@ fn tool_parameters_are_parsed_leniently() {
         cwd,
     )
     .unwrap();
-    assert_eq!(search.limit, 1);
+    assert_eq!(search.limit, Some(1));
     assert_eq!(search.mode, Some(ModeArg::Semantic));
     assert_eq!(search.index.as_deref(), Some("arko"));
     assert_eq!(search.path_prefix.as_deref(), Some("src/"));
     assert_eq!(search.language.as_deref(), Some("rust"));
     let search =
         tools::parse_search(&params(json!({"query": "q", "mode": "lexical"})), cwd).unwrap();
-    assert_eq!(search.limit, 10);
+    assert_eq!(search.limit, None);
     assert_eq!(search.mode, Some(ModeArg::Lexical));
+    assert!(!search.exhaustive && !search.ignore_case);
+    let search = tools::parse_search(
+        &params(json!({"query": "q", "mode": "lexical", "limit": "5k",
+                       "exhaustive": "yes", "ignore_case": true})),
+        cwd,
+    )
+    .unwrap();
+    assert_eq!(search.limit, Some(5_000));
+    assert!(search.exhaustive && search.ignore_case);
+    // Only a lexical search's results all hold the query.
+    for name in ["exhaustive", "ignore_case"] {
+        for mode in ["hybrid", "semantic"] {
+            let error = tools::parse_search(
+                &params(json!({"query": "q", "mode": mode, name: true})),
+                cwd,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("mode lexical"), "{error}");
+        }
+        let off = tools::parse_search(
+            &params(json!({"query": "q", "mode": "hybrid", name: false})),
+            cwd,
+        );
+        assert!(off.is_ok());
+    }
     // The agent picks the mode every time.
     assert!(tools::parse_search(&params(json!({"query": "q"})), cwd).is_err());
     assert!(tools::parse_search(&params(json!({"query": "q", "mode": "fuzzy"})), cwd).is_err());
@@ -1604,12 +1650,14 @@ fn search_and_status_formatting() {
         scope: "fn retry".into(),
         symbol: "retry".into(),
         changed: true,
+        lines: None,
     };
     let output = SearchOutput {
         hits: vec![hit.clone()],
         searched: vec![("proj".into(), Kind::Code, Mode::Hybrid)],
         notes: vec!["a note".into()],
         query_tokens: 3,
+        ..SearchOutput::default()
     };
     assert_eq!(
         tools::format_search("retry", &output, 3),
@@ -2027,6 +2075,7 @@ fn hit_on(file: &Path, chunk: &arko_index::bench_v1::Chunk) -> Hit {
         scope: chunk.scope.clone(),
         symbol: chunk.symbol_path.clone(),
         changed: false,
+        lines: None,
     }
 }
 
@@ -2193,14 +2242,14 @@ fn indexes_of_other_directories_are_found_by_any_path_in_them() {
     assert_eq!(reports[0].id, outcome.layout.id());
 
     // No index covers the working directory, so a path_prefix picks one.
-    let mut args = search_args(&work, "retry backoff", Some(ModeArg::Lexical));
+    let mut args = search_args(&work, "retry_with_backoff", Some(ModeArg::Lexical));
     let error = indexes.search_blocking(&args).unwrap_err();
     assert!(error.contains("no index covers"), "{error}");
     args.path_prefix = Some("../proj/src".into());
     let output = indexes.search_blocking(&args).unwrap();
     let net = root.join("src/net.rs").to_string_lossy().into_owned();
     assert_eq!(hit_files(&output)[0], net, "{output:?}");
-    let mut args = search_args(&work, "retry backoff", Some(ModeArg::Lexical));
+    let mut args = search_args(&work, "retry_with_backoff", Some(ModeArg::Lexical));
     args.index = Some(net.clone());
     let output = indexes.search_blocking(&args).unwrap();
     assert_eq!(hit_files(&output)[0], net, "{output:?}");
@@ -2356,4 +2405,712 @@ fn index_counts_are_one_or_many() {
     assert_eq!(census(0).describe(), "3 prose, 5 source, 0 other files");
     assert_eq!(census(1).describe(), "3 prose, 5 source, 1 other file");
     assert_eq!(census(2).describe(), "3 prose, 5 source, 2 other files");
+}
+
+// ----- exact (lexical) search -----
+
+/// A project where `fetch_widget` is called from many functions in many
+/// files, beside functions with words that only look like it.
+fn callers_project(fixture: &Fixture, files: usize) -> PathBuf {
+    let root = fixture.base.join("callers");
+    let filler: String = (0..24)
+        .map(|line| format!("    let step_{line} = id + {line};\n"))
+        .collect();
+    for file in 0..files {
+        let mut text = String::new();
+        for function in 0..4 {
+            let n = file * 4 + function;
+            let call = match function {
+                0 | 1 => {
+                    "    fetch_widget(id);\n    let again = fetch_widget(id + 1);\n".to_string()
+                }
+                2 => format!("    fetch(widget_{n}); // FETCH_WIDGET in capitals\n"),
+                _ => "    let widgets = fetch_widgets(id);\n".to_string(),
+            };
+            text.push_str(&format!(
+                "/// Function {n}.\npub fn function_{n}(id: u32) {{\n{filler}{call}}}\n\n"
+            ));
+        }
+        write(&root.join(format!("src/part_{file:02}.rs")), &text);
+    }
+    write(
+        &root.join("src/widget.rs"),
+        "/// Fetches a widget.\npub fn fetch_widget(id: u32) -> u32 {\n    id\n}\n",
+    );
+    write(
+        &root.join("README.md"),
+        "# Callers\n\nUse `fetch_widget` to fetch one.\n",
+    );
+    root
+}
+
+/// Places in files, each (file, line).
+type Places = Vec<(String, usize)>;
+
+/// What rg would find of `needle` in `root`'s `.rs` and `.md` files, as the
+/// index chunks them, meaning each chunk (file, start line) that holds it,
+/// and each line (file, line) where it starts.
+fn oracle(root: &Path, needle: &str) -> (Places, Places) {
+    let (mut chunks, mut lines) = (Vec::new(), Vec::new());
+    let mut files: Vec<PathBuf> = Vec::new();
+    for dir in [root.to_path_buf(), root.join("src")] {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path
+                .extension()
+                .is_some_and(|ext| ext == "rs" || ext == "md")
+            {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    for file in files {
+        let shown = file
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(&file).unwrap();
+        // (The index leaves out a file with a NUL as binary.)
+        if text.contains('\0') {
+            continue;
+        }
+        let kind = if shown.ends_with(".md") {
+            Kind::Docs
+        } else {
+            Kind::Code
+        };
+        for chunk in
+            arko_index::bench_v1::chunk_file(&file, &super::engine::chunk_options(kind)).unwrap()
+        {
+            if text[chunk.start_byte..chunk.end_byte].contains(needle) {
+                chunks.push((shown.clone(), chunk.start_line));
+            }
+        }
+        for (at, line) in text.lines().enumerate() {
+            if line.contains(needle) {
+                lines.push((shown.clone(), at + 1));
+            }
+        }
+    }
+    (chunks, lines)
+}
+
+/// Each result's (file, start line), and each line it shows (file, line).
+fn found(output: &SearchOutput) -> (Places, Places) {
+    let mut chunks = Vec::new();
+    let mut lines = Vec::new();
+    for hit in &output.hits {
+        chunks.push((hit.display.clone(), hit.start_line));
+        let held = hit.lines.as_ref().expect("an exact match has its lines");
+        assert_eq!(held.more, 0, "{hit:?}");
+        assert!(!held.shown.is_empty(), "{hit:?}");
+        for (line, _) in &held.shown {
+            assert!(hit.start_line <= *line && *line <= hit.end_line, "{hit:?}");
+            lines.push((hit.display.clone(), *line));
+        }
+    }
+    (chunks, lines)
+}
+
+#[test]
+fn an_exact_search_counts_every_chunk_that_holds_the_query_as_written() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 6);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let (chunks, lines) = oracle(&root, "fetch_widget");
+    // Calls (two a function), `fetch_widgets` (which holds it), the
+    // definition and the README.
+    assert!(chunks.len() > 10, "{chunks:?}");
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.limit = Some(50);
+    let output = indexes.search_blocking(&args).unwrap();
+    assert_eq!(output.total, Some(chunks.len()), "{output:?}");
+    assert_eq!(output.searched[0].2, Mode::Lexical);
+    let (mut got, mut got_lines) = found(&output);
+    got.sort();
+    got_lines.sort();
+    let (mut want, mut want_lines) = (chunks.clone(), lines.clone());
+    want.sort();
+    want_lines.sort();
+    assert_eq!(got, want);
+    assert_eq!(got_lines, want_lines);
+    // In path and line order.
+    let order: Vec<_> = output
+        .hits
+        .iter()
+        .map(|hit| (hit.display.clone(), hit.start_line))
+        .collect();
+    assert_eq!(order, want);
+    // `fetch(widget_)` holds its words, and isn't a match. Neither is the
+    // name in capitals, unless the case doesn't matter.
+    assert!(
+        output
+            .hits
+            .iter()
+            .flat_map(|hit| &hit.lines.as_ref().unwrap().shown)
+            .all(|(_, line)| line.contains("fetch_widget")),
+        "{output:?}"
+    );
+    args.ignore_case = true;
+    let any_case = indexes.search_blocking(&args).unwrap();
+    assert_eq!(any_case.total, Some(oracle_any_case(&root).len()));
+    assert!(any_case.total > output.total);
+    // A cut list still counts them all.
+    args.ignore_case = false;
+    args.limit = Some(3);
+    let cut = indexes.search_blocking(&args).unwrap();
+    assert_eq!(cut.hits.len(), 3);
+    assert_eq!(cut.total, Some(chunks.len()));
+    // A query nothing holds as written.
+    let none = indexes
+        .search_blocking(&search_args(&root, "widget fetch", Some(ModeArg::Lexical)))
+        .unwrap();
+    assert!(none.hits.is_empty(), "{none:?}");
+    assert_eq!(none.total, Some(0));
+    // Ranked modes count nothing.
+    let ranked = indexes
+        .search_blocking(&search_args(&root, "fetch_widget", Some(ModeArg::Hybrid)))
+        .unwrap();
+    assert_eq!(ranked.total, None);
+    assert!(ranked.hits.iter().all(|hit| hit.lines.is_none()));
+    fixture.shutdown(&indexes);
+}
+
+/// The chunks of the callers project that hold `fetch_widget` in any case.
+fn oracle_any_case(root: &Path) -> Places {
+    let (mut chunks, _) = oracle(root, "fetch_widget");
+    chunks.extend(oracle(root, "FETCH_WIDGET").0);
+    chunks.sort();
+    chunks.dedup();
+    chunks
+}
+
+#[test]
+fn an_exact_search_filters_by_path_and_language() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 3);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let (chunks, _) = oracle(&root, "fetch_widget");
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.limit = Some(50);
+    args.path_prefix = Some("src/part_01.rs".into());
+    let output = indexes.search_blocking(&args).unwrap();
+    let want = chunks
+        .iter()
+        .filter(|(file, _)| file == "src/part_01.rs")
+        .count();
+    assert_eq!(output.total, Some(want));
+    assert!(
+        output
+            .hits
+            .iter()
+            .all(|hit| hit.display == "src/part_01.rs")
+    );
+    args.path_prefix = None;
+    args.language = Some("markdown".into());
+    let output = indexes.search_blocking(&args).unwrap();
+    assert_eq!(hit_files(&output), ["README.md"], "{output:?}");
+    assert_eq!(output.total, Some(1));
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn an_exact_search_reads_files_as_they_are_now() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 2);
+    // Searches don't bring the index up to date in the test's time.
+    let timing = Timing {
+        reconcile_interval: Duration::from_secs(3600),
+        ..fast(false)
+    };
+    let indexes = fixture.open(&root, Backend::Hash, false, timing);
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.limit = Some(50);
+    let before = indexes.search_blocking(&args).unwrap();
+    // Lines go in above the calls, and one more call comes in below them.
+    let file = root.join("src/part_00.rs");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    write(
+        &file,
+        &format!(
+            "//! Moved down.\n//! Further.\n\n{text}pub fn added() {{\n    fetch_widget(9);\n}}\n"
+        ),
+    );
+    // A file gone since holds nothing, and neither does one that became binary.
+    std::fs::remove_file(root.join("src/widget.rs")).unwrap();
+    write(
+        &root.join("src/part_01.rs"),
+        "pub fn function_4() {\n    fetch_widget(1);\n}\n\0\n",
+    );
+    let after = indexes.search_blocking(&args).unwrap();
+    assert!(
+        after.notes.iter().all(|note| !note.contains("rebuilt")),
+        "{:?}",
+        after.notes
+    );
+    let (mut want, mut want_lines) = oracle(&root, "fetch_widget");
+    want.sort();
+    want_lines.sort();
+    let (mut got, mut got_lines) = found(&after);
+    got.sort();
+    got_lines.sort();
+    assert_eq!(got, want);
+    assert_eq!(got_lines, want_lines);
+    assert_eq!(after.total, Some(want.len()));
+    let moved = |output: &SearchOutput| {
+        found(output)
+            .1
+            .into_iter()
+            .filter(|(file, _)| file == "src/part_00.rs")
+            .map(|(_, line)| line)
+            .collect::<Vec<_>>()
+    };
+    let (was, now) = (moved(&before), moved(&after));
+    assert_eq!(now.len(), was.len() + 1, "{now:?}");
+    assert!(was.iter().zip(&now).all(|(was, now)| now == &(was + 3)));
+    assert!(hit_files(&before).contains(&"src/widget.rs".to_string()));
+    assert!(!hit_files(&after).contains(&"src/widget.rs".to_string()));
+    assert!(hit_files(&before).contains(&"src/part_01.rs".to_string()));
+    assert!(!hit_files(&after).contains(&"src/part_01.rs".to_string()));
+    // The changed file's results say so, and only theirs.
+    for (output, changed) in [(&before, false), (&after, true)] {
+        for hit in &output.hits {
+            let expected = changed && hit.display == "src/part_00.rs";
+            assert_eq!(hit.changed, expected, "{hit:?}");
+        }
+    }
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn an_exact_search_of_several_indexes_counts_them_all() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 2);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes
+        .create_blocking(&create_args(&root, Some(Kind::Code)))
+        .unwrap();
+    indexes
+        .create_blocking(&create_args(&root, Some(Kind::Docs)))
+        .unwrap();
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.limit = Some(50);
+    let both = indexes.search_blocking(&args).unwrap();
+    assert_eq!(both.searched.len(), 2);
+    let mut each = 0;
+    for name in ["callers", "callers-docs"] {
+        args.index = Some(name.into());
+        let one = indexes.search_blocking(&args).unwrap();
+        assert!(one.total.unwrap() > 0, "{name}: {one:?}");
+        each += one.total.unwrap();
+    }
+    assert_eq!(both.total, Some(each));
+    // A cut list keeps each index's share.
+    args.index = None;
+    args.limit = Some(2);
+    let cut = indexes.search_blocking(&args).unwrap();
+    let names: Vec<&str> = cut.hits.iter().map(|hit| hit.index.as_str()).collect();
+    assert!(
+        names.contains(&"callers") && names.contains(&"callers-docs"),
+        "{names:?}"
+    );
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn exact_matches_are_grouped_by_file_and_read_back() {
+    use super::lexical::Lines;
+    let hit = |index: &str, display: &str, lines: (usize, usize), scope: &str| Hit {
+        index: index.into(),
+        display: display.into(),
+        file: PathBuf::from("/w").join(display),
+        start_line: lines.0,
+        end_line: lines.1,
+        start_byte: 0,
+        end_byte: 0,
+        scope: scope.into(),
+        symbol: String::new(),
+        changed: false,
+        lines: None,
+    };
+    let with = |mut hit: Hit, shown: &[(usize, &str)], more: usize| {
+        hit.lines = Some(Lines {
+            shown: shown
+                .iter()
+                .map(|(number, line)| (*number, line.to_string()))
+                .collect(),
+            more,
+        });
+        hit
+    };
+    let output = SearchOutput {
+        hits: vec![
+            with(
+                hit("proj", "src/a.rs", (30, 40), "fn two"),
+                &[(31, "go()")],
+                2,
+            ),
+            with(
+                hit("proj", "src/b.rs", (1, 5), ""),
+                &[(2, "go();"), (4, "go(); go();")],
+                0,
+            ),
+            with(
+                hit("proj", "src/a.rs", (10, 20), "fn one"),
+                &[(12, "go();")],
+                0,
+            ),
+        ],
+        total: Some(1_340),
+        searched: vec![("proj".into(), Kind::Code, Mode::Lexical)],
+        notes: vec!["a note".into()],
+        ..SearchOutput::default()
+    };
+    let text = tools::format_search_detail("go()", &output, tools::Detail::Lines);
+    assert_eq!(
+        text,
+        [
+            "3 of 1,340 results from proj (code, lexical):",
+            "",
+            "src/a.rs",
+            "  10-20 · fn one",
+            "    12 | go();",
+            "  30-40 · fn two",
+            "    31 | go()",
+            "    and 2 more lines",
+            "src/b.rs",
+            "  1-5",
+            "    2 | go();",
+            "    4 | go(); go();",
+            "note: a note",
+        ]
+        .join("\n")
+    );
+    let proj = vec!["proj".to_string()];
+    assert_eq!(
+        tools::read_search_header(text.lines().next().unwrap()),
+        Some((proj.clone(), 3))
+    );
+    assert_eq!(
+        tools::read_search_hits(&text).unwrap(),
+        [
+            "3 of 1,340 results from proj (code, lexical)",
+            "src/a.rs:10-20 · fn one",
+            "src/a.rs:30-40 · fn two",
+            "src/b.rs:1-5",
+        ]
+    );
+    // A list that isn't cut gives one number, with its thousands apart.
+    let whole = SearchOutput {
+        total: Some(3),
+        ..output.clone()
+    };
+    let text = tools::format_search_detail("go()", &whole, tools::Detail::Lines);
+    assert!(
+        text.starts_with("3 results from proj (code, lexical):\n"),
+        "{text}"
+    );
+    assert_eq!(
+        tools::read_search_header("1,240 results from proj (code, lexical):"),
+        Some((proj.clone(), 1_240))
+    );
+    assert_eq!(
+        tools::read_search_header("1 of 2 results from proj (code, lexical):"),
+        Some((proj, 1))
+    );
+    // Several indexes name theirs, and the same file in two is two groups.
+    let several = SearchOutput {
+        hits: vec![
+            with(hit("proj", "src/a.rs", (1, 2), "fn x"), &[(1, "go()")], 0),
+            with(hit("docs", "src/a.rs", (1, 2), ""), &[(1, "go()")], 0),
+        ],
+        total: Some(2),
+        searched: vec![
+            ("proj".into(), Kind::Code, Mode::Lexical),
+            ("docs".into(), Kind::Docs, Mode::Lexical),
+        ],
+        ..SearchOutput::default()
+    };
+    let text = tools::format_search_detail("go()", &several, tools::Detail::Lines);
+    assert_eq!(
+        tools::read_search_hits(&text).unwrap(),
+        [
+            "2 results from proj (code, lexical), docs (docs, lexical)",
+            "[proj] src/a.rs:1-2 · fn x",
+            "[docs] src/a.rs:1-2",
+        ]
+    );
+    // Whole results still read back as before.
+    let full = tools::format_search_detail("go()", &output, tools::Detail::Brief(1));
+    assert!(full.starts_with("3 of 1,340 results"), "{full}");
+    assert_eq!(tools::read_search_hits(&full).unwrap().len(), 4);
+}
+
+/// The chunk count read before a search may be of an older, smaller
+/// generation. The candidates still come back whole, so the total and an
+/// exhaustive list hold the chunks past the count too.
+#[test]
+fn a_stale_chunk_count_cuts_no_candidates() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 4);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    let outcome = indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let state = outcome.layout.state();
+    let docs = arko_index::index2::status(&state).unwrap().docs;
+    let filter = arko_index::vector::Filter::default();
+    let all = super::engine::every_candidate(&state, "fetch_widget", &filter, docs).unwrap();
+    assert!(all.len() > 8, "{}", all.len());
+    let ids = |hits: &[arko_index::hybrid::SearchHit]| {
+        let mut ids: Vec<String> = hits.iter().map(|hit| hit.chunk.id.clone()).collect();
+        ids.sort();
+        ids
+    };
+    // Counts far below it, and one that leaves the first list exactly full.
+    for stale in [0, 1, 2, all.len() as u64 - 1] {
+        let found = super::engine::every_candidate(&state, "fetch_widget", &filter, stale).unwrap();
+        assert_eq!(ids(&found), ids(&all), "{stale}");
+    }
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.limit = Some(50);
+    let output = indexes.search_blocking(&args).unwrap();
+    assert_eq!(output.total, Some(oracle(&root, "fetch_widget").0.len()));
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn limits_are_set_per_mode() {
+    use super::engine::{DEFAULT_LIMITS, Limits, MAX_LIMIT};
+    assert_eq!(
+        DEFAULT_LIMITS,
+        Limits {
+            semantic: 10,
+            hybrid: 10,
+            lexical: 100
+        }
+    );
+    assert_eq!(DEFAULT_LIMITS.of(Some(ModeArg::Lexical)), 100);
+    assert_eq!(DEFAULT_LIMITS.of(Some(ModeArg::Semantic)), 10);
+    assert_eq!(DEFAULT_LIMITS.of(None), 10);
+    let set = DEFAULT_LIMITS
+        .with(" lexical=250, semantic = 5,, hybrid=50 ")
+        .unwrap();
+    assert_eq!(
+        set,
+        Limits {
+            semantic: 5,
+            hybrid: 50,
+            lexical: 250
+        }
+    );
+    // The modes it leaves out keep theirs.
+    assert_eq!(
+        DEFAULT_LIMITS.with("bm25=7").unwrap(),
+        Limits {
+            lexical: 7,
+            ..DEFAULT_LIMITS
+        }
+    );
+    assert_eq!(DEFAULT_LIMITS.with("").unwrap(), DEFAULT_LIMITS);
+    assert_eq!(
+        DEFAULT_LIMITS.with("lexical=100000").unwrap().lexical,
+        100_000
+    );
+    for bad in [
+        "lexical",
+        "fuzzy=3",
+        "=3",
+        "semantic=0",
+        "hybrid=-1",
+        "hybrid=lots",
+        &format!("semantic={}", MAX_LIMIT + 1),
+    ] {
+        assert!(DEFAULT_LIMITS.with(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn a_lexical_search_lists_100_by_default_and_every_match_when_exhaustive() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 45);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let (mut chunks, mut lines) = oracle(&root, "fetch_widget");
+    chunks.sort();
+    lines.sort();
+    assert!(chunks.len() > 100, "{}", chunks.len());
+    let all = chunks.len();
+
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.limit = None;
+    let output = indexes.search_blocking(&args).unwrap();
+    assert_eq!(output.hits.len(), 100);
+    assert_eq!(output.total, Some(all));
+    assert_eq!(
+        output.notes,
+        [format!(
+            "exhaustive=true lists all {all}, and path_prefix narrows the search"
+        )]
+    );
+    // Every match, with every line it starts on.
+    args.exhaustive = true;
+    let output = indexes.search_blocking(&args).unwrap();
+    assert_eq!(output.total, Some(all));
+    let (got, mut got_lines) = found(&output);
+    got_lines.sort();
+    assert_eq!(got, chunks);
+    assert_eq!(got_lines, lines);
+    assert!(output.notes.is_empty(), "{:?}", output.notes);
+    // Exhaustive goes past any limit, and a limit may be past 50.
+    args.limit = Some(1);
+    assert_eq!(indexes.search_blocking(&args).unwrap().hits.len(), all);
+    args.exhaustive = false;
+    args.limit = Some(all - 1);
+    assert_eq!(indexes.search_blocking(&args).unwrap().hits.len(), all - 1);
+
+    // Semantic and hybrid keep 10 by default, and at most 50.
+    for mode in [ModeArg::Semantic, ModeArg::Hybrid] {
+        let mut args = search_args(&root, "fetch a widget by its id", Some(mode));
+        args.limit = None;
+        let output = indexes.search_blocking(&args).unwrap();
+        assert_eq!(output.hits.len(), 10, "{mode:?}");
+        assert_eq!(output.total, None);
+        args.limit = Some(500);
+        assert_eq!(
+            indexes.search_blocking(&args).unwrap().hits.len(),
+            50,
+            "{mode:?}"
+        );
+        args.limit = Some(3);
+        assert_eq!(indexes.search_blocking(&args).unwrap().hits.len(), 3);
+        for (exhaustive, ignore_case) in [(true, false), (false, true)] {
+            args.exhaustive = exhaustive;
+            args.ignore_case = ignore_case;
+            let error = indexes.search_blocking(&args).unwrap_err();
+            assert!(error.contains("mode lexical"), "{error}");
+        }
+    }
+
+    // The agent's tool says the same.
+    let tool = indexes
+        .tools()
+        .into_iter()
+        .find(|tool| tool.definition().name == "index_search")
+        .unwrap();
+    let context = TaskContext::new(uuid::Uuid::new_v4(), "test", "", &root);
+    let run = |value: Value| {
+        fixture
+            .runtime
+            .block_on(tool.execute(&context, params(value)))
+            .unwrap()
+    };
+    let text = run(json!({"query": "fetch_widget", "mode": "lexical"}));
+    let first = text.lines().next().unwrap();
+    assert_eq!(
+        first,
+        format!("100 of {all} results from callers (code, lexical):")
+    );
+    assert!(text.contains("\nsrc/part_00.rs\n  "), "{text}");
+    assert!(text.contains(" | fetch_widget(id);\n"), "{text}");
+    assert!(text.ends_with(&format!(
+        "note: exhaustive=true lists all {all}, and path_prefix narrows the search"
+    )));
+    let text = run(json!({"query": "fetch_widget", "mode": "lexical", "exhaustive": true}));
+    assert!(
+        text.starts_with(&format!("{all} results from callers (code, lexical):")),
+        "{text}"
+    );
+    assert_eq!(tools::read_search_hits(&text).unwrap().len(), all + 1);
+    // detail=full shows whole definitions instead.
+    let text =
+        run(json!({"query": "fetch_widget", "mode": "lexical", "detail": "full", "limit": 2}));
+    assert!(text.contains("\n3 | "), "{text}");
+    fixture.shutdown(&indexes);
+}
+
+/// `arko index search` names its own options where the tool's notes name
+/// parameters.
+#[test]
+fn the_cli_names_its_options_in_the_notes() {
+    assert_eq!(
+        cli_text("note: exhaustive=true lists all 340, and path_prefix narrows the search"),
+        "note: --exhaustive lists all 340, and --path-prefix narrows the search"
+    );
+    assert_eq!(
+        cli_text(
+            "note: lexical finds the chunks that hold the query as written (ignore_case=true matches its ASCII letters in any case). hybrid finds its words in any order"
+        ),
+        "note: lexical finds the chunks that hold the query as written (--ignore-case matches its ASCII letters in any case). --mode hybrid finds its words in any order"
+    );
+}
+
+/// Only a search's notes name the command's options. A matched line stays
+/// as it is in the file.
+#[test]
+fn the_cli_changes_no_matched_line() {
+    let text = [
+        "1 of 2 results from proj (code, lexical):",
+        "",
+        "src/a.rs",
+        "  1-3 · fn a",
+        "    2 | let hint = \"exhaustive=true lists all, and path_prefix narrows; hybrid finds\";",
+        "note: exhaustive=true lists all 2, and path_prefix narrows the search",
+    ]
+    .join("\n");
+    let shown = cli_search_text(&text);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(lines[..5], text.lines().collect::<Vec<_>>()[..5]);
+    assert_eq!(
+        lines[5],
+        "note: --exhaustive lists all 2, and --path-prefix narrows the search"
+    );
+}
+
+/// A file the search can't read is named, and left out of the count, rather
+/// than taken for one that holds nothing.
+#[cfg(unix)]
+#[test]
+fn an_exact_search_names_the_files_it_couldnt_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 2);
+    // The index isn't brought up to date in the test's time, so it still has
+    // the file.
+    let timing = Timing {
+        reconcile_interval: Duration::from_secs(3600),
+        ..fast(false)
+    };
+    let indexes = fixture.open(&root, Backend::Hash, false, timing);
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.limit = Some(50);
+    let all = indexes.search_blocking(&args).unwrap().total.unwrap();
+    let file = root.join("src/part_01.rs");
+    let in_it = oracle(&root, "fetch_widget")
+        .0
+        .iter()
+        .filter(|(shown, _)| shown == "src/part_01.rs")
+        .count();
+    assert!(in_it > 0);
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // (Someone who reads every file, such as root, has nothing to test.)
+    if std::fs::read(&file).is_err() {
+        let output = indexes.search_blocking(&args).unwrap();
+        assert_eq!(output.total, Some(all - in_it));
+        let note = output
+            .notes
+            .iter()
+            .find(|note| {
+                note.starts_with("The results and their count leave out 1 file of callers")
+            })
+            .unwrap_or_else(|| panic!("{:?}", output.notes));
+        assert!(note.contains("src/part_01.rs ("), "{note}");
+    }
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    fixture.shutdown(&indexes);
 }
