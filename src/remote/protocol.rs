@@ -1552,16 +1552,28 @@ pub fn tokens(count: u64) -> String {
     }
 }
 
+/// What an amount of dollars shows as when it isn't a real one.
+pub const NO_DOLLARS: &str = "—";
+
+/// The amount from which a number of dollars is taken for a fault, not a
+/// price. It is far above any bill, and its cents still fit a whole number.
+const MOST_DOLLARS: f64 = 1e12;
+
 /// Dollars to the cent with thousands marked, such as `$0.00`, `$12.50`,
-/// `$4,007.05`. Every place that shows what something cost uses it.
+/// `$4,007.05`. Every place that shows what something cost uses it. An amount
+/// that is no number, or is a trillion dollars or more, shows as `—`, so it
+/// doesn't read as a bill of nothing or of a made-up sum.
 pub fn dollars(amount: f64) -> String {
+    if !amount.is_finite() || amount.abs() >= MOST_DOLLARS {
+        return NO_DOLLARS.to_string();
+    }
     let cents = (amount.abs() * 100.0).round() as u64;
     let sign = if amount < 0.0 && cents > 0 { "-" } else { "" };
     format!("{sign}${}.{:02}", thousands(cents / 100), cents % 100)
 }
 
 /// Dollars as people write them, such as `$12`, `$3.20`, `$1,200`: whole
-/// dollars without cents.
+/// dollars without cents. An amount that isn't real is `—`, as in [`dollars`].
 pub fn money(amount: f64) -> String {
     let text = dollars(amount);
     match text.strip_suffix(".00") {
@@ -2053,6 +2065,37 @@ mod tests {
         ] {
             assert_eq!(money(amount), text, "{amount}");
         }
+    }
+
+    /// An amount that isn't a real one shows as a dash, not as a bill of
+    /// nothing or of a made-up sum, and the amounts either side of the edge,
+    /// negative half cents and negative zero keep their usual form.
+    #[test]
+    fn dollars_that_are_not_real_numbers_show_as_a_dash() {
+        for amount in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e12,
+            -1e12,
+            f64::MAX,
+            f64::MIN,
+            1.8e19,
+        ] {
+            assert_eq!(dollars(amount), "—", "{amount}");
+            assert_eq!(money(amount), "—", "{amount}");
+        }
+        for (amount, text) in [
+            (999_999_999_999.99, "$999,999,999,999.99"),
+            (-999_999_999_999.0, "-$999,999,999,999.00"),
+            (-0.005, "-$0.01"),
+            (-0.004, "$0.00"),
+            (-0.0, "$0.00"),
+            (f64::MIN_POSITIVE, "$0.00"),
+        ] {
+            assert_eq!(dollars(amount), text, "{amount}");
+        }
+        assert_eq!(money(999_999_999_999.0), "$999,999,999,999");
     }
 
     /// Sizes, the tray's heading and a skill's card count one or many.

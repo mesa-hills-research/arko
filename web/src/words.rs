@@ -1205,6 +1205,9 @@ mod tests {
         assert_eq!(dollars(4_007.05), "$4,007.05");
         assert_eq!(dollars(0.001), "< $0.01");
         assert_eq!(money(1_200.0), "$1,200");
+        // An amount that isn't a real one is a dash, not nothing.
+        assert_eq!(dollars(f64::NAN), "—");
+        assert_eq!(money(f64::INFINITY), "—");
         assert_eq!(cost_words(0.0, 4_007.05), "≈ $4,007.05 at API prices");
         assert_eq!(cost_words(1_234.5, 1_234.5), "$1,234.50");
         let status = StatusData {

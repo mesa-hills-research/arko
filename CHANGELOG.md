@@ -26,6 +26,7 @@
   to print `11151855k input and 32800k output tokens` and `$4007.05`.
 - `/cost` puts each line one step in under the line it belongs to, and says a plan's usage as a
   sentence, such as "95% of the Claude plan's week used" instead of `Claude plan 7 d 95%`.
+- An amount of dollars that isn't a real number, or is a trillion dollars or more, shows as `—`.
 
 ### Skills
 
