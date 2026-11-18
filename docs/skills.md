@@ -88,8 +88,9 @@ Arko has four skills built in, so no files are needed.
 `prose` is always in the agents' instructions. They load the others on demand like any other
 skill, and `/skills` lists them all as built in.
 
-A skill that is always in the instructions can't be loaded again. Asking `load_skill` for it says it
-is there already, and the skills section of the instructions names each such skill.
+A skill that is always in the instructions, under Active Skills, is loaded already, and `load_skill`
+doesn't load it again. When `load_skill` finds no skill of the name asked for, its answer ends with a
+note saying so, in case the name is one of those.
 
 ### Replace one
 

@@ -26,7 +26,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use arko_agents::{
     EmbeddedSkill, InterceptedResult, InterceptionFailurePolicy, InvalidSkillPolicy,
@@ -36,9 +35,7 @@ use arko_ai::{Model, Provider};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::agents::MAIN;
 use crate::builtin_skills::BuiltinSkills;
-use crate::details::Details;
 use crate::providers::{self, ALIASES, CLAUDE_CODE, OPENROUTER};
 
 /// The project's skill folders users share, in the working directory.
@@ -202,7 +199,7 @@ pub fn config(folders: &[PathBuf], builtin: &BuiltinSkills) -> Option<SkillsConf
             .collect(),
         embedded,
         on_invalid_skill: InvalidSkillPolicy::Warn,
-        // `PreLoaded` answers for a skill whose text is in the instructions.
+        // `NotFoundHint` adds to the results that say a skill wasn't found.
         load_skill_interception: Some(InterceptionFailurePolicy::UseRawResult),
         ..Default::default()
     })
@@ -228,59 +225,26 @@ pub fn agent_config(
     Some(config)
 }
 
-/// The names of the skills whose text is in the instructions of an agent on
-/// `model`, the main agent's or, with `worker`, a worker's. These are the
-/// skills the instructions' "Active Skills" hold, which `load_skill`
-/// doesn't load.
-pub(crate) fn pre_loaded(
-    folders: &[PathBuf],
-    builtin: &BuiltinSkills,
-    model: &str,
-    worker: bool,
-) -> Vec<String> {
-    agent_config(folders, builtin, model, worker)
-        .and_then(|config| arko_agents::SkillManager::load(&config, Path::new(".")).ok())
-        .map(|manager| {
-            manager
-                .prompt_context()
-                .auto_loaded_skills
-                .iter()
-                .map(|skill| skill.name.clone())
-                .collect()
-        })
-        .unwrap_or_default()
-}
+/// What follows a `load_skill` result that says a skill wasn't found. The skill
+/// system doesn't load a skill whose text is in the instructions under Active
+/// Skills, and says it wasn't found, which looks like a broken setup. It holds
+/// for every agent, whichever skills it has.
+const ALREADY_LOADED: &str =
+    "A skill under Active Skills in your instructions is already loaded and needs no load_skill.";
 
-/// What `load_skill` says of a skill that is in the agent's instructions
-/// already, which it can't load again.
-fn already_loaded(name: &str) -> String {
-    format!(
-        "The {name} skill is already in your instructions, under Active Skills. Follow it from there."
-    )
-}
-
-/// Answers `load_skill` for a skill that is in the agent's instructions
-/// already. The skill system doesn't load such a skill, so it says the skill
-/// wasn't found, which reads as a broken setup. Every other result is left as
-/// it is.
-pub(crate) struct PreLoaded {
-    details: Arc<Details>,
-}
-
-impl PreLoaded {
-    pub(crate) fn new(details: Arc<Details>) -> Self {
-        Self { details }
-    }
-}
+/// Adds [`ALREADY_LOADED`] after a `load_skill` result that says the skill asked
+/// for wasn't found, which keeps the skills it lists. Every other result is
+/// left as it is.
+pub(crate) struct NotFoundHint;
 
 #[async_trait]
-impl ToolResultInterceptor for PreLoaded {
+impl ToolResultInterceptor for NotFoundHint {
     async fn intercept(
         &self,
         tool_name: &str,
         raw_result: &str,
         params: &HashMap<String, Value>,
-        task_context: &TaskContext<'_>,
+        _task_context: &TaskContext<'_>,
     ) -> Result<InterceptedResult, ToolError> {
         if tool_name != LOAD_SKILL_TOOL_NAME {
             return Ok(InterceptedResult::Unchanged);
@@ -288,24 +252,13 @@ impl ToolResultInterceptor for PreLoaded {
         let Some(name) = params.get("name").and_then(Value::as_str).map(str::trim) else {
             return Ok(InterceptedResult::Unchanged);
         };
-        // (A skill the skill system found has its text here instead, and one
-        // that is in a prompt for another model loads by its name.)
+        // (A skill that was found has its text here instead.)
         if !raw_result.starts_with(&format!("Skill '{name}' not found")) {
             return Ok(InterceptedResult::Unchanged);
         }
-        let Ok(facts) = self.details.skills() else {
-            return Ok(InterceptedResult::Unchanged);
-        };
-        let main = task_context.agent_name == MAIN;
-        let loaded = facts
-            .skills
-            .iter()
-            .any(|skill| skill.name == name && skill.always && (main || skill.workers));
-        Ok(if loaded {
-            InterceptedResult::Replaced(already_loaded(name))
-        } else {
-            InterceptedResult::Unchanged
-        })
+        Ok(InterceptedResult::Replaced(format!(
+            "{raw_result}\n\n{ALREADY_LOADED}"
+        )))
     }
 }
 
@@ -530,32 +483,50 @@ mod tests {
         assert!(lists(&["haiku", "luna"], "cc:haiku"));
     }
 
-    /// The skills in an agent's instructions are those marked `auto_load` that
-    /// its model and its kind get, and the pre-loaded built-in one unless a
-    /// skill of the user's replaces it.
-    #[test]
-    fn the_pre_loaded_skills_are_those_in_the_agents_instructions() {
-        let temp = tempfile::tempdir().unwrap();
-        let folder = temp.path().join("skills");
-        skill(&folder, "house", "auto_load: true\n");
-        skill(&folder, "lead", "auto_load: true\nworkers: false\n");
-        skill(&folder, "quirks", "auto_load: true\nmodels: haiku\n");
-        skill(&folder, "review", "");
-        let folders = [folder.clone()];
-        let all = BuiltinSkills::default();
-        let names = |model, worker| {
-            let mut names = pre_loaded(&folders, &all, model, worker);
-            names.sort();
-            names
+    /// A `load_skill` result that says a skill wasn't found keeps its words and
+    /// the skills to load, and a note follows that a skill under Active Skills
+    /// is loaded already. Every other result is as it was.
+    #[tokio::test]
+    async fn a_skill_not_found_is_followed_by_a_note_on_active_skills() {
+        let dir = Path::new(".");
+        let ask = async |tool: &str, name: Option<&str>, raw: &str| -> Option<String> {
+            let params: HashMap<String, Value> = name
+                .map(|name| ("name".to_string(), Value::from(name)))
+                .into_iter()
+                .collect();
+            let context = TaskContext::new(uuid::Uuid::nil(), "Arko", "", dir);
+            match NotFoundHint.intercept(tool, raw, &params, &context).await {
+                Ok(InterceptedResult::Replaced(text)) => Some(text),
+                Ok(InterceptedResult::Unchanged) => None,
+                Err(error) => panic!("{error}"),
+            }
         };
-        assert_eq!(names("opus", false), ["house", "lead", "prose"]);
-        assert_eq!(names("opus", true), ["house", "prose"]);
-        assert_eq!(names("haiku", false), ["house", "lead", "prose", "quirks"]);
-        // A skill of the user's named prose replaces the built-in one.
-        skill(&folder, "prose", "");
-        assert_eq!(names("opus", false), ["house", "lead"]);
-        assert!(pre_loaded(&folders, &none(), "opus", false).contains(&"house".to_string()));
-        assert!(pre_loaded(&[], &none(), "opus", false).is_empty());
+        let hint = "A skill under Active Skills in your instructions is already loaded and needs no load_skill.";
+        let listed = "Skill 'prose' not found. Available skills:\n- ponytail\n- ui-taste";
+        assert_eq!(
+            ask("load_skill", Some("prose"), listed).await,
+            Some(format!("{listed}\n\n{hint}"))
+        );
+        // The name as the model wrote it, with spaces around, and a list with
+        // nothing to load.
+        let none = "Skill 'prose' not found. Available skills:\nNo on-demand skills are currently available.";
+        assert_eq!(
+            ask("load_skill", Some(" prose "), none).await,
+            Some(format!("{none}\n\n{hint}"))
+        );
+        // A name that is no skill is told the same, with its list.
+        let typo = "Skill 'proze' not found. Available skills:\n- ponytail";
+        assert_eq!(
+            ask("load_skill", Some("proze"), typo).await,
+            Some(format!("{typo}\n\n{hint}"))
+        );
+        // A skill that was found, another skill's not-found text, a call
+        // without a name and another tool's result stay as they were.
+        let found = "--- BEGIN SKILL: ponytail ---\nDo it.\n--- END SKILL: ponytail ---";
+        assert_eq!(ask("load_skill", Some("ponytail"), found).await, None);
+        assert_eq!(ask("load_skill", Some("ponytail"), listed).await, None);
+        assert_eq!(ask("load_skill", None, listed).await, None);
+        assert_eq!(ask("shell", Some("prose"), listed).await, None);
     }
 
     /// Each agent's configuration has its own model's names, a worker's
@@ -575,8 +546,8 @@ mod tests {
         assert_eq!(main.only, None);
         let worker = agent_config(&folders, &none(), "cc:haiku", true).unwrap();
         assert!(worker.subagent && worker.offer_when_empty);
-        // Their `load_skill` results reach the interceptor that answers for a
-        // skill that is in the instructions already.
+        // Their `load_skill` results reach the interceptor that adds to a
+        // result that says a skill wasn't found.
         for config in [&main, &worker] {
             assert_eq!(
                 config.load_skill_interception,

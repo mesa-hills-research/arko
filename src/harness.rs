@@ -806,10 +806,9 @@ impl Harness {
             .disable_messaging()
             .cancel_grace_period(Duration::from_secs(10))
             .keep_saved_configs([MAIN])
-            // `load_skill` says a skill in the instructions is there already.
-            .tool_result_interceptor(Arc::new(crate::skills::PreLoaded::new(
-                self.details.clone(),
-            )));
+            // A `load_skill` that finds no skill says one under Active Skills is
+            // loaded already.
+            .tool_result_interceptor(Arc::new(skills::NotFoundHint));
         // What the user types while the agent works reaches it as a note,
         // and it answers where they read it. (Without a terminal, lines
         // wait for their own turn and no note comes.)

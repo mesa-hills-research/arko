@@ -176,6 +176,21 @@ async fn setup_answering(
     ModelServer,
     Seen,
 ) {
+    setup_reading(temp, move |who, _| worker(who)).await
+}
+
+/// [`setup`], with `worker` giving the answer to a worker's request, from the
+/// worker's name and the request's body.
+async fn setup_reading(
+    temp: &Path,
+    worker: impl Fn(&str, &str) -> String + Send + Sync + 'static,
+) -> (
+    Harness,
+    Inputs,
+    mpsc::UnboundedSender<Input>,
+    ModelServer,
+    Seen,
+) {
     let seen: Seen = Arc::default();
     let record = seen.clone();
     let server = ModelServer::start(Arc::new(move |_, body: String| {
@@ -185,13 +200,12 @@ async fn setup_answering(
             .lock()
             .unwrap()
             .push((who.clone(), model, effort, body.clone()));
-        Box::pin(async move {
-            if who == "main" {
-                lead(&body, "m")
-            } else {
-                worker(&who)
-            }
-        })
+        let answer = if who == "main" {
+            lead(&body, "m")
+        } else {
+            worker(&who, &body)
+        };
+        Box::pin(async move { answer })
     }))
     .await;
     let (harness, inputs, sender) = harness(temp, server.client(), true);
@@ -1061,6 +1075,72 @@ async fn a_worker_started_after_a_skills_change_has_the_new_skills() {
     start_worker(&mut harness, &mut inputs, "Start after the change.").await;
     assert!(listed("Start before the change."));
     assert!(!listed("Start after the change."));
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// A worker that asks `load_skill` for a skill whose text is in its
+/// instructions, or for a name that is no skill, reads that it wasn't found,
+/// with the skills to load and a note that a skill under Active Skills is
+/// loaded already. A skill that loads is as it was.
+#[tokio::test]
+async fn a_worker_is_told_that_a_skill_under_active_skills_is_loaded_already() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender, _server, seen) =
+        setup_reading(temp.path(), |who, body| {
+            // It asks for prose, a name that is no skill and ponytail, one at
+            // a time, then is done.
+            let asked = body.matches("function_call_output").count();
+            let call = |name: &str| {
+                tool_call(
+                    &format!("k{asked}"),
+                    "load_skill",
+                    serde_json::json!({ "name": name }),
+                )
+            };
+            match asked {
+                0 => call("prose"),
+                1 => call("proze"),
+                2 => call("ponytail"),
+                _ => complete(&format!("w{who}"), "Worker done."),
+            }
+        })
+        .await;
+    super::built_in_skills::configure(
+        &mut harness,
+        crate::builtin_skills::BuiltinSkills::default(),
+        Vec::new(),
+    );
+    harness.open(false).unwrap();
+    harness.start_new_workers();
+    start_worker(&mut harness, &mut inputs, "Start with defaults.").await;
+    let results = {
+        let seen = seen.lock().unwrap();
+        let (.., last) = seen
+            .iter()
+            .rev()
+            .find(|(who, _, _, body)| who != "main" && user_texts(body)[0].contains("Start with defaults."))
+            .unwrap();
+        let last: serde_json::Value = serde_json::from_str(last).unwrap();
+        last["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "function_call_output")
+            .map(|item| item["output"].as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>()
+    };
+    let note = "A skill under Active Skills in your instructions is already loaded and needs no load_skill.";
+    assert_eq!(results.len(), 3, "{results:?}");
+    assert_eq!(
+        results[0],
+        format!(
+            "Skill 'prose' not found. Available skills:\n- ponytail\n- ui-taste\n- worker-choice\n\n{note}"
+        )
+    );
+    assert!(results[1].starts_with("Skill 'proze' not found. Available skills:\n- ponytail"));
+    assert!(results[1].ends_with(&format!("\n\n{note}")), "{}", results[1]);
+    assert!(results[2].starts_with("--- BEGIN SKILL: ponytail ---"), "{}", results[2]);
+    assert!(!results[2].contains(note));
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
