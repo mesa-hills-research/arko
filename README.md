@@ -103,7 +103,7 @@ front ends, and add the `remote` feature for the web page. The library's name is
 
 ```toml
 [dependencies]
-arko-tui = { version = "0.23.1", default-features = false, features = ["remote"] }
+arko-tui = { version = "0.24.0", default-features = false, features = ["remote"] }
 ```
 
 `cargo doc --open` builds the API docs, and [moving to 0.22](docs/migrating-to-0.22.md) says what
