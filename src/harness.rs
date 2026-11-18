@@ -358,9 +358,10 @@ pub(crate) fn unoffered_with(
         };
         let offered = &saved.tool_config.available_tool_names;
         for name in &fresh.tool_config.available_tool_names {
-            // One saved before edit_file edits files with apply_diff.
-            let edits_with_apply_diff = name == EDIT_FILE_TOOL_NAME
-                && offered.iter().any(|name| name == APPLY_DIFF_TOOL_NAME);
+            // One saved while the agents edited with edit_file edits files
+            // with it.
+            let edits_with_edit_file = name == APPLY_DIFF_TOOL_NAME
+                && offered.iter().any(|name| name == EDIT_FILE_TOOL_NAME);
             // One saved with a tool for each MCP tool reaches the servers
             // through those.
             let reaches_servers = name == mcp::MCP_TOOL_NAME
@@ -369,7 +370,7 @@ pub(crate) fn unoffered_with(
                     .any(|name| mcp::split_tool_name(name).is_some());
             if !offered.contains(name)
                 && !missing.contains(&name.as_str())
-                && !edits_with_apply_diff
+                && !edits_with_edit_file
                 && !reaches_servers
             {
                 missing.push(name);
@@ -5821,9 +5822,9 @@ pub(crate) mod tests {
     }
 
     /// File editing's end-to-end tests, in their own file.
-    mod edit_file {
+    mod apply_diff {
         use super::*;
-        include!("edit_file_tests.rs");
+        include!("apply_diff_tests.rs");
     }
 
     /// What the model is sent, measured (an ignored test), in its own file.

@@ -871,6 +871,11 @@ fn a_claude_code_conversation_lists_the_files_it_changed() {
             json!({"path": "src/a.rs", "old_string": "b", "new_string": "c"}),
             "Edited.",
         )
+        .call(
+            "apply_diff",
+            json!({"path": "docs/d.md", "diff": "<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE"}),
+            "Edited docs/d.md at line 1:\n1 | b",
+        )
         .text("The docs are done.");
     let task = talk.task("cc:opus", true);
     let (workers, open) = no_workers();
@@ -884,7 +889,7 @@ fn a_claude_code_conversation_lists_the_files_it_changed() {
         budget: 6_000,
     });
     assert!(brief.contains(
-        "## Files written or edited\n\n- src/a.rs (turns 1 and 2)\n- docs/b.md (turn 2)\n- /elsewhere/c.rs (turn 2)\n\n"
+        "## Files written or edited\n\n- src/a.rs (turns 1 and 2)\n- docs/b.md (turn 2)\n- /elsewhere/c.rs (turn 2)\n- docs/d.md (turn 2)\n\n"
     ), "{brief}");
     assert!(!brief.contains("failed.rs"));
     assert!(brief.contains("### Turn 1\n\nUser\nFix it.\n\nReply\nFixed."));

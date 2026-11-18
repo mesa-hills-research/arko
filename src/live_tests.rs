@@ -351,7 +351,7 @@ async fn an_old_session_resumed_with_the_flag_gets_the_shell_part_and_says_so() 
     for config in [&mut harness.main_config, &mut harness.worker_config] {
         for tool in [
             arko_agents::builtins::WRITE_FILE_TOOL_NAME,
-            arko_agents::builtins::EDIT_FILE_TOOL_NAME,
+            arko_agents::builtins::APPLY_DIFF_TOOL_NAME,
         ] {
             config
                 .tool_config

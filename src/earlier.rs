@@ -900,11 +900,12 @@ fn words_of(text: &str) -> String {
     }
 }
 
-/// The file a call of a file tool writes or edits (Arko's `edit_file` and
-/// `write_file`, and Claude Code's), relative to `cwd` when it's inside.
+/// The file a call of a file tool writes or edits (Arko's `apply_diff`,
+/// `edit_file` and `write_file`, and Claude Code's), relative to `cwd` when
+/// it's inside.
 fn edited(tool: &str, arguments: &Value, cwd: &Path) -> Option<String> {
     let key = match tool {
-        "edit_file" | "write_file" => "path",
+        "apply_diff" | "edit_file" | "write_file" => "path",
         "Edit" | "Write" | "MultiEdit" => "file_path",
         "NotebookEdit" => "notebook_path",
         _ => return None,

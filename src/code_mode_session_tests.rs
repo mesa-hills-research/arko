@@ -194,6 +194,29 @@ async fn from_code_the_outside_hook_and_the_guard_refuse_and_the_third_refusal_e
     assert!(!outside.exists());
 }
 
+/// From code, an edit of a file outside the working directory is refused
+/// while outside access is off, and the file stays byte for byte as it was.
+/// Were the call to skip the gate, the file would change.
+#[tokio::test]
+async fn from_code_an_edit_outside_the_working_directory_is_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    let outside = temp.path().join("outside.txt");
+    std::fs::write(&outside, b"keep\r\nme\n").unwrap();
+    let diff = "<<<<<<< SEARCH\nkeep\n=======\nchanged\n>>>>>>> REPLACE\n";
+    let code = format!(
+        "try {{ await tools.apply_diff({{ path: {outside:?}, diff: {diff:?} }}); return 'edited'; }} catch (e) {{ return `${{e.refused}} ${{e.message}}`; }}",
+        outside = outside.display().to_string(),
+    );
+    let bodies: Bodies = Arc::default();
+    let server = model_running(&code, &bodies).await;
+    let (mut harness, mut inputs, _sender) = harness(temp.path(), server.client(), true);
+    let _managers = equip(&mut harness, Tools::Both, |_| {});
+    run_turn(&mut harness, &mut inputs).await;
+    let result = run_result(&bodies);
+    assert!(result.starts_with("true "), "{result}");
+    assert_eq!(std::fs::read(&outside).unwrap(), b"keep\r\nme\n");
+}
+
 /// From code, a call that would wait for the user's approval is refused at
 /// once, and the turn goes on. Were it to skip the gate, the file would be
 /// written, and were it to wait, the turn wouldn't end.

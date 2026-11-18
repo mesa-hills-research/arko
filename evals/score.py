@@ -20,7 +20,7 @@ Wasted moves:
 - idx: an index_search that failed because no index covers the working
   directory, or a search of the unrelated index.
 - shell-edit: a project file changed through the shell (sed -i, a
-  redirect, tee, a script that writes) instead of edit_file or write_file.
+  redirect, tee, a script that writes) instead of apply_diff or write_file.
   They don't count on the rename task, where the instructions suggest the
   shell for a change across many files.
 - reread: a read_file of the same file and lines again, with no change to

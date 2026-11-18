@@ -29,7 +29,7 @@ return hits.join("\n");
 ```
 
 Code can call `read_file`, `list_files`, `index_search`, `index_status`, `shell`, `write_file`
-and `edit_file`. Jobs that outlive a run, workers, questions, messages, skills, notes and MCP
+and `apply_diff`. Jobs that outlive a run, workers, questions, messages, skills, notes and MCP
 servers stay direct calls.
 
 Each call passes the same checks as a call of the model's, meaning outside access, the command

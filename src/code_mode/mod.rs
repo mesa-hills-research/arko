@@ -52,7 +52,7 @@ pub const CALLABLE: [&str; 7] = [
     crate::index::STATUS_TOOL_NAME,
     crate::shell::SHELL_TOOL_NAME,
     arko_agents::builtins::WRITE_FILE_TOOL_NAME,
-    arko_agents::builtins::EDIT_FILE_TOOL_NAME,
+    arko_agents::builtins::APPLY_DIFF_TOOL_NAME,
 ];
 
 // The limits of a run, set before any code runs.
@@ -152,7 +152,7 @@ mod tests {
                 "index_status",
                 "shell",
                 "write_file",
-                "edit_file"
+                "apply_diff"
             ]
         );
     }

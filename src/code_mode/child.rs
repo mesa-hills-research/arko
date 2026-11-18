@@ -121,7 +121,7 @@ impl Changes {
     /// What `records`' calls may have changed. A call that failed, or still
     /// ran when the run ended, counts, since it may have.
     fn of(records: &[NestedRecord]) -> Self {
-        use arko_agents::builtins::{EDIT_FILE_TOOL_NAME, WRITE_FILE_TOOL_NAME};
+        use arko_agents::builtins::{APPLY_DIFF_TOOL_NAME, WRITE_FILE_TOOL_NAME};
         let mut changes = Self::default();
         for record in records {
             let done = matches!(
@@ -134,8 +134,8 @@ impl Changes {
             );
             match record.tool_name.as_str() {
                 WRITE_FILE_TOOL_NAME if done => changes.files_written += 1,
-                EDIT_FILE_TOOL_NAME if done => changes.files_edited += 1,
-                WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME if partway => {
+                APPLY_DIFF_TOOL_NAME if done => changes.files_edited += 1,
+                WRITE_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME if partway => {
                     changes.files_maybe_changed += 1;
                 }
                 // A command that failed may have changed things too.
