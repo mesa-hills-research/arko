@@ -366,9 +366,10 @@ async fn an_end_the_resume_settles_again_is_told_again() {
 }
 
 /// What a worker whose monitor ran does, in a session that Arko closes:
-/// it starts the monitor, then stays on each request, except its first one
-/// after the session resumes, which waits a second for mail.
-async fn monitoring_worker(seen: Seen) -> ModelServer {
+/// it starts the monitor, then waits for mail (when `waits`) or stays on
+/// its request. Its first request after the session resumes waits a second
+/// for mail, and it stays on the others.
+async fn monitoring_worker(seen: Seen, waits: bool) -> ModelServer {
     ModelServer::start(Arc::new(move |index, body: String| {
         let who = sender(&body);
         seen.lock().unwrap().push((who.clone(), body.clone()));
@@ -386,6 +387,11 @@ async fn monitoring_worker(seen: Seen) -> ModelServer {
                     &format!("a{index}"),
                     "monitor_start",
                     serde_json::json!({"command": "sleep 60", "pattern": "ERROR"}),
+                ),
+                "r1" if asked == 2 && waits => tool_call(
+                    &format!("a{index}"),
+                    crew::WAIT_FOR_AGENTS,
+                    serde_json::json!({}),
                 ),
                 "r1" if asked == 3 => tool_call(
                     &format!("a{index}"),
@@ -416,6 +422,8 @@ async fn monitoring_session(
     harness.start_new_workers();
     turn(&mut harness, &mut inputs, "Watch the log.").await;
     until(|| requests(seen, "r1").len() == 2 && harness.background.jobs().len() == 1).await;
+    // (Its second request is under way, or its wait is.)
+    tokio::time::sleep(Duration::from_millis(200)).await;
     let monitor = harness.background.jobs()[0].job_id;
     (harness, inputs, sender, managers, monitor)
 }
@@ -451,18 +459,24 @@ async fn resume_and_check(harness: &mut Harness, seen: &Seen, monitor: uuid::Uui
     managers.shutdown().await;
 }
 
-/// Arko closes as it does on /exit. r1's monitor stops as r1's run does, so
-/// r1 is told before the session's jobs are saved.
+/// Arko closes as it does on /exit, while r1 waits for mail. r1's monitor
+/// stops as r1's run does, so r1 is told once it has stopped, before the
+/// session's jobs are saved, and its wait doesn't end with the note.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_worker_hears_its_monitor_stopped_when_arko_closed() {
     let seen: Seen = Arc::default();
-    let server = monitoring_worker(seen.clone()).await;
+    let server = monitoring_worker(seen.clone(), true).await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, _inputs, _sender, managers, monitor) =
         monitoring_session(temp.path(), &server, &seen).await;
-    harness.tell_workers_their_watchers_stop();
-    harness.crew.as_ref().unwrap().shutdown().await;
+    let watchers = harness.workers_watchers();
+    assert_eq!(watchers.len(), 1);
+    let crew = harness.crew.clone().unwrap();
+    crew.shutdown_and(|workflow| harness.tell_workers_of_jobs(workflow, watchers))
+        .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(requests(&seen, "r1").len(), 2, "r1 read nothing before it stopped");
     managers.shutdown().await;
     drop(managers);
     resume_and_check(&mut harness, &seen, monitor).await;
@@ -474,7 +488,7 @@ async fn a_worker_hears_its_monitor_stopped_when_arko_closed() {
 #[tokio::test]
 async fn a_worker_hears_its_monitor_stopped_when_arko_died() {
     let seen: Seen = Arc::default();
-    let server = monitoring_worker(seen.clone()).await;
+    let server = monitoring_worker(seen.clone(), false).await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, _inputs, _sender, managers, monitor) =
         monitoring_session(temp.path(), &server, &seen).await;

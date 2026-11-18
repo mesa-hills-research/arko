@@ -5127,22 +5127,21 @@ impl Harness {
         ))
     }
 
-    /// Arko closes, and the jobs that report only to a worker (its monitors
-    /// and moved calls) stop as its run does, before the jobs are saved as
-    /// they end. So each worker is told of its own now, in a note it reads
-    /// when the session resumes. Its commands run until Arko's jobs stop,
-    /// and it hears of them when the session opens again
-    /// ([`Self::tell_workers_of_stopped_jobs`]).
-    pub(crate) fn tell_workers_their_watchers_stop(&self) {
-        let (Some(manager), Some(workflow)) = (self.background.manager(), &self.workflow) else {
-            return;
+    /// The jobs that report only to a worker (its monitors and moved calls),
+    /// which stop with its run when Arko closes, before the jobs are saved as
+    /// they end, so the next session never lists them. Read before the
+    /// workers stop, for [`Self::tell_workers_of_jobs`] once they have. (A
+    /// worker's commands run until Arko's jobs stop, and the next session
+    /// tells it of them, see [`Self::tell_workers_of_stopped_jobs`].)
+    pub(crate) fn workers_watchers(&self) -> Vec<arko_agents::terminal::JobInfo> {
+        let Some(manager) = self.background.manager() else {
+            return Vec::new();
         };
-        let watchers = manager
+        manager
             .jobs()
             .into_iter()
             .filter(|job| !matches!(job.kind, arko_agents::terminal::JobKind::Command))
-            .collect();
-        self.tell_workers_of_jobs(workflow, watchers);
+            .collect()
     }
 
     /// Each worker whose background jobs were running when Arko last stopped
@@ -5159,7 +5158,11 @@ impl Harness {
     /// its own, in a note for its run. A note is posted once, keyed by its
     /// first job, so the workflow opened again in this process tells no one
     /// twice.
-    fn tell_workers_of_jobs(&self, workflow: &Workflow, jobs: Vec<arko_agents::terminal::JobInfo>) {
+    pub(crate) fn tell_workers_of_jobs(
+        &self,
+        workflow: &Workflow,
+        jobs: Vec<arko_agents::terminal::JobInfo>,
+    ) {
         let runs = workflow.subagents();
         let mut stopped: Vec<(&arko_workflows::subagents::SubagentRecord, Vec<_>)> = Vec::new();
         for job in jobs {

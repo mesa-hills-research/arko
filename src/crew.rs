@@ -2090,7 +2090,17 @@ impl Crew {
             stopped_by(&active, &accepted)
         })
     }
+    /// [`Self::shutdown_and`] with nothing to tell (tests).
+    #[cfg(test)]
     pub async fn shutdown(&self) {
+        self.shutdown_and(|_| {}).await;
+    }
+
+    /// Stops the workers and saves the workflow as Arko closes, calling
+    /// `stopped` once the workers have stopped and before the workflow's last
+    /// checkpoint, for what they should read when they run again. (Told
+    /// earlier, a worker could act on it first.)
+    pub async fn shutdown_and(&self, stopped: impl FnOnce(&Workflow)) {
         if let Some(workflow) = self.workflow() {
             // Stopping the workflow marks its unfinished subagents for resume.
             workflow.stop(StopRequest::operator("Arko closed"));
@@ -2100,6 +2110,7 @@ impl Crew {
                 }
             })
             .await;
+            stopped(&workflow);
             // How long they ran and what they called, the runs just stopped
             // too.
             self.save_worker_figures();

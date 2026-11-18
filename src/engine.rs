@@ -1303,7 +1303,7 @@ impl Engine {
             harness.stop_remote().await;
         }
         if let Some(crew) = &harness.crew {
-            harness.tell_workers_their_watchers_stop();
+            let watchers = harness.workers_watchers();
             let running = crew.running().len();
             if running > 0 {
                 output.line(&output.dim(&format!(
@@ -1312,7 +1312,8 @@ impl Engine {
                     if running == 1 { "it" } else { "them" }
                 )));
             }
-            crew.shutdown().await;
+            crew.shutdown_and(|workflow| harness.tell_workers_of_jobs(workflow, watchers))
+                .await;
         }
         // The background jobs stop before the MCP servers and the indexes
         // their moved calls wait on, so the jobs are saved as stopped by the
