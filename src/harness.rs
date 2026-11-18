@@ -5142,17 +5142,21 @@ impl Harness {
         let Some(manager) = self.background.manager() else {
             return Vec::new();
         };
-        // (Every job running counts as known, so the close always goes
-        // through. One that starts meanwhile is known at the next try.)
-        let mut known: Vec<uuid::Uuid> = Vec::new();
-        while let Err(running) = manager.close(&known) {
-            known = running.iter().map(|job| job.job_id).collect();
-        }
-        manager
-            .jobs()
-            .into_iter()
-            .filter(|job| !matches!(job.kind, arko_agents::terminal::JobKind::Command))
-            .collect()
+        // (The manager's lock is held while a job starts, so off the
+        // runtime. Every job running counts as known, so the close always
+        // goes through, and one that starts meanwhile is known at the next
+        // try.)
+        crate::blocking(|| {
+            let mut known: Vec<uuid::Uuid> = Vec::new();
+            while let Err(running) = manager.close(&known) {
+                known = running.iter().map(|job| job.job_id).collect();
+            }
+            manager
+                .jobs()
+                .into_iter()
+                .filter(|job| !matches!(job.kind, arko_agents::terminal::JobKind::Command))
+                .collect()
+        })
     }
 
     /// Each worker whose background jobs were running when Arko last stopped
