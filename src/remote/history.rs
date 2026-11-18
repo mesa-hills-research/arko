@@ -1474,7 +1474,7 @@ mod tests {
             shown,
             [
                 "2 jobs finished · cargo build --release and npm run dev",
-                "r1 reported · r2 to main",
+                "r1 reported · r2 messaged the lead",
                 "Monitor ends in 2 min · npm run dev",
             ]
         );

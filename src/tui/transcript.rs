@@ -4042,10 +4042,17 @@ fn columns(line: &Wrapped, from: usize, to: usize) -> String {
 }
 
 /// `item` without what the terminal doesn't show (a call's parameters and
-/// whole result, for apps), which would stay in memory with it.
+/// whole result, for apps), which would stay in memory with it. The line
+/// that opens a turn for the workers' news says only what their rows here
+/// don't, and nothing when they say it all ([`View::shows`]).
 fn for_terminal(mut item: Item) -> Item {
     item.parameters = None;
     item.output = None;
+    if item.opens_turn
+        && let Some(rest) = item.beside_rows.take()
+    {
+        item.text = rest;
+    }
     item
 }
 
@@ -4081,6 +4088,8 @@ impl View {
             // context and cost as they change. A line after each turn would
             // repeat it.
             Kind::Turn => Show::Hidden,
+            // (The workers' rows say all the news of this turn's line.)
+            Kind::Notice if item.opens_turn && item.text.is_empty() => Show::Hidden,
             _ => match self {
                 View::Full | View::Quiet => Show::Item,
                 View::Messages => match item.kind {
@@ -5656,6 +5665,70 @@ mod tests {
         let own = rows(&mut t, &Filter::Worker("r3".into(), View::Full), 40, 12);
         assert!(own.iter().any(|row| row.contains("Looking.")), "{own:?}");
         assert!(own.iter().any(|row| row.contains("read a.rs")), "{own:?}");
+    }
+
+    /// The line that opens a turn for the workers' news (a report, a message
+    /// to the lead) says only what the workers' rows here don't, and is gone
+    /// when they say it all. Without
+    /// that (a reopened session, whose rows aren't there), it says all.
+    #[test]
+    fn a_turns_line_says_what_the_workers_rows_dont() {
+        let mut t = Transcript::new();
+        t.apply(Update::Item(item(1, Kind::User, "Fix it")));
+        t.apply(Update::Item(item(2, Kind::Reply, "Fixed.").agent("r3")));
+        let opening = |id: u64, text: &str, beside: Option<&str>| {
+            let mut notice = item(id, Kind::Notice, text);
+            notice.level = Some(Level::Info);
+            notice.opens_turn = true;
+            notice.beside_rows = beside.map(str::to_string);
+            notice
+        };
+        t.apply(Update::Item(opening(3, "r3 reported", Some(""))));
+        t.apply(Update::Item(item(4, Kind::Text, "Merging it.")));
+        for view in [View::Full, View::Quiet] {
+            let shown = rows(&mut t, &Filter::Main(view), 40, 5);
+            assert_eq!(
+                shown,
+                ["▎ Fix it", "", "▸ r3 reported", "", "  Merging it."],
+                "{view:?}"
+            );
+        }
+        // A worker's message to the lead, the same way.
+        let mut message = item(5, Kind::Call, "message main “Which branch?”").agent("r3");
+        message.status = Some(CallStatus::Ok);
+        message.act = Some(Act {
+            kind: ActKind::Message,
+            target: "main".into(),
+            ..Act::default()
+        });
+        t.apply(Update::Item(message));
+        t.apply(Update::Item(opening(6, "r3 messaged the lead", Some(""))));
+        t.apply(Update::Item(item(7, Kind::Text, "Use blue.")));
+        for view in [View::Full, View::Quiet] {
+            let shown = rows(&mut t, &Filter::Main(view), 40, 12);
+            let said = shown
+                .iter()
+                .filter(|row| row.contains("r3 messaged the lead"))
+                .count();
+            assert_eq!(said, 1, "{view:?} {shown:?}");
+        }
+        t.apply(Update::Item(opening(
+            8,
+            "r3 and r4 failed",
+            Some("r4 failed"),
+        )));
+        t.apply(Update::Item(opening(9, "r7 reported", None)));
+        let shown = rows(&mut t, &full(), 40, 16);
+        assert!(
+            shown
+                .iter()
+                .any(|row| row.ends_with("r4 failed") && !row.contains("r3")),
+            "{shown:?}"
+        );
+        assert!(
+            shown.iter().any(|row| row.ends_with("r7 reported")),
+            "{shown:?}"
+        );
     }
 
     /// A worker's message to its lead keeps how its call stands. While it

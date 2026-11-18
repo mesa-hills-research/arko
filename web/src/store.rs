@@ -300,6 +300,7 @@ pub mod tests {
             job: None,
             pending: false,
             opens_turn: false,
+            beside_rows: None,
             code: Vec::new(),
             questions: None,
             images: Vec::new(),

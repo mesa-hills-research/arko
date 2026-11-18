@@ -815,7 +815,13 @@ fn item_row(id: u64, key: String, cell: RowCell, thinking: Memo<Option<u64>>) ->
                     Some(view! { <span class="label">{words::notice_label(&agent, summary.as_ref())}</span> })
                 }
             });
-            view! { {label}<span class="text">{move || text.get()}</span> }.into_any()
+            // (The line that opens a turn for the workers' news says only
+            // what their rows here don't.)
+            let said = move || {
+                data.with(|item| item.beside_rows.clone().filter(|_| item.opens_turn))
+                    .unwrap_or_else(|| text.get())
+            };
+            view! { {label}<span class="text">{said}</span> }.into_any()
         }
     };
     let more = (item.detail.is_some() && !matches!(item.kind, Kind::Call | Kind::Result | Kind::Turn)).then(|| {

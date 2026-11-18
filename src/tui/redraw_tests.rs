@@ -364,7 +364,7 @@ fn be_the_view(dir: &Path) -> ! {
         match step.unwrap().as_str() {
             // As the session opens a turn for a monitor's alert.
             "alert" => {
-                feed.turn_opening("Monitor 2 alerted");
+                feed.turn_opening("Monitor 2 alerted", None);
                 feed.turn_started();
             }
             "worker" => feed.worker("r1", TASK, WorkerChange::Started),

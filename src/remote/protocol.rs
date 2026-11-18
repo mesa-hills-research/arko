@@ -532,6 +532,10 @@ pub struct ItemData {
     /// the user.
     #[serde(default)]
     pub opens_turn: bool,
+    /// For such a notice, what it says beyond the workers' rows the page
+    /// shows, and empty when they say it all.
+    #[serde(default)]
+    pub beside_rows: Option<String>,
     /// The highlighting of its Markdown's finished code blocks.
     #[serde(default)]
     pub code: Vec<CodeSpans>,

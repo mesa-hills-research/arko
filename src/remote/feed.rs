@@ -219,6 +219,13 @@ pub struct Item {
     /// notices, which say how the turn goes.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub opens_turn: bool,
+    /// For a line that opens a turn for the workers' news, what it says
+    /// beyond the news the transcript shows as the workers' own rows, for a
+    /// client that draws those rows, and empty when they say it all. None
+    /// when no row says any of it (and in a reopened session, which has no
+    /// such rows), so a client shows `text`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub beside_rows: Option<String>,
     /// A question card's questions (`Kind::Question`), each with its id
     /// and what became of it, updated as that changes ([`Update::Change`]).
     /// `None` for a question asked before questions had ids.
@@ -271,6 +278,7 @@ impl Item {
             job: None,
             pending: false,
             opens_turn: false,
+            beside_rows: None,
             questions: None,
             files: Vec::new(),
         }
@@ -3118,15 +3126,16 @@ impl Feed {
     }
 
     /// The line that opens a turn Arko started without a message from the
-    /// user, naming who and what it is for.
-    pub fn turn_opening(&self, text: &str) {
+    /// user, naming who and what it is for, with what it says beside the
+    /// workers' rows ([`Item::beside_rows`]).
+    pub fn turn_opening(&self, text: &str, beside_rows: Option<&str>) {
         let text = text.trim();
         if !text.is_empty() {
-            self.add(
-                Item::new(Kind::Notice, text)
-                    .level(Level::Info)
-                    .opens_turn(),
-            );
+            let mut item = Item::new(Kind::Notice, text)
+                .level(Level::Info)
+                .opens_turn();
+            item.beside_rows = beside_rows.map(|rest| rest.trim().to_string());
+            self.add(item);
         }
     }
 
@@ -6506,6 +6515,39 @@ mod tests {
         );
     }
 
+    /// The line that opens a turn for news the workers' rows say keeps all
+    /// of it for every client, and says beside it what's left for a client
+    /// that draws those rows, nothing when they say it all.
+    #[test]
+    fn the_line_that_opens_a_turn_keeps_what_the_workers_rows_say() {
+        let feed = Feed::new("main");
+        feed.turn_opening("  r1 reported", Some(""));
+        feed.turn_opening("r1 and r2 reported", Some("r2 reported"));
+        feed.turn_opening("Job finished", None);
+        let lines: Vec<(String, Option<String>)> = items(&feed)
+            .into_iter()
+            .map(|item| (item.text, item.beside_rows))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("r1 reported".to_string(), Some(String::new())),
+                (
+                    "r1 and r2 reported".to_string(),
+                    Some("r2 reported".to_string())
+                ),
+                ("Job finished".to_string(), None),
+            ]
+        );
+        let wire: Vec<serde_json::Value> = items(&feed)
+            .iter()
+            .map(|item| serde_json::to_value(item).unwrap())
+            .collect();
+        assert_eq!(wire[0]["text"], "r1 reported");
+        assert_eq!(wire[0]["beside_rows"], "");
+        assert!(wire[2].get("beside_rows").is_none());
+    }
+
     /// The line that opens a turn Arko started is marked, so a client can
     /// tell it from Arko's other notices. The page's copy carries the mark
     /// only there.
@@ -6513,8 +6555,8 @@ mod tests {
     fn the_line_that_opens_a_turn_is_marked_and_other_notices_are_not() {
         let feed = Feed::new("main");
         feed.notice(Level::Info, "Resumed.");
-        feed.turn_opening("  r1 reported");
-        feed.turn_opening("  ");
+        feed.turn_opening("  r1 reported", None);
+        feed.turn_opening("  ", None);
         let marks: Vec<(String, bool)> = items(&feed)
             .into_iter()
             .map(|item| (item.text, item.opens_turn))

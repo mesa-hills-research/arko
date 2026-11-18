@@ -129,6 +129,7 @@ pub fn moves_rows(old: &ItemData, new: &ItemData, view: View) -> bool {
         || old.started.is_some() != new.started.is_some()
         || old.from.is_some() != new.from.is_some()
         || serious(old) != serious(new)
+        || said_by_rows(old) != said_by_rows(new)
         // A call's status moves a Messages count, and what a call did and
         // how it went words its Quiet row, which a count that's open shows.
         || (view != View::Full
@@ -173,6 +174,12 @@ fn pending_last<'a>(items: impl IntoIterator<Item = &'a ItemData>) -> Vec<&'a It
     out
 }
 
+/// Whether `item` is the line that opens a turn for the workers' news,
+/// all of which the workers' rows say.
+fn said_by_rows(item: &ItemData) -> bool {
+    item.kind == Kind::Notice && item.opens_turn && item.beside_rows.as_deref() == Some("")
+}
+
 /// What a view does with an item.
 enum Place {
     Hidden,
@@ -186,6 +193,9 @@ enum Place {
 /// main agent's in the main transcript and a worker's in its own. One rule
 /// serves both, so a worker's view can't differ from the selected one.
 fn place(view: View, item: &ItemData) -> Place {
+    if said_by_rows(item) {
+        return Place::Hidden;
+    }
     match view {
         View::Full => Place::Row,
         // The worker's own line stands for the call that started it. A call
@@ -669,7 +679,7 @@ fn is_read(item: &ItemData) -> bool {
         | Kind::Call
         | Kind::Question
         | Kind::Reply => true,
-        Kind::Notice => item.opens_turn,
+        Kind::Notice => item.opens_turn && !said_by_rows(item),
         _ => false,
     }
 }
@@ -1417,6 +1427,54 @@ mod tests {
         );
     }
 
+    /// The line that opens a turn for news the workers' rows say whole (a
+    /// report, a message to the lead) has no row of its own, and counts for
+    /// nothing new. One that says more,
+    /// or of a reopened session (which has no such rows), keeps its row.
+    #[test]
+    fn a_turns_line_that_the_workers_rows_say_has_no_row() {
+        let covered = ItemData {
+            beside_rows: Some(String::new()),
+            ..opening(3, "r1 reported")
+        };
+        let rest = ItemData {
+            beside_rows: Some("r2 failed".into()),
+            ..opening(6, "r1 reported · r2 failed")
+        };
+        // A worker's message to the lead, as its call, and the line of the
+        // turn it started.
+        let mut message = item(8, Kind::Call, "r2", "message main");
+        message.status = Some(CallStatus::Ok);
+        message.act = Some(crate::protocol::Act {
+            kind: crate::protocol::ActKind::Message,
+            target: MAIN.into(),
+            ..Default::default()
+        });
+        let messaged = ItemData {
+            beside_rows: Some(String::new()),
+            ..opening(9, "r2 messaged the lead")
+        };
+        let items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            item(2, Kind::Reply, "r1", "Counted."),
+            covered,
+            item(4, Kind::Reply, MAIN, "Thanks."),
+            item(5, Kind::Turn, MAIN, "2 s"),
+            rest,
+            opening(7, "r3 reported"),
+            message,
+            messaged,
+        ];
+        for view in [View::Full, View::Quiet] {
+            assert_eq!(
+                ids(&layout(&items, view, None)),
+                ["i1", "s2", "i4", "i5", "i6", "i7", "s8"],
+                "{view:?}"
+            );
+        }
+        assert_eq!(says(&items[..4], View::Full, None, 1), "2 new");
+    }
+
     #[test]
     fn marks_count_for_nothing_and_a_notice_that_opens_a_turn_counts() {
         let mut items = vec![
@@ -1870,6 +1928,23 @@ mod tests {
             assert!(moves(&|item| item.from = Some(MAIN.into()), view));
             assert!(!moves(&|item| item.text.push_str(" Mostly."), view));
             assert!(!moves(&|item| item.level = Some(Level::Info), view));
+            // A turn's line that the workers' rows come to say whole goes,
+            // and comes back when they no longer do.
+            let opening = ItemData {
+                beside_rows: Some("r2 failed".into()),
+                ..opening(9, "r1 reported · r2 failed")
+            };
+            let said = ItemData {
+                beside_rows: Some(String::new()),
+                ..opening.clone()
+            };
+            assert!(moves_rows(&opening, &said, view), "{view:?}");
+            assert!(moves_rows(&said, &opening, view), "{view:?}");
+            let fewer = ItemData {
+                beside_rows: Some("r2".into()),
+                ..opening.clone()
+            };
+            assert!(!moves_rows(&opening, &fewer, view), "{view:?}");
             // How a call went words its Quiet row, which a count that's
             // open shows in Messages.
             assert_eq!(

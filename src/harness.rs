@@ -1681,10 +1681,11 @@ impl Harness {
     }
 
     /// Prints the line a turn Arko started opens with, and shows it on the
-    /// remote page as that line.
-    fn say_opening(&self, text: &str) {
+    /// remote page as that line, with what it says beside the workers' rows
+    /// (`beside_rows`, [`Opening::beside_rows`]).
+    fn say_opening(&self, text: &str, beside_rows: Option<String>) {
         self.echo_line(Level::Info, text);
-        self.feed.turn_opening(text);
+        self.feed.turn_opening(text, beside_rows.as_deref());
     }
 
     fn echo_line(&self, level: Level, text: &str) {
@@ -3988,8 +3989,10 @@ impl Harness {
             }
             .message(&report);
         }
-        if let Some(notice) = opening.and_then(|opening| opening.notice(&about)) {
-            self.say_opening(&format!("  {notice}"));
+        if let Some(opening) = opening
+            && let Some(notice) = opening.notice(&about)
+        {
+            self.say_opening(&format!("  {notice}"), opening.beside_rows(&about));
         }
         if resumes {
             self.say(
@@ -7015,6 +7018,15 @@ pub(crate) mod tests {
     /// them, read back from the conversation. Only the notices marked as
     /// opening a turn are in it.
     fn reopened_openings(harness: &Harness) -> Vec<String> {
+        reopened_openings_beside(harness)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    /// The lines of the turns Arko started in a reopened session's
+    /// transcript, with what each says beside the workers' rows.
+    fn reopened_openings_beside(harness: &Harness) -> Vec<(String, Option<String>)> {
         let Conversation::Answered(result) = &harness.conversation else {
             panic!("the conversation wasn't answered");
         };
@@ -7026,20 +7038,34 @@ pub(crate) mod tests {
         )
         .into_iter()
         .filter(|item| item.kind == remote::Kind::Notice && item.opens_turn)
-        .map(|item| item.text)
+        .map(|item| (item.text, item.beside_rows))
         .collect()
     }
 
     /// The lines of the turns Arko started in the page's history, those
     /// its items mark as opening a turn.
     fn live_openings(feed: &remote::Feed) -> Vec<String> {
+        live_openings_beside(feed)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect()
+    }
+
+    /// The lines of the turns Arko started in the page's history, with what
+    /// each says beside the workers' rows.
+    fn live_openings_beside(feed: &remote::Feed) -> Vec<(String, Option<String>)> {
         feed.subscribe()
             .0
             .items
             .iter()
             .map(|item| serde_json::to_value(item).unwrap())
             .filter(|item| item["kind"] == "notice" && item["opens_turn"] == true)
-            .map(|item| item["text"].as_str().unwrap_or_default().to_string())
+            .map(|item| {
+                (
+                    item["text"].as_str().unwrap_or_default().to_string(),
+                    item["beside_rows"].as_str().map(str::to_string),
+                )
+            })
             .collect()
     }
 
@@ -7515,25 +7541,28 @@ pub(crate) mod tests {
             news.contains(&crate::openings::Opening::News.text()),
             "{news}"
         );
-        // Live, r1's report is a row of its own, and the turn has no line
-        // to say it again. A reopened session reads the conversation, which
-        // has no row for it, so the turn's line says who reported.
-        assert!(!has(&harness.feed, "notice", "r1 reported", ""));
-        assert!(live_openings(&harness.feed).is_empty());
-        assert!(
-            harness
-                .feed
-                .shows_worker_row("r1", Some("There are 3 files."))
+        // The turn's line says who reported, live and in the transcript a
+        // reopened session reads from the conversation. Live, r1's report
+        // is a row of its own too, so the line says nothing beside it for
+        // the terminal and the page, which draw that row. A reopened session
+        // has no such row.
+        assert!(has(&harness.feed, "notice", "r1 reported", ""));
+        assert_eq!(
+            live_openings_beside(&harness.feed),
+            [("r1 reported".to_string(), Some(String::new()))]
         );
-        assert_eq!(reopened_openings(&harness), ["r1 reported"]);
+        assert_eq!(
+            reopened_openings_beside(&harness),
+            [("r1 reported".to_string(), None)]
+        );
         crew.shutdown().await;
     }
 
-    /// A worker's message to the idle agent starts a turn, and its report
-    /// starts the next. The live transcript shows each as the worker's row,
-    /// and a reopened session's as the line of each turn.
+    /// A worker's message to the idle agent starts a turn whose line says
+    /// who sent it, and its report starts the next, in the live transcript
+    /// and in a reopened session's. Live, the worker's rows say it too.
     #[tokio::test]
-    async fn a_workers_message_and_report_each_show_once() {
+    async fn the_line_of_a_turn_for_a_workers_message_names_the_worker() {
         use crate::mock_model::{ModelServer, complete, tool_call};
         let server = ModelServer::start(Arc::new(move |_, body: String| {
             Box::pin(async move {
@@ -7589,16 +7618,19 @@ pub(crate) mod tests {
                 .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         assert_eq!(summary(&harness), "The blue branch is checked.");
-        // Live, its message and its report are rows of their own, which the
-        // turns' lines leave out. A reopened session has only the lines.
-        assert!(live_openings(&harness.feed).is_empty());
-        assert!(harness.feed.shows_worker_row("r1", None));
-        assert!(
-            harness
-                .feed
-                .shows_worker_row("r1", Some("Blue branch checked."))
+        // Each turn's line names the worker, live and reopened. Live, its
+        // message and its report are rows of their own too, so the lines
+        // say nothing beside them for the terminal and the page.
+        let lines = ["r1 messaged the lead", "r1 reported"];
+        for line in lines {
+            assert!(has(&harness.feed, "notice", line, ""), "{line}");
+        }
+        let beside = |rest: Option<String>| lines.map(|line| (line.to_string(), rest.clone()));
+        assert_eq!(
+            live_openings_beside(&harness.feed),
+            beside(Some(String::new()))
         );
-        assert_eq!(reopened_openings(&harness), ["r1 to main", "r1 reported"]);
+        assert_eq!(reopened_openings_beside(&harness), beside(None));
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 

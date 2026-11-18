@@ -609,7 +609,7 @@ impl RandomSession {
         match self.rng.below(3) {
             0 => self.feed.notice(Level::Warn, &text),
             1 => self.feed.output(&text),
-            _ => self.feed.turn_opening(&text),
+            _ => self.feed.turn_opening(&text, None),
         }
         "notice"
     }

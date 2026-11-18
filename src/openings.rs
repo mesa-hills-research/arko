@@ -82,10 +82,6 @@ impl Opening {
     pub(crate) fn notice(self, about: &Subjects) -> Option<String> {
         let commands = &about.commands;
         Some(match self {
-            // (Its rows say all of it.)
-            Self::News | Self::ResentNews if about.workers.is_empty() && about.shown => {
-                return None;
-            }
             Self::News | Self::ResentNews => workers_line(&about.workers),
             Self::Job => counted(commands, ("Job", "jobs"), ("finished", "finished")),
             Self::Alert => counted(commands, ("Monitor", "monitors"), ("alerted", "alerted")),
@@ -98,6 +94,27 @@ impl Opening {
                 )
             }
             Self::Answers => return None,
+        })
+    }
+
+    /// What the line of [`notice`](Self::notice) says beyond the news the
+    /// transcript shows as the workers' own rows, for a client that draws
+    /// those rows (the terminal and the web page), and empty when the rows
+    /// say all of it. `None` when no row says any of it.
+    pub(crate) fn beside_rows(self, about: &Subjects) -> Option<String> {
+        if !matches!(self, Self::News | Self::ResentNews) || about.shown.is_empty() {
+            return None;
+        }
+        let rest: Vec<(String, Heard)> = about
+            .workers
+            .iter()
+            .filter(|sent| !about.shown.contains(sent))
+            .cloned()
+            .collect();
+        Some(if rest.is_empty() {
+            String::new()
+        } else {
+            workers_line(&rest)
         })
     }
 
@@ -169,18 +186,18 @@ pub(crate) struct Subjects {
     /// What each job that finished, or monitor that alerted or ends, runs
     /// (`None` when that isn't known). Each is listed once.
     pub(crate) commands: Vec<Option<String>>,
-    /// Some of the news is in the transcript already, as the workers' own
-    /// rows, and `workers` leaves it out.
-    pub(crate) shown: bool,
+    /// The news of `workers` that the transcript shows as the workers' own
+    /// rows (a report with words, a message to the main agent).
+    pub(crate) shown: Vec<(String, Heard)>,
 }
 
 impl Subjects {
     /// The workers that sent `mail`, the news waiting for the main agent.
     /// `handle` gives a run's ID as the agent list shows it (`r4` for a
     /// worker of a worker too). A copy of a message the user sent a worker,
-    /// and news from the host, name no worker. A report or a message the
-    /// transcript shows as the worker's own row (`shown`) is left out, so
-    /// the line doesn't say it again under that row.
+    /// and news from the host, name no worker. `shown` says which reports
+    /// and messages the transcript shows as the worker's own row, by the
+    /// worker, what it sent and the mail's body.
     pub(crate) fn of_mail(
         mail: &[arko_workflows::subagents::MailItem],
         handle: impl Fn(uuid::Uuid) -> Option<String>,
@@ -209,11 +226,11 @@ impl Subjects {
                 Heard::Message => true,
                 _ => false,
             };
-            if row && shown(&who, heard, &item.body) {
-                about.shown = true;
-            } else {
-                about.heard(&who, heard);
+            if row && shown(&who, heard, &item.body) && !about.shown.contains(&(who.clone(), heard))
+            {
+                about.shown.push((who.clone(), heard));
             }
+            about.heard(&who, heard);
         }
         about
     }
@@ -335,8 +352,8 @@ fn monitor_in(text: &str, closing: &str) -> Option<(uuid::Uuid, String)> {
 }
 
 /// The line for news from workers to the main agent, as the user reads it:
-/// "r1 reported", "r1, r2 and r3 reported", "r2 to main", "r1 reported · r2
-/// to main".
+/// "r1 reported", "r1, r2 and r3 reported", "r2 messaged the lead", "r1
+/// reported · r2 messaged the lead".
 fn workers_line(workers: &[(String, Heard)]) -> String {
     let parts: Vec<String> = [
         Heard::Report,
@@ -361,9 +378,10 @@ fn workers_line(workers: &[(String, Heard)]) -> String {
             Heard::Report => format!("{who} reported"),
             Heard::Failed => format!("{who} failed"),
             Heard::Stopped => format!("{who} stopped"),
-            Heard::Asked if many => format!("{who} asked main questions"),
-            Heard::Asked => format!("{who} asked main a question"),
-            Heard::Message => crate::remote::quiet::mail_label(&who, "main"),
+            Heard::Asked if many => format!("{who} asked the lead questions"),
+            Heard::Asked => format!("{who} asked the lead a question"),
+            // (As the worker's row for it says.)
+            Heard::Message => format!("{who} messaged the lead"),
         })
     })
     .collect();
@@ -505,14 +523,14 @@ mod tests {
             news(&[("r1", Report), ("r2", Report), ("r3", Report)]),
             "r1, r2 and r3 reported"
         );
-        assert_eq!(news(&[("r2", Message)]), "r2 to main");
+        assert_eq!(news(&[("r2", Message)]), "r2 messaged the lead");
         assert_eq!(
             news(&[("r2", Message), ("r5", Message)]),
-            "r2 and r5 to main"
+            "r2 and r5 messaged the lead"
         );
         assert_eq!(
             news(&[("r1", Report), ("r2", Message)]),
-            "r1 reported · r2 to main"
+            "r1 reported · r2 messaged the lead"
         );
         assert_eq!(
             news(&[
@@ -521,17 +539,17 @@ mod tests {
                 ("r3", Message),
                 ("r4", Report)
             ]),
-            "r1 and r4 reported · r2 and r3 to main"
+            "r1 and r4 reported · r2 and r3 messaged the lead"
         );
         assert_eq!(news(&[("r1", Failed)]), "r1 failed");
         assert_eq!(
             news(&[("r1", Stopped), ("r2", Stopped)]),
             "r1 and r2 stopped"
         );
-        assert_eq!(news(&[("r1", Asked)]), "r1 asked main a question");
+        assert_eq!(news(&[("r1", Asked)]), "r1 asked the lead a question");
         assert_eq!(
             news(&[("r1", Asked), ("r2", Asked)]),
-            "r1 and r2 asked main questions"
+            "r1 and r2 asked the lead questions"
         );
         // Nothing is known of who sent it.
         assert_eq!(
@@ -553,14 +571,17 @@ mod tests {
         assert_eq!(line(3, Heard::Report), "r1, r2 and r3 reported");
         assert_eq!(line(4, Heard::Report), "r1, r2 and 2 others reported");
         assert_eq!(line(6, Heard::Report), "r1, r2 and 4 others reported");
-        assert_eq!(line(6, Heard::Message), "r1, r2 and 4 others to main");
+        assert_eq!(
+            line(6, Heard::Message),
+            "r1, r2 and 4 others messaged the lead"
+        );
         let mut about = workers(&[("r9", Heard::Report)]);
         for n in 1..=5 {
             about.heard(&format!("r{n}"), Heard::Message);
         }
         assert_eq!(
             Opening::News.notice(&about).unwrap(),
-            "r9 reported · r1, r2 and 3 others to main"
+            "r9 reported · r1, r2 and 3 others messaged the lead"
         );
     }
 
@@ -575,7 +596,7 @@ mod tests {
         assert_eq!(news(&[("r1", Report), ("r1", Failed)]), "r1 failed");
         assert_eq!(
             news(&[("r1", Message), ("r2", Message), ("r1", Message)]),
-            "r1 and r2 to main"
+            "r1 and r2 messaged the lead"
         );
     }
 
@@ -630,14 +651,14 @@ mod tests {
         );
         assert_eq!(
             Opening::News.notice(&about).unwrap(),
-            "r4 reported · r1 to main"
+            "r4 reported · r1 messaged the lead"
         );
         let kinds = [
             (MailKind::Report, "r1 reported"),
             (MailKind::Failed, "r1 failed"),
             (MailKind::Stopped, "r1 stopped"),
-            (MailKind::Question, "r1 asked main a question"),
-            (MailKind::Message, "r1 to main"),
+            (MailKind::Question, "r1 asked the lead a question"),
+            (MailKind::Message, "r1 messaged the lead"),
         ];
         for (kind, line) in kinds {
             let about = Subjects::of_mail(&[mail(from(one), kind)], handle, |_, _, _| false);
@@ -645,45 +666,64 @@ mod tests {
         }
     }
 
-    /// A report or a message the transcript shows as the worker's row stays
-    /// out of the line, and news that the rows say whole has no line. What
-    /// no row says still shows.
+    /// The line names all the news. Beside the rows a client draws for the
+    /// workers' reports and messages, it says only the rest, and nothing
+    /// when the rows say it all.
     #[test]
-    fn news_the_workers_rows_show_stays_out_of_the_line() {
+    fn beside_the_workers_rows_the_line_says_the_rest() {
         let (one, two) = (Uuid::new_v4(), Uuid::new_v4());
         let handle = |id: Uuid| Some(if id == one { "r1" } else { "r2" }.to_string());
         let from = MailSender::Run;
         let rows = |who: &str, heard: Heard, _: &str| who == "r1" && heard != Heard::Failed;
-        let line = |mail: &[MailItem]| Opening::News.notice(&Subjects::of_mail(mail, handle, rows));
-        assert_eq!(line(&[mail(from(one), MailKind::Report)]), None);
+        let lines = |mail: &[MailItem]| {
+            let about = Subjects::of_mail(mail, handle, rows);
+            (
+                Opening::News.notice(&about).unwrap(),
+                Opening::News.beside_rows(&about),
+            )
+        };
+        let line = |all: &str, beside: Option<&str>| (all.to_string(), beside.map(str::to_string));
+        assert_eq!(
+            lines(&[mail(from(one), MailKind::Report)]),
+            line("r1 reported", Some(""))
+        );
         for (first, then) in [
             (MailKind::Message, MailKind::Report),
             (MailKind::Report, MailKind::Message),
         ] {
-            assert_eq!(line(&[mail(from(one), first), mail(from(one), then)]), None);
+            assert_eq!(
+                lines(&[mail(from(one), first), mail(from(one), then)]),
+                line("r1 reported", Some(""))
+            );
         }
         assert_eq!(
-            line(&[
+            lines(&[
                 mail(from(one), MailKind::Report),
                 mail(from(two), MailKind::Report)
-            ])
-            .as_deref(),
-            Some("r2 reported")
+            ]),
+            line("r1 and r2 reported", Some("r2 reported"))
         );
         assert_eq!(
-            line(&[mail(from(one), MailKind::Failed)]).as_deref(),
-            Some("r1 failed")
+            lines(&[mail(from(one), MailKind::Failed)]),
+            line("r1 failed", None)
         );
         let said_nothing = MailItem {
             body: " ".into(),
             ..mail(from(one), MailKind::Report)
         };
-        assert_eq!(line(&[said_nothing]).as_deref(), Some("r1 reported"));
-        // News with no worker named says so.
+        assert_eq!(lines(&[said_nothing]), line("r1 reported", None));
+        // A message shown with a report that has no row still leaves the
+        // report to the line.
+        let quiet_report = MailItem {
+            body: String::new(),
+            ..mail(from(one), MailKind::Report)
+        };
         assert_eq!(
-            Opening::News.notice(&Subjects::default()).as_deref(),
-            Some("News from workers")
+            lines(&[mail(from(one), MailKind::Message), quiet_report]),
+            line("r1 reported", Some("r1 reported"))
         );
+        // Other news has no rows of its own.
+        assert_eq!(Opening::Job.beside_rows(&Subjects::default()), None);
     }
 
     /// A job's line names what it ran, and says how many when several did.
