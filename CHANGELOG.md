@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.24.0 (2026-11-18)
 
 ### Editing files
 
@@ -10,13 +10,26 @@
   which block and why, and the file is left as it was.
 - A block's search lines must match whole lines of the file exactly and be found once, or with
   `replace_all`, everywhere. The file is replaced in one step and keeps its permissions, owner,
-  group, ACL and other properties. A file with one that can't be kept, such as a second hard
-  link, is refused unchanged.
+  group, ACL and other properties. A file with one that can't be kept, such as a second hard link
+  or another user as its owner, is left as it was, and the agent is told to change it with
+  `write_file` or the shell. On Unix systems other than Linux and macOS that is every file.
 - An edit's row says how many edits it made ("2 edits") and opens to the changes. The line prompt
   says how many edits a call of several makes, and in Quiet each block counts as an edit ("Made 3
   edits to app.rs").
+- An edit with `replace_all` counts each place it changed, "5 edits" on its row and "Made 5 edits
+  to app.rs" in Quiet, with `edit_file` too. It said "5 replacements" and "Made 1 edit". A Quiet
+  row of several edits counts only those that went in ("Made 2 edits to a.rs ✗"), and one whose
+  edits all failed reads "Couldn't edit a.rs ✗".
+- A failed edit's row reads "edit src/app.rs · ✗ Failed", and opening it shows why each block
+  didn't apply. A failed call's error no longer says "Execution failed:" twice.
+- On a narrow screen a file's row keeps the file's name whole. Its outcome's words give way first,
+  then its folders ("edit …/app.rs").
 - `run_code` calls `apply_diff` in place of `edit_file`.
 - A session saved with `edit_file` resumes with it.
+- A path that leaves the working directory through a symbolic link is refused however it's
+  written. This covers Arko's file tools, Claude Code's Read, Write, Edit, NotebookEdit, Glob and
+  Grep, and a worker's workspace while outside access is off. It's checked when the call is made,
+  so shell commands and links changed afterwards aren't covered.
 
 ### Code only
 
@@ -31,6 +44,13 @@
 - The notice of what saved conversations lack names `run_code` and the direct calls a saved `code`
   run lacks, and says that a conversation Claude Code compacts keeps the tools it started with,
   where it promised them at the next handover.
+- A `run_code` call has a row of its own, worded from what its code is for ("Running code to
+  count TODO comments per crate", then "Ran code to …"). It opens to its code, highlighted, then
+  one line of what its calls did ("Listed 1 folder and read 31 files") and a line with ✗ for each
+  call that failed, in the order they came, and the result. While it runs, the row counts its
+  calls and names the one that runs. Full has each call's line after the code. It read "Used
+  run_code" and opened to its result alone. A reopened session shows the row, the code and the
+  result.
 
 ### The transcript
 
@@ -40,6 +60,103 @@
   it moved down and up with it and swapped rows with it when the agent read it.
 - An answer, or words sent with an approval, now shows after a message you typed before it. It
   used to show above that message.
+- A long call (a command, a wait, an MCP tool's call) has a Quiet row of its own while it runs,
+  which says what it does. When it ends it joins the row before it, unless something came below it
+  meanwhile, so nothing above what you're reading moves. A row of several calls says what runs
+  while one runs, and what they did once all ended.
+- A long line of code, of a diff or of a job's output that wraps goes on under its own indent, on
+  the page and in the terminal, where it went on at the edge. The page draws a tab 4 columns wide,
+  as the terminal does.
+- An index search's Quiet row names the index alone, and opening it shows the query once, then the
+  results.
+- In the terminal a failed row paints only its ✗ in the error's colour, as the page does, and a
+  failed Quiet row's ✗ stands a column in from the edge.
+- A row's line gives way to its width by one rule, in the terminal and on the web page. The
+  marker, a worker's name, ✓ or ✗, how long a call has run, the spinner, Move to background and
+  Stop stay, each in the room it keeps from the start of the call's run or its job's, so the words
+  don't change as a button comes or the time grows. How a row runs, such as a code run's count of
+  calls, shows only in the room the words leave. Then the words are cut where a word ends, down
+  to their first 12 columns, before what happened goes, so a narrow wait reads "Waited for job… ·
+  failed (exit 1)". Each part goes whole. A file's line keeps its name, and its folders go a whole
+  folder at a time. Lines used to be cut inside words ("runni…", "run_cod…"). A row opens to what
+  its line as drawn left out, each thing once, and without the ✓ or ✗ its line shows.
+- In the terminal, a call that runs over an hour says so in whole hours ("2h").
+- A wait's line names a run only where its own words don't ("Waited for r4 · finished"). A wait on
+  a job that failed shows ✗, and one that asks for input or was stopped shows no mark, where both
+  showed ✓.
+- A failed call's line says "Failed", and its content says why, once. A failed code run says it
+  couldn't, where it said "Ran code to …". An edit's error on screen leaves out what it tells the
+  agent to do next.
+- A note that waits below a long call keeps its place as the call ends and as the agent reads it,
+  and the call's row no longer regroups. A read note keeps the room its "pending" tag took.
+- An opened call shows what it says once. The call as written is left out where what it opens to
+  holds the rest of its line, for messages, workers' tasks, queries and commands. A long command
+  whose words open with a group in parentheses keeps what fits, where it read "Ran…".
+- Closing a fold no longer leaves blank under the end, in the terminal and on the web page. After
+  you open a call near the end, scroll down to read it and close it, the lines come down so the
+  end is at the bottom again, as before the call opened. The view follows again unless you
+  scrolled up. The blank used to stay until the next scroll.
+
+### Spacing
+
+- The space between the transcript's rows follows one table, in the terminal and on the web page,
+  so the same neighbours always stand the same distance apart. Lines of work stack, what is said
+  and cards stand apart from their neighbours, and so does what follows anything open. An exchange
+  starts with your message and ends with the line after a turn, with more space before the one and
+  after the other. The message box stands where the next row would, so the last row has as much
+  space under it as two rows of its kind have between them.
+- On the page, the line after a turn sits under its turn, with the next message an exchange below
+  it. It sat closer to the next message than to its own turn. The first message stands 24 px under
+  the header, where it stood 40.
+- On a computer, a message's Copy shows in its corner when the pointer is on it, and beside your
+  message's bubble, and takes no room of its own. A reply and your message stood 26 px further
+  from what followed them. On a phone, Copy stays under the message.
+- A worker's card and its report, and a question's record, hold what they say 12 px from their
+  frame, top and bottom, as a message's bubble does. A report's Copy stands in its corner.
+- In the terminal, the end of what is said, a note waiting or anything open has a blank row under
+  it before the status line, as rows have between them, and "Working…" has none, as a line of work
+  doesn't. "Working…" now follows a notice or a worker's line with no blank row, as it follows a
+  call. On a screen of one row, the row shows text rather than that blank row.
+
+### The web page
+
+- Every row and line has its marker, a triangle on one that opens and a dot on one with nothing to
+  open. A row with nothing to open had an empty marker column.
+- A running call's Move to background and Stop no longer make its line taller, so the rows under it
+  stay where they are when it ends.
+- Opening or closing a content's door keeps the lines above it in place, also when the page has
+  to fetch the whole first. Closing a long content from its end keeps the door under the pointer.
+- After a fold near the end, a trip to another view and back brings you back to the block you
+  were reading, where it went to the end.
+- A call that runs leaves no blank under it. The hidden "Working…" line under a running call
+  carried the call's whole command and wrapped on a phone, up to half the screen, and that blank
+  stayed once the call ended. The live line is one line now, a call that runs on the last row is
+  the live line itself, and text that streams has nothing under it until it pauses.
+- Rows that come below a call that still runs, such as the lead's message to a worker, put the
+  line "Running cargo test…" at the end, in the terminal too, so the end says the agent works.
+- With an iPhone's keyboard up, the page takes the height of what shows above the keyboard, so a
+  scroll over the message box no longer shows an empty band under it.
+- With an iPhone's keyboard up, the answer panel fits above it, with its field and Send in sight
+  and its questions scrolling, and it's back as it was once the keyboard goes. The keyboard covered
+  the field and Send. Safari also offered a contact's name for the field when a question asked for
+  a name.
+- A running command's details in Full show the command once.
+- Move to background and Stop are their words alone until the pointer is on them, in the link
+  colour, so the space under a running row is the same with them as without.
+- Where there's room, a note's "pending" stands beside its bubble, so the note needs no line under
+  it, waiting or read.
+- A scroll to the end by the browser, with the scrollbar or a wheel, and a button's touch target on
+  the last row no longer leave blank between the end and the message box.
+- A selection of a command's or a job's output copies its blank lines.
+- A worker's card is two lines in every state, its title and a line of its calls, time and state,
+  so the cards below it stay where they are. It gained a third line with the worker's latest call
+  and then its report's first line, which its "reported" row shows. Where its second line is too
+  long, the parts that don't change go first (its profile and model), and it no longer wraps.
+- On the web page, a worker's long title is cut where a word ends, with "…" right after it, on its
+  card and in the workers' sheet. The browser cut it inside a word or left a space before the "…".
+- A worker's view that has only its report, as when its work came before the page's history, opens
+  at its end as other worker views do, and stays where you scroll it. On a phone it went back to its
+  top when the finger lifted, and the wheel didn't scroll it.
 
 ### Questions
 
@@ -55,6 +172,21 @@
 - In a worker's view, a message goes to that worker also while the main agent waits for an answer.
 - At the line prompt (`--repl`), which has no answer panel, the line typed after a question still
   answers it.
+- A question's card shows its questions from the start, in the terminal and on the web page, each
+  with a line that says "Needs your answer". The answer, or what else became of the question, takes
+  that line, so the card keeps its height. It used to be one line until a question was answered,
+  then grew into a box and pushed everything below it down. A long answer is cut to its line, and a
+  click on it shows it whole. A click on an open question opens the answer panel on it.
+- On the web page, the answer panel, the chip of open questions and "Replying to" follow the
+  questions as their cards change. A question the agent didn't wait for, and one settled elsewhere,
+  reached them up to 2 s later, so the panel could open or close, and the transcript move, under
+  whatever came next.
+- On the web page, a new question's card no longer has "Working…" under it for a moment as it
+  comes. Its line could leave blank under the card when it went.
+- When a question you're answering in the panel is settled elsewhere, "That question is no longer
+  open." takes the panel's place at the panel's height until you type, send or close it, and a new
+  question opens in that room. It stood above the message box for 5 s, and the transcript moved
+  when it went.
 
 ### The full-screen view
 
@@ -67,6 +199,10 @@
   stays set.
 - Ptyxis draws its own background behind the cells, so its margin keeps the profile's colour.
   `gsettings set org.gnome.Ptyxis disable-padding true` takes the margin away.
+- Esc acts at once in terminals without the kitty keyboard protocol, such as Ptyxis, GNOME
+  Terminal and tmux. It waited for the next key or click, so the web page's QR code and the other
+  popups closed only then, and Esc followed by a letter came out as Alt with that letter. The
+  thread that reads the terminal also kept a CPU core busy while the view was open.
 
 ### Models
 
@@ -93,19 +229,42 @@
 - A session saved before the way to OpenAI could be chosen goes on over the ChatGPT login it used,
   and its workers go by that login. A Sol worker in one handed over at 200k.
 
-### The web page
+### Workers
 
-- A call that runs leaves no blank under it. The hidden "Working…" line under a running call
-  carried the call's whole command and wrapped on a phone, up to half the screen, and that blank
-  stayed once the call ended. The live line is one line now, a call that runs on the last row is
-  the live line itself, and text that streams has nothing under it until it pauses.
-- Rows that come below a call that still runs, such as the lead's message to a worker, put the
-  line "Running cargo test…" at the end, in the terminal too, so the end says the agent works.
-- The message box stands where the next item would, so the last item has as much space under it
-  as two items of its kind have between them.
-- With an iPhone's keyboard up, the page takes the height of what shows above the keyboard, so a
-  scroll over the message box no longer shows an empty band under it.
-- A running command's details in Full show the command once.
+- While outside access is off, a worker's workspace can't be reached through a link that leads out
+  of the working directory, such as `up -> ..`. The link's target became the worker's working
+  directory, so its file tools and commands could change anything in it.
+
+### Background jobs
+
+- A note you type while an agent waits for a background job ends the wait, and the agent reads it
+  at once. Since 0.23.1 the wait ran on to its end, up to 4 min 30 s for a 5-minute cache. A
+  worker's wait ends the same way when its lead writes to it, and a lead's when a worker reports.
+- A wait on a job says what it found (new output, finished, failed with its exit code, asks for
+  input, stopped, timed out or nothing new), where it showed the tool's JSON. It opens to the
+  job's output as text, and "new output" means output past what the agent already had. Waits on a
+  job merge only with waits on the same job.
+- Window titles, links and the other controls in a job's output no longer take text with them.
+
+### Dependencies
+
+- arko_ai 0.3.2, arko_agents 0.10.0 and arko_workflows 0.11.0, for Gemini 4 Neon, `apply_diff`,
+  the waits that notes end, the tools reached only from code and the workspace link check.
+- termelon 0.2.2, for the terminal's background and the Esc key.
+
+### For apps
+
+- An app that also names arko_agents' or arko_workflows' types takes arko_agents 0.10 and
+  arko_workflows 0.11.
+- `remote::Act` has `edits`, how many edits an `apply_diff` call of several blocks makes (zero for
+  one), so code that builds an `Act` field by field needs it.
+- `code_mode::CALLABLE` holds `apply_diff` as well as `edit_file`, eight tools in all.
+- `code_mode::Tools` has `Code`, so an exhaustive `match` on it needs an arm for it, and
+  `Tools::ALL` holds three. `Tools::calls_only_from_code` says whether a setting reaches the tools
+  of `CALLABLE` only from code, and `code_mode::file_tool_definitions()` gives the definitions of
+  arko_agents' file tools among them.
+- `RunCodeTool::new` takes the session's tool definitions (`ToolDefinition`) in place of their
+  names.
 
 ## 0.23.1 (2026-11-18)
 
