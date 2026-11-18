@@ -1,0 +1,35 @@
+# TEMPORARY, for the release-0240 branch only: formatting, clippy and the
+# whole test suite on Linux. It goes before the branch is merged.
+name: Branch check
+on:
+  push:
+    branches: [release-0240]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy && rustup default 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Some tests make git repositories and commit in them.
+      - run: git config --global user.name "Branch Check" && git config --global user.email "branch-check@example.com"
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # These six run Claude Code's CLI, which the runner lacks. They run on
+      # a machine that has it.
+      - name: Tests
+        run: >-
+          cargo test --locked --no-fail-fast --
+          --skip commands::tests::a_model_on_openrouter_completes_from_its_list
+          --skip harness::tests::a_worker_in_claude_code_reports_to_a_main_agent_elsewhere
+          --skip harness::tests::live::resuming_a_session_restarts_its_workers_in_claude_code
+          --skip harness::tests::switching::a_claude_code_lead_writes_its_report_as_a_reply_before_a_switch
+          --skip harness::tests::switching::a_handover_size_set_stays_across_models_and_a_reopen
+          --skip harness::tests::switching::a_reopened_session_takes_the_size_and_window_of_its_conversation
