@@ -68,8 +68,12 @@ git dependency at a full SHA, in a commit marked TEMPORARY.
 - A tool call from the script is a frame to Arko. Arko runs it through the gate and sends the
   answer back. The child holds no key, credential or tool.
 - The child sets its limits before any code runs, and the run fails if it can't:
-  - Linux and macOS: `RLIMIT_DATA` for memory, `RLIMIT_CPU` above the computing limit,
-    `RLIMIT_CORE` and `RLIMIT_FSIZE` at 0
+  - Linux and macOS: `RLIMIT_AS` at the size it starts with plus 1 GB (it counts shared
+    mappings too), `RLIMIT_DATA` at 512 MB, `RLIMIT_CPU` above the computing limit,
+    `RLIMIT_CORE` and `RLIMIT_FSIZE` at 0. Whether macOS enforces the first two is shown by
+    the tests on a macOS runner, not assumed
+  - Arko's watchdog, on Linux and macOS, ends a child whose resident memory passes 512 MB, a
+    backstop beside the OS limits, not one of them
   - Linux: `oom_score_adj` raised to 1000, so the OOM killer takes it first
   - Windows: a Job Object with a process memory limit, a user-time limit, one active process,
     and death on an unhandled exception
@@ -79,6 +83,68 @@ git dependency at a full SHA, in a commit marked TEMPORARY.
 - A child that dies, is killed or breaks the protocol is a clean tool error, never an Arko
   failure. No panic, unwrap or blocking call on a tokio worker on Arko's side.
 - One child per run. Its start (process plus engine) is measured and reported.
+
+## The child's lifecycle
+
+One run, as Arko sees it. A run's future in Arko (`child::run`) owns the child's handle, the
+reader of its output, the memory watchdog and the nested call in flight, so dropping that
+future ends all of them at once.
+
+| State | Arko is | The child is |
+|---|---|---|
+| Starting | spawning it, writing `Start`, reading up to the magic line | setting its OS limits, reading `Start` |
+| Running | waiting for the child's next frame | computing |
+| In a call | running one nested call through the gate | computing on, or waiting for that answer |
+| Finishing | holding the child's `Done` | exiting on its own |
+| Dead | holding the outcome | gone |
+
+| Event | From | To |
+|---|---|---|
+| A `Call` frame | Running | In a call |
+| The call's answer written | In a call | Running |
+| A `Done` frame | Running | Finishing, then Dead with the child's own outcome |
+| Output ends without `Done` | Starting, Running | Dead, `Died` with the exit status and the first 4 KB of stderr |
+| The child exits during a call | In a call | The call is dropped, the frames left are read for a `Done` (2 s), then Dead with that `Done` or `Died` |
+| A write to the child fails | Starting, In a call | Dead, `Died` |
+| An unreadable or oversized frame, a missing magic line, more than 500 calls | any | Dead, `Broken` |
+| The whole run's time limit | any | Dead, `TimedOut` |
+| A stop (the future dropped, or `TaskContext::stop`) | any | Dead, `Stopped` |
+| The watchdog sees resident memory past the limit | any after spawn | Dead, `OverMemory` |
+| The third refusal | In a call | Dead, `Refusals` |
+| The middleware stops or pauses the task at a call | In a call | Dead, `Halted` |
+
+Who kills the child:
+
+- One owner. The child's handle is created with kill-on-drop and lives in the run's future.
+  Every end above returns from or drops that future, and dropping the handle kills the child
+  (SIGKILL, or TerminateProcess on Windows). The time limit, a stop, the watchdog, the refusal
+  cap, a halt and a broken protocol all end the run that way. Nothing else sends a kill.
+- The nested call in flight is part of the same future, so it is dropped with it, and a command
+  it started is killed by the shell's own drop guard.
+- The child also ends itself when its input closes (Arko gone, or the handle dropped), and when
+  `RLIMIT_CPU`, `RLIMIT_AS`, `RLIMIT_DATA` or the Job Object stop it.
+
+Queues, one each way:
+
+- Child to Arko is the pipe, then Arko's reader, then a channel of one frame. Arko holds at most
+  the frame waiting and the one being read, each at most 8 MB of call arguments plus 64 KB. When
+  it is full, the reader waits, the pipe fills, and the child's write blocks.
+- Arko to child is the pipe, then the child's reader thread, then the interpreter's answer queue.
+  Arko writes one answer per call it was sent, so the queue holds at most 500 answers of at most
+  8 MB, in the child's memory under its limits. It is not bounded tighter, because a child whose
+  interpreter waits on a full pipe to Arko must still take Arko's answers, or both would wait.
+
+Time:
+
+- The computing clock runs only while the interpreter runs code (`eval`, `call`, `run_jobs`).
+  It stops while the interpreter waits for an answer and while its write to Arko blocks on a full
+  pipe. Arko's time running a nested call is never computing time.
+- The whole run's time limit counts everything, from spawn.
+
+Runner death is noticed in every state. While Arko waits for a frame, the output ends. While a
+nested call runs, Arko waits on the child's exit beside the call, so a runner that crashes
+during a long shell command drops that call at once, and the command is killed. A write that
+fails is death too. Arko's own death closes the child's input, and the child exits.
 
 ## The engine seam
 
@@ -112,6 +178,8 @@ Set before any code runs, as constants in one place.
 | Code size | 100 KB | The tool, before a child starts |
 | Result | 30,000 characters, cut with a line saying how much was left out | The tool |
 | One result into the code | 8 MB | Arko |
+| One call's arguments out of the code | 8 MB | The child, and Arko's frame limit |
+| The child's resident memory | 512 MB | Arko's watchdog |
 
 ## Results
 
