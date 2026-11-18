@@ -574,6 +574,7 @@ async fn a_runaway_allocation_past_the_heap_cap_is_stopped_by_the_os() {
         Duration::from_secs(60),
     )
     .await;
+    println!("a runaway allocation: {:?}", ran.outcome);
     match &ran.outcome {
         Outcome::Done(done) => assert!(
             matches!(done.ended, Ended::OutOfMemory { .. }),
@@ -584,6 +585,40 @@ async fn a_runaway_allocation_past_the_heap_cap_is_stopped_by_the_os() {
         other => panic!("{other:?}"),
     }
     assert!(began.elapsed() < Duration::from_secs(30));
+}
+
+/// The address-space limit alone (the watchdog and `RLIMIT_DATA` loose,
+/// the heap's cap at 2 GB) stops a runaway allocation well before the
+/// heap's cap would. Each array holds about 16 MB, so the heap's cap
+/// would take some 120 of them, and 512 MB of address space about 30.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_address_space_limit_stops_a_runaway_allocation() {
+    let mut loose = limits();
+    loose.heap_bytes = 2 * 1024 * MB;
+    loose.os_memory_bytes = 16 * 1024 * MB;
+    loose.os_address_space_bytes = 512 * MB;
+    let ran = run_with(
+        "const all = [];\n\
+         try { while (true) all.push(new Array(1000000).fill(7)); } catch (e) { return `${all.length} ${e.message}`; }",
+        loose,
+        &FakeGate::default(),
+        Duration::from_secs(60),
+    )
+    .await;
+    println!("the address space alone: {:?}", ran.outcome);
+    match &ran.outcome {
+        Outcome::Done(_) => {
+            let shown = returned(&ran);
+            let (arrays, why) = shown.split_once(' ').unwrap();
+            let arrays: usize = arrays.parse().unwrap();
+            assert!(arrays < 60, "{shown}");
+            assert_eq!(why, "out of memory");
+        }
+        // An allocation of the runner's own failed, which aborts it.
+        Outcome::Died { status, .. } => assert!(status.contains("signal"), "{status}"),
+        other => panic!("{other:?}"),
+    }
 }
 
 /// The processor-time limit ends a runner whose computing time limit is

@@ -1,0 +1,27 @@
+# TEMPORARY. The code runner's tests (its engine, its child process and its
+# limits) on each system, for the code-mode branch. It goes before the
+# branch is merged.
+name: Code mode
+on:
+  push:
+    branches: [code-mode]
+  workflow_dispatch:
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: rustup toolchain install 1.97.1 --profile minimal && rustup default 1.97.1
+      - run: cargo test --locked --lib code_mode
+      # What stopped a runaway allocation, and how long a run takes to start.
+      - run: cargo test --locked --lib code_mode::child::tests -- --nocapture runaway address_space
+      - run: cargo test --locked --lib code_mode::child::tests::start_time -- --ignored --nocapture
