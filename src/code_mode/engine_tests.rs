@@ -390,7 +390,12 @@ fn console_lines_come_before_the_value_and_survive_a_failure() {
     );
     assert_eq!(ran.done.ended, Ended::ComputeLimit);
     assert_eq!(ran.done.log, ["before"]);
-    let ran = run("for (let i = 0; i < 100000; i++) console.log('x'.repeat(10));\nreturn 1;");
+    // (A slow machine's debug build takes seconds over 100,000 lines.)
+    let ran = run_for(
+        "for (let i = 0; i < 100000; i++) console.log('x'.repeat(10));\nreturn 1;",
+        Duration::from_secs(120),
+    );
+    assert_eq!(returned(&ran), "1");
     assert_eq!(ran.done.log.len(), super::MAX_LOG_BYTES / 10);
     assert_eq!(
         ran.done.log_left_out,
