@@ -43,13 +43,18 @@ stay in Arko, on arko_workflows 0.9.0 as it is.
 
 ## 3. Background jobs after a restart
 
-- When a session resumes, each worker whose background jobs (monitors, commands, moved calls)
-  stopped with Arko gets one note naming them, in the words the main agent's first message uses,
-  so it starts again the ones it still needs.
-- Posted with `post_note_once`, keyed by the first stopped job's id, so a workflow opened again
-  in the same process posts nothing new.
-- Posted before `resume_subagents`, so a relaunched worker reads it at its first step. One that
-  isn't relaunched reads it when it's continued.
+- Each worker whose background jobs (monitors, commands, moved calls) stopped with Arko gets a
+  note naming them, in the words the main agent's first message uses, so it starts again the
+  ones it still needs.
+- A clean close stops a worker's monitors and moved calls as its run ends (the framework's
+  `stop_owner_watchers`), before the jobs are saved, so the next open never lists them. They're
+  told at close, before the crew stops the workflow, and saved with its last checkpoint.
+- The next open tells the jobs `interrupted_at_open` lists: a worker's commands after a clean
+  close, and everything after Arko died.
+- Each note is posted with `post_note_once`, keyed by its first job's id, so a workflow opened
+  again in the same process posts nothing new.
+- The open's notes are posted before `resume_subagents`, so a relaunched worker reads them at
+  its first step. One that isn't relaunched reads them when it's continued.
 - The main agent's first message is unchanged.
 
 ## 4. A paused or failed peer blocks no one
@@ -65,4 +70,5 @@ stay in Arko, on arko_workflows 0.9.0 as it is.
   note and its wait ends, a finished peer stays finished. A checkpoint that saved a worker
   running whose result finished: its relaunched peer is told once, also when the workflow opens
   again.
-- 3: a resumed session posts a worker's note naming its monitor, once.
+- 3: a closed and a dead Arko: the resumed worker reads one note naming its monitor, also when
+  the workflow opens again.
