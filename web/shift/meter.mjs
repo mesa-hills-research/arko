@@ -1497,9 +1497,9 @@ async function pixelCases(cdp, agent) {
   const failures = [];
   const skipped = [];
   let count = 0;
-  const play = async (ratio, name, body) => {
+  const play = async (ratio, name, body, view = 'full') => {
     count++;
-    const run = new Case({ cdp, agent, meter: new Meter(), size: { name: `cases @${ratio}`, width: 1000, height: 700, dpr: ratio, mobile: name.startsWith('touch') }, view: 'full', scrolled: false, seed: 7 });
+    const run = new Case({ cdp, agent, meter: new Meter(), size: { name: `cases @${ratio}`, width: 1000, height: 700, dpr: ratio, mobile: name.startsWith('touch') }, view, scrolled: false, seed: 7 });
     try {
       await run.open();
       const problem = await body(run, ratio);
@@ -1779,6 +1779,65 @@ async function pixelCases(cdp, agent) {
         const moved = Case.moved(a, b);
         return moved === 0 ? null : `the lines are ${moved} from their rows`;
       });
+    }
+    // A row whose words, outcome and spinner leave little room still shows
+    // its button whole, on one line, inside the row, and its words give
+    // way first, down to 8 characters.
+    for (const view of ['quiet', 'full']) {
+      await play(ratio, `touch: a running row with Move to background fits a phone (${view})`, async (run) => {
+        await run.metrics(390, 844);
+        await run.settle(null);
+        await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+        const dir = run.words(3).split(' ').join('/');
+        const { call } = await run.feed({ do: 'call', tool: 'shell', parameters: { command: `ls ${dir}` } });
+        await run.feed({ do: 'result', call, tool: 'shell', output: 'exit code 0, 0.1 s\na.rs' });
+        const path = run.words(4).split(' ').join('/');
+        await run.feed({ do: 'call', tool: 'shell', parameters: { command: `sleep 40; tail -3 ../${path}/target/debug/build/output` } });
+        await run.feed({ do: 'movable' });
+        const measure = `(() => {
+          const line = [...document.querySelectorAll('#rows .call-line')].find((line) => line.querySelector('.call-action'));
+          if (!line) return null;
+          const row = line.closest('.row').getBoundingClientRect();
+          const button = line.querySelector('.call-action');
+          const what = line.querySelector('.what');
+          const right = Math.max(...[...line.querySelectorAll('*')].map((each) => each.getBoundingClientRect().right));
+          const zero = document.createElement('span');
+          zero.style.cssText = 'position: absolute; display: inline-block; white-space: nowrap; visibility: hidden';
+          zero.style.font = getComputedStyle(what).font;
+          zero.textContent = '00000000';
+          document.body.appendChild(zero);
+          const eight = zero.getBoundingClientRect().width;
+          zero.remove();
+          return {
+            past: right - row.right,
+            line: line.getBoundingClientRect().height,
+            button: button.getBoundingClientRect().height,
+            clipped: button.scrollWidth > button.clientWidth,
+            what: what.getBoundingClientRect().width,
+            cut: what.scrollWidth > what.clientWidth,
+            eight,
+            note: [...line.querySelectorAll('.outcome')].some((each) => each.textContent.includes('running')),
+          };
+        })()`;
+        // (The status, which says the call may move, comes every 2 s.)
+        let shot = null;
+        for (let at = 0; at < 40 && !shot; at++) {
+          await run.settle(null);
+          shot = await run.evaluate(measure);
+          if (!shot) await new Promise((done) => setTimeout(done, 100));
+        }
+        if (!shot) return 'no Move to background';
+        if (view === 'quiet' && !shot.note) return 'the row has no outcome after its words';
+        if (shot.past > 0.5) return `the row runs ${shot.past} px past its right edge`;
+        if (shot.clipped || shot.button > 24.5) return `the button wraps or is cut (${shot.button} px tall)`;
+        if (shot.line > 24.5) return `the line is ${shot.line} px tall`;
+        if (!shot.cut) return 'the words fit whole, so nothing gave way';
+        // (In Quiet the outcome after them takes the rest, so they stand at
+        // their 8, and in Full nothing does.)
+        if (shot.what < shot.eight - 1) return `the words are ${shot.what} px, under 8 characters (${shot.eight} px)`;
+        if (view === 'quiet' && shot.what > shot.eight + 1) return `the words are ${shot.what} px, not 8 characters (${shot.eight} px)`;
+        return null;
+      }, view);
     }
     await play(ratio, 'touch: a finger lifted without a drag catches up to the end', async (run) => {
       await run.fill();

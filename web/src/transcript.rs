@@ -263,6 +263,13 @@ fn count_row(id: u64, key: String, count: Count) -> AnyView {
     .into_any()
 }
 
+/// Whether a line's words are longer than the 8 characters they keep when
+/// what follows them takes the rest of the line, so they give way down to
+/// those 8 before anything else does.
+fn long_words(words: &str) -> bool {
+    words.chars().count() > 8
+}
+
 /// Whether the element under `root` that `selector` finds shows less than
 /// its text, its end cut with an ellipsis.
 fn overflows(root: &web_sys::Element, selector: &str) -> bool {
@@ -451,9 +458,11 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                     <span class="call-line">
                         // (Its triangle turns as it opens.)
                         <span class="mark">{move || if opens() || cut.get() { "▸" } else { "" }}</span>
-                        <span class="what" title=move || words().said()>{move || words().text}</span>
-                        {move || words().news.map(|news| view! { <span class="news">{format!("({news})")}</span> })}
-                        {move || words().note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
+                        <span class="said">
+                            <span class="what" class:long=move || long_words(&words().text) title=move || words().said()>{move || words().text}</span>
+                            {move || words().news.map(|news| view! { <span class="news">{format!("({news})")}</span> })}
+                            {move || words().note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
+                        </span>
                         {move || words().running.then(|| view! {
                             <span class="outcome"><Spinner /></span>
                         })}
@@ -928,8 +937,10 @@ fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
                     <span class="call-line">
                         <span class="mark">{move || if opens() { "▸" } else { "" }}</span>
                         <span class="who">{agent}</span>
-                        <span class="what">{move || said().text}</span>
-                        {move || said().note.map(|note| view! { <span class="outcome">{note}</span> })}
+                        <span class="said">
+                            <span class="what" class:long=move || long_words(&said().text)>{move || said().text}</span>
+                            {move || said().note.map(|note| view! { <span class="outcome">{note}</span> })}
+                        </span>
                         {move || said().running.then(|| view! {
                             <span class="outcome"><Spinner /></span>
                         })}
@@ -1011,12 +1022,21 @@ fn call_line(
                 }
                 None => None,
             };
+            // (The spinner and the buttons stay whole, and what the line
+            // says gives way to them.)
+            let (said, spin) = match item.status {
+                Some(CallStatus::Running) => (None, outcome),
+                _ => (outcome, None),
+            };
             view! {
                 <span class="call-line">
                     <span class="mark">{mark}</span>
                     {who.map(|who| view! { <span class="who">{who}</span> })}
-                    <span class="what" title=item.text.clone()>{item.text.clone()}</span>
-                    {outcome}
+                    <span class="said">
+                        <span class="what" class:long=long_words(&item.text) title=item.text.clone()>{item.text.clone()}</span>
+                        {said}
+                    </span>
+                    {spin}
                     {move || {
                         let (moves, stop) = if in_row { (false, None) } else { actions.get() };
                         view! {

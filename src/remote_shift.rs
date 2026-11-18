@@ -33,19 +33,28 @@ use crate::remote::{
 
 const KEY: &str = "c2hpZnQgbWV0ZXIgc2Vzc2lvbnMgMDE";
 
-struct Still;
+/// The session's status, which says nothing changes but the calls a client
+/// may move to the background.
+#[derive(Default)]
+struct Still {
+    movable: std::sync::Mutex<Vec<u64>>,
+}
 
 impl Meter for Still {
     fn read(&self) -> Reading {
-        Reading::default()
+        Reading {
+            movable: self.movable.lock().unwrap().clone(),
+            ..Reading::default()
+        }
     }
 }
 
-/// A session the meter plays, its feed and server, and what waits on the
-/// user.
+/// A session the meter plays, its feed and server, the status it gives,
+/// and what waits on the user.
 struct Session {
     feed: Feed,
     server: Server,
+    still: Arc<Still>,
     approvals: HashMap<String, oneshot::Receiver<Answer>>,
 }
 
@@ -93,6 +102,7 @@ fn answer_actions(feed: Feed, mut actions: mpsc::UnboundedReceiver<Action>) {
 /// Starts a session, served on a port of its own.
 fn start(root: &Path) -> Session {
     let feed = Feed::new("main");
+    let still = Arc::new(Still::default());
     let (actions, received) = mpsc::unbounded_channel();
     let server = Server::start(
         "127.0.0.1:0".parse().unwrap(),
@@ -106,7 +116,7 @@ fn start(root: &Path) -> Session {
         feed.clone(),
         Images::default(),
         actions,
-        Arc::new(Still),
+        still.clone(),
         None,
         crate::remote::Project {
             workspace: root.join("work"),
@@ -118,6 +128,7 @@ fn start(root: &Path) -> Session {
     Session {
         feed,
         server,
+        still,
         approvals: HashMap::new(),
     }
 }
@@ -285,6 +296,17 @@ fn act(session: &mut Session, request: &Value) -> Value {
                 crate::remote::JobState::Finished,
                 Some("exit 0".into()),
             );
+            json!({})
+        }
+        // The latest call that runs may move to the background.
+        "movable" => {
+            let items = feed.subscribe().0.items;
+            let running = items.iter().rev().find(|item| {
+                item.kind == crate::remote::Kind::Call
+                    && item.status == Some(crate::remote::CallStatus::Running)
+            });
+            *session.still.movable.lock().unwrap() =
+                running.map(|item| item.id).into_iter().collect();
             json!({})
         }
         other => json!({ "error": format!("no such step: {other}") }),

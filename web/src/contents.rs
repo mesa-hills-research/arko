@@ -125,7 +125,7 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
         data.with(|item| {
             let kind = item.content.unwrap_or(ContentKind::Muted);
             let text = whole.as_deref().map_or(item.text.as_str(), String::as_str);
-            lines_view(kind, text)
+            lines_view(kind, text, item.number_width)
         })
     };
     let gone = move || state.with(|state| matches!(state, Some(Fetched::Gone)));
@@ -181,11 +181,12 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
     view! { {lines}{door} }
 }
 
-/// The lines of a content `text` of `kind`.
-fn lines_view(kind: ContentKind, text: &str) -> AnyView {
+/// The lines of a content `text` of `kind`, their numbers as wide as
+/// `numbers` where its whole's widest number is known.
+fn lines_view(kind: ContentKind, text: &str, numbers: Option<usize>) -> AnyView {
     match kind {
         ContentKind::Lines | ContentKind::Diff => {
-            let width = content::number_width(kind, text);
+            let width = numbers.unwrap_or_else(|| content::number_width(kind, text));
             // The code's lines highlighted, in the order its numbered lines
             // come (a diff's notes between them have none).
             let code = content::code(kind, text);

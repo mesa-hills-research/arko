@@ -438,9 +438,14 @@ button.cache { padding: 0; border: 0; background: none; }
 }
 .call-line .what { min-width: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
 .call-line .news { flex: none; white-space: nowrap; }
-/* The words give way first, down to about 8 characters, and only then the
-   outcome, as in the terminal. */
+/* What the line says gives way to the spinner and the row's buttons, which
+   stay whole. In it the words give way first, down to 8 characters (longer
+   words are `.long`), and only then the outcome, as in the terminal. */
+.call-line .said { display: flex; flex: 0 1 auto; align-items: baseline; gap: 6px; min-width: 0; }
+.call-line .said > .what { flex-shrink: 0; }
+.call-line .said > .what.long { flex-shrink: 1000; min-width: 8ch; }
 .call-line .outcome { flex: none; max-width: calc(100% - 8ch - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.call-line .said > .outcome { flex: 0 1 auto; min-width: 0; max-width: none; }
 .call-line .outcome::before { content: "· "; color: var(--muted); }
 .call-line .ok { color: var(--success); }
 .call-line .failed { color: var(--error); }

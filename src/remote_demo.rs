@@ -26,7 +26,8 @@ use crate::ui::Input;
 /// long reply that streams), "demo:worker" (a new worker whose long reply
 /// streams while the main agent waits), "demo:think" (reasoning that
 /// streams for 20 s),
-/// "demo:slow" (a 30 s command), "demo:ask" (a
+/// "demo:slow" (a 30 s command), "demo:busy" (a quick command, then a
+/// 40 s one with a long command line in the same row), "demo:ask" (a
 /// question), "demo:wait" (a question the agent waits for, which the next
 /// message answers), "demo:questions" (three numbered questions with choices),
 /// "demo:approval" (two worker profiles to approve), "demo:image" (a file read
@@ -38,12 +39,13 @@ use crate::ui::Input;
 /// `ARKO_DEMO_MODEL_MS` (900) is how long the model takes to answer, and a
 /// long one keeps "Working…" on the page.
 /// What starts a script is a message with one of these.
-const MARKERS: [&str; 12] = [
+const MARKERS: [&str; 13] = [
     "Run the demo",
     "demo:stream",
     "demo:worker",
     "demo:think",
     "demo:slow",
+    "demo:busy",
     "demo:ask",
     "demo:wait",
     "demo:questions",
@@ -259,6 +261,22 @@ async fn remote_page_demo() {
                     _ => {
                         done();
                         complete("z1", "Slept.")
+                    }
+                };
+            }
+            if let Some(step) = after("demo:busy") {
+                return match step {
+                    0 => turn("y0", "Checking the build log.", Some(shell("ls"))),
+                    1 => turn(
+                        "y1",
+                        "",
+                        Some(shell(
+                            "sleep 40; tail -3 ../example-fw/target/debug/build/example/output 2>/dev/null || true",
+                        )),
+                    ),
+                    _ => {
+                        done();
+                        complete("y2", "The build is fine.")
                     }
                 };
             }
