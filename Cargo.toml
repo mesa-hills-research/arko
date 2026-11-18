@@ -164,6 +164,6 @@ opt-level = 3
 # TEMPORARY. The framework's code-mode branch, whose NestedCalls run_code
 # calls tools through. It ships with arko_agents 0.9.0, and then this goes.
 [patch.crates-io]
-arko_ai = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "2066456760a0b0244d017b308fbe5666de3e44ae" }
-arko_agents = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "2066456760a0b0244d017b308fbe5666de3e44ae" }
-arko_workflows = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "2066456760a0b0244d017b308fbe5666de3e44ae" }
+arko_ai = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "6e8b2946d01e51d9b12808c866ece5627c13b627" }
+arko_agents = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "6e8b2946d01e51d9b12808c866ece5627c13b627" }
+arko_workflows = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "6e8b2946d01e51d9b12808c866ece5627c13b627" }
