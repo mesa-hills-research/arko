@@ -312,6 +312,7 @@ pub(crate) fn new_settings(
             Some(depth) => crate::workers::check_depth(depth)?,
             None => DEFAULT_WORKER_DEPTH,
         },
+        peer_messages: crate::workers::DEFAULT_PEER_MESSAGES,
         worker_retry_cap: options
             .worker_retry_cap
             .map(crate::workers::check_retry_cap)

@@ -170,6 +170,14 @@ pub struct Settings {
     /// existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_retry_cap: Option<u32>,
+    /// How many messages two linked workers may send each other between two
+    /// of their lead's messages to either (`/peer-messages`). The default in
+    /// sessions saved before it existed.
+    #[serde(
+        default = "default_peer_messages",
+        skip_serializing_if = "is_default_peer_messages"
+    )]
+    pub peer_messages: u32,
     /// The agent that started a worker gets a copy of the user's messages to
     /// it (`/message-copies`). Always saved, off in a new session. On in
     /// sessions saved before it existed, as they always did.
@@ -221,6 +229,14 @@ fn default_message_copies() -> bool {
     true
 }
 
+fn default_peer_messages() -> u32 {
+    crate::workers::DEFAULT_PEER_MESSAGES
+}
+
+fn is_default_peer_messages(most: &u32) -> bool {
+    *most == crate::workers::DEFAULT_PEER_MESSAGES
+}
+
 impl Settings {
     /// Settings for tests, meaning a session in `workspace` with both agents on
     /// `model`, no limit on workers, and nothing else on (not the built-in
@@ -257,6 +273,7 @@ impl Settings {
             worker_models: ModelChoice::default(),
             worker_depth: DEFAULT_WORKER_DEPTH,
             worker_retry_cap: None,
+            peer_messages: crate::workers::DEFAULT_PEER_MESSAGES,
             message_copies: true,
             // (Tests that start workers on models billed per token aren't
             // about billing.)

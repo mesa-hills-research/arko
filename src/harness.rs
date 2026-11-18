@@ -935,6 +935,7 @@ impl Harness {
         }
         if let Some(crew) = &self.crew {
             crew.set_retry_cap(self.settings.worker_retry_cap);
+            crew.set_peer_messages(self.settings.peer_messages);
             // The main agent chooses and saves the workers' profiles.
             for tool in worker_tools::tools(
                 crew.clone(),
@@ -2166,6 +2167,7 @@ impl Harness {
             "/api-budget" => self.api_budget_command(argument, source),
             "/worker-depth" => self.worker_depth_command(argument, source),
             "/worker-retry-cap" => self.worker_retry_cap_command(argument, source),
+            "/peer-messages" => self.peer_messages_command(argument, source),
             "/message-copies" => self.message_copies_command(argument, source),
             "/extensions" => self.extensions_command(argument, source),
             "/profiles" => self.profiles_command(argument),
@@ -5471,7 +5473,7 @@ pub(crate) fn publish_title_from_disk(session: &Session, gauges: &Gauges) {
 /// an argument, meaning `/outside`, `/model`, `/handover`, `/handover-at`, `/keys`.
 /// And `/message`, `/approve` and `/reject`, which work while the agent
 /// works too.
-pub(crate) const LIVE_COMMANDS: [&str; 30] = [
+pub(crate) const LIVE_COMMANDS: [&str; 31] = [
     "/outside",
     "/model",
     "/handover",
@@ -5493,6 +5495,7 @@ pub(crate) const LIVE_COMMANDS: [&str; 30] = [
     "/api-budget",
     "/worker-depth",
     "/worker-retry-cap",
+    "/peer-messages",
     "/message-copies",
     "/extensions",
     "/profiles",

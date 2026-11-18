@@ -408,6 +408,63 @@ impl Harness {
         Ok(text)
     }
 
+    /// `/peer-messages`, typed at the prompt or sent from the page, says how
+    /// many messages two linked workers may send each other between two of
+    /// their lead's messages to either, or with a number sets it. The
+    /// framework takes the limit as the workflow is built, so before the
+    /// conversation starts the agents are built again, and after it the
+    /// limit applies when the session opens again.
+    pub(crate) fn peer_messages_command(&mut self, argument: &str, source: Source) {
+        let before = self.settings.peer_messages;
+        let result = self.peer_messages_request(argument);
+        let changed = before != self.settings.peer_messages;
+        self.setting_reply(result, source, changed);
+    }
+
+    fn peer_messages_request(&mut self, argument: &str) -> Result<String, String> {
+        let applied = match &self.crew {
+            Some(crew) if self.settings.max_workers > 0 => crew.peer_messages(),
+            _ => return Err("This session has no workers (it started with --workers 0, or with the old worker tools).".to_string()),
+        };
+        let now = self.settings.peer_messages;
+        let name = workers::PEER_MESSAGES_NAME;
+        let until = |applied: u32| format!(" Until the session opens again, it is {applied}.");
+        if argument.is_empty() {
+            let pending = if applied == now {
+                String::new()
+            } else {
+                until(applied)
+            };
+            return Ok(format!(
+                "{name} is {now}. {}{pending} {} N changes it.",
+                workers::peer_messages_about(now),
+                workers::PEER_MESSAGES_COMMAND
+            ));
+        }
+        let most = workers::parse_peer_messages(argument)?;
+        if most == now {
+            return Ok(format!("{name} is {most} already."));
+        }
+        let mut settings = self.settings.clone();
+        settings.peer_messages = most;
+        let text = format!(
+            "{name} is now {most}. {}",
+            workers::peer_messages_about(most)
+        );
+        if self.conversation_started() {
+            self.settings = settings;
+            self.save_session();
+            Ok(if most == applied {
+                text
+            } else {
+                format!("{text}{}", until(applied))
+            })
+        } else {
+            self.rebuild_agents(settings)?;
+            Ok(text)
+        }
+    }
+
     /// `/message-copies`, typed at the prompt, sent from the page or chosen
     /// in the settings, says whether the agent that started a worker gets a
     /// copy of the user's messages to it, or with `on` or `off` sets that.

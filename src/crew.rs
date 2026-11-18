@@ -1225,6 +1225,9 @@ pub struct Crew {
     /// How many failed model requests in a row stop a worker (see
     /// `config`), if any do.
     retry_cap: Mutex<Option<u32>>,
+    /// How many messages two linked workers may send each other between two
+    /// of their lead's messages to either (see `config`).
+    peer_messages: Mutex<u32>,
     /// What workers billed per token may spend.
     spending: Arc<Spending>,
     /// The session's MCP servers, which a worker's set is chosen from.
@@ -1254,6 +1257,7 @@ impl Crew {
                 workflow: Arc::default(),
                 lead: Mutex::new(None),
                 retry_cap: Mutex::new(None),
+                peer_messages: Mutex::new(crate::workers::DEFAULT_PEER_MESSAGES),
                 wake,
                 events: Mutex::new(None),
             }),
@@ -1308,6 +1312,8 @@ impl Crew {
         if let Some(cap) = *self.retry_cap.lock().unwrap() {
             config = config.max_failed_requests(cap);
         }
+        // And the peers' limit, which it can't change after.
+        config = config.max_peer_messages(*self.peer_messages.lock().unwrap());
         // A worker's workspace may be outside the lead's only while outside
         // access is on, which can change while the session runs, and the
         // `outside` hook refuses the others.
@@ -1318,6 +1324,18 @@ impl Crew {
     /// workflow built from now on (none means no cap).
     pub fn set_retry_cap(&self, cap: Option<u32>) {
         *self.retry_cap.lock().unwrap() = cap;
+    }
+
+    /// How many messages two linked workers may send each other between two
+    /// of their lead's messages to either, in the workflow built from now on.
+    pub fn set_peer_messages(&self, most: u32) {
+        *self.peer_messages.lock().unwrap() = most;
+    }
+
+    /// The limit [`Self::set_peer_messages`] set last, which the workflow
+    /// built since has.
+    pub fn peer_messages(&self) -> u32 {
+        *self.peer_messages.lock().unwrap()
     }
 
     /// The model new workers start on from now on.

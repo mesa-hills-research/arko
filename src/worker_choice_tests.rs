@@ -929,6 +929,64 @@ async fn the_worker_retry_cap_is_kept_and_reaches_the_workers() {
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
+/// `/peer-messages` says how many messages two linked workers may send
+/// each other and sets it, saved with the session. Before the conversation
+/// starts the workflow has it at once. After it, the running workflow keeps
+/// its limit until the session opens again, and the reply says so.
+#[tokio::test]
+async fn the_peer_messages_limit_is_kept_and_reaches_the_workflow() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, _sender, _server, _seen) = setup(temp.path()).await;
+    let limit = |harness: &Harness| harness.crew.as_ref().unwrap().config().max_peer_messages;
+    assert_eq!(limit(&harness), 200);
+    assert!(harness.live_command("/peer-messages", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Peer messages is 200. Two linked workers may send each other 200 messages, and a message from their lead to either starts the count again. /peer-messages N changes it."
+    );
+    for bad in ["0", "off", "many"] {
+        assert!(harness.live_command(&format!("/peer-messages {bad}"), Source::Terminal));
+        assert_eq!(
+            last_said(&harness.feed),
+            format!("`{bad}` isn't a number from 1, such as /peer-messages 200.")
+        );
+    }
+    assert!(harness.live_command("/peer-messages 500", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Peer messages is now 500. Two linked workers may send each other 500 messages, and a message from their lead to either starts the count again."
+    );
+    assert_eq!(limit(&harness), 500);
+    assert_eq!(harness.session.load_settings().unwrap().peer_messages, 500);
+    assert!(harness.live_command("/peer-messages 500", Source::Terminal));
+    assert_eq!(last_said(&harness.feed), "Peer messages is 500 already.");
+
+    start_worker(&mut harness, &mut inputs, "Start a plain worker.").await;
+    assert!(harness.live_command("/peer-messages 1000", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Peer messages is now 1000. Two linked workers may send each other 1000 messages, and a message from their lead to either starts the count again. Until the session opens again, it is 500."
+    );
+    assert_eq!(harness.session.load_settings().unwrap().peer_messages, 1000);
+    assert!(harness.live_command("/peer-messages", Source::Terminal));
+    assert!(
+        last_said(&harness.feed).contains("Until the session opens again, it is 500."),
+        "{}",
+        last_said(&harness.feed)
+    );
+    // The session opens again with it.
+    harness.crew.as_ref().unwrap().shutdown().await;
+    harness.open(true).unwrap();
+    assert_eq!(limit(&harness), 1000);
+    assert!(harness.live_command("/peer-messages", Source::Terminal));
+    assert!(!last_said(&harness.feed).contains("Until"));
+    // Back to the default, it isn't saved.
+    assert!(harness.live_command("/peer-messages 200", Source::Terminal));
+    let saved = std::fs::read_to_string(harness.session.dir.join("session.json")).unwrap();
+    assert!(!saved.contains("peer_messages"), "{saved}");
+    harness.crew.as_ref().unwrap().shutdown().await;
+}
+
 /// A worker whose model requests keep failing goes on under no cap, and
 /// `/worker-retry-cap` set while it runs stops it at its next failed request.
 #[tokio::test]

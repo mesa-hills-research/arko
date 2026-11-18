@@ -1,10 +1,11 @@
 //! The session settings for who chooses the workers' models, how deep
-//! workers go, how many failed requests stop a worker and whether the agent
-//! that started a worker gets a copy of the user's messages to it, with the
-//! words and commands every front end uses for them (`/worker-models`,
-//! `/worker-depth`, `/worker-retry-cap`, `/message-copies`, and the flags
-//! `--worker-models`, `--worker-depth`, `--worker-retry-cap`,
-//! `--message-copies`). The
+//! workers go, how many failed requests stop a worker, how many messages
+//! linked workers send each other and whether the agent that started a
+//! worker gets a copy of the user's messages to it, with the words and
+//! commands every front end uses for them (`/worker-models`,
+//! `/worker-depth`, `/worker-retry-cap`, `/peer-messages`,
+//! `/message-copies`, and the flags `--worker-models`, `--worker-depth`,
+//! `--worker-retry-cap`, `--message-copies`). The
 //! terminal's settings, the web page and an app's settings page name and set
 //! them alike.
 
@@ -60,6 +61,41 @@ pub const COPIES_NAME: &str = "Message copies";
 /// The command that sets it, which takes `on` or `off` ([`copies_command`]
 /// writes it).
 pub const COPIES_COMMAND: &str = "/message-copies";
+
+/// The name of the setting for how many messages two workers linked with
+/// each other may send each other between two of their lead's messages to
+/// either.
+pub const PEER_MESSAGES_NAME: &str = "Peer messages";
+
+/// The command that sets it, which takes a number from 1
+/// ([`parse_peer_messages`] reads it).
+pub const PEER_MESSAGES_COMMAND: &str = "/peer-messages";
+
+/// How many a new session allows, and a session saved before the setting.
+pub const DEFAULT_PEER_MESSAGES: u32 = 200;
+
+/// The line under the peer messages setting, saying what it does with
+/// `most` as the setting is.
+pub fn peer_messages_about(most: u32) -> String {
+    format!(
+        "Two linked workers may send each other {}, and a message from their lead to either starts the count again.",
+        crate::remote::plural(most, "message", "messages")
+    )
+}
+
+/// Reads `text` as `/peer-messages` takes it, a whole number from 1.
+pub fn parse_peer_messages(text: &str) -> Result<u32, String> {
+    text.trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|most| *most >= 1)
+        .ok_or_else(|| {
+            format!(
+                "`{}` isn't a number from 1, such as {PEER_MESSAGES_COMMAND} {DEFAULT_PEER_MESSAGES}.",
+                text.trim()
+            )
+        })
+}
 
 /// The command that turns message copies on or off, such as
 /// `/message-copies off`.
@@ -288,6 +324,22 @@ mod tests {
             );
         }
         assert!(check_retry_cap(0).is_err());
+        assert_eq!(PEER_MESSAGES_NAME, "Peer messages");
+        assert_eq!(DEFAULT_PEER_MESSAGES, 200);
+        assert_eq!(
+            peer_messages_about(1),
+            "Two linked workers may send each other 1 message, and a message from their lead to either starts the count again."
+        );
+        assert!(peer_messages_about(200).contains(" 200 messages, "));
+        assert_eq!(parse_peer_messages(" 500 "), Ok(500));
+        assert_eq!(parse_peer_messages("1"), Ok(1));
+        for bad in ["0", "-1", "2.5", "off", "", "many"] {
+            let error = parse_peer_messages(bad).unwrap_err();
+            assert!(
+                error.ends_with("isn't a number from 1, such as /peer-messages 200."),
+                "{bad}: {error}"
+            );
+        }
         for bad in ["0", "5", "two", "", "-1", "2.5"] {
             let error = parse_depth(bad).unwrap_err();
             assert!(error.contains("from 1 to 4"), "{bad}: {error}");

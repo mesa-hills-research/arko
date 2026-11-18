@@ -288,6 +288,13 @@ pub const COMMANDS: &[Command] = &[
         runs: Runs::Session,
     },
     Command {
+        name: "/peer-messages",
+        args: "N",
+        about: "how many messages two linked workers may send each other before their lead writes to either. 200 by default",
+        aliases: &[],
+        runs: Runs::Session,
+    },
+    Command {
         name: "/message-copies",
         args: "on|off",
         about: "copies of your messages to a worker for the agent that started it",
