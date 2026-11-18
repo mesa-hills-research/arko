@@ -82,6 +82,10 @@ impl Opening {
     pub(crate) fn notice(self, about: &Subjects) -> Option<String> {
         let commands = &about.commands;
         Some(match self {
+            // (Its rows say all of it.)
+            Self::News | Self::ResentNews if about.workers.is_empty() && about.shown => {
+                return None;
+            }
             Self::News | Self::ResentNews => workers_line(&about.workers),
             Self::Job => counted(commands, ("Job", "jobs"), ("finished", "finished")),
             Self::Alert => counted(commands, ("Monitor", "monitors"), ("alerted", "alerted")),
@@ -165,16 +169,22 @@ pub(crate) struct Subjects {
     /// What each job that finished, or monitor that alerted or ends, runs
     /// (`None` when that isn't known). Each is listed once.
     pub(crate) commands: Vec<Option<String>>,
+    /// Some of the news is in the transcript already, as the workers' own
+    /// rows, and `workers` leaves it out.
+    pub(crate) shown: bool,
 }
 
 impl Subjects {
     /// The workers that sent `mail`, the news waiting for the main agent.
     /// `handle` gives a run's ID as the agent list shows it (`r4` for a
     /// worker of a worker too). A copy of a message the user sent a worker,
-    /// and news from the host, name no worker.
+    /// and news from the host, name no worker. A report or a message the
+    /// transcript shows as the worker's own row (`shown`) is left out, so
+    /// the line doesn't say it again under that row.
     pub(crate) fn of_mail(
         mail: &[arko_workflows::subagents::MailItem],
         handle: impl Fn(uuid::Uuid) -> Option<String>,
+        shown: impl Fn(&str, Heard, &str) -> bool,
     ) -> Self {
         use arko_workflows::subagents::{MailKind, MailSender};
         let mut about = Self::default();
@@ -190,7 +200,18 @@ impl Subjects {
                 MailKind::Message => Heard::Message,
                 MailKind::Copy => continue,
             };
-            if let Some(who) = handle(from) {
+            let Some(who) = handle(from) else {
+                continue;
+            };
+            // (A report without words has no row.)
+            let row = match heard {
+                Heard::Report => !item.body.trim().is_empty(),
+                Heard::Message => true,
+                _ => false,
+            };
+            if row && shown(&who, heard, &item.body) {
+                about.shown = true;
+            } else {
                 about.heard(&who, heard);
             }
         }
@@ -565,7 +586,7 @@ mod tests {
             from,
             kind,
             heading: String::new(),
-            body: String::new(),
+            body: "Done.".into(),
             at: chrono::Utc::now(),
             delivered_at: None,
             file: None,
@@ -598,6 +619,7 @@ mod tests {
                 mail(from(one), MailKind::Message),
             ],
             handle,
+            |_, _, _| false,
         );
         assert_eq!(
             about.workers,
@@ -618,9 +640,50 @@ mod tests {
             (MailKind::Message, "r1 to main"),
         ];
         for (kind, line) in kinds {
-            let about = Subjects::of_mail(&[mail(from(one), kind)], handle);
+            let about = Subjects::of_mail(&[mail(from(one), kind)], handle, |_, _, _| false);
             assert_eq!(Opening::News.notice(&about).unwrap(), line);
         }
+    }
+
+    /// A report or a message the transcript shows as the worker's row stays
+    /// out of the line, and news that the rows say whole has no line. What
+    /// no row says still shows.
+    #[test]
+    fn news_the_workers_rows_show_stays_out_of_the_line() {
+        let (one, two) = (Uuid::new_v4(), Uuid::new_v4());
+        let handle = |id: Uuid| Some(if id == one { "r1" } else { "r2" }.to_string());
+        let from = MailSender::Run;
+        let rows = |who: &str, heard: Heard, _: &str| who == "r1" && heard != Heard::Failed;
+        let line = |mail: &[MailItem]| Opening::News.notice(&Subjects::of_mail(mail, handle, rows));
+        assert_eq!(line(&[mail(from(one), MailKind::Report)]), None);
+        for (first, then) in [
+            (MailKind::Message, MailKind::Report),
+            (MailKind::Report, MailKind::Message),
+        ] {
+            assert_eq!(line(&[mail(from(one), first), mail(from(one), then)]), None);
+        }
+        assert_eq!(
+            line(&[
+                mail(from(one), MailKind::Report),
+                mail(from(two), MailKind::Report)
+            ])
+            .as_deref(),
+            Some("r2 reported")
+        );
+        assert_eq!(
+            line(&[mail(from(one), MailKind::Failed)]).as_deref(),
+            Some("r1 failed")
+        );
+        let said_nothing = MailItem {
+            body: " ".into(),
+            ..mail(from(one), MailKind::Report)
+        };
+        assert_eq!(line(&[said_nothing]).as_deref(), Some("r1 reported"));
+        // News with no worker named says so.
+        assert_eq!(
+            Opening::News.notice(&Subjects::default()).as_deref(),
+            Some("News from workers")
+        );
     }
 
     /// A job's line names what it ran, and says how many when several did.

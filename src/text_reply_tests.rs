@@ -408,11 +408,10 @@ async fn workers_report_with_complete_task_and_the_lead_replies_in_text() {
 }
 
 /// A turn Arko starts for the workers' news may end without a reply when
-/// nothing in it is for the user. The line prompt shows the turn's line and
-/// the line that ends it, the feed has no reply, and the turn's run is told
-/// a reply is optional. Resumed, the
-/// session shows the turns with the same numbers, and its last reply is the
-/// one before. A turn the user starts still gets a reply, so a response with
+/// nothing in it is for the user. The line prompt shows the line that ends
+/// it, the feed has no reply, and the turn's run is told a reply is
+/// optional. Resumed, the session shows the turns with the same numbers,
+/// and its last reply is the one before. A turn the user starts still gets a reply, so a response with
 /// neither text nor a call there gets the note asking for one.
 #[tokio::test]
 async fn a_news_turn_with_nothing_for_the_user_ends_without_a_reply() {
@@ -485,12 +484,13 @@ async fn a_news_turn_with_nothing_for_the_user_ends_without_a_reply() {
         ["Started r1.", "Code done."]
     );
     harness.flush_printer().await;
-    // The turn's line, then the line that ends it, with no reply between.
+    // The line that ends it, with no reply. (r1's report was said as it
+    // came, so the turn has no line of its own.)
     let news_lines = lines.0.lock().unwrap()[printed..].to_vec();
-    assert_eq!(news_lines.len(), 2, "{news_lines:#?}");
-    assert_eq!(news_lines[0], "  r1 reported");
-    assert!(news_lines[1].starts_with("── "), "{news_lines:#?}");
-    // The reply and the line that opened the news turn, each with its turn.
+    assert_eq!(news_lines.len(), 1, "{news_lines:#?}");
+    assert!(news_lines[0].starts_with("── "), "{news_lines:#?}");
+    // The reply, each with its turn, and in a reopened session the line
+    // that opened the news turn too.
     let marks = |feed: &remote::Feed| -> Vec<(remote::Kind, u64)> {
         feed.subscribe()
             .0
@@ -503,19 +503,22 @@ async fn a_news_turn_with_nothing_for_the_user_ends_without_a_reply() {
             .collect()
     };
     let live = marks(&harness.feed);
-    assert_eq!(
-        live,
-        [(remote::Kind::Reply, 1), (remote::Kind::Notice, 2)]
-    );
+    assert_eq!(live, [(remote::Kind::Reply, 1)]);
 
-    // Arko closes, and the session is resumed.
+    // Arko closes, and the session is resumed. Live, r1's report is its
+    // own row, which says why the news turn started. A reopened session
+    // reads the conversation, which has no such row, so the line that opened
+    // the turn says it instead.
     harness.open(true).unwrap();
     harness.banner_end(false);
     let restored: Vec<(remote::Kind, u64)> = marks(&harness.feed)[live.len()..]
         .iter()
         .map(|(kind, turn)| (*kind, turn - 2))
         .collect();
-    assert_eq!(restored, live);
+    assert_eq!(
+        restored,
+        [(remote::Kind::Reply, 1), (remote::Kind::Notice, 2)]
+    );
     harness.flush_printer().await;
     assert_eq!(lines.count("Resumed. The last reply is below."), 1);
     assert_eq!(lines.count("Started r1."), 2);

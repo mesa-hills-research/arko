@@ -4547,11 +4547,18 @@ impl Harness {
                     return Subjects::default();
                 };
                 let runs = workflow.subagents();
-                Subjects::of_mail(&workflow.pending_news(run), |from| {
-                    runs.iter()
-                        .find(|worker| worker.run_id == from)
-                        .map(|worker| worker.handle.clone())
-                })
+                Subjects::of_mail(
+                    &workflow.pending_news(run),
+                    |from| {
+                        runs.iter()
+                            .find(|worker| worker.run_id == from)
+                            .map(|worker| worker.handle.clone())
+                    },
+                    |who, heard, body| {
+                        let report = (heard == crate::openings::Heard::Report).then_some(body);
+                        self.feed.shows_worker_row(who, report)
+                    },
+                )
             }
             // What each ran is in the conversation, in the call that
             // started it, as a reopened session reads it.
@@ -7508,19 +7515,25 @@ pub(crate) mod tests {
             news.contains(&crate::openings::Opening::News.text()),
             "{news}"
         );
-        // The turn's line says who reported, in the live transcript and in
-        // the one a reopened session reads from the conversation.
-        assert!(has(&harness.feed, "notice", "r1 reported", ""));
-        assert_eq!(live_openings(&harness.feed), ["r1 reported"]);
+        // Live, r1's report is a row of its own, and the turn has no line
+        // to say it again. A reopened session reads the conversation, which
+        // has no row for it, so the turn's line says who reported.
+        assert!(!has(&harness.feed, "notice", "r1 reported", ""));
+        assert!(live_openings(&harness.feed).is_empty());
+        assert!(
+            harness
+                .feed
+                .shows_worker_row("r1", Some("There are 3 files."))
+        );
         assert_eq!(reopened_openings(&harness), ["r1 reported"]);
         crew.shutdown().await;
     }
 
-    /// A worker's message to the idle agent starts a turn whose line says
-    /// who sent it, and its report starts the next, in the live transcript
-    /// and in a reopened session's.
+    /// A worker's message to the idle agent starts a turn, and its report
+    /// starts the next. The live transcript shows each as the worker's row,
+    /// and a reopened session's as the line of each turn.
     #[tokio::test]
-    async fn the_line_of_a_turn_for_a_workers_message_names_the_worker() {
+    async fn a_workers_message_and_report_each_show_once() {
         use crate::mock_model::{ModelServer, complete, tool_call};
         let server = ModelServer::start(Arc::new(move |_, body: String| {
             Box::pin(async move {
@@ -7576,12 +7589,16 @@ pub(crate) mod tests {
                 .unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         assert_eq!(summary(&harness), "The blue branch is checked.");
-        let lines = ["r1 to main", "r1 reported"];
-        for line in lines {
-            assert!(has(&harness.feed, "notice", line, ""), "{line}");
-        }
-        assert_eq!(live_openings(&harness.feed), lines);
-        assert_eq!(reopened_openings(&harness), lines);
+        // Live, its message and its report are rows of their own, which the
+        // turns' lines leave out. A reopened session has only the lines.
+        assert!(live_openings(&harness.feed).is_empty());
+        assert!(harness.feed.shows_worker_row("r1", None));
+        assert!(
+            harness
+                .feed
+                .shows_worker_row("r1", Some("Blue branch checked."))
+        );
+        assert_eq!(reopened_openings(&harness), ["r1 to main", "r1 reported"]);
         harness.crew.as_ref().unwrap().shutdown().await;
     }
 

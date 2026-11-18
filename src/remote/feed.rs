@@ -3086,6 +3086,37 @@ impl Feed {
         }
     }
 
+    /// Whether the main view shows what the worker `worker` sent as its own
+    /// row, its report as the mail `report` has it (the report, then what
+    /// Arko adds after it, such as what its run used), or with `None` a
+    /// message to the main agent.
+    pub(crate) fn shows_worker_row(&self, worker: &str, report: Option<&str>) -> bool {
+        let state = self.lock();
+        state
+            .workers_lane
+            .items
+            .iter()
+            .filter(|item| item.agent == worker)
+            .any(|item| {
+                match super::quiet::WorkerRow::of(
+                    item.kind,
+                    item.act.as_ref(),
+                    item.status,
+                    item.outcome.as_deref(),
+                    MAIN_AGENT,
+                ) {
+                    Some(super::quiet::WorkerRow::Reported) => report.is_some_and(|report| {
+                        report
+                            .trim()
+                            .strip_prefix(item.text.trim())
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with('\n'))
+                    }),
+                    Some(super::quiet::WorkerRow::Message(_)) => report.is_none(),
+                    None => false,
+                }
+            })
+    }
+
     /// The line that opens a turn Arko started without a message from the
     /// user, naming who and what it is for.
     pub fn turn_opening(&self, text: &str) {
@@ -7483,6 +7514,23 @@ mod tests {
                 .iter()
                 .all(|(kind, ..)| matches!(kind, Kind::Call | Kind::Result | Kind::WorkerLine))
         );
+        // A worker's message to the main agent and its reports are rows of
+        // the main view, which the line that opens a turn for that news
+        // leaves out, whichever came first.
+        assert!(feed.shows_worker_row("r1", None));
+        assert!(feed.shows_worker_row("r1", Some("Fixed.")));
+        assert!(!feed.shows_worker_row("r1", Some("Docs too.")));
+        feed.worker(
+            "r1",
+            "Fix it",
+            WorkerChange::Finished {
+                report: "Docs too.",
+            },
+        );
+        assert!(feed.shows_worker_row("r1", Some(" Docs too.\n\nr1 used 60 tokens.")));
+        assert!(!feed.shows_worker_row("r1", Some("Docs too. And tests.")));
+        assert!(!feed.shows_worker_row("r2", Some("Fixed.")));
+        assert!(!feed.shows_worker_row("r2", None));
     }
 
     /// A call's act counts in the budget of what every client gets, also
