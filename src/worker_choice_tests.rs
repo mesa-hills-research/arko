@@ -968,6 +968,11 @@ async fn the_peer_messages_limit_is_kept_and_reaches_the_workflow() {
         "Peer messages is now 1000. Two linked workers may send each other 1000 messages, and a message from their lead to either starts the count again. Until the session opens again, it is 500."
     );
     assert_eq!(harness.session.load_settings().unwrap().peer_messages, 1000);
+    assert!(harness.live_command("/peer-messages 1000", Source::Terminal));
+    assert_eq!(
+        last_said(&harness.feed),
+        "Peer messages is 1000 already. Until the session opens again, it is 500."
+    );
     assert!(harness.live_command("/peer-messages", Source::Terminal));
     assert!(
         last_said(&harness.feed).contains("Until the session opens again, it is 500."),

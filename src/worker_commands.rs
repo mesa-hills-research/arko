@@ -428,22 +428,25 @@ impl Harness {
         };
         let now = self.settings.peer_messages;
         let name = workers::PEER_MESSAGES_NAME;
-        let until = |applied: u32| format!(" Until the session opens again, it is {applied}.");
-        if argument.is_empty() {
-            let pending = if applied == now {
+        // What the running workflow keeps, when it isn't the setting.
+        let until = |most: u32| {
+            if most == applied {
                 String::new()
             } else {
-                until(applied)
-            };
+                format!(" Until the session opens again, it is {applied}.")
+            }
+        };
+        if argument.is_empty() {
             return Ok(format!(
-                "{name} is {now}. {}{pending} {} N changes it.",
+                "{name} is {now}. {}{} {} N changes it.",
                 workers::peer_messages_about(now),
+                until(now),
                 workers::PEER_MESSAGES_COMMAND
             ));
         }
         let most = workers::parse_peer_messages(argument)?;
         if most == now {
-            return Ok(format!("{name} is {most} already."));
+            return Ok(format!("{name} is {most} already.{}", until(most)));
         }
         let mut settings = self.settings.clone();
         settings.peer_messages = most;
@@ -454,11 +457,7 @@ impl Harness {
         if self.conversation_started() {
             self.settings = settings;
             self.save_session();
-            Ok(if most == applied {
-                text
-            } else {
-                format!("{text}{}", until(applied))
-            })
+            Ok(format!("{text}{}", until(most)))
         } else {
             self.rebuild_agents(settings)?;
             Ok(text)
