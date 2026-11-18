@@ -26,6 +26,8 @@ models, and on your Claude plan through an installed Claude Code.
 - An [approval tray](docs/approvals.md) for what the agent needs your OK for, such as an MCP server,
   a skill or a worker profile, answered all at once
 - Search indexes of code and docs (`arko index`), kept current while Arko runs
+- [Code mode](docs/code-mode.md) (`--tools both`), where the agent runs JavaScript that calls its
+  tools, in a process of its own with limits on its memory and time
 - A web page for following a session and taking part from a browser, such as a phone's
   (`--remote`)
 - [Dictation](docs/dictation.md) into the message box (`/dictate`, Ctrl+R), recognized on your
