@@ -892,7 +892,7 @@ mod tests {
         let none = Keys::new(Arc::new(LLMClient::new()), None, None, None);
         assert_eq!(
             none.refusal(&model("sol")).unwrap(),
-            "Can't start a worker on gpt-6.1-sol. It needs a ChatGPT login or OPENAI_API_KEY, and this session has neither. Ask the user to add OPENAI_API_KEY with /keys or sign in to Codex with `codex login`, or choose a model that worker_options lists as usable now."
+            "Can't start a worker on gpt-6.2-sol. It needs a ChatGPT login or OPENAI_API_KEY, and this session has neither. Ask the user to add OPENAI_API_KEY with /keys or sign in to Codex with `codex login`, or choose a model that worker_options lists as usable now."
         );
         // With Claude Code ready, the Claude plan is the next step.
         assert_eq!(
@@ -914,7 +914,7 @@ mod tests {
         keys.apply(&credentials::OPENAI, None);
         assert_eq!(
             keys.refusal(&model("sol")).unwrap(),
-            "Can't start a worker on gpt-6.1-sol. The user removed its API key (OPENAI_API_KEY) while Arko runs. Ask the user to add it back with /keys, or choose a model that worker_options lists as usable now."
+            "Can't start a worker on gpt-6.2-sol. The user removed its API key (OPENAI_API_KEY) while Arko runs. Ask the user to add it back with /keys, or choose a model that worker_options lists as usable now."
         );
     }
 

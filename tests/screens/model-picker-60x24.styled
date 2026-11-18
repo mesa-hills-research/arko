@@ -20,7 +20,7 @@ style 2 4 29 fg=#9d9d9d bg=#101010 bold
 style 2 29 57 fg=#dedede bg=#101010
 style 2 57 58 fg=#303030 bg=#101010
 style 2 58 60 fg=#dedede bg=#131313
-text 3 "  │   gpt-6.1-sol    sol    API, $2/$10                  │"
+text 3 "  │   gpt-6.2-sol    sol    API, $2/$10                  │"
 style 3 0 2 fg=#dedede bg=#131313
 style 3 2 3 fg=#303030 bg=#101010
 style 3 3 21 fg=#dedede bg=#101010
@@ -28,7 +28,7 @@ style 3 21 46 fg=#9d9d9d bg=#101010
 style 3 46 57 fg=#dedede bg=#101010
 style 3 57 58 fg=#303030 bg=#101010
 style 3 58 60 fg=#dedede bg=#131313
-text 4 "  │   gpt-6-astra    astra  API, $10/$50                 │"
+text 4 "  │   gpt-6.2-astra  astra  API, $8/$40                  │"
 style 4 0 2 fg=#dedede bg=#131313
 style 4 2 3 fg=#303030 bg=#101010
 style 4 3 21 fg=#dedede bg=#101010

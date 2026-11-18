@@ -948,7 +948,7 @@ mod tests {
         };
         let gemini = providers::resolve_model("gemini").unwrap();
         let on_gemini = switched(&opus, &gemini, Effort::High, None);
-        assert_eq!(on_gemini.model, "gemini-3.1-pro-preview");
+        assert_eq!(on_gemini.model, "gemini-4-carbon");
         assert!(!on_gemini.fast, "Gemini has no fast mode");
         assert!(!on_gemini.cache_1h, "nor a long cache");
         assert_eq!(on_gemini.handover_at, Some(200_000), "the model's own size");

@@ -185,7 +185,7 @@ async fn a_switch_starts_a_new_conversation_from_the_old_models_report_and_a_bri
     assert!(
         last_user_of(&report)
             .0
-            .contains("a new conversation on gpt-6.1-sol"),
+            .contains("a new conversation on gpt-6.2-sol"),
         "{report}"
     );
     let said = lines(&harness.feed);
@@ -199,23 +199,23 @@ async fn a_switch_starts_a_new_conversation_from_the_old_models_report_and_a_bri
     );
     assert!(
         said.contains(
-            "New conversation on gpt-6.1-sol (high effort), from gpt-6-luna's report and a brief of conversation 1."
+            "New conversation on gpt-6.2-sol (high effort), from gpt-6-luna's report and a brief of conversation 1."
         ),
         "{said}"
     );
     // The session, the next one's default and the clients have the model.
-    assert_eq!(harness.settings.main.model, "gpt-6.1-sol");
+    assert_eq!(harness.settings.main.model, "gpt-6.2-sol");
     assert_eq!(
         harness.session.load_settings().unwrap().main.model,
-        "gpt-6.1-sol"
+        "gpt-6.2-sol"
     );
     assert_eq!(
         providers::LastModels::load(&harness.root).map(|last| last.main),
-        Some("gpt-6.1-sol".to_string())
+        Some("gpt-6.2-sol".to_string())
     );
     let reading = remote::Meter::read(harness.gauges.as_ref());
-    assert_eq!(reading.models.main, "gpt-6.1-sol");
-    assert_eq!(reading.models.conversation, "gpt-6.1-sol");
+    assert_eq!(reading.models.main, "gpt-6.2-sol");
+    assert_eq!(reading.models.conversation, "gpt-6.2-sol");
 
     say(
         &mut harness,
@@ -224,7 +224,7 @@ async fn a_switch_starts_a_new_conversation_from_the_old_models_report_and_a_bri
     )
     .await;
     let first = turn_with(&bodies, "Go on with the docs.");
-    assert_eq!(model_in(&first), "gpt-6.1-sol");
+    assert_eq!(model_in(&first), "gpt-6.2-sol");
     let (message, _) = last_user_of(&first);
     assert!(message.contains("# Earlier conversation"), "{message}");
     assert!(message.contains(REPORT), "{message}");
@@ -265,16 +265,16 @@ async fn a_switch_starts_a_new_conversation_from_the_old_models_report_and_a_bri
     assert_eq!(
         listed,
         [
-            (2, "gpt-6.1-sol".to_string()),
+            (2, "gpt-6.2-sol".to_string()),
             (1, "gpt-6-luna".to_string())
         ]
     );
     assert_eq!(harness.conversations.list[0].model, "gpt-6-luna");
-    assert_eq!(harness.conversations.list[1].model, "gpt-6.1-sol");
+    assert_eq!(harness.conversations.list[1].model, "gpt-6.2-sol");
     // Its next turn goes on without the brief again.
     say(&mut harness, &mut inputs, "And the changelog.").await;
     let next = turn_with(&bodies, "And the changelog.");
-    assert_eq!(model_in(&next), "gpt-6.1-sol");
+    assert_eq!(model_in(&next), "gpt-6.2-sol");
     assert!(!last_user_of(&next).0.contains("# Earlier conversation"));
 
     // Back to the old conversation, on its own model, which holds the
@@ -308,7 +308,7 @@ async fn a_switch_starts_a_new_conversation_from_the_old_models_report_and_a_bri
     harness.resume_command("2").await;
     say(&mut harness, &mut inputs, "And there after the reopen.").await;
     let there = turn_with(&bodies, "And there after the reopen.");
-    assert_eq!(model_in(&there), "gpt-6.1-sol");
+    assert_eq!(model_in(&there), "gpt-6.2-sol");
     assert!(
         tools_in(&there)
             .iter()
@@ -372,21 +372,21 @@ async fn new_continue_carries_the_conversation_over_and_a_plain_new_starts_clean
     switch(&mut harness, &mut inputs, "/model sol").await;
     assert!(
         lines(&harness.feed).contains(
-            "The next conversation runs gpt-6.1-sol (high effort), and new workers follow it."
+            "The next conversation runs gpt-6.2-sol (high effort), and new workers follow it."
         ),
         "{}",
         lines(&harness.feed)
     );
     say(&mut harness, &mut inputs, "Fourth.").await;
     let fourth = turn_with(&bodies, "Fourth.");
-    assert_eq!(model_in(&fourth), "gpt-6.1-sol");
+    assert_eq!(model_in(&fourth), "gpt-6.2-sol");
     assert!(!last_user_of(&fourth).0.contains("# Earlier conversation"));
     assert!(!offers_tool(&fourth));
     // And a model switch right after `/model` is a switch again.
     switch(&mut harness, &mut inputs, "/model luna").await;
     assert!(
         lines(&harness.feed).contains(
-            "New conversation on gpt-6-luna (high effort), from gpt-6.1-sol's report and a brief of conversation 4."
+            "New conversation on gpt-6-luna (high effort), from gpt-6.2-sol's report and a brief of conversation 4."
         ),
         "{}",
         lines(&harness.feed)
@@ -443,7 +443,7 @@ async fn the_report_is_skipped_with_ctrl_c_and_a_failed_one_falls_back_to_the_br
     assert!(said.contains("Skipped gpt-6-luna's report."), "{said}");
     assert!(
         said.contains(
-            "New conversation on gpt-6.1-sol (high effort), from a brief of conversation 1."
+            "New conversation on gpt-6.2-sol (high effort), from a brief of conversation 1."
         ),
         "{said}"
     );
@@ -471,7 +471,7 @@ async fn the_report_is_skipped_with_ctrl_c_and_a_failed_one_falls_back_to_the_br
     );
     assert!(
         said.contains(
-            "New conversation on gpt-6.1-sol (high effort), from a brief of conversation 1."
+            "New conversation on gpt-6.2-sol (high effort), from a brief of conversation 1."
         ),
         "{said}"
     );
@@ -535,11 +535,11 @@ async fn workers_move_to_the_new_conversation_and_new_ones_follow_the_model() {
     let said = lines(&harness.feed);
     assert!(
         said.contains(
-            "New conversation on gpt-6.1-sol (high effort), from gpt-6-luna's report and a brief of conversation 1. Worker r1 keeps running and reports here. New workers without a model of their own follow it."
+            "New conversation on gpt-6.2-sol (high effort), from gpt-6-luna's report and a brief of conversation 1. Worker r1 keeps running and reports here. New workers without a model of their own follow it."
         ),
         "{said}"
     );
-    assert_eq!(harness.settings.worker.model, "gpt-6.1-sol");
+    assert_eq!(harness.settings.worker.model, "gpt-6.2-sol");
     say(&mut harness, &mut inputs, "Hello again.").await;
     let hello = turn_with(&bodies, "Hello again.");
     assert!(
@@ -566,7 +566,7 @@ async fn workers_move_to_the_new_conversation_and_new_ones_follow_the_model() {
         .rfind(|body| body.contains("3 files.") && !body.contains("You are agent run"))
         .cloned()
         .expect("the report reached the main agent");
-    assert_eq!(model_in(&news), "gpt-6.1-sol", "in the new conversation");
+    assert_eq!(model_in(&news), "gpt-6.2-sol", "in the new conversation");
     // A new worker starts on the new model.
     say(&mut harness, &mut inputs, "Start another.").await;
     let worker = bodies
@@ -576,7 +576,7 @@ async fn workers_move_to_the_new_conversation_and_new_ones_follow_the_model() {
         .find(|body| body.contains("You are agent run r2"))
         .cloned()
         .expect("the second worker ran");
-    assert_eq!(model_in(&worker), "gpt-6.1-sol");
+    assert_eq!(model_in(&worker), "gpt-6.2-sol");
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -682,7 +682,7 @@ async fn cost_keeps_each_conversations_plan_after_a_switch_across_plans() {
     say(&mut harness, &mut inputs, "Make a file.").await;
     switch(&mut harness, &mut inputs, "/model sol").await;
     say(&mut harness, &mut inputs, "Go on.").await;
-    assert_eq!(model_in(&turn_with(&bodies, "Go on.")), "gpt-6.1-sol");
+    assert_eq!(model_in(&turn_with(&bodies, "Go on.")), "gpt-6.2-sol");
     assert_eq!(harness.spent(), 0.0, "both on plans");
 
     harness.publish_details();
@@ -931,7 +931,7 @@ async fn a_ctrl_c_before_the_report_starts_skips_it() {
     assert!(said.contains("Skipped gpt-6-luna's report."), "{said}");
     assert!(
         said.contains(
-            "New conversation on gpt-6.1-sol (high effort), from a brief of conversation 1."
+            "New conversation on gpt-6.2-sol (high effort), from a brief of conversation 1."
         ),
         "{said}"
     );
@@ -971,7 +971,7 @@ async fn the_brief_waits_for_the_new_conversations_first_run() {
 
     say(&mut harness, &mut inputs, "Go on.").await;
     let first = turn_with(&bodies, "Go on.");
-    assert_eq!(model_in(&first), "gpt-6.1-sol");
+    assert_eq!(model_in(&first), "gpt-6.2-sol");
     assert!(last_user_of(&first).0.contains("# Earlier conversation"));
     assert!(
         tools_in(&first)

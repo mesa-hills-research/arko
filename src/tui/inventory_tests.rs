@@ -1108,7 +1108,7 @@ fn crew(app: &mut App) {
     r1.cost_list = 0.31;
     let mut r2 = worker("r2", WorkerState::Finished, "Read the lexer", 48);
     r2.report = Some("The lexer splits on spaces only. Quotes are the parser's job.".into());
-    r2.model = Some("gpt-6-astra".into());
+    r2.model = Some("gpt-6.2-astra".into());
     r2.effort = Some("high".into());
     let mut r3 = worker("r3", WorkerState::Failed, "Update the docs", 9);
     r3.error = Some("The model server refused the request".into());

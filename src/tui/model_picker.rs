@@ -968,12 +968,8 @@ mod tests {
         assert!(opus.starts_with("API, $"), "{opus}");
         assert!(row("opus").contains(&opus), "{rows:#?}");
         assert!(!row("cc:opus").contains("API"), "{rows:#?}");
-        assert!(
-            picker
-                .details("gemini-3.1-pro-preview")
-                .starts_with("API, $")
-        );
-        for plan in ["cc:claude-sonnet-5-5", "gpt-6.1-sol"] {
+        assert!(picker.details("gemini-4-carbon").starts_with("API, $"));
+        for plan in ["cc:claude-sonnet-5-5", "gpt-6.2-sol"] {
             assert_eq!(picker.details(plan), "", "{plan}");
         }
         // On an API key OpenAI's models are billed per token too.

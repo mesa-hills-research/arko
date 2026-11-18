@@ -103,27 +103,27 @@ async fn before_the_start_model_sets_the_main_agent_and_after_it_opens_a_new_con
     // A provider the session can't reach says what it needs.
     assert!(harness.live_command("/model gemini high", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "gemini-3.1-pro-preview needs GEMINI_API_KEY. /keys adds API keys."
+        "gemini-4-carbon needs GEMINI_API_KEY. /keys adds API keys."
     ));
 
     assert!(harness.live_command("/model sol high", Source::Terminal));
     assert!(
         said(&harness.feed)
-            .contains("The main agent now runs gpt-6.1-sol (high effort), and new workers follow it.")
+            .contains("The main agent now runs gpt-6.2-sol (high effort), and new workers follow it.")
     );
-    assert_eq!(harness.settings.main.model, "gpt-6.1-sol");
+    assert_eq!(harness.settings.main.model, "gpt-6.2-sol");
     assert_eq!(harness.settings.main.effort, Effort::High);
-    assert_eq!(harness.settings.worker.model, "gpt-6.1-sol");
+    assert_eq!(harness.settings.worker.model, "gpt-6.2-sol");
     assert!(harness.session.latest_checkpoint().is_none(), "still before the start");
     let saved = harness.session.load_settings().unwrap();
-    assert_eq!(saved.main.model, "gpt-6.1-sol");
+    assert_eq!(saved.main.model, "gpt-6.2-sol");
     assert_eq!(
         providers::LastModels::load(&harness.root).map(|last| last.main),
-        Some("gpt-6.1-sol".to_string())
+        Some("gpt-6.2-sol".to_string())
     );
     let reading = remote::Meter::read(harness.gauges.as_ref());
-    assert_eq!(reading.models.main, "gpt-6.1-sol");
-    assert!(reading.models.banner_model.starts_with("gpt-6.1-sol (high effort)"));
+    assert_eq!(reading.models.main, "gpt-6.2-sol");
+    assert!(reading.models.banner_model.starts_with("gpt-6.2-sol (high effort)"));
     assert!(!reading.models.started);
 
     // The first request runs on it.
@@ -133,14 +133,14 @@ async fn before_the_start_model_sets_the_main_agent_and_after_it_opens_a_new_con
     ));
     assert_eq!(
         asked.lock().unwrap()[0],
-        ("main".into(), "gpt-6.1-sol".into(), "high".into())
+        ("main".into(), "gpt-6.2-sol".into(), "high".into())
     );
     assert!(remote::Meter::read(harness.gauges.as_ref()).models.started);
 
     // Once the conversation has started, `/model` says what it does.
     assert!(harness.live_command("/model", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "This conversation runs gpt-6.1-sol (high effort). /model MODEL [EFFORT] starts a new conversation on another model that carries this one over, and /model worker sets the workers' model."
+        "This conversation runs gpt-6.2-sol (high effort). /model MODEL [EFFORT] starts a new conversation on another model that carries this one over, and /model worker sets the workers' model."
     ));
     // Where the prompt doesn't make the switch (during a turn), it says to
     // wait for the turn to end.
@@ -148,7 +148,7 @@ async fn before_the_start_model_sets_the_main_agent_and_after_it_opens_a_new_con
     assert!(said(&harness.feed).contains(
         "Wait for the turn to end (or stop it) first. Then /model luna starts a new conversation on it."
     ));
-    assert_eq!(harness.settings.main.model, "gpt-6.1-sol");
+    assert_eq!(harness.settings.main.model, "gpt-6.2-sol");
     // Between turns it opens a new conversation on luna, whose first
     // request holds a brief of the first.
     let switch = harness.switch_of("/model luna").expect("a switch");
@@ -174,7 +174,7 @@ async fn before_the_start_model_sets_the_main_agent_and_after_it_opens_a_new_con
         TurnEnd::Answered
     ));
     let (_, model, _) = asked.lock().unwrap().last().cloned().unwrap();
-    assert_eq!(model, "gpt-6.1-sol");
+    assert_eq!(model, "gpt-6.2-sol");
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -276,12 +276,12 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
     // Workers started from now on run sol.
     assert!(harness.live_command("/model worker sol high", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "Workers that get no profile or model of their own now run gpt-6.1-sol (high effort). The main agent keeps gpt-6-luna (high effort), and the workers started before keep theirs."
+        "Workers that get no profile or model of their own now run gpt-6.2-sol (high effort). The main agent keeps gpt-6-luna (high effort), and the workers started before keep theirs."
     ));
-    assert_eq!(harness.session.load_settings().unwrap().worker.model, "gpt-6.1-sol");
+    assert_eq!(harness.session.load_settings().unwrap().worker.model, "gpt-6.2-sol");
     let reading = remote::Meter::read(harness.gauges.as_ref());
-    assert_eq!(reading.models.workers, "gpt-6.1-sol");
-    assert!(reading.models.banner_workers.contains("gpt-6.1-sol"));
+    assert_eq!(reading.models.workers, "gpt-6.2-sol");
+    assert!(reading.models.banner_workers.contains("gpt-6.2-sol"));
 
     // Arko stops while r1 runs, and resumes the session, and r1 goes on on luna.
     harness.crew.as_ref().unwrap().shutdown().await;
@@ -312,7 +312,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
         TurnEnd::Answered
     ));
     until(|| !models("r2").is_empty()).await;
-    assert_eq!(models("r2")[0], "gpt-6.1-sol");
+    assert_eq!(models("r2")[0], "gpt-6.2-sol");
     assert!(
         asked
             .lock()
@@ -355,7 +355,7 @@ async fn a_worker_keeps_the_model_it_started_on_and_new_ones_start_on_the_new_on
             .as_ref()
             .unwrap()
             .describe()
-            .contains("runs gpt-6.1-sol at high effort\n")
+            .contains("runs gpt-6.2-sol at high effort\n")
     );
     // `/model worker main` makes new workers follow the main agent again.
     assert!(harness.live_command("/model worker main", Source::Terminal));
@@ -377,38 +377,38 @@ async fn before_the_start_model_worker_sets_the_workers_own_model() {
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, _inputs, _sender) = harness(temp.path(), server.client(), true);
     assert!(harness.live_command("/model worker astra", Source::Terminal));
-    assert!(said(&harness.feed).contains("Workers without a profile or a model of their own now run gpt-6-astra (high effort)."));
+    assert!(said(&harness.feed).contains("Workers without a profile or a model of their own now run gpt-6.2-astra (high effort)."));
     assert!(!harness.settings.workers_follow_main());
     assert_eq!(
-        harness.worker_config.llm_config.model.id, "gpt-6-astra",
+        harness.worker_config.llm_config.model.id, "gpt-6.2-astra",
         "the workers' configuration, built again"
     );
     assert!(harness.live_command("/model sol", Source::Terminal));
     assert!(
         said(&harness.feed)
-            .contains("The main agent now runs gpt-6.1-sol (high effort). Workers keep gpt-6-astra (high effort).")
+            .contains("The main agent now runs gpt-6.2-sol (high effort). Workers keep gpt-6.2-astra (high effort).")
     );
     assert!(harness.live_command("/model worker main", Source::Terminal));
     assert!(harness.settings.workers_follow_main());
-    assert_eq!(harness.worker_config.llm_config.model.id, "gpt-6.1-sol");
+    assert_eq!(harness.worker_config.llm_config.model.id, "gpt-6.2-sol");
     // The line prompt's forms without a model say the setting and the use.
     assert!(harness.live_command("/model worker", Source::Terminal));
     assert!(said(&harness.feed).contains(
-        "Workers without a profile or a model of their own run the main agent's model, gpt-6.1-sol (high effort). /model worker MODEL [EFFORT] sets"
+        "Workers without a profile or a model of their own run the main agent's model, gpt-6.2-sol (high effort). /model worker MODEL [EFFORT] sets"
     ));
     assert!(harness.live_command("/model", Source::Terminal));
-    assert!(said(&harness.feed).contains("The main agent runs gpt-6.1-sol (high effort). /model MODEL [EFFORT]"));
+    assert!(said(&harness.feed).contains("The main agent runs gpt-6.2-sol (high effort). /model MODEL [EFFORT]"));
     // From the web page, the same, and the terminal says where it came from.
     assert!(harness.live_command("/model worker astra low", Source::Web));
     assert!(
         said(&harness.feed)
-            .contains("Changed from the web page. Workers without a profile or a model of their own now run gpt-6-astra (low effort).")
+            .contains("Changed from the web page. Workers without a profile or a model of their own now run gpt-6.2-astra (low effort).")
     );
     assert_eq!(harness.settings.worker.effort, Effort::Low);
     assert!(harness.live_command("/model worker astra low", Source::Web));
     assert!(
         said(&harness.feed)
-            .contains("From the web page. Workers without a profile or a model of their own now run gpt-6-astra (low effort).")
+            .contains("From the web page. Workers without a profile or a model of their own now run gpt-6.2-astra (low effort).")
     );
     harness.crew.as_ref().unwrap().shutdown().await;
 }
@@ -461,14 +461,14 @@ async fn the_page_names_the_model_set_after_it_started() {
     assert!(model(&page_status(&http, &base, &cookie).await).starts_with("gpt-6-luna"));
     assert!(harness.live_command("/model sol high", Source::Terminal));
     let status = page_status(&http, &base, &cookie).await;
-    assert!(model(&status).starts_with("gpt-6.1-sol (high effort)"), "{status}");
+    assert!(model(&status).starts_with("gpt-6.2-sol (high effort)"), "{status}");
     assert_eq!(status["info"]["model"], status["models"]["banner_model"]);
     assert!(matches!(
         harness.turn(Prompt::User("Hello.".into()), &mut inputs).await,
         TurnEnd::Answered
     ));
     let status = page_status(&http, &base, &cookie).await;
-    assert!(model(&status).starts_with("gpt-6.1-sol"), "{status}");
+    assert!(model(&status).starts_with("gpt-6.2-sol"), "{status}");
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -491,7 +491,7 @@ async fn the_effort_a_model_was_switched_to_is_kept_for_the_next_pick() {
         Some("high")
     );
     assert_eq!(
-        crate::models::last_effort(&root, "gpt-6.1-sol").as_deref(),
+        crate::models::last_effort(&root, "gpt-6.2-sol").as_deref(),
         Some("high"),
         "by any name"
     );

@@ -2485,7 +2485,7 @@ mod tests {
         let (crew, registered) = crew_for(&session, &root, &luna());
         let first = start("r1", &[("profile", "judge")]);
         let before = prepared(&crew, &first, &registered);
-        assert_eq!(before["llm_config"]["model"]["id"], "gpt-6.1-sol");
+        assert_eq!(before["llm_config"]["model"]["id"], "gpt-6.2-sol");
         let opening = |crew: &Crew, request: &StartRequest| {
             let ask = crew.config().start_context.unwrap();
             ask(request)
@@ -2508,7 +2508,7 @@ mod tests {
         // A worker started now gets the edit.
         let second = start("r2", &[("profile", "judge")]);
         let after = prepared(&crew, &second, &registered);
-        assert_eq!(after["llm_config"]["model"]["id"], "gpt-6-astra");
+        assert_eq!(after["llm_config"]["model"]["id"], "gpt-6.2-astra");
         assert_eq!(
             opening(&crew, &second).as_deref(),
             Some("# Your profile (judge)\nJudge version two.")
@@ -3003,7 +3003,7 @@ mod tests {
         let mut request = start("r1", &[]);
         request.run_id = run;
         let applied = prepared(&crew, &request, &registered);
-        assert_eq!(applied["llm_config"]["model"]["id"], "gpt-6.1-sol");
+        assert_eq!(applied["llm_config"]["model"]["id"], "gpt-6.2-sol");
         let mut expected = registered.clone();
         expected.llm_config = on_sol.llm_config.clone();
         expected.handover = on_sol.handover.clone();
@@ -3615,7 +3615,7 @@ mod tests {
         );
         assert_eq!(
             start_on(&plans, &base, "gemini").await.unwrap(),
-            Err("The user lets workers run only on their plans (/worker-billing plans), and Gemini 3.1 Pro Preview is billed per token. Start it on a plan model instead. Those usable now are cc:opus, cc:fable, cc:sonnet, cc:haiku, sol, astra, terra, and luna.".into())
+            Err("The user lets workers run only on their plans (/worker-billing plans), and Gemini 4 Carbon is billed per token. Start it on a plan model instead. Those usable now are cc:opus, cc:fable, cc:sonnet, cc:haiku, sol, astra, terra, and luna.".into())
         );
         assert_eq!(start_on(&plans, &base, "cc:haiku").await.unwrap(), Ok(()));
         // The session's own worker model, luna, is on the ChatGPT plan here.

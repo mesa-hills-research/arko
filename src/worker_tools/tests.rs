@@ -132,7 +132,7 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
         "\n\nModels usable now (the plan that pays, or API and the price per million input and output tokens, and the size where a worker hands over to a fresh conversation)\n"
     ));
     assert!(
-        text.contains("\n- sol · efforts low to max · ChatGPT plan 5 h 12%, 7 d 40%, shared with the user's own use · hands over at 250k · cache 30m, fixed"),
+        text.contains("\n- sol · efforts low to max · ChatGPT plan 5 h 12%, 7 d 40%, shared with the user's own use · hands over at 475k · cache 30m, fixed"),
         "{text}"
     );
     assert!(text.contains("\n- luna · efforts low to max · "));
@@ -140,9 +140,9 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     assert!(text.contains(
         "\n- opus, fable, sonnet, haiku, mythos · needs ANTHROPIC_API_KEY. The user adds it with /keys."
     ));
-    assert!(
-        text.contains("\n- gemini, flash · needs GEMINI_API_KEY. The user adds it with /keys.")
-    );
+    assert!(text.contains(
+        "\n- carbon, argon, hydrogen · needs GEMINI_API_KEY. The user adds it with /keys."
+    ));
     assert!(text.contains(
         "\n- cc:opus, cc:fable, cc:sonnet, cc:haiku, cc:mythos · needs Claude Code signed in. The user signs in with `claude auth login`."
     ));
@@ -192,7 +192,8 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
         .find(|line| line.starts_with("- sol ·"))
         .unwrap();
     assert!(sol.ends_with(" · cache 30m, fixed"), "{sol}");
-    assert!(text.contains("\n- gemini · efforts low to high · API, $"));
+    assert!(text.contains("\n- carbon · efforts low to high · API, $"));
+    assert!(text.contains("\n- hydrogen · efforts low to xhigh · API, $"));
     assert!(text.contains("\n- openrouter:<slug> · any model OpenRouter serves · API · "));
     assert!(!text.contains("Not usable now"));
     // A session that hands over in Claude Code says so.

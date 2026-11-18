@@ -1741,7 +1741,7 @@ mod tests {
         default.model = Some("gpt-6-luna".into());
         default.effort = Some("high".into());
         let mut other = worker("r2", Running);
-        other.model = Some("gpt-6.1-sol".into());
+        other.model = Some("gpt-6.2-sol".into());
         other.effort = Some("xhigh".into());
         let mut plan = worker("r3", Running);
         plan.model = Some("cc:claude-haiku-5-5".into());
@@ -4080,7 +4080,8 @@ mod tests {
             rows.contains("▸ gpt-6-luna     luna   API, $0.10/$0.50  now, high effort"),
             "{rows}"
         );
-        assert!(rows.contains("  gpt-6.1-sol    sol"), "{rows}");
+        assert!(rows.contains("  gpt-6.2-sol    sol"), "{rows}");
+        assert!(rows.contains("  gpt-6.2-astra  astra"), "{rows}");
         assert!(rows.contains("  gpt-6.1-terra  terra"), "{rows}");
         assert!(
             rows.contains("Google Gemini, billed per token  needs GEMINI_API_KEY"),

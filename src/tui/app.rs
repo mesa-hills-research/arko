@@ -5351,7 +5351,7 @@ pub(super) mod tests {
         app.editor.clear();
         type_text(&mut app, "/model w");
         press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        assert!(app.ghost().unwrap().starts_with("main|sol|gpt-6.1-sol"));
+        assert!(app.ghost().unwrap().starts_with("main|sol|gpt-6.2-sol"));
         app.editor.clear();
         // Once the conversation starts, only the workers' model changes.
         app.set_reading(Reading {
@@ -5514,7 +5514,7 @@ pub(super) mod tests {
         }
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let efforts = picker(&app);
-        assert_eq!(efforts.title(), "Main agent's effort on gpt-6.1-sol");
+        assert_eq!(efforts.title(), "Main agent's effort on gpt-6.2-sol");
         assert!(
             matches!(&efforts.step, model_picker::Step::Efforts { efforts, selected, .. } if efforts.len() == 5 && *selected == 2)
         );
@@ -5533,10 +5533,10 @@ pub(super) mod tests {
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.overlay.is_none());
-        assert_eq!(sent(&mut app), ["/model gpt-6-astra xhigh"]);
+        assert_eq!(sent(&mut app), ["/model gpt-6.2-astra xhigh"]);
         assert_eq!(
             app.hint.as_ref().map(|(text, _)| text.as_str()),
-            Some("The main agent runs gpt-6-astra at xhigh effort")
+            Some("The main agent runs gpt-6.2-astra at xhigh effort")
         );
         // With a model, the line goes to the session as typed.
         type_text(&mut app, "/model sol high");
