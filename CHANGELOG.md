@@ -1,6 +1,36 @@
 # Changelog
 
-## Unreleased
+## 0.23.1 (2026-11-18)
+
+### The transcript
+
+- "N more lines" opens below the lines it showed. Opening a long output or a file's lines used to
+  move the preview and everything above it up by the lines that came. Closing keeps the preview's
+  lines on their rows, from the mouse and the keyboard alike, and the line numbers keep their
+  column as a content opens.
+- A worker's report shows once in its lead's transcript. A turn the report started opened with
+  "r1 reported" just under the report's own row. That line now says only what the workers' rows
+  don't, and a turn whose rows say it all has none. A reopened session keeps the lines.
+- A wait on a background job reads as a wait ("Waiting for job 4d2c1a9b"), as a wait for workers
+  does, where it read as a check of the job.
+
+### The web page
+
+- On a phone, a running row such as "Ran ls · running tail -3" fits the screen, with its Move to
+  background button whole. Its words give way first, then its outcome.
+- On a phone, the room the keyboard took no longer stays blank below the end after a message is
+  sent from a little above it.
+
+### Background jobs
+
+- An agent's `terminal_control wait` lasts as long as its `wait_ms` asks, up to the longest wait
+  that ends before the agent's prompt cache lapses (4 min 30 s for a 5-minute cache, 54 min for an
+  hour). It used to end after 30 seconds, so agents asked again and again or ran `sleep` in the
+  shell. The agents are told to wait for a job this way.
+- Every wait of a request, `wait_for_agents` and `wait_for_message` included, ends before the
+  prompt cache lapses, counted from a moment no later than the request's use of the cache. For a
+  Claude Code agent it counted from the reply, so a slow reply could leave a wait running past the
+  cache.
 
 ### Workers
 
@@ -39,6 +69,16 @@
   billing, the model for a kind of work, effort and profiles, and has the agent ask you before it
   starts a worker billed per token, even when the session's worker billing would start it without
   asking. `--no-builtin-skill worker-choice` leaves it out.
+
+### Dependencies
+
+- arko_ai 0.3.1, arko_agents 0.9.1 and arko_workflows 0.10.1, for the longer waits.
+
+### For apps
+
+- `remote::Item` has `number_width`, the widest line number of a content's whole, and
+  `beside_rows`, what a turn's opening line says beside the workers' rows. `Feed::turn_opening`
+  takes the second.
 
 ## 0.23.0 (2026-11-18)
 
