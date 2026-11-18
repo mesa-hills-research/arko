@@ -1312,7 +1312,7 @@ impl Engine {
                 )));
             }
             crew.shutdown_and(
-                || harness.workers_watchers(),
+                || harness.close_jobs_for_workers(),
                 |workflow, watchers| harness.tell_workers_of_jobs(workflow, watchers),
             )
             .await;

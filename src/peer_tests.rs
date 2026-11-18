@@ -462,8 +462,8 @@ async fn resume_and_check(harness: &mut Harness, seen: &Seen, monitor: uuid::Uui
 /// Arko closes as it does on /exit, while r1 waits for mail. r1's monitors
 /// stop as r1's run does, so r1 is told once it has stopped, before the
 /// session's jobs are saved, and its wait doesn't end with the note. The
-/// jobs are read at once before the stop, so a monitor started as the close
-/// began is named too.
+/// jobs are closed before they're read, so none starts that the note would
+/// miss.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_worker_hears_its_monitors_stopped_when_arko_closed() {
@@ -483,9 +483,20 @@ async fn a_worker_hears_its_monitors_stopped_when_arko_closed() {
         )
         .await
         .unwrap();
+    let watchers = harness.close_jobs_for_workers();
+    assert_eq!(watchers.len(), 2);
+    let refused = managers
+        .jobs
+        .start_monitor(
+            &arko_agents::TaskContext::new(r1, WORKER, "", &workspace),
+            "sleep 62",
+            arko_agents::terminal::MonitorOptions::lines(None),
+        )
+        .await;
+    assert!(refused.is_err(), "no monitor starts once the jobs are closed");
     let crew = harness.crew.clone().unwrap();
     crew.shutdown_and(
-        || harness.workers_watchers(),
+        || watchers,
         |workflow, watchers| harness.tell_workers_of_jobs(workflow, watchers),
     )
     .await;

@@ -5129,17 +5129,25 @@ impl Harness {
         ))
     }
 
-    /// The jobs that report only to a worker (its monitors and moved calls),
-    /// which stop with its run when Arko closes, before the jobs are saved as
-    /// they end, so the next session never lists them. Read at once before
-    /// the workers stop, for [`Self::tell_workers_of_jobs`] once they have
-    /// ([`Crew::shutdown_and`]). (A worker's commands run until Arko's jobs
-    /// stop, and the next session tells it of them, see
+    /// Closes the session's jobs for Arko's exit, so no job starts or moves
+    /// to the background from now on, and returns those that report only to
+    /// a worker (its monitors and moved calls). They stop with its run as
+    /// the workers stop, before the jobs are saved as they end, so the next
+    /// session never lists them, and [`Self::tell_workers_of_jobs`] tells the
+    /// workers once they have stopped ([`Crew::shutdown_and`]). Closed first,
+    /// the list can't miss a start. (A worker's commands run until Arko's
+    /// jobs stop, and the next session tells it of them, see
     /// [`Self::tell_workers_of_stopped_jobs`].)
-    pub(crate) fn workers_watchers(&self) -> Vec<arko_agents::terminal::JobInfo> {
+    pub(crate) fn close_jobs_for_workers(&self) -> Vec<arko_agents::terminal::JobInfo> {
         let Some(manager) = self.background.manager() else {
             return Vec::new();
         };
+        // (Every job running counts as known, so the close always goes
+        // through. One that starts meanwhile is known at the next try.)
+        let mut known: Vec<uuid::Uuid> = Vec::new();
+        while let Err(running) = manager.close(&known) {
+            known = running.iter().map(|job| job.job_id).collect();
+        }
         manager
             .jobs()
             .into_iter()

@@ -2118,9 +2118,7 @@ impl Crew {
     /// reads what the stop ends, at once before it, and `stopped` gets it
     /// once the workers have stopped, before the workflow's last checkpoint,
     /// for what they should read when they run again. (Told earlier, a worker
-    /// could act on it first. Read earlier, it would miss what a worker
-    /// started since. A call under way at the stop is cancelled, and the
-    /// worker is told so when it runs again.)
+    /// could act on it first.)
     pub async fn shutdown_and<T>(
         &self,
         before: impl FnOnce() -> T,
