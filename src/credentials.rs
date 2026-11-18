@@ -64,6 +64,8 @@ pub const CACHE_1H: &str = "ARKO_CACHE_1H";
 pub const BUILTIN_SKILLS: &str = "ARKO_BUILTIN_SKILLS";
 /// The built-in skills new sessions leave out, by name, separated by commas.
 pub const BUILTIN_SKILLS_OFF: &str = "ARKO_BUILTIN_SKILLS_OFF";
+/// The tools new sessions' agents are offered, `classic` or `both`.
+pub const TOOLS: &str = "ARKO_TOOLS";
 /// The shell new sessions run commands in on Windows, either `cmd` or `powershell`.
 pub const SHELL: &str = "ARKO_SHELL";
 /// Whether new sessions' workers may run on models billed per token, either

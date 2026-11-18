@@ -583,7 +583,8 @@ impl Tool for ShellTool {
                 },
             )
             .map_err(|error| match error {
-                TerminalError::Refused(refusal) => ToolError::ExecutionFailed(refusal.message),
+                // (It reads as a failure does, and code counts it as refused.)
+                TerminalError::Refused(refusal) => ToolError::Refused(refusal.message),
                 error => ToolError::ExecutionFailed(error.to_string()),
             })?;
         let mut guard = CancelOnDrop {
