@@ -603,7 +603,7 @@ fn earlier_turns(count: usize) -> Vec<remote::Item> {
         for (text, outcome) in [
             ("read_file src/parse.rs", "212 lines"),
             ("$ cargo test -p parse", "1 failed"),
-            ("edit_file src/parse.rs", "+4 -1"),
+            ("edit src/parse.rs", "2 edits"),
         ] {
             let mut call = Item::new(Kind::Call, text);
             call.status = Some(CallStatus::Ok);

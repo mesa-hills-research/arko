@@ -1355,7 +1355,9 @@ impl EventPrinter {
             ),
             READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME
             | APPLY_DIFF_TOOL_NAME | LIST_FILES_TOOL_NAME => {
-                let (verb, detail) = file_call(tool, parameters);
+                // (This line has no outcome, so it says how many edits a
+                // call of several makes.)
+                let (verb, detail) = file_call(tool, parameters, true);
                 format!("{bullet} {} {detail}", self.output.bold(verb))
             }
             SHELL_TOOL_NAME => {
@@ -1569,7 +1571,7 @@ pub fn brief_waiting_for(
         SHELL_TOOL_NAME => command_line(text("command")),
         READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME
         | LIST_FILES_TOOL_NAME => {
-            let (verb, detail) = file_call(tool, parameters);
+            let (verb, detail) = file_call(tool, parameters, false);
             format!("{verb} {detail}")
         }
         crew::MESSAGE_AGENT => match text("to") {
@@ -1615,12 +1617,28 @@ fn flag(parameters: &HashMap<String, serde_json::Value>, name: &str) -> bool {
     }
 }
 
+/// How many SEARCH/REPLACE blocks an `apply_diff` call's `diff` holds, the
+/// edits it makes, counted by their marker lines as the tool reads them.
+pub fn diff_edits(parameters: &HashMap<String, serde_json::Value>) -> usize {
+    parameters
+        .get("diff")
+        .and_then(|value| value.as_str())
+        .map_or(0, |diff| {
+            diff.lines()
+                .filter(|line| line.trim_end() == "<<<<<<< SEARCH")
+                .count()
+        })
+}
+
 /// A file tool's call, meaning its verb (`read`, `write`, `edit`, `list`) and what
 /// it reads or changes (`src/main.rs:10-40`, `src/new.rs (12 lines)`,
-/// `src/lib.rs (all)` for an edit of every occurrence).
+/// `src/lib.rs (all)` for an edit of every occurrence). With `counted`, an
+/// `apply_diff` call of several blocks says how many edits it makes
+/// (`src/lib.rs (3 edits)`), for a line that shows no outcome.
 fn file_call(
     tool: &str,
     parameters: &HashMap<String, serde_json::Value>,
+    counted: bool,
 ) -> (&'static str, String) {
     let text = |name: &str| match parameters.get(name) {
         Some(serde_json::Value::String(text)) => text.trim().to_string(),
@@ -1648,26 +1666,22 @@ fn file_call(
                 format!("{path} ({})", plural(lines, "line", "lines")),
             )
         }
-        EDIT_FILE_TOOL_NAME => (
-            "edit",
+        // (`edit_file` in sessions saved while the agents edited with it.)
+        EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => {
+            let mut notes = Vec::new();
             if flag(parameters, "replace_all") {
-                format!("{path} (all)")
-            } else {
-                path
-            },
-        ),
-        // In sessions saved before edit_file.
-        APPLY_DIFF_TOOL_NAME => {
-            let blocks = parameters
-                .get("diff")
-                .and_then(|value| value.as_str())
-                .map_or(0, |diff| diff.matches("<<<<<<< SEARCH").count());
+                notes.push("all".to_string());
+            }
+            let edits = diff_edits(parameters);
+            if counted && edits > 1 {
+                notes.push(plural(edits, "edit", "edits"));
+            }
             (
                 "edit",
-                if blocks > 1 {
-                    format!("{path} ({blocks} changes)")
-                } else {
+                if notes.is_empty() {
                     path
+                } else {
+                    format!("{path} ({})", notes.join(", "))
                 },
             )
         }
@@ -1872,21 +1886,19 @@ mod tests {
         assert_eq!(edit(Some(false.into())), "edit a.rs");
         assert_eq!(edit(Some(true.into())), "edit a.rs (all)");
         assert_eq!(edit(Some("true".into())), "edit a.rs (all)");
-        let block = "<<<<<<< SEARCH\n:start_line:1\n-------\na\n=======\nb\n>>>>>>> REPLACE\n";
-        assert_eq!(
-            brief(
-                APPLY_DIFF_TOOL_NAME,
-                &params(&[("path", "a.rs".into()), ("diff", block.into())])
-            ),
-            "edit a.rs"
-        );
-        assert_eq!(
-            brief(
-                APPLY_DIFF_TOOL_NAME,
-                &params(&[("path", "a.rs".into()), ("diff", block.repeat(2).into())])
-            ),
-            "edit a.rs (2 changes)"
-        );
+        // An apply_diff call reads as one edit, of several blocks too,
+        // whose count its outcome gives, and as one of every match.
+        let block = "<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n";
+        let diff = |diff: String, all: bool| {
+            let mut pairs = vec![("path", "a.rs".into()), ("diff", diff.into())];
+            if all {
+                pairs.push(("replace_all", true.into()));
+            }
+            brief(APPLY_DIFF_TOOL_NAME, &params(&pairs))
+        };
+        assert_eq!(diff(block.into(), false), "edit a.rs");
+        assert_eq!(diff(block.repeat(2), false), "edit a.rs");
+        assert_eq!(diff(block.repeat(2), true), "edit a.rs (all)");
         assert_eq!(brief(LIST_FILES_TOOL_NAME, &params(&[])), "list .");
         assert_eq!(
             brief(
@@ -2071,6 +2083,23 @@ mod tests {
             .unwrap(),
             "● edit b.rs (all)"
         );
+        // A call of several blocks says how many edits it makes, since the
+        // line shows no outcome. A block's marker in another's text, with
+        // its backslash, isn't one.
+        let blocks = "<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n";
+        let escaped = "<<<<<<< SEARCH\nx\n=======\n\\<<<<<<< SEARCH\n>>>>>>> REPLACE\n";
+        for (diff, all, shown) in [
+            (blocks.to_string(), false, "● edit b.rs"),
+            (escaped.to_string(), false, "● edit b.rs"),
+            (blocks.repeat(3), false, "● edit b.rs (3 edits)"),
+            (blocks.repeat(2), true, "● edit b.rs (all, 2 edits)"),
+        ] {
+            let mut pairs = vec![("path", "b.rs".into()), ("diff", diff.into())];
+            if all {
+                pairs.push(("replace_all", true.into()));
+            }
+            assert_eq!(line(APPLY_DIFF_TOOL_NAME, &pairs).unwrap(), shown);
+        }
         // The question is shown as it is asked.
         assert_eq!(
             line(ASK_USER_TOOL_NAME, &[("questions", "Which?".into())]),

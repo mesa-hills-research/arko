@@ -716,8 +716,9 @@ fn words(group: &Group) -> Words {
             format!("{} {}", tense("Writing", "Wrote"), files(("file", "files")))
         }
         Some(ActKind::Edit) => format!(
-            "{} {count} edits to {}",
+            "{} {} to {}",
             tense("Making", "Made"),
+            plural(edits(calls), "edit", "edits"),
             files(("file", "files"))
         ),
         Some(ActKind::Command) => {
@@ -829,6 +830,16 @@ fn words(group: &Group) -> Words {
     }
 }
 
+/// How many edits `calls` made, a call of several (an `apply_diff` call's
+/// blocks) counting each.
+fn edits(calls: &[Member]) -> usize {
+    calls
+        .iter()
+        .filter(|call| call.act.kind == ActKind::Edit)
+        .map(|call| call.act.edits.max(1) as usize)
+        .sum()
+}
+
 /// What a row of the reads and changes of one file says, each kind in
 /// turn, the file named once ("Read app.rs and made 3 edits", "Read app.rs,
 /// wrote it and made 1 edit"). Edits are counted, and a file read or
@@ -837,10 +848,7 @@ fn file_words(calls: &[Member], now: bool) -> String {
     let tense = |present: &str, past: &str| if now { present } else { past }.to_string();
     let name = calls[0].name.as_str();
     let has = |kind: ActKind| calls.iter().any(|call| call.act.kind == kind);
-    let edits = calls
-        .iter()
-        .filter(|call| call.act.kind == ActKind::Edit)
-        .count();
+    let edits = edits(calls);
     let mut parts: Vec<String> = Vec::new();
     if has(ActKind::Read) {
         parts.push(format!("{} {name}", tense("Reading", "Read")));
@@ -1015,7 +1023,10 @@ fn phrases(member: &Member) -> Phrases {
         ),
         ActKind::Edit => three(
             format!("Editing {name}"),
-            format!("Made 1 edit to {name}"),
+            format!(
+                "Made {} to {name}",
+                plural(edits(std::slice::from_ref(member)), "edit", "edits")
+            ),
             format!("edit {name}"),
         ),
         ActKind::Command => three(
@@ -1292,6 +1303,28 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                 act(ActKind::Edit, "src/engine.rs"),
                 "edit src/engine.rs",
                 "Made 1 edit to engine.rs",
+            )
+        },
+        Fixture {
+            outcome: "2 edits",
+            before: Some(
+                "fn branched(&self, index: usize) -> Message {\n    let branch = &self.branches[index];\n    Message {\n        text: branch.text.clone(),\n        summary: branch.summary.clone(),\n        message_index: None,\n        at: branch.at,\n    }\n}\n",
+            ),
+            content: Some((
+                Diff,
+                " 3\t    Message {\n 4\t        text: branch.text.clone(),\n 5\t        summary: branch.summary.clone(),\n-6\t        message_index: None,\n+6\t        message_index: Some(index),\n-7\t        at: branch.at,\n+7\t        at: branch.at + 1,\n 8\t    }\n 9\t}",
+            )),
+            ..fixture(
+                "an edit of two blocks",
+                "apply_diff",
+                r#"{"path": "src/engine.rs", "diff": "<<<<<<< SEARCH\n        message_index: None,\n=======\n        message_index: Some(index),\n>>>>>>> REPLACE\n<<<<<<< SEARCH\n        at: branch.at,\n=======\n        at: branch.at + 1,\n>>>>>>> REPLACE\n"}"#,
+                "Edited src/engine.rs at lines 6 and 7:\n4 |         text: branch.text.clone(),\n5 |         summary: branch.summary.clone(),\n6 |         message_index: Some(index),\n7 |         at: branch.at + 1,\n8 |     }\n9 | }",
+                Act {
+                    edits: 2,
+                    ..act(ActKind::Edit, "src/engine.rs")
+                },
+                "edit src/engine.rs",
+                "Made 2 edits to engine.rs",
             )
         },
         Fixture {

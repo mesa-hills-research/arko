@@ -147,7 +147,15 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         LIST_FILES_TOOL_NAME => on(ActKind::List, path("directory")),
         WRITE_FILE_TOOL_NAME => on(ActKind::Write, path("path")),
         "Write" => on(ActKind::Write, path("file_path")),
-        EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME => on(ActKind::Edit, path("path")),
+        EDIT_FILE_TOOL_NAME => on(ActKind::Edit, path("path")),
+        // (Each block is an edit, and a call of one is like edit_file's.)
+        APPLY_DIFF_TOOL_NAME => Act {
+            edits: match crate::ui::diff_edits(parameters) {
+                0 | 1 => 0,
+                many => u32::try_from(many).unwrap_or(u32::MAX),
+            },
+            ..on(ActKind::Edit, path("path"))
+        },
         "Edit" | "MultiEdit" => on(ActKind::Edit, path("file_path")),
         SHELL_TOOL_NAME | "Bash" => {
             let command = text_of(parameters, "command");
@@ -1070,6 +1078,14 @@ pub(crate) fn outcome_after(
         return outcome;
     }
     let mut outcome = brief(tool, output);
+    // An apply_diff call's edits are its blocks, which applied together.
+    if tool == APPLY_DIFF_TOOL_NAME && output.starts_with("Edited ") {
+        outcome.text = Some(plural(
+            crate::ui::diff_edits(parameters).max(1),
+            "edit",
+            "edits",
+        ));
+    }
     outcome.job = job;
     if tool != SHELL_TOOL_NAME && outcome.output.is_none() && !output.trim().is_empty() {
         outcome.output = Some(output.into());
@@ -1102,20 +1118,25 @@ fn brief(tool: &str, output: &str) -> Outcome {
         LIST_FILES_TOOL_NAME => Outcome::ok(plural(lines(), "entry", "entries")),
         WRITE_FILE_TOOL_NAME | HANDOVER_REPORT_TOOL_NAME => Outcome::ok(""),
         // "Edited a.rs at lines 3-5: ..." or "Replaced 4 occurrences in
-        // a.rs, at lines ...".
-        EDIT_FILE_TOOL_NAME => match output.strip_prefix("Replaced ").and_then(|rest| {
-            rest.split_whitespace()
-                .next()
-                .and_then(|count| count.parse::<usize>().ok())
-        }) {
-            Some(count) => Outcome::ok(plural(count, "replacement", "replacements")),
-            None if output.starts_with("Edited ") => Outcome::ok("1 edit"),
-            None => Outcome::ok(cut(
-                output.lines().next().unwrap_or_default(),
-                OUTCOME_CHARS,
-            )),
-        },
-        // In sessions saved before edit_file.
+        // a.rs, at lines ...", from edit_file and apply_diff alike. (An
+        // apply_diff call's edits are counted in `outcome_after`.)
+        EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME
+            if output.starts_with("Edited ") || output.starts_with("Replaced ") =>
+        {
+            match output.strip_prefix("Replaced ").and_then(|rest| {
+                rest.split_whitespace()
+                    .next()
+                    .and_then(|count| count.parse::<usize>().ok())
+            }) {
+                Some(count) => Outcome::ok(plural(count, "replacement", "replacements")),
+                None => Outcome::ok("1 edit"),
+            }
+        }
+        EDIT_FILE_TOOL_NAME => Outcome::ok(cut(
+            output.lines().next().unwrap_or_default(),
+            OUTCOME_CHARS,
+        )),
+        // apply_diff's results in sessions saved before edit_file.
         APPLY_DIFF_TOOL_NAME => {
             // "Successfully applied all 2 diff block(s) ..." or "Applied 1
             // of 2 diff block(s) ...".
@@ -1319,6 +1340,17 @@ fn content(
                 .unwrap_or_else(|| bare_diff(old, new));
             Content::new(ContentKind::Diff, diff, language(given("path")))
         }
+        // (A session saved before receipts shows each block's lines.)
+        APPLY_DIFF_TOOL_NAME => {
+            let diff = receipt.and_then(receipt_diff).unwrap_or_else(|| {
+                blocks_of(given("diff"))
+                    .iter()
+                    .map(|(old, new)| bare_diff(old, new))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            });
+            Content::new(ContentKind::Diff, diff, language(given("path")))
+        }
         "Edit" => {
             let diff = bare_diff(given("old_string"), given("new_string"));
             Content::new(ContentKind::Diff, diff, language(given("file_path")))
@@ -1483,6 +1515,55 @@ fn receipt_diff(receipt: &ToolReceipt) -> Option<String> {
         out.push(MORE_CHANGED.to_string());
     }
     Some(out.join("\n"))
+}
+
+/// The search and replace lines of each block of an `apply_diff` call's
+/// `diff`, as the tool reads them (a marker with a backslash before it is a
+/// line of the file), for a call without a receipt.
+fn blocks_of(diff: &str) -> Vec<(String, String)> {
+    #[derive(Clone, Copy)]
+    enum Part {
+        Outside,
+        Search,
+        Replace,
+    }
+    const MARKERS: [&str; 3] = ["<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE"];
+    let is = |line: &str, marker: &str| line.trim_end() == marker;
+    let text = |line: &str| match line.strip_prefix('\\') {
+        Some(rest) if MARKERS.contains(&rest.trim_start_matches('\\').trim_end()) => {
+            rest.to_string()
+        }
+        _ => line.to_string(),
+    };
+    let (mut blocks, mut part) = (Vec::new(), Part::Outside);
+    let (mut search, mut replace): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    for line in diff.lines() {
+        match part {
+            Part::Outside => {
+                if is(line, MARKERS[0]) {
+                    (search, replace) = (Vec::new(), Vec::new());
+                    part = Part::Search;
+                }
+            }
+            Part::Search if is(line, MARKERS[1]) => {
+                // (The old form's header, `:start_line:` and `-------`.)
+                if search.len() >= 2
+                    && search[0].trim().starts_with(":start_line:")
+                    && search[1].trim_end() == "-------"
+                {
+                    search.drain(..2);
+                }
+                part = Part::Replace;
+            }
+            Part::Search => search.push(text(line)),
+            Part::Replace if is(line, MARKERS[2]) => {
+                blocks.push((search.join("\n"), replace.join("\n")));
+                part = Part::Outside;
+            }
+            Part::Replace => replace.push(text(line)),
+        }
+    }
+    blocks
 }
 
 /// The diff of an edit without the tool's receipt (a restored session,
@@ -1806,7 +1887,10 @@ mod tests {
                 let receipt = fixture.before.map(|before| {
                     let given = |name: &str| text(&parameters, name);
                     let all = flag(&parameters, "replace_all");
-                    edited(before, given("old_string"), given("new_string"), all)
+                    match fixture.tool {
+                        APPLY_DIFF_TOOL_NAME => applied(before, given("diff"), all),
+                        _ => edited(before, given("old_string"), given("new_string"), all),
+                    }
                 });
                 outcome_after(fixture.tool, &parameters, fixture.output, receipt.as_ref())
             };
@@ -1859,6 +1943,26 @@ mod tests {
             .block_on(run)
             .unwrap();
         output.receipt.expect("edit_file gives a receipt")
+    }
+
+    /// The receipt `apply_diff` gives for `diff` (every match, with `all`)
+    /// in a file whose text is `before`.
+    pub(crate) fn applied(before: &str, diff: &str, all: bool) -> ToolReceipt {
+        use arko_agents::tool::Tool;
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("f.txt"), before).unwrap();
+        let parameters: HashMap<String, Value> = serde_json::from_value(serde_json::json!({
+            "path": "f.txt", "diff": diff, "replace_all": all,
+        }))
+        .unwrap();
+        let context = arko_agents::TaskContext::new(Uuid::nil(), "main", "", folder.path());
+        let run = arko_agents::builtins::ApplyDiffTool.execute_with_output(&context, parameters);
+        let output = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(run)
+            .unwrap();
+        output.receipt.expect("apply_diff gives a receipt")
     }
 
     /// An edit's diff is the tool's receipt of it, the whole lines it

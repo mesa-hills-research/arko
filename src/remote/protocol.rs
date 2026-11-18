@@ -253,6 +253,10 @@ pub struct Act {
     /// A search's query.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub query: String,
+    /// For an edit of several changes at once, how many (an `apply_diff`
+    /// call's blocks). Zero for one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub edits: u32,
     /// The words of a call of another kind, which never merges, while it
     /// runs ("Starting a worker"), once it ended ("Queued r12") and after
     /// "Couldn’t" when it failed ("start a worker").
