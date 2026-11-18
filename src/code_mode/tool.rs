@@ -168,8 +168,11 @@ async fn run(
     let nested = context.nested.as_ref().ok_or_else(|| {
         failed("run_code runs only where its calls can go through the agent's checks.".into())
     })?;
-    let runner = Runner::this_program()
-        .map_err(|error| failed(format!("Arko couldn't find its own program ({error}).")))?;
+    let runner = Runner::this_program().map_err(|error| {
+        failed(format!(
+            "run_code can't start its code runner here, as {error}."
+        ))
+    })?;
     let start = Start {
         code: code.to_string(),
         tools: tool

@@ -64,6 +64,11 @@ impl Runner {
     /// (In tests it is the test program, which runs the runner in a test of
     /// its own.)
     pub fn this_program() -> std::io::Result<Self> {
+        if !super::runner::answers() {
+            return Err(std::io::Error::other(
+                "this program's main doesn't call arko::code_mode::run_if_asked",
+            ));
+        }
         let program = if cfg!(target_os = "linux") {
             PathBuf::from("/proc/self/exe")
         } else {

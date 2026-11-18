@@ -22,6 +22,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: rustup toolchain install 1.97.1 --profile minimal && rustup default 1.97.1
       - run: cargo test --locked --lib code_mode
+      - run: cargo test --locked --test code_runner
       # What stopped a runaway allocation, and how long a run takes to start.
       - run: cargo test --locked --lib code_mode::child::tests -- --nocapture runaway address_space
       - run: cargo test --locked --lib code_mode::child::tests::start_time -- --ignored --nocapture
+      - run: cargo test --locked --test code_runner start_time -- --ignored --nocapture
+      - run: cargo test --locked --release --test code_runner start_time -- --ignored --nocapture
