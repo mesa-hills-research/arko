@@ -378,12 +378,26 @@ pub(super) mod words {
                 count => parts.push(format!("{verb} {count} {noun}s")),
             }
         }
+        let partway = match changes.files_maybe_changed {
+            0 => None,
+            1 => Some(
+                "A write or edit that failed or was stopped may have changed its file.".to_string(),
+            ),
+            count => Some(format!(
+                "{count} writes or edits that failed or were stopped may have changed their files."
+            )),
+        };
         let list = match parts.as_slice() {
-            [] => return None,
+            [] => return partway,
             [one] => one.clone(),
             [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
         };
-        Some(format!("Before it ended, the code {list}."))
+        let mut text = format!("Before it ended, the code {list}.");
+        if let Some(partway) = partway {
+            text.push(' ');
+            text.push_str(&partway);
+        }
+        Some(text)
     }
 
     /// `text` cut at the result's most characters, with a line saying how

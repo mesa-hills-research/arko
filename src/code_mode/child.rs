@@ -112,25 +112,34 @@ pub struct Changes {
     pub files_written: u32,
     pub files_edited: u32,
     pub commands: u32,
+    /// Writes and edits that failed, or still ran when the run ended, which
+    /// may have changed their files partway.
+    pub files_maybe_changed: u32,
 }
 
 impl Changes {
-    /// What `records`' calls may have changed. A call that still ran when
-    /// the run ended counts, since it may have.
+    /// What `records`' calls may have changed. A call that failed, or still
+    /// ran when the run ended, counts, since it may have.
     fn of(records: &[NestedRecord]) -> Self {
         use arko_agents::builtins::{EDIT_FILE_TOOL_NAME, WRITE_FILE_TOOL_NAME};
         let mut changes = Self::default();
         for record in records {
-            let ran = !matches!(record.state, NestedState::Refused);
-            let wrote = matches!(
+            let done = matches!(
                 record.state,
-                NestedState::Running | NestedState::Ran { failed: false } | NestedState::Halted
+                NestedState::Ran { failed: false } | NestedState::Halted
+            );
+            let partway = matches!(
+                record.state,
+                NestedState::Running | NestedState::Ran { failed: true }
             );
             match record.tool_name.as_str() {
-                WRITE_FILE_TOOL_NAME if wrote => changes.files_written += 1,
-                EDIT_FILE_TOOL_NAME if wrote => changes.files_edited += 1,
+                WRITE_FILE_TOOL_NAME if done => changes.files_written += 1,
+                EDIT_FILE_TOOL_NAME if done => changes.files_edited += 1,
+                WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME if partway => {
+                    changes.files_maybe_changed += 1;
+                }
                 // A command that failed may have changed things too.
-                crate::shell::SHELL_TOOL_NAME if ran => changes.commands += 1,
+                crate::shell::SHELL_TOOL_NAME if done || partway => changes.commands += 1,
                 _ => {}
             }
         }

@@ -173,6 +173,11 @@ impl Gate for FakeGate {
             "halt" => NestedOutcome::Halted("Budget exhausted.".into()),
             "big" => NestedOutcome::Finished(ToolOutput::text("x".repeat(9 * MB as usize))),
             "large" => NestedOutcome::Finished(ToolOutput::text("x".repeat(7 * MB as usize))),
+            // An edit that changed its file partway, then failed.
+            "edit_file" => {
+                start(NestedState::Ran { failed: true });
+                NestedOutcome::Failed("Execution failed: no space left on device".into())
+            }
             "block" | "shell" => {
                 start(NestedState::Running);
                 let guard = Dropped(self.dropped.clone());
@@ -227,6 +232,7 @@ fn start(code: &str, limits: Limits) -> Start {
             "big",
             "shell",
             "write_file",
+            "edit_file",
         ]
         .map(String::from)
         .to_vec(),
@@ -424,7 +430,25 @@ async fn what_changed_counts_a_call_that_was_still_running() {
             files_written: 1,
             files_edited: 0,
             commands: 1,
+            files_maybe_changed: 0,
         }
+    );
+}
+
+/// An edit that failed after it started may have changed its file, and a
+/// failed run says so.
+#[tokio::test]
+async fn a_failed_edit_counts_as_a_change_it_may_have_made() {
+    let ran = run(
+        "try { await tools.edit_file({ path: 'a', old_string: 'b', new_string: 'c' }); } catch {}\n\
+         throw new Error('after the edit');",
+    )
+    .await;
+    assert_eq!(ran.changes.files_maybe_changed, 1);
+    let shown = crate::code_mode::tool::words::result(&ran, 300).unwrap_err();
+    assert_eq!(
+        shown,
+        "The code threw on line 2: Error: after the edit\nA write or edit that failed or was stopped may have changed its file."
     );
 }
 
