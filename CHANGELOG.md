@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Models
+
+- GPT-6.2 Sol and GPT-6.2 Astra, on the ChatGPT login or an OpenAI API key. `sol` and `astra` now
+  name them, and a ChatGPT login or an OpenAI key starts a new session on GPT-6.2 Sol. GPT-6.1 Sol
+  and GPT-6 Astra stay available by their IDs.
+- Gemini 4 Carbon, Argon and Hydrogen, as `carbon`, `argon` and `hydrogen`. `gemini` now names
+  Carbon, Google's most capable, and a Gemini key starts a new session on it. `flash` names
+  Hydrogen, which Google gives as the upgrade from Gemini 3.8 Flash. Hydrogen takes the xhigh
+  effort.
+- On the ChatGPT login, GPT-6.2 Sol, GPT-6.1 Sol and GPT-6.1 Terra hand over at 475k, below the
+  500k the login now takes for them. The other OpenAI models still hand over at 250k.
+- A skill for `sol` or `astra` also reaches OpenRouter's `openai/gpt-6.2-sol-pro` and
+  `openai/gpt-6.2-astra-pro`, the same models in pro reasoning mode.
+
 ## 0.22.2 (2026-11-14)
 
 ### The web page

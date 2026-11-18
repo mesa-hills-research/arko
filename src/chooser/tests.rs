@@ -157,7 +157,7 @@ fn the_call_beats_the_profile_and_the_profile_beats_the_session() {
     save(&basis, Place::User, profile("plain", None, None));
 
     let by_profile = pick(&basis, &[("profile", "judge")]).unwrap();
-    assert_eq!(model_of(&by_profile), "gpt-6.1-sol");
+    assert_eq!(model_of(&by_profile), "gpt-6.2-sol");
     assert!(
         effort_of(&by_profile).contains("max"),
         "{}",
@@ -168,7 +168,7 @@ fn the_call_beats_the_profile_and_the_profile_beats_the_session() {
     // The call's model beats the profile's, and the profile's effort goes
     // with it as the nearest the model takes.
     let by_call = pick(&basis, &[("profile", "judge"), ("model", "astra")]).unwrap();
-    assert_eq!(model_of(&by_call), "gpt-6-astra");
+    assert_eq!(model_of(&by_call), "gpt-6.2-astra");
     assert!(effort_of(&by_call).contains("max"));
     // And the call's effort beats both.
     let both = pick(
@@ -308,7 +308,7 @@ fn fast_mode_is_off_unless_the_profile_asks_or_the_session_s_model_has_it() {
     save(&basis, Place::User, no_fast);
     assert_eq!(
         pick(&basis, &[("profile", "no-fast")]).unwrap_err(),
-        "The profile `no-fast` asks for fast mode. gemini-3.1-pro-preview has no fast mode (Gemini models have none)"
+        "The profile `no-fast` asks for fast mode. gemini-4-carbon has no fast mode (Gemini models have none)"
     );
 }
 

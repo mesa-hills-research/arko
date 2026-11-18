@@ -318,12 +318,12 @@ async fn a_worker_runs_the_model_effort_and_profile_the_main_agent_chose() {
 
     start_worker(&mut harness, &mut inputs, "Start on a model.").await;
     let (model, effort, opening) = worker_with(&seen, "Start on a model.").unwrap();
-    assert_eq!((model.as_str(), effort.as_str()), ("gpt-6-astra", "low"));
+    assert_eq!((model.as_str(), effort.as_str()), ("gpt-6.2-astra", "low"));
     assert!(!opening.contains("Your profile"), "{opening}");
 
     start_worker(&mut harness, &mut inputs, "Start with the judge.").await;
     let (model, effort, opening) = worker_with(&seen, "Start with the judge.").unwrap();
-    assert_eq!((model.as_str(), effort.as_str()), ("gpt-6.1-sol", "xhigh"));
+    assert_eq!((model.as_str(), effort.as_str()), ("gpt-6.2-sol", "xhigh"));
     let project_at = opening.find("Use tabs.").expect("the project's instructions");
     let profile_at = opening
         .find("# Your profile (judge)\nJudge it against the reference.")
@@ -338,7 +338,7 @@ async fn a_worker_runs_the_model_effort_and_profile_the_main_agent_chose() {
         .into_iter()
         .find(|summary| summary.title.contains("Start with the judge."))
         .expect("the judge's summary");
-    assert_eq!(summary.model.as_deref(), Some("gpt-6.1-sol"));
+    assert_eq!(summary.model.as_deref(), Some("gpt-6.2-sol"));
     assert_eq!(summary.effort.as_deref(), Some("xhigh"));
     assert_eq!(summary.profile.as_deref(), Some("judge"));
     assert_eq!((summary.parent.as_deref(), summary.depth), (None, 1));
@@ -358,7 +358,7 @@ async fn a_worker_runs_the_model_effort_and_profile_the_main_agent_chose() {
     // profile's.
     assert!(harness.live_command("/model worker astra", Source::Terminal));
     start_worker(&mut harness, &mut inputs, "Start again plainly.").await;
-    assert_eq!(worker_with(&seen, "Start again plainly.").unwrap().0, "gpt-6-astra");
+    assert_eq!(worker_with(&seen, "Start again plainly.").unwrap().0, "gpt-6.2-astra");
     start_worker(&mut harness, &mut inputs, "Start with the judge.").await;
     let judged: Vec<String> = seen
         .lock()
@@ -367,7 +367,7 @@ async fn a_worker_runs_the_model_effort_and_profile_the_main_agent_chose() {
         .filter(|(who, _, _, body)| who != "main" && user_texts(body)[0].contains("Start with the judge."))
         .map(|(_, model, ..)| model.clone())
         .collect();
-    assert!(judged.iter().all(|model| model == "gpt-6.1-sol"), "{judged:?}");
+    assert!(judged.iter().all(|model| model == "gpt-6.2-sol"), "{judged:?}");
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -516,7 +516,7 @@ async fn a_worker_resumes_with_its_setup_after_its_profile_is_deleted() {
     until(|| r1_requests().len() >= 2).await;
     let requests = r1_requests();
     for (model, effort, body) in &requests {
-        assert_eq!((model.as_str(), effort.as_str()), ("gpt-6.1-sol", "medium"));
+        assert_eq!((model.as_str(), effort.as_str()), ("gpt-6.2-sol", "medium"));
         assert!(
             user_texts(body)[0].contains("# Your profile (judge)\nJudge version one."),
             "{}",
@@ -568,7 +568,7 @@ async fn the_main_agent_lists_the_options_saves_a_profile_and_starts_a_worker_wi
     ));
     start_worker(&mut harness, &mut inputs, "Start with the saved profile.").await;
     let (model, effort, opening) = worker_with(&seen, "Start with the saved profile.").unwrap();
-    assert_eq!((model.as_str(), effort.as_str()), ("gpt-6.1-sol", "high"));
+    assert_eq!((model.as_str(), effort.as_str()), ("gpt-6.2-sol", "high"));
     assert!(opening.contains("# Your profile (3d-judge)\nYou judge 3D models."), "{opening}");
     harness.crew.as_ref().unwrap().shutdown().await;
 }
@@ -709,11 +709,11 @@ async fn a_worker_billed_per_token_starts_once_the_user_allows_it_in_the_tray() 
             let approval = &requests[0].approval;
             assert_eq!(
                 approval.title(),
-                "Start a worker on GPT-6 Astra, billed per token?"
+                "Start a worker on GPT-6.2 Astra, billed per token?"
             );
             assert_eq!(
                 approval.option().as_deref(),
-                Some("Allow GPT-6 Astra for this session")
+                Some("Allow GPT-6.2 Astra for this session")
             );
             let approved: &[usize] = if approve { &[0] } else { &[] };
             send_tray_answer(&sender, &requests, approved, true, "");
@@ -723,7 +723,7 @@ async fn a_worker_billed_per_token_starts_once_the_user_allows_it_in_the_tray() 
     start_worker(&mut harness, &mut inputs, "Start on a model.").await;
     assert!(
         last_result(&seen).contains(
-            "The user denied a worker on GPT-6 Astra, which is billed per token, so it didn't start."
+            "The user denied a worker on GPT-6.2 Astra, which is billed per token, so it didn't start."
         ),
         "{}",
         last_result(&seen)
@@ -731,7 +731,7 @@ async fn a_worker_billed_per_token_starts_once_the_user_allows_it_in_the_tray() 
     assert!(worker_with(&seen, "Start on a model.").is_none(), "no worker started");
     start_worker(&mut harness, &mut inputs, "Start on a model.").await;
     let (model, _, _) = worker_with(&seen, "Start on a model.").unwrap();
-    assert_eq!(model, "gpt-6-astra");
+    assert_eq!(model, "gpt-6.2-astra");
     tokio::time::timeout(Duration::from_secs(20), answers)
         .await
         .expect("the answers were given in time")
@@ -834,7 +834,7 @@ async fn worker_models_sets_who_chooses_the_workers_models() {
     assert!(told, "the main agent read a note");
     assert!(harness.live_command("/worker-models agent", Source::Terminal));
     start_worker(&mut harness, &mut inputs, "Start on a model.").await;
-    assert!(worker_with(&seen, "Start on a model.").is_some_and(|(model, ..)| model == "gpt-6-astra"));
+    assert!(worker_with(&seen, "Start on a model.").is_some_and(|(model, ..)| model == "gpt-6.2-astra"));
     harness.crew.as_ref().unwrap().shutdown().await;
 }
 
@@ -1338,7 +1338,7 @@ async fn a_resumed_session_reads_what_its_workers_cost_from_their_saved_runs() {
     let summary = |harness: &Harness| harness.feed.worker_summary("r1").unwrap();
     let before = summary(&harness);
     assert!(before.cost_billed > 0.0, "{before:?}");
-    assert_eq!(before.model.as_deref(), Some("gpt-6-astra"));
+    assert_eq!(before.model.as_deref(), Some("gpt-6.2-astra"));
 
     // As if the page and the cost had been lost, so the saved runs say it.
     let mut lost = crate::remote::WorkerInfo::new();

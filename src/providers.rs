@@ -1,7 +1,7 @@
 //! The providers Arko runs its agents on, and how models are named.
 //!
-//! A model ID from arko's registry (`claude-opus-5-5`, `gpt-6.1-sol`,
-//! `gemini-3.1-pro-preview`) or an alias (`opus`, `sol`, `gemini`) names a
+//! A model ID from arko's registry (`claude-opus-5-5`, `gpt-6.2-sol`,
+//! `gemini-4-carbon`) or an alias (`opus`, `sol`, `gemini`) names a
 //! model at its own provider, meaning Claude models with an Anthropic API key,
 //! OpenAI models with a ChatGPT login or an OpenAI API key, Gemini models
 //! with a Google Gemini API key. Two prefixes name the other routes:
@@ -45,28 +45,38 @@ pub const CLAUDE_CODE: &str = "cc:";
 /// The long form of [`CLAUDE_CODE`], also accepted.
 const CLAUDE_CODE_LONG: &str = "claude-code:";
 
-/// Short names for the models people use most.
-pub const ALIASES: [(&str, &str); 11] = [
+/// Short names for the models people use most. A model with two goes by
+/// the first in short (`carbon`, `hydrogen`). `gemini` names Google's most
+/// capable Gemini 4 model, and `flash` Gemini 4 Hydrogen, which Google names
+/// the upgrade from Gemini 3.8 Flash.
+pub const ALIASES: [(&str, &str); 14] = [
     ("opus", "claude-opus-5-5"),
     ("fable", "claude-fable-5-2"),
     ("sonnet", "claude-sonnet-5-5"),
     ("haiku", "claude-haiku-5-5"),
     ("mythos", "claude-mythos-5-2"),
-    ("sol", "gpt-6.1-sol"),
-    ("astra", "gpt-6-astra"),
+    ("sol", "gpt-6.2-sol"),
+    ("astra", "gpt-6.2-astra"),
     ("terra", "gpt-6.1-terra"),
     ("luna", "gpt-6-luna"),
-    ("gemini", "gemini-3.1-pro-preview"),
-    ("flash", "gemini-3.8-flash"),
+    ("carbon", "gemini-4-carbon"),
+    ("gemini", "gemini-4-carbon"),
+    ("argon", "gemini-4-argon"),
+    ("hydrogen", "gemini-4-hydrogen"),
+    ("flash", "gemini-4-hydrogen"),
 ];
 
 /// Registry models and the exact slug each has on OpenRouter, one row for
 /// each model OpenRouter also serves, written by hand from OpenRouter's
-/// model list (checked on 2026-10-29). A slug names its model only by
+/// model list (checked on 2026-11-17). A slug names its model only by
 /// equality, after one of [`OPENROUTER_ROUTING_SUFFIXES`] comes off (see
 /// [`openrouter_equivalent`]), so a "-v2" variant, a fine-tune or another
 /// publisher's model is none of these. Nothing fills it from OpenRouter's
 /// list, since that would need the guessing the table is there to avoid.
+///
+/// GPT-6.2 Sol and Astra have a second row, their `-pro` slug, which
+/// OpenRouter serves as the same model with `reasoning.mode` set to `pro`
+/// (OpenAI's API takes that as a request option, not a model).
 ///
 /// An alias moved or added in [`ALIASES`] needs a row here, or its model in
 /// [`NOT_ON_OPENROUTER`], and a test fails until it has one. A live test
@@ -90,6 +100,10 @@ pub const OPENROUTER_EQUIVALENTS: &[(&str, &str)] = &[
     ("claude-haiku-5-5", "anthropic/claude-haiku-5.5"),
     ("claude-haiku-4-5-20251001", "anthropic/claude-haiku-4.5"),
     // OpenAI
+    ("gpt-6.2-sol", "openai/gpt-6.2-sol"),
+    ("gpt-6.2-sol", "openai/gpt-6.2-sol-pro"),
+    ("gpt-6.2-astra", "openai/gpt-6.2-astra"),
+    ("gpt-6.2-astra", "openai/gpt-6.2-astra-pro"),
     ("gpt-6.1-sol", "openai/gpt-6.1-sol"),
     ("gpt-6.1-terra", "openai/gpt-6.1-terra"),
     ("gpt-6-sol", "openai/gpt-6-sol"),
@@ -118,6 +132,9 @@ pub const OPENROUTER_EQUIVALENTS: &[(&str, &str)] = &[
     ("o3-2025-04-16", "openai/o3"),
     ("o3-pro-2025-06-10", "openai/o3-pro"),
     // Gemini
+    ("gemini-4-carbon", "google/gemini-4-carbon"),
+    ("gemini-4-argon", "google/gemini-4-argon"),
+    ("gemini-4-hydrogen", "google/gemini-4-hydrogen"),
     ("gemini-3.1-pro-preview", "google/gemini-3.1-pro-preview"),
     (
         "gemini-3.1-pro-preview-customtools",
@@ -539,12 +556,16 @@ fn generation_of(model: &Model, effort: Effort, thinking_text: bool) -> Option<G
     generation(model, effort, false, false, thinking_text).ok()
 }
 
-/// Gemini thinks at low, medium or high. Higher efforts are high, and
-/// Gemini 3 Pro, which has no medium, thinks high at medium.
+/// Gemini thinks at low, medium or high, and Gemini 4 Hydrogen also at
+/// xhigh. Higher efforts are the highest level the model takes, and Gemini
+/// 3 Pro, which has no medium, thinks high at medium.
 fn gemini_level(model: &Model, effort: Effort) -> GeminiThinkingLevel {
     match effort {
         Effort::Low => GeminiThinkingLevel::Low,
         Effort::Medium if !model.is_gemini_3_pro() => GeminiThinkingLevel::Medium,
+        Effort::Xhigh | Effort::Max if model.supports_gemini_xhigh_thinking() => {
+            GeminiThinkingLevel::XHigh
+        }
         _ => GeminiThinkingLevel::High,
     }
 }
@@ -719,8 +740,8 @@ fn choose_default(
 /// The first model the credentials there are allow, and why, meaning Claude Opus
 /// 5.5 in Claude Code when `claude` is installed and signed in (the Claude
 /// plan comes before a key billed per token), else Opus with an Anthropic
-/// API key, else GPT-6.1 Sol with a ChatGPT login, else Opus on OpenRouter,
-/// Sol on an OpenAI API key, or Gemini 3.1 Pro on a Gemini key, else Opus
+/// API key, else GPT-6.2 Sol with a ChatGPT login, else Opus on OpenRouter,
+/// Sol on an OpenAI API key, or Gemini 4 Carbon on a Gemini key, else Opus
 /// in a Claude Code that isn't signed in yet (the setup screen helps sign
 /// it in), and `None` without any.
 pub fn model_by_credentials(codex_auth: Option<&Path>) -> Option<(&'static str, &'static str)> {
@@ -757,16 +778,16 @@ fn first_by_credentials(have: Credentials) -> Option<(&'static str, &'static str
     } else if have.anthropic {
         Some(("claude-opus-5-5", "ANTHROPIC_API_KEY is set"))
     } else if have.chatgpt {
-        Some(("gpt-6.1-sol", "there is a ChatGPT login"))
+        Some(("gpt-6.2-sol", "there is a ChatGPT login"))
     } else if have.openrouter {
         Some((
             "openrouter:anthropic/claude-opus-5.5",
             "OPENROUTER_API_KEY is set",
         ))
     } else if have.openai {
-        Some(("gpt-6.1-sol", "OPENAI_API_KEY is set"))
+        Some(("gpt-6.2-sol", "OPENAI_API_KEY is set"))
     } else if have.gemini {
-        Some(("gemini-3.1-pro-preview", "GEMINI_API_KEY is set"))
+        Some(("gemini-4-carbon", "GEMINI_API_KEY is set"))
     } else if have.claude_code.is_some() {
         Some((opus_on_plan, "Claude Code is installed"))
     } else {
@@ -877,7 +898,8 @@ pub fn efforts(model: &Model) -> Vec<Effort> {
         Provider::OpenAI => {
             let id = model.id.as_str();
             let pro = |version: &str| id.starts_with(&format!("gpt-{version}-pro"));
-            if model.is_openai_gpt_6_astra()
+            if model.is_openai_gpt_6_2()
+                || model.is_openai_gpt_6_astra()
                 || model.is_openai_gpt_6_sol_or_luna()
                 || model.is_openai_gpt_5_6()
             {
@@ -898,6 +920,9 @@ pub fn efforts(model: &Model) -> Vec<Effort> {
         }
         Provider::Google if model.model_type != ModelType::Reasoning => Vec::new(),
         Provider::Google if model.is_gemini_3_pro() => vec![Low, High],
+        Provider::Google if model.supports_gemini_xhigh_thinking() => {
+            vec![Low, Medium, High, Xhigh]
+        }
         Provider::Google => vec![Low, Medium, High],
         // OpenRouter maps each effort to the model's own levels.
         Provider::OpenRouter => all,
@@ -1046,20 +1071,21 @@ pub fn model_menu(
         ),
         (
             openai.to_string(),
-            "gpt-6.1-sol",
+            "gpt-6.2-sol",
             &[
-                ("gpt-6.1-sol", "sol"),
-                ("gpt-6-astra", "astra"),
+                ("gpt-6.2-sol", "sol"),
+                ("gpt-6.2-astra", "astra"),
                 ("gpt-6.1-terra", "terra"),
                 ("gpt-6-luna", "luna"),
             ],
         ),
         (
             "Google Gemini, billed per token".to_string(),
-            "gemini-3.1-pro-preview",
+            "gemini-4-carbon",
             &[
-                ("gemini-3.1-pro-preview", "gemini"),
-                ("gemini-3.8-flash", "flash"),
+                ("gemini-4-carbon", "carbon"),
+                ("gemini-4-argon", "argon"),
+                ("gemini-4-hydrogen", "hydrogen"),
             ],
         ),
         (
@@ -2272,12 +2298,24 @@ mod tests {
             ("opus", Provider::Anthropic, "claude-opus-5-5"),
             ("Fable", Provider::Anthropic, "claude-fable-5-2"),
             ("claude-fable-5-1", Provider::Anthropic, "claude-fable-5-1"),
-            ("sol", Provider::OpenAI, "gpt-6.1-sol"),
+            ("sol", Provider::OpenAI, "gpt-6.2-sol"),
+            ("Astra", Provider::OpenAI, "gpt-6.2-astra"),
+            ("gpt-6.1-sol", Provider::OpenAI, "gpt-6.1-sol"),
+            ("gpt-6-astra", Provider::OpenAI, "gpt-6-astra"),
             ("Terra", Provider::OpenAI, "gpt-6.1-terra"),
             ("gpt-6.1-terra", Provider::OpenAI, "gpt-6.1-terra"),
             ("gpt-6-luna", Provider::OpenAI, "gpt-6-luna"),
-            ("gemini", Provider::Google, "gemini-3.1-pro-preview"),
-            ("flash", Provider::Google, "gemini-3.8-flash"),
+            ("gemini", Provider::Google, "gemini-4-carbon"),
+            ("carbon", Provider::Google, "gemini-4-carbon"),
+            ("Argon", Provider::Google, "gemini-4-argon"),
+            ("hydrogen", Provider::Google, "gemini-4-hydrogen"),
+            ("flash", Provider::Google, "gemini-4-hydrogen"),
+            (
+                "gemini-3.1-pro-preview",
+                Provider::Google,
+                "gemini-3.1-pro-preview",
+            ),
+            ("gemini-3.8-flash", Provider::Google, "gemini-3.8-flash"),
             ("gemini-3.5-flash", Provider::Google, "gemini-3.5-flash"),
             (
                 "openrouter:anthropic/claude-opus-5.5",
@@ -2330,7 +2368,7 @@ mod tests {
         assert!(error.contains("Did you mean claude-opus-5-5?"), "{error}");
         let error = resolve_model("cc:sol").unwrap_err();
         assert!(
-            error.contains("gpt-6.1-sol isn't one (OpenAI model)"),
+            error.contains("gpt-6.2-sol isn't one (OpenAI model)"),
             "{error}"
         );
         let error = resolve_model("cc:opsu").unwrap_err();
@@ -2446,6 +2484,15 @@ mod tests {
             Some(GeminiThinkingLevel::Medium)
         );
         assert_eq!(level("flash", Effort::Low), Some(GeminiThinkingLevel::Low));
+        // Gemini 4 Hydrogen thinks at xhigh, also at max, and Carbon at most high.
+        for effort in [Effort::Xhigh, Effort::Max] {
+            assert_eq!(level("hydrogen", effort), Some(GeminiThinkingLevel::XHigh));
+            assert_eq!(level("carbon", effort), Some(GeminiThinkingLevel::High));
+        }
+        assert_eq!(
+            level("gemini-3.8-flash", Effort::Xhigh),
+            Some(GeminiThinkingLevel::High)
+        );
         assert_eq!(
             level("gemini-3-pro-preview", Effort::Medium),
             Some(GeminiThinkingLevel::High),
@@ -2940,7 +2987,7 @@ mod tests {
         assert_eq!(
             need(&gemini, &[("ANTHROPIC_API_KEY", "sk-ant-1")]),
             Some(Need::GeminiKey {
-                model: "gemini-3.1-pro-preview".into()
+                model: "gemini-4-carbon".into()
             })
         );
         assert_eq!(need(&gemini, &[("GEMINI_API_KEY", "AIza1")]), None);
@@ -2971,7 +3018,7 @@ mod tests {
         assert_eq!(
             need(&sol, &login),
             Some(Need::OpenAiKey {
-                model: "gpt-6.1-sol".into()
+                model: "gpt-6.2-sol".into()
             })
         );
         let both = [login[0], login[1], ("OPENAI_API_KEY", "sk-proj-1")];
@@ -3193,7 +3240,14 @@ mod tests {
                 openai: true,
                 ..Credentials::default()
             }),
-            Some("gpt-6.1-sol")
+            Some("gpt-6.2-sol")
+        );
+        assert_eq!(
+            first(Credentials {
+                gemini: true,
+                ..Credentials::default()
+            }),
+            Some("gemini-4-carbon")
         );
         assert_eq!(first(Credentials::default()), None);
     }
@@ -3218,7 +3272,7 @@ mod tests {
             models(root.path()),
             Some((
                 "cc:claude-opus-5-5".to_string(),
-                Some("gemini-3.8-flash".to_string())
+                Some("gemini-4-hydrogen".to_string())
             ))
         );
         std::fs::write(root.path().join(LAST_MODELS_FILE), "not json").unwrap();
@@ -3263,10 +3317,10 @@ mod tests {
         // An effort a model doesn't take (or one made up) isn't offered.
         let file = std::fs::read_to_string(root.join(LAST_MODELS_FILE)).unwrap();
         let file = file
-            .replace("\"gpt-6.1-sol\": \"max\"", "\"gpt-6.1-sol\": \"extreme\"")
+            .replace("\"gpt-6.2-sol\": \"max\"", "\"gpt-6.2-sol\": \"extreme\"")
             .replace(
-                "\"gemini-3.8-flash\": \"low\"",
-                "\"gemini-3.8-flash\": \"max\"",
+                "\"gemini-4-hydrogen\": \"low\"",
+                "\"gemini-4-hydrogen\": \"max\"",
             );
         std::fs::write(root.join(LAST_MODELS_FILE), file).unwrap();
         assert_eq!(LastModels::effort_of(root, "sol"), None);
@@ -3655,17 +3709,23 @@ mod tests {
         assert_eq!(efforts("opus"), [Low, Medium, High, Xhigh, Max]);
         assert_eq!(efforts("cc:fable"), [Low, Medium, High, Xhigh, Max]);
         assert_eq!(efforts("sol"), [Low, Medium, High, Xhigh, Max]);
+        assert_eq!(efforts("astra"), [Low, Medium, High, Xhigh, Max]);
+        assert_eq!(efforts("gpt-6.1-sol"), [Low, Medium, High, Xhigh, Max]);
         assert_eq!(efforts("terra"), [Low, Medium, High, Xhigh, Max]);
         assert_eq!(
             efforts("gpt-5.4-nano-2026-03-17"),
             [Low, Medium, High, Xhigh]
         );
         assert_eq!(efforts("gemini"), [Low, Medium, High]);
+        assert_eq!(efforts("argon"), [Low, Medium, High]);
+        assert_eq!(efforts("hydrogen"), [Low, Medium, High, Xhigh]);
+        assert_eq!(efforts("gemini-3.1-pro-preview"), [Low, Medium, High]);
         assert_eq!(efforts("gemini-3-pro-preview"), [Low, High]);
         assert!(efforts("gemini-2.0-flash").is_empty(), "it doesn't reason");
         assert_eq!(efforts("openrouter:x/y"), [Low, Medium, High, Xhigh, Max]);
         let fit = |name: &str, effort| fit_effort(&resolve_model(name).unwrap(), effort);
         assert_eq!(fit("gemini", Xhigh), High);
+        assert_eq!(fit("hydrogen", Max), Xhigh);
         assert_eq!(fit("gemini-3-pro-preview", Medium), Low);
         assert_eq!(fit("opus", Medium), Medium);
         assert_eq!(
@@ -3689,7 +3749,7 @@ mod tests {
         let menu = model_menu(
             needs,
             Some(OpenAiAuth::ApiKey),
-            &["gpt-5.6-terra", "gpt-6.1-sol"],
+            &["gpt-5.6-terra", "gpt-6.2-sol"],
             &[],
         );
         assert_eq!(menu[0].name, "OpenAI, with your API key");
@@ -3702,8 +3762,8 @@ mod tests {
         assert_eq!(
             names,
             [
-                "gpt-6.1-sol",
-                "gpt-6-astra",
+                "gpt-6.2-sol",
+                "gpt-6.2-astra",
                 "gpt-6.1-terra",
                 "gpt-6-luna",
                 "gpt-5.6-terra"
@@ -3865,7 +3925,10 @@ mod tests {
 
     #[test]
     fn a_model_is_named_by_its_alias_when_it_has_one() {
-        assert_eq!(short_model_name("gpt-6.1-sol"), "sol");
+        assert_eq!(short_model_name("gpt-6.2-sol"), "sol");
+        assert_eq!(short_model_name("gpt-6.1-sol"), "gpt-6.1-sol");
+        assert_eq!(short_model_name("gemini-4-carbon"), "carbon");
+        assert_eq!(short_model_name("gemini-4-hydrogen"), "hydrogen");
         assert_eq!(short_model_name("claude-opus-5-5"), "opus");
         assert_eq!(short_model_name("cc:claude-haiku-5-5"), "cc:haiku");
         assert_eq!(
@@ -3998,14 +4061,21 @@ mod tests {
     }
 
     /// Every row pairs a registry model with a plain `org/name` slug, with no
-    /// whitespace and no `:` suffix, and no ID or slug is there twice. Every
+    /// whitespace and no `:` suffix, and no slug is there twice. An ID is
+    /// there twice only for its `-pro` slug, right after its own. Every
     /// aliased model has a row or is among those OpenRouter doesn't serve,
     /// and not both, so moving an alias fails here until the table follows.
     #[test]
     fn every_alias_has_one_decision_and_every_row_is_plain() {
         let mut ids = std::collections::HashSet::new();
         let mut slugs = std::collections::HashSet::new();
+        let mut previous: Option<(&str, &str)> = None;
         for (id, slug) in OPENROUTER_EQUIVALENTS {
+            let pro_of_previous = previous.is_some_and(|(before_id, before_slug)| {
+                before_id == *id && *slug == format!("{before_slug}-pro")
+            });
+            assert!(ids.insert(*id) || pro_of_previous, "{id} has two rows");
+            previous = Some((*id, *slug));
             assert!(Model::find(id).is_some(), "{id} isn't a registry model");
             let parts: Vec<&str> = slug.split('/').collect();
             assert_eq!(parts.len(), 2, "{slug}");
@@ -4014,7 +4084,6 @@ mod tests {
                 !slug.contains(|c: char| c.is_whitespace() || ":@~".contains(c)),
                 "{slug}"
             );
-            assert!(ids.insert(*id), "{id} has two rows");
             assert!(slugs.insert(*slug), "{slug} has two rows");
         }
         for id in NOT_ON_OPENROUTER {

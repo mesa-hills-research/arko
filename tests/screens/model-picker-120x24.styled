@@ -28,7 +28,7 @@ style 2 106 107 fg=#303030 bg=#101010
 style 2 107 116 fg=#dedede bg=#131313
 style 2 116 118 fg=#303030 bg=#131313
 style 2 118 120 fg=#dedede bg=#131313
-text 3 "  │ Workers │   gpt-6.1-sol    sol    API, $2/$10                                                         │          │"
+text 3 "  │ Workers │   gpt-6.2-sol    sol    API, $2/$10                                                         │          │"
 style 3 0 2 fg=#dedede bg=#131313
 style 3 2 4 fg=#303030 bg=#131313
 style 3 4 12 fg=#9d9d9d bg=#131313
@@ -40,7 +40,7 @@ style 3 106 107 fg=#303030 bg=#101010
 style 3 107 116 fg=#dedede bg=#131313
 style 3 116 118 fg=#303030 bg=#131313
 style 3 118 120 fg=#dedede bg=#131313
-text 4 "  │ Workspac│   gpt-6-astra    astra  API, $10/$50                                                        │          │"
+text 4 "  │ Workspac│   gpt-6.2-astra  astra  API, $8/$40                                                         │          │"
 style 4 0 2 fg=#dedede bg=#131313
 style 4 2 4 fg=#303030 bg=#131313
 style 4 4 12 fg=#9d9d9d bg=#131313

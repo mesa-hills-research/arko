@@ -29,10 +29,10 @@ style 8 2 12 dim
 style 8 107 118 dim
 text 9 "            │ OpenAI, with your API key                                                                   │"
 style 9 14 39 bold dim
-text 10 "▎ Add a READ│   gpt-6.1-sol    sol    API, $2/$10                                                         │"
+text 10 "▎ Add a READ│   gpt-6.2-sol    sol    API, $2/$10                                                         │"
 style 10 0 2 fg=cyan
 style 10 31 56 dim
-text 11 "            │   gpt-6-astra    astra  API, $10/$50                                                        │"
+text 11 "            │   gpt-6.2-astra  astra  API, $8/$40                                                         │"
 style 11 31 56 dim
 text 12 "  Done. The │   gpt-6.1-terra  terra  API, $1/$5                                                          │"
 style 12 31 56 dim

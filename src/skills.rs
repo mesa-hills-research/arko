@@ -342,7 +342,9 @@ mod tests {
     #[test]
     fn each_model_goes_by_the_names_of_its_route() {
         assert_eq!(names("haiku"), ["claude-haiku-5-5", "haiku"]);
-        assert_eq!(names("gpt-6.1-sol"), ["gpt-6.1-sol", "sol"]);
+        assert_eq!(names("gpt-6.2-sol"), ["gpt-6.2-sol", "sol"]);
+        assert_eq!(names("gpt-6.1-sol"), ["gpt-6.1-sol"]);
+        assert_eq!(names("gemini"), ["gemini-4-carbon", "carbon", "gemini"]);
         assert_eq!(names("claude-opus-4-6"), ["claude-opus-4-6"]);
         assert_eq!(
             names("cc:haiku"),
