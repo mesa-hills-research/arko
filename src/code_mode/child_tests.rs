@@ -152,6 +152,17 @@ impl Gate for FakeGate {
     }
 }
 
+/// Waits until a call of `gate` blocks, for at most 20 seconds.
+async fn until_blocked(gate: &FakeGate) {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !gate.blocked.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a call blocked in time");
+}
+
 fn limits() -> Limits {
     Limits {
         compute_ms: COMPUTE_SECONDS * 1000,
@@ -455,9 +466,7 @@ async fn a_stop_kills_the_child_while_it_loops_and_while_a_call_runs() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
         if code.contains("block") {
-            while !gate.blocked.load(Ordering::SeqCst) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+            until_blocked(&gate).await;
         } else {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
@@ -532,9 +541,7 @@ async fn the_runner_runs_under_its_os_limits() {
             .await
         }
     });
-    while !gate.blocked.load(Ordering::SeqCst) {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    until_blocked(&gate).await;
     let child = runners(&mark)[0];
     let adj = std::fs::read_to_string(format!("/proc/{child}/oom_score_adj")).unwrap();
     assert_eq!(adj.trim(), "1000");
@@ -785,9 +792,7 @@ async fn a_fan_out_behind_a_blocked_call_is_held_back_and_isnt_computing() {
             .await
         }
     });
-    while !gate.blocked.load(Ordering::SeqCst) {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    until_blocked(&gate).await;
     // Longer than the computing limit, while the code's writes wait.
     tokio::time::sleep(Duration::from_secs(3)).await;
     gate.release.notify_one();
