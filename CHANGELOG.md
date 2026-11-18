@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Code mode
+
+- `--tools both` (or `ARKO_TOOLS=both`) offers the agents `run_code` beside their tools. It runs
+  JavaScript that calls read_file, list_files, index_search, index_status, shell, write_file and
+  edit_file, and returns only what the code returns, so loops and filtering over many files stay
+  out of the conversation. `classic`, without it, stays the default for now, and a resumed session
+  takes the setting for the conversations and workers that start after.
+- Each call from code passes the same checks as a call of the model's, meaning outside access, the
+  command guard, the path and approval policies and every hook. A call that would wait for
+  approval is refused at once, and the third refused call ends the run.
+- The code runs in a process of its own, Arko started again as a code runner, with none of Arko's
+  environment or keys. The operating system holds it to its memory and processor time, so a
+  runaway script or a fault in the engine ends that process and never Arko. A run may compute for
+  30 seconds, hold 64 MB, make 500 tool calls and take timeout_seconds (5 minutes by default, at
+  most an hour). A failed run says its line and what it had changed.
+- A program built on the library that sets `Options::tools` to `both` calls
+  `arko::code_mode::run_if_asked()` first in `main`.
+
 ## 0.22.2 (2026-11-14)
 
 ### The web page
