@@ -265,7 +265,7 @@ pub(super) mod words {
         if done.log_left_out > 0 {
             lines.push(format!(
                 "[{} more log lines left out]",
-                thousands(done.log_left_out as usize)
+                thousands(usize::try_from(done.log_left_out).unwrap_or(usize::MAX))
             ));
         }
         lines
@@ -385,7 +385,8 @@ pub(super) mod words {
             Some((end, _)) => (&text[..end], text[end..].chars().count()),
             None => (text, 0),
         };
-        let left_out = cut_here + usize::try_from(left_out).unwrap_or(usize::MAX);
+        // (The runner's count is the child's word, so it can't overflow this.)
+        let left_out = cut_here.saturating_add(usize::try_from(left_out).unwrap_or(usize::MAX));
         if left_out == 0 {
             return kept.to_string();
         }

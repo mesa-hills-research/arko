@@ -69,9 +69,10 @@ git dependency at a full SHA, in a commit marked TEMPORARY.
   answer back. The child holds no key, credential or tool.
 - The child sets its limits before any code runs, and the run fails if it can't:
   - Linux and macOS: `RLIMIT_AS` at the size it starts with plus 1 GB (it counts shared
-    mappings too), `RLIMIT_DATA` at 512 MB, `RLIMIT_CPU` above the computing limit,
-    `RLIMIT_CORE` and `RLIMIT_FSIZE` at 0. Whether macOS enforces the first two is shown by
-    the tests on a macOS runner, not assumed
+    mappings too), `RLIMIT_CPU` above the computing limit, `RLIMIT_CORE` and `RLIMIT_FSIZE`
+    at 0, and on Linux `RLIMIT_DATA` at 512 MB. macOS refuses a data limit below what a process
+    already counts as data (EINVAL on its CI runner), so there the address space is the memory
+    limit. Whether macOS enforces it is shown by the tests on a macOS runner, not assumed
   - Arko's watchdog, on Linux and macOS, ends a child whose resident memory passes 512 MB, a
     backstop beside the OS limits, not one of them
   - Linux: `oom_score_adj` raised to 1000, so the OOM killer takes it first

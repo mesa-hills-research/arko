@@ -5,7 +5,7 @@
 //!
 //! | | Linux | macOS | Windows |
 //! |---|---|---|---|
-//! | Memory | `RLIMIT_DATA`, and `RLIMIT_AS` above what it starts with | The same | The Job Object's process memory |
+//! | Memory | `RLIMIT_DATA`, and `RLIMIT_AS` above what it starts with | `RLIMIT_AS` above what it starts with | The Job Object's process memory |
 //! | Processor time | `RLIMIT_CPU` | `RLIMIT_CPU` | The Job Object's user time |
 //! | Core dumps, file writes | `RLIMIT_CORE`, `RLIMIT_FSIZE` at 0 | The same | No error dialog, one process |
 //! | Out of memory | `oom_score_adj` 1000, so it goes first | | |
@@ -39,6 +39,10 @@ mod imp {
             start.saturating_add(limits.os_address_space_bytes),
             0,
         )?;
+        // macOS refuses a data limit below what a process already counts
+        // as data, which is more than the heap's cap, so there the address
+        // space is the limit.
+        #[cfg(not(target_os = "macos"))]
         set(libc::RLIMIT_DATA, "RLIMIT_DATA", limits.os_memory_bytes, 0)?;
         // The processor time ends the runner with SIGXCPU, and SIGKILL a
         // little later.

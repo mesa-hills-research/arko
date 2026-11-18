@@ -69,6 +69,46 @@ fn runner() {
             std::thread::sleep(Duration::from_secs(60));
             std::process::exit(0);
         }
+        Ok("forged-done") => {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            out.write_all(crate::code_mode::protocol::MAGIC).unwrap();
+            let done =
+                crate::code_mode::protocol::FromChild::Done(crate::code_mode::protocol::Done {
+                    ended: Ended::Returned {
+                        value: Some("x".repeat(40_000)),
+                        unread: Vec::new(),
+                    },
+                    log: vec!["a line".into()],
+                    log_left_out: u64::MAX,
+                    value_left_out: u64::MAX,
+                    calls: u32::MAX,
+                    heap_bytes: u64::MAX,
+                    compute_ms: u64::MAX,
+                });
+            crate::code_mode::protocol::write_frame(&mut out, &done).unwrap();
+            std::process::exit(0);
+        }
+        Ok("garbage-then-deaf") => {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            out.write_all(crate::code_mode::protocol::MAGIC).unwrap();
+            let call =
+                crate::code_mode::protocol::FromChild::Call(crate::code_mode::protocol::Call {
+                    id: 1,
+                    tool: "large".into(),
+                    args: serde_json::json!({}),
+                });
+            crate::code_mode::protocol::write_frame(&mut out, &call).unwrap();
+            // Arko's answer fills the pipe this never reads, and then the
+            // frame Arko can't read comes.
+            std::thread::sleep(Duration::from_secs(1));
+            out.write_all(&5u32.to_le_bytes()).unwrap();
+            out.write_all(b"notjs").unwrap();
+            out.flush().unwrap();
+            std::thread::sleep(Duration::from_secs(60));
+            std::process::exit(0);
+        }
         Ok(what @ ("call-then-exit" | "call-then-garbage")) => {
             use std::io::Write;
             let mut out = std::io::stdout();
@@ -132,6 +172,7 @@ impl Gate for FakeGate {
             "refuse" => NestedOutcome::Refused("Refused: not from here.".into()),
             "halt" => NestedOutcome::Halted("Budget exhausted.".into()),
             "big" => NestedOutcome::Finished(ToolOutput::text("x".repeat(9 * MB as usize))),
+            "large" => NestedOutcome::Finished(ToolOutput::text("x".repeat(7 * MB as usize))),
             "block" | "shell" => {
                 start(NestedState::Running);
                 let guard = Dropped(self.dropped.clone());
@@ -581,6 +622,7 @@ async fn a_runaway_allocation_past_the_heap_cap_is_stopped_by_the_os() {
         Duration::from_secs(60),
     )
     .await;
+    println!("a runaway allocation: {:?}", ran.outcome);
     match &ran.outcome {
         Outcome::Done(done) => assert!(
             matches!(done.ended, Ended::OutOfMemory { .. }),
@@ -593,14 +635,49 @@ async fn a_runaway_allocation_past_the_heap_cap_is_stopped_by_the_os() {
     assert!(began.elapsed() < Duration::from_secs(30));
 }
 
-/// The processor-time limit ends a runner whose computing time limit is
-/// looser, as a fault in the engine's own count would.
+/// The address-space limit alone (the watchdog and `RLIMIT_DATA` loose,
+/// the heap's cap at 2 GB) stops a runaway allocation well before the
+/// heap's cap would. Each array holds about 16 MB, so the heap's cap
+/// would take some 120 of them, and 512 MB of address space about 30.
 #[cfg(unix)]
+#[tokio::test]
+async fn the_address_space_limit_stops_a_runaway_allocation() {
+    let mut loose = limits();
+    loose.heap_bytes = 2 * 1024 * MB;
+    loose.os_memory_bytes = 16 * 1024 * MB;
+    loose.os_address_space_bytes = 512 * MB;
+    let ran = run_with(
+        "const all = [];\n\
+         try { while (true) all.push(new Array(1000000).fill(7)); } catch (e) { return `${all.length} ${e.message}`; }",
+        loose,
+        &FakeGate::default(),
+        Duration::from_secs(60),
+    )
+    .await;
+    println!("the address space alone: {:?}", ran.outcome);
+    match &ran.outcome {
+        Outcome::Done(_) => {
+            let shown = returned(&ran);
+            let (arrays, why) = shown.split_once(' ').unwrap();
+            let arrays: usize = arrays.parse().unwrap();
+            assert!(arrays < 60, "{shown}");
+            assert_eq!(why, "out of memory");
+        }
+        // An allocation of the runner's own failed, which aborts it.
+        Outcome::Died { status, .. } => assert!(status.contains("signal"), "{status}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The processor-time limit (`RLIMIT_CPU`, or the Job Object's) ends a
+/// runner whose computing time limit is looser, as a fault in the engine's
+/// own count would.
 #[tokio::test]
 async fn the_processor_time_limit_ends_a_runaway_runner() {
     let mut loose = limits();
     loose.compute_ms = 600_000;
     loose.cpu_seconds = 1;
+    let began = Instant::now();
     let ran = run_with(
         "while (true) {}",
         loose,
@@ -608,10 +685,20 @@ async fn the_processor_time_limit_ends_a_runaway_runner() {
         Duration::from_secs(60),
     )
     .await;
+    println!(
+        "the processor time: {:?} after {:?}",
+        ran.outcome,
+        began.elapsed()
+    );
     match &ran.outcome {
-        Outcome::Died { status, .. } => assert!(status.contains("signal"), "{status}"),
+        Outcome::Died { status, .. } => {
+            if cfg!(unix) {
+                assert!(status.contains("signal"), "{status}");
+            }
+        }
         other => panic!("{other:?}"),
     }
+    assert!(began.elapsed() < Duration::from_secs(30));
 }
 
 /// A runner that ends while one of its calls runs ends the run at once,
@@ -670,6 +757,62 @@ async fn a_broken_frame_during_a_call_ends_the_run() {
     );
     assert!(began.elapsed() < Duration::from_secs(10));
     assert!(gate.dropped.load(Ordering::SeqCst));
+}
+
+/// A runner's counts are the child's word, so the largest it can send
+/// don't upset Arko's arithmetic.
+#[tokio::test]
+async fn a_forged_done_with_the_largest_counts_reads_cleanly() {
+    let (args, env) = runner_doing("forged-done");
+    let runner = Runner {
+        args,
+        env,
+        ..Runner::this_program().unwrap()
+    };
+    let ran = super::run(
+        &runner,
+        start("", limits()),
+        &FakeGate::default(),
+        Duration::from_secs(60),
+        &StopSignal::never(),
+    )
+    .await;
+    let shown = crate::code_mode::tool::words::result(&ran, 300).unwrap();
+    assert!(shown.starts_with("a line\n["), "{}", &shown[..40]);
+    assert!(
+        shown.ends_with(" more characters left out]"),
+        "{}",
+        &shown[shown.len() - 60..]
+    );
+}
+
+/// A runner that breaks the protocol while Arko waits to write it an answer
+/// it doesn't read ends the run at once.
+#[tokio::test]
+async fn a_broken_frame_while_an_answer_waits_to_be_written_ends_the_run() {
+    let (args, env) = runner_doing("garbage-then-deaf");
+    let runner = Runner {
+        args,
+        env,
+        ..Runner::this_program().unwrap()
+    };
+    let mut tools = start("", limits());
+    tools.tools.push("large".into());
+    let began = Instant::now();
+    let ran = super::run(
+        &runner,
+        tools,
+        &FakeGate::default(),
+        Duration::from_secs(60),
+        &StopSignal::never(),
+    )
+    .await;
+    assert!(
+        matches!(&ran.outcome, Outcome::Broken(why) if why.starts_with("The code runner sent a frame Arko can't read")),
+        "{:?}",
+        ran.outcome
+    );
+    assert!(began.elapsed() < Duration::from_secs(10));
 }
 
 /// A runner whose code throws while a call it didn't await runs sends its
@@ -767,6 +910,30 @@ async fn a_fan_out_behind_a_blocked_call_is_held_back_and_isnt_computing() {
         ran.most_held <= 2 * (4 * MB as usize + 64 * 1024),
         "{} bytes held",
         ran.most_held
+    );
+}
+
+/// A value larger than a frame from the runner may be is cut in the
+/// runner, which says how much it left out.
+#[tokio::test]
+async fn a_long_value_is_cut_in_the_runner() {
+    let ran = run("return 'é'.repeat(10 * 1024 * 1024);").await;
+    let Outcome::Done(done) = &ran.outcome else {
+        panic!("{:?}", ran.outcome);
+    };
+    assert_eq!(
+        returned(&ran).chars().count(),
+        crate::code_mode::MAX_RESULT_CHARS
+    );
+    assert_eq!(
+        done.value_left_out,
+        (10 * 1024 * 1024 - crate::code_mode::MAX_RESULT_CHARS) as u64
+    );
+    let shown = crate::code_mode::tool::words::result(&ran, 300).unwrap();
+    assert!(
+        shown.ends_with("\n[10,455,760 more characters left out]"),
+        "{}",
+        &shown[shown.len() - 60..]
     );
 }
 
