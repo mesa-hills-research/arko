@@ -2,6 +2,8 @@
 //! the run as a frame on its input and writes how it ended.
 
 #![cfg(feature = "code-mode")]
+// The measurement prints its numbers. (No full screen runs here.)
+#![allow(clippy::disallowed_macros)]
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
