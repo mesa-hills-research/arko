@@ -10,7 +10,8 @@
 // reader's own (a scroll, End, the marker, sending, another view or width),
 // "Working…" and a note waiting at the end going down into the blank below
 // the end as what comes above them takes it, and a taller view giving back
-// what a shorter one took while following. A panel opened and closed with
+// what a shorter one took while following, or hid while the reader read
+// before going to the end (a phone's keyboard). A panel opened and closed with
 // nothing between puts every line back on its pixel.
 //
 // Then it plays the pixel cases, each in a session of its own at ratios 1,
@@ -526,6 +527,9 @@ class Run {
     this.seq = 0;
     this.opened = null;
     this.owed = 0;
+    this.shrunk = 0;
+    this.hidden = 0;
+    this.jumping = false;
     this.textOpen = false;
     this.workers = 0;
     this.failures = [];
@@ -744,7 +748,7 @@ class Run {
   /// Counts how the lines of `after` moved from `before`.
   compare(before, after) {
     const { step, below, viewport } = this;
-    if (before.choice === 'read' && after.choice === 'follow') this.owed = 0;
+    if (before.choice === 'read' && after.choice === 'follow') this.followsAgain();
     const following = before.following && after.following;
     const changed = this.changeAt(before, after);
     const blank = Math.max(0, before.bottom - before.end);
@@ -802,9 +806,15 @@ class Run {
     if (room > 0) this.meter.tally(this.meter.allowed, key('the end makes room')).add(room);
     if (pushed > 0) this.meter.tally(this.meter.allowed, key('below a change on the screen')).add(pushed);
     // While following, a shorter view moves the lines up, and a taller one
-    // gives that back first. What is owed starts at none when following
-    // starts, and a taller view while reading takes from it.
+    // gives that back first. What is owed starts, when following starts,
+    // at what shorter views hid at the bottom while reading, and a taller
+    // view while reading takes from both.
     const taller = after.clientHeight - before.clientHeight;
+    this.shrunk = Math.max(0, this.shrunk - taller);
+    if (taller > 0) this.hidden = Math.max(0, this.hidden - taller);
+    else if (before.choice === 'read' && after.choice === 'read') {
+      this.hidden += Math.max(0, -taller - blank / after.dpr);
+    }
     if (viewport && following) {
       if (up > 0 && taller < 0) this.owed += up;
       if (rows > 0 && rows <= this.owed + 1) {
@@ -928,6 +938,7 @@ class Run {
 
   /// The reader clicks the marker, which is End, and follows again.
   async toEnd() {
+    this.jumping = true;
     const at = await this.evaluate(`(() => { const j = document.querySelector('.jump.shown'); if (!j) return null; const r = j.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
     if (at && this.rng.chance(50)) {
       await this.click(at[0], at[1]);
@@ -936,8 +947,23 @@ class Run {
       await this.evaluate('document.activeElement && document.activeElement.blur()');
       await this.key('End', 'End');
     }
-    this.owed = 0;
     await this.settle(null);
+    this.jumped();
+  }
+
+  /// Following starts, owing the lines shorter views hid while reading.
+  /// (End, the marker and sending owe more, `jumped`.)
+  followsAgain() {
+    if (!this.jumping) this.owed = this.hidden * this.size.dpr;
+    this.hidden = 0;
+  }
+
+  /// End, the marker or sending went to the end, owing all that shorter
+  /// views took.
+  jumped() {
+    this.owed = Math.max(this.owed, this.shrunk * this.size.dpr);
+    this.hidden = 0;
+    this.jumping = false;
   }
 
   /// Toggles the lowest fold among the last lines on the screen, or toggles
@@ -1323,6 +1349,7 @@ class Run {
 
   /// The reader sends a message, which goes to the end.
   async send() {
+    this.jumping = true;
     await this.focusBox();
     await this.type(`Then ${this.words(3 + this.rng.below(8))}`);
     const before = await this.events();
@@ -1331,7 +1358,7 @@ class Run {
     await this.key('Enter', 'Enter', '\r', 2);
     await this.delivered(before, 1500);
     await this.settle(null);
-    this.owed = 0;
+    this.jumped();
   }
 
   async focusBox() {
@@ -1764,6 +1791,134 @@ async function pixelCases(cdp, agent) {
       const b = await run.look();
       return a.marker && a.marker === b.marker ? null : `"${a.marker}" → "${b.marker}"`;
     });
+    // A phone's keyboard takes the bottom of the view and gives it back.
+    // (180 px keeps the view above 510 px, where the page takes a landscape
+    // phone's smaller chrome.)
+    await play(ratio, 'the keyboard comes and goes while reading, and nothing moves', async (run) => {
+      await run.fill();
+      const a = await run.roll(-200, 0);
+      await run.metrics(run.width, run.height - 180);
+      await run.settle(null);
+      await run.metrics(run.width, run.height + 180);
+      await run.settle(null);
+      const b = await run.look();
+      if (b.choice !== 'read') return `the choice is ${b.choice}`;
+      return Case.moved(a, b) === 0 ? null : `the lines moved ${Case.moved(a, b)}`;
+    });
+    await play(ratio, 'the keyboard takes only blank while reading, a message is sent, and it goes', async (run) => {
+      await run.fill();
+      await run.blank(300 * ratio);
+      await run.roll(-10, 0);
+      await run.metrics(run.width, run.height - 180);
+      await run.settle(null);
+      await run.send();
+      const sent = await run.look();
+      if (!follows(sent) || Math.abs(blankOf(sent)) > 1) return `sent: ${sent.choice}, blank ${blankOf(sent)}`;
+      await run.metrics(run.width, run.height + 180);
+      await run.settle(null);
+      const b = await run.look();
+      if (!follows(b)) return `the choice is ${b.choice}`;
+      return blankOf(b) === blankOf(sent) ? null : `blank ${blankOf(b)} below the end, ${blankOf(sent)} as it was sent`;
+    });
+    await play(ratio, 'following with blank, the keyboard comes, a message is sent, and it goes', async (run) => {
+      await run.fill();
+      const a = await run.blank(100 * ratio);
+      if (!follows(a)) return `the choice is ${a.choice}`;
+      await run.metrics(run.width, run.height - 180);
+      await run.settle(null);
+      await run.send();
+      const sent = await run.look();
+      if (!follows(sent) || Math.abs(blankOf(sent)) > 1) return `sent: ${sent.choice}, blank ${blankOf(sent)}`;
+      await run.metrics(run.width, run.height + 180);
+      await run.settle(null);
+      const b = await run.look();
+      if (!follows(b)) return `the choice is ${b.choice}`;
+      return blankOf(b) === blankOf(sent) ? null : `blank ${blankOf(b)} below the end, ${blankOf(sent)} as it was sent`;
+    });
+    // The keyboard comes while reading, the reader opens a worker's view
+    // and comes back, and sends. Another view starts what the window took
+    // afresh, so the keyboard going afterwards leaves its height blank and
+    // moves no line, and going in the worker's view leaves nothing owed.
+    for (const away of [false, true]) {
+      const where = away ? 'in the worker\'s view' : 'after sending';
+      await play(ratio, `the keyboard comes while reading, a worker's view and back, and it goes ${where}`, async (run) => {
+        await run.fill();
+        await run.feed({ do: 'worker', id: 'r1', text: `Task ${run.words(4)}` });
+        for (let at = 0; at < 4; at++) await run.feed({ do: 'text', text: `${run.some(12, 8)}\n\n` });
+        await run.settle(null);
+        await run.roll(-40, 0);
+        await run.metrics(run.width, run.height - 180);
+        await run.settle(null);
+        const card = await run.evaluate(`(() => {
+          const log = document.getElementById('log').getBoundingClientRect();
+          const card = [...document.querySelectorAll('#rows .wcard')].find((card) => { const r = card.getBoundingClientRect(); return r.top >= log.top && r.bottom <= log.bottom; });
+          if (!card) return null;
+          const r = card.getBoundingClientRect();
+          return [r.left + 20, r.top + r.height / 2];
+        })()`);
+        if (!card) return 'skipped';
+        await run.click(card[0], card[1]);
+        await run.settle(null);
+        if (away) {
+          await run.metrics(run.width, run.height + 180);
+          await run.settle(null);
+        }
+        await run.key('Escape', 'Escape');
+        await run.settle(null);
+        const back = await run.look();
+        if (back.choice !== 'read') return `back, the choice is ${back.choice}`;
+        await run.send();
+        const sent = await run.look();
+        if (!follows(sent) || Math.abs(blankOf(sent)) > 1) return `sent: ${sent.choice}, blank ${blankOf(sent)}`;
+        if (!away) {
+          await run.metrics(run.width, run.height + 180);
+          await run.settle(null);
+        }
+        const b = await run.look();
+        if (!follows(b)) return `the choice is ${b.choice}`;
+        if (Case.moved(sent, b) !== 0) return `the lines moved ${Case.moved(sent, b)}`;
+        const want = blankOf(sent) + (away ? 0 : Math.round(180 * ratio));
+        return Math.abs(blankOf(b) - want) <= 1 ? null : `blank ${blankOf(b)} below the end, not ${want}`;
+      });
+    }
+    await play(ratio, 'the keyboard takes only blank while reading, a scroll down follows, and it goes', async (run) => {
+      await run.fill();
+      await run.blank(300 * ratio);
+      const a = await run.roll(-10, 0);
+      if (a.choice !== 'read') return `the choice is ${a.choice}`;
+      await run.metrics(run.width, run.height - 180);
+      await run.settle(null);
+      const b = await run.roll(0.5, 300);
+      if (!follows(b)) return `the scroll down left ${b.choice}`;
+      await run.metrics(run.width, run.height + 180);
+      await run.settle(null);
+      const c = await run.look();
+      if (Case.moved(a, c) !== 0) return `the lines moved ${Case.moved(a, c)}`;
+      return blankOf(c) === blankOf(a) ? null : `blank ${blankOf(c)}, not ${blankOf(a)}`;
+    });
+    for (const narrower of [0, 200]) {
+      const width = narrower ? `, the window ${narrower} narrower meanwhile` : '';
+      await play(ratio, `a message sent from above the end, then the keyboard goes, leaves no blank${width}`, async (run) => {
+        await run.fill();
+        await run.roll(-200, 0);
+        await run.metrics(run.width, run.height - 180);
+        await run.settle(null);
+        if (narrower) {
+          await run.metrics(run.width - narrower, run.height);
+          await run.settle(null);
+        }
+        await run.send();
+        const sent = await run.look();
+        // (At a ratio of 1.5 the end may stand a device pixel above the
+        // edge as sending puts it there.)
+        if (!follows(sent) || Math.abs(blankOf(sent)) > 1) return `sent: ${sent.choice}, blank ${blankOf(sent)}`;
+        await run.metrics(run.width, run.height + 180);
+        await run.settle(null);
+        const b = await run.look();
+        if (!follows(b)) return `the choice is ${b.choice}`;
+        return blankOf(b) === blankOf(sent) ? null : `blank ${blankOf(b)} below the end, ${blankOf(sent)} as it was sent`;
+      });
+    }
     for (const lines of [0, 1, 5]) {
       await play(ratio, `the message box grows 3 lines and shrinks with ${lines} lines of blank`, async (run) => {
         await run.fill();

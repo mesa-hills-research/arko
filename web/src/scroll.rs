@@ -355,6 +355,14 @@ struct State {
     painted: Painted,
     /// What shorter views moved the lines up, to give back (device px).
     owed: f64,
+    /// What shorter views took from the view, less what taller ones gave
+    /// back, and the lines of it they hid at the bottom while the reader
+    /// read, as opposed to blank below the end (CSS px, so another width or
+    /// pixel ratio leaves them as they are). Going to the end owes one of
+    /// them, as `chose` and `end_now` say. Another view, a worker's or the
+    /// main one again, starts both at none.
+    shrunk: f64,
+    hidden: f64,
     gesture: Gesture,
     coast: Option<Coast>,
     clicked: Option<Clicked>,
@@ -385,6 +393,8 @@ impl Default for State {
             hold: None,
             painted: Painted::default(),
             owed: 0.0,
+            shrunk: 0.0,
+            hidden: 0.0,
             gesture: Gesture::default(),
             coast: None,
             clicked: None,
@@ -1062,6 +1072,17 @@ impl State {
                         follows,
                     );
                     self.owed = owed;
+                    // (A shorter view while reading hides what was below its
+                    // new bottom edge, lines or blank.)
+                    if by < 0.0 {
+                        self.shrunk -= by;
+                        if self.choice == Choice::Read {
+                            self.hidden += (-by - blank).max(0.0);
+                        }
+                    } else {
+                        self.shrunk = (self.shrunk - by).max(0.0);
+                        self.hidden = (self.hidden - by).max(0.0);
+                    }
                     if up < 0.0 {
                         top += up / geometry.ratio;
                     }
@@ -1112,19 +1133,30 @@ impl State {
         self.write(geometry, top)
     }
 
-    /// Sets the choice, and the rows to give back start at none when
-    /// following starts.
+    /// Sets the choice. When following starts, the rows to give back are
+    /// the lines shorter views hid while the reader read, so a view that
+    /// grows again brings them back with its bottom edge, and the blank it
+    /// hid comes back as blank.
     fn chose(&mut self, choice: Choice) {
         if choice == Choice::Follow && self.choice == Choice::Read {
-            self.owed = 0.0;
+            self.owed = self.hidden * window().device_pixel_ratio();
+        }
+        if choice == Choice::Follow {
+            self.hidden = 0.0;
         }
         self.choice = choice;
     }
 
-    /// The view goes to the end, with no blank below it, and follows.
+    /// The view goes to the end, with no blank below it, and follows. All
+    /// that shorter views took is owed then, the blank they took and the
+    /// lines they hid or moved up alike, whether the reader read or
+    /// followed, so a view that grows again (a phone's keyboard going after
+    /// a message is sent) keeps the end on its bottom edge instead of
+    /// leaving blank below it.
     fn end_now(&mut self, now: f64) -> Out {
         self.coast = Coast::after(&self.gesture, now);
         self.chose(Choice::Follow);
+        self.owed = self.owed.max(self.shrunk * window().device_pixel_ratio());
         self.kept = None;
         let Some(geometry) = self.geometry() else {
             self.pending = Some(Pending::End);
@@ -1579,6 +1611,9 @@ pub fn worker_view(worker: bool) {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.clicked = None;
+        // (Another view starts what the window took afresh.)
+        state.shrunk = 0.0;
+        state.hidden = 0.0;
         state.coast = Coast::after(&state.gesture, now());
         if worker {
             if state.left.is_none() {
@@ -1613,6 +1648,8 @@ pub fn new_feed() {
         let mut state = state.borrow_mut();
         state.choice = Choice::Follow;
         state.owed = 0.0;
+        state.shrunk = 0.0;
+        state.hidden = 0.0;
         state.left = None;
         state.kept = None;
         state.baseline = None;
