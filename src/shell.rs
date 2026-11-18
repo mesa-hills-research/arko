@@ -786,7 +786,9 @@ mod tests {
         let error = run(&tool, temp.path(), serde_json::json!({"command": command}))
             .await
             .unwrap_err();
-        assert!(matches!(error, ToolError::ExecutionFailed(_)), "{error:?}");
+        // A refusal, which reads as a failure does.
+        assert!(matches!(error, ToolError::Refused(_)), "{error:?}");
+        assert!(error.to_string().starts_with("Execution failed: Refused: "), "{error}");
     }
 
     #[cfg(unix)]
