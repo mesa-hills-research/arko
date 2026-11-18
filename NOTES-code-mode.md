@@ -8,7 +8,9 @@ from the start, and the language is JavaScript only. This file goes in the last 
 ## Scope
 
 - `run_code(code, purpose, timeout_seconds)`, offered beside today's tools under
-  `--tools both`. `classic` stays the default (`ARKO_TOOLS`, `tools` in `session.json`).
+  `--tools both` (`ARKO_TOOLS`, `tools` in `session.json`). New sessions default to `classic`
+  until the quick regression check passes, and then to `both` (DECISIONS.md). Sessions saved
+  without the setting read as `classic` either way.
 - `run_code` is always registered, as a resume-only tool for the main agent and the workers. A
   conversation whose configuration lists it is offered it.
 - JavaScript only. The description teaches the API in plain JavaScript terms.
