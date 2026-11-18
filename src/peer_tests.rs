@@ -1,7 +1,7 @@
-// End-to-end tests of what linked workers hear of each other, with the mock
-// model. Two workers start in a group, and one finishes while the other
-// waits, or Arko stops and the session resumes. (Included in `main`'s tests,
-// whose helpers they use.)
+// End-to-end tests of what linked workers hear of each other, and what a
+// worker hears of its jobs, with the mock model. Two workers start in a
+// group, and one finishes while the other waits, or Arko stops and the
+// session resumes. (Included in `main`'s tests, whose helpers they use.)
 
 use crate::mock_model::{ModelServer, complete, tool_call, tool_calls};
 
@@ -239,4 +239,125 @@ async fn a_relaunched_peer_hears_of_a_worker_that_ended_unseen_once() {
     assert_eq!(notes_for(&harness, r2).len(), 1);
     assert_eq!(requests(&seen, "r2")[3].matches(told).count(), 1);
     harness.crew.as_ref().unwrap().shutdown().await;
+}
+
+/// What a worker whose monitor ran does, in a session that Arko closes:
+/// it starts the monitor, then stays on each request, except its first one
+/// after the session resumes, which waits a second for mail.
+async fn monitoring_worker(seen: Seen) -> ModelServer {
+    ModelServer::start(Arc::new(move |index, body: String| {
+        let who = sender(&body);
+        seen.lock().unwrap().push((who.clone(), body.clone()));
+        let asked = requests(&seen, &who).len();
+        Box::pin(async move {
+            let done = results(&body);
+            match who.as_str() {
+                "main" if done == 0 => tool_call(
+                    &format!("m{index}"),
+                    crew::START_AGENT,
+                    serde_json::json!({"agent": WORKER, "task": "Watch the log."}),
+                ),
+                "main" => complete(&format!("m{index}"), "Started."),
+                "r1" if done == 0 => tool_call(
+                    &format!("a{index}"),
+                    "monitor_start",
+                    serde_json::json!({"command": "sleep 60", "pattern": "ERROR"}),
+                ),
+                "r1" if asked == 3 => tool_call(
+                    &format!("a{index}"),
+                    crew::WAIT_FOR_AGENTS,
+                    serde_json::json!({"timeout_seconds": 1}),
+                ),
+                "r1" => std::future::pending::<String>().await,
+                other => panic!("an unexpected agent {other}"),
+            }
+        })
+    }))
+    .await
+}
+
+/// A session whose worker r1 started a monitor of `sleep 60` and waits,
+/// with the shell and terminal tools, and the monitor's job.
+async fn monitoring_session(
+    temp: &Path,
+    server: &ModelServer,
+    seen: &Seen,
+) -> (Harness, Inputs, mpsc::UnboundedSender<Input>, Managers, uuid::Uuid) {
+    let (mut harness, mut inputs, sender) = harness(temp, server.client(), true);
+    let shell = Shell::detect(WindowsShell::Cmd);
+    let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.tools = managers.tools(&shell, harness.handover.runs());
+    harness.background = managers.background.clone();
+    harness.open(false).unwrap();
+    harness.start_new_workers();
+    turn(&mut harness, &mut inputs, "Watch the log.").await;
+    until(|| requests(seen, "r1").len() == 2 && harness.background.jobs().len() == 1).await;
+    let monitor = harness.background.jobs()[0].job_id;
+    (harness, inputs, sender, managers, monitor)
+}
+
+/// The session opens again (`arko -c`) with its jobs as the closed Arko
+/// left them. r1 runs again and reads the note of its stopped jobs, which
+/// names the monitor, once, also when the workflow opens again.
+async fn resume_and_check(harness: &mut Harness, seen: &Seen, monitor: uuid::Uuid) {
+    let shell = Shell::detect(WindowsShell::Cmd);
+    let managers = Managers::open(&harness.session, &shell).unwrap();
+    harness.tools = managers.tools(&shell, harness.handover.runs());
+    harness.background = managers.background.clone();
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    until(|| requests(seen, "r1").len() == 4).await;
+    let r1 = harness.workflow().subagents()[0].run_id;
+    let told = format!(
+        "Arko was closed, so these background jobs of yours stopped, and they don't start again on their own. Start again any you still need.\\n  - the monitor of `sleep 60` (lines that match `ERROR`, job {}…)",
+        &monitor.to_string()[..8]
+    );
+    let asked = requests(seen, "r1");
+    assert_eq!(asked[3].matches(&told).count(), 1, "{}", asked[3]);
+    assert_eq!(notes_for(harness, r1).len(), 1);
+
+    // Opened again in the same process, it tells r1 nothing new.
+    harness.crew.as_ref().unwrap().shutdown().await;
+    harness.open(true).unwrap();
+    harness.start_new_workers();
+    until(|| requests(seen, "r1").len() == 5).await;
+    assert_eq!(notes_for(harness, r1).len(), 1);
+    assert_eq!(requests(seen, "r1")[4].matches(&told).count(), 1);
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+}
+
+/// Arko closes as it does on /exit. r1's monitor stops as r1's run does, so
+/// r1 is told before the session's jobs are saved.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_worker_hears_its_monitor_stopped_when_arko_closed() {
+    let seen: Seen = Arc::default();
+    let server = monitoring_worker(seen.clone()).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender, managers, monitor) =
+        monitoring_session(temp.path(), &server, &seen).await;
+    harness.tell_workers_their_watchers_stop();
+    harness.crew.as_ref().unwrap().shutdown().await;
+    managers.shutdown().await;
+    drop(managers);
+    resume_and_check(&mut harness, &seen, monitor).await;
+}
+
+/// Arko dies (a VM restart, say) with r1's monitor running, so the session
+/// that opens next finds it interrupted and tells r1.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_worker_hears_its_monitor_stopped_when_arko_died() {
+    let seen: Seen = Arc::default();
+    let server = monitoring_worker(seen.clone()).await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender, managers, monitor) =
+        monitoring_session(temp.path(), &server, &seen).await;
+    // The jobs end with the process while r1 still runs, and nothing tells
+    // r1 before.
+    managers.shutdown().await;
+    drop(managers);
+    harness.crew.as_ref().unwrap().shutdown().await;
+    resume_and_check(&mut harness, &seen, monitor).await;
 }

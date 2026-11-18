@@ -1303,6 +1303,7 @@ impl Engine {
             harness.stop_remote().await;
         }
         if let Some(crew) = &harness.crew {
+            harness.tell_workers_their_watchers_stop();
             let running = crew.running().len();
             if running > 0 {
                 output.line(&output.dim(&format!(

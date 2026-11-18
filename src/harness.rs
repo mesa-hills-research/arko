@@ -1149,6 +1149,9 @@ impl Harness {
         if let Some(crew) = &self.crew {
             crew.attach(&workflow, lead);
             if resume {
+                // (Told before they're relaunched, so they read it at their
+                // first step.)
+                self.tell_workers_of_stopped_jobs(&workflow);
                 workflow.resume_subagents();
                 crate::blocking(|| crate::peers::tell_of_ended(&workflow));
             }
@@ -5107,34 +5110,84 @@ impl Harness {
         if self.interrupted_told {
             return None;
         }
-        let lines: Vec<String> = self
+        let jobs: Vec<_> = self
             .background
             .manager()?
             .interrupted_at_open()
             .into_iter()
             .filter(|job| job.owner == run)
-            .map(|job| {
-                let id = job.job_id.to_string();
-                let id = &id[..8];
-                match &job.kind {
-                    arko_agents::terminal::JobKind::Call { tool_name } => {
-                        format!("- your {tool_name} call (job {id}…)")
-                    }
-                    arko_agents::terminal::JobKind::Monitor(info) => format!(
-                        "- the monitor of `{}` ({}, job {id}…)",
-                        jobs_label(&job.label),
-                        crate::jobs::watching(&info.trigger, true)
-                    ),
-                    _ if job.label.trim().is_empty() => format!("- a command (job {id}…)"),
-                    _ => format!("- `{}` (job {id}…)", jobs_label(&job.label)),
-                }
-            })
             .collect();
-        if lines.is_empty() {
+        if jobs.is_empty() {
             return None;
         }
         self.interrupted_told = true;
-        Some(format!("{STOPPED_JOBS}\n{}", lines.join("\n")))
+        Some(format!(
+            "# Background jobs\n\n{}",
+            stopped_jobs_words(&jobs)
+        ))
+    }
+
+    /// Arko closes, and the jobs that report only to a worker (its monitors
+    /// and moved calls) stop as its run does, before the jobs are saved as
+    /// they end. So each worker is told of its own now, in a note it reads
+    /// when the session resumes. Its commands run until Arko's jobs stop,
+    /// and it hears of them when the session opens again
+    /// ([`Self::tell_workers_of_stopped_jobs`]).
+    pub(crate) fn tell_workers_their_watchers_stop(&self) {
+        let (Some(manager), Some(workflow)) = (self.background.manager(), &self.workflow) else {
+            return;
+        };
+        let watchers = manager
+            .jobs()
+            .into_iter()
+            .filter(|job| !matches!(job.kind, arko_agents::terminal::JobKind::Command))
+            .collect();
+        self.tell_workers_of_jobs(workflow, watchers);
+    }
+
+    /// Each worker whose background jobs were running when Arko last stopped
+    /// or quit is told which, as the main agent is in its first message
+    /// ([`Self::interrupted_jobs`]). A worker relaunched with the session
+    /// reads it at its first step, and one that isn't when it runs again.
+    fn tell_workers_of_stopped_jobs(&self, workflow: &Workflow) {
+        if let Some(manager) = self.background.manager() {
+            self.tell_workers_of_jobs(workflow, manager.interrupted_at_open());
+        }
+    }
+
+    /// Tells each worker which of `jobs`, the jobs Arko's closing stops, are
+    /// its own, in a note for its run. A note is posted once, keyed by its
+    /// first job, so the workflow opened again in this process tells no one
+    /// twice.
+    fn tell_workers_of_jobs(&self, workflow: &Workflow, jobs: Vec<arko_agents::terminal::JobInfo>) {
+        let runs = workflow.subagents();
+        let mut stopped: Vec<(&arko_workflows::subagents::SubagentRecord, Vec<_>)> = Vec::new();
+        for job in jobs {
+            let Some(run) = runs.iter().find(|run| run.run_id == job.owner) else {
+                continue;
+            };
+            match stopped
+                .iter_mut()
+                .find(|(worker, _)| worker.run_id == run.run_id)
+            {
+                Some((_, jobs)) => jobs.push(job),
+                None => stopped.push((run, vec![job])),
+            }
+        }
+        crate::blocking(|| {
+            for (worker, jobs) in stopped {
+                let note = Note::new(stopped_jobs_words(&jobs))
+                    .source(NoteSource::Host)
+                    .to([worker.agent.clone()])
+                    .for_run(worker.run_id);
+                if let Err(error) = workflow.post_note_once(jobs[0].job_id, note) {
+                    log::warn!(
+                        "could not tell {} which of its jobs stopped: {error}",
+                        worker.handle
+                    );
+                }
+            }
+        });
     }
 
     /// After a failed turn, the stopped jobs its message named are named
@@ -5470,9 +5523,33 @@ pub(crate) enum TurnStop {
 /// How often a stop asked before the turn's run started is asked again.
 const STOP_AGAIN: Duration = Duration::from_millis(100);
 
-/// How the main agent's message names its background jobs that stopped with
-/// the last Arko, the jobs' lines following.
-const STOPPED_JOBS: &str = "# Background jobs\n\nArko was closed, so these background jobs of yours stopped, and they don't start again on their own. Start again any you still need.";
+/// What an agent is told of its background jobs that stopped with the last
+/// Arko, before their lines.
+const STOPPED_JOBS: &str = "Arko was closed, so these background jobs of yours stopped, and they don't start again on their own. Start again any you still need.";
+
+/// [`STOPPED_JOBS`] with a line for each of `jobs`.
+fn stopped_jobs_words(jobs: &[arko_agents::terminal::JobInfo]) -> String {
+    let lines: Vec<String> = jobs
+        .iter()
+        .map(|job| {
+            let id = job.job_id.to_string();
+            let id = &id[..8];
+            match &job.kind {
+                arko_agents::terminal::JobKind::Call { tool_name } => {
+                    format!("- your {tool_name} call (job {id}…)")
+                }
+                arko_agents::terminal::JobKind::Monitor(info) => format!(
+                    "- the monitor of `{}` ({}, job {id}…)",
+                    jobs_label(&job.label),
+                    crate::jobs::watching(&info.trigger, true)
+                ),
+                _ if job.label.trim().is_empty() => format!("- a command (job {id}…)"),
+                _ => format!("- `{}` (job {id}…)", jobs_label(&job.label)),
+            }
+        })
+        .collect();
+    format!("{STOPPED_JOBS}\n{}", lines.join("\n"))
+}
 
 /// A job's command or tool as `/jobs` shows it, on one line.
 fn jobs_label(label: &str) -> String {
@@ -5634,8 +5711,8 @@ pub(crate) mod tests {
         include!("openrouter_tests.rs");
     }
 
-    /// What linked workers hear of each other's ends, end to end, in their
-    /// own file.
+    /// What linked workers hear of each other's ends, and a worker of its
+    /// stopped jobs, end to end, in their own file.
     mod peer_notices {
         use super::*;
         include!("peer_tests.rs");
