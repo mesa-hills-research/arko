@@ -788,7 +788,10 @@ mod tests {
             .unwrap_err();
         // A refusal, which reads as a failure does.
         assert!(matches!(error, ToolError::Refused(_)), "{error:?}");
-        assert!(error.to_string().starts_with("Execution failed: Refused: "), "{error}");
+        assert!(
+            error.to_string().starts_with("Execution failed: Refused: "),
+            "{error}"
+        );
     }
 
     #[cfg(unix)]

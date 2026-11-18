@@ -157,6 +157,7 @@ mod words_of_a_run {
             files_written: 0,
             files_edited: 2,
             commands: 1,
+            files_maybe_changed: 0,
         };
         assert_eq!(
             result(&run, 300).unwrap_err(),
@@ -206,9 +207,28 @@ mod words_of_a_run {
                 files_written: 1,
                 files_edited: 0,
                 commands: 3,
+                files_maybe_changed: 0,
             })
             .unwrap(),
             "Before it ended, the code wrote 1 file and ran 3 commands."
+        );
+        assert_eq!(
+            changed(&Changes {
+                files_written: 1,
+                files_edited: 0,
+                commands: 0,
+                files_maybe_changed: 2,
+            })
+            .unwrap(),
+            "Before it ended, the code wrote 1 file. 2 writes or edits that failed or were stopped may have changed their files."
+        );
+        assert_eq!(
+            changed(&Changes {
+                files_maybe_changed: 1,
+                ..Changes::default()
+            })
+            .unwrap(),
+            "A write or edit that failed or was stopped may have changed its file."
         );
     }
 
