@@ -5131,10 +5131,11 @@ impl Harness {
 
     /// The jobs that report only to a worker (its monitors and moved calls),
     /// which stop with its run when Arko closes, before the jobs are saved as
-    /// they end, so the next session never lists them. Read before the
-    /// workers stop, for [`Self::tell_workers_of_jobs`] once they have. (A
-    /// worker's commands run until Arko's jobs stop, and the next session
-    /// tells it of them, see [`Self::tell_workers_of_stopped_jobs`].)
+    /// they end, so the next session never lists them. Read at once before
+    /// the workers stop, for [`Self::tell_workers_of_jobs`] once they have
+    /// ([`Crew::shutdown_and`]). (A worker's commands run until Arko's jobs
+    /// stop, and the next session tells it of them, see
+    /// [`Self::tell_workers_of_stopped_jobs`].)
     pub(crate) fn workers_watchers(&self) -> Vec<arko_agents::terminal::JobInfo> {
         let Some(manager) = self.background.manager() else {
             return Vec::new();

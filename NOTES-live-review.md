@@ -57,8 +57,10 @@ stay in Arko, on arko_workflows 0.9.0 as it is.
   ones it still needs.
 - A clean close stops a worker's monitors and moved calls as its run ends (the framework's
   `stop_owner_watchers`), before the jobs are saved, so the next open never lists them. They're
-  read before the crew stops the workflow and told once the workers have stopped, before its
-  last checkpoint, so no worker reads the note and starts a monitor that the close then stops.
+  read at once before the crew stops the workflow (`Crew::shutdown_and`'s `before`, no await or
+  output between) and told once the workers have stopped, before its last checkpoint, so no
+  worker reads the note and starts a monitor that the close then stops. A start still under way
+  at the stop is cancelled, and the framework's reopen message tells the worker so.
 - The next open tells the jobs `interrupted_at_open` lists: a worker's commands after a clean
   close, and everything after Arko died.
 - Each note is posted with `post_note_once`, keyed by its first job's id, so a workflow opened

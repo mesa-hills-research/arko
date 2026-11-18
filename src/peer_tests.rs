@@ -459,27 +459,46 @@ async fn resume_and_check(harness: &mut Harness, seen: &Seen, monitor: uuid::Uui
     managers.shutdown().await;
 }
 
-/// Arko closes as it does on /exit, while r1 waits for mail. r1's monitor
-/// stops as r1's run does, so r1 is told once it has stopped, before the
-/// session's jobs are saved, and its wait doesn't end with the note.
+/// Arko closes as it does on /exit, while r1 waits for mail. r1's monitors
+/// stop as r1's run does, so r1 is told once it has stopped, before the
+/// session's jobs are saved, and its wait doesn't end with the note. The
+/// jobs are read at once before the stop, so a monitor started as the close
+/// began is named too.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_worker_hears_its_monitor_stopped_when_arko_closed() {
+async fn a_worker_hears_its_monitors_stopped_when_arko_closed() {
     let seen: Seen = Arc::default();
     let server = monitoring_worker(seen.clone(), true).await;
     let temp = tempfile::tempdir().unwrap();
     let (mut harness, _inputs, _sender, managers, monitor) =
         monitoring_session(temp.path(), &server, &seen).await;
-    let watchers = harness.workers_watchers();
-    assert_eq!(watchers.len(), 1);
+    let r1 = harness.workflow().subagents()[0].run_id;
+    let workspace = harness.settings.workspace.clone();
+    managers
+        .jobs
+        .start_monitor(
+            &arko_agents::TaskContext::new(r1, WORKER, "", &workspace),
+            "sleep 61",
+            arko_agents::terminal::MonitorOptions::lines(None),
+        )
+        .await
+        .unwrap();
     let crew = harness.crew.clone().unwrap();
-    crew.shutdown_and(|workflow| harness.tell_workers_of_jobs(workflow, watchers))
-        .await;
+    crew.shutdown_and(
+        || harness.workers_watchers(),
+        |workflow, watchers| harness.tell_workers_of_jobs(workflow, watchers),
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(requests(&seen, "r1").len(), 2, "r1 read nothing before it stopped");
     managers.shutdown().await;
     drop(managers);
     resume_and_check(&mut harness, &seen, monitor).await;
+    let told = notes_for(&harness, r1);
+    assert!(
+        told[0].contains("\n- the monitor of `sleep 61` (every line, job "),
+        "{told:?}"
+    );
 }
 
 /// Arko dies (a VM restart, say) with r1's monitor running, so the session

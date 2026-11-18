@@ -2111,15 +2111,23 @@ impl Crew {
     /// [`Self::shutdown_and`] with nothing to tell (tests).
     #[cfg(test)]
     pub async fn shutdown(&self) {
-        self.shutdown_and(|_| {}).await;
+        self.shutdown_and(|| (), |_, ()| {}).await;
     }
 
-    /// Stops the workers and saves the workflow as Arko closes, calling
-    /// `stopped` once the workers have stopped and before the workflow's last
-    /// checkpoint, for what they should read when they run again. (Told
-    /// earlier, a worker could act on it first.)
-    pub async fn shutdown_and(&self, stopped: impl FnOnce(&Workflow)) {
+    /// Stops the workers and saves the workflow as Arko closes. `before`
+    /// reads what the stop ends, at once before it, and `stopped` gets it
+    /// once the workers have stopped, before the workflow's last checkpoint,
+    /// for what they should read when they run again. (Told earlier, a worker
+    /// could act on it first. Read earlier, it would miss what a worker
+    /// started since. A call under way at the stop is cancelled, and the
+    /// worker is told so when it runs again.)
+    pub async fn shutdown_and<T>(
+        &self,
+        before: impl FnOnce() -> T,
+        stopped: impl FnOnce(&Workflow, T),
+    ) {
         if let Some(workflow) = self.workflow() {
+            let read = before();
             // Stopping the workflow marks its unfinished subagents for resume.
             workflow.stop(StopRequest::operator("Arko closed"));
             let _ = tokio::time::timeout(Duration::from_secs(12), async {
@@ -2128,7 +2136,7 @@ impl Crew {
                 }
             })
             .await;
-            stopped(&workflow);
+            stopped(&workflow, read);
             // How long they ran and what they called, the runs just stopped
             // too.
             self.save_worker_figures();
