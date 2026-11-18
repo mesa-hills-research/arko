@@ -287,6 +287,7 @@ pub mod tests {
             delivery: None,
             content: None,
             more: None,
+            number_width: None,
             language: None,
             ended: None,
             status: None,

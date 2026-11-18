@@ -143,6 +143,11 @@ pub struct Item {
     /// lines"). The content is in `whole`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub more: Option<String>,
+    /// For a content whose preview leaves some out, the widest number of the
+    /// whole's numbered lines, which the preview's numbers line up to, so
+    /// they keep their columns as it opens. It stays when the whole goes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number_width: Option<usize>,
     /// The language of a content of a file's lines, by the file's extension
     /// ("rs"), for its highlighting.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -250,6 +255,7 @@ impl Item {
             task_title: None,
             content: None,
             more: None,
+            number_width: None,
             language: None,
             whole: None,
             tool: None,

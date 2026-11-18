@@ -1258,6 +1258,10 @@ impl Content {
         let (preview, more) = content::preview(self.kind, &self.text);
         let mut block = Item::new(Kind::Result, preview);
         block.content = Some(self.kind);
+        block.number_width = more
+            .is_some()
+            .then(|| content::number_width(self.kind, &self.text))
+            .filter(|width| *width > 0);
         block.whole = more.is_some().then(|| self.text.into());
         block.more = more;
         block.language = self.language;

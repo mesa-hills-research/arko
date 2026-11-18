@@ -507,6 +507,10 @@ pub struct ItemData {
     /// `/api/result/{id}` gives whole.
     #[serde(default)]
     pub more: Option<String>,
+    /// The widest number of a content's whole, which its preview's numbers
+    /// line up to.
+    #[serde(default)]
+    pub number_width: Option<usize>,
     /// The language of a content's lines, by its file's extension.
     #[serde(default)]
     pub language: Option<String>,

@@ -1188,21 +1188,23 @@ fn a_reader_at_random_sees_every_block_as_it_is() {
                     .copied()
                     .flatten()
                     .is_some_and(|at| shown.keys.first() == Some(&at.key) && at.line == 0);
+                // (A line held above the screen isn't checked.)
                 if let Some(pin) = pinned
+                    && let Ok(pin_row) = usize::try_from(pin.row)
                     && !(shown.following && closed(pin.key))
                     && t.view.placement().outcome == termelon::feed::Outcome::Kept
-                    && pin.row < height as usize
+                    && pin_row < height as usize
                 {
                     let row = shown.refs.iter().position(|at| {
                         at.is_some_and(|at| (at.key, at.line) == (pin.key, pin.line))
                     });
                     let short =
-                        at_start && (shown.following || row.is_some_and(|row| row < pin.row));
-                    let at = shown.refs.get(pin.row).copied().flatten();
+                        at_start && (shown.following || row.is_some_and(|row| row < pin_row));
+                    let at = shown.refs.get(pin_row).copied().flatten();
                     if !short && at.map(|at| (at.key, at.line)) != Some((pin.key, pin.line)) {
                         wrong.push(format!(
-                            "the fold's line (block {} line {}) isn't on row {}, which shows {at:?}",
-                            pin.key, pin.line, pin.row
+                            "the fold's line (block {} line {}) isn't on row {pin_row}, which shows {at:?}",
+                            pin.key, pin.line
                         ));
                     }
                 }

@@ -1,71 +1,86 @@
 size 120 40
 cursor 3 38 visible default
-text 0 "│    Compiling crate84 v0.1.0"
-style 0 0 2 dim
-text 1 "│    Compiling crate85 v0.1.0"
-style 1 0 2 dim
-text 2 "│    Compiling crate86 v0.1.0"
-style 2 0 2 dim
-text 3 "│    Compiling crate87 v0.1.0"
-style 3 0 2 dim
-text 4 "│    Compiling crate88 v0.1.0"
-style 4 0 2 dim
-text 5 "│    Compiling crate89 v0.1.0"
-style 5 0 2 dim
-text 6 "│    Compiling crate90 v0.1.0"
-style 6 0 2 dim
-text 7 "│    Compiling crate91 v0.1.0"
-style 7 0 2 dim
-text 8 "│    Compiling crate92 v0.1.0"
-style 8 0 2 dim
-text 9 "│    Compiling crate93 v0.1.0"
-style 9 0 2 dim
-text 10 "│    Compiling crate94 v0.1.0"
-style 10 0 2 dim
-text 11 "│    Compiling crate95 v0.1.0"
-style 11 0 2 dim
-text 12 "│    Compiling crate96 v0.1.0"
+text 0 ""
+text 1 "  ┌ Arko ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐"
+style 1 2 3 dim
+style 1 3 9 bold
+style 1 9 118 dim
+text 2 "  │ Model      gpt-6-luna (high effort)                                                                              │"
+style 2 2 15 dim
+style 2 116 118 dim
+text 3 "  │ Workers    parallel workers                                                                                      │"
+style 3 2 15 dim
+style 3 116 118 dim
+text 4 "  │ Workspace  /home/ada/proj                                                                                        │"
+style 4 2 15 dim
+style 4 116 118 dim
+text 5 "  │ Session    20261110-101010-abcd                                                                                  │"
+style 5 2 15 dim
+style 5 116 118 dim
+text 6 "  │ Project    AGENTS.md                                                                                             │"
+style 6 2 15 dim
+style 6 116 118 dim
+text 7 "  │ Tools      2 skills · 1 MCP server                                                                               │"
+style 7 2 15 dim
+style 7 116 118 dim
+text 8 "  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
+style 8 2 118 dim
+text 9 ""
+text 10 "▎ Show me the parser, then build it"
+style 10 0 2 fg=cyan
+text 11 ""
+text 12 "▸ read src/parser.rs · ✓"
 style 12 0 2 dim
-text 13 "│    Compiling crate97 v0.1.0"
+style 12 20 23 dim
+style 12 23 24 fg=green
+text 13 "▾ $ cargo build · ✓ exit 0"
 style 13 0 2 dim
-text 14 "│    Compiling crate98 v0.1.0"
+style 13 15 18 dim
+style 13 18 19 fg=green
+style 13 19 26 dim
+text 14 "│    Compiling crate1 v0.1.0"
 style 14 0 2 dim
-text 15 "│    Compiling crate99 v0.1.0"
+text 15 "│    Compiling crate2 v0.1.0"
 style 15 0 2 dim
-text 16 "│    Compiling crate100 v0.1.0"
+text 16 "│    Compiling crate3 v0.1.0"
 style 16 0 2 dim
-text 17 "│    Compiling crate101 v0.1.0"
+text 17 "│    Compiling crate4 v0.1.0"
 style 17 0 2 dim
-text 18 "│    Compiling crate102 v0.1.0"
+text 18 "│    Compiling crate5 v0.1.0"
 style 18 0 2 dim
-text 19 "│    Compiling crate103 v0.1.0"
+text 19 "│    Compiling crate6 v0.1.0"
 style 19 0 2 dim
-text 20 "│    Compiling crate104 v0.1.0"
+text 20 "│    Compiling crate7 v0.1.0"
 style 20 0 2 dim
-text 21 "│    Compiling crate105 v0.1.0"
+text 21 "│    Compiling crate8 v0.1.0"
 style 21 0 2 dim
-text 22 "│    Compiling crate106 v0.1.0"
+text 22 "│    Compiling crate9 v0.1.0"
 style 22 0 2 dim
-text 23 "│    Compiling crate107 v0.1.0"
+text 23 "│    Compiling crate10 v0.1.0"
 style 23 0 2 dim
-text 24 "│    Compiling crate108 v0.1.0"
+text 24 "│    Compiling crate11 v0.1.0"
 style 24 0 2 dim
-text 25 "│    Compiling crate109 v0.1.0"
+text 25 "│    Compiling crate12 v0.1.0"
 style 25 0 2 dim
-text 26 "│    Compiling crate110 v0.1.0"
+text 26 "│    Compiling crate13 v0.1.0"
 style 26 0 2 dim
-text 27 "│    Compiling crate111 v0.1.0"
+text 27 "│    Compiling crate14 v0.1.0"
 style 27 0 2 dim
-text 28 "│    Compiling crate112 v0.1.0"
+text 28 "│    Compiling crate15 v0.1.0"
 style 28 0 2 dim
-text 29 "│    Compiling crate113 v0.1.0"
+text 29 "│    Compiling crate16 v0.1.0"
 style 29 0 2 dim
-text 30 "│ ↑ show the first lines only"
-style 30 0 29 dim
-text 31 ""
-text 32 ""
-text 33 ""
-text 34 ""
+text 30 "│    Compiling crate17 v0.1.0"
+style 30 0 2 dim
+text 31 "│    Compiling crate18 v0.1.0"
+style 31 0 2 dim
+text 32 "│    Compiling crate19 v0.1.0"
+style 32 0 2 dim
+text 33 "│    Compiling crate20 v0.1.0"
+style 33 0 2 dim
+text 34 "│    Compiling crate21 v0.1.0                                                                                    ↓ end"
+style 34 0 2 dim
+style 34 112 119 reverse
 text 35 "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 style 35 0 120 dim
 text 36 ""

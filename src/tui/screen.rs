@@ -3919,10 +3919,12 @@ mod tests {
         );
     }
 
-    /// A click on a command's "more lines" opens its whole output, and a
-    /// click on the line that ends it closes it. The line clicked stays
-    /// under the mouse. A drag, a double click and a triple click select
-    /// text as anywhere else, and leave the block as it was.
+    /// A click on a command's "more lines" opens its whole output below the
+    /// lines it showed, and a click on the line that ends it closes it. No
+    /// line above the click moves. Closing keeps the first lines on their
+    /// rows where any of them shows, else the line that opens it again
+    /// takes the row clicked. A drag, a double click and a triple click
+    /// select text as anywhere else, and leave the block as it was.
     #[test]
     fn a_click_opens_and_closes_a_commands_output() {
         use crate::remote::CallStatus;
@@ -3957,26 +3959,68 @@ mod tests {
         assert_eq!(rows[0], "│ line 1");
         assert_eq!(rows[4], "│ … 6 more lines");
         let left = MouseButton::Left;
-        let click = |app: &mut App, x: u16| {
-            mouse(app, MouseEventKind::Down(left), x, 4);
-            mouse(app, MouseEventKind::Up(left), x, 4);
+        let click = |app: &mut App, x: u16, y: u16| {
+            mouse(app, MouseEventKind::Down(left), x, y);
+            mouse(app, MouseEventKind::Up(left), x, y);
             screen(app, 40, 13)
         };
-        let rows = click(&mut app, 12);
+        let rows = click(&mut app, 12, 4);
+        assert_eq!(
+            rows[..7],
+            [
+                "│ line 1",
+                "│ line 2",
+                "│ line 3",
+                "│ line 4",
+                "│ line 5",
+                "│ line 6",
+                "│ line 7",
+            ]
+        );
+        assert!(rows[7].starts_with("│ line 8 "), "{rows:#?}");
+        // Its last line closes it, the first lines staying on their rows.
+        app.transcript.scroll(3);
+        let rows = screen(&mut app, 40, 13);
+        assert_eq!(rows[0], "│ line 4");
+        assert!(
+            rows[7].starts_with("│ ↑ show the first lines only"),
+            "{rows:#?}"
+        );
+        // (Elsewhere on the line, since the same cell again would be a double
+        // click.)
+        let rows = click(&mut app, 14, 7);
+        assert_eq!(rows[..3], ["│ line 4", "│ … 6 more lines", ""]);
+        // Closed from where none of the first lines shows, the line that
+        // opens it again takes the row clicked.
+        click(&mut app, 16, 1);
+        app.transcript.scroll(2);
+        let rows = screen(&mut app, 40, 13);
         assert_eq!(
             rows[..6],
             [
+                "│ line 6",
                 "│ line 7",
                 "│ line 8",
                 "│ line 9",
                 "│ line 10",
                 "│ ↑ show the first lines only",
+            ]
+        );
+        let rows = click(&mut app, 18, 5);
+        assert_eq!(
+            rows[1..7],
+            [
+                "│ line 1",
+                "│ line 2",
+                "│ line 3",
+                "│ line 4",
+                "│ … 6 more lines",
                 "",
             ]
         );
-        // (Elsewhere on the line, since the same cell again would be a double
-        // click.)
-        let rows = click(&mut app, 14);
+        // Back where the test began.
+        app.transcript.scroll(1);
+        let rows = screen(&mut app, 40, 13);
         assert_eq!(rows[0], "│ line 1");
         assert_eq!(rows[4], "│ … 6 more lines");
         assert!(app.take_effects().is_empty());
@@ -3992,11 +4036,11 @@ mod tests {
         assert_eq!(app.take_effects(), [copy("… 6", "3 characters")]);
         // A double click copies a word, then a triple click (on another
         // cell) the line. (Frames are drawn between the clicks.)
-        click(&mut app, 7);
-        let rows = click(&mut app, 7);
+        click(&mut app, 7, 4);
+        let rows = click(&mut app, 7, 4);
         assert_eq!(rows[4], "│ … 6 more lines");
         for _ in 0..3 {
-            click(&mut app, 8);
+            click(&mut app, 8, 4);
         }
         assert_eq!(screen(&mut app, 40, 13)[4], "│ … 6 more lines");
         assert_eq!(
@@ -4007,6 +4051,119 @@ mod tests {
                 copy("… 6 more lines", "14 characters"),
             ]
         );
+    }
+
+    /// "More lines" opens below the lines it showed and moves nothing above
+    /// it, up, down or along its row, also from the keyboard inside an open
+    /// Quiet row of several calls, where the rest has numbers a digit wider,
+    /// and where its preview ends at a line cut short.
+    #[test]
+    fn more_lines_opens_below_what_it_showed() {
+        use crate::remote::content::preview;
+        use crate::remote::{Act, ActKind, CallStatus, ContentKind};
+        use termelon::event::{MouseButton, MouseEventKind};
+        let mut app = app();
+        app.set_view(crate::tui::transcript::View::Quiet);
+        let read = |id: u64, file: &str| {
+            let mut call = Item::new(Kind::Call, format!("read {file}"));
+            call.id = id;
+            call.status = Some(CallStatus::Ok);
+            call.act = Some(Act {
+                kind: ActKind::Read,
+                target: file.into(),
+                ..Act::default()
+            });
+            call
+        };
+        // A file's lines 80 to 105, whose first 16 show.
+        let lines: Vec<String> = (80..=105)
+            .map(|n| format!("{n}\tlet x{n} = {n};"))
+            .collect();
+        let (shown, more) = preview(ContentKind::Lines, &lines.join("\n"));
+        let mut file = Item::new(Kind::Result, &shown);
+        file.id = 4;
+        file.call = Some(3);
+        file.content = Some(ContentKind::Lines);
+        file.whole = Some(lines.join("\n").into());
+        file.more = more;
+        file.number_width = Some(3);
+        let kept = file.clone();
+        let mut first = Item::new(Kind::Result, "1\tfn a() {}");
+        first.id = 2;
+        first.call = Some(1);
+        first.content = Some(ContentKind::Lines);
+        for item in [read(1, "a.rs"), first, read(3, "b.rs"), file] {
+            app.transcript.apply(Update::Item(item));
+        }
+        let at = |rows: &[String], text: &str| {
+            rows.iter()
+                .position(|row| row.contains(text))
+                .unwrap_or_else(|| panic!("{text}: {rows:#?}"))
+        };
+        let left = MouseButton::Left;
+        let click = |app: &mut App, y: usize| {
+            mouse(app, MouseEventKind::Down(left), 6, y as u16);
+            mouse(app, MouseEventKind::Up(left), 6, y as u16);
+            screen(app, 60, 30)
+        };
+        let rows = screen(&mut app, 60, 30);
+        let rows = click(&mut app, at(&rows, "Read a.rs and b.rs"));
+        click(&mut app, at(&rows, "read b.rs"));
+        let before = screen(&mut app, 60, 30);
+        let door = at(&before, "more lines");
+        app.key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        assert_eq!(
+            app.transcript.focus,
+            Some(transcript::Target::Inner { row: 1, item: 4 })
+        );
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let after = screen(&mut app, 60, 30);
+        assert_eq!(after[..door], before[..door], "{after:#?}");
+        assert!(after[door].contains(" 96  let x96"), "{after:#?}");
+        assert!(after[door - 1].contains(" 95  let x95"), "{after:#?}");
+        // (Its last line, the keyboard's, is below the screen now.)
+        assert!(
+            !after.iter().any(|row| row.contains("first lines only")),
+            "{after:#?}"
+        );
+        // Closed, and once its whole goes, its lines keep their columns.
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(screen(&mut app, 60, 30), before);
+        app.transcript.apply(Update::Change(Item {
+            whole: None,
+            ..kept
+        }));
+        let gone = screen(&mut app, 60, 30);
+        assert_eq!(gone[..door], before[..door], "{gone:#?}");
+        assert!(gone[door].contains("No longer kept"), "{gone:#?}");
+
+        // A command's output whose fifth line is longer than a preview shows.
+        let mut app = self::app();
+        let mut call = Item::new(Kind::Call, "$ cat log");
+        call.id = 1;
+        call.status = Some(CallStatus::Ok);
+        call.act = Some(Act {
+            kind: ActKind::Command,
+            ..Act::default()
+        });
+        let long: Vec<String> = (0..150).map(|n| format!("w{n}")).collect();
+        let output = format!("one\ntwo\nthree\nfour\n{}\nsix", long.join(" "));
+        let (shown, more) = preview(ContentKind::Plain, &output);
+        let mut block = Item::new(Kind::Result, &shown);
+        block.id = 2;
+        block.call = Some(1);
+        block.content = Some(ContentKind::Plain);
+        block.whole = Some(output.clone().into());
+        block.more = more;
+        for item in [call, block] {
+            app.transcript.apply(Update::Item(item));
+        }
+        let before = screen(&mut app, 60, 30);
+        let door = at(&before, "more characters");
+        let after = click(&mut app, door);
+        // (The cut line's last row goes on where it was cut.)
+        assert_eq!(after[..door - 1], before[..door - 1], "{after:#?}");
+        assert!(after.iter().any(|row| row.contains("six")), "{after:#?}");
     }
 
     #[test]

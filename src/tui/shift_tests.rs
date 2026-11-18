@@ -5,8 +5,10 @@
 //! up. Every word of the session is a word no other has, so each line on the
 //! screen is found again in the next frame by its first word. Following, a
 //! line may move up, as what comes at the end pushes it, and never down.
-//! Scrolled up, no line moves. A fold the reader opens or closes moves no
-//! line above it, up or down. One move is allowed. "Working…" and the notes
+//! Scrolled up, no line moves. A fold the reader opens or closes, by the
+//! mouse or the keyboard, moves no line above it, up, down or along its row.
+//! That goes for a long content's "N more lines" too, which opens the rest
+//! below its preview and closes it again. One move is allowed. "Working…" and the notes
 //! waiting at the end go down as what comes above them takes their rows,
 //! into the blank rows below the end, and while the reader reads on past the
 //! bottom row, and up as what stood above them goes. A worker's start keeps its words in their columns
@@ -18,18 +20,18 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 
-use termelon::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use termelon::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use termelon::testing::TestTerminal;
 
 use crate::glyphs::{Symbols, tests::choose_symbols};
 use crate::remote::{
-    Act, ActKind, Activity, CallStatus, ContentKind, Delivery, Item, Kind, Level, Update,
+    Act, ActKind, Activity, CallStatus, ContentKind, Delivery, Item, Kind, Level, Update, content,
 };
 use crate::tui::app::{App, Info};
 use crate::tui::input::{Editor, History};
 use crate::tui::screen::draw;
 use crate::tui::theme::{Catalog, Depth};
-use crate::tui::transcript::View;
+use crate::tui::transcript::{Target, View};
 
 /// Numbers from a seed, so a session plays the same each time.
 struct Rng(u64);
@@ -70,12 +72,14 @@ enum Step {
     Read,
     FoldOpens,
     FoldCloses,
+    DoorOpens,
+    DoorCloses,
     TurnEnds,
     WorkerStarts,
 }
 
 impl Step {
-    const ALL: [Step; 21] = [
+    const ALL: [Step; 23] = [
         Step::Asked,
         Step::WorkingCall,
         Step::WorkingThought,
@@ -95,6 +99,8 @@ impl Step {
         Step::Read,
         Step::FoldOpens,
         Step::FoldCloses,
+        Step::DoorOpens,
+        Step::DoorCloses,
         Step::TurnEnds,
         Step::WorkerStarts,
     ];
@@ -120,6 +126,8 @@ impl Step {
             Step::Read => "waiting message read",
             Step::FoldOpens => "fold opens near the end",
             Step::FoldCloses => "fold closes near the end",
+            Step::DoorOpens => "\"N more lines\" opens",
+            Step::DoorCloses => "\"N more lines\" closes",
             Step::TurnEnds => "turn ends",
             Step::WorkerStarts => "worker start → its ID",
         }
@@ -225,6 +233,11 @@ struct Meter {
     /// The worker starts whose words moved along their row as the worker's
     /// ID came, with the rows before and after.
     sideways: Vec<String>,
+    /// The folds toggled that moved a line above them along its row, with
+    /// the rows before and after.
+    aside: Vec<String>,
+    /// The frames that toggled a fold by the keyboard, by step.
+    keyed: BTreeMap<Step, u32>,
 }
 
 impl Meter {
@@ -448,6 +461,34 @@ fn lines(rows: &[String]) -> HashMap<String, usize> {
     out
 }
 
+/// The column each line of `rows` that [`lines`] finds by a word has that
+/// word in.
+fn columns(rows: &[String]) -> HashMap<String, usize> {
+    lines(rows)
+        .into_iter()
+        .filter_map(|(id, y)| {
+            let word = id.strip_prefix("w:")?;
+            let at = place_of(&rows[y..=y], word)?.1;
+            Some((id, at))
+        })
+        .collect()
+}
+
+/// The lines on the row `below` and above it that `before` and `after` both show,
+/// whose words moved along their row, from which column to which.
+fn moved_aside(before: &[String], after: &[String], below: usize) -> Vec<(String, usize, usize)> {
+    let rows = lines(before);
+    let now = columns(after);
+    columns(before)
+        .into_iter()
+        .filter(|(id, _)| rows[id] <= below)
+        .filter_map(|(id, from)| {
+            let to = *now.get(&id)?;
+            (to != from).then_some((id, from, to))
+        })
+        .collect()
+}
+
 /// How the lines of a frame moved from the frame before.
 #[derive(Default)]
 struct Moved {
@@ -559,6 +600,8 @@ struct Run<'m> {
     app: App,
     terminal: TestTerminal,
     rng: Rng,
+    /// Numbers for the long contents and their doors.
+    doors: Rng,
     id: u64,
     at: i64,
     word: u64,
@@ -589,6 +632,19 @@ struct Run<'m> {
     workers: u64,
 }
 
+/// The step a click on `row` makes when it's a content's door ("… 6 more
+/// lines") or the line that closes what the door opened.
+fn door_of(row: &str) -> Option<Step> {
+    let text = row.trim_start_matches(['│', ' ']).trim_end();
+    if text.starts_with("… ") && text.contains(" more ") {
+        Some(Step::DoorOpens)
+    } else if text == "↑ show the first lines only" {
+        Some(Step::DoorCloses)
+    } else {
+        None
+    }
+}
+
 /// The row and column of the first word `word` in `rows`.
 fn place_of(rows: &[String], word: &str) -> Option<(usize, usize)> {
     rows.iter().enumerate().find_map(|(y, row)| {
@@ -613,6 +669,7 @@ impl<'m> Run<'m> {
             app,
             terminal: crate::tui::golden::terminal(size.0, size.1),
             rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
+            doors: Rng(seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1),
             id: 0,
             at: chrono::Utc::now().timestamp_millis(),
             word: 0,
@@ -717,6 +774,24 @@ impl<'m> Run<'m> {
             // it, but not in the frame of a toggle.)
             let rises = following && below.is_none();
             let moved = moves(&last.rows, &shot.rows, rises, below, shot.end);
+            if let Some(row) = below {
+                for (id, from, to) in moved_aside(&last.rows, &shot.rows, row) {
+                    let rows: Vec<String> = last
+                        .rows
+                        .iter()
+                        .zip(&shot.rows)
+                        .map(|(a, b)| format!("{a:<width$} │ {b}", width = self.size.0 as usize))
+                        .collect();
+                    self.meter.aside.push(format!(
+                        "{}×{} {:?}, {}: {id} went from column {from} to {to}\n{}",
+                        self.size.0,
+                        self.size.1,
+                        View::ALL[self.view],
+                        step.name(),
+                        rows.join("\n")
+                    ));
+                }
+            }
             if moved.room > 0 {
                 self.meter
                     .allowed
@@ -919,11 +994,13 @@ impl<'m> Run<'m> {
         let Some((y, fold)) = at else {
             return;
         };
-        // An open fold's line has ▾, and a thinking's has no marker.
+        // An open fold's line has ▾, and a thinking's has no marker. A
+        // content's door is its last line.
         let marker = rows[y].trim_start_matches(['│', ' ']).chars().next();
-        let step = match marker {
-            Some('▾') => Step::FoldCloses,
-            Some('▸') => Step::FoldOpens,
+        let step = match (door_of(&rows[y]), marker) {
+            (Some(step), _) => step,
+            (_, Some('▾')) => Step::FoldCloses,
+            (_, Some('▸')) => Step::FoldOpens,
             _ if self.toggled.contains(&fold) => Step::FoldCloses,
             _ => Step::FoldOpens,
         };
@@ -931,9 +1008,7 @@ impl<'m> Run<'m> {
             self.toggled.insert(fold);
             self.opened = Some(fold);
         }
-        self.click(y);
-        self.frame_below(step, Some(y));
-        self.scroll_up();
+        self.press(y, step);
     }
 
     /// A thought streams, from what was live, which names the step.
@@ -1034,15 +1109,46 @@ impl<'m> Run<'m> {
         self.calls.push((kind, target.clone(), alone));
         self.frame(step);
         self.meanwhile();
-        // It ends, and its content comes after it.
+        // It ends, and its content comes after it. Now and then a long one,
+        // whose preview leaves some out behind its door, which may cut a line
+        // short, and a file's lines that cross into numbers a digit wider.
         let mut ended = call;
         ended.status = Some(CallStatus::Ok);
+        // (A long one draws its numbers from the doors' own, so the rest of
+        // the session makes the choices it would make without it.)
         let lines = 1 + self.rng.below(6);
+        let long = matches!(kind, ActKind::Read | ActKind::Command | ActKind::List)
+            && self.doors.chance(45);
+        let lines = if long {
+            content::PREVIEW_LINES as u64 + 1 + self.doors.below(20)
+        } else {
+            lines
+        };
+        // (The line that's longer than a preview shows.)
+        let cut = (long && self.doors.chance(30))
+            .then(|| self.doors.below(content::PREVIEW_LINES as u64));
+        let start = if long && self.doors.chance(50) {
+            85 + self.doors.below(14)
+        } else {
+            1
+        };
+        let words = |run: &mut Self, n: u64, least: u64, more: u64| {
+            if cut == Some(n) {
+                run.words(120)
+            } else if long {
+                let n = least + run.doors.below(more);
+                run.words(n)
+            } else if more == 0 {
+                run.words(least)
+            } else {
+                run.some(least, more)
+            }
+        };
         let content = match kind {
             ActKind::Read => {
                 ended.outcome = Some(format!("{lines} lines"));
                 let text: Vec<String> = (0..lines)
-                    .map(|n| format!("{}\t{}", n + 1, self.some(2, 6)))
+                    .map(|n| format!("{}\t{}", start + n, words(self, n, 2, 6)))
                     .collect();
                 Some((ContentKind::Lines, text.join("\n")))
             }
@@ -1059,14 +1165,14 @@ impl<'m> Run<'m> {
             ActKind::Command => {
                 ended.outcome = Some("exit 0".into());
                 let text: Vec<String> = (0..lines)
-                    .map(|_| format!("{} ok", self.some(2, 5)))
+                    .map(|n| format!("{} ok", words(self, n, 2, 5)))
                     .collect();
                 Some((ContentKind::Plain, text.join("\n")))
             }
             ActKind::List => {
                 ended.outcome = Some(format!("{lines} entries"));
                 let text: Vec<String> = (0..lines)
-                    .map(|_| format!("{}.rs", self.words(1)))
+                    .map(|n| format!("{}.rs", words(self, n, 1, 0)))
                     .collect();
                 Some((ContentKind::Plain, text.join("\n")))
             }
@@ -1080,14 +1186,126 @@ impl<'m> Run<'m> {
         // (The feed sends the call's change and its content together.)
         self.update(Update::Change(ended));
         if let Some((kind, text)) = content {
-            let mut result = self.item(Kind::Result, &text);
+            // (As the feed makes it, its preview and the door to the rest.)
+            let (preview, more) = content::preview(kind, &text);
+            let mut result = self.item(Kind::Result, &preview);
             result.call = Some(id);
             result.content = Some(kind);
+            result.number_width = more
+                .is_some()
+                .then(|| content::number_width(kind, &text))
+                .filter(|width| *width > 0);
+            result.whole = more.is_some().then(|| text.into());
+            result.more = more;
             self.add(result);
         }
         self.live = Live::Result;
         self.frame(Step::Result);
+        if long && self.doors.chance(90) {
+            self.door();
+        }
         self.meanwhile();
+    }
+
+    /// The reader opens the door of the lowest content among the screen's
+    /// last rows, first opening the Quiet row or the call it's folded in
+    /// where it doesn't show yet. It closes again as any fold toggled does.
+    fn door(&mut self) {
+        if self.opened.is_some() {
+            return;
+        }
+        for _ in 0..3 {
+            let Some(rows) = self.last.as_ref().map(|last| last.rows.clone()) else {
+                return;
+            };
+            let door = rows
+                .iter()
+                .rposition(|row| door_of(row) == Some(Step::DoorOpens));
+            if let Some(y) = door {
+                let Some(fold) = self.fold_on(y) else {
+                    return;
+                };
+                self.toggled.insert(fold);
+                self.opened = Some(fold);
+                self.press(y, Step::DoorOpens);
+                // Now and then the reader scrolls down a little, its first
+                // lines still showing or not, and closes it again.
+                if self.doors.chance(60) {
+                    let by = self.doors.below(u64::from(self.size.1)) as i64;
+                    self.app.transcript.scroll(by);
+                    self.moved();
+                    let rows = self
+                        .last
+                        .as_ref()
+                        .map_or_else(Vec::new, |last| last.rows.clone());
+                    let close = rows
+                        .iter()
+                        .rposition(|row| door_of(row) == Some(Step::DoorCloses));
+                    if let Some(y) = close
+                        && self.fold_on(y) == Some(fold)
+                    {
+                        self.toggled.remove(&fold);
+                        self.opened = None;
+                        self.press(y, Step::DoorCloses);
+                    }
+                }
+                return;
+            }
+            // (A closed fold that may hold it, which stays open, and the
+            // reader's own scroll down to what it opened.)
+            let Some(end) = rows.iter().rposition(|row| !row.trim().is_empty()) else {
+                return;
+            };
+            let closed = (end.saturating_sub(8)..=end).rev().find(|y| {
+                rows[*y].trim_start_matches(['│', ' ']).starts_with('▸')
+                    && self.fold_on(*y).is_some()
+            });
+            let Some(y) = closed else {
+                return;
+            };
+            if let Some(fold) = self.fold_on(y) {
+                self.toggled.insert(fold);
+            }
+            self.press(y, Step::FoldOpens);
+            self.app.transcript.scroll(i64::from(self.size.1 / 2));
+            self.moved();
+        }
+    }
+
+    /// The reader toggles the fold on the transcript's row `y` by a click,
+    /// or a content's door now and then by the keyboard, and the frame is
+    /// counted under `step`, every line above that row with it. (A door is
+    /// its content's own block, or a part of the Quiet row it's in.)
+    fn press(&mut self, y: usize, step: Step) {
+        let area = self.app.transcript.drawn.area;
+        let (filter, theme) = (self.app.filter(), self.app.theme.clone());
+        let door = matches!(step, Step::DoorOpens | Step::DoorCloses);
+        let fold = self
+            .app
+            .transcript
+            .fold_at(area.x + 3, area.y + y as u16, &filter, &theme);
+        match fold.filter(|_| door && self.doors.chance(40)) {
+            Some(fold) => {
+                self.app.transcript.focus = Some(if fold.block == fold.item {
+                    Target::Block(fold.item)
+                } else {
+                    Target::Inner {
+                        row: fold.block,
+                        item: fold.item,
+                    }
+                });
+                self.app
+                    .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                *self.meter.keyed.entry(step).or_default() += 1;
+                self.frame_below(step, Some(y));
+                self.app.transcript.focus = None;
+            }
+            None => {
+                self.click(y);
+                self.frame_below(step, Some(y));
+            }
+        }
+        self.scroll_up();
     }
 
     /// The reply streams, from what was live, with its paragraphs and bold
@@ -1441,6 +1659,25 @@ fn no_line_moves_down_as_an_agent_works() {
     }
     assert!(meter.frames() > 1500, "{} frames", meter.frames());
     assert_eq!(meter.shifted(), 0, "\n{table}\n{}", meter.examples());
+    assert!(meter.aside.is_empty(), "{}", meter.aside.join("\n\n"));
+    // Doors opened and closed, by the mouse and the keyboard, in Full and
+    // inside open Quiet rows.
+    for step in [Step::DoorOpens, Step::DoorCloses] {
+        for view in [View::Full, View::Quiet] {
+            let at = View::ALL.iter().position(|each| *each == view).unwrap();
+            let frames: u32 = [Reader::Following, Reader::Up]
+                .into_iter()
+                .filter_map(|reader| meter.tallies.get(&(step, at, reader)))
+                .map(|tally| tally.frames)
+                .sum();
+            assert!(frames > 0, "{} in {view:?}\n{table}", step.name());
+        }
+        assert!(
+            meter.keyed.get(&step).is_some_and(|n| *n > 0),
+            "{}",
+            step.name()
+        );
+    }
 }
 
 /// A worker's start, which says "starting" until the worker's first event

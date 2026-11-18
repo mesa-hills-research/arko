@@ -214,15 +214,44 @@ struct QuietCached {
     marks: Option<Vec<u64>>,
 }
 
-/// A line held on a row of the screen at the next draw, so the line a click
-/// opened or closed a fold at stays under the pointer.
+/// A line held on a row of the screen at the next draw, so a fold opened or
+/// closed moves none of the lines above it.
 #[derive(Debug, Clone, Copy)]
 struct Pin {
     /// The block it's in, and its line there.
     key: u64,
     line: usize,
-    /// The row of the area it stays on.
-    row: usize,
+    /// The row of the area it stays on, above the area when less than 0.
+    row: i64,
+}
+
+impl Pin {
+    /// What a fold toggled holds, from where its line was (`was`, on the
+    /// area's row `row`) and where it is now (`now`). A call, a thinking or a
+    /// row folds at its first line, which stays on its row. A content folds
+    /// at its last, the door to the rest or the line that closes it, and its
+    /// lines above that are the preview it shows either way. Opening holds the
+    /// preview's last line, so the rest comes below it. Closing holds the
+    /// preview's lines where any of them shows, else the door takes the row
+    /// clicked, so no line that stays on the screen moves.
+    fn held(was: Option<Fold>, now: Fold, row: i64) -> Self {
+        let at = |line: usize, row: i64| Self {
+            key: now.block,
+            line,
+            row,
+        };
+        let Some(was) = was.filter(|was| was.block == now.block && was.line != now.line) else {
+            return at(now.line, row);
+        };
+        if now.line > was.line {
+            return match was.line.checked_sub(1) {
+                Some(last) => at(last, row - 1),
+                None => at(now.line, row),
+            };
+        }
+        let door = row - i64::try_from(was.line - now.line).unwrap_or(i64::MAX);
+        at(now.line, if door >= 1 { door } else { row })
+    }
 }
 
 /// What the reader did since the view was last drawn. The next draw applies
@@ -1240,7 +1269,7 @@ impl Transcript {
             self.acted.pin = Some(Pin {
                 key,
                 line: at.line,
-                row,
+                row: row as i64,
             });
         }
     }
@@ -2350,8 +2379,7 @@ impl Transcript {
         if let Some(pin) = acted.pin
             && let Some((item, _)) = self.laid.slots.get(&pin.key).copied()
         {
-            let row = i64::try_from(pin.row).unwrap_or(i64::MAX);
-            feed.place(item, u32::try_from(pin.line).unwrap_or(u32::MAX), row);
+            feed.place(item, u32::try_from(pin.line).unwrap_or(u32::MAX), pin.row);
             pinned = Some(pin.key);
             toward_end = None;
         }
@@ -3095,7 +3123,8 @@ impl Transcript {
         });
         let inner = gap.is_some() && !row;
         // (A click on a thinking's text folds it, and its label stays put.)
-        let shown_at = self.fold(item, inner, filter, theme).and_then(|fold| {
+        let was = self.fold(item, inner, filter, theme);
+        let shown_at = was.and_then(|fold| {
             self.drawn
                 .rows
                 .iter()
@@ -3140,11 +3169,8 @@ impl Transcript {
             }
         }
         let fold = self.fold(item, inner, filter, theme)?;
-        self.acted.pin = Some(Pin {
-            key: fold.block,
-            line: fold.line,
-            row: shown_at.unwrap_or(y.saturating_sub(self.drawn.area.y) as usize),
-        });
+        let row = shown_at.unwrap_or(y.saturating_sub(self.drawn.area.y) as usize);
+        self.acted.pin = Some(Pin::held(was, fold, row as i64));
         Some(fold)
     }
 
@@ -3263,33 +3289,37 @@ impl Transcript {
     }
 
     /// Opens (`Some(true)`), closes (`Some(false)`) or toggles (`None`) the
-    /// block the keyboard is on. Its fold's line stays on the row it's on,
-    /// as under the pointer.
+    /// block the keyboard is on. The lines above its fold stay where they
+    /// are, as under the pointer, and that holds the view. (A content's
+    /// line for the keyboard is its last, which may go below the screen as
+    /// it opens.) Otherwise its line comes into sight.
     pub fn open_focus(&mut self, open: Option<bool>, filter: &Filter, theme: &Theme) {
         let Some(focus) = self.focus else {
             return;
         };
-        self.acted.reveal = true;
         let (item, inner) = match focus {
             Target::Block(key) => (key, false),
             Target::Inner { item, .. } => (item, true),
         };
         let held = self.fold_row(item, inner, filter, theme);
+        let was = (!is_count(item))
+            .then(|| self.fold(item, inner, filter, theme))
+            .flatten();
+        self.acted.reveal = true;
         if self.open_target(focus, open, filter, theme)
             && let Some(row) = held
         {
-            let pin = if is_count(item) {
-                self.drawn
-                    .rows
-                    .get(row)
-                    .copied()
-                    .flatten()
-                    .map(|at| (at.key, at.line))
+            self.acted.reveal = false;
+            self.acted.pin = if is_count(item) {
+                self.drawn.rows.get(row).copied().flatten().map(|at| Pin {
+                    key: at.key,
+                    line: at.line,
+                    row: row as i64,
+                })
             } else {
                 self.fold(item, inner, filter, theme)
-                    .map(|fold| (fold.block, fold.line))
+                    .map(|fold| Pin::held(was, fold, row as i64))
             };
-            self.acted.pin = pin.map(|(key, line)| Pin { key, line, row });
         }
     }
 
@@ -4316,7 +4346,11 @@ fn content_lines(item: &Item, theme: &Theme, width: usize, open: bool) -> Vec<Wr
     let kind = item.content.unwrap_or(ContentKind::Muted);
     let whole = item.whole.as_deref().filter(|_| open);
     let text = whole.unwrap_or(&item.text);
-    let numbers = content::number_width(kind, text);
+    // (Its numbers fit the whole's widest, so the lines it shows either way
+    // keep their columns as it opens, also once the whole goes.)
+    let numbers = item
+        .number_width
+        .unwrap_or_else(|| content::number_width(kind, item.whole.as_deref().unwrap_or(text)));
     // The highlighting of its numbered lines, in their order.
     let mut painted = code_spans(kind, text, item.language.as_deref(), theme).into_iter();
     let mut out = Vec::new();
