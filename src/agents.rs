@@ -960,11 +960,31 @@ fn tool_instructions(settings: &AgentSettings, worker: bool) -> String {
         } else {
             ""
         };
+        // The skills in the instructions already.
+        let model = if worker {
+            &settings.worker.model
+        } else {
+            &settings.main.model
+        };
+        let loaded = skills::pre_loaded(
+            settings.skill_folders,
+            settings.builtin_skills,
+            model,
+            worker,
+        );
+        let loaded = match loaded.as_slice() {
+            [] => String::new(),
+            [one] => format!(" The {one} skill is already in your instructions, so don't load it."),
+            many => format!(
+                " The skills {} are already in your instructions, so don't load them.",
+                crate::and_list(many)
+            ),
+        };
         // The main agent saves skills (`add_skill`).
         let saving = if worker { "" } else { SAVING_SKILLS };
         text.push_str(&format!(
             "\n# Skills\n\
-             Skills are instructions for particular kinds of work{from}. When a skill's description fits your task, load it with `load_skill` before you start, and follow it.{files}{saving}\n"
+             Skills are instructions for particular kinds of work{from}. When a skill's description fits your task, load it with `load_skill` before you start, and follow it.{loaded}{files}{saving}\n"
         ));
     }
     text
@@ -1738,6 +1758,73 @@ mod tests {
                 "paths outside the working directory unless the user has turned on outside access"
             ));
         }
+    }
+
+    /// The skills section names the skills whose text is in the instructions,
+    /// for the agent that has them, and says nothing of them otherwise.
+    #[test]
+    fn the_skills_section_names_the_skills_in_the_instructions_already() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("skills");
+        let skill = |name: &str, extra: &str| {
+            let dir = folder.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\ndescription: The {name} skill.\n{extra}---\n\nDo {name}.\n"
+                ),
+            )
+            .unwrap();
+        };
+        skill("house-style", "auto_load: true\n");
+        skill("lead-only", "auto_load: true\nworkers: false\n");
+        skill("review", "");
+        let opus = model("opus", false);
+        let folders = [folder];
+        let all = BuiltinSkills::default();
+        let with = AgentSettings {
+            skill_folders: &folders,
+            builtin_skills: &all,
+            ..AgentSettings::for_test(&opus, &opus)
+        };
+        let main = main_config(&with).unwrap();
+        assert!(
+            main.instructions.contains(" The skills house-style, lead-only, and prose are already in your instructions, so don't load them."),
+            "{}",
+            main.instructions
+        );
+        // A worker doesn't have the one for the main agent.
+        let worker = worker_config(&with).unwrap();
+        assert!(
+            worker.instructions.contains(
+                " The skills house-style and prose are already in your instructions, so don't load them."
+            ),
+            "{}",
+            worker.instructions
+        );
+        // One alone is said in the singular, and with none the section doesn't
+        // say it.
+        let only_prose = AgentSettings {
+            skill_folders: &[],
+            builtin_skills: &all,
+            ..AgentSettings::for_test(&opus, &opus)
+        };
+        let text = main_config(&only_prose).unwrap().instructions;
+        assert!(
+            text.contains(" The prose skill is already in your instructions, so don't load it.")
+        );
+        let none = BuiltinSkills {
+            none: false,
+            off: vec!["prose".into()],
+        };
+        let without = AgentSettings {
+            skill_folders: &[],
+            builtin_skills: &none,
+            ..AgentSettings::for_test(&opus, &opus)
+        };
+        let text = main_config(&without).unwrap().instructions;
+        assert!(text.contains("# Skills") && !text.contains("is already in your instructions"));
     }
 
     /// The main agent reaches MCP servers through `mcp` in every session,

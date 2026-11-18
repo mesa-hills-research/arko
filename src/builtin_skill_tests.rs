@@ -147,6 +147,118 @@ async fn a_skill_of_the_same_name_replaces_a_built_in_one() {
     assert!(bodies[0].contains("built into Arko and from these folders:"));
     assert!(bodies[1].contains("Write the way my team does."));
     assert!(!bodies[1].contains("# Prose"));
+    // It loads on demand now, so it isn't one that is there already.
+    assert!(!bodies[0].contains("is already in your instructions"));
+}
+
+/// A skill whose text is in the agents' instructions can't be loaded again.
+/// Asked for it, `load_skill` says it is there already, where the skill
+/// system says it wasn't found, and the instructions name it.
+#[tokio::test]
+async fn load_skill_says_a_pre_loaded_skill_is_there_already() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies = turn_loading(
+        temp.path(),
+        BuiltinSkills::default(),
+        Vec::new(),
+        Some("prose"),
+    )
+    .await;
+    assert_eq!(bodies.len(), 2);
+    assert!(bodies[0].contains("--- BEGIN SKILL: prose ---"));
+    assert!(
+        bodies[0].contains("The prose skill is already in your instructions, so don't load it."),
+        "the instructions name it"
+    );
+    let answer = "The prose skill is already in your instructions, under Active Skills. Follow it from there.";
+    assert!(bodies[1].contains(answer), "{}", bodies[1]);
+    assert!(!bodies[1].contains("not found"));
+    // A name that is no skill is still not found, with the skills to load.
+    let bodies = turn_loading(
+        temp.path(),
+        BuiltinSkills::default(),
+        Vec::new(),
+        Some("proze"),
+    )
+    .await;
+    assert!(bodies[1].contains("Skill 'proze' not found. Available skills:"));
+    assert!(!bodies[1].contains("Follow it from there."));
+}
+
+/// The answer is for the agent that has the skill in its instructions. A skill
+/// of the user's marked `auto_load` gets it, and one only the main agent gets
+/// is not found by a worker.
+#[tokio::test]
+async fn a_skill_in_the_instructions_is_told_apart_from_one_that_is_not_found() {
+    use arko_agents::{InterceptedResult, TaskContext, ToolResultInterceptor};
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
+    let folder = temp.path().join("skills");
+    let skill = |name: &str, extra: &str| {
+        let dir = folder.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: My {name} skill.\n{extra}---\n\n{name}.\n"),
+        )
+        .unwrap();
+    };
+    skill("house-style", "auto_load: true\n");
+    skill("lead-only", "auto_load: true\nworkers: false\n");
+    skill("review", "");
+    with_folders(&mut harness, vec![folder]);
+    harness.settings.builtin_skills = BuiltinSkills::default();
+    harness.publish_details();
+    let interceptor = crate::skills::PreLoaded::new(harness.details.clone());
+    let asked = async |tool: &str, agent: &str, name: &str, raw: &str| -> Option<String> {
+        let params = std::collections::HashMap::from([(
+            "name".to_string(),
+            serde_json::Value::from(name),
+        )]);
+        let context = TaskContext::new(uuid::Uuid::nil(), agent, "", temp.path());
+        match interceptor.intercept(tool, raw, &params, &context).await {
+            Ok(InterceptedResult::Replaced(text)) => Some(text),
+            Ok(InterceptedResult::Unchanged) => None,
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let not_found = |name: &str| format!("Skill '{}' not found. Available skills:\n- review", name.trim());
+    let there = |name: &str| {
+        Some(format!(
+            "The {name} skill is already in your instructions, under Active Skills. Follow it from there."
+        ))
+    };
+    for name in ["prose", "house-style", " prose "] {
+        for agent in [crate::agents::MAIN, crate::agents::WORKER] {
+            let answer = asked("load_skill", agent, name, &not_found(name)).await;
+            assert_eq!(answer, there(name.trim()), "{agent} {name}");
+        }
+    }
+    // Only the main agent has this one, so a worker's skill list doesn't.
+    let lead_only = not_found("lead-only");
+    assert_eq!(
+        asked("load_skill", crate::agents::MAIN, "lead-only", &lead_only).await,
+        there("lead-only")
+    );
+    assert_eq!(
+        asked("load_skill", crate::agents::WORKER, "lead-only", &lead_only).await,
+        None
+    );
+    // A skill to load, a name that is none, a skill the system loaded, and
+    // another tool's result are as they were.
+    for (tool, name, raw) in [
+        ("load_skill", "review", not_found("review")),
+        ("load_skill", "no-such-skill", not_found("no-such-skill")),
+        (
+            "load_skill",
+            "house-style",
+            "--- BEGIN SKILL: house-style ---\nDo it.\n--- END SKILL: house-style ---".into(),
+        ),
+        ("shell", "prose", not_found("prose")),
+    ] {
+        let answer = asked(tool, crate::agents::MAIN, name, &raw).await;
+        assert_eq!(answer, None, "{tool} {name}");
+    }
 }
 
 /// A session left without some or all built-in skills doesn't offer them,

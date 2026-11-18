@@ -27,6 +27,12 @@
 - `/cost` puts each line one step in under the line it belongs to, and says a plan's usage as a
   sentence, such as "95% of the Claude plan's week used" instead of `Claude plan 7 d 95%`.
 
+### Skills
+
+- Asking `load_skill` for a skill that is already in the agent's instructions, such as `prose`,
+  says so. It used to answer that the skill wasn't found, which looked like a broken setup. The
+  skills section of the instructions names each such skill.
+
 ## 0.23.0 (2026-11-18)
 
 ### Models
