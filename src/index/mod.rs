@@ -43,5 +43,6 @@ pub(crate) use engine::WatchState;
 pub use engine::{Indexes, Known, LIMITS_SETTING};
 pub(crate) use store::Kind;
 pub use tools::{
-    TOOL_NAMES, definitions as tool_definitions, read_search_header, read_search_hits,
+    SEARCH_TOOL_NAME, STATUS_TOOL_NAME, TOOL_NAMES, definitions as tool_definitions,
+    read_search_header, read_search_hits,
 };

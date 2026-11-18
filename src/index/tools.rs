@@ -22,10 +22,15 @@ use super::engine::{
 use super::lexical::SINGLE_QUOTES;
 use super::store::Kind;
 
+/// The search tool's name.
+pub const SEARCH_TOOL_NAME: &str = "index_search";
+/// The status tool's name.
+pub const STATUS_TOOL_NAME: &str = "index_status";
+
 /// The tools' names.
 pub const TOOL_NAMES: &[&str] = &[
-    "index_search",
-    "index_status",
+    SEARCH_TOOL_NAME,
+    STATUS_TOOL_NAME,
     "index_create",
     "index_manage",
 ];

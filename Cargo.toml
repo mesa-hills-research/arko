@@ -142,7 +142,7 @@ libc = "0.2.182"
 signal-hook = { version = "0.3.18", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"], optional = true }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
