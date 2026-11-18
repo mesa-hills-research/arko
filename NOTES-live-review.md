@@ -29,8 +29,17 @@ stay in Arko, on arko_workflows 0.9.0 as it is.
 - A failure or stop note gives the reason on one line and says not to wait for it. A plan's
   usage limit ends a worker as failed (its usage-limit policy pauses, and a subagent's pause
   fails the run), so it lands here too.
-- Posted from the crew's event task. No crew lock is held while posting.
-- Events lost to a lagging channel (1024 behind) lose their notes. Accepted.
+- Each note is posted with `post_note_once`, keyed by the ended run, how it ended, its model
+  calls so far and the peer. The same end gives the same key, whichever path tells it.
+- Posted from the crew's event task, through `crate::blocking` (posting writes the event log),
+  with no crew lock held. Nothing is posted while the workflow stops, since its workers stop
+  with it.
+- After a resume, once the workers are relaunched, every ended worker's peers that run again
+  are told (with the same keys). This covers a worker the checkpoint saved running whose
+  result says it ended (the framework settles it without an event), an end during a stop of
+  the workflow, and a note lost when Arko died. A peer told before isn't told again.
+- Events lost to a lagging channel (1024 behind) lose their notes until the next resume.
+  Accepted.
 
 ## 3. Background jobs after a restart
 
@@ -52,6 +61,8 @@ stay in Arko, on arko_workflows 0.9.0 as it is.
 
 - 1: parsing and wording, the value reaching the workflow config, saved and read back, the
   command before and after the conversation starts.
-- 2: the recipients and words. Two linked workers where one ends: a running peer gets the note,
-  a finished peer stays finished.
+- 2: the recipients, words and keys. Two linked workers where one ends: a running peer gets the
+  note and its wait ends, a finished peer stays finished. A checkpoint that saved a worker
+  running whose result finished: its relaunched peer is told once, also when the workflow opens
+  again.
 - 3: a resumed session posts a worker's note naming its monitor, once.
