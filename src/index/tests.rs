@@ -15,12 +15,13 @@ use clap::Parser;
 use serde_json::{Value, json};
 
 use super::census::{self, Census, Class};
-use super::cli::{IndexCommand, cli_search_text, cli_text, run_command_with};
+use super::cli::{IndexCommand, cli_search_text, cli_text, run_command_with, search_text};
 use super::embed::{self, Backend};
 use super::engine::{
     Action, CreateArgs, CreateOutcome, EmbedPlan, Events, Hit, Indexes, ModeArg, SearchArgs,
     SearchOutput, Timing, WatchState, monitor_words,
 };
+use super::lexical::SINGLE_QUOTES;
 use super::store::{self, Kind, Layout, Manifest, Rules};
 use super::tools::{self, TOOL_NAMES};
 
@@ -219,6 +220,7 @@ fn search_args(cwd: &Path, query: &str, mode: Option<ModeArg>) -> SearchArgs {
         mode,
         limit: Some(10),
         exhaustive: false,
+        after: None,
         path_prefix: None,
         language: None,
         ignore_case: false,
@@ -834,21 +836,37 @@ fn dense_and_hybrid_search_with_the_test_embedder() {
         output.hits.iter().all(|hit| hit.display == "README.md"),
         "{output:?}"
     );
-    // A language that matches nothing gives the results from every
-    // language, and says so.
+    // A ranked search with a language that matches nothing gives the results
+    // from every language, and says so.
+    for mode in [ModeArg::Hybrid, ModeArg::Semantic] {
+        let mut args = search_args(&root, "retry backoff delay", Some(mode));
+        args.language = Some("python".into());
+        let output = indexes.search_blocking(&args).unwrap();
+        assert_eq!(hit_files(&output)[0], "src/net.rs", "{output:?}");
+        assert_eq!(
+            output.notes,
+            ["nothing matched in python, so these results are from every language"]
+        );
+    }
+    // A lexical search stays with the language, and says what to do.
     let mut args = search_args(&root, "retry_with_backoff", Some(ModeArg::Lexical));
     args.language = Some("python".into());
     let output = indexes.search_blocking(&args).unwrap();
-    assert_eq!(hit_files(&output)[0], "src/net.rs", "{output:?}");
+    assert!(output.hits.is_empty(), "{output:?}");
+    assert_eq!(output.total, Some(0));
     assert_eq!(
         output.notes,
-        ["nothing matched in python, so these results are from every language"]
+        ["No matches in python. Search without the language filter to see every language."]
     );
-    let mut args = search_args(&root, "zzqqxx", Some(ModeArg::Lexical));
-    args.language = Some("python".into());
+    args.language = None;
+    assert_eq!(
+        hit_files(&indexes.search_blocking(&args).unwrap())[0],
+        "src/net.rs"
+    );
+    // What lexical search finds, and what finds the rest.
+    let args = search_args(&root, "zzqqxx", Some(ModeArg::Lexical));
     let output = indexes.search_blocking(&args).unwrap();
     assert!(output.hits.is_empty(), "{output:?}");
-    // What lexical search finds, and what finds the rest.
     assert_eq!(output.notes.len(), 1, "{output:?}");
     assert!(
         output.notes[0].starts_with(
@@ -1446,6 +1464,13 @@ fn tool_parameters_are_parsed_leniently() {
     assert_eq!(search.limit, None);
     assert_eq!(search.mode, Some(ModeArg::Lexical));
     assert!(!search.exhaustive && !search.ignore_case);
+    assert_eq!(search.after, None);
+    let search = tools::parse_search(
+        &params(json!({"query": "q", "mode": "lexical", "after": " src/a.rs:804:5 "})),
+        cwd,
+    )
+    .unwrap();
+    assert_eq!(search.after.as_deref(), Some("src/a.rs:804:5"));
     let search = tools::parse_search(
         &params(json!({"query": "q", "mode": "lexical", "limit": "5k",
                        "exhaustive": "yes", "ignore_case": true})),
@@ -1454,18 +1479,20 @@ fn tool_parameters_are_parsed_leniently() {
     .unwrap();
     assert_eq!(search.limit, Some(5_000));
     assert!(search.exhaustive && search.ignore_case);
-    // Only a lexical search's results all hold the query.
-    for name in ["exhaustive", "ignore_case"] {
+    // Only a lexical search's results all hold the query, in one order.
+    for (name, on, off) in [
+        ("exhaustive", json!(true), json!(false)),
+        ("ignore_case", json!(true), json!(false)),
+        ("after", json!("src/a.rs:804:5"), json!("")),
+    ] {
         for mode in ["hybrid", "semantic"] {
-            let error = tools::parse_search(
-                &params(json!({"query": "q", "mode": mode, name: true})),
-                cwd,
-            )
-            .unwrap_err();
+            let error =
+                tools::parse_search(&params(json!({"query": "q", "mode": mode, name: on})), cwd)
+                    .unwrap_err();
             assert!(error.to_string().contains("mode lexical"), "{error}");
         }
         let off = tools::parse_search(
-            &params(json!({"query": "q", "mode": "hybrid", name: false})),
+            &params(json!({"query": "q", "mode": "hybrid", name: off})),
             cwd,
         );
         assert!(off.is_ok());
@@ -1647,6 +1674,7 @@ fn search_and_status_formatting() {
         end_line: 5,
         start_byte: 0,
         end_byte: 1000,
+        column: 1,
         scope: "fn retry".into(),
         symbol: "retry".into(),
         changed: true,
@@ -1953,6 +1981,23 @@ fn cli_commands() {
             "rust",
             "parse",
         ],
+        &[
+            "search",
+            "-m",
+            "lexical",
+            "--after",
+            "src/config.rs:1:1",
+            "pub",
+        ],
+        &[
+            "search",
+            "-m",
+            "lexical",
+            "--after",
+            "src/zzz.rs:9",
+            "--exhaustive",
+            "pub",
+        ],
         &["update"],
         &["update", "--force"],
         &["embed", "--estimate"],
@@ -1972,6 +2017,20 @@ fn cli_commands() {
     );
     let error = cli(&fixture, &root, &["search", "-m", "fuzzy", "x"]).unwrap_err();
     assert!(error.contains("hybrid"), "{error}");
+    let error = cli(
+        &fixture,
+        &root,
+        &["search", "-m", "lexical", "--after", "config", "pub"],
+    )
+    .unwrap_err();
+    assert!(error.contains("\"config\" isn't a cursor"), "{error}");
+    let error = cli(
+        &fixture,
+        &root,
+        &["search", "-m", "hybrid", "--after", "src/a.rs:1:1", "pub"],
+    )
+    .unwrap_err();
+    assert!(error.contains("mode lexical"), "{error}");
     let elsewhere = fixture.base.join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
     let error = cli(&fixture, &elsewhere, &["update"]).unwrap_err();
@@ -2072,6 +2131,7 @@ fn hit_on(file: &Path, chunk: &arko_index::bench_v1::Chunk) -> Hit {
         end_line: chunk.end_line,
         start_byte: chunk.start_byte,
         end_byte: chunk.end_byte,
+        column: 1,
         scope: chunk.scope.clone(),
         symbol: chunk.symbol_path.clone(),
         changed: false,
@@ -2447,11 +2507,8 @@ fn callers_project(fixture: &Fixture, files: usize) -> PathBuf {
 /// Places in files, each (file, line).
 type Places = Vec<(String, usize)>;
 
-/// What rg would find of `needle` in `root`'s `.rs` and `.md` files, as the
-/// index chunks them, meaning each chunk (file, start line) that holds it,
-/// and each line (file, line) where it starts.
-fn oracle(root: &Path, needle: &str) -> (Places, Places) {
-    let (mut chunks, mut lines) = (Vec::new(), Vec::new());
+/// The `.rs` and `.md` files of `root` and its `src`, in path order.
+fn project_files(root: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = Vec::new();
     for dir in [root.to_path_buf(), root.join("src")] {
         for entry in std::fs::read_dir(dir).unwrap() {
@@ -2465,7 +2522,15 @@ fn oracle(root: &Path, needle: &str) -> (Places, Places) {
         }
     }
     files.sort();
-    for file in files {
+    files
+}
+
+/// What rg would find of `needle` in `root`'s `.rs` and `.md` files, as the
+/// index chunks them, meaning each chunk (file, start line) that holds it,
+/// and each line (file, line) where it starts.
+fn oracle(root: &Path, needle: &str) -> (Places, Places) {
+    let (mut chunks, mut lines) = (Vec::new(), Vec::new());
+    for file in project_files(root) {
         let shown = file
             .strip_prefix(root)
             .unwrap()
@@ -2711,15 +2776,19 @@ fn an_exact_search_of_several_indexes_counts_them_all() {
         each += one.total.unwrap();
     }
     assert_eq!(both.total, Some(each));
-    // A cut list keeps each index's share.
+    // A cut list is the start of the one list in path order, whichever
+    // index each result is from.
     args.index = None;
     args.limit = Some(2);
     let cut = indexes.search_blocking(&args).unwrap();
-    let names: Vec<&str> = cut.hits.iter().map(|hit| hit.index.as_str()).collect();
-    assert!(
-        names.contains(&"callers") && names.contains(&"callers-docs"),
-        "{names:?}"
-    );
+    let key = |output: &SearchOutput| {
+        output
+            .hits
+            .iter()
+            .map(|hit| (hit.index.clone(), hit.display.clone(), hit.start_line))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(key(&cut), key(&both)[..2]);
     fixture.shutdown(&indexes);
 }
 
@@ -2734,6 +2803,7 @@ fn exact_matches_are_grouped_by_file_and_read_back() {
         end_line: lines.1,
         start_byte: 0,
         end_byte: 0,
+        column: 1,
         scope: scope.into(),
         symbol: String::new(),
         changed: false,
@@ -2752,6 +2822,11 @@ fn exact_matches_are_grouped_by_file_and_read_back() {
     let output = SearchOutput {
         hits: vec![
             with(
+                hit("proj", "src/a.rs", (10, 20), "fn one"),
+                &[(12, "go();")],
+                0,
+            ),
+            with(
                 hit("proj", "src/a.rs", (30, 40), "fn two"),
                 &[(31, "go()")],
                 2,
@@ -2759,11 +2834,6 @@ fn exact_matches_are_grouped_by_file_and_read_back() {
             with(
                 hit("proj", "src/b.rs", (1, 5), ""),
                 &[(2, "go();"), (4, "go(); go();")],
-                0,
-            ),
-            with(
-                hit("proj", "src/a.rs", (10, 20), "fn one"),
-                &[(12, "go();")],
                 0,
             ),
         ],
@@ -2844,6 +2914,30 @@ fn exact_matches_are_grouped_by_file_and_read_back() {
             "2 results from proj (code, lexical), docs (docs, lexical)",
             "[proj] src/a.rs:1-2 · fn x",
             "[docs] src/a.rs:1-2",
+        ]
+    );
+    // The results keep the order they come in, so a file that two indexes
+    // share comes back in groups where the order takes them.
+    let interleaved = SearchOutput {
+        hits: vec![
+            with(hit("proj", "src/a.rs", (1, 2), "fn x"), &[(1, "go()")], 0),
+            with(hit("docs", "src/a.rs", (1, 2), ""), &[(1, "go()")], 0),
+            with(hit("proj", "src/a.rs", (5, 6), "fn y"), &[(5, "go()")], 0),
+            with(hit("docs", "src/a.rs", (5, 6), ""), &[(5, "go()")], 0),
+            with(hit("proj", "src/b.rs", (1, 2), ""), &[(1, "go()")], 0),
+        ],
+        total: Some(5),
+        ..several.clone()
+    };
+    let text = tools::format_search_detail("go()", &interleaved, tools::Detail::Lines);
+    assert_eq!(
+        tools::read_search_hits(&text).unwrap()[1..],
+        [
+            "[proj] src/a.rs:1-2 · fn x",
+            "[docs] src/a.rs:1-2",
+            "[proj] src/a.rs:5-6 · fn y",
+            "[docs] src/a.rs:5-6",
+            "[proj] src/b.rs:1-2",
         ]
     );
     // Whole results still read back as before.
@@ -2951,11 +3045,14 @@ fn a_lexical_search_lists_100_by_default_and_every_match_when_exhaustive() {
     let output = indexes.search_blocking(&args).unwrap();
     assert_eq!(output.hits.len(), 100);
     assert_eq!(output.total, Some(all));
+    let (file, line, column) = oracle_starts(&root, "fetch_widget")[99].clone();
+    assert!(output.notes.is_empty(), "{:?}", output.notes);
     assert_eq!(
-        output.notes,
-        [format!(
-            "exhaustive=true lists all {all}, and path_prefix narrows the search"
-        )]
+        next_note(&output),
+        Some(format!(
+            "exhaustive=true lists all {all}, and path_prefix narrows the search. For the next {}, use after=\"{file}:{line}:{column}\"",
+            all - 100
+        ))
     );
     // Every match, with every line it starts on.
     args.exhaustive = true;
@@ -3018,7 +3115,8 @@ fn a_lexical_search_lists_100_by_default_and_every_match_when_exhaustive() {
     assert!(text.contains("\nsrc/part_00.rs\n  "), "{text}");
     assert!(text.contains(" | fetch_widget(id);\n"), "{text}");
     assert!(text.ends_with(&format!(
-        "note: exhaustive=true lists all {all}, and path_prefix narrows the search"
+        "note: exhaustive=true lists all {all}, and path_prefix narrows the search. For the next {}, use after=\"{file}:{line}:{column}\"",
+        all - 100
     )));
     let text = run(json!({"query": "fetch_widget", "mode": "lexical", "exhaustive": true}));
     assert!(
@@ -3058,7 +3156,7 @@ fn the_cli_changes_no_matched_line() {
         "",
         "src/a.rs",
         "  1-3 · fn a",
-        "    2 | let hint = \"exhaustive=true lists all, and path_prefix narrows; hybrid finds\";",
+        r#"    2 | let hint = "exhaustive=true lists all, and path_prefix narrows; hybrid finds; use after="a:1:1"";"#,
         "note: exhaustive=true lists all 2, and path_prefix narrows the search",
     ]
     .join("\n");
@@ -3113,4 +3211,1162 @@ fn an_exact_search_names_the_files_it_couldnt_read() {
     }
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
     fixture.shutdown(&indexes);
+}
+
+// ----- pages of an exact search -----
+
+/// The places where results start, each (file, line, byte column).
+type Starts = Vec<(String, usize, usize)>;
+
+/// Where each chunk of `root`'s `.rs` and `.md` files that holds `needle`
+/// starts, read from the files themselves, in path order.
+fn oracle_starts(root: &Path, needle: &str) -> Starts {
+    let mut starts = Vec::new();
+    for file in project_files(root) {
+        let shown = file
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(&file).unwrap();
+        if text.contains('\0') {
+            continue;
+        }
+        let kind = if shown.ends_with(".md") {
+            Kind::Docs
+        } else {
+            Kind::Code
+        };
+        for chunk in
+            arko_index::bench_v1::chunk_file(&file, &super::engine::chunk_options(kind)).unwrap()
+        {
+            if text[chunk.start_byte..chunk.end_byte].contains(needle) {
+                let line_start = text[..chunk.start_byte].rfind('\n').map_or(0, |at| at + 1);
+                starts.push((
+                    shown.clone(),
+                    chunk.start_line,
+                    chunk.start_byte - line_start + 1,
+                ));
+            }
+        }
+    }
+    starts
+}
+
+/// Where each result of `output` starts.
+fn starts(output: &SearchOutput) -> Starts {
+    output
+        .hits
+        .iter()
+        .map(|hit| (hit.display.clone(), hit.start_line, hit.column))
+        .collect()
+}
+
+/// A place as a cursor writes it.
+fn cursor_at((file, line, column): &(String, usize, usize)) -> String {
+    format!("{file}:{line}:{column}")
+}
+
+/// The cursor of the page after `output`'s.
+fn next_cursor(output: &SearchOutput) -> Option<String> {
+    output.next.as_ref().map(|next| next.cursor.to_string())
+}
+
+/// The note of a cut list as the tool writes it.
+fn next_note(output: &SearchOutput) -> Option<String> {
+    let text = tools::format_search_detail("fetch_widget", output, tools::Detail::Lines);
+    let note = text.lines().last()?.strip_prefix("note: ")?;
+    note.contains(", use after=\"").then(|| note.to_string())
+}
+
+/// `args` searched with `after`.
+fn search_after(indexes: &Arc<Indexes>, args: &SearchArgs, after: &str) -> SearchOutput {
+    let args = SearchArgs {
+        after: Some(after.to_string()),
+        ..args.clone()
+    };
+    indexes.search_blocking(&args).unwrap()
+}
+
+/// Every page of the search, each from the cursor that ends the note of the
+/// page before.
+fn all_pages(indexes: &Arc<Indexes>, args: &SearchArgs) -> Vec<SearchOutput> {
+    let mut args = args.clone();
+    let mut pages = Vec::new();
+    loop {
+        let page = indexes.search_blocking(&args).unwrap();
+        let next = next_cursor(&page);
+        pages.push(page);
+        match next {
+            Some(cursor) => args.after = Some(cursor),
+            None => return pages,
+        }
+        assert!(pages.len() < 2_000, "the pages don't end");
+    }
+}
+
+#[test]
+fn the_pages_of_an_exact_search_join_up_to_the_whole_list() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 45);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let want = oracle_starts(&root, "fetch_widget");
+    let all = want.len();
+    assert!(all > 100, "{all}");
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.exhaustive = true;
+    let whole = indexes.search_blocking(&args).unwrap();
+    assert_eq!(starts(&whole), want);
+    assert!(next_cursor(&whole).is_none() && whole.before == 0 && whole.after.is_none());
+    args.exhaustive = false;
+    for limit in [
+        None,
+        Some(7),
+        Some(100),
+        Some(all - 1),
+        Some(all),
+        Some(all + 1),
+    ] {
+        args.limit = limit;
+        let size = limit.unwrap_or(100);
+        let pages = all_pages(&indexes, &args);
+        assert_eq!(pages.len(), all.div_ceil(size), "{limit:?}");
+        let (mut seen, mut cursor) = (0, None);
+        for page in &pages {
+            let count = size.min(all - seen);
+            // Each page is the next of the whole list, so together they have
+            // no gap and no repeat.
+            assert_eq!(starts(page), want[seen..seen + count], "{limit:?}: {seen}");
+            assert_eq!(page.total, Some(all));
+            assert_eq!(page.before, seen);
+            assert_eq!(page.after, cursor);
+            seen += count;
+            // The note of a cut page gives the place of its last result.
+            cursor = (seen < all).then(|| cursor_at(&want[seen - 1]));
+            assert_eq!(next_cursor(page), cursor, "{limit:?}: {seen}");
+        }
+        assert_eq!(seen, all);
+        // A page counts the one after it as it comes.
+        for (page, following) in pages.iter().zip(&pages[1..]) {
+            let next = page.next.as_ref().unwrap();
+            assert_eq!(next.count, following.hits.len(), "{limit:?}");
+        }
+        assert!(pages.last().unwrap().next.is_none());
+    }
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn a_cut_list_ends_its_note_with_the_cursor_of_the_next_page() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 5);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let want = oracle_starts(&root, "fetch_widget");
+    // (Three in each of five files, the definition and the README.)
+    assert_eq!(want.len(), 17);
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.limit = Some(5);
+    let note = |left: usize, next: usize, last: usize| {
+        format!(
+            "exhaustive=true lists all {left}, and path_prefix narrows the search. For the next {next}, use after=\"{}\"",
+            cursor_at(&want[last])
+        )
+    };
+    let page = indexes.search_blocking(&args).unwrap();
+    assert_eq!(next_note(&page), Some(note(17, 5, 4)));
+    assert_eq!((page.before, page.after), (0, None));
+    // The note counts what the call lists with exhaustive=true, which is all
+    // after the cursor it was given.
+    let page = search_after(&indexes, &args, &cursor_at(&want[4]));
+    assert_eq!(next_note(&page), Some(note(12, 5, 9)));
+    let page = search_after(&indexes, &args, &cursor_at(&want[9]));
+    assert_eq!(next_note(&page), Some(note(7, 2, 14)));
+    assert_eq!(page.after, Some(cursor_at(&want[9])));
+    // The last page has no more to say, whatever it holds.
+    let page = search_after(&indexes, &args, &cursor_at(&want[14]));
+    assert_eq!(starts(&page), want[15..]);
+    assert!(page.next.is_none() && next_note(&page).is_none());
+    // The next page is no more than what is left.
+    args.limit = Some(10);
+    let page = indexes.search_blocking(&args).unwrap();
+    assert_eq!(next_note(&page), Some(note(17, 7, 9)));
+    // Everything, or a page that fits the rest, makes no cut.
+    args.limit = Some(12);
+    let page = search_after(&indexes, &args, &cursor_at(&want[4]));
+    assert_eq!(starts(&page), want[5..]);
+    assert!(page.next.is_none() && next_note(&page).is_none());
+    // With exhaustive=true, after lists all that follows it.
+    args.exhaustive = true;
+    args.limit = Some(1);
+    let page = search_after(&indexes, &args, &cursor_at(&want[4]));
+    assert_eq!(starts(&page), want[5..]);
+    assert_eq!((page.total, page.before), (Some(17), 5));
+    assert!(page.next.is_none() && next_note(&page).is_none());
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn a_cursor_may_be_copied_with_its_quotes_or_cut_to_a_line() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 6);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let want = oracle_starts(&root, "fetch_widget");
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.exhaustive = true;
+    let (file, line, column) = want[7].clone();
+    for after in [
+        format!("{file}:{line}:{column}"),
+        format!("\"{file}:{line}:{column}\""),
+        format!("after=\"{file}:{line}:{column}\""),
+        format!("  {file}:{line}:{column} "),
+        // Every result that starts on the line is before it.
+        format!("{file}:{line}"),
+    ] {
+        let page = search_after(&indexes, &args, &after);
+        assert_eq!(starts(&page), want[8..], "{after}");
+        assert_eq!(page.before, 8, "{after}");
+    }
+    // The line above a result, at any column, leaves it in.
+    let (file, line, _) = want[8].clone();
+    assert!(line > 1, "{line}");
+    let page = search_after(&indexes, &args, &format!("{file}:{}:9999", line - 1));
+    assert_eq!(starts(&page), want[8..]);
+    // Before every result, past the last, and in a file that sorts after all.
+    let page = search_after(&indexes, &args, "A:1:1");
+    assert_eq!((starts(&page), page.before), (want.clone(), 0));
+    let last = cursor_at(want.last().unwrap());
+    for after in [last.as_str(), "zz.rs:1", "src/widget.rs:9999"] {
+        let page = search_after(&indexes, &args, after);
+        assert!(page.hits.is_empty(), "{after}");
+        assert_eq!((page.total, page.before), (Some(want.len()), want.len()));
+        assert!(page.notes.is_empty(), "{:?}", page.notes);
+    }
+    // A blank one is none.
+    let page = search_after(&indexes, &args, "  ");
+    assert_eq!((starts(&page), page.before, page.after), (want, 0, None));
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn results_that_start_on_one_line_page_by_their_columns() {
+    let fixture = Fixture::new();
+    let root = fixture.base.join("long");
+    // A line of one call after another, which the chunker splits into many
+    // chunks that start on that line.
+    let calls = "fetch_widget(1), ".repeat(16_000);
+    write(
+        &root.join("src/a.rs"),
+        "pub fn first() {\n    fetch_widget(0);\n}\n",
+    );
+    write(
+        &root.join("src/long.rs"),
+        &format!("let calls = [{calls}];\n"),
+    );
+    write(
+        &root.join("src/z.rs"),
+        "pub fn last() {\n    fetch_widget(2);\n}\n",
+    );
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.exhaustive = true;
+    let whole = indexes.search_blocking(&args).unwrap();
+    let on_line: Vec<&Hit> = whole
+        .hits
+        .iter()
+        .filter(|hit| hit.display == "src/long.rs")
+        .collect();
+    assert!(on_line.len() > 20, "{}", on_line.len());
+    for hit in &on_line {
+        assert_eq!(hit.start_line, 1);
+        // The line is the file's first, so the column is the byte it starts.
+        assert_eq!(hit.column, hit.start_byte + 1, "{hit:?}");
+    }
+    assert!(on_line.windows(2).all(|two| two[0].column < two[1].column));
+    assert_eq!(whole.hits.len(), on_line.len() + 2);
+    args.exhaustive = false;
+    for limit in [1, 3, 4, 10] {
+        args.limit = Some(limit);
+        let pages = all_pages(&indexes, &args);
+        let joined: Starts = pages.iter().flat_map(starts).collect();
+        assert_eq!(joined, starts(&whole), "limit {limit}");
+        assert_eq!(
+            pages.len(),
+            whole.hits.len().div_ceil(limit),
+            "limit {limit}"
+        );
+        // A page that ends in the long line has a column of it for a cursor.
+        for page in &pages[..pages.len() - 1] {
+            assert_eq!(
+                next_cursor(page),
+                Some(cursor_at(&starts(page).pop().unwrap()))
+            );
+        }
+    }
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn a_page_starts_after_the_cursor_however_the_files_changed() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 8);
+    // Searches don't bring the index up to date in the test's time.
+    let timing = Timing {
+        reconcile_interval: Duration::from_secs(3600),
+        ..fast(false)
+    };
+    let indexes = fixture.open(&root, Backend::Hash, false, timing);
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.limit = Some(10);
+    let first = indexes.search_blocking(&args).unwrap();
+    let cursor = next_cursor(&first).unwrap();
+    let last = starts(&first).pop().unwrap();
+    assert_eq!(cursor, cursor_at(&last));
+    let file = last.0.clone();
+    assert_eq!(file, "src/part_02.rs", "the cursor is in the third file");
+
+    std::thread::sleep(Duration::from_millis(20));
+    let append = |name: &str, text: &str| {
+        let path = root.join(name);
+        let old = std::fs::read_to_string(&path).unwrap();
+        write(&path, &format!("{old}{text}"));
+    };
+    // New results below the cursor, in its file and in a file that was
+    // listed, and a new result in an earlier file, which the cursor is past.
+    append(&file, "pub fn added() {\n    fetch_widget(9);\n}\n");
+    append(
+        "src/part_00.rs",
+        "pub fn also_added() {\n    fetch_widget(8);\n}\n",
+    );
+    // A later file gone, and one that became binary.
+    std::fs::remove_file(root.join("src/part_04.rs")).unwrap();
+    write(&root.join("src/part_05.rs"), "fetch_widget(1);\n\0\n");
+    let now = oracle_starts(&root, "fetch_widget");
+    let after: Starts = now.iter().filter(|start| **start > last).cloned().collect();
+    assert!(after.iter().any(|(name, _, _)| *name == file), "{after:?}");
+    args.exhaustive = true;
+    let page = search_after(&indexes, &args, &cursor);
+    assert_eq!(starts(&page), after);
+    assert_eq!(page.total, Some(now.len()));
+    assert_eq!(page.before, now.len() - after.len());
+    // Pages of the list as it is now go on after the cursor too.
+    args.exhaustive = false;
+    args.after = Some(cursor.clone());
+    let pages = all_pages(&indexes, &args);
+    let joined: Starts = pages.iter().flat_map(starts).collect();
+    assert_eq!(joined, after);
+
+    // Lines come in above the cursor's place, so its file's results are further
+    // down, and the page still starts after the place of the cursor, in the
+    // file as it is. (A result that moved past the cursor shows again.)
+    let top = std::fs::read_to_string(root.join(&file)).unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    write(&root.join(&file), &format!("//! One.\n//! Two.\n\n{top}"));
+    let now = oracle_starts(&root, "fetch_widget");
+    let after: Starts = now.iter().filter(|start| **start > last).cloned().collect();
+    args.exhaustive = true;
+    args.after = None;
+    let page = search_after(&indexes, &args, &cursor);
+    assert_eq!(starts(&page), after);
+    // The result the cursor was made of now starts three lines further down.
+    assert!(
+        after.contains(&(file.clone(), last.1 + 3, last.2)),
+        "{after:?}"
+    );
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn pages_keep_to_the_path_and_language_filters() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 20);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let want = oracle_starts(&root, "fetch_widget");
+    let source: Starts = want
+        .iter()
+        .filter(|(file, _, _)| file.starts_with("src/"))
+        .cloned()
+        .collect();
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    let joined = |pages: &[SearchOutput]| -> Starts { pages.iter().flat_map(starts).collect() };
+
+    // A directory.
+    args.path_prefix = Some("src".into());
+    args.limit = Some(9);
+    let pages = all_pages(&indexes, &args);
+    assert_eq!(joined(&pages), source);
+    assert!(pages.iter().all(|page| page.total == Some(source.len())));
+    assert_eq!(pages.len(), source.len().div_ceil(9));
+    // A file, a result at a time.
+    args.path_prefix = Some("src/part_03.rs".into());
+    args.limit = Some(1);
+    let pages = all_pages(&indexes, &args);
+    let in_file: Starts = want
+        .iter()
+        .filter(|(file, _, _)| file == "src/part_03.rs")
+        .cloned()
+        .collect();
+    assert_eq!(in_file.len(), 3);
+    assert_eq!(joined(&pages), in_file);
+    assert_eq!(pages.len(), 3);
+    assert!(pages.iter().all(|page| page.total == Some(3)));
+    // A language.
+    args.path_prefix = None;
+    args.language = Some("rust".into());
+    args.limit = Some(25);
+    let pages = all_pages(&indexes, &args);
+    assert_eq!(joined(&pages), source);
+    assert!(pages.iter().all(|page| page.total == Some(source.len())));
+    // A cursor from a search without the filter, in a file it leaves out.
+    args.language = Some("markdown".into());
+    args.limit = None;
+    let page = search_after(&indexes, &args, "A:1:1");
+    assert_eq!(hit_files(&page), ["README.md"]);
+    let readme = cursor_at(&want[0]);
+    // A filtered list that ended has no results after its last, and doesn't go
+    // on to the other languages as a list with no match at all does.
+    let page = search_after(&indexes, &args, &readme);
+    assert!(page.hits.is_empty(), "{page:?}");
+    assert_eq!((page.total, page.before), (Some(1), 1));
+    assert!(page.notes.is_empty(), "{:?}", page.notes);
+    // A language that matches nothing stays empty from any cursor, and says
+    // so, where a ranked search would list every language.
+    args.language = Some("python".into());
+    for after in ["A:1:1", readme.as_str()] {
+        let page = search_after(&indexes, &args, after);
+        assert!(page.hits.is_empty(), "{page:?}");
+        assert_eq!((page.total, page.before), (Some(0), 0));
+        assert_eq!(
+            page.notes,
+            ["No matches in python. Search without the language filter to see every language."]
+        );
+    }
+    fixture.shutdown(&indexes);
+}
+
+/// The matches of a language may be gone by the time its next page is asked
+/// for. The page is of that language still, and so is empty, rather than
+/// the matches of the others.
+#[test]
+fn a_page_of_a_language_stays_in_it_when_its_matches_are_gone() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 4);
+    write(
+        &root.join("src/zz_data.py"),
+        "def go():\n    fetch_widget(1)\n",
+    );
+    // Searches don't bring the index up to date in the test's time.
+    let timing = Timing {
+        reconcile_interval: Duration::from_secs(3600),
+        ..fast(false)
+    };
+    let indexes = fixture.open(&root, Backend::Hash, false, timing);
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.language = Some("rust".into());
+    args.limit = Some(5);
+    let first = indexes.search_blocking(&args).unwrap();
+    assert!(hit_files(&first).iter().all(|file| file.ends_with(".rs")));
+    let cursor = next_cursor(&first).unwrap();
+    // The Rust files that held the matches go, and a Python one is left.
+    for entry in std::fs::read_dir(root.join("src")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    let page = search_after(&indexes, &args, &cursor);
+    assert!(page.hits.is_empty(), "{page:?}");
+    assert_eq!((page.total, page.before), (Some(0), 0));
+    assert_eq!(
+        page.notes,
+        ["No matches in rust. Search without the language filter to see every language."]
+    );
+    // Without the language, the Python match is there to be found.
+    args.language = None;
+    let page = indexes.search_blocking(&args).unwrap();
+    assert!(hit_files(&page).contains(&"src/zz_data.py".to_string()));
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn the_pages_of_several_indexes_are_one_list_in_path_order() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 3);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes
+        .create_blocking(&create_args(&root, Some(Kind::Code)))
+        .unwrap();
+    indexes
+        .create_blocking(&create_args(&root, Some(Kind::Docs)))
+        .unwrap();
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.exhaustive = true;
+    let whole = indexes.search_blocking(&args).unwrap();
+    assert_eq!(whole.searched.len(), 2);
+    let list = |output: &SearchOutput| -> Vec<(String, String, usize, usize)> {
+        output
+            .hits
+            .iter()
+            .map(|hit| {
+                (
+                    hit.index.clone(),
+                    hit.display.clone(),
+                    hit.start_line,
+                    hit.column,
+                )
+            })
+            .collect()
+    };
+    let rendered = |output: &SearchOutput| -> Vec<String> {
+        let text = tools::format_search_detail("fetch_widget", output, tools::Detail::Lines);
+        tools::read_search_hits(&text).unwrap()[1..].to_vec()
+    };
+    // By file and place, and by index where both have a result at one.
+    let mut sorted = list(&whole);
+    sorted.sort_by(|a, b| (&a.1, a.2, a.3, &a.0).cmp(&(&b.1, b.2, b.3, &b.0)));
+    assert_eq!(list(&whole), sorted);
+    let shared = |hits: &[Hit]| hits.windows(2).any(|two| two[0].place() == two[1].place());
+    assert!(
+        shared(&whole.hits),
+        "an index has a result where the other does"
+    );
+    args.exhaustive = false;
+    for limit in [1, 2, 3, 5] {
+        args.limit = Some(limit);
+        let pages = all_pages(&indexes, &args);
+        let joined: Vec<_> = pages.iter().flat_map(list).collect();
+        assert_eq!(joined, list(&whole), "limit {limit}");
+        // The pages as the tool writes them, with the results of each, read
+        // back in the order of the whole list as it is written.
+        let joined: Vec<String> = pages.iter().flat_map(rendered).collect();
+        assert_eq!(joined, rendered(&whole), "limit {limit}");
+        for page in &pages {
+            assert_eq!(page.total, Some(whole.hits.len()));
+            // A cursor is a place, so a page ends after all the results at its
+            // last one, and may run over the limit by those of other indexes.
+            let over = page.hits.get(limit..).unwrap_or_default();
+            let last = page.hits[limit.min(page.hits.len()) - 1].place();
+            assert!(
+                over.iter().all(|hit| hit.place() == last),
+                "{limit}: {over:?}"
+            );
+        }
+    }
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn a_cursor_that_is_not_one_is_refused() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 2);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    for bad in [
+        "nonsense",
+        "src/part_00.rs",
+        "src/part_00.rs:",
+        "src/part_00.rs:line",
+        "src/part_00.rs:0",
+        "src/part_00.rs:3:0",
+        ":4:1",
+        "\"\"",
+    ] {
+        args.after = Some(bad.into());
+        let error = indexes.search_blocking(&args).unwrap_err();
+        assert!(
+            error.starts_with(&format!(
+                "{bad:?} isn't a cursor. Use the one that ends the note"
+            )),
+            "{bad}: {error}"
+        );
+        assert!(error.ends_with("such as src/a.rs:804:5"), "{error}");
+    }
+    // Only an exact search has a list to page through.
+    for mode in [ModeArg::Hybrid, ModeArg::Semantic] {
+        let mut args = search_args(&root, "fetch a widget", Some(mode));
+        args.after = Some("src/part_00.rs:1:1".into());
+        let error = indexes.search_blocking(&args).unwrap_err();
+        assert!(error.contains("are for mode lexical"), "{error}");
+        assert!(
+            error.starts_with("exhaustive, ignore_case and after"),
+            "{error}"
+        );
+        // (Blank leaves it out.)
+        args.after = Some(" ".into());
+        assert!(indexes.search_blocking(&args).is_ok());
+    }
+    fixture.shutdown(&indexes);
+}
+
+#[test]
+fn a_page_after_a_cursor_is_headed_by_its_place_in_the_list() {
+    let hit = |line: usize| Hit {
+        index: "proj".into(),
+        display: "src/a.rs".into(),
+        file: PathBuf::from("/w/src/a.rs"),
+        start_line: line,
+        end_line: line + 1,
+        start_byte: 0,
+        end_byte: 0,
+        column: 1,
+        scope: String::new(),
+        symbol: String::new(),
+        changed: false,
+        lines: Some(super::lexical::Lines {
+            shown: vec![(line, "go()".into())],
+            more: 0,
+        }),
+    };
+    let page = |first: usize, count: usize, total: usize, after: Option<&str>| SearchOutput {
+        hits: (0..count).map(|at| hit(first + at)).collect(),
+        total: Some(total),
+        before: first.saturating_sub(1),
+        after: after.map(str::to_string),
+        searched: vec![("proj".into(), Kind::Code, Mode::Lexical)],
+        ..SearchOutput::default()
+    };
+    let header = |output: &SearchOutput| {
+        let text = tools::format_search_detail("go()", output, tools::Detail::Lines);
+        text.lines().next().unwrap().to_string()
+    };
+    let proj = vec!["proj".to_string()];
+    for (output, text, hits) in [
+        // The first page, after nothing, and after a cursor before every result.
+        (page(1, 100, 340, None), "100 of 340 results", 100),
+        (page(1, 100, 340, Some("A:1:1")), "100 of 340 results", 100),
+        (
+            page(101, 100, 340, Some("src/a.rs:100:1")),
+            "101-200 of 340 results",
+            100,
+        ),
+        (
+            page(301, 40, 340, Some("src/a.rs:300:1")),
+            "301-340 of 340 results",
+            40,
+        ),
+        (
+            page(6, 1, 340, Some("src/a.rs:5:1")),
+            "6-6 of 340 results",
+            1,
+        ),
+        (
+            page(1_101, 3, 5_000, Some("src/a.rs:1:1")),
+            "1,101-1,103 of 5,000 results",
+            3,
+        ),
+        // A list that isn't cut, and the whole of one that follows a cursor.
+        (page(1, 3, 3, None), "3 results", 3),
+        (page(3, 2, 4, Some("src/a.rs:2:1")), "3-4 of 4 results", 2),
+    ] {
+        let line = header(&output);
+        assert_eq!(line, format!("{text} from proj (code, lexical):"));
+        assert_eq!(tools::read_search_header(&line), Some((proj.clone(), hits)));
+    }
+    // A page that follows the last result has none.
+    let past = SearchOutput {
+        hits: Vec::new(),
+        total: Some(1_340),
+        before: 1_340,
+        after: Some("src/a.rs:804:5".into()),
+        searched: vec![("proj".into(), Kind::Code, Mode::Lexical)],
+        ..SearchOutput::default()
+    };
+    let text = tools::format_search_detail("go()", &past, tools::Detail::Lines);
+    assert_eq!(
+        text,
+        "No results after \"src/a.rs:804:5\" from proj (code, lexical). 1,340 in all."
+    );
+    assert_eq!(
+        tools::read_search_header(text.lines().next().unwrap()),
+        Some((proj, 0))
+    );
+    assert_eq!(tools::read_search_hits(&text), None);
+    // A path, and an index, that hold the words around them are read as
+    // what they are.
+    for (path, index) in [
+        ("src/note from draft.rs", "proj"),
+        ("src/a.rs:1:1 from proj (code, lexical). 5 in all.", "proj"),
+        ("C:\\w\\x\\\"q.rs", "proj"),
+        ("src/a.rs", "notes from May. Draft (v2)"),
+        ("src/note from draft.rs", "from. a (b, c)"),
+    ] {
+        let cursor = super::lexical::Cursor::at(path, 1, 1).to_string();
+        let output = SearchOutput {
+            after: Some(cursor),
+            searched: vec![
+                (index.into(), Kind::Code, Mode::Lexical),
+                ("other".into(), Kind::Docs, Mode::Lexical),
+            ],
+            ..past.clone()
+        };
+        let text = tools::format_search_detail("go()", &output, tools::Detail::Lines);
+        assert_eq!(
+            tools::read_search_header(&text),
+            Some((vec![index.to_string(), "other".to_string()], 0)),
+            "{text}"
+        );
+    }
+    // A search with no match at all says so, as before.
+    let none = SearchOutput {
+        total: Some(0),
+        after: Some("src/a.rs:804:5".into()),
+        ..past
+    };
+    let text = tools::format_search_detail("go()", &none, tools::Detail::Lines);
+    assert!(
+        text.starts_with("No results for \"go()\" in proj"),
+        "{text}"
+    );
+    // The results of a page read back as a list's do.
+    let text = tools::format_search_detail(
+        "go()",
+        &page(101, 2, 340, Some("src/a.rs:100:1")),
+        tools::Detail::Lines,
+    );
+    assert_eq!(
+        tools::read_search_hits(&text).unwrap(),
+        [
+            "101-102 of 340 results from proj (code, lexical)",
+            "src/a.rs:101-102",
+            "src/a.rs:102-103",
+        ]
+    );
+}
+
+#[test]
+fn the_search_tool_pages_by_the_cursor_of_a_cut_list() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 6);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let tool = indexes
+        .tools()
+        .into_iter()
+        .find(|tool| tool.definition().name == "index_search")
+        .unwrap();
+    let context = TaskContext::new(uuid::Uuid::new_v4(), "test", "", &root);
+    let run = |value: Value| {
+        fixture
+            .runtime
+            .block_on(tool.execute(&context, params(value)))
+    };
+    let all = oracle_starts(&root, "fetch_widget").len();
+    assert_eq!(all, 20);
+    let mut got: Vec<String> = Vec::new();
+    let mut after: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let mut call = json!({"query": "fetch_widget", "mode": "lexical", "limit": 8});
+        if let Some(cursor) = &after {
+            call["after"] = json!(cursor);
+        }
+        let text = run(call).unwrap();
+        pages += 1;
+        let hits = tools::read_search_hits(&text).unwrap();
+        // The first line, and then each result as `file:lines`.
+        let first = pages * 8 - 7;
+        let count = hits.len() - 1;
+        let header = match pages {
+            1 => format!("8 of {all} results from callers (code, lexical)"),
+            _ => format!(
+                "{first}-{} of {all} results from callers (code, lexical)",
+                first + count - 1
+            ),
+        };
+        assert_eq!(hits[0], header);
+        got.extend(hits[1..].iter().cloned());
+        let note = text.lines().last().unwrap();
+        match note.rsplit_once(", use after=\"") {
+            Some((_, cursor)) => after = Some(cursor.strip_suffix('"').unwrap().to_string()),
+            None => {
+                assert!(!text.contains("note: "), "{text}");
+                break;
+            }
+        }
+    }
+    assert_eq!(pages, 3);
+    // The pages hold every result once, in the order of the list.
+    let text =
+        run(json!({"query": "fetch_widget", "mode": "lexical", "exhaustive": true})).unwrap();
+    assert_eq!(got, tools::read_search_hits(&text).unwrap()[1..]);
+    assert_eq!(got.len(), all);
+    // A cursor that isn't one, and one for a ranked search, say what is wrong.
+    let error =
+        run(json!({"query": "fetch_widget", "mode": "lexical", "after": "part_00"})).unwrap_err();
+    assert!(
+        error.to_string().contains("\"part_00\" isn't a cursor"),
+        "{error}"
+    );
+    let error = run(json!({"query": "fetch_widget", "mode": "hybrid", "after": "src/a.rs:1:1"}))
+        .unwrap_err();
+    assert!(error.to_string().contains("mode lexical"), "{error}");
+    // The description says what the cursor stands for, and that a page may
+    // hold more results than the limit where indexes share a place.
+    let definition = tool.definition();
+    assert!(
+        definition.description.contains(
+            "A page ends after every result at its last place, so a search of several indexes that hold the same file can run over `limit` by up to one less than the number of indexes."
+        ),
+        "{}",
+        definition.description
+    );
+    assert!(
+        definition
+            .description
+            .contains("Nothing is kept between calls, so a page begins after the cursor's place"),
+        "{}",
+        definition.description
+    );
+    let after = definition
+        .parameters
+        .iter()
+        .find(|parameter| parameter.name == "after")
+        .unwrap();
+    assert!(!after.required && after.description.starts_with("Lexical mode only."));
+    fixture.shutdown(&indexes);
+}
+
+/// Two indexes of the same files list each result twice, once from each. The
+/// default listing is in the order of the whole list, and the pages of it
+/// join up to that.
+#[test]
+fn the_listing_of_indexes_that_share_files_keeps_the_order_of_the_list() {
+    let fixture = Fixture::new();
+    let root = callers_project(&fixture, 3);
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes
+        .create_blocking(&create_args(&root, Some(Kind::Code)))
+        .unwrap();
+    let mut docs = create_args(&root, Some(Kind::Docs));
+    docs.include = vec!["src/".into()];
+    indexes.create_blocking(&docs).unwrap();
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.exhaustive = true;
+    let whole = indexes.search_blocking(&args).unwrap();
+    let in_both = whole
+        .hits
+        .windows(2)
+        .filter(|two| two[0].place() == two[1].place() && two[0].index != two[1].index)
+        .count();
+    // (A file has several results, and each is in both indexes.)
+    assert!(in_both >= 6, "{in_both}");
+    let rendered = |output: &SearchOutput| -> Vec<String> {
+        let text = tools::format_search_detail("fetch_widget", output, tools::Detail::Lines);
+        tools::read_search_hits(&text).unwrap()[1..].to_vec()
+    };
+    let want = rendered(&whole);
+    // The listing is in the order of the hits, so a file in two indexes is
+    // listed in turns.
+    let order: Vec<(String, usize)> = whole
+        .hits
+        .iter()
+        .map(|hit| (hit.index.clone(), hit.start_line))
+        .collect();
+    let listed: Vec<(String, usize)> = want
+        .iter()
+        .map(|line| {
+            let (index, rest) = line.strip_prefix('[').unwrap().split_once("] ").unwrap();
+            let (_, lines) = rest.rsplit_once(':').unwrap();
+            let lines = lines.split(' ').next().unwrap();
+            (
+                index.to_string(),
+                lines.split('-').next().unwrap().parse().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(listed, order);
+    args.exhaustive = false;
+    for limit in [1, 2, 4, 7] {
+        args.limit = Some(limit);
+        let pages = all_pages(&indexes, &args);
+        let joined: Vec<String> = pages.iter().flat_map(rendered).collect();
+        assert_eq!(joined, want, "limit {limit}");
+        // A page may run over the limit by the other index's results at its
+        // last place, and no more. The note counts the next page as it comes.
+        assert!(pages.iter().all(|page| page.hits.len() <= limit + 1));
+        if limit <= 2 {
+            assert!(pages.iter().any(|page| page.hits.len() > limit));
+        }
+        for (page, following) in pages.iter().zip(&pages[1..]) {
+            let note = next_note(page).unwrap();
+            let count = following.hits.len();
+            assert!(
+                note.contains(&format!(". For the next {count}, use after=\"")),
+                "{note}"
+            );
+        }
+    }
+    fixture.shutdown(&indexes);
+}
+
+/// Files named like what a cursor is written with, and what a shell or a
+/// parameter would change. A page after a cursor of one starts after it.
+#[test]
+fn pages_go_on_through_files_with_hard_names() {
+    let fixture = Fixture::new();
+    let root = fixture.base.join("names");
+    let names = [
+        "after=a.rs",
+        "\"q.rs",
+        " lead.rs",
+        "100%.rs",
+        "50%25.rs",
+        "a b.rs",
+        "notes:12.rs",
+        "tab\there.rs",
+        "it's.rs",
+        "$(printf x).rs",
+        "z.rs",
+    ];
+    for name in names {
+        write(
+            &root.join(name),
+            "pub fn one() {\n    fetch_widget(1);\n}\n\npub fn two() {\n    fetch_widget(2);\n}\n",
+        );
+    }
+    let indexes = fixture.open(&root, Backend::Hash, false, fast(false));
+    indexes.create_blocking(&create_args(&root, None)).unwrap();
+    let mut args = search_args(&root, "fetch_widget", Some(ModeArg::Lexical));
+    args.exhaustive = true;
+    let whole = indexes.search_blocking(&args).unwrap();
+    let files: std::collections::BTreeSet<String> = starts(&whole)
+        .into_iter()
+        .map(|(file, _, _)| file)
+        .collect();
+    assert_eq!(files, names.iter().map(|name| name.to_string()).collect());
+    args.exhaustive = false;
+    for limit in [1, 2, 3] {
+        args.limit = Some(limit);
+        let pages = all_pages(&indexes, &args);
+        let joined: Starts = pages.iter().flat_map(starts).collect();
+        assert_eq!(joined, starts(&whole), "limit {limit}");
+        assert_eq!(pages.len(), whole.hits.len().div_ceil(limit));
+        // Each page starts where the one before ended, whatever it is called.
+        for (before, page) in pages.iter().zip(&pages[1..]) {
+            let last = starts(before).pop().unwrap();
+            assert!(starts(page)[0] > last, "{last:?}");
+            assert_eq!(page.after, next_cursor(before));
+        }
+    }
+    fixture.shutdown(&indexes);
+}
+
+// ----- the command's note for the next page -----
+
+/// A cut list of one result per file, and the command's text of it.
+fn command_page(path: &str) -> (SearchOutput, String) {
+    let hit = Hit {
+        index: "proj".into(),
+        display: path.into(),
+        file: PathBuf::from("/w").join(path),
+        start_line: 1,
+        end_line: 2,
+        start_byte: 0,
+        end_byte: 0,
+        column: 1,
+        scope: String::new(),
+        symbol: String::new(),
+        changed: false,
+        lines: Some(super::lexical::Lines {
+            shown: vec![(1, "go()".into())],
+            more: 0,
+        }),
+    };
+    let output = SearchOutput {
+        hits: vec![hit],
+        total: Some(340),
+        next: Some(super::engine::NextPage {
+            cursor: super::lexical::Cursor::at(path, 1, 1),
+            count: 100,
+        }),
+        searched: vec![("proj".into(), Kind::Code, Mode::Lexical)],
+        ..SearchOutput::default()
+    };
+    let text = search_text("go()", &output, tools::Detail::Lines);
+    (output, text)
+}
+
+#[test]
+fn the_command_gives_the_next_page_as_a_word_for_the_shell() {
+    let (_, text) = command_page("src/a.rs");
+    assert_eq!(
+        text.lines().last().unwrap(),
+        "note: --exhaustive lists all 340, and --path-prefix narrows the search. For the next 100, use --after 'src/a.rs:1:1'"
+    );
+    // A name that holds the words of the tools' hints, or what a shell acts on.
+    // The note keeps it as the cursor writes it, in single quotes.
+    for path in [
+        "src/exhaustive=true.rs",
+        "src/path_prefix narrows.rs",
+        "src/after=\"x\".rs",
+        "src/$(printf expanded).rs",
+        "src/`printf expanded`.rs",
+        "src/$HOME.rs",
+        "src/it's.rs",
+        "src/'; echo hi; '.rs",
+        "src/a\\b*?[x].rs",
+        "-x.rs",
+        "src/a\u{2019}$(Write-Output expanded)\u{2018}.rs",
+        "src/\u{201A}\u{201B}'.rs",
+    ] {
+        let (output, text) = command_page(path);
+        let cursor = output.next.as_ref().unwrap().cursor.to_string();
+        let note = text.lines().last().unwrap();
+        let word = tools::shell_word(&cursor, false);
+        assert!(note.ends_with(&format!("use --after {word}")), "{note}");
+        // The word holds no quote delimiter of POSIX sh or PowerShell but its
+        // wrapping quotes, in either shell's form, and says the same path.
+        for powershell in [false, true] {
+            let word = tools::shell_word(&cursor, powershell);
+            let inside = word
+                .strip_prefix('\'')
+                .and_then(|word| word.strip_suffix('\''));
+            assert!(
+                inside.is_some_and(|inside| !inside.contains(SINGLE_QUOTES)),
+                "{word}"
+            );
+            if powershell {
+                assert_eq!(powershell_string(&word), Some(cursor.clone()), "{word}");
+            }
+        }
+        assert_eq!(
+            super::lexical::Cursor::parse(&cursor).unwrap(),
+            output.next.as_ref().unwrap().cursor
+        );
+        // The tool's note holds the same cursor between double quotes.
+        let tool = tools::format_search_detail("go()", &output, tools::Detail::Lines);
+        assert!(tool.ends_with(&format!("use after=\"{cursor}\"")), "{tool}");
+    }
+}
+
+/// What PowerShell reads of `word` as a string in single quotes, as its
+/// tokenizer scans one. Any of its single quote characters begins and ends the
+/// string, and two in a row stand for one. None where the word is not one
+/// string, so that the shell reads on past it.
+fn powershell_string(word: &str) -> Option<String> {
+    let mut chars = word.chars().peekable();
+    if !SINGLE_QUOTES.contains(&chars.next()?) {
+        return None;
+    }
+    let mut text = String::new();
+    loop {
+        let c = chars.next()?;
+        if SINGLE_QUOTES.contains(&c) {
+            if !chars
+                .peek()
+                .is_some_and(|next| SINGLE_QUOTES.contains(next))
+            {
+                // The end of the string, which must be the end of the word.
+                return chars.next().is_none().then_some(text);
+            }
+            text.push(chars.next()?);
+        } else {
+            text.push(c);
+        }
+    }
+}
+
+/// A file named with curly quotes can't end the single quotes of the word
+/// that PowerShell is given for it. A model of its scanning stands in for it.
+#[test]
+fn a_powershell_word_is_one_string_whatever_quotes_the_text_holds() {
+    // The model sees what a cursor written without them would do.
+    let broken = "'a\u{2019}$(Write-Output expanded)\u{2018}.rs:1:1'";
+    assert_eq!(powershell_string(broken), None);
+    for text in [
+        "src/a.rs:1:1",
+        "it's",
+        "a\u{2019}$(Write-Output expanded)\u{2018}.rs:1:1",
+        "\u{2018}\u{2019}\u{201A}\u{201B}'",
+        "\u{2019}",
+        "''",
+        "a $(b) `c` \"d\" ; e",
+        "",
+    ] {
+        let word = tools::shell_word(text, true);
+        assert_eq!(powershell_string(&word).as_deref(), Some(text), "{word}");
+    }
+    // A cursor holds none of them, so its word needs no doubling.
+    for path in [
+        "a\u{2019}$(Write-Output expanded)\u{2018}.rs",
+        "\u{201A}\u{201B}'.rs",
+        "plain.rs",
+    ] {
+        let cursor = super::lexical::Cursor::at(path, 1, 1).to_string();
+        let word = tools::shell_word(&cursor, true);
+        assert_eq!(word, format!("'{cursor}'"));
+        assert_eq!(powershell_string(&word), Some(cursor));
+    }
+}
+
+/// What a shell reads of `shell_word` is the text, whatever the text holds.
+#[cfg(unix)]
+#[test]
+fn a_shell_word_is_read_back_as_the_text_it_quotes() {
+    let hostile = [
+        "src/a.rs:1:1",
+        "src/$(printf expanded).rs:1:1",
+        "src/`printf expanded`.rs:1:1",
+        "$HOME ${HOME} $((1+1))",
+        "it's",
+        "'",
+        "''",
+        "a'b'c",
+        "\"double\" and 'single'",
+        "back\\slash \\n \\'",
+        "; rm -rf / #",
+        "a && b || c | d > e < f",
+        "*?[a-z]{1,2}~",
+        "!history !!",
+        "  spaces  ",
+        "tab\there",
+        "new\nline",
+        "-x.rs:1:1",
+        "é日本 \u{1F600}",
+        "a\u{2019}$(Write-Output expanded)\u{2018}.rs",
+        "",
+    ];
+    for text in hostile {
+        let word = tools::shell_word(text, false);
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf %s {word}"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{word}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), text, "{word}");
+        // And it reaches a program as one argument.
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("set -- {word}; printf %s \"$#:$1\""))
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), format!("1:{text}"));
+    }
+    // PowerShell doubles the quote.
+    assert_eq!(tools::shell_word("it's", true), "'it''s'");
+    assert_eq!(tools::shell_word("a$(b)", true), "'a$(b)'");
+}
+
+#[test]
+fn the_command_takes_a_cursor_that_starts_with_a_dash() {
+    for args in [
+        &["search", "-m", "lexical", "--after", "-x.rs:1:1", "go"][..],
+        &["search", "-m", "lexical", "--after=-x.rs:1:1", "go"],
+    ] {
+        let mut argv = vec!["arko-index"];
+        argv.extend_from_slice(args);
+        let command = Cli::try_parse_from(argv).unwrap().command;
+        let IndexCommand::Search { after, .. } = command else {
+            panic!("a search");
+        };
+        assert_eq!(after.as_deref(), Some("-x.rs:1:1"));
+    }
 }

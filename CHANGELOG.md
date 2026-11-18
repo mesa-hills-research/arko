@@ -19,6 +19,18 @@
   doesn't find.
 - `arko index search` takes `--exhaustive` and `--ignore-case`, and lists lexical matches the same
   way.
+- A lexical list that is cut ends its note with the cursor of its next page, such as
+  `after="src/a.rs:804:5"` (the path, line and column where its last result starts, with any `%`,
+  `"`, single or curly single quote, control character or leading space of the path written as `%`
+  and hex digits). Calling with `after` lists the matches that follow it, `limit` of them or all of
+  them with `exhaustive=true`, and says where the page lies in the list ("101-200 of 340
+  results"). A page ends after every result at its last place, so a search of indexes that hold
+  the same file can run over `limit` by up to one less than the number of indexes, and the note
+  counts the next page as it will be. Nothing is kept between calls, so a page starts after that
+  place in the files as they are now. `arko index search` takes `--after`, and the command it
+  suggests for the next page quotes the cursor for POSIX shells and PowerShell.
+- A lexical search stays within its `language`. When nothing in it matches, the search says so,
+  where it used to list the matches of every language. Semantic and hybrid search still do.
 
 ## 0.22.2 (2026-11-14)
 

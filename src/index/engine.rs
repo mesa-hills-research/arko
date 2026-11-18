@@ -36,7 +36,7 @@ use tokio::runtime::Handle;
 
 use super::census::{self, Census};
 use super::embed::{self, Backend};
-use super::lexical::{Lines, Literal};
+use super::lexical::{Cursor, Lines, Literal, columns};
 use super::monitor::{self, OpenError};
 use super::store::{self, BuildRecord, Kind, Layout, Manifest, Rules};
 
@@ -349,6 +349,9 @@ pub struct SearchArgs {
     pub limit: Option<usize>,
     /// An exact search returns every match, whatever `limit` says.
     pub exhaustive: bool,
+    /// An exact search's results start after this cursor (see
+    /// [`Cursor`]), the last result of the page before.
+    pub after: Option<String>,
     /// A path (relative to `cwd`, or absolute) results must be under.
     pub path_prefix: Option<String>,
     pub language: Option<String>,
@@ -369,6 +372,9 @@ pub struct Hit {
     pub end_line: usize,
     pub start_byte: usize,
     pub end_byte: usize,
+    /// The byte column (from 1) in its first line where the result starts,
+    /// set for the matches of an exact search.
+    pub column: usize,
     pub scope: String,
     pub symbol: String,
     /// The file changed after the index was built.
@@ -377,12 +383,35 @@ pub struct Hit {
     pub lines: Option<Lines>,
 }
 
+impl Hit {
+    /// The file as shown, and the line and column where the result starts.
+    /// An exact search lists its matches in the order of these places.
+    pub(crate) fn place(&self) -> (&str, usize, usize) {
+        (&self.display, self.start_line, self.column)
+    }
+}
+
+/// The page after the one an exact search listed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NextPage {
+    /// The cursor that starts it, the place of the last result listed.
+    pub cursor: Cursor,
+    /// The results it holds, with the limit the search was given.
+    pub count: usize,
+}
+
 /// What a search found, and how.
 #[derive(Clone, Debug, Default)]
 pub struct SearchOutput {
     pub hits: Vec<Hit>,
     /// The matches in all, for an exact search, which `hits` may cut.
     pub total: Option<usize>,
+    /// The matches an exact search left out because `after` came past them.
+    pub before: usize,
+    /// The cursor the exact search started after.
+    pub after: Option<String>,
+    /// The page that follows an exact search's, when the list goes on.
+    pub next: Option<NextPage>,
     /// Each index searched, meaning its name, kind and the mode used.
     pub searched: Vec<(String, Kind, Mode)>,
     pub notes: Vec<String>,
@@ -1676,12 +1705,18 @@ impl Indexes {
         // Lexical asked for is an exact search, whose matches are all
         // equally right, so it has no most.
         let exact = args.mode == Some(ModeArg::Lexical);
-        if !exact && (args.exhaustive || args.ignore_case) {
+        let after = args
+            .after
+            .as_deref()
+            .map(str::trim)
+            .filter(|after| !after.is_empty());
+        if !exact && (args.exhaustive || args.ignore_case || after.is_some()) {
             return Err(
-                "exhaustive and ignore_case are for mode lexical, whose results hold the query as written"
+                "exhaustive, ignore_case and after are for mode lexical, whose results hold the query as written, in path order"
                     .into(),
             );
         }
+        let after = after.map(Cursor::parse).transpose()?;
         let limit = args.limit.unwrap_or_else(|| limits().of(args.mode)).max(1);
         let limit = match exact {
             true if args.exhaustive => usize::MAX,
@@ -1764,27 +1799,36 @@ impl Indexes {
             });
         }
         if literal.is_some() {
-            output.total = Some(lists.iter().map(Vec::len).sum());
-        }
-        // Interleaved by rank, so each index's best results come first (and
-        // each index keeps its share of a cut list), up to the limit.
-        let mut lists: Vec<_> = lists.into_iter().map(Vec::into_iter).collect();
-        while output.hits.len() < limit {
-            let before = output.hits.len();
-            for list in &mut lists {
-                if output.hits.len() < limit
-                    && let Some(hit) = list.next()
-                {
-                    output.hits.push(hit);
+            let page = page_of(lists.into_iter().flatten().collect(), after.as_ref(), limit);
+            output.hits = page.hits;
+            output.total = Some(page.total);
+            output.before = page.before;
+            output.after = after.as_ref().map(Cursor::to_string);
+            output.next = page.next;
+        } else {
+            // Interleaved by rank, so each index's best results come first
+            // (and each index keeps its share of a cut list), up to the limit.
+            let mut lists: Vec<_> = lists.into_iter().map(Vec::into_iter).collect();
+            while output.hits.len() < limit {
+                let before = output.hits.len();
+                for list in &mut lists {
+                    if output.hits.len() < limit
+                        && let Some(hit) = list.next()
+                    {
+                        output.hits.push(hit);
+                    }
                 }
-            }
-            if output.hits.len() == before {
-                break;
+                if output.hits.len() == before {
+                    break;
+                }
             }
         }
         // A language that matched nothing was often a wrong guess (`rust` in
-        // a Python project). The search goes on without it, and says so.
-        if output.hits.is_empty()
+        // a Python project). A ranked search goes on without it, and says so.
+        // An exact search stays with it, so that the pages of one list are all
+        // of one language, whatever the files became in between.
+        if !exact
+            && output.hits.is_empty()
             && let Some(language) = language
         {
             let mut wider = self.search_blocking(&SearchArgs {
@@ -1799,20 +1843,20 @@ impl Indexes {
                 return Ok(wider);
             }
         }
-        match output.total {
-            Some(total) if total > output.hits.len() => output.notes.push(format!(
-                "exhaustive=true lists all {}, and path_prefix narrows the search",
-                fmt_count(total as u64)
-            )),
-            Some(0) => output.notes.push(format!(
-                "lexical finds the chunks that hold the query as written{}. hybrid finds its words in any order, and rg finds punctuation alone and text inside a longer name",
-                if args.ignore_case {
-                    ""
-                } else {
-                    " (ignore_case=true matches its ASCII letters in any case)"
-                }
-            )),
-            _ => {}
+        if output.total == Some(0) {
+            output.notes.push(match language {
+                Some(language) => format!(
+                    "No matches in {language}. Search without the language filter to see every language."
+                ),
+                None => format!(
+                    "lexical finds the chunks that hold the query as written{}. hybrid finds its words in any order, and rg finds punctuation alone and text inside a longer name",
+                    if args.ignore_case {
+                        ""
+                    } else {
+                        " (ignore_case=true matches its ASCII letters in any case)"
+                    }
+                ),
+            });
         }
         Ok(output)
     }
@@ -2026,9 +2070,12 @@ impl Indexes {
                 }
             }
             chunks.sort_by_key(|chunk| chunk.start_byte);
-            for (chunk, lines) in literal.matches(&text, &chunks) {
+            let found = literal.matches(&text, &chunks);
+            let starts = columns(&text, found.iter().map(|(chunk, _)| chunk.start_byte));
+            for ((chunk, lines), column) in found.into_iter().zip(starts) {
                 let mut hit = hit_of(manifest, chunk.clone(), query.cwd);
                 hit.changed = changed;
+                hit.column = column;
                 hit.lines = Some(lines);
                 hits.push(hit);
             }
@@ -2544,6 +2591,62 @@ struct Query<'a> {
     cwd: &'a Path,
 }
 
+/// A page of an exact search's matches.
+struct Page {
+    hits: Vec<Hit>,
+    /// The matches in all, and how many of them come at or before the cursor.
+    total: usize,
+    before: usize,
+    /// The page after it, when the list goes on.
+    next: Option<NextPage>,
+}
+
+/// The page of `matches` (from every index searched) that starts after the
+/// cursor and holds `limit` of them, or more where the page can't end. They
+/// are in the order of their places in files, and by index where two indexes
+/// have a result at one place. A cursor names a place, so a page doesn't end
+/// between those, and may run over the limit by the results of the other
+/// indexes at its last place.
+fn page_of(mut matches: Vec<Hit>, after: Option<&Cursor>, limit: usize) -> Page {
+    matches.sort_by(|a, b| {
+        a.place()
+            .cmp(&b.place())
+            .then_with(|| a.index.cmp(&b.index))
+    });
+    let total = matches.len();
+    let before = after.map_or(0, |cursor| {
+        matches.partition_point(|hit| {
+            let (path, line, column) = hit.place();
+            cursor.reaches(path, line, column)
+        })
+    });
+    let end = page_end(&matches, before, limit);
+    let next = (end < total).then(|| {
+        let (path, line, column) = matches[end - 1].place();
+        NextPage {
+            cursor: Cursor::at(path, line, column),
+            count: page_end(&matches, end, limit) - end,
+        }
+    });
+    matches.truncate(end);
+    Page {
+        hits: matches.split_off(before),
+        total,
+        before,
+        next,
+    }
+}
+
+/// Where the page of `matches` that starts at `start` ends: `limit` further
+/// on, and past the results at the place that ends it.
+fn page_end(matches: &[Hit], start: usize, limit: usize) -> usize {
+    let mut end = start.saturating_add(limit).min(matches.len());
+    while end > start && end < matches.len() && matches[end].place() == matches[end - 1].place() {
+        end += 1;
+    }
+    end
+}
+
 /// Every chunk of the index at `state` that holds a word of `query` (and
 /// passes `filter`), by BM25, when its generation had `docs` chunks as last
 /// read. A build may have published a larger one since, so a list that comes
@@ -2596,6 +2699,7 @@ fn hit_of(manifest: &Manifest, chunk: Chunk, cwd: &Path) -> Hit {
         end_line: chunk.end_line,
         start_byte: chunk.start_byte,
         end_byte: chunk.end_byte,
+        column: 1,
         scope: chunk.scope,
         symbol: chunk.symbol_path,
         lines: None,

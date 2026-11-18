@@ -9,10 +9,10 @@ use arko_index::dense::{EmbedProgress, StopSignal};
 
 use super::embed::{self, Backend};
 use super::engine::{
-    Action, CreateArgs, EmbedSummary, Events, Found, Indexes, ModeArg, SearchArgs, Timing,
-    chunks_in_files, fmt_count, fmt_counted, fmt_dollars,
+    Action, CreateArgs, EmbedSummary, Events, Found, Indexes, ModeArg, SearchArgs, SearchOutput,
+    Timing, chunks_in_files, fmt_count, fmt_counted, fmt_dollars,
 };
-use super::tools::{self, format_create, format_search_detail, format_status};
+use super::tools::{self, format_create, format_status};
 
 /// `arko index` subcommands.
 #[derive(Debug, Clone, clap::Subcommand)]
@@ -71,6 +71,11 @@ pub enum IndexCommand {
         /// Every match of a lexical search, whatever --limit says
         #[arg(long)]
         exhaustive: bool,
+        /// A lexical search lists the matches after this cursor, which the
+        /// note of a cut list gives (src/a.rs:804:5). The note quotes it for
+        /// POSIX shells and PowerShell
+        #[arg(long, allow_hyphen_values = true)]
+        after: Option<String>,
         /// A lexical search matches the query's ASCII letters in any case
         #[arg(long)]
         ignore_case: bool,
@@ -207,6 +212,17 @@ pub(super) fn cli_search_text(text: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A search's result as the command prints it. The note that gives the next
+/// page is written for the shell, from the cursor, rather than from the
+/// tools' words, which could change the cursor.
+pub(super) fn search_text(query: &str, output: &SearchOutput, detail: tools::Detail) -> String {
+    let mut text = cli_search_text(&tools::format_search_body(query, output, detail));
+    if let Some(note) = tools::next_note(output, true) {
+        text.push_str(&format!("\nnote: {note}"));
+    }
+    text
 }
 
 async fn blocking<T: Send + 'static>(
@@ -349,6 +365,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             mode,
             limit,
             exhaustive,
+            after,
             ignore_case,
             path_prefix,
             language,
@@ -367,6 +384,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
                 mode,
                 limit,
                 exhaustive,
+                after,
                 path_prefix,
                 language,
                 ignore_case,
@@ -385,10 +403,7 @@ async fn run(indexes: &Arc<Indexes>, cmd: IndexCommand, cwd: &Path) -> Result<Ex
             };
             let detail = tools::detail_for(mode, detail);
             let output = blocking(move || worker.search_blocking(&args)).await?;
-            println!(
-                "{}",
-                cli_search_text(&format_search_detail(&text, &output, detail))
-            );
+            println!("{}", search_text(&text, &output, detail));
             Ok(ExitCode::SUCCESS)
         }
         IndexCommand::Update { index, force } => {

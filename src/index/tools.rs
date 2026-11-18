@@ -19,6 +19,7 @@ use super::engine::{
     self, Action, CreateArgs, CreateOutcome, EmbedPlan, IndexReport, Indexes, ModeArg, SearchArgs,
     SearchOutput, chunks_in_files, fmt_ago, fmt_count, fmt_counted, fmt_dollars,
 };
+use super::lexical::SINGLE_QUOTES;
 use super::store::Kind;
 
 /// The tools' names.
@@ -314,11 +315,16 @@ pub(crate) fn parse_search(
         .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX).max(1));
     let exhaustive = bool_param(params, "exhaustive")?.unwrap_or(false);
     let ignore_case = bool_param(params, "ignore_case")?.unwrap_or(false);
-    for (name, given) in [("exhaustive", exhaustive), ("ignore_case", ignore_case)] {
+    let after = str_param(params, "after");
+    for (name, given) in [
+        ("exhaustive", exhaustive),
+        ("ignore_case", ignore_case),
+        ("after", after.is_some()),
+    ] {
         if given && mode != ModeArg::Lexical {
             return Err(invalid(
                 name,
-                "it is for mode lexical, whose results hold the query as written",
+                "it is for mode lexical, whose results hold the query as written, in path order",
             ));
         }
     }
@@ -328,6 +334,7 @@ pub(crate) fn parse_search(
         mode: Some(mode),
         limit,
         exhaustive,
+        after,
         path_prefix: str_param(params, "path_prefix"),
         language: str_param(params, "language"),
         ignore_case,
@@ -574,29 +581,49 @@ fn whole_result(
 const NO_RESULTS: &str = "No results for ";
 const NO_RESULTS_HINT: &str = ". Try other words, a broader path_prefix, or rg for exact text.";
 
+/// How the first line of a search's result begins when a page after a cursor
+/// had no results, though the search had some.
+const NO_MORE: &str = "No results after ";
+
 /// The first line of a search's result, which says how many results it had
 /// from which indexes (`searched`, each `name (kind, mode)`), and of how many
-/// in all when the list is cut ("100 of 340 results").
-/// [`read_search_header`] reads it back.
-fn search_header(query: &str, searched: &[String], hits: usize, total: Option<usize>) -> String {
+/// in all when the list is cut ("100 of 340 results") or starts after a
+/// cursor ("101-200 of 340 results"). [`read_search_header`] reads it back.
+fn search_header(query: &str, searched: &[String], output: &SearchOutput) -> String {
+    let hits = output.hits.len();
+    let names = searched.join(", ");
     if hits == 0 {
+        if let (Some(after), Some(total)) = (&output.after, output.total)
+            && total > 0
+        {
+            return format!(
+                "{NO_MORE}{after:?} from {names}. {} in all.",
+                fmt_count(total as u64)
+            );
+        }
         let within = if searched.is_empty() {
             String::new()
         } else {
-            format!(" in {}", searched.join(", "))
+            format!(" in {names}")
         };
-        format!("{NO_RESULTS}{query:?}{within}{NO_RESULTS_HINT}")
-    } else {
-        let count = match total {
-            Some(total) if total > hits => format!(
-                "{} of {}",
-                fmt_count(hits as u64),
-                fmt_counted(total as u64, "result", "results")
-            ),
-            _ => fmt_counted(hits as u64, "result", "results"),
-        };
-        format!("{count} from {}:", searched.join(", "))
+        return format!("{NO_RESULTS}{query:?}{within}{NO_RESULTS_HINT}");
     }
+    let first = output.before as u64 + 1;
+    let count = match output.total {
+        Some(total) if output.before > 0 => format!(
+            "{}-{} of {}",
+            fmt_count(first),
+            fmt_count(first + hits as u64 - 1),
+            fmt_counted(total as u64, "result", "results")
+        ),
+        Some(total) if total > hits => format!(
+            "{} of {}",
+            fmt_count(hits as u64),
+            fmt_counted(total as u64, "result", "results")
+        ),
+        _ => fmt_counted(hits as u64, "result", "results"),
+    };
+    format!("{count} from {names}:")
 }
 
 /// The hits of a search's result, as [`format_search_detail`] writes it,
@@ -653,6 +680,19 @@ pub fn read_search_hits(output: &str) -> Option<Vec<String>> {
     Some(hits)
 }
 
+/// The text after the string quoted as Rust quotes one at the start of
+/// `text`.
+fn after_quoted(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('"')?;
+    let mut escaped = false;
+    let end = rest.char_indices().find_map(|(at, c)| {
+        let ends = c == '"' && !escaped;
+        escaped = c == '\\' && !escaped;
+        ends.then_some(at)
+    })?;
+    Some(&rest[end + 1..])
+}
+
 /// What the first line of a search's result says, as [`search_header`]
 /// writes it, meaning the indexes searched and how many results there were.
 pub fn read_search_header(line: &str) -> Option<(Vec<String>, usize)> {
@@ -666,20 +706,24 @@ pub fn read_search_header(line: &str) -> Option<(Vec<String>, usize)> {
             .collect()
     };
     if let Some(rest) = line.strip_prefix(NO_RESULTS) {
-        // Past the query, quoted as Rust quotes a string.
-        let rest = rest.strip_prefix('"')?;
-        let mut escaped = false;
-        let end = rest.char_indices().find_map(|(at, c)| {
-            let ends = c == '"' && !escaped;
-            escaped = c == '\\' && !escaped;
-            ends.then_some(at)
-        })?;
-        let rest = rest[end + 1..].strip_suffix(NO_RESULTS_HINT)?;
+        // Past the query.
+        let rest = after_quoted(rest)?.strip_suffix(NO_RESULTS_HINT)?;
         let list = rest.strip_prefix(" in ").unwrap_or_default();
         return Some((names(list), 0));
     }
+    if let Some(rest) = line.strip_prefix(NO_MORE) {
+        // Past the cursor, and then the indexes before the count.
+        // ("No results after \"src/a.rs:804:5\" from proj (code, lexical). 340 in all.")
+        let list = after_quoted(rest)?.strip_prefix(" from ")?;
+        return Some((names(list.rsplit_once(". ")?.0), 0));
+    }
     let (count, rest) = line.split_once(' ')?;
-    let hits = count.replace(',', "").parse().ok()?;
+    let number = |text: &str| text.replace(',', "").parse::<usize>().ok();
+    // ("101-200 of 340 results" is a page after a cursor.)
+    let hits = match count.split_once('-') {
+        Some((first, last)) => number(last)?.checked_sub(number(first)?)? + 1,
+        None => number(count)?,
+    };
     // ("100 of 340 results", a cut list.)
     let rest = match rest.strip_prefix("of ") {
         Some(cut) => cut.split_once(' ')?.1,
@@ -699,61 +743,52 @@ pub fn format_search(query: &str, output: &SearchOutput, snippet_lines: usize) -
     format_search_detail(query, output, Detail::Brief(snippet_lines))
 }
 
-/// `hits` grouped by file, in the order of each file's first, after a blank
-/// line. Each group is the file (`[index] path` when `several` indexes were
-/// searched), then each result as its lines and scope (`  774-877 · fn x`),
-/// then the lines that hold the query (`    804 | text`).
+/// `hits` in their order, after a blank line, with a heading where the file
+/// (or the index) changes from the result before. Each group is the file
+/// (`[index] path` when `several` indexes were searched), then each result as
+/// its lines and scope (`  774-877 · fn x`), then the lines that hold the
+/// query (`    804 | text`). The results of an exact search are in the order of
+/// their places, so a file is one group unless indexes share it.
 fn grouped_results(hits: &[engine::Hit], several: bool) -> String {
-    let mut files: Vec<(&engine::Hit, Vec<&engine::Hit>)> = Vec::new();
-    let mut at: HashMap<(&str, &Path), usize> = HashMap::new();
-    for hit in hits {
-        let key = (hit.index.as_str(), hit.file.as_path());
-        match at.get(&key) {
-            Some(&group) => files[group].1.push(hit),
-            None => {
-                at.insert(key, files.len());
-                files.push((hit, vec![hit]));
-            }
-        }
-    }
     let mut out = String::new();
-    if !files.is_empty() {
+    if !hits.is_empty() {
         out.push('\n');
     }
-    for (first, mut results) in files {
-        results.sort_by_key(|hit| hit.start_line);
-        if several {
-            out.push_str(&format!("[{}] ", first.index));
-        }
-        out.push_str(&first.display);
-        out.push('\n');
-        for hit in results {
-            out.push_str(&format!("  {}-{}", hit.start_line, hit.end_line));
-            let context = if hit.scope.is_empty() {
-                &hit.symbol
-            } else {
-                &hit.scope
-            };
-            if !context.is_empty() {
-                out.push_str(&format!(" · {context}"));
+    let mut group: Option<(&str, &Path)> = None;
+    for hit in hits {
+        if group != Some((hit.index.as_str(), hit.file.as_path())) {
+            group = Some((hit.index.as_str(), hit.file.as_path()));
+            if several {
+                out.push_str(&format!("[{}] ", hit.index));
             }
-            if hit.changed {
-                out.push_str(" (file changed since indexed)");
-            }
+            out.push_str(&hit.display);
             out.push('\n');
-            let Some(lines) = &hit.lines else {
-                continue;
-            };
-            for (number, line) in &lines.shown {
-                out.push_str(&format!("    {number} | {line}\n"));
-            }
-            if lines.more > 0 {
-                out.push_str(&format!(
-                    "    and {} more {}\n",
-                    fmt_count(lines.more as u64),
-                    crate::remote::noun(lines.more, "line", "lines")
-                ));
-            }
+        }
+        out.push_str(&format!("  {}-{}", hit.start_line, hit.end_line));
+        let context = if hit.scope.is_empty() {
+            &hit.symbol
+        } else {
+            &hit.scope
+        };
+        if !context.is_empty() {
+            out.push_str(&format!(" · {context}"));
+        }
+        if hit.changed {
+            out.push_str(" (file changed since indexed)");
+        }
+        out.push('\n');
+        let Some(lines) = &hit.lines else {
+            continue;
+        };
+        for (number, line) in &lines.shown {
+            out.push_str(&format!("    {number} | {line}\n"));
+        }
+        if lines.more > 0 {
+            out.push_str(&format!(
+                "    and {} more {}\n",
+                fmt_count(lines.more as u64),
+                crate::remote::noun(lines.more, "line", "lines")
+            ));
         }
     }
     out
@@ -762,6 +797,16 @@ fn grouped_results(hits: &[engine::Hit], several: bool) -> String {
 /// A search's results with `detail`, meaning a header line, then per result
 /// `path:start-end · scope` and its lines, then notes.
 pub fn format_search_detail(query: &str, output: &SearchOutput, detail: Detail) -> String {
+    let mut text = format_search_body(query, output, detail);
+    if let Some(note) = next_note(output, false) {
+        text.push_str(&format!("\nnote: {note}"));
+    }
+    text
+}
+
+/// [`format_search_detail`] without the note that gives the next page, which
+/// the command writes for the shell.
+pub(super) fn format_search_body(query: &str, output: &SearchOutput, detail: Detail) -> String {
     let mut out = String::new();
     let searched: Vec<String> = output
         .searched
@@ -769,12 +814,7 @@ pub fn format_search_detail(query: &str, output: &SearchOutput, detail: Detail) 
         .map(|(name, kind, mode)| format!("{name} ({}, {})", kind.as_str(), mode_name(*mode)))
         .collect();
     let several = output.searched.len() > 1;
-    out.push_str(&search_header(
-        query,
-        &searched,
-        output.hits.len(),
-        output.total,
-    ));
+    out.push_str(&search_header(query, &searched, output));
     out.push('\n');
     if detail == Detail::Lines {
         out.push_str(&grouped_results(&output.hits, several));
@@ -840,6 +880,47 @@ pub fn format_search_detail(query: &str, output: &SearchOutput, detail: Detail) 
         out.push_str(&format!("note: {note}\n"));
     }
     out.trim_end().to_string()
+}
+
+/// The note of a cut exact list, which ends with the cursor of the next page.
+/// A tool passes it as `after="CURSOR"`, and a command as `--after 'CURSOR'`
+/// (see [`shell_word`]), quoted for POSIX shells and PowerShell. `lists all`
+/// counts what the same search lists with exhaustive=true, meaning everything
+/// after the cursor it was given.
+pub(super) fn next_note(output: &SearchOutput, command: bool) -> Option<String> {
+    let next = output.next.as_ref()?;
+    let all = fmt_count((output.total.unwrap_or_default() - output.before) as u64);
+    let (count, cursor) = (fmt_count(next.count as u64), next.cursor.to_string());
+    Some(if command {
+        format!(
+            "--exhaustive lists all {all}, and --path-prefix narrows the search. For the next {count}, use --after {}",
+            shell_word(&cursor, cfg!(windows))
+        )
+    } else {
+        format!(
+            "exhaustive=true lists all {all}, and path_prefix narrows the search. For the next {count}, use after=\"{cursor}\""
+        )
+    })
+}
+
+/// `text` as one word of a POSIX shell command or a PowerShell one, in single
+/// quotes. Nothing inside single quotes is changed, run or split, except
+/// their delimiters, which are written as the shell takes them literally. In
+/// POSIX sh a single quote ends the quotes, is escaped and begins them again.
+/// In PowerShell every one of [`SINGLE_QUOTES`] is doubled. A cursor holds
+/// none of them, so the word for a cursor holds no delimiter but its own
+/// wrapping quotes. Other shells, such as cmd.exe, are not covered.
+pub(super) fn shell_word(text: &str, powershell: bool) -> String {
+    let mut word = String::from("'");
+    for c in text.chars() {
+        match c {
+            '\'' if !powershell => word.push_str(r"'\''"),
+            c if powershell && SINGLE_QUOTES.contains(&c) => word.extend([c, c]),
+            c => word.push(c),
+        }
+    }
+    word.push('\'');
+    word
 }
 
 /// "embedding now", with the run's progress and where it runs.
@@ -1035,7 +1116,7 @@ const SEARCH_DESCRIPTION: &str = "Searches Arko's indexes of code and docs by me
 Before you commit to grep or rg, ask whether you already know the symbols or exact strings you're looking for. If you don't, describe the behaviour you want (\"where are failed requests retried\", \"code that validates config paths\") and search with mode `semantic`. A name's definition takes `hybrid`. Every use of a name or an exact string (a function's callers, an error message) takes `lexical`. Results come back whole where rg gives one line, so one search often replaces several rounds of rg, sed and read_file. \
 Use rg/grep for regexes, punctuation alone, text inside a longer name, and files no index covers. \
 Semantic and hybrid return ranked `path:start-end · scope` results. The top ones come whole: the entire function, type or doc section, with line numbers as read_file shows them, so there's no need to read them again or grep around them; the rest show their first lines (read those with read_file if they look promising). detail=brief returns only locations and short snippets: more results in less space. \
-Lexical lists every chunk that holds the query as written, in path order and grouped by file, each with its scope and the lines that hold the query. Its first line says how many there are in all (\"100 of 340 results\"), and exhaustive=true lists them all. \
+Lexical lists every chunk that holds the query as written, in path order and grouped by file, each with its scope and the lines that hold the query. Its first line says how many there are in all (\"100 of 340 results\"), and exhaustive=true lists them all. A cut list's note ends with the cursor of its next page, and `after` lists the matches that follow a cursor, `limit` of them or all with exhaustive=true. A page ends after every result at its last place, so a search of several indexes that hold the same file can run over `limit` by up to one less than the number of indexes. Nothing is kept between calls, so a page begins after the cursor's place (a path, line and column) in the files as they are now. An edit above that place can move a match across it, and then the match is listed twice or not at all. \
 Works for any directory with an index, not just the current one: name it in `index` (an index name, or any directory or file inside it) or give a `path_prefix` inside it. Without either, searches the indexes covering the current directory; index_status lists them all.";
 
 const STATUS_DESCRIPTION: &str = "Shows Arko's semantic search indexes (all, or the one named): root, kind, chunks, embedding coverage and cost, monitoring and pending changes, errors. Check it before index_create.";
@@ -1243,8 +1324,14 @@ fn search_definition() -> ToolDefinition {
             ),
             param(
                 "exhaustive",
-                "Lexical mode only. true lists every match, whatever the limit.",
+                "Lexical mode only. true lists every match, whatever the limit (all that follow the cursor, with `after`).",
                 ToolParameterType::Bool,
+                false,
+            ),
+            param(
+                "after",
+                "Lexical mode only. A cursor from the end of a cut list's note, such as `src/a.rs:804:5`. Lists the matches that follow it, in the same order.",
+                ToolParameterType::String,
                 false,
             ),
             param(
@@ -1267,7 +1354,7 @@ fn search_definition() -> ToolDefinition {
             ),
             param(
                 "language",
-                "Only chunks in this language, such as python or rust. Leave it out unless the project mixes languages and you want one of them.",
+                "Only chunks in this language, such as python or rust. When none match, lexical search says so, and semantic and hybrid search list every language. Leave it out unless the project mixes languages and you want one of them.",
                 ToolParameterType::String,
                 false,
             ),

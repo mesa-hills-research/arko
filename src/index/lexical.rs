@@ -5,6 +5,8 @@
 //! the lines where the query starts.
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
+use std::fmt;
 
 use arko_index::bench_v1::Chunk;
 
@@ -21,6 +23,167 @@ pub struct Lines {
     pub shown: Vec<(usize, String)>,
     /// The lines that hold it past those shown.
     pub more: usize,
+}
+
+/// The characters that begin or end a string in single quotes in POSIX sh or
+/// in PowerShell, which reads the curly single quotes as the straight one.
+pub(crate) const SINGLE_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+
+/// Where a page of an exact search starts, meaning the place of the last
+/// result of the page before, as the note of a cut list gives it
+/// (`src/a.rs:804:5`). The results are in the order of their places, so a
+/// page is the results whose places come after the cursor's.
+///
+/// Any path survives being written and read back. A cursor writes `%`, `"`,
+/// each of [`SINGLE_QUOTES`], a control character, and a space at the start
+/// of the path, as `%` and two hex digits for each byte. It never starts or
+/// ends in a space or a quote (it ends in a number), so a cursor passed on as
+/// a parameter, or between quotes, keeps its path as it was.
+///
+/// Invariant: a cursor holds no quote delimiter of POSIX sh or PowerShell, so
+/// the word a command suggests for it, in single quotes, holds no delimiter
+/// other than its own wrapping quotes, and no path can end that word early.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cursor {
+    /// The file as results show it.
+    path: String,
+    /// The line where the result starts, from 1.
+    line: usize,
+    /// The byte column of its start in that line, from 1. None means every
+    /// result that starts on the line.
+    column: Option<usize>,
+}
+
+impl Cursor {
+    /// The cursor of a result that starts at `column` of `line` in `path`.
+    pub fn at(path: &str, line: usize, column: usize) -> Self {
+        Self {
+            path: path.to_string(),
+            line,
+            column: Some(column),
+        }
+    }
+
+    /// `PATH:LINE:COLUMN`, or `PATH:LINE` for all the results that start on
+    /// the line, with the path as the cursor writes it. A pair of quotes
+    /// around the cursor, with or without `after=` before them, is left off,
+    /// as an agent may copy them with it.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let bad = || {
+            format!(
+                "{text:?} isn't a cursor. Use the one that ends the note of a cut list, a path with a line and a column such as src/a.rs:804:5"
+            )
+        };
+        let given = without_quotes(text.trim());
+        let (head, last) = number_after_colon(given).ok_or_else(bad)?;
+        let (path, line, column) = match number_after_colon(head) {
+            Some((path, line)) => (path, line, Some(last)),
+            None => (head, last, None),
+        };
+        let path = unescaped(path).filter(|path| !path.is_empty());
+        Ok(Self {
+            path: path.ok_or_else(bad)?,
+            line,
+            column,
+        })
+    }
+
+    /// Whether a result that starts at `column` of `line` in `path` comes at
+    /// or before the cursor, so that a page after it leaves the result out.
+    pub fn reaches(&self, path: &str, line: usize, column: usize) -> bool {
+        match path.cmp(self.path.as_str()).then(line.cmp(&self.line)) {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            Ordering::Equal => self.column.is_none_or(|last| column <= last),
+        }
+    }
+}
+
+impl fmt::Display for Cursor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (at, c) in self.path.chars().enumerate() {
+            if c == '%'
+                || c == '"'
+                || SINGLE_QUOTES.contains(&c)
+                || c.is_control()
+                || (at == 0 && c.is_whitespace())
+            {
+                for byte in c.encode_utf8(&mut [0; 4]).bytes() {
+                    write!(f, "%{byte:02X}")?;
+                }
+            } else {
+                write!(f, "{c}")?;
+            }
+        }
+        write!(f, ":{}", self.line)?;
+        match self.column {
+            Some(column) => write!(f, ":{column}"),
+            None => Ok(()),
+        }
+    }
+}
+
+/// `text` without the pair of quotes around it, and the `after=` before
+/// them. A cursor ends in a number, so a path never makes one look quoted.
+fn without_quotes(text: &str) -> &str {
+    fn inside(text: &str) -> Option<&str> {
+        ['"', '\'']
+            .into_iter()
+            .find_map(|quote| text.strip_prefix(quote)?.strip_suffix(quote))
+    }
+    inside(text)
+        .or_else(|| inside(text.strip_prefix("after=")?))
+        .unwrap_or(text)
+}
+
+/// `path` with each `%` and two hex digits taken for the byte they stand for.
+/// A `%` that isn't followed by two hex digits is a `%`.
+fn unescaped(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let hex = bytes
+            .get(at + 1..at + 3)
+            .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit));
+        match (bytes[at], hex) {
+            (b'%', Some(hex)) => {
+                out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
+                at += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The number (from 1) after the last colon of `text`, and what comes before
+/// the colon.
+fn number_after_colon(text: &str) -> Option<(&str, usize)> {
+    let (head, tail) = text.rsplit_once(':')?;
+    let number: usize = tail.parse().ok().filter(|&number| number >= 1)?;
+    Some((head, number))
+}
+
+/// The byte column (from 1) in its line of each of `starts`, ascending byte
+/// offsets into `text` at the start of a character.
+pub(crate) fn columns(text: &str, starts: impl IntoIterator<Item = usize>) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    // Where the line of the last start begins, and how far the text was read.
+    let (mut line_start, mut read) = (0, 0);
+    starts
+        .into_iter()
+        .map(|at| {
+            if let Some(newline) = bytes[read..at].iter().rposition(|&byte| byte == b'\n') {
+                line_start = read + newline + 1;
+            }
+            read = at;
+            at - line_start + 1
+        })
+        .collect()
 }
 
 /// A query as lexical search matches it.
@@ -373,5 +536,211 @@ mod tests {
         let found = Literal::new(&long, false).matches(&text, &chunks);
         let line = &found[0].1.shown[0].1;
         assert_eq!(*line, format!("…{}…", "x".repeat(LINE_WIDTH - 2)));
+    }
+
+    fn cursor(path: &str, line: usize, column: Option<usize>) -> Cursor {
+        Cursor {
+            path: path.into(),
+            line,
+            column,
+        }
+    }
+
+    #[test]
+    fn a_cursor_is_a_path_a_line_and_a_column() {
+        for (text, want) in [
+            ("src/a.rs:804:5", cursor("src/a.rs", 804, Some(5))),
+            ("src/a.rs:804", cursor("src/a.rs", 804, None)),
+            // As an agent may copy it from a note.
+            (" \"src/a.rs:1:1\" ", cursor("src/a.rs", 1, Some(1))),
+            ("after=\"src/a.rs:12:3\"", cursor("src/a.rs", 12, Some(3))),
+            // A path with colons keeps them, and a name that ends in a number
+            // is read with the line and column after it.
+            ("C:\\w\\a.rs:7:2", cursor("C:\\w\\a.rs", 7, Some(2))),
+            ("C:\\w\\a.rs:7", cursor("C:\\w\\a.rs", 7, None)),
+            ("notes:12:7:3", cursor("notes:12", 7, Some(3))),
+            ("/a b/é.rs:3:9", cursor("/a b/é.rs", 3, Some(9))),
+        ] {
+            assert_eq!(Cursor::parse(text).unwrap(), want, "{text}");
+        }
+        for text in [
+            "",
+            "   ",
+            "src/a.rs",
+            "src/a.rs:",
+            "src/a.rs:x",
+            "src/a.rs:0",
+            "src/a.rs:3:0",
+            "src/a.rs:-1",
+            ":3",
+            ":3:1",
+            "src/a.rs:3:1:",
+            "after=",
+        ] {
+            let error = Cursor::parse(text).unwrap_err();
+            assert!(error.contains("isn't a cursor"), "{text}: {error}");
+            assert!(error.contains("src/a.rs:804:5"), "{text}: {error}");
+        }
+        // Written as the note gives it.
+        for text in ["src/a.rs:804:5", "src/a.rs:804", "C:\\w\\a.rs:7:2"] {
+            assert_eq!(Cursor::parse(text).unwrap().to_string(), text);
+        }
+        assert_eq!(Cursor::at("src/a.rs", 804, 5).to_string(), "src/a.rs:804:5");
+    }
+
+    /// The cursor of `path` as a note writes it, and what reads it back.
+    fn written(path: &str) -> String {
+        let text = Cursor::at(path, 7, 3).to_string();
+        assert_eq!(
+            Cursor::parse(&text).unwrap(),
+            Cursor::at(path, 7, 3),
+            "{path:?}"
+        );
+        text
+    }
+
+    #[test]
+    fn a_cursor_reads_back_any_path_it_writes() {
+        for path in [
+            "src/a.rs",
+            "after=a.rs",
+            "after=\"a.rs\"",
+            "\"a.rs",
+            "a.rs\"",
+            "\"a.rs\"",
+            "'a.rs",
+            "'a.rs'",
+            "a\u{2019}$(Write-Output expanded)\u{2018}.rs",
+            "\u{2018}\u{2019}\u{201A}\u{201B}",
+            "it\u{2019}s.rs",
+            " a.rs",
+            "\ta.rs",
+            "a.rs ",
+            "a b/ c .rs",
+            "a\nb.rs",
+            "a\r\nb.rs",
+            "100%.rs",
+            "100%25.rs",
+            "a%2Fb.rs",
+            "%",
+            "%4",
+            "notes:12",
+            "notes:12:7",
+            "C:\\w\\a.rs",
+            "src/$(printf x).rs",
+            "`x`;'\\.rs",
+            "é/ü/日本.rs",
+            "\u{a0}nbsp.rs",
+            "\u{2028}x.rs",
+        ] {
+            let text = written(path);
+            // The text is a path as it writes it, and it ends in numbers.
+            assert!(text.ends_with(":7:3"), "{text:?}");
+            assert!(!text.starts_with(char::is_whitespace), "{text:?}");
+            assert!(!text.contains(['"', '\n', '\r', '\t']), "{text:?}");
+            assert!(!text.contains(SINGLE_QUOTES), "{text:?}");
+            // Between quotes, or given as `after=` with them, it is the same.
+            for quoted in [
+                format!("\"{text}\""),
+                format!("after=\"{text}\""),
+                format!("'{text}'"),
+            ] {
+                assert_eq!(
+                    Cursor::parse(&quoted).unwrap(),
+                    Cursor::at(path, 7, 3),
+                    "{quoted}"
+                );
+            }
+            // And a parameter that is trimmed loses nothing of it.
+            assert_eq!(text.trim(), text);
+        }
+        // Every short path of the characters that matter, so that none
+        // reads as something else.
+        let alphabet = [
+            'a', ' ', '"', '\'', '%', ':', '=', '1', '\n', '\\', 'é', '\u{2019}', '\u{201B}',
+        ];
+        let mut paths = vec![String::new()];
+        for _ in 0..3 {
+            let longer: Vec<String> = paths
+                .iter()
+                .flat_map(|path| alphabet.iter().map(move |c| format!("{path}{c}")))
+                .collect();
+            for path in &longer {
+                written(path);
+            }
+            paths = longer;
+        }
+        // What the cursor leaves as it is, it leaves readable.
+        assert_eq!(written("src/a b/é.rs"), "src/a b/é.rs:7:3");
+        assert_eq!(written("a%.rs"), "a%25.rs:7:3");
+        assert_eq!(written(" a.rs"), "%20a.rs:7:3");
+        assert_eq!(written("a\"b"), "a%22b:7:3");
+        assert_eq!(written("it's"), "it%27s:7:3");
+        assert_eq!(written("it\u{2019}s"), "it%E2%80%99s:7:3");
+        for quote in SINGLE_QUOTES {
+            assert!(!written(&format!("a{quote}b")).contains(quote));
+        }
+        assert_eq!(written("a\nb"), "a%0Ab:7:3");
+        // A path as it is typed.
+        assert_eq!(
+            Cursor::parse("after=a.rs:1:1").unwrap(),
+            Cursor::at("after=a.rs", 1, 1)
+        );
+        assert_eq!(
+            Cursor::parse("\"a.rs:1:1").unwrap(),
+            Cursor::at("\"a.rs", 1, 1)
+        );
+        assert_eq!(
+            Cursor::parse("100%.rs:1:1").unwrap(),
+            Cursor::at("100%.rs", 1, 1)
+        );
+        assert_eq!(Cursor::parse("a%2:1:1").unwrap(), Cursor::at("a%2", 1, 1));
+        // A byte that isn't text is no path.
+        assert!(Cursor::parse("a%FF.rs:1:1").is_err());
+    }
+
+    #[test]
+    fn a_cursor_reaches_the_places_before_it_and_itself() {
+        let at = Cursor::at("src/b.rs", 10, 5);
+        for (path, line, column, reached) in [
+            ("src/a.rs", 99, 1, true),
+            ("src/b.rs", 9, 80, true),
+            ("src/b.rs", 10, 4, true),
+            ("src/b.rs", 10, 5, true),
+            ("src/b.rs", 10, 6, false),
+            ("src/b.rs", 11, 1, false),
+            ("src/c.rs", 1, 1, false),
+            // A path is compared whole, as it sorts.
+            ("src/b.rs/x", 1, 1, false),
+            ("src/b", 99, 1, true),
+        ] {
+            assert_eq!(
+                at.reaches(path, line, column),
+                reached,
+                "{path}:{line}:{column}"
+            );
+        }
+        // Without a column, every result that starts on the line is before it.
+        let line = Cursor::parse("src/b.rs:10").unwrap();
+        assert!(line.reaches("src/b.rs", 10, 1) && line.reaches("src/b.rs", 10, 900));
+        assert!(!line.reaches("src/b.rs", 11, 1));
+    }
+
+    #[test]
+    fn columns_are_bytes_into_each_line() {
+        let text = "ab\n  é fn\n\nlet x = 1; let y = 2;\n";
+        let at = |needle: &str| text.find(needle).unwrap();
+        let starts = [0, at("b"), at("é"), at("fn"), at("let y"), text.len()];
+        // (The start of the text, the end of a line, past a two-byte letter,
+        // a line with nothing in it, and the end of the text.)
+        assert_eq!(columns(text, starts), [1, 2, 3, 6, 12, 1]);
+        assert_eq!(columns(text, [at("let x"), at("let x")]), [1, 1]);
+        assert_eq!(columns("", [0]), [1]);
+        assert!(columns(text, []).is_empty());
+        // A line of many chunks is read once, however long.
+        let line = "x".repeat(100_000);
+        let starts: Vec<usize> = (0..100).map(|n| n * 1_000).collect();
+        let found = columns(&line, starts.iter().copied());
+        assert_eq!(found, starts.iter().map(|at| at + 1).collect::<Vec<_>>());
     }
 }
