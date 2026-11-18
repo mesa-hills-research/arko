@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.23.0 (2026-11-18)
 
 ### Models
 
@@ -23,6 +23,7 @@
   edit_file, and returns only what the code returns, so loops and filtering over many files stay
   out of the conversation. `classic`, without it, stays the default for now, and a resumed session
   takes the setting for the conversations and workers that start after.
+  [Code mode](docs/code-mode.md) says more.
 - Each call from code passes the same checks as a call of the model's, meaning outside access, the
   command guard, the path and approval policies and every hook. A call that would wait for
   approval is refused at once, and the third refused call ends the run.
@@ -31,8 +32,6 @@
   runaway script or a fault in the engine ends that process and never Arko. A run may compute for
   30 seconds, hold 64 MB, make 500 tool calls and take timeout_seconds (5 minutes by default, at
   most an hour). A failed run says its line and what it had changed.
-- A program built on the library that sets `Options::tools` to `both` calls
-  `arko::code_mode::run_if_asked()` first in `main`.
 
 ### Search indexes
 
@@ -63,6 +62,20 @@
   suggests for the next page quotes the cursor for POSIX shells and PowerShell.
 - A lexical search stays within its `language`. When nothing in it matches, the search says so,
   where it used to list the matches of every language. Semantic and hybrid search still do.
+
+### Dependencies
+
+- arko_ai 0.3.0, arko_agents 0.9.0 and arko_workflows 0.10.0, for the new models and the calls
+  code mode makes.
+- rquickjs 0.14.0, behind the `code-mode` feature, on by default. It needs a C compiler.
+
+### For apps
+
+- An app that also names arko_ai's types takes arko_ai 0.3, where a `match` on
+  `GeminiThinkingLevel` needs a `_` arm.
+- `Options::tools` chooses `code_mode::Tools::Classic` or `Both`. A program that sets `Both` calls
+  `arko::code_mode::run_if_asked()` first in `main`, and an app built with
+  `default-features = false` adds the `code-mode` feature for it.
 
 ## 0.22.2 (2026-11-14)
 
