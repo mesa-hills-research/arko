@@ -33,10 +33,28 @@ impl RunCodeTool {
     }
 
     /// The description, the only place that teaches the model the API.
+    /// An agent has one of the two editing tools, so they're named as one.
     fn description(&self) -> String {
-        let names = match self.callable.as_slice() {
+        use arko_agents::builtins::{APPLY_DIFF_TOOL_NAME, EDIT_FILE_TOOL_NAME};
+        let mut names: Vec<String> = self
+            .callable
+            .iter()
+            .filter(|name| **name != EDIT_FILE_TOOL_NAME)
+            .map(|name| name.to_string())
+            .collect();
+        if self.callable.contains(&EDIT_FILE_TOOL_NAME) {
+            match names.iter().position(|name| name == APPLY_DIFF_TOOL_NAME) {
+                Some(at) => {
+                    names[at] = format!(
+                        "whichever of {APPLY_DIFF_TOOL_NAME} and {EDIT_FILE_TOOL_NAME} you have"
+                    );
+                }
+                None => names.push(EDIT_FILE_TOOL_NAME.to_string()),
+            }
+        }
+        let names = match names.as_slice() {
             [] => "none".to_string(),
-            [one] => one.to_string(),
+            [one] => one.clone(),
             [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
         };
         format!(

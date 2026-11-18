@@ -1,6 +1,6 @@
 Runs JavaScript that calls your tools and returns only what the code returns. Use it when a step would otherwise take many calls or put a large result in front of you, such as the same call over many files, a result to count or filter before you read it, or calls that feed each other. For one read, one edit or one command, call the tool itself.
 
-The code is the body of an async function. `await tools.read_file({ path })` calls a tool with the arguments it takes as a tool, and gives its result as text. The tools it can call are read_file, list_files, index_search, index_status, shell, write_file and apply_diff. A call that fails or is refused throws an Error with the tool's message. `return` what you need (objects come back as JSON), and `console.log` adds lines above it. The result is cut at 30,000 characters.
+The code is the body of an async function. `await tools.read_file({ path })` calls a tool with the arguments it takes as a tool, and gives its result as text. The tools it can call are read_file, list_files, index_search, index_status, shell, write_file and whichever of apply_diff and edit_file you have. A call that fails or is refused throws an Error with the tool's message. `return` what you need (objects come back as JSON), and `console.log` adds lines above it. The result is cut at 30,000 characters.
 
 The code has no files, network, imports or timers of its own, and TypeScript syntax is an error. A run may take timeout_seconds, compute for 30 seconds, hold 64 MB and make 500 tool calls.
 

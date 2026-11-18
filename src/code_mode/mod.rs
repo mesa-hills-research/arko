@@ -44,8 +44,10 @@ pub const RUNNER_ARGUMENT: &str = "code-runner";
 
 /// The tools code may call, and no others. The first four only read. Jobs
 /// that outlive a run, workers, questions, messages, skills, notes and MCP
-/// servers stay direct calls.
-pub const CALLABLE: [&str; 7] = [
+/// servers stay direct calls. (A run calls only those its agent has, so
+/// sessions saved while the agents edited with `edit_file` call that, and
+/// new ones `apply_diff`.)
+pub const CALLABLE: [&str; 8] = [
     arko_agents::builtins::READ_FILE_TOOL_NAME,
     arko_agents::builtins::LIST_FILES_TOOL_NAME,
     crate::index::SEARCH_TOOL_NAME,
@@ -53,6 +55,7 @@ pub const CALLABLE: [&str; 7] = [
     crate::shell::SHELL_TOOL_NAME,
     arko_agents::builtins::WRITE_FILE_TOOL_NAME,
     arko_agents::builtins::APPLY_DIFF_TOOL_NAME,
+    arko_agents::builtins::EDIT_FILE_TOOL_NAME,
 ];
 
 // The limits of a run, set before any code runs.
@@ -142,7 +145,7 @@ mod tests {
 
     /// Code calls only tools that read, write files or run commands.
     #[test]
-    fn code_calls_only_the_seven_tools() {
+    fn code_calls_only_the_eight_tools() {
         assert_eq!(
             CALLABLE,
             [
@@ -152,7 +155,8 @@ mod tests {
                 "index_status",
                 "shell",
                 "write_file",
-                "apply_diff"
+                "apply_diff",
+                "edit_file"
             ]
         );
     }

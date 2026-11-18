@@ -922,7 +922,7 @@ impl Engine {
         if let Some(indexes) = &indexes {
             tools.extend(indexes.tools());
         }
-        // `run_code` calls the tools of the seven the session has.
+        // `run_code` calls the tools of the eight the session has.
         let callable: Vec<&'static str> = crate::code_mode::CALLABLE
             .into_iter()
             .filter(|name| indexes.is_some() || !index::TOOL_NAMES.contains(name))
