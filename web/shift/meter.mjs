@@ -1844,20 +1844,28 @@ async function pixelCases(cdp, agent) {
       await play(ratio, `the keyboard comes while reading, a worker's view and back, and it goes ${where}`, async (run) => {
         await run.fill();
         await run.feed({ do: 'worker', id: 'r1', text: `Task ${run.words(4)}` });
-        for (let at = 0; at < 4; at++) await run.feed({ do: 'text', text: `${run.some(12, 8)}\n\n` });
+        for (let at = 0; at < 6; at++) await run.feed({ do: 'text', text: `${run.some(12, 8)}\n\n` });
         await run.settle(null);
         await run.roll(-40, 0);
         await run.metrics(run.width, run.height - 180);
         await run.settle(null);
-        const card = await run.evaluate(`(() => {
+        // (The card above the end, in sight. Scrolled to where it isn't,
+        // which keeps the reader reading.)
+        const where = `(() => {
           const log = document.getElementById('log').getBoundingClientRect();
-          const card = [...document.querySelectorAll('#rows .wcard')].find((card) => { const r = card.getBoundingClientRect(); return r.top >= log.top && r.bottom <= log.bottom; });
+          const card = [...document.querySelectorAll('#rows .wcard')].pop();
           if (!card) return null;
           const r = card.getBoundingClientRect();
-          return [r.left + 20, r.top + r.height / 2];
-        })()`);
-        if (!card) return 'skipped';
-        await run.click(card[0], card[1]);
+          return { x: r.left + 20, y: r.top + r.height / 2, above: log.top + 20 - r.top, below: r.bottom + 20 - log.bottom };
+        })()`;
+        let card = await run.evaluate(where);
+        if (!card) return 'no worker card';
+        if (card.above > 0) await run.roll(-card.above * ratio, 200);
+        else if (card.below > 0) await run.roll(card.below * ratio, 200);
+        card = await run.evaluate(where);
+        if (card.above > 0 || card.below > 0) return `the worker card is out of sight (${JSON.stringify(card)})`;
+        if ((await run.look()).choice !== 'read') return 'the scroll to the card followed';
+        await run.click(card.x, card.y);
         await run.settle(null);
         if (away) {
           await run.metrics(run.width, run.height + 180);
