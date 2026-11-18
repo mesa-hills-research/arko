@@ -2124,7 +2124,10 @@ mod tests {
                 off: vec!["prose".into()]
             }
         );
-        assert_eq!(seam.details.skills().unwrap().builtin_off.len(), 3);
+        assert_eq!(
+            seam.details.skills().unwrap().builtin_off.len(),
+            crate::builtin_skills::names().len()
+        );
         quit(seam, ended).await;
         let options = Options {
             builtin_skills: Some(true),

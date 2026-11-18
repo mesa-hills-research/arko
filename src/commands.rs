@@ -824,7 +824,14 @@ mod tests {
         assert!(dynamic_choices(&reading, "/session-names", &["words"]).is_empty());
         assert_eq!(
             dynamic_choices(&reading, "/builtin-skills", &[]),
-            ["on", "off", "prose", "ponytail", "ui-taste"]
+            [
+                "on",
+                "off",
+                "prose",
+                "ponytail",
+                "ui-taste",
+                "worker-choice"
+            ]
         );
         assert_eq!(
             dynamic_choices(&reading, "/builtin-skills", &["prose"]),

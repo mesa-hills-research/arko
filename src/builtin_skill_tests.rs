@@ -151,6 +151,27 @@ async fn a_skill_of_the_same_name_replaces_a_built_in_one() {
     assert!(!bodies[0].contains("is already in your instructions"));
 }
 
+/// `worker-choice` loads on demand like `ponytail`, and what it says is
+/// there once loaded.
+#[tokio::test]
+async fn worker_choice_is_offered_and_loads_by_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let bodies = turn_loading(
+        temp.path(),
+        BuiltinSkills::default(),
+        Vec::new(),
+        Some("worker-choice"),
+    )
+    .await;
+    assert_eq!(bodies.len(), 2);
+    assert!(bodies[0].contains("**worker-choice**"));
+    assert!(bodies[0].contains("Load it before starting a worker or saving a worker profile."));
+    assert!(!bodies[0].contains("# Choosing a worker"));
+    assert!(bodies[1].contains("--- BEGIN SKILL: worker-choice ---"));
+    assert!(bodies[1].contains("# Choosing a worker"));
+    assert!(bodies[1].contains("## Billing comes first"));
+}
+
 /// A skill whose text is in the agents' instructions can't be loaded again.
 /// Asked for it, `load_skill` says it is there already, where the skill
 /// system says it wasn't found, and the instructions name it.
@@ -326,6 +347,7 @@ async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {
             ("ponytail", false, Some(folder.join("ponytail"))),
             ("review", false, None),
             ("ui-taste", true, None),
+            ("worker-choice", true, None),
         ]
     );
     assert_eq!(facts.skills[1].path, Some(folder.join("review")));
@@ -347,6 +369,7 @@ async fn the_facts_say_which_skills_are_built_in_and_which_are_left_out() {
         [
             ("ponytail", true, false),
             ("ui-taste", true, false),
+            ("worker-choice", true, false),
             ("prose", true, true)
         ]
     );
@@ -406,7 +429,7 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     let text = printed.0.lock().unwrap().join("\n");
     let lines: Vec<&str> = text.lines().collect();
     // By name, the names in a column of their own, and no line over the width.
-    let names = ["always-on", "prose", "ui-taste", "wide"];
+    let names = ["always-on", "prose", "ui-taste", "wide", "worker-choice"];
     for (line, name) in lines.iter().zip(names) {
         assert!(line.starts_with(&format!("{name:<9}  ")), "{text}");
     }
@@ -418,6 +441,7 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
         "built in, always loaded".to_string(),
         folder.join("ui-taste").display().to_string(),
         wide.display().to_string(),
+        "built in".to_string(),
     ];
     for (line, place) in lines.iter().zip(&places) {
         assert!(line.ends_with(&format!("  {place}")), "{text}");
@@ -429,9 +453,9 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     assert!(lines[2].contains("  My ui-taste skill. "), "{text}");
     assert!(lines[3].contains("…  "), "{text}");
     assert!(!lines[3].contains(&"日本語".repeat(34)), "{text}");
-    assert_eq!(lines[4], "Built-in skills left out (ponytail).", "{text}");
-    assert_eq!(lines.len(), 5, "{text}");
-    // Of the four skills, the three in the folder are the user's own.
+    assert_eq!(lines[5], "Built-in skills left out (ponytail).", "{text}");
+    assert_eq!(lines.len(), 6, "{text}");
+    // Of the five skills, the three in the folder are the user's own.
     assert_eq!(harness.header(None).tools, ["3 skills"]);
 
     // On a narrow terminal the folders lose their leading folders, so each
@@ -446,7 +470,7 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
         lines[0].ends_with("/skills/always-on, always loaded"),
         "{text}"
     );
-    assert_eq!(lines.len(), 5, "{text}");
+    assert_eq!(lines.len(), 6, "{text}");
 
     printed.0.lock().unwrap().clear();
     harness.settings.builtin_skills = BuiltinSkills {
@@ -459,7 +483,7 @@ async fn skills_lists_each_skill_with_its_description_and_where_it_comes_from() 
     let text = printed.0.lock().unwrap().join("\n");
     assert!(text.starts_with("No skills."), "{text}");
     assert!(
-        text.contains("Built-in skills left out (prose, ponytail, ui-taste)."),
+        text.contains("Built-in skills left out (prose, ponytail, ui-taste, worker-choice)."),
         "{text}"
     );
     assert!(harness.header(None).tools.is_empty());
@@ -514,7 +538,7 @@ async fn a_saved_conversation_resumes_after_the_built_in_skills_changed() {
     };
     configure(&mut harness, one, Vec::new());
     let skills = harness.main_config.skills_config.as_mut().unwrap();
-    assert_eq!(skills.embedded.len(), 2);
+    assert_eq!(skills.embedded.len(), 3);
     skills.embedded[0] = arko_agents::EmbeddedSkill::new(
         "prose",
         "---\nname: prose\ndescription: Reworded for a later Arko.\nauto_load: true\n---\n\nNew text.\n",
@@ -575,27 +599,33 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
     assert_eq!(last_said(&harness.feed), "Built-in skills are now on.");
     assert_eq!(
         given(&harness.main_config),
-        ["prose", "ponytail", "ui-taste"]
+        ["prose", "ponytail", "ui-taste", "worker-choice"]
     );
     assert!(harness.live_command("/builtin-skills prose off", Source::Terminal));
     assert_eq!(last_said(&harness.feed), "prose is now off.");
-    assert_eq!(given(&harness.main_config), ["ponytail", "ui-taste"]);
-    assert_eq!(given(&harness.worker_config), ["ponytail", "ui-taste"]);
+    assert_eq!(
+        given(&harness.main_config),
+        ["ponytail", "ui-taste", "worker-choice"]
+    );
+    assert_eq!(
+        given(&harness.worker_config),
+        ["ponytail", "ui-taste", "worker-choice"]
+    );
     assert!(harness.live_command("/builtin-skills", Source::Terminal));
     assert!(
         last_said(&harness.feed).starts_with(
-            "Built-in skills are on, so the agents get ponytail and ui-taste. prose is left out. /builtin-skills"
+            "Built-in skills are on, so the agents get ponytail, ui-taste, and worker-choice. prose is left out. /builtin-skills"
         ),
         "{}",
         last_said(&harness.feed)
     );
     assert!(harness.live_command("/builtin-skills ponytail off", Source::Terminal));
     assert_eq!(last_said(&harness.feed), "ponytail is now off.");
-    assert_eq!(given(&harness.main_config), ["ui-taste"]);
+    assert_eq!(given(&harness.main_config), ["ui-taste", "worker-choice"]);
     assert!(harness.live_command("/builtin-skills", Source::Terminal));
     assert!(
         last_said(&harness.feed).starts_with(
-            "Built-in skills are on, so the agents get ui-taste. prose and ponytail are left out."
+            "Built-in skills are on, so the agents get ui-taste and worker-choice. prose and ponytail are left out."
         ),
         "{}",
         last_said(&harness.feed)
@@ -612,7 +642,12 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
         .collect();
     assert_eq!(
         listed,
-        [("prose", false), ("ponytail", false), ("ui-taste", true)]
+        [
+            ("prose", false),
+            ("ponytail", false),
+            ("ui-taste", true),
+            ("worker-choice", true)
+        ]
     );
     assert!(harness.live_command("/builtin-skills prose off", Source::Terminal));
     assert_eq!(last_said(&harness.feed), "prose is off already.");
@@ -624,6 +659,7 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
     );
     // Off for all leaves each name's own switch as it was.
     assert!(harness.live_command("/builtin-skills ui-taste off", Source::Terminal));
+    assert!(harness.live_command("/builtin-skills worker-choice off", Source::Terminal));
     assert!(harness.live_command("/builtin-skills off", Source::Terminal));
     assert!(given(&harness.main_config).is_empty());
     assert!(harness.live_command("/builtin-skills prose on", Source::Terminal));
@@ -637,7 +673,7 @@ async fn builtin_skills_sets_what_the_agents_get_before_the_conversation_starts(
     for (bad, said) in [
         (
             "pros off",
-            "pros isn't a built-in skill. They are prose, ponytail, and ui-taste.",
+            "pros isn't a built-in skill. They are prose, ponytail, ui-taste, and worker-choice.",
         ),
         (
             "maybe",

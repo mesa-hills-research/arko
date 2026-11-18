@@ -32,6 +32,10 @@
 - Asking `load_skill` for a skill that is already in the agent's instructions, such as `prose`,
   says so. It used to answer that the skill wasn't found, which looked like a broken setup. The
   skills section of the instructions names each such skill.
+- A new built-in skill, `worker-choice`, loads on demand like `ponytail` and `ui-taste`. It covers
+  billing, the model for a kind of work, effort and profiles, and has the agent ask you before it
+  starts a worker billed per token, even when the session's worker billing would start it without
+  asking. `--no-builtin-skill worker-choice` leaves it out.
 
 ## 0.23.0 (2026-11-18)
 

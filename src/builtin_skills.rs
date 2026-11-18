@@ -1,5 +1,5 @@
-//! The skills built into Arko, general advice on writing, coding and
-//! interfaces, held in the program so no file is needed. They are listed with the skills of the
+//! The skills built into Arko, general advice on writing, coding,
+//! interfaces and choosing workers, held in the program so no file is needed. They are listed with the skills of the
 //! skill folders, a skill of the same name in those folders replaces one, and
 //! `ARKO_BUILTIN_SKILLS`, `ARKO_BUILTIN_SKILLS_OFF`, their flags and
 //! `/builtin-skills` leave them out (see `BuiltinSkills`). An app reads their
@@ -29,7 +29,7 @@ pub(crate) struct Builtin {
 }
 
 /// The built-in skills, in the order they are listed.
-pub(crate) const BUILTIN: [Builtin; 3] = [
+pub(crate) const BUILTIN: [Builtin; 4] = [
     Builtin {
         name: "prose",
         text: include_str!("builtin_skills/prose/SKILL.md"),
@@ -43,6 +43,11 @@ pub(crate) const BUILTIN: [Builtin; 3] = [
     Builtin {
         name: "ui-taste",
         text: include_str!("builtin_skills/ui-taste/SKILL.md"),
+        pre_loaded: false,
+    },
+    Builtin {
+        name: "worker-choice",
+        text: include_str!("builtin_skills/worker-choice/SKILL.md"),
         pre_loaded: false,
     },
 ];
@@ -333,6 +338,7 @@ mod tests {
             BUILTIN[0].text.contains("\n# Prose\n")
                 && BUILTIN[1].text.contains("\n# Ponytail\n")
                 && BUILTIN[2].text.contains("\n# Taste\n")
+                && BUILTIN[3].text.contains("\n# Choosing a worker\n")
         );
     }
 
@@ -420,6 +426,19 @@ mod tests {
         assert_eq!(context.on_demand_skills[0].description, "An x.");
     }
 
+    /// `worker-choice` loads on demand, and tells the agent to ask the user
+    /// before it starts a worker billed per token, even where the session's
+    /// worker billing would start one.
+    #[test]
+    fn worker_choice_asks_the_user_before_a_worker_billed_per_token() {
+        let skill = find("worker-choice").unwrap();
+        assert!(!skill.pre_loaded);
+        let text = skill.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(text.contains(
+            "Before starting a worker billed per token (an API key, OpenRouter, Gemini), ask the user and wait for a yes for that worker. Ask even when the session's worker billing would start it without asking."
+        ));
+    }
+
     #[test]
     fn the_choice_leaves_out_all_or_some_by_name() {
         let all = BuiltinSkills::default();
@@ -429,7 +448,10 @@ mod tests {
         let (none, warnings) = BuiltinSkills::new(true, &[], "x");
         assert!(warnings.is_empty());
         assert!(!none.is_all());
-        assert_eq!(none.left_out(), ["prose", "ponytail", "ui-taste"]);
+        assert_eq!(
+            none.left_out(),
+            ["prose", "ponytail", "ui-taste", "worker-choice"]
+        );
         assert!(!none.gives("prose"));
         let (one, _) =
             BuiltinSkills::new(false, &[" prose".into(), "prose".into(), "".into()], "x");
@@ -451,7 +473,7 @@ mod tests {
         assert_eq!(
             warnings,
             [
-                "--no-builtin-skill names `pros`, which isn't a built-in skill (they are prose, ponytail, and ui-taste), so Arko skips it"
+                "--no-builtin-skill names `pros`, which isn't a built-in skill (they are prose, ponytail, ui-taste, and worker-choice), so Arko skips it"
             ]
         );
         // (The interface skill's old name.)
@@ -461,7 +483,7 @@ mod tests {
         assert_eq!(
             warnings,
             [
-                "ARKO_BUILTIN_SKILLS_OFF names `arko-taste`, which isn't a built-in skill (they are prose, ponytail, and ui-taste), so Arko skips it"
+                "ARKO_BUILTIN_SKILLS_OFF names `arko-taste`, which isn't a built-in skill (they are prose, ponytail, ui-taste, and worker-choice), so Arko skips it"
             ]
         );
     }
