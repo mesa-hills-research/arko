@@ -57,7 +57,7 @@ dictation = ["dep:speech", "dep:cpal"]
 [dependencies]
 # The framework, from crates.io. CONTRIBUTING.md shows how to build against
 # a local checkout of it.
-arko_ai = "0.2.6"
+arko_ai = "0.3.0"
 arko_agents = "0.8.0"
 arko_workflows = "0.9.0"
 arko_index = "0.3.2"
@@ -153,3 +153,12 @@ strip = true
 # The speech engine is far too slow to dictate with unoptimized.
 [profile.dev.package.telmo]
 opt-level = 3
+
+# TEMPORARY, for this branch's CI only: arko_ai 0.3.0 with GPT-6.2 and
+# Gemini 4, and arko_agents and arko_workflows built on it, from the
+# arko_framework branch models-1117. Remove it, take those releases from
+# crates.io and regenerate Cargo.lock once they are published.
+[patch.crates-io]
+arko_ai = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "12a901e192bc62ec2486a6a93769eae772cbc364" }
+arko_agents = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "12a901e192bc62ec2486a6a93769eae772cbc364" }
+arko_workflows = { git = "https://github.com/mesa-hills-research/arko_framework", rev = "12a901e192bc62ec2486a6a93769eae772cbc364" }

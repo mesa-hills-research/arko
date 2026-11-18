@@ -1,0 +1,56 @@
+# TEMPORARY, for the models-1117 branch only: formatting, clippy and the
+# whole test suite on Linux, and release builds for Linux and Windows.
+# Remove it with the arko_ai patch in Cargo.toml.
+name: Branch check
+on:
+  push:
+    branches: [models-1117]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy && rustup default 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Some tests make git repositories and commit in them.
+      - run: git config --global user.name "Branch Check" && git config --global user.email "branch-check@example.com"
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --locked --no-fail-fast
+
+  # Release builds of this branch for trying it before the release, with
+  # dictation and the debug snapshots, as the pre-release installs have.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: arko
+          - os: windows-latest
+            binary: arko.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Telmo, the speech engine, needs Rust 1.97.
+      - run: rustup toolchain install 1.97.1 --profile minimal && rustup default 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The microphone needs ALSA's headers on Linux.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo build --release --locked --features dictation,dbg-snapshot
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: arko-${{ runner.os }}
+          path: target/release/${{ matrix.binary }}
+          if-no-files-found: error
+          retention-days: 14
