@@ -99,11 +99,12 @@ front ends, and add the `remote` feature for the web page. The library's name is
 
 ```toml
 [dependencies]
-arko-tui = { version = "0.21.0", default-features = false, features = ["remote"] }
+arko-tui = { version = "0.22.2", default-features = false, features = ["remote"] }
 ```
 
-`cargo doc --open` builds the API docs, and [moving to 0.21](docs/migrating-to-0.21.md) says what
-an app changes from 0.20 ([from 0.19](docs/migrating-to-0.20.md)). See
+`cargo doc --open` builds the API docs, and [moving to 0.22](docs/migrating-to-0.22.md) says what
+an app changes from 0.21 ([from 0.20](docs/migrating-to-0.21.md),
+[from 0.19](docs/migrating-to-0.20.md)). See
 [listing extensions and managing project approvals](docs/extensions.md),
 [approvals](docs/approvals.md), [worker profiles](docs/worker-profiles.md) and
 [skills](docs/skills.md) for settings pages.
