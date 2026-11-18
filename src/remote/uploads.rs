@@ -1533,14 +1533,23 @@ pub(super) mod tests {
         Some((FREE_FLOOR + 60).saturating_sub(used))
     }
 
-    /// The bytes of the files in the attachments folder `path`.
+    /// The bytes of the files in the attachments folder `path`. When a file
+    /// is renamed while they're counted, as a finished upload's part file
+    /// is, they're counted again.
     fn held_bytes(path: &Path) -> u64 {
-        std::fs::read_dir(path)
-            .unwrap()
-            .map(|entry| entry.unwrap())
-            .filter(|entry| entry.file_name() != ".gitignore")
-            .map(|entry| entry.metadata().unwrap().len())
-            .sum()
+        loop {
+            let lengths: std::io::Result<Vec<u64>> = std::fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .filter(|entry| entry.file_name() != ".gitignore")
+                .map(|entry| entry.metadata().map(|metadata| metadata.len()))
+                .collect();
+            match lengths {
+                Ok(lengths) => return lengths.iter().sum(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("{error}"),
+            }
+        }
     }
 
     /// Two writes at once can't both use the room left above the floor.
