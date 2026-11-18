@@ -146,9 +146,6 @@ fn error_of<'js>(ctx: &Ctx<'js>, error: CaughtError<'js>, interrupted: &Cell<boo
                 frames: frames(&exception.stack().unwrap_or_default()),
             }
         }
-        // QuickJS-ng throws null when it has no memory left for an Error
-        // (so code that throws null itself reads as out of memory too).
-        CaughtError::Value(value) if value.is_null() => EngineError::OutOfMemory,
         CaughtError::Value(value) => EngineError::Thrown {
             message: describe(ctx, value),
             frames: Vec::new(),

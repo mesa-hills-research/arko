@@ -160,12 +160,18 @@ fn a_thrown_error_names_its_line_in_the_code() {
             tool: None,
         }
     );
-    let ran = run("throw 'a string';");
-    assert!(
-        matches!(&ran.done.ended, Ended::Threw { message, .. } if message == "a string"),
-        "{:?}",
-        ran.done.ended
-    );
+    for (thrown, message) in [
+        ("'a string'", "a string"),
+        ("null", "null"),
+        ("{ n: 1 }", r#"{"n":1}"#),
+    ] {
+        let ran = run(&format!("throw {thrown};"));
+        assert!(
+            matches!(&ran.done.ended, Ended::Threw { message: got, .. } if got == message),
+            "{thrown}: {:?}",
+            ran.done.ended
+        );
+    }
 }
 
 #[test]
@@ -220,8 +226,11 @@ fn the_heap_cap_ends_a_run_and_code_may_catch_it() {
         small,
         Arc::default(),
     );
+    // QuickJS-ng throws null where it has no memory left for its Error, as
+    // on macOS, whose allocator counts allocations larger.
     assert!(
-        matches!(ran.done.ended, Ended::OutOfMemory { .. }),
+        matches!(&ran.done.ended, Ended::OutOfMemory { .. })
+            || matches!(&ran.done.ended, Ended::Threw { message, .. } if message == "null"),
         "{:?}",
         ran.done.ended
     );
