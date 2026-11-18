@@ -280,6 +280,7 @@ impl Session<'_> {
         // The error output, read on its own so the runner never waits on it.
         let stderr = tokio::spawn(read_start(errors, STDERR_BYTES));
         let _tasks = Tasks([reader.abort_handle(), stderr.abort_handle()]);
+        let mut faults = fatal.clone();
         let mut pipes = Pipes {
             child,
             input,
@@ -287,32 +288,42 @@ impl Session<'_> {
             fatal,
             stderr,
         };
+        let pid = pipes.child.id();
+        let over_memory = async {
+            let Some(pid) = pid else {
+                return std::future::pending().await;
+            };
+            let mut checks = tokio::time::interval(MEMORY_CHECK);
+            loop {
+                checks.tick().await;
+                // (Reading another process's memory may block, so it isn't
+                // read on a runtime worker.)
+                let resident = tokio::task::spawn_blocking(move || resident_bytes(pid))
+                    .await
+                    .ok()
+                    .flatten();
+                if resident.is_some_and(|bytes| bytes > memory_limit) {
+                    return;
+                }
+            }
+        };
+        // A fault the reader finds ends the run whatever Arko is doing, also
+        // while it writes to a child that has stopped reading.
+        tokio::select! {
+            outcome = self.answer_calls(&mut pipes, start) => outcome,
+            () = over_memory => Outcome::OverMemory,
+            fault = Pipes::broken(&mut faults) => Outcome::Broken(fault),
+        }
+    }
+
+    /// Sends the run, and answers the runner's calls until it says how the
+    /// run ended.
+    async fn answer_calls(&mut self, pipes: &mut Pipes, start: Start) -> Outcome {
         if let Err(error) = send(&mut pipes.input, &ToChild::Start(start)).await {
             return pipes
                 .ended(format!("Arko couldn't send the code ({error})"))
                 .await;
         }
-        let pid = pipes.child.id();
-        let over_memory = async {
-            let mut checks = tokio::time::interval(MEMORY_CHECK);
-            loop {
-                checks.tick().await;
-                if pid
-                    .and_then(resident_bytes)
-                    .is_some_and(|bytes| bytes > memory_limit)
-                {
-                    return;
-                }
-            }
-        };
-        tokio::select! {
-            outcome = self.answer_calls(&mut pipes) => outcome,
-            () = over_memory => Outcome::OverMemory,
-        }
-    }
-
-    /// Answers the runner's calls until it says how the run ended.
-    async fn answer_calls(&mut self, pipes: &mut Pipes) -> Outcome {
         loop {
             let Some((frame, bytes)) = pipes.frames.recv().await else {
                 return pipes.ended(String::new()).await;
@@ -329,11 +340,9 @@ impl Session<'_> {
             }
             let answered = tokio::select! {
                 answered = self.answer(call) => answered,
-                // The runner ended, or broke the protocol, while the call
-                // ran, so the call is dropped (a command it started is
-                // killed).
+                // The runner ended while the call ran, so the call is
+                // dropped (a command it started is killed).
                 _ = pipes.child.wait() => return ended_during_call(pipes).await,
-                fault = Pipes::broken(&mut pipes.fatal) => return Outcome::Broken(fault),
             };
             self.held.give_back(bytes);
             match answered {
