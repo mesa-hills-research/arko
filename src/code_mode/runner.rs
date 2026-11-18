@@ -13,11 +13,23 @@ use super::protocol::{self, Answer, Call, Done, Ended, FromChild, MAGIC, Start, 
 use super::quickjs::QuickJs;
 use super::{RUNNER_ARGUMENT, THREAD_STACK_BYTES, os_limits};
 
+/// This program runs as the code runner when started as one, so a run may
+/// start it.
+static ANSWERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this program starts as the code runner when asked. A program
+/// whose `main` doesn't call [`run_if_asked`] would start as itself.
+pub(super) fn answers() -> bool {
+    cfg!(test) || ANSWERS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Runs this process as the code runner and exits, when its command line
 /// is the runner's. A program built on this library calls it first thing
 /// in `main` if its sessions run code (`--tools both`), since the runner
-/// is the same program.
+/// is the same program. Until it is called, `run_code` fails instead of
+/// starting the program.
 pub fn run_if_asked() {
+    ANSWERS.store(true, std::sync::atomic::Ordering::SeqCst);
     let mut args = std::env::args_os().skip(1);
     if args.next().is_some_and(|arg| arg == RUNNER_ARGUMENT) && args.next().is_none() {
         run();
