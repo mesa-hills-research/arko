@@ -301,6 +301,7 @@ pub mod tests {
             call: None,
             job: None,
             pending: false,
+            waited_as: None,
             opens_turn: false,
             beside_rows: None,
             code: Vec::new(),

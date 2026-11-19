@@ -62,7 +62,9 @@ pub enum Step<'a> {
     /// [`Step::Other`] instead, so it stays there and the next call starts a
     /// row of its own.
     Thinking(u64),
-    /// Anything else the view shows, by its item's ID, which ends a run.
+    /// Anything else the view shows, by its item's ID, which ends a run. A
+    /// note the agent read goes by the ID it had while it waited
+    /// (`Item::waited_as`), so reading it moves no row.
     Other(u64),
     /// What shows beside the agent's work without ending it (a note the
     /// agent hasn't read, which waits at the end), by its item's ID.
@@ -2902,10 +2904,12 @@ mod tests {
         };
         assert_eq!(members(&below[3]), [vec![0], vec![1], vec![2, 3]]);
         // A thinking or a note that came below it while it ran keeps it
-        // where it is too, and one that came after it ended doesn't.
+        // where it is too, also once the note is read (by the ID it waited
+        // as), and one that came after it ended doesn't.
         for (later, settled_at, rows) in [
             (Step::Thinking(3), 4, ["q1", "q2", "s2"].as_slice()),
             (Step::Aside(3), 4, &["q1", "q2", "s2"]),
+            (Step::Other(3), 4, &["q1", "q2", "s2"]),
             (Step::Aside(3), 3, &["q1", "s2"]),
         ] {
             let steps = [call(1, &rg, Ok), ran(2, Ok, Some(settled_at)), later];

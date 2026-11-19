@@ -221,9 +221,16 @@ pub struct Item {
     /// show it muted, after the other items of its conversation, because
     /// the agent's output goes on above it. Once the agent reads it, the
     /// item goes ([`Update::Remove`]) and comes again where the agent read
-    /// it ([`Update::Item`]), with a new `id` and this unset.
+    /// it ([`Update::Item`]), with a new `id`, this unset and the old one in
+    /// `waited_as`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pending: bool,
+    /// For a note the agent read after it waited, the `id` it had while it
+    /// waited. Clients place it in time by that ID, so a long call it stood
+    /// below as it ended keeps its Quiet row once the note is read, and its
+    /// row keeps the room of its "pending" tag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waited_as: Option<u64>,
     /// Whether it is the line that opens a turn Arko started without a
     /// message from the user, naming who and what the turn is for (a worker's
     /// report, a job that finished). Clients can tell it from Arko's other
@@ -290,6 +297,7 @@ impl Item {
             call: None,
             job: None,
             pending: false,
+            waited_as: None,
             opens_turn: false,
             beside_rows: None,
             questions: None,
@@ -356,6 +364,7 @@ impl Item {
         self.call = self.call.map(|call| call + ids);
         self.ended = self.ended.map(|ended| ended + ids);
         self.settled_at = self.settled_at.map(|settled| settled + ids);
+        self.waited_as = self.waited_as.map(|waited| waited + ids);
         self.turn = self.turn.map(|turn| turn + turns);
     }
 
@@ -2803,13 +2812,14 @@ impl Feed {
     }
 
     /// The note `id` was read, so it moves to here, where the agent read
-    /// it, as a new item that isn't pending.
+    /// it, as a new item that isn't pending, which keeps the ID it waited as.
     fn move_read(&self, state: &mut State, id: u64) {
         let Some(mut item) = state.main.remove(id) else {
             return;
         };
         self.publish(state, Update::Remove { id });
         item.pending = false;
+        item.waited_as = Some(id);
         self.push(state, item);
     }
 
@@ -6475,7 +6485,8 @@ mod tests {
         let updates = updates(&mut receiver);
         assert!(matches!(updates[0], Update::Remove { id } if id == note));
         assert!(matches!(&updates[1], Update::Item(item)
-            if item.text == "Keep the old name." && !item.pending && item.id > note));
+            if item.text == "Keep the old name." && !item.pending && item.id > note
+                && item.waited_as == Some(note)));
         let json = |item: &Item| serde_json::to_value(item).unwrap();
         assert_eq!(json(&items(&feed)[2]).get("pending"), None);
         let mut pending = Item::new(Kind::User, "Wait.");

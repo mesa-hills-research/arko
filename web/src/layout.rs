@@ -390,6 +390,8 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData], sealed: &HashSet<u64>) -> Vec
         }
         shown.push((row, Vec::new()));
     }
+    // (A note the agent read stands in time where it waited.)
+    let came = |id: u64| by_id.get(&id).and_then(|item| item.waited_as).unwrap_or(id);
     let steps: Vec<quiet::Step> = shown
         .iter()
         .map(|(row, results)| match row {
@@ -415,7 +417,7 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData], sealed: &HashSet<u64>) -> Vec
             // (One the reader opened on its own line stays there.)
             Row::Item(id, Kind::Thinking) if sealed.contains(id) => quiet::Step::Other(*id),
             Row::Item(id, Kind::Thinking) => quiet::Step::Thinking(*id),
-            Row::Item(id, _) | Row::Status(id) => quiet::Step::Other(*id),
+            Row::Item(id, _) | Row::Status(id) => quiet::Step::Other(came(*id)),
             _ => quiet::Step::Other(0),
         })
         .collect();
@@ -596,8 +598,8 @@ fn under_way(store: &Store, status: &StatusData, worker: Option<&str>) -> Option
 /// streams is the live line on its row, and so is a call that runs on the
 /// last row (it stands alone while it runs), and text that streams until
 /// it pauses. Where rows came after the call's (a lead's message, a
-/// notice), the Working row says what the call does, as it does in
-/// Messages, which counts the call on its turn's line.
+/// notice, a note waiting), the Working row says what the call does, as it
+/// does in Messages, which counts the call on its turn's line.
 pub fn live_line(
     rows: &[Row],
     store: &Store,
@@ -610,7 +612,7 @@ pub fn live_line(
     let tool = under_way(store, status, worker)
         .is_some_and(|since| busy(&store.items, worker.unwrap_or(MAIN), since) == Busy::Tool);
     if tool && let Some(call) = running(store, worker) {
-        let shown = match call_stands(rows, store, call.id) {
+        let shown = match call_stands(rows, call.id) {
             Stands::Last => false,
             Stands::Above => true,
             // (Messages counts it on its turn's line.)
@@ -633,7 +635,7 @@ enum Stands {
     Unshown,
 }
 
-fn call_stands(rows: &[Row], store: &Store, id: u64) -> Stands {
+fn call_stands(rows: &[Row], id: u64) -> Stands {
     let holds = |row: &Row| match row {
         Row::Item(item, Kind::Call) => *item == id,
         Row::Quiet { row, .. } => row
@@ -645,12 +647,15 @@ fn call_stands(rows: &[Row], store: &Store, id: u64) -> Stands {
     let Some(at) = rows.iter().rposition(holds) else {
         return Stands::Unshown;
     };
-    // (The agent's other calls, side by side with it, their results and
-    // the notes waiting at the end are its own work below it.)
-    let came = rows[at + 1..].iter().any(|row| match row {
-        Row::Item(_, Kind::Call | Kind::Result) | Row::Quiet { .. } | Row::Count { .. } => false,
-        Row::Item(item, _) => store.get(*item).is_none_or(|item| !item.pending),
-        _ => true,
+    // (The agent's other calls, side by side with it, and their results are
+    // its own work below it. A note waiting at the end came below it, as it
+    // did for its Quiet row, so the Working row stands under the note from
+    // the start, and the note keeps its place as the call ends.)
+    let came = rows[at + 1..].iter().any(|row| {
+        !matches!(
+            row,
+            Row::Item(_, Kind::Call | Kind::Result) | Row::Quiet { .. } | Row::Count { .. }
+        )
     });
     if came { Stands::Above } else { Stands::Last }
 }
@@ -1227,12 +1232,24 @@ mod tests {
             assert!(line(&store, view), "{view:?}: a message came after it");
         }
         assert_eq!(working_label(&store, None), "Running cargo test…");
-        // A note waiting at the end isn't a row after it.
+        // So does a note waiting at the end, below which the Working row
+        // stands, and which keeps its place as the call ends, when only the
+        // row's words change.
         store.remove(6);
         let mut note = item(7, Kind::User, MAIN, "and this");
         note.pending = true;
         store.add(note, 0.0);
-        assert!(!line(&store, View::Full));
+        for view in [View::Quiet, View::Full] {
+            assert!(line(&store, view), "{view:?}: a note came after it");
+            let rows = with_working(layout(&store.items, view, None), true);
+            assert_eq!(ids(&rows[rows.len() - 2..]), ["i7", "working"], "{view:?}");
+        }
+        let running = working_label(&store, None);
+        store.change(command(4, "cargo test", CallStatus::Ok), 0.0);
+        for view in [View::Quiet, View::Full] {
+            assert!(line(&store, view), "{view:?}");
+        }
+        assert_ne!(working_label(&store, None), running);
     }
 
     #[test]
@@ -1521,8 +1538,8 @@ mod tests {
             let (sealed, leads) = (HashSet::new(), HashMap::new());
             layout_sealed(&store.items, View::Messages, None, &sealed, &leads, &open)
         };
-        assert_eq!(call_stands(&laid(&[10]), &store, 11), Stands::Last);
-        assert_eq!(call_stands(&laid(&[]), &store, 11), Stands::Unshown);
+        assert_eq!(call_stands(&laid(&[10]), 11), Stands::Last);
+        assert_eq!(call_stands(&laid(&[]), 11), Stands::Unshown);
     }
 
     #[test]
@@ -1872,6 +1889,51 @@ mod tests {
             said(&settled, 1),
             ("Ran 2 commands (rg, cargo)".into(), false)
         );
+    }
+
+    /// A long call that ends with a note waiting below it stays on its own
+    /// row, and the agent reading the note, which comes again as a new
+    /// item, moves no row.
+    #[test]
+    fn a_long_call_that_ended_above_a_note_keeps_its_row_once_the_note_is_read() {
+        use crate::protocol::{Act, ActKind};
+        let call = |id: u64, target: &str, status: CallStatus| ItemData {
+            status: Some(status),
+            act: Some(Act {
+                kind: ActKind::Command,
+                target: target.into(),
+                ..Act::default()
+            }),
+            ..item(id, Kind::Call, MAIN, target)
+        };
+        let mut note = item(4, Kind::User, MAIN, "Also run clippy.");
+        note.delivery = Some(Delivery::Note);
+        note.pending = true;
+        let mut items = vec![
+            item(1, Kind::User, MAIN, "go"),
+            call(2, "rg x", CallStatus::Ok),
+            call(3, "cargo build", CallStatus::Running),
+            note.clone(),
+        ];
+        assert_eq!(
+            ids(&layout(&items, View::Quiet, None)),
+            ["i1", "q2", "q3", "i4"]
+        );
+        items[2].status = Some(CallStatus::Ok);
+        items[2].settled_at = Some(5);
+        let ended = layout(&items, View::Quiet, None);
+        assert_eq!(ids(&ended), ["i1", "q2", "q3", "i4"]);
+        // Read, it comes again by a new ID, keeping the one it waited as.
+        items.pop();
+        items.push(ItemData {
+            id: 6,
+            pending: false,
+            waited_as: Some(4),
+            ..note
+        });
+        let read = layout(&items, View::Quiet, None);
+        assert_eq!(ids(&read), ["i1", "q2", "q3", "i6"]);
+        assert_eq!(read[..3], ended[..3]);
     }
 
     /// Each of the shared fixtures, alone in its Quiet row, says and opens

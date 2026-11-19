@@ -599,6 +599,10 @@ pub struct ItemData {
     pub job: Option<String>,
     #[serde(default)]
     pub pending: bool,
+    /// For a note the agent read after it waited, the ID it had while it
+    /// waited, by which it stands in time.
+    #[serde(default)]
+    pub waited_as: Option<u64>,
     /// Whether this notice opens a turn Arko started without a message from
     /// the user.
     #[serde(default)]

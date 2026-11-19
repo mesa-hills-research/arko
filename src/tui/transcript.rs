@@ -1429,8 +1429,11 @@ impl Transcript {
 
     /// Whether rows came after the block among `blocks` that holds the
     /// entry `at` (a call that runs), besides the agent's own work (its
-    /// other calls side by side with it and their results) and the notes
-    /// waiting at the end. False where no block holds it.
+    /// other calls side by side with it and their results). A note waiting
+    /// at the end is such a row, as it is for the call's Quiet row
+    /// ([`quiet::Step::Aside`]), so the live line stands below it from the
+    /// start and the note keeps its row as the call ends. False where no
+    /// block holds it.
     fn came_after(&self, blocks: &[Block], at: usize) -> bool {
         let Some(holder) = blocks.iter().rposition(|block| match &block.shown {
             Shown::Entry(index) => *index == at,
@@ -1441,8 +1444,7 @@ impl Transcript {
         };
         blocks[holder + 1..].iter().any(|block| match &block.shown {
             Shown::Entry(index) => {
-                let item = &self.entries[*index].item;
-                !item.pending && !matches!(item.kind, Kind::Call | Kind::Result)
+                !matches!(self.entries[*index].item.kind, Kind::Call | Kind::Result)
             }
             Shown::Quiet(_) | Shown::Counter { .. } => false,
             _ => true,
@@ -1658,8 +1660,8 @@ impl Transcript {
             self.quiet_cache.retain(|key, _| keys.contains(key));
         }
         // Rows that came after the agent's call that runs (a lead's message,
-        // a notice) leave its row above the end, so the live line at the end
-        // says what it does.
+        // a notice, a note waiting) leave its row above the end, so the live
+        // line at the end says what it does.
         if !self.motion.working
             && let Some((agent, since)) = self.under_way(filter)
             && self.busy(agent, since) == Busy::Tool
@@ -1942,10 +1944,12 @@ impl Transcript {
             .iter()
             .map(|(index, results, as_is)| {
                 let item = &self.entries[*index].item;
+                // (A note the agent read stands in time where it waited.)
+                let came = item.waited_as.unwrap_or(item.id);
                 match item.kind {
                     // (A note the agent hasn't read waits at the end.)
                     _ if item.pending => quiet::Step::Aside(item.id),
-                    _ if *as_is => quiet::Step::Other(item.id),
+                    _ if *as_is => quiet::Step::Other(came),
                     // A worker's row stands as it is, in every view.
                     Kind::Call if going(item).is_some() => quiet::Step::Other(item.id),
                     Kind::Call if filter.owns(item) => quiet::Step::Call(quiet::Call {
@@ -1965,7 +1969,7 @@ impl Transcript {
                         quiet::Step::Other(item.id)
                     }
                     Kind::Thinking => quiet::Step::Thinking(item.id),
-                    _ => quiet::Step::Other(item.id),
+                    _ => quiet::Step::Other(came),
                 }
             })
             .collect();
@@ -7598,8 +7602,9 @@ mod tests {
 
     /// "Working…" stands at the end, below a note the agent hasn't read,
     /// which waits under the agent's output with a blank line above it and
-    /// one below it. The note keeps its row as Working… goes and comes, and
-    /// as the agent reads it.
+    /// one below it. A call that runs above the note has the live line
+    /// there too, so the note keeps its row as the call ends, and as the
+    /// agent reads it.
     #[test]
     fn working_stands_below_a_note_waiting_to_be_read() {
         let mut t = Transcript::new();
@@ -7616,27 +7621,31 @@ mod tests {
         assert_eq!(shown[..4], ["· $ make · ✓", "", pending.as_str(), ""]);
         assert!(is_working(&shown[4]), "{shown:?}");
         assert_eq!(shown[5], "");
-        // While a call runs, with no Working line, the note has the blank
-        // line below it.
+        // A call runs, and the live line stays below the note.
+        let note_at = |shown: &[String]| shown.iter().position(|row| row.contains("Use tabs."));
+        let live_at = |shown: &[String]| shown.iter().position(|row| is_working(row));
         let mut call = item(3, Kind::Call, "$ make test");
         call.status = Some(CallStatus::Running);
         t.apply(Update::Item(call.clone()));
-        let shown = rows(&mut t, &full(), 40, 5);
-        assert_eq!(shown[1..], ["· $ make test …", "", pending.as_str(), ""]);
-        // The call ends and Working… comes below the note again, and the
-        // agent reads it, which comes again as the feed sends it.
+        let running = rows(&mut t, &full(), 40, 7);
+        let at = note_at(&running);
+        assert!(live_at(&running) > at, "{running:?}");
+        // The call ends, and the agent reads the note, which comes again as
+        // the feed sends it. The note and the live line keep their rows.
+        let still = |t: &mut Transcript| {
+            let shown = rows(t, &full(), 40, 7);
+            assert_eq!(note_at(&shown), at, "{shown:?}");
+            assert_eq!(live_at(&shown), live_at(&running), "{shown:?}");
+        };
         call.status = Some(CallStatus::Ok);
         t.apply(Update::Change(call));
-        let shown = rows(&mut t, &full(), 40, 7);
-        assert_eq!(shown[1..5], ["· $ make test · ✓", "", pending.as_str(), ""]);
-        assert!(is_working(&shown[5]), "{shown:?}");
+        still(&mut t);
         t.apply(Update::Remove { id: 2 });
         let mut read = item(4, Kind::User, "Use tabs.");
         read.delivery = Some(Delivery::Note);
+        read.waited_as = Some(2);
         t.apply(Update::Item(read));
-        let shown = rows(&mut t, &full(), 40, 7);
-        assert_eq!(shown[1..5], ["· $ make test · ✓", "", "▎ Use tabs.", ""]);
-        assert!(is_working(&shown[5]), "{shown:?}");
+        still(&mut t);
     }
 
     /// In a worker's own view, "Working…" says the worker waits on its
@@ -7834,6 +7843,87 @@ mod tests {
             at("Still indenting.") < at("Use tabs.") && at("Use tabs.") < at("New conversation"),
             "{shown:?}"
         );
+    }
+
+    /// A long call with a note waiting below it keeps its own Quiet row once
+    /// it ends, and the agent reading the note regroups nothing. The note
+    /// keeps its row through both, and so does the live line under it.
+    #[test]
+    fn a_long_call_that_ended_above_a_note_keeps_its_row_once_the_note_is_read() {
+        use crate::shell::SHELL_TOOL_NAME;
+        use arko_agents::AgentEvent;
+        let feed = crate::remote::Feed::new(MAIN_AGENT);
+        let (snapshot, mut updates) = feed.subscribe();
+        let mut t = Transcript::new();
+        t.reset(snapshot);
+        t.working = Some(0);
+        let event = |event: AgentEvent| arko_workflows::WorkflowEvent {
+            timestamp: chrono::Utc::now(),
+            workflow_run_id: uuid::Uuid::nil(),
+            agent_name: MAIN_AGENT.into(),
+            agent_run_id: uuid::Uuid::nil(),
+            event,
+        };
+        let call = |id: uuid::Uuid, command: &str| {
+            event(AgentEvent::ToolCallFormatted {
+                tool_call_id: id,
+                tool_name: SHELL_TOOL_NAME.into(),
+                parameters: [("command".to_string(), command.into())].into(),
+            })
+        };
+        let result = |id: uuid::Uuid| {
+            event(AgentEvent::ToolResult {
+                tool_call_id: id,
+                tool_name: SHELL_TOOL_NAME.into(),
+                output: "exit code 0, 0.1 s\n(no output)".into(),
+                receipt: None,
+            })
+        };
+        let quiet = Filter::Main(View::Quiet);
+        let mut draw = |t: &mut Transcript| {
+            while let Ok(update) = updates.try_recv() {
+                t.apply(update);
+            }
+            rows(t, &quiet, 60, 8)
+        };
+        let note_row = |shown: &[String]| {
+            shown
+                .iter()
+                .position(|row| row.contains("Also run clippy."))
+                .unwrap()
+        };
+        let live_row = |shown: &[String]| shown.iter().position(|row| after_spinner(row).is_some());
+        let (rg, build) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        feed.event(&call(rg, "rg x"), None);
+        feed.event(&result(rg), None);
+        feed.event(&call(build, "cargo build"), None);
+        feed.note("Also run clippy.", Source::Terminal, 1, Vec::new());
+        let waits = draw(&mut t);
+        let (at, live) = (note_row(&waits), live_row(&waits));
+        assert!(live > Some(at), "{waits:?}");
+        // The call ends below the row of rg, on a row of its own.
+        feed.event(&result(build), None);
+        let ended = draw(&mut t);
+        assert_eq!(note_row(&ended), at, "{ended:?}");
+        assert_eq!(live_row(&ended), live, "{ended:?}");
+        assert_eq!(
+            ended[..at].iter().filter(|row| !row.is_empty()).count(),
+            2,
+            "{ended:?}"
+        );
+        // Read, the note comes again by a new ID, and nothing above it
+        // regroups or moves.
+        feed.event(
+            &event(AgentEvent::ContextInjected {
+                ids: vec!["note:1".into()],
+                bytes: 100,
+            }),
+            None,
+        );
+        let read = draw(&mut t);
+        assert_eq!(note_row(&read), at, "{read:?}");
+        assert_eq!(read[..at], ended[..at]);
+        assert_eq!(live_row(&read), live, "{read:?}");
     }
 
     /// Claude Code's message about a request that failed mid-response shows
