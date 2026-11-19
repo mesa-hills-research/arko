@@ -4441,6 +4441,11 @@ impl Harness {
                 TurnEnd::Failed
             }
         };
+        // (Before the footer ends the turn in the feed, so a client that
+        // sees it ended can edit the message.)
+        if let Some(item) = user_item {
+            self.mark_message(item, at);
+        }
         // The answers the agent was given leave, and the others stay for
         // its next turn.
         self.settle_answer_notes();
@@ -4448,9 +4453,6 @@ impl Harness {
         self.tell_monitors_of_the_cache();
         // (Its latest request, for when the session opens again.)
         self.save_keep_warm();
-        if let Some(item) = user_item {
-            self.mark_message(item, at);
-        }
         if exit {
             return TurnEnd::Exit;
         }
