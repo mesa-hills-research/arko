@@ -515,6 +515,10 @@ pub struct ItemData {
     /// For a call that failed, the ID the next item had when it failed.
     #[serde(default)]
     pub ended: Option<u64>,
+    /// For a call that ended, the ID the next item had when it first stopped
+    /// running.
+    #[serde(default)]
+    pub settled_at: Option<u64>,
     /// What a call did, for the Quiet view's rows.
     #[serde(default)]
     pub act: Option<Act>,

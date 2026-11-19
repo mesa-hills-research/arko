@@ -1898,7 +1898,7 @@ impl Transcript {
                 let item = &self.entries[*index].item;
                 match item.kind {
                     // (A note the agent hasn't read waits at the end.)
-                    _ if item.pending => quiet::Step::Aside,
+                    _ if item.pending => quiet::Step::Aside(item.id),
                     _ if *as_is => quiet::Step::Other(item.id),
                     // A worker's row stands as it is, in every view.
                     Kind::Call if going(item).is_some() => quiet::Step::Other(item.id),
@@ -1911,13 +1911,14 @@ impl Transcript {
                         turn: item.turn,
                         content: !results.is_empty(),
                         ended: item.ended,
+                        settled_at: item.settled_at,
                         sealed: self.quiet_sealed.contains(&item.id),
                     }),
                     // (One the reader opened on its own line stays there.)
                     Kind::Thinking if self.quiet_sealed.contains(&item.id) => {
                         quiet::Step::Other(item.id)
                     }
-                    Kind::Thinking => quiet::Step::Thinking,
+                    Kind::Thinking => quiet::Step::Thinking(item.id),
                     _ => quiet::Step::Other(item.id),
                 }
             })
@@ -7974,7 +7975,8 @@ mod tests {
 
     /// The Quiet view's rows follow from the items alone, so switching to
     /// Full and back while a command runs, and after it ended, shows the
-    /// rows a reader who stayed in Quiet saw.
+    /// rows a reader who stayed in Quiet saw. A command that runs has a row
+    /// of its own, which goes into the row before it once it ends.
     #[test]
     fn quiet_rows_survive_a_view_switch() {
         use crate::remote::{Act, ActKind};
@@ -8005,10 +8007,13 @@ mod tests {
         t.apply(Update::Item(call(3, ActKind::Read, "a.rs", CallStatus::Ok)));
         let quiet = Filter::Main(View::Quiet);
         let before = rows(&mut t, &quiet, 50, 4);
-        assert_eq!(before[..2], ["▸ Running cargo build …", "· Read a.rs"]);
+        assert_eq!(
+            before[..3],
+            ["· Ran rg x", "· Running cargo build …", "· Read a.rs"]
+        );
         rows(&mut t, &Filter::Main(View::Full), 50, 4);
         assert_eq!(rows(&mut t, &quiet, 50, 4), before);
-        // It ends in its row, and no row comes or goes.
+        // It ends, and joins the row before it.
         t.apply(Update::Change(call(
             2,
             ActKind::Command,
@@ -8018,7 +8023,7 @@ mod tests {
         let after = rows(&mut t, &quiet, 50, 4);
         assert_eq!(after[..2], ["▸ Ran 2 commands (rg, cargo)", "· Read a.rs"]);
         let count = |rows: &[String]| rows.iter().filter(|row| !row.is_empty()).count();
-        assert_eq!(count(&before), count(&after));
+        assert_eq!(count(&before), count(&after) + 1);
         rows(&mut t, &Filter::Main(View::Full), 50, 4);
         assert_eq!(rows(&mut t, &quiet, 50, 4), after);
     }

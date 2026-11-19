@@ -290,6 +290,7 @@ pub mod tests {
             number_width: None,
             language: None,
             ended: None,
+            settled_at: None,
             status: None,
             outcome: None,
             act: None,

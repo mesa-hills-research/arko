@@ -118,6 +118,11 @@ pub struct Item {
     /// starts a Quiet row of its own instead of joining the failed one's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended: Option<u64>,
+    /// For a call that ended, the ID the next item had when it first stopped
+    /// running. A long call joins the Quiet row before it only when nothing
+    /// came below it by then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settled_at: Option<u64>,
     /// What a call did, for the Quiet view's rows, which every client words
     /// and merges the same way ([`quiet`](super::quiet)).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,6 +268,7 @@ impl Item {
             status: None,
             outcome: None,
             ended: None,
+            settled_at: None,
             act: None,
             started: None,
             sets: None,
@@ -343,12 +349,13 @@ impl Item {
     }
 
     /// Moves the item `ids` IDs and `turns` turns on, with everything in it
-    /// that names an item by its ID (the call a result is of, the ID a failed
-    /// call ended at), for items made apart and added after others.
+    /// that names an item by its ID (the call a result is of, the IDs a call
+    /// failed and ended at), for items made apart and added after others.
     pub(crate) fn relocate(&mut self, ids: u64, turns: u64) {
         self.id += ids;
         self.call = self.call.map(|call| call + ids);
         self.ended = self.ended.map(|ended| ended + ids);
+        self.settled_at = self.settled_at.map(|settled| settled + ids);
         self.turn = self.turn.map(|turn| turn + turns);
     }
 
@@ -365,6 +372,7 @@ impl Item {
     ) {
         self.status = Some(status);
         self.outcome = outcome;
+        self.settled_at.get_or_insert(next);
         if status != CallStatus::Failed {
             self.ended = None;
         } else if self.ended.is_none() {
@@ -5438,11 +5446,11 @@ mod tests {
         );
     }
 
-    /// A command joins the Quiet row above as it comes, whether it ends
-    /// before or after the next call shows, so the rows follow from the
-    /// items alone.
+    /// A command has a Quiet row of its own while it runs. Once it ends it
+    /// joins the row above if nothing came below it by then, and else stays
+    /// where it is, so nothing above what came moves.
     #[test]
-    fn a_command_keeps_its_quiet_row_whenever_it_ends() {
+    fn a_command_joins_the_row_above_only_if_it_ends_last() {
         let rows = |late: bool| {
             let feed = Feed::new("main");
             let (rg, build, read) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
@@ -5481,10 +5489,8 @@ mod tests {
             }
             quiet_words(&items(&feed))
         };
-        // The build joins the row as it comes either way, so no row comes
-        // and goes with it.
-        assert_eq!(rows(true), ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
         assert_eq!(rows(false), ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
+        assert_eq!(rows(true), ["Ran rg x", "Ran cargo build", "Read a.rs"]);
     }
 
     /// The Quiet rows of the calls among `items`, by their words.
@@ -5501,6 +5507,7 @@ mod tests {
                     outcome: item.outcome.as_deref(),
                     turn: item.turn,
                     ended: item.ended,
+                    settled_at: item.settled_at,
                     ..Default::default()
                 })
             })
@@ -5815,6 +5822,7 @@ mod tests {
                             turn: item.turn,
                             content: !results.is_empty(),
                             ended: item.ended,
+                            settled_at: item.settled_at,
                             sealed: false,
                         }),
                         _ => quiet::Step::Other(item.id),

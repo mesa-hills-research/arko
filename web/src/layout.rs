@@ -394,7 +394,7 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData], sealed: &HashSet<u64>) -> Vec
         .map(|(row, results)| match row {
             // (A note the agent hasn't read waits at the end.)
             Row::Item(id, _) if by_id.get(id).is_some_and(|item| item.pending) => {
-                quiet::Step::Aside
+                quiet::Step::Aside(*id)
             }
             Row::Item(id, Kind::Call) => match by_id.get(id) {
                 Some(item) => quiet::Step::Call(quiet::Call {
@@ -406,13 +406,14 @@ fn quiet_rows(rows: Vec<Row>, items: &[&ItemData], sealed: &HashSet<u64>) -> Vec
                     turn: item.turn,
                     content: !results.is_empty(),
                     ended: item.ended,
+                    settled_at: item.settled_at,
                     sealed: sealed.contains(&item.id),
                 }),
                 None => quiet::Step::Other(*id),
             },
             // (One the reader opened on its own line stays there.)
             Row::Item(id, Kind::Thinking) if sealed.contains(id) => quiet::Step::Other(*id),
-            Row::Item(_, Kind::Thinking) => quiet::Step::Thinking,
+            Row::Item(id, Kind::Thinking) => quiet::Step::Thinking(*id),
             Row::Item(id, _) | Row::Status(id) => quiet::Step::Other(*id),
             _ => quiet::Step::Other(0),
         })
@@ -1601,10 +1602,10 @@ mod tests {
         assert_eq!(says(&hidden, View::Full, None, 1), "2 new");
     }
 
-    /// A long call joins the row above as it comes and shows there while
-    /// it runs, so no row comes or goes when it starts or ends.
+    /// A long call has a row of its own while it runs, and joins the row
+    /// above once it ends, when nothing came below it by then.
     #[test]
-    fn a_long_call_leaves_the_rows_as_they_are() {
+    fn a_long_call_joins_the_row_above_once_it_ends() {
         use crate::protocol::{Act, ActKind};
         let call = |id: u64, target: &str, status: CallStatus| ItemData {
             status: Some(status),
@@ -1620,20 +1621,24 @@ mod tests {
             call(2, "rg x", CallStatus::Ok),
             call(3, "cargo build", CallStatus::Running),
         ];
-        let said = |rows: &[Row]| match &rows[1] {
+        let said = |rows: &[Row], at: usize| match &rows[at] {
             Row::Quiet { row, .. } => (row.words.said(), row.words.running),
             other => panic!("{other:?}"),
         };
         let running = layout(&items, View::Quiet, None);
-        assert_eq!(ids(&running), ["i1", "q2"]);
+        assert_eq!(ids(&running), ["i1", "q2", "q3"]);
         assert_eq!(
-            said(&running),
+            said(&running, 2),
             (quiet::doing(items[2].act.as_ref().unwrap()), true)
         );
         items[2].status = Some(CallStatus::Ok);
+        items[2].settled_at = Some(4);
         let settled = layout(&items, View::Quiet, None);
-        assert_eq!(ids(&settled), ids(&running));
-        assert_eq!(said(&settled), ("Ran 2 commands (rg, cargo)".into(), false));
+        assert_eq!(ids(&settled), ["i1", "q2"]);
+        assert_eq!(
+            said(&settled, 1),
+            ("Ran 2 commands (rg, cargo)".into(), false)
+        );
     }
 
     /// Each of the shared fixtures, alone in its Quiet row, says and opens
