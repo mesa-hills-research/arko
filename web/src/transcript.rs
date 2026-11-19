@@ -18,6 +18,10 @@ use crate::spinner::Spinner;
 use crate::store::{Entry, MAIN, call_actions};
 use crate::{contents, scroll, words};
 
+/// The marker of a row or line with nothing to open, running or not, as the
+/// terminal draws it. One that opens has a triangle.
+const STILL: &str = "·";
+
 #[component]
 pub fn Transcript() -> impl IntoView {
     let page = page();
@@ -464,8 +468,9 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                     }
                 >
                     <span class="call-line">
-                        // (Its triangle turns as it opens.)
-                        <span class="mark">{move || if opens() || cut.get() { "▸" } else { "" }}</span>
+                        // (Its triangle turns as it opens. A row with nothing
+                        // to open has a dot.)
+                        <span class="mark">{move || if opens() || cut.get() { "▸" } else { STILL }}</span>
                         <span class="said">
                             <span class="what" class:long=move || long_words(&words().text) title=move || words().said()>{move || words().text}</span>
                             {move || words().news.map(|news| view! { <span class="news">{format!("({news})")}</span> })}
@@ -559,7 +564,7 @@ fn quiet_member(
     let line = move || {
         merged().then(|| {
             let mark = move || match (folds() || cut.get(), open()) {
-                (false, _) => "",
+                (false, _) => STILL,
                 (true, false) => "▸",
                 (true, true) => "▾",
             };
@@ -949,7 +954,7 @@ fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
                     }
                 >
                     <span class="call-line">
-                        <span class="mark">{move || if opens() { "▸" } else { "" }}</span>
+                        <span class="mark">{move || if opens() { "▸" } else { STILL }}</span>
                         <span class="who">{agent}</span>
                         <span class="said">
                             <span class="what" class:long=move || long_words(&said().text)>{move || said().text}</span>
@@ -1104,7 +1109,7 @@ fn call_row(cell: RowCell) -> AnyView {
     };
     let open = move || folds() && full_open(page, id, command);
     // (Its triangle turns as it opens.)
-    let mark = move || if folds() { "▸" } else { "" };
+    let mark = move || if folds() { "▸" } else { STILL };
     let detail = move || {
         open().then(|| {
             let whole = cut

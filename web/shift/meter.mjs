@@ -1964,9 +1964,10 @@ async function pixelCases(cdp, agent) {
         return moved === 0 ? null : `the lines are ${moved} from their rows`;
       });
     }
-    // A row whose words, outcome and spinner leave little room still shows
-    // its button whole, on one line, inside the row, and its words give
-    // way first, down to 8 characters.
+    // A row whose words and spinner leave little room still shows its
+    // button whole, on one line, inside the row, and its words give way,
+    // down to 8 characters. A Quiet row of several calls says what runs
+    // first, with nothing after it.
     for (const view of ['quiet', 'full']) {
       await play(ratio, `touch: a running row with Move to background fits a phone (${view})`, async (run) => {
         await run.metrics(390, 844);
@@ -2011,17 +2012,63 @@ async function pixelCases(cdp, agent) {
           if (!shot) await new Promise((done) => setTimeout(done, 100));
         }
         if (!shot) return 'no Move to background';
-        if (view === 'quiet' && !shot.note) return 'the row has no outcome after its words';
+        if (view === 'quiet' && shot.note) return 'the row says what runs after its words, not first';
         if (shot.past > 0.5) return `the row runs ${shot.past} px past its right edge`;
         if (shot.clipped || shot.button > 24.5) return `the button wraps or is cut (${shot.button} px tall)`;
         if (shot.line > 24.5) return `the line is ${shot.line} px tall`;
         if (!shot.cut) return 'the words fit whole, so nothing gave way';
-        // (In Quiet the outcome after them takes the rest, so they stand at
-        // their 8, and in Full nothing does.)
         if (shot.what < shot.eight - 1) return `the words are ${shot.what} px, under 8 characters (${shot.eight} px)`;
-        if (view === 'quiet' && shot.what > shot.eight + 1) return `the words are ${shot.what} px, not 8 characters (${shot.eight} px)`;
         return null;
       }, view);
+    }
+    // A Quiet row of several waits whose running wait ends keeps each of
+    // its lines on its row and its words where they start, closed or open.
+    // The row's words change in place, and the spinner and the button go
+    // from its end.
+    for (const open of [false, true]) {
+      await play(ratio, `touch: a merged wait row that ends moves no line (${open ? 'open' : 'closed'})`, async (run) => {
+        await run.metrics(390, 844);
+        await run.settle(null);
+        await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+        const first = await run.feed({ do: 'call', tool: 'wait_for_agents', parameters: {} });
+        await run.feed({ do: 'result', call: first.call, tool: 'wait_for_agents', output: 'An update for you arrived while you waited. It follows. Wait again if you still need to. Still running: r3.' });
+        const { call } = await run.feed({ do: 'call', tool: 'wait_for_agents', parameters: {} });
+        await run.feed({ do: 'movable' });
+        await run.settle(null);
+        if (open) {
+          const at = await run.evaluate(`(() => { const s = [...document.querySelectorAll('#rows details.quiet > summary')].pop(); if (!s) return null; const r = s.getBoundingClientRect(); return [r.left + 30, r.top + r.height / 2]; })()`);
+          if (!at) return 'no row of several';
+          await run.click(at[0], at[1]);
+          await run.settle(null);
+        }
+        const lines = `(() => [...document.querySelectorAll('#rows .call-line')].filter((line) => line.getBoundingClientRect().height > 0).map((line) => {
+          const box = line.getBoundingClientRect();
+          const what = line.querySelector('.what').getBoundingClientRect();
+          return [Math.round(box.top * 10) / 10, Math.round(what.left * 10) / 10, Math.round(box.height * 10) / 10];
+        }))()`;
+        // (The status, which says the call may move, comes every 2 s.)
+        let before = null;
+        for (let at = 0; at < 40 && !before; at++) {
+          await run.settle(null);
+          const shown = await run.evaluate(`!!document.querySelector('#rows .call-action')`);
+          if (shown) before = await run.evaluate(lines);
+          else await new Promise((done) => setTimeout(done, 100));
+        }
+        if (!before) return 'no Move to background';
+        if (open && before.length < 3) return `the open row shows ${before.length} lines`;
+        await run.feed({ do: 'result', call, tool: 'wait_for_agents', output: 'None of your agent runs is running now.' });
+        await run.settle(null);
+        const after = await run.evaluate(lines);
+        if (after.length !== before.length) return `${before.length} lines became ${after.length}`;
+        for (let n = 0; n < before.length; n++) {
+          const [top, left, height] = before[n];
+          const [nowTop, nowLeft, nowHeight] = after[n];
+          if (nowTop !== top || nowLeft !== left || nowHeight !== height) {
+            return `line ${n} moved from ${before[n]} to ${after[n]}`;
+          }
+        }
+        return null;
+      }, 'quiet');
     }
     await play(ratio, 'touch: a finger lifted without a drag catches up to the end', async (run) => {
       await run.fill();
