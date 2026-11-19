@@ -495,8 +495,23 @@ enum Busy {
     Text(u64),
     /// A call of its runs.
     Tool,
+    /// It waits on the user's answer to a question its card holds.
+    User,
     /// It replied.
     Done,
+}
+
+/// Whether the question card `item` says that its agent waits on the
+/// user: one of its questions is open and waited on. The card comes with
+/// its questions and changes with them, so it says so as it comes, before
+/// the status does.
+fn waits_on_user(item: &ItemData) -> bool {
+    item.kind == Kind::Question
+        && item.questions.as_ref().is_some_and(|questions| {
+            questions
+                .iter()
+                .any(|question| question.waits && question.state == "open")
+        })
 }
 
 fn busy(items: &[ItemData], agent: &str, since: i64) -> Busy {
@@ -525,6 +540,8 @@ fn busy(items: &[ItemData], agent: &str, since: i64) -> Busy {
             Kind::User if matches!(item.delivery, Some(Delivery::Command | Delivery::Queued)) => {
                 continue;
             }
+            // Its question waits, also after the call that asked it ended.
+            Kind::Question if waits_on_user(item) => return Busy::User,
             _ => {}
         }
         if after_call {
@@ -571,7 +588,7 @@ pub fn motion(
         // It counts calls, so the line at the end says what the agent's
         // call does while it runs (`working_label`).
         Busy::Tool if view == View::Messages => (None, true),
-        Busy::Tool | Busy::Done => still,
+        Busy::Tool | Busy::User | Busy::Done => still,
     }
 }
 
@@ -585,8 +602,32 @@ fn under_way(store: &Store, status: &StatusData, worker: Option<&str>) -> Option
             .is_some_and(|summary| summary.state == WorkerState::Running)
             .then_some(i64::MIN),
         // While the agent asks, it waits on the user, not on its model.
-        None if !status.working || status.question.is_some() => None,
+        None if !status.working || asks(store, status) => None,
         None => Some(status.since.unwrap_or(i64::MIN)),
+    }
+}
+
+/// Whether the main agent waits on the user's answer, as the status says.
+/// The card it names says so too, and the card goes first: one whose
+/// questions no longer wait, or one a turn the user started came after,
+/// was settled or left before the status followed. Without the card or its
+/// questions (trimmed, or from an older Arko), the status says.
+fn asks(store: &Store, status: &StatusData) -> bool {
+    let Some(question) = &status.question else {
+        return false;
+    };
+    match store.get(question.id) {
+        Some(card) if card.kind == Kind::Question && card.questions.is_some() => {
+            waits_on_user(card)
+                && !store.items.iter().any(|item| {
+                    item.id > card.id
+                        && item.kind == Kind::User
+                        && item.agent == MAIN
+                        && !item.pending
+                        && item.delivery == Some(Delivery::Turn)
+                })
+        }
+        _ => true,
     }
 }
 
@@ -1167,6 +1208,155 @@ mod tests {
         };
         assert_eq!(
             motion(&store, &asking, View::Full, None, 0.0),
+            (None, false)
+        );
+    }
+
+    /// The main agent's question card `id`, of one question in `state`
+    /// ("open", "answered") that the agent waits on or not.
+    fn card(id: u64, state: &str, waits: bool) -> ItemData {
+        let question: crate::protocol::QuestionData = serde_json::from_value(serde_json::json!({
+            "id": "q1", "question": "Tabs or spaces?", "state": state,
+            "waits": waits, "item": id,
+        }))
+        .unwrap();
+        ItemData {
+            questions: Some(vec![question]),
+            ..item(id, Kind::Question, MAIN, "Arko asked a question")
+        }
+    }
+
+    /// The status of a main agent at work that waits on the question card
+    /// `id`, if any.
+    fn at_work(asks: Option<u64>) -> StatusData {
+        StatusData {
+            working: true,
+            since: Some(0),
+            question: asks.map(|id| crate::protocol::Question {
+                id,
+                text: "Tabs or spaces?".into(),
+            }),
+            ..StatusData::default()
+        }
+    }
+
+    /// A card the agent waits on says so as it comes, in the same event,
+    /// and the status that says so comes after it. Between them no Working
+    /// row stands under the card, which would leave its room blank under it
+    /// when it went. Once the card settles, the agent works again, also
+    /// while the status still names the card.
+    #[test]
+    fn a_card_the_agent_waits_on_stops_the_working_row_before_the_status_comes() {
+        let mut store = Store::default();
+        store.add(item(1, Kind::User, MAIN, "Set up the new crate."), 0.0);
+        store.add(
+            item(2, Kind::Text, MAIN, "One question before I start."),
+            0.0,
+        );
+        assert_eq!(
+            motion(&store, &at_work(None), View::Full, None, QUIET_MS),
+            (None, true)
+        );
+        store.add(card(3, "open", true), 0.0);
+        for view in [View::Quiet, View::Full, View::Messages] {
+            for status in [at_work(None), at_work(Some(3))] {
+                assert_eq!(
+                    motion(&store, &status, view, None, QUIET_MS),
+                    (None, false),
+                    "{view:?}, the status naming {:?}",
+                    status.question.as_ref().map(|question| question.id)
+                );
+            }
+        }
+        // Answered, before and after the status follows.
+        store.change(card(3, "answered", false), 0.0);
+        for status in [at_work(Some(3)), at_work(None)] {
+            assert_eq!(
+                motion(&store, &status, View::Full, None, QUIET_MS),
+                (None, true)
+            );
+        }
+    }
+
+    /// The card waits also when the call that asked ends after it came
+    /// (its result is the latest of the agent's items), and also with a note
+    /// of the user's waiting below it.
+    #[test]
+    fn a_card_waits_whatever_of_its_call_and_the_notes_came_after_it() {
+        let mut store = Store::default();
+        store.add(item(1, Kind::User, MAIN, "go"), 0.0);
+        let mut call = item(2, Kind::Call, MAIN, "ask_user");
+        call.status = Some(CallStatus::Ok);
+        store.add(call, 0.0);
+        store.add(card(3, "open", true), 0.0);
+        store.add(item(4, Kind::Result, MAIN, "asked"), 0.0);
+        assert_eq!(
+            motion(&store, &at_work(None), View::Full, None, 0.0),
+            (None, false)
+        );
+        store.add(
+            ItemData {
+                pending: true,
+                delivery: Some(Delivery::Note),
+                ..item(5, Kind::User, MAIN, "Keep the tests in their own folder.")
+            },
+            0.0,
+        );
+        assert_eq!(
+            motion(&store, &at_work(None), View::Full, None, 0.0),
+            (None, false)
+        );
+    }
+
+    /// What the card doesn't stop: the work after a question the agent
+    /// doesn't wait on, a worker's work beside the main agent's card, and a
+    /// turn the user started after the card, also while a late status still
+    /// names it.
+    #[test]
+    fn a_card_stops_only_its_own_agents_wait() {
+        let mut store = Store::default();
+        store.add(item(1, Kind::User, MAIN, "go"), 0.0);
+        store.add(card(2, "open", false), 0.0);
+        assert_eq!(
+            motion(&store, &at_work(None), View::Full, None, 0.0),
+            (None, true)
+        );
+        store.change(card(2, "open", true), 0.0);
+        store.worker(worker("r1"));
+        assert_eq!(
+            motion(&store, &at_work(Some(2)), View::Full, Some("r1"), 0.0),
+            (None, true)
+        );
+        store.add(
+            ItemData {
+                delivery: Some(Delivery::Turn),
+                ..item(3, Kind::User, MAIN, "Use spaces, and set up the crate.")
+            },
+            0.0,
+        );
+        for status in [at_work(Some(2)), at_work(None)] {
+            assert_eq!(motion(&store, &status, View::Full, None, 0.0), (None, true));
+        }
+    }
+
+    /// Where the page has no card's questions to go by (the card was
+    /// trimmed, or came from an older Arko without them), the status says
+    /// whether the agent asks.
+    #[test]
+    fn without_its_card_the_status_says_the_agent_asks() {
+        let mut store = Store::default();
+        store.add(item(1, Kind::User, MAIN, "go"), 0.0);
+        assert_eq!(
+            motion(&store, &at_work(Some(9)), View::Full, None, 0.0),
+            (None, false)
+        );
+        store.add(item(2, Kind::Question, MAIN, "Arko asked a question"), 0.0);
+        assert_eq!(
+            motion(&store, &at_work(None), View::Full, None, 0.0),
+            (None, true)
+        );
+        assert_eq!(
+            motion(&store, &at_work(Some(2)), View::Full, None, 0.0),
             (None, false)
         );
     }

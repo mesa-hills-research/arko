@@ -221,10 +221,22 @@ const INSTRUMENT = `(() => {
     return every(callback, ms, ...rest);
   };
   meter.tick = (ms) => { meter.ahead += ms; for (const tick of meter.ticks) tick(); };
+  // (A case holds the status back with holdStatus, as a frame that comes
+  // between the stream's events would, until releaseStatus.)
+  meter.holdStatus = false;
+  meter.heldStatus = [];
+  meter.releaseStatus = () => {
+    meter.holdStatus = false;
+    for (const deliver of meter.heldStatus.splice(0)) deliver();
+  };
   const Source = window.EventSource;
   window.EventSource = class extends Source {
     addEventListener(type, listen, options) {
       const counted = function (event) {
+        if (type === 'status' && meter.holdStatus) {
+          meter.heldStatus.push(() => counted.call(this, event));
+          return undefined;
+        }
         try { return listen.call(this, event); } finally { meter.events++; }
       };
       return super.addEventListener(type, counted, options);
@@ -1968,6 +1980,35 @@ async function pixelCases(cdp, agent) {
       await next.close();
     }
   }, 'quiet');
+  // A question card the agent waits on comes in one event and the status
+  // that says it asks in the next, and a frame can come between them. No
+  // "Working…" stands under the card then, which would leave its room
+  // blank under the card once the status took it away.
+  for (const view of ['quiet', 'full', 'messages']) {
+    await play(1, `a question card has no Working… under it before the status comes (${view})`, async (run) => {
+      await run.feed({ do: 'user', text: `Please ${run.words(6)}` });
+      await run.feed({ do: 'text', text: `${run.some(6, 4)}\n\n` });
+      await run.settle(null);
+      const under = `(() => {
+        const rows = [...document.querySelectorAll('#rows > *')];
+        const card = rows.findIndex((row) => row.classList.contains('question'));
+        return card >= 0 && rows.slice(card + 1).some((row) => row.classList.contains('working'));
+      })()`;
+      await run.evaluate('__meter.holdStatus = true');
+      await run.feed({ do: 'ask', id: 'q1', text: `${run.some(4, 4)}?`, waits: true });
+      let frames = 0;
+      for (let at = 0; at < 6; at++) {
+        await run.frame();
+        if (await run.evaluate(under)) frames++;
+      }
+      const held = await run.evaluate('__meter.heldStatus.length');
+      await run.evaluate('__meter.releaseStatus()');
+      await run.settle(null);
+      if (!held) return 'no status was held back';
+      if (!(await run.evaluate(`!!document.querySelector('#rows > .question')`))) return 'no card came';
+      return frames ? `"Working…" stood under the new card for ${frames} of 6 frames before the status came` : null;
+    }, view);
+  }
   for (const ratio of RATIOS) {
     await play(ratio, 'three scrolls up of 0.4 in one gesture', async (run) => {
       const a = await run.fill();
