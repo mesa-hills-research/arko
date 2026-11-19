@@ -1428,7 +1428,7 @@ fn run_calls(call: u64, content: RwSignal<ItemData>, full: bool) -> impl IntoVie
 fn MoveButton(id: u64) -> impl IntoView {
     let busy = RwSignal::new(false);
     view! {
-        <button type="button" class="btn outline small call-action" disabled=move || busy.get()
+        <button type="button" class="btn ghost small call-action" disabled=move || busy.get()
             on:click=move |event| {
                 event.stop_propagation();
                 event.prevent_default();
@@ -1456,7 +1456,7 @@ fn answered(busy: RwSignal<bool>, taken: bool) {
 fn StopJobButton(job: String) -> impl IntoView {
     let busy = RwSignal::new(false);
     view! {
-        <button type="button" class="btn small call-action" disabled=move || busy.get()
+        <button type="button" class="btn ghost small call-action" disabled=move || busy.get()
             on:click=move |event| {
                 event.stop_propagation();
                 event.prevent_default();

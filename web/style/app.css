@@ -562,10 +562,13 @@ button.cache { padding: 0; border: 0; background: none; }
   mask-image: var(--arcs), var(--cap-1), var(--cap-2), var(--cap-3), var(--cap-4);
   animation: spin 1.2s steps(36, end) infinite;
 }
-/* A call's buttons stand over its line, 2 px past it above and below, so
-   the line is as tall with them as without, and nothing under it moves as
-   they come and go. */
-.call-line .call-action { align-self: center; margin: -2px 0 -2px 4px; font-family: var(--sans); }
+/* A call's buttons are as tall as its line, so the line is as tall with
+   them as without, and nothing under it moves as they come and go. At rest
+   they're their words alone, in the link colour, so the space under the
+   row is the same with them as without. Their box shows on hover and
+   press. */
+.call-line .call-action { align-self: center; height: 20px; min-height: 0; margin-left: 4px; color: var(--link); font-family: var(--sans); line-height: 18px; }
+.call-line .call-action:not(:disabled):active { background: var(--secondary-hover); }
 details.call > summary, details.more > summary { cursor: pointer; list-style: none; }
 details.call > summary::-webkit-details-marker,
 details.more > summary::-webkit-details-marker { display: none; }
