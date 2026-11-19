@@ -352,7 +352,9 @@ fn states() -> Vec<State> {
     // Code runs in each state (done, failed, a call refused inside, stopped,
     // running) in each view, tall enough for their open rows.
     let runs: [(&str, Build); 5] = [
-        s("code-runs-quiet", |app, _| code_runs(app, View::Quiet, false)),
+        s("code-runs-quiet", |app, _| {
+            code_runs(app, View::Quiet, false)
+        }),
         s("code-runs-quiet-open", |app, _| {
             code_runs(app, View::Quiet, true)
         }),
@@ -527,7 +529,9 @@ fn code_run_screens() {
             let mut app = fresh(Look::Dark);
             code_runs(&mut app, view, open);
             let mut terminal = golden::terminal(width, height);
-            terminal.draw(|frame| screen::draw(frame, &mut app)).unwrap();
+            terminal
+                .draw(|frame| screen::draw(frame, &mut app))
+                .unwrap();
             let base = dir.join(format!("{name}-{width}"));
             std::fs::write(base.with_extension("ans"), terminal.take_output()).unwrap();
             std::fs::write(base.with_extension("size"), format!("{width} {height}")).unwrap();

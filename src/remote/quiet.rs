@@ -1333,7 +1333,10 @@ fn code_run(member: &Member, Phrases { doing, done, .. }: Phrases) -> Words {
         // Held for a compaction, or the session ended first.
         Some(CallStatus::Failed) if !member.failed() => Words {
             text: doing,
-            note: member.call.outcome.map(|outcome| outcome.trim().to_string()),
+            note: member
+                .call
+                .outcome
+                .map(|outcome| outcome.trim().to_string()),
             muted: true,
             ..Words::default()
         },

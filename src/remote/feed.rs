@@ -69,8 +69,8 @@ pub(crate) const WORKER_EVERY: Duration = Duration::from_millis(250);
 
 // The types the web page reads too, which it compiles from the same file.
 pub use super::protocol::{
-    Act, ActKind, Activity, CallLine, CallStatus, Calls, Came, ContentKind, Delivery, JobKind, JobState, JobSummary,
-    Kind, Level, Question, Source, WorkerState,
+    Act, ActKind, Activity, CallLine, CallStatus, Calls, Came, ContentKind, Delivery, JobKind,
+    JobState, JobSummary, Kind, Level, Question, Source, WorkerState,
 };
 
 /// The message that keeps the prompt cache warm where the provider takes
@@ -2076,7 +2076,11 @@ impl Feed {
                 calls.lines.push(line.clone());
             }
         });
-        if let Some(run) = state.calls.get_mut(outer).and_then(|call| call.run.as_mut()) {
+        if let Some(run) = state
+            .calls
+            .get_mut(outer)
+            .and_then(|call| call.run.as_mut())
+        {
             run.running.insert(
                 *id,
                 Nested {

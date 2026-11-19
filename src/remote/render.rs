@@ -22,8 +22,8 @@ use arko_agents::tool::ToolReceipt;
 
 use super::content;
 use super::feed::{Act, ActKind, CallStatus, Came, ContentKind, Item, Kind};
-use super::protocol::CallLine;
 use super::plural;
+use super::protocol::CallLine;
 use super::quiet;
 use crate::crew;
 use crate::message;

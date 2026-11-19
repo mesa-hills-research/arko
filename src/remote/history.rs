@@ -107,9 +107,9 @@ fn items_from(
                             let outcome = if result.is_error {
                                 // A stop's result says so, as the feed does
                                 // when a stop cancels a call.
-                                let stopped = result
-                                    .output
-                                    .starts_with("The task was cancelled while this call was running");
+                                let stopped = result.output.starts_with(
+                                    "The task was cancelled while this call was running",
+                                );
                                 match stopped {
                                     true => render::Outcome::failed(super::quiet::STOPPED),
                                     false => render::Outcome::error(&tool, &result.output),

@@ -40,8 +40,8 @@ use super::theme::{Theme, Tint};
 use super::wrap::{self, Join, Wrapped, width as text_width};
 use crate::glyphs;
 use crate::remote::{
-    ActKind, CallStatus, Calls, ContentKind, Delivery, Item, Kind, Level, MAIN_AGENT, Snapshot, Source,
-    Update, WorkerState, WorkerSummary, content, quiet,
+    ActKind, CallStatus, Calls, ContentKind, Delivery, Item, Kind, Level, MAIN_AGENT, Snapshot,
+    Source, Update, WorkerState, WorkerSummary, content, quiet,
 };
 
 use super::worker_rows::{self, Going, Tone, going, worker_facts};
@@ -1026,7 +1026,10 @@ impl Transcript {
             Update::Change(item) => {
                 self.changed(item.id);
                 let id = item.id;
-                let run = item.act.as_ref().is_some_and(|act| act.kind == ActKind::Code);
+                let run = item
+                    .act
+                    .as_ref()
+                    .is_some_and(|act| act.kind == ActKind::Code);
                 if let Some(entry) = self.find_mut(id) {
                     entry.item = for_terminal(item);
                     entry.touch();
@@ -5781,12 +5784,21 @@ mod tests {
             let call = t
                 .entries
                 .iter()
-                .find(|entry| entry.item.act.as_ref().is_some_and(|act| act.kind == ActKind::Code))
+                .find(|entry| {
+                    entry
+                        .item
+                        .act
+                        .as_ref()
+                        .is_some_and(|act| act.kind == ActKind::Code)
+                })
                 .map(|entry| entry.item.id)
                 .unwrap();
             if view == View::Quiet {
                 let shown = rows(&mut t, &filter, 100, 90);
-                assert_eq!(shown[2], "▸ Ran code to count TODO comments per crate", "{shown:?}");
+                assert_eq!(
+                    shown[2], "▸ Ran code to count TODO comments per crate",
+                    "{shown:?}"
+                );
                 t.toggle(call, 2, &filter, &theme);
             }
             let shown = rows(&mut t, &filter, 100, 90);
@@ -5794,22 +5806,45 @@ mod tests {
                 .iter()
                 .position(|row| row == "│ … 4 more lines")
                 .unwrap_or_else(|| panic!("{view:?} {shown:?}"));
-            assert_eq!(shown[at - 16], format!("│  {}", code[0]), "{view:?} {shown:?}");
+            assert_eq!(
+                shown[at - 16],
+                format!("│  {}", code[0]),
+                "{view:?} {shown:?}"
+            );
             // What the calls did follows the code, then the result.
             let after = match view {
                 View::Quiet => "│ Listed 1 folder and read 3 files",
                 _ => "│ · list crates · ✓ 4 entries",
             };
             assert_eq!(shown[at + 1], after, "{view:?} {shown:?}");
-            assert!(shown[at..].iter().any(|row| row == "│ 31 arko_agents"), "{shown:?}");
+            assert!(
+                shown[at..].iter().any(|row| row == "│ 31 arko_agents"),
+                "{shown:?}"
+            );
             t.toggle(call + 1, at as u16, &filter, &theme);
             let opened = rows(&mut t, &filter, 100, 90);
-            assert_eq!(opened[..at], shown[..at], "{view:?}: nothing above the door moves");
-            assert_eq!(opened[at], format!("│  {}", code[16]), "{view:?} {opened:?}");
-            assert_eq!(opened[at + 3], format!("│  {}", code[19]), "{view:?} {opened:?}");
+            assert_eq!(
+                opened[..at],
+                shown[..at],
+                "{view:?}: nothing above the door moves"
+            );
+            assert_eq!(
+                opened[at],
+                format!("│  {}", code[16]),
+                "{view:?} {opened:?}"
+            );
+            assert_eq!(
+                opened[at + 3],
+                format!("│  {}", code[19]),
+                "{view:?} {opened:?}"
+            );
             assert_eq!(opened[at + 4], "│ ↑ show the first lines only", "{view:?}");
             t.toggle(call + 1, (at + 4) as u16, &filter, &theme);
-            assert_eq!(rows(&mut t, &filter, 100, 90), shown, "{view:?}: it closes again");
+            assert_eq!(
+                rows(&mut t, &filter, 100, 90),
+                shown,
+                "{view:?}: it closes again"
+            );
         }
     }
 
