@@ -37,6 +37,7 @@ mod render;
 pub(crate) mod scenario;
 #[cfg(feature = "remote")]
 mod server;
+pub mod spacing;
 #[cfg(feature = "remote")]
 mod uploads;
 
