@@ -98,7 +98,8 @@ pub struct Fitted {
 
 /// `words` and the parts after them (`parts`, the room each takes with the
 /// gap and dot before it, and the columns the words keep before it gives
-/// way, [`quiet::WORDS_KEEP`] or [`quiet::WORDS_KEEP_RUNNING`]) fitted to
+/// way, [`quiet::WORDS_KEEP`], [`quiet::WORDS_KEEP_RUNNING`] or
+/// [`quiet::WORDS_KEEP_LIVE`]) fitted to
 /// `room` pixels, where `fixed` is the width of what never gives way among
 /// them (a call's ✓ or ✗).
 pub fn line(words: &str, fixed: f64, parts: &[(f64, usize)], room: f64, m: Metrics) -> Fitted {
@@ -106,7 +107,11 @@ pub fn line(words: &str, fixed: f64, parts: &[(f64, usize)], room: f64, m: Metri
         .iter()
         .map(|(width, keep)| quiet::Part {
             width: units(*width),
-            keep: units(*keep as f64 * m.ch),
+            // (All the words, for how a row runs.)
+            keep: match *keep {
+                quiet::WORDS_KEEP_LIVE => usize::MAX,
+                keep => units(keep as f64 * m.ch),
+            },
         })
         .collect();
     let fit = quiet::fit(units(m.text(words)), units(fixed), &parts, units(room));
@@ -318,12 +323,10 @@ fn draw_width(_font: &str, text: &str) -> f64 {
 /// The room a line has for its words and what follows them, in pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Room {
-    /// As it stands now, past the spinner and the buttons it shows.
+    /// As it stands now, past the spinner and the buttons it shows. A row
+    /// opens to what its line left out in this room too, since the spinner
+    /// and Move to background stand for a call's run and Stop for its job's.
     pub now: f64,
-    /// As it stands through its run, without the spinner and the buttons,
-    /// which come and go. Whether a row opens to what its line left out is
-    /// decided by this room, so that never comes or goes with them.
-    pub steady: f64,
 }
 
 /// The room the call line `line` (a `.call-line`) has for what its `.said`
@@ -338,10 +341,7 @@ fn room(line: &web_sys::Element) -> Option<Room> {
         .any(|class| class == "fitted")
     {
         let width = f64::from(line.parent_element()?.client_width());
-        return (width > 0.0).then_some(Room {
-            now: width,
-            steady: width,
-        });
+        return (width > 0.0).then_some(Room { now: width });
     }
     let said = line.query_selector(":scope > .said").ok()??;
     let end = line.get_bounding_client_rect();
@@ -350,7 +350,6 @@ fn room(line: &web_sys::Element) -> Option<Room> {
     }
     let start = said.get_bounding_client_rect().left();
     let mut after = 0.0;
-    let mut passing = 0.0;
     let mut next = said.next_element_sibling();
     while let Some(element) = next {
         let width = element.get_bounding_client_rect().width();
@@ -366,19 +365,11 @@ fn room(line: &web_sys::Element) -> Option<Room> {
                 .and_then(|value| value.trim_end_matches("px").parse::<f64>().ok())
                 .unwrap_or(0.0)
         };
-        let taken = width + GAP + margin("margin-left") + margin("margin-right");
-        after += taken;
-        // (The spinner and the buttons, which come and go.)
-        let has = |selector: &str| element.query_selector(selector).ok().flatten().is_some();
-        if button || has(".spinner") || has(".call-action") {
-            passing += taken;
-        }
+        after += width + GAP + margin("margin-left") + margin("margin-right");
         next = element.next_element_sibling();
     }
-    let now = (end.right() - start - after).max(0.0);
     Some(Room {
-        now,
-        steady: now + passing,
+        now: (end.right() - start - after).max(0.0),
     })
 }
 
@@ -518,15 +509,22 @@ mod tests {
     #[test]
     fn a_line_gives_way_as_the_terminals_does() {
         let note = (GAP + M.dot() + M.text("running"), quiet::WORDS_KEEP);
-        let live = (GAP + M.dot() + M.text("2 calls"), quiet::WORDS_KEEP_RUNNING);
+        let live = (GAP + M.dot() + M.text("2 calls"), quiet::WORDS_KEEP_LIVE);
         // Room for all of it.
         let all = line("Started cargo build", 0.0, &[note], 400.0, M);
         assert_eq!(
             (all.words.as_str(), all.parts, all.cut),
             ("Started cargo build", 1, false)
         );
-        // How it runs goes while the words would keep less than 24 columns,
-        // and what happened only below 12. The words take what's left.
+        // How it runs shows only in the room the words leave, and goes whole
+        // before it would cut them.
+        let short = line("Started cargo build", 0.0, &[note, live], 36.0 * 8.0, M);
+        assert_eq!(
+            (short.words.as_str(), short.parts),
+            ("Started cargo build", 1)
+        );
+        // What happened goes only where the words would keep less than 12
+        // columns. The words take what's left.
         let words = "Started cargo build --release in a terminal";
         let narrow = line(words, 0.0, &[note, live], 30.0 * 8.0, M);
         assert_eq!(narrow.parts, 1);

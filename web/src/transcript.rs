@@ -18,7 +18,7 @@ use crate::protocol::{
 };
 use crate::shimmer::Shimmer;
 use crate::spinner::Spinner;
-use crate::store::{Entry, MAIN, call_actions};
+use crate::store::{Entry, MAIN, call_actions, kept_actions};
 use crate::{contents, fit, quiet, scroll, words};
 
 /// The marker of a row or line with nothing to open, running or not, as the
@@ -344,27 +344,24 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         data.track();
     });
     let fitted = Memo::new(move |_| room.get().map(|room| quiet_fit(&words(), room.now)));
-    // (Not counting how it runs, the spinner or the buttons, so the row
-    // doesn't come to open, nor its words whole come into it, as those come
-    // and go.)
+    // It opens to what its line as drawn left out, its words and its news or
+    // note. (How it runs only takes the room its words leave, so it doesn't
+    // count, nor show in what the row opens to, as it changes with every
+    // call.)
     let steady_words = move || quiet::Words {
         live: Vec::new(),
-        running: false,
         ..words()
     };
-    let steady = Memo::new(move |_| {
-        room.get()
-            .map(|room| quiet_fit(&steady_words(), room.steady))
-    });
-    let cut =
-        Signal::derive(move || steady.with(|steady| steady.as_ref().is_some_and(|fit| fit.cut)));
-    let left_out = move || {
-        steady.with(|steady| {
-            steady
-                .as_ref()
-                .is_some_and(|fit| fit.parts < quiet_parts(&steady_words(), fit::metrics()).len())
+    let settled = move || {
+        data.with(|row| {
+            usize::from(row.words.news.is_some()) + usize::from(row.words.note.is_some())
         })
     };
+    let left_out =
+        move || fitted.with(|fitted| fitted.as_ref().is_some_and(|fit| fit.parts < settled()));
+    let cut = Signal::derive(move || {
+        fitted.with(|fitted| fitted.as_ref().is_some_and(|fit| fit.words_cut)) || left_out()
+    });
     let opens = move || data.with(|row| row.opens);
     let open = move || (opens() || cut.get()) && page.quiet_open.contains(id);
     // The row's calls, by ID.
@@ -394,13 +391,14 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         class
     };
     // What each call's own row offers (Move to background while it runs,
-    // Stop while its job or monitor runs), whatever row it's in.
+    // Stop while its job or monitor runs), whatever row it's in, each in the
+    // room its state keeps for it from the start.
     let actions = move || {
         members()
             .into_iter()
             .filter_map(cell)
             .map(|cell| {
-                let (moves, stop) = cell.data.with(|item| {
+                let offered = cell.data.with(|item| {
                     call_actions(
                         item,
                         |id| page.movable.with(|movable| movable.contains(&id)),
@@ -410,11 +408,9 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                         },
                     )
                 });
+                let kept = cell.data.with(kept_actions);
                 let call = cell.data.with_untracked(|item| item.id);
-                view! {
-                    {moves.then(|| view! { <MoveButton id=call /> })}
-                    {stop.map(|job| view! { <StopJobButton job=job /> })}
-                }
+                action_buttons(call, offered, kept)
             })
             .collect_view()
     };
@@ -437,8 +433,11 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         if data.with(|row| row.merged) {
             return None;
         }
-        let (words_cut, parts) =
-            steady.with(|steady| steady.as_ref().map(|fit| (fit.words_cut, fit.parts)))?;
+        let (words_cut, parts) = fitted.with(|fitted| {
+            fitted
+                .as_ref()
+                .map(|fit| (fit.words_cut, fit.parts.min(settled())))
+        })?;
         let cell = members().first().copied().and_then(cell);
         let words_cut = words_cut
             && !cell
@@ -566,7 +565,7 @@ fn quiet_parts(words: &quiet::Words, m: fit::Metrics) -> Vec<(f64, usize)> {
         parts.push((fit::GAP + m.dot() + m.text(note), quiet::note_keep(words)));
     }
     for live in &words.live {
-        parts.push((fit::GAP + m.dot() + m.text(live), quiet::WORDS_KEEP_RUNNING));
+        parts.push((fit::GAP + m.dot() + m.text(live), quiet::WORDS_KEEP_LIVE));
     }
     parts
 }
@@ -1134,18 +1133,10 @@ fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
     // they cut its words or left out its note, it opens to them whole.
     let line = NodeRef::<leptos::html::Span>::new();
     let room = fit::watch(line, move || row.track());
+    // (As its line is drawn, its spinner in the room it keeps while the
+    // message's call runs.)
     let fitted = Memo::new(move |_| room.get().map(|room| quiet_fit(&said(), room.now)));
-    // (Without the spinner, which comes and goes.)
-    let steady = Memo::new(move |_| {
-        room.get().map(|room| {
-            let said = quiet::Words {
-                running: false,
-                ..said()
-            };
-            quiet_fit(&said, room.steady)
-        })
-    });
-    let cut = move || steady.with(|fitted| fitted.as_ref().is_some_and(|fitted| fitted.cut));
+    let cut = move || fitted.with(|fitted| fitted.as_ref().is_some_and(|fitted| fitted.cut));
     let opens = move || {
         cut()
             || if report() {
@@ -1157,7 +1148,7 @@ fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
     let words = move || {
         // (What its line left out, each once, its words whole where it cut
         // them and its note where it left it out.)
-        let whole = steady
+        let whole = fitted
             .get()
             .filter(|fitted| fitted.cut)
             .and_then(|fitted| {
@@ -1277,14 +1268,10 @@ fn call_line(
         Some(data.with(|item| fit_call(item, room.now)))
     });
     if let Some(cut) = cut {
-        // (Whether it opens to what it left out, without the spinner and
-        // the buttons, which come and go.)
-        let steady = Memo::new(move |_| {
-            let room = room.get()?;
-            Some(data.with(|item| fit_call(item, room.steady)))
-        });
+        // (It opens to what its line as drawn left out, its spinner and
+        // buttons standing, since they keep their room for their state.)
         Effect::new(move |_| {
-            let cuts = steady.with(|fitted| {
+            let cuts = fitted.with(|fitted| {
                 fitted
                     .as_ref()
                     .map_or(LineCut::default(), |fitted| LineCut {
@@ -1372,11 +1359,11 @@ fn call_line(
                     </span>
                     {spin}
                     {move || {
-                        let (moves, stop) = if in_row { (false, None) } else { actions.get() };
-                        view! {
-                            {moves.then(|| view! { <MoveButton id=id /> })}
-                            {stop.map(|job| view! { <StopJobButton job=job /> })}
+                        if in_row {
+                            return None;
                         }
+                        let kept = data.with(kept_actions);
+                        Some(action_buttons(id, actions.get(), kept))
                     }}
                 </span>
             }
@@ -1763,6 +1750,37 @@ fn MoveButton(id: u64) -> impl IntoView {
                 });
             }>
             "Move to background"
+        </button>
+    }
+}
+
+/// A call's buttons on its line, Move to background and Stop where they
+/// apply now (`offered`, [`call_actions`]), and where its state keeps their
+/// room but they don't apply yet (`kept`, [`kept_actions`]), the button
+/// unseen in its place. (So the line keeps its room and its words their
+/// cut when the button comes.)
+fn action_buttons(id: u64, offered: (bool, Option<String>), kept: (bool, bool)) -> impl IntoView {
+    let (moves, stop) = offered;
+    let (keep_move, keep_stop) = kept;
+    let move_button = match (moves, keep_move) {
+        (true, _) => Some(view! { <MoveButton id=id /> }.into_any()),
+        (false, true) => Some(view! { <KeptButton label="Move to background" /> }.into_any()),
+        _ => None,
+    };
+    let stop_button = match (stop, keep_stop) {
+        (Some(job), _) => Some(view! { <StopJobButton job=job /> }.into_any()),
+        (None, true) => Some(view! { <KeptButton label="Stop" /> }.into_any()),
+        _ => None,
+    };
+    view! { {move_button}{stop_button} }
+}
+
+/// The room of a button that doesn't apply yet, unseen and out of reach.
+#[component]
+fn KeptButton(label: &'static str) -> impl IntoView {
+    view! {
+        <button type="button" class="btn ghost small call-action kept" tabindex="-1" aria-hidden="true" disabled=true>
+            {label}
         </button>
     }
 }

@@ -593,6 +593,8 @@ button.cache { padding: 0; border: 0; background: none; }
    press. */
 .call-line .call-action { align-self: center; height: 20px; min-height: 0; margin-left: 4px; color: var(--link); font-family: var(--sans); line-height: 18px; }
 .call-line .call-action:not(:disabled):active { background: var(--secondary-hover); }
+/* A button's room, kept for its state before the button applies. */
+.call-line .call-action.kept { visibility: hidden; }
 details.call > summary, details.more > summary { cursor: pointer; list-style: none; }
 details.call > summary::-webkit-details-marker,
 details.more > summary::-webkit-details-marker { display: none; }

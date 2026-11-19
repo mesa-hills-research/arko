@@ -348,7 +348,11 @@ fn act(session: &mut Session, request: &Value) -> Value {
             json!({})
         }
         "job" => {
-            let job = Uuid::new_v4();
+            // (By the ID a call's result named, where given.)
+            let job = request["id"]
+                .as_str()
+                .and_then(|id| id.parse().ok())
+                .unwrap_or_else(Uuid::new_v4);
             let mut start = crate::remote::JobStart::new(
                 job,
                 crate::remote::MAIN_AGENT.to_string(),

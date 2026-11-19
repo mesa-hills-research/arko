@@ -2598,10 +2598,10 @@ async function pixelCases(cdp, agent) {
         await run.feed({ do: 'call', tool: 'shell', parameters: { command: `sleep 40; tail -3 ../${path}/target/debug/build/output` } });
         await run.feed({ do: 'movable' });
         const measure = `(() => {
-          const line = [...document.querySelectorAll('#rows .call-line')].find((line) => line.querySelector('.call-action'));
+          const line = [...document.querySelectorAll('#rows .call-line')].find((line) => line.querySelector('.call-action:not(.kept)'));
           if (!line) return null;
           const row = line.closest('.row').getBoundingClientRect();
-          const button = line.querySelector('.call-action');
+          const button = line.querySelector('.call-action:not(.kept)');
           const what = line.querySelector('.what');
           const right = Math.max(...[...line.querySelectorAll('*')].map((each) => each.getBoundingClientRect().right));
           const zero = document.createElement('span');
@@ -2667,7 +2667,11 @@ async function pixelCases(cdp, agent) {
           return {
             working: working ? working.getBoundingClientRect().height : 0,
             row: line ? line.closest('.row').getBoundingClientRect().height : 0,
-            button: !!(line && line.querySelector('.call-action')),
+            button: !!(line && line.querySelector('.call-action:not(.kept)')),
+            // (Its words as cut and its marker, which the button's room,
+            // kept from the start, leaves as they were.)
+            words: line ? (line.querySelector('.said') || line).textContent : '',
+            mark: line ? (line.querySelector('.mark') || line).textContent : '',
           };
         })()`;
         const before = await run.evaluate(live);
@@ -2685,6 +2689,8 @@ async function pixelCases(cdp, agent) {
         if (view !== 'messages' && !after.button) problems.push('no Move to background');
         if (Math.max(before.working, after.working) > 20.5) problems.push(`the live line is ${Math.max(before.working, after.working)} px tall`);
         if (Math.abs(after.row - before.row) > 0.5) problems.push(`the row went from ${before.row} to ${after.row} px as its button came`);
+        if (view !== 'messages' && after.words !== before.words) problems.push(`its words went from "${before.words}" to "${after.words}" as its button came`);
+        if (after.mark !== before.mark) problems.push(`its marker went from "${before.mark}" to "${after.mark}" as its button came`);
         const running = await run.look();
         await run.feed({ do: 'result', call, tool: 'shell', output: 'exit code 0, 9.0 s\nok' });
         await run.feed({ do: 'movable' });
@@ -2692,6 +2698,86 @@ async function pixelCases(cdp, agent) {
         const ended = await run.look();
         const grew = Math.round(rawBlank(ended) - rawBlank(running));
         if (grew > 0) problems.push(`${grew} device px of blank came below the end as the call ended`);
+        return problems[0] ?? null;
+      }, view);
+    }
+    // A running command's Move to background, and a started job's Stop,
+    // come into the room their line kept from the start. The line's words,
+    // its marker and its row's height with what it opens to stay as they
+    // were, and so does a note that waits below it. Each row is open first,
+    // the command's of its own and the started job's in a Quiet row of two
+    // calls (in Full, its own line).
+    for (const view of ['quiet', 'full']) {
+      await play(ratio, `touch: a call's button comes into the room its line kept (${view})`, async (run) => {
+        await run.metrics(320, 844);
+        await run.fill(4);
+        await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+        // (The line whose button comes, which holds its room from the start.)
+        const line = `[...document.querySelectorAll('#rows .call-line')].filter((line) => line.querySelector(':scope > .call-action')).pop()`;
+        const measure = `(() => {
+          const line = ${line};
+          const below = [...document.querySelectorAll('#rows > .row')].pop();
+          if (!line || !below) return null;
+          const details = line.closest('details');
+          return {
+            words: (line.querySelector('.said') || line).textContent,
+            mark: (line.querySelector('.mark') || line).textContent,
+            row: line.closest('.row').getBoundingClientRect().height,
+            open: details ? details.open : null,
+            below: below.getBoundingClientRect().top,
+            last: below.contains(line),
+            button: !!line.querySelector('.call-action:not(.kept)'),
+          };
+        })()`;
+        const open = async () => {
+          await run.settle(null);
+          const at = await run.evaluate(`(() => {
+            const line = ${line};
+            const details = line && line.closest('details');
+            if (!details || details.open) return null;
+            const r = line.getBoundingClientRect();
+            return [r.left + 30, r.top + r.height / 2];
+          })()`);
+          if (at) await run.click(at[0], at[1]);
+        };
+        const problems = [];
+        const arrives = async (what, step) => {
+          await run.settle(null);
+          const before = await run.evaluate(measure);
+          await step();
+          let after = before;
+          for (let at = 0; at < 40 && !(after && after.button); at++) {
+            await run.settle(null);
+            after = await run.evaluate(measure);
+            if (!(after && after.button)) await sleep(100);
+          }
+          if (!before || !after || !after.button) return problems.push(`no ${what}`);
+          if (before.button) problems.push(`${what} showed before its step`);
+          if (before.last) problems.push(`nothing waits below the line ${what} comes to`);
+          for (const key of ['words', 'mark', 'row', 'open', 'below']) {
+            if (before[key] !== after[key]) problems.push(`${key} went from ${JSON.stringify(before[key])} to ${JSON.stringify(after[key])} as ${what} came`);
+          }
+        };
+        // A command of its own row, open, with a note below.
+        const { call } = await run.feed({ do: 'call', tool: 'shell', parameters: { command: `cargo test -p ${run.words(1)} --release` } });
+        await open();
+        await run.feed({ do: 'note', text: `Also ${run.words(3)}`, seq: 1 });
+        await arrives('Move to background', () => run.feed({ do: 'movable' }));
+        await run.feed({ do: 'result', call, tool: 'shell', output: 'exit code 0, 9.0 s\nok' });
+        await run.feed({ do: 'movable' });
+        await run.feed({ do: 'read', seq: 1 });
+        // A started job after a quick command, one Quiet row, open, with a
+        // note below.
+        const ls = await run.feed({ do: 'call', tool: 'shell', parameters: { command: `ls ${run.words(1)}` } });
+        await run.feed({ do: 'result', call: ls.call, tool: 'shell', output: 'exit code 0, 0.1 s\na.rs' });
+        const started = await run.feed({ do: 'call', tool: 'terminal_start', parameters: { command: `./migrate ${run.words(2)}` } });
+        const job = crypto.randomUUID();
+        await run.feed({ do: 'result', call: started.call, tool: 'terminal_start', output: JSON.stringify({ job_id: job, state: 'running' }) });
+        await open();
+        await run.feed({ do: 'note', text: `And ${run.words(3)}`, seq: 2 });
+        await arrives('Stop', () => run.feed({ do: 'job', id: job, call: started.call, text: './migrate' }));
+        await run.feed({ do: 'job_ended', job });
+        await run.settle(null);
         return problems[0] ?? null;
       }, view);
     }
@@ -2710,13 +2796,13 @@ async function pixelCases(cdp, agent) {
         await run.feed({ do: 'movable' });
         for (let at = 0; at < 40; at++) {
           await run.settle(null);
-          if (await run.evaluate(`!!document.querySelector('#rows .call-action')`)) break;
+          if (await run.evaluate(`!!document.querySelector('#rows .call-action:not(.kept)')`)) break;
           await sleep(100);
         }
         const a = await run.look();
         if (!follows(a)) return `the case began ${a.choice}`;
         const fold = `(() => {
-          const line = [...document.querySelectorAll('#rows .call-line')].find((line) => /\\bls\\b/.test(line.textContent) && !line.querySelector('.call-action'));
+          const line = [...document.querySelectorAll('#rows .call-line')].find((line) => /\\bls\\b/.test(line.textContent) && !line.querySelector('.call-action:not(.kept)'));
           if (!line) return null;
           const r = line.getBoundingClientRect();
           return [r.left + 30, r.top + r.height / 2];

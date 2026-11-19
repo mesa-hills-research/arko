@@ -249,6 +249,19 @@ pub fn call_actions(
     (moves, stop)
 }
 
+/// The buttons whose room a call's line keeps for as long as its state
+/// lasts, shown or not yet. That is Move to background while it runs and
+/// can move (`Act::moves`), and Stop while the job it made runs
+/// (`Act::job_runs`). So the line's words are cut the same way, and it
+/// opens to the same, before and after the button comes.
+pub fn kept_actions(item: &ItemData) -> (bool, bool) {
+    let act = item.act.as_ref().filter(|_| item.kind == Kind::Call);
+    let moves = item.status == Some(crate::protocol::CallStatus::Running)
+        && act.is_some_and(|act| act.moves);
+    let stop = item.job.is_some() && act.is_some_and(|act| act.job_runs);
+    (moves, stop)
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -488,6 +501,33 @@ pub mod tests {
             call_actions(&call, asked, |job| job == "j1"),
             (false, Some("j1".into()))
         );
+    }
+
+    /// A call's line keeps the room of Move to background from the start of a
+    /// run that can move, and of Stop while its job runs, before either is
+    /// offered, and of neither once its state ended.
+    #[test]
+    fn a_line_keeps_its_buttons_room_for_their_state() {
+        let mut call = item(5, Kind::Call, MAIN, "cargo build");
+        call.status = Some(CallStatus::Running);
+        call.act = Some(crate::protocol::Act {
+            moves: true,
+            ..Default::default()
+        });
+        assert_eq!(kept_actions(&call), (true, false));
+        // A call that can't move keeps no room for it.
+        call.act.as_mut().unwrap().moves = false;
+        assert_eq!(kept_actions(&call), (false, false));
+        // A started job's Stop, while the job runs, and not after.
+        call.status = Some(CallStatus::Ok);
+        call.job = Some("j1".into());
+        call.act.as_mut().unwrap().job_runs = true;
+        assert_eq!(kept_actions(&call), (false, true));
+        call.act.as_mut().unwrap().job_runs = false;
+        assert_eq!(kept_actions(&call), (false, false));
+        // A moved call ended its run, so Move's room goes with its state.
+        call.act.as_mut().unwrap().moves = true;
+        assert_eq!(kept_actions(&call), (false, false));
     }
 
     #[test]

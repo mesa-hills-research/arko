@@ -434,65 +434,65 @@ style 84 0 2 fg=#9d9d9d bg=#131313
 style 84 2 27 fg=#dedede bg=#131313
 style 84 27 35 fg=#9d9d9d bg=#131313
 style 84 35 40 fg=#dedede bg=#131313
-text 85 "│  for (const name of [\"arko_index\","
-style 85 0 2 fg=#9d9d9d bg=#131313
-style 85 2 3 fg=#dedede bg=#232323
-style 85 3 6 fg=#87b1f6 bg=#232323
-style 85 6 8 fg=#dedede bg=#232323
-style 85 8 13 fg=#87b1f6 bg=#232323
-style 85 13 19 fg=#dedede bg=#232323
-style 85 19 21 fg=#87b1f6 bg=#232323
-style 85 21 23 fg=#dedede bg=#232323
-style 85 23 35 fg=#a3e09f bg=#232323
-style 85 35 40 fg=#dedede bg=#232323
-text 86 "│  \"arko_ai\"]) {"
+text 85 "│ Running code to run each crate's tests"
+style 85 0 40 fg=#9d9d9d bg=#131313
+text 86 "│  for (const name of [\"arko_index\","
 style 86 0 2 fg=#9d9d9d bg=#131313
 style 86 2 3 fg=#dedede bg=#232323
-style 86 3 12 fg=#a3e09f bg=#232323
-style 86 12 40 fg=#dedede bg=#232323
-text 87 "│    const output = await tools.shell({"
+style 86 3 6 fg=#87b1f6 bg=#232323
+style 86 6 8 fg=#dedede bg=#232323
+style 86 8 13 fg=#87b1f6 bg=#232323
+style 86 13 19 fg=#dedede bg=#232323
+style 86 19 21 fg=#87b1f6 bg=#232323
+style 86 21 23 fg=#dedede bg=#232323
+style 86 23 35 fg=#a3e09f bg=#232323
+style 86 35 40 fg=#dedede bg=#232323
+text 87 "│  \"arko_ai\"]) {"
 style 87 0 2 fg=#9d9d9d bg=#131313
-style 87 2 5 fg=#dedede bg=#232323
-style 87 5 10 fg=#87b1f6 bg=#232323
-style 87 10 20 fg=#dedede bg=#232323
-style 87 20 25 fg=#87b1f6 bg=#232323
-style 87 25 32 fg=#dedede bg=#232323
-style 87 32 37 fg=#bcc4e0 bg=#232323
-style 87 37 40 fg=#dedede bg=#232323
-text 88 "│    command: `cargo test -p ${name}`"
+style 87 2 3 fg=#dedede bg=#232323
+style 87 3 12 fg=#a3e09f bg=#232323
+style 87 12 40 fg=#dedede bg=#232323
+text 88 "│    const output = await tools.shell({"
 style 88 0 2 fg=#9d9d9d bg=#131313
 style 88 2 5 fg=#dedede bg=#232323
-style 88 5 12 fg=#bcc4e0 bg=#232323
-style 88 12 14 fg=#dedede bg=#232323
-style 88 14 29 fg=#a3e09f bg=#232323
-style 88 29 36 fg=#dedede bg=#232323
-style 88 36 37 fg=#a3e09f bg=#232323
+style 88 5 10 fg=#87b1f6 bg=#232323
+style 88 10 20 fg=#dedede bg=#232323
+style 88 20 25 fg=#87b1f6 bg=#232323
+style 88 25 32 fg=#dedede bg=#232323
+style 88 32 37 fg=#bcc4e0 bg=#232323
 style 88 37 40 fg=#dedede bg=#232323
-text 89 "│    });"
+text 89 "│    command: `cargo test -p ${name}`"
 style 89 0 2 fg=#9d9d9d bg=#131313
-style 89 2 40 fg=#dedede bg=#232323
-text 90 "│    console.log(output.split(\"\\n\").pop("
+style 89 2 5 fg=#dedede bg=#232323
+style 89 5 12 fg=#bcc4e0 bg=#232323
+style 89 12 14 fg=#dedede bg=#232323
+style 89 14 29 fg=#a3e09f bg=#232323
+style 89 29 36 fg=#dedede bg=#232323
+style 89 36 37 fg=#a3e09f bg=#232323
+style 89 37 40 fg=#dedede bg=#232323
+text 90 "│    });"
 style 90 0 2 fg=#9d9d9d bg=#131313
-style 90 2 13 fg=#dedede bg=#232323
-style 90 13 16 fg=#bcc4e0 bg=#232323
-style 90 16 24 fg=#dedede bg=#232323
-style 90 24 29 fg=#bcc4e0 bg=#232323
-style 90 29 30 fg=#dedede bg=#232323
-style 90 30 34 fg=#a3e09f bg=#232323
-style 90 34 36 fg=#dedede bg=#232323
-style 90 36 39 fg=#bcc4e0 bg=#232323
-style 90 39 40 fg=#dedede bg=#232323
-text 91 "│    ));"
+style 90 2 40 fg=#dedede bg=#232323
+text 91 "│    console.log(output.split(\"\\n\").pop("
 style 91 0 2 fg=#9d9d9d bg=#131313
-style 91 2 40 fg=#dedede bg=#232323
-text 92 "│  }"
+style 91 2 13 fg=#dedede bg=#232323
+style 91 13 16 fg=#bcc4e0 bg=#232323
+style 91 16 24 fg=#dedede bg=#232323
+style 91 24 29 fg=#bcc4e0 bg=#232323
+style 91 29 30 fg=#dedede bg=#232323
+style 91 30 34 fg=#a3e09f bg=#232323
+style 91 34 36 fg=#dedede bg=#232323
+style 91 36 39 fg=#bcc4e0 bg=#232323
+style 91 39 40 fg=#dedede bg=#232323
+text 92 "│    ));"
 style 92 0 2 fg=#9d9d9d bg=#131313
 style 92 2 40 fg=#dedede bg=#232323
-text 93 "│ Listed 1 folder and ran 1 command"
-style 93 0 35 fg=#9d9d9d bg=#131313
-style 93 35 40 fg=#dedede bg=#131313
-text 94 ""
-style 94 0 40 fg=#dedede bg=#131313
+text 93 "│  }"
+style 93 0 2 fg=#9d9d9d bg=#131313
+style 93 2 40 fg=#dedede bg=#232323
+text 94 "│ Listed 1 folder and ran 1 command"
+style 94 0 35 fg=#9d9d9d bg=#131313
+style 94 35 40 fg=#dedede bg=#131313
 text 95 ""
 style 95 0 40 fg=#dedede bg=#131313
 text 96 ""

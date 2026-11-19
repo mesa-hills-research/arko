@@ -2255,7 +2255,7 @@ impl Transcript {
                         // the whole command or query, and where it left out
                         // its news or note, them, after its words whole where
                         // it cut those too.
-                        let fit = quiet_steady(&row.words, width);
+                        let fit = quiet_fit(&row.words, width, 0, None);
                         let words = fit.words_cut && !detail_is_whole(item);
                         let whole = if fit.left_out {
                             let steady = steady_words(&row.words);
@@ -4601,7 +4601,7 @@ fn quiet_parts(words: &quiet::Words) -> Vec<(String, usize)> {
         parts.push((rendered(format!(" · {note}")), quiet::note_keep(words)));
     }
     for live in &words.live {
-        parts.push((rendered(format!(" · {live}")), quiet::WORDS_KEEP_RUNNING));
+        parts.push((rendered(format!(" · {live}")), quiet::WORDS_KEEP_LIVE));
     }
     parts
 }
@@ -4619,6 +4619,16 @@ fn quiet_end(words: &quiet::Words, clock: Option<&str>) -> String {
     rendered(end)
 }
 
+/// The widest a running call's clock gets ([`running_clock`]).
+const CLOCK_ROOM: &str = "99h+";
+
+/// The columns the end of a running call's line keeps from the start, its
+/// clock at its widest ([`CLOCK_ROOM`]) and "…", so its words are cut the
+/// same way as the clock comes and grows and the line opens to the same.
+fn running_end() -> usize {
+    text_width(&rendered(format!(" · {CLOCK_ROOM} …")))
+}
+
 /// The columns a failed row's ✗ takes at its right, two from its words,
 /// itself, and a blank one after it. (A terminal draws a glyph wider than
 /// its cell into the next one, and the last column has none.)
@@ -4630,13 +4640,13 @@ struct QuietFit {
     words: String,
     /// What follows them, the parts that fit and its end.
     tail: String,
-    /// It cut its words or left out a part.
+    /// It cut its words or left out its news or note.
     cut: bool,
     /// It cut its words.
     words_cut: bool,
     /// How many of the parts after its words show ([`quiet::Fit::parts`]).
     parts: usize,
-    /// It left out a part.
+    /// It left out its news or note.
     left_out: bool,
 }
 
@@ -4657,9 +4667,16 @@ fn quiet_fit(words: &quiet::Words, width: usize, lead: usize, clock: Option<&str
             keep: *keep,
         })
         .collect();
-    let fit = quiet::fit(text_width(&text), text_width(&end), &widths, room);
+    // (While it runs, its end keeps the room of its clock at its widest.)
+    let end_width = match words.running {
+        true => text_width(&end).max(running_end()),
+        false => text_width(&end),
+    };
+    let fit = quiet::fit(text_width(&text), end_width, &widths, room);
     let shown = cut_words(&text, fit.words);
-    let left_out = fit.parts < parts.len();
+    // (Its news or note, which it opens to. How it runs isn't counted, which
+    // only takes the room its words leave.)
+    let left_out = fit.parts < parts.len() - words.live.len();
     let tail: String = parts[..fit.parts]
         .iter()
         .map(|(part, _)| part.as_str())
@@ -4675,26 +4692,19 @@ fn quiet_fit(words: &quiet::Words, width: usize, lead: usize, clock: Option<&str
 }
 
 /// Whether a Quiet row's line at `width` cuts its words or leaves out its
-/// news or note, so the row opens to them whole. (Not counting how long it
-/// has run or how it runs, such as a code run's count of calls and the call
-/// that runs, so a row doesn't come to open, nor its words whole come into
-/// it, as those change.)
+/// news or note, so the row opens to them whole. That is its line as drawn,
+/// whose clock keeps its room from the start ([`running_end`]) and whose
+/// way of running only takes the room its words leave, so it comes to the
+/// same while it runs.
 fn quiet_cut(words: &quiet::Words, width: usize) -> bool {
-    quiet_steady(words, width).cut
+    quiet_fit(words, width, 0, None).cut
 }
 
-/// [`quiet_fit`] of a Quiet row's line at `width` without how long it has
-/// run or how it runs.
-fn quiet_steady(words: &quiet::Words, width: usize) -> QuietFit {
-    quiet_fit(&steady_words(words), width, 0, None)
-}
-
-/// A row's `words` as they stand through its run, without how it runs and
-/// the "…" that ends a running row, which come and go.
+/// A row's `words` without how it runs ([`quiet::Words::live`]), as what
+/// it opens to says them, since how it runs changes with every call.
 fn steady_words(words: &quiet::Words) -> quiet::Words {
     quiet::Words {
         live: Vec::new(),
-        running: false,
         ..words.clone()
     }
 }
@@ -5122,9 +5132,8 @@ fn status_lines(
     // them and its note where it left it out.)
     if look.folds && look.open {
         let steady = steady_words(&words);
-        let fit = quiet_fit(&steady, width, text_width(&who), None);
         let left_out = steady.left_out(fit.words_cut.then_some(steady.text.as_str()), fit.parts);
-        if let Some(left_out) = left_out.filter(|_| fit.cut) {
+        if let Some(left_out) = left_out.filter(|_| cut) {
             let inner = width.saturating_sub(MARGIN).max(1);
             lines.extend(railed(
                 detail_lines(&rendered(left_out), theme, inner),
@@ -5147,7 +5156,7 @@ fn status_lines(
 /// Whether a worker's status row of `item` at `width` cuts its words or
 /// leaves out its note, so it opens to them whole.
 fn status_cut(item: &Item, row: quiet::WorkerRow, width: usize) -> bool {
-    let words = steady_words(&row.words(item.outcome.as_deref()));
+    let words = row.words(item.outcome.as_deref());
     quiet_fit(&words, width, text_width(&format!("{} ", item.agent)), None).cut
 }
 
@@ -5307,10 +5316,11 @@ fn call_tail(
 }
 
 /// Whether a call's Full line at `width` cuts its words or leaves out its
-/// outcome's words, so the call opens to them whole ([`shown_whole`]). (Not
-/// counting how long it has run.)
+/// outcome's words, so the call opens to them whole ([`shown_whole`]). (Its
+/// clock keeps its room from the start, so that comes to the same while it
+/// runs, [`running_end`].)
 fn call_cut(item: &Item, width: usize, who: bool, in_row: bool) -> bool {
-    call_fit(item, width, who, None, in_row, true).cut()
+    call_fit(item, width, who, None, in_row).cut()
 }
 
 /// What an open call shows over its detail of what its line at `width`
@@ -5319,7 +5329,7 @@ fn call_cut(item: &Item, width: usize, who: bool, in_row: bool) -> bool {
 /// outcome's words, them, after its words whole where they show, and alone
 /// where the line shows its words. Never its mark, which its line shows.
 fn shown_whole(item: &Item, width: usize, who: bool, in_row: bool) -> Option<String> {
-    let fit = call_fit(item, width, who, None, in_row, true);
+    let fit = call_fit(item, width, who, None, in_row);
     let words = (fit.words_cut && !(item.detail.is_some() && detail_is_whole(item)))
         .then(|| call_words(item));
     let outcome = ended_outcome(item).filter(|_| fit.left_out);
@@ -5365,25 +5375,18 @@ impl CallFit {
 /// ([`FileLine`](crate::remote::FileLine), [`quiet::file_fit`]). Its
 /// outcome's words show only beside that, then its folders give way from
 /// their left, a folder at a time, down to "…/", and only then the name, at
-/// its end. `steady` fits it as it stands through its run, without what
-/// ends a running line, for whether it opens to what it left out.
-fn call_fit(
-    item: &Item,
-    width: usize,
-    who: bool,
-    clock: Option<&str>,
-    in_row: bool,
-    steady: bool,
-) -> CallFit {
+/// its end. While it runs, what ends it keeps the room of its clock at its
+/// widest ([`running_end`]), so it cuts the same with `clock` or without.
+fn call_fit(item: &Item, width: usize, who: bool, clock: Option<&str>, in_row: bool) -> CallFit {
     let words = call_words(item);
-    // (Steady, without what ends a running line, which comes and goes.)
-    let (mut tail, outcome) = match steady && item.status == Some(CallStatus::Running) {
-        true => (Vec::new(), None),
-        false => call_tail(item, clock, in_row),
-    };
+    let (mut tail, outcome) = call_tail(item, clock, in_row);
     let who = if who { text_width(&item.agent) + 1 } else { 0 };
     let room = width.saturating_sub(MARGIN + who).max(1);
-    let fixed: usize = tail.iter().map(|(part, _)| text_width(part)).sum();
+    let mut fixed: usize = tail.iter().map(|(part, _)| text_width(part)).sum();
+    // (A code run's own calls, which carry no act, show no clock.)
+    if item.status == Some(CallStatus::Running) && !in_row && item.act.is_some() {
+        fixed = fixed.max(running_end());
+    }
     let outcome_width = outcome.as_deref().map_or(0, text_width);
     let Some(file) = crate::remote::FileLine::of(&item.text, item.path) else {
         let parts: Vec<quiet::Part> = outcome
@@ -5476,7 +5479,7 @@ fn call_line(
             theme.text().add_modifier(Modifier::BOLD),
         ));
     }
-    let fit = call_fit(item, width, who, clock, in_row, false);
+    let fit = call_fit(item, width, who, clock, in_row);
     let cut = fit.cut();
     let style = if in_row { theme.dim() } else { theme.text() };
     spans.push(Span::styled(fit.words, style));
@@ -6088,10 +6091,21 @@ fn spans_width(spans: &[Span]) -> usize {
 }
 
 /// How long a running call has run, once that is a second or more, so a
-/// quick call doesn't flash a time.
+/// quick call doesn't flash a time ([`running_clock`]).
 fn running_time(item: &Item, now: i64) -> Option<String> {
     let ms = now - item.at;
-    (item.status == Some(CallStatus::Running) && ms >= 1000).then(|| duration(ms))
+    (item.status == Some(CallStatus::Running) && ms >= 1000).then(|| running_clock(ms))
+}
+
+/// How long `ms` milliseconds of a running call read on its line, "45s" or
+/// "12m", from an hour on in whole hours ("2h"), and "99h+" past that. So
+/// it never takes more room than its line keeps for it ([`CLOCK_ROOM`]).
+fn running_clock(ms: i64) -> String {
+    match ms / 3_600_000 {
+        0 => duration(ms),
+        hours @ 1..=99 => format!("{hours}h"),
+        _ => "99h+".to_string(),
+    }
 }
 
 /// A worker's state in a word, and its style.
@@ -6320,10 +6334,10 @@ mod tests {
         }
     }
 
-    /// Whether a Quiet row shows its words whole inside it goes by its words
-    /// and the width alone. A code run's count of calls and the call that
-    /// runs take room on its line as they come and cut its words there, and
-    /// the words whole don't come into the open row above its code.
+    /// A code run's count of calls and the call that runs show only in the
+    /// room its words leave, each whole, so they never cut its words. Whether
+    /// a Quiet row shows its words whole inside it goes by its words and the
+    /// width alone.
     #[test]
     fn how_a_row_runs_leaves_its_words_whole_out_of_it() {
         let words = quiet::Words {
@@ -6331,23 +6345,34 @@ mod tests {
             running: true,
             ..quiet::Words::default()
         };
-        let width = MARGIN + text_width(&words.text) + 4;
+        let calls = " · 2 tool calls";
+        let width = MARGIN + text_width(&words.text) + running_end() + text_width(calls);
         let live = quiet::Words {
             live: vec!["2 tool calls".into(), "reading src/main.rs".into()],
             ..words.clone()
         };
-        let line = |words: &quiet::Words| {
+        let line = |words: &quiet::Words, width: usize| {
             quiet_line(words, Some(true), &Theme::terminal(), width, None)
                 .iter()
                 .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
                 .collect::<String>()
         };
-        assert!(line(&live).contains("2 tool calls"), "{}", line(&live));
-        assert!(!line(&live).contains("every crate"), "its line cuts them");
+        let drawn = line(&live, width);
+        assert!(drawn.contains("every crate · 2 tool calls"), "{drawn}");
+        assert!(!drawn.contains("reading"), "{drawn}");
         assert!(!quiet_cut(&words, width));
         assert!(!quiet_cut(&live, width));
-        // (Where the words alone don't fit, they show whole.)
-        assert!(quiet_cut(&live, width - 6));
+        // A column less, the count goes whole and the words stay whole.
+        let drawn = line(&live, width - 1);
+        assert!(
+            drawn.contains("every crate") && !drawn.contains("tool calls"),
+            "{drawn}"
+        );
+        assert!(!quiet_cut(&live, width - 1));
+        // Where the words alone don't fit, the row opens to them whole.
+        let narrow = width - text_width(calls) - 1;
+        assert!(quiet_cut(&words, narrow));
+        assert!(quiet_cut(&live, narrow));
     }
 
     /// The rows of a drawn transcript down to its last that isn't blank.
@@ -7827,6 +7852,86 @@ mod tests {
         }
     }
 
+    /// A running line's clock never takes more room than the line keeps for
+    /// it, so the line cuts its words the same from its first second to its
+    /// last, and opens to the same. How a row runs only takes the room its
+    /// words leave, so the row cuts and opens the same with it or without.
+    #[test]
+    fn a_running_line_cuts_and_opens_the_same_as_it_runs() {
+        let hour = 3_600_000;
+        for ms in [
+            1_000,
+            9_999,
+            10_000,
+            59_999,
+            60_000,
+            hour - 1,
+            hour,
+            99 * hour + hour - 1,
+            100 * hour,
+            i64::MAX / 2,
+        ] {
+            assert!(
+                text_width(&running_clock(ms)) <= text_width(CLOCK_ROOM),
+                "{ms}: {}",
+                running_clock(ms)
+            );
+        }
+        let clocks = [1_000, 59_000, 600_000, 5 * hour, 100 * hour].map(running_clock);
+        let mut call = item(1, Kind::Call, "$ cargo build --release --workspace");
+        call.status = Some(CallStatus::Running);
+        call.act = Some(Act {
+            moves: true,
+            ..Act::default()
+        });
+        for width in 16..64 {
+            let bare = call_fit(&call, width, false, None, false);
+            for clock in &clocks {
+                let fit = call_fit(&call, width, false, Some(clock), false);
+                assert_eq!(
+                    (fit.words.as_str(), fit.words_cut),
+                    (bare.words.as_str(), bare.words_cut),
+                    "{width} {clock}"
+                );
+                let tail: String = fit.tail.iter().map(|(part, _)| part.as_str()).collect();
+                assert!(MARGIN + text_width(&fit.words) + text_width(&tail) <= width);
+            }
+            assert_eq!(call_cut(&call, width, false, false), bare.cut(), "{width}");
+        }
+        let words = quiet::Words {
+            text: "Running code to count TODO comments per crate".into(),
+            news: Some("1 failed".into()),
+            running: true,
+            ..quiet::Words::default()
+        };
+        let lives: [Vec<String>; 3] = [
+            Vec::new(),
+            vec!["1 call".into()],
+            vec![
+                "12 calls".into(),
+                "read crates/arko_agents/src/runtime/loop.rs".into(),
+            ],
+        ];
+        for width in 16..90 {
+            let bare = quiet_fit(&steady_words(&words), width, 0, None);
+            for live in &lives {
+                let words = quiet::Words {
+                    live: live.clone(),
+                    ..words.clone()
+                };
+                for clock in &clocks {
+                    let fit = quiet_fit(&words, width, 0, Some(clock));
+                    assert_eq!(
+                        (fit.words.as_str(), fit.words_cut, fit.left_out, fit.cut),
+                        (bare.words.as_str(), bare.words_cut, bare.left_out, bare.cut),
+                        "{width} {live:?} {clock}"
+                    );
+                }
+                assert_eq!(quiet_cut(&words, width), bare.cut, "{width}");
+            }
+        }
+    }
+
     /// What a wait found stays on its line as the line narrows, and its
     /// job's ID gives way first, until its words would keep less than 12
     /// columns, in Full and in Quiet, whatever it found. Open, the line
@@ -7854,7 +7959,7 @@ mod tests {
             let fixed: usize = fixed.iter().map(|(part, _)| text_width(part)).sum();
             let least = MARGIN + fixed + quiet::WORDS_KEEP + text_width(&outcome.unwrap());
             for width in 16..70 {
-                let fit = call_fit(&wait, width, false, None, false, false);
+                let fit = call_fit(&wait, width, false, None, false);
                 let tail: String = fit.tail.iter().map(|(part, _)| part.as_str()).collect();
                 assert!(MARGIN + text_width(&fit.words) + text_width(&tail) <= width);
                 assert_eq!(tail.contains(said), width >= least, "{found:?} {width}");
@@ -7868,7 +7973,7 @@ mod tests {
                 }
             }
             // At the narrowest that keeps it, the ID went whole.
-            let fit = call_fit(&wait, least, false, None, false, false);
+            let fit = call_fit(&wait, least, false, None, false);
             assert_eq!(fit.words, "waiting for…", "{found:?}");
             // Quiet's row says it in its note, by the same rule.
             let quiet = quiet::Words {
@@ -7901,7 +8006,7 @@ mod tests {
         call.outcome = Some("41.0 s".into());
         let mut dropped_at = None;
         for width in (12..60).rev() {
-            let fit = call_fit(&call, width, false, None, false, false);
+            let fit = call_fit(&call, width, false, None, false);
             let (shown, cut) = (fit.words.clone(), fit.cut());
             let tail: String = fit.tail.iter().map(|(part, _)| part.as_str()).collect();
             let said = format!("{shown}{tail}");
@@ -7948,7 +8053,7 @@ mod tests {
         let mut short = item(2, Kind::Call, "$ ls");
         short.status = Some(CallStatus::Failed);
         short.outcome = Some("No such file or directory (os error 2)".into());
-        let fit = call_fit(&short, 30, false, None, false, true);
+        let fit = call_fit(&short, 30, false, None, false);
         assert!(fit.left_out && !fit.words_cut);
         assert_eq!(
             shown_whole(&short, 30, false, false).as_deref(),
@@ -7990,7 +8095,7 @@ mod tests {
         call.status = Some(CallStatus::Ok);
         call.outcome = Some("1 edit".into());
         for width in 20..80 {
-            let fit = call_fit(&call, width, false, None, false, false);
+            let fit = call_fit(&call, width, false, None, false);
             let shown = fit.words;
             let tail: String = fit.tail.iter().map(|(part, _)| part.as_str()).collect();
             assert!(
@@ -8108,7 +8213,7 @@ mod tests {
         call.path = Some((6, 27));
         call.status = Some(CallStatus::Ok);
         for width in 16..50 {
-            let shown = call_fit(&call, width, false, None, false, false).words;
+            let shown = call_fit(&call, width, false, None, false).words;
             let kept = shown.trim_end_matches('…');
             assert!(
                 !kept.contains('(') || kept.ends_with(')'),

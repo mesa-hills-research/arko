@@ -487,77 +487,78 @@ style 90 0 2 fg=#9d9d9d bg=#131313
 style 90 2 28 fg=#dedede bg=#131313
 style 90 28 36 fg=#9d9d9d bg=#131313
 style 90 36 40 fg=#dedede bg=#131313
-text 91 "│  for (const name of [\"arko_index\","
-style 91 0 2 fg=#9d9d9d bg=#131313
-style 91 2 3 fg=#dedede bg=#232323
-style 91 3 6 fg=#87b1f6 bg=#232323
-style 91 6 8 fg=#dedede bg=#232323
-style 91 8 13 fg=#87b1f6 bg=#232323
-style 91 13 19 fg=#dedede bg=#232323
-style 91 19 21 fg=#87b1f6 bg=#232323
-style 91 21 23 fg=#dedede bg=#232323
-style 91 23 35 fg=#a3e09f bg=#232323
-style 91 35 40 fg=#dedede bg=#232323
-text 92 "│  \"arko_ai\"]) {"
+text 91 "│ run_code run each crate's tests"
+style 91 0 33 fg=#9d9d9d bg=#131313
+style 91 33 40 fg=#dedede bg=#131313
+text 92 "│  for (const name of [\"arko_index\","
 style 92 0 2 fg=#9d9d9d bg=#131313
 style 92 2 3 fg=#dedede bg=#232323
-style 92 3 12 fg=#a3e09f bg=#232323
-style 92 12 40 fg=#dedede bg=#232323
-text 93 "│    const output = await tools.shell({"
+style 92 3 6 fg=#87b1f6 bg=#232323
+style 92 6 8 fg=#dedede bg=#232323
+style 92 8 13 fg=#87b1f6 bg=#232323
+style 92 13 19 fg=#dedede bg=#232323
+style 92 19 21 fg=#87b1f6 bg=#232323
+style 92 21 23 fg=#dedede bg=#232323
+style 92 23 35 fg=#a3e09f bg=#232323
+style 92 35 40 fg=#dedede bg=#232323
+text 93 "│  \"arko_ai\"]) {"
 style 93 0 2 fg=#9d9d9d bg=#131313
-style 93 2 5 fg=#dedede bg=#232323
-style 93 5 10 fg=#87b1f6 bg=#232323
-style 93 10 20 fg=#dedede bg=#232323
-style 93 20 25 fg=#87b1f6 bg=#232323
-style 93 25 32 fg=#dedede bg=#232323
-style 93 32 37 fg=#bcc4e0 bg=#232323
-style 93 37 40 fg=#dedede bg=#232323
-text 94 "│    command: `cargo test -p ${name}`"
+style 93 2 3 fg=#dedede bg=#232323
+style 93 3 12 fg=#a3e09f bg=#232323
+style 93 12 40 fg=#dedede bg=#232323
+text 94 "│    const output = await tools.shell({"
 style 94 0 2 fg=#9d9d9d bg=#131313
 style 94 2 5 fg=#dedede bg=#232323
-style 94 5 12 fg=#bcc4e0 bg=#232323
-style 94 12 14 fg=#dedede bg=#232323
-style 94 14 29 fg=#a3e09f bg=#232323
-style 94 29 36 fg=#dedede bg=#232323
-style 94 36 37 fg=#a3e09f bg=#232323
+style 94 5 10 fg=#87b1f6 bg=#232323
+style 94 10 20 fg=#dedede bg=#232323
+style 94 20 25 fg=#87b1f6 bg=#232323
+style 94 25 32 fg=#dedede bg=#232323
+style 94 32 37 fg=#bcc4e0 bg=#232323
 style 94 37 40 fg=#dedede bg=#232323
-text 95 "│    });"
+text 95 "│    command: `cargo test -p ${name}`"
 style 95 0 2 fg=#9d9d9d bg=#131313
-style 95 2 40 fg=#dedede bg=#232323
-text 96 "│    console.log(output.split(\"\\n\").pop("
+style 95 2 5 fg=#dedede bg=#232323
+style 95 5 12 fg=#bcc4e0 bg=#232323
+style 95 12 14 fg=#dedede bg=#232323
+style 95 14 29 fg=#a3e09f bg=#232323
+style 95 29 36 fg=#dedede bg=#232323
+style 95 36 37 fg=#a3e09f bg=#232323
+style 95 37 40 fg=#dedede bg=#232323
+text 96 "│    });"
 style 96 0 2 fg=#9d9d9d bg=#131313
-style 96 2 13 fg=#dedede bg=#232323
-style 96 13 16 fg=#bcc4e0 bg=#232323
-style 96 16 24 fg=#dedede bg=#232323
-style 96 24 29 fg=#bcc4e0 bg=#232323
-style 96 29 30 fg=#dedede bg=#232323
-style 96 30 34 fg=#a3e09f bg=#232323
-style 96 34 36 fg=#dedede bg=#232323
-style 96 36 39 fg=#bcc4e0 bg=#232323
-style 96 39 40 fg=#dedede bg=#232323
-text 97 "│    ));"
+style 96 2 40 fg=#dedede bg=#232323
+text 97 "│    console.log(output.split(\"\\n\").pop("
 style 97 0 2 fg=#9d9d9d bg=#131313
-style 97 2 40 fg=#dedede bg=#232323
-text 98 "│  }"
+style 97 2 13 fg=#dedede bg=#232323
+style 97 13 16 fg=#bcc4e0 bg=#232323
+style 97 16 24 fg=#dedede bg=#232323
+style 97 24 29 fg=#bcc4e0 bg=#232323
+style 97 29 30 fg=#dedede bg=#232323
+style 97 30 34 fg=#a3e09f bg=#232323
+style 97 34 36 fg=#dedede bg=#232323
+style 97 36 39 fg=#bcc4e0 bg=#232323
+style 97 39 40 fg=#dedede bg=#232323
+text 98 "│    ));"
 style 98 0 2 fg=#9d9d9d bg=#131313
 style 98 2 40 fg=#dedede bg=#232323
-text 99 "│ · list crates · ✓ 4 entries"
-style 99 0 18 fg=#9d9d9d bg=#131313
-style 99 18 19 fg=#30d158 bg=#131313
-style 99 19 29 fg=#9d9d9d bg=#131313
-style 99 29 40 fg=#dedede bg=#131313
-text 100 "│ · $ cargo test -p… · ✓ 24 passed"
-style 100 0 23 fg=#9d9d9d bg=#131313
-style 100 23 24 fg=#30d158 bg=#131313
-style 100 24 34 fg=#9d9d9d bg=#131313
-style 100 34 40 fg=#dedede bg=#131313
-text 101 "│ · $ cargo test -p arko_ai …"
-style 101 0 4 fg=#9d9d9d bg=#131313
-style 101 4 27 fg=#dedede bg=#131313
-style 101 27 29 fg=#9d9d9d bg=#131313
-style 101 29 40 fg=#dedede bg=#131313
-text 102 ""
-style 102 0 40 fg=#dedede bg=#131313
+text 99 "│  }"
+style 99 0 2 fg=#9d9d9d bg=#131313
+style 99 2 40 fg=#dedede bg=#232323
+text 100 "│ · list crates · ✓ 4 entries"
+style 100 0 18 fg=#9d9d9d bg=#131313
+style 100 18 19 fg=#30d158 bg=#131313
+style 100 19 29 fg=#9d9d9d bg=#131313
+style 100 29 40 fg=#dedede bg=#131313
+text 101 "│ · $ cargo test -p… · ✓ 24 passed"
+style 101 0 23 fg=#9d9d9d bg=#131313
+style 101 23 24 fg=#30d158 bg=#131313
+style 101 24 34 fg=#9d9d9d bg=#131313
+style 101 34 40 fg=#dedede bg=#131313
+text 102 "│ · $ cargo test -p arko_ai …"
+style 102 0 4 fg=#9d9d9d bg=#131313
+style 102 4 27 fg=#dedede bg=#131313
+style 102 27 29 fg=#9d9d9d bg=#131313
+style 102 29 40 fg=#dedede bg=#131313
 text 103 ""
 style 103 0 40 fg=#dedede bg=#131313
 text 104 ""

@@ -142,9 +142,9 @@ pub struct Words {
     /// "monitoring"), which gives way before its words do
     /// ([`WORDS_KEEP_RUNNING`]) and stands through the run.
     pub note_runs: bool,
-    /// How it runs, said after its note, muted, which gives way first where
-    /// the line is narrow, its last part first (a code run's count of calls,
-    /// then the call that runs).
+    /// How it runs, said after its note, muted, in the room its words leave,
+    /// its last part going first (a code run's count of calls, then the call
+    /// that runs).
     pub live: Vec<String>,
     /// A call a stop or a compaction cut short, whose row is muted.
     pub muted: bool,
@@ -1534,23 +1534,31 @@ fn one(member: &Member) -> Words {
 // Every client draws a row's line on one line and cuts it by one rule, in
 // whatever unit it measures (the terminal's columns, the page's pixels).
 // What never gives way stays, meaning a marker, a worker's name, ✓ or ✗, how
-// long a call has run, the spinner and the buttons. How a row runs gives way
-// first, while its words have under [`WORDS_KEEP_RUNNING`] columns. What
+// long a call has run, the spinner and the buttons, each in the room its
+// state keeps for it from the start. How a row runs shows only in the room
+// its words leave ([`WORDS_KEEP_LIVE`]). A job's state while it runs gives
+// way while the words have under [`WORDS_KEEP_RUNNING`] columns. What
 // happened (a call's outcome, a row's news and note) gives way only when the
 // words would have under [`WORDS_KEEP`], since it says more than the rest of
 // what was done, such as a job's ID. Each part goes whole, the last first.
 // The words take what's left, cut where a word ends. A file's line keeps
-// its file's name in their place, and its folders give way before it.
+// its file's name in their place, and its folders give way before it. A row
+// opens to what its line as drawn left out.
 
 /// The columns a line's words keep before what happened gives way, enough
 /// to say what was done ("Waited for job…", "$ cargo build…"), or all of
 /// them where they're shorter.
 pub const WORDS_KEEP: usize = 12;
 
-/// The columns a line's words keep before how a row runs gives way, such as
-/// a code run's count of calls and the call that runs, or a job's state
-/// while it runs.
+/// The columns a line's words keep before a job's state gives way while
+/// the job runs ("running", "monitoring").
 pub const WORDS_KEEP_RUNNING: usize = 24;
+
+/// What a line's words keep before how a row runs gives way (a code run's
+/// count of calls and the call that runs), all of them. It shows only in
+/// the room the words leave, so it never cuts them, and the line cuts its
+/// words and opens the same as it changes with every call.
+pub const WORDS_KEEP_LIVE: usize = usize::MAX;
 
 /// The columns a call line's words keep before its outcome's words give
 /// way, from its act. That says how its job runs while its job runs
