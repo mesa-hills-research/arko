@@ -290,12 +290,12 @@ pub fn Banner() -> impl IntoView {
         page.workers.track();
         let id = page.worker.get()?;
         let summary = STORE.with(|store| store.borrow().workers.get(&id).cloned());
-        let (title, meta, _) = match &summary {
+        let (title, meta) = match &summary {
             Some(summary) => {
                 let usual = page.status.with(|status| status.models.clone());
                 words::worker_words(summary, page.server_now(), None, &usual)
             }
-            None => (id.clone(), String::new(), String::new()),
+            None => (id.clone(), String::new()),
         };
         Some((format!("{id} · {title}"), meta))
     };

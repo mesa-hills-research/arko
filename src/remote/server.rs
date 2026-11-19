@@ -2344,19 +2344,6 @@ mod tests {
         }
     }
 
-    /// A worker's meta line holds its model, profile and cost, which a phone
-    /// would cut at the end if the line couldn't wrap.
-    #[test]
-    fn a_workers_meta_line_wraps_on_a_narrow_screen() {
-        let start = STYLE.find(".wcard .wmeta{").expect("the meta line's rule");
-        let rule = &STYLE[start..start + STYLE[start..].find('}').unwrap()];
-        assert!(rule.contains("overflow-wrap:anywhere"), "{rule}");
-        assert!(
-            !rule.contains("nowrap") && !rule.contains("ellipsis"),
-            "{rule}"
-        );
-    }
-
     /// An app on its own (no server), with its sessions kept in `file`.
     fn bare_app(key: &str, file: Option<PathBuf>) -> App {
         let (actions, _received) = mpsc::unbounded_channel();

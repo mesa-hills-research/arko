@@ -1796,10 +1796,12 @@ fn StopJobButton(job: String) -> impl IntoView {
     }
 }
 
-/// A worker's live card. In the workers' sheet (`listed`), the workers a
-/// worker started stand indented under it. It follows its own worker's
-/// summary, makes its words once for the places that show them, and
-/// follows the clock only while its worker's time runs.
+/// A worker's live card, two lines in every state, its title and its meta
+/// line on one line ([`fit_meta`]). (Its report has a row of its own, and
+/// what it does is in its own view.) In the workers' sheet (`listed`), the
+/// workers a worker started stand indented under it. It follows its own
+/// worker's summary, makes its words once for the places that show them,
+/// and follows the clock only while its worker's time runs.
 #[component]
 pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
     let page = page();
@@ -1844,17 +1846,34 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
                     } else {
                         0.0
                     };
-                    page.models
-                        .with(|usual| words::worker_words(summary, now, viewing.as_deref(), usual))
+                    let parts = page
+                        .models
+                        .with(|usual| words::worker_parts(summary, now, viewing.as_deref(), usual));
+                    (words::worker_title(summary), parts)
                 }
-                None => (id.clone(), "0 calls · running".into(), String::new()),
+                None => (id.clone(), words::unknown_parts()),
             })
         }
+    });
+    let whole = Memo::new(move |_| {
+        words.with(|(_, parts)| {
+            parts
+                .iter()
+                .map(|part| part.words.as_str())
+                .collect::<Vec<_>>()
+                .join(" · ")
+        })
+    });
+    let line = NodeRef::<leptos::html::Span>::new();
+    let room = crate::fit::watch(line, move || words.track());
+    let meta = Memo::new(move |_| match room.get() {
+        Some(room) => words.with(|(_, parts)| fit_meta(parts, room.now)),
+        None => whole.get(),
     });
     let open = id.clone();
     let label = {
         let id = id.clone();
-        move || words.with(|(title, meta, _)| format!("{id}, {title}, {meta}"))
+        move || words.with(|(title, _)| format!("{id}, {title}, {}", whole.get()))
     };
     view! {
         <button
@@ -1868,10 +1887,21 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
         >
             <span class="wtitle"><span class="wid">{id.clone()}</span>{move || words.with(|words| words.0.clone())}</span>
             <span class="wgo"><ChevronRight size=16 /></span>
-            <span class="wmeta">{move || words.with(|words| words.1.clone())}</span>
-            {move || words.with(|words| (!words.2.is_empty()).then(|| words.2.clone())).map(|last| view! { <span class="wlast">{last}</span> })}
+            <span class="wmeta"><span node_ref=line class="fitted">{move || meta.get()}</span></span>
         </button>
     }
+}
+
+/// The font of a worker card's meta line (`.wcard .wmeta` in app.css).
+const META_FONT: &str = "12.5px var(--sans)";
+
+/// A worker card's meta line in `room` pixels, on one line
+/// ([`words::fit_parts`]).
+fn fit_meta(parts: &[words::MetaPart], room: f64) -> String {
+    let units = |px: f64| (px * 100.0).round().max(0.0) as usize;
+    words::fit_parts(parts, units(room), |text| {
+        units(crate::fit::text_width(META_FONT, text))
+    })
 }
 
 /// Shows the worker `id`'s own transcript (none for the main one) in a new

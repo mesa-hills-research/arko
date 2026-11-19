@@ -332,27 +332,89 @@ fn servers_words(mcp: Option<&[String]>) -> Option<String> {
     })
 }
 
-/// A worker's summary in words, with its title, the meta line ("18 calls ·
+/// A worker's summary in words, its title and the meta line ("18 calls ·
 /// 2m14s · running · under r1 · gpt-6.1-sol, high · profile judge ·
-/// $0.12") and what it did last. `viewing` is the worker whose own view
-/// shows, which says who started it already. `usual` has the model and
-/// effort workers start with, which the meta line names only when the
-/// worker runs another.
+/// $0.12", [`worker_parts`] joined).
 pub fn worker_words(
     summary: &WorkerData,
     now: f64,
     viewing: Option<&str>,
     usual: &ModelsData,
-) -> (String, String, String) {
-    let mut parts = vec![plural(summary.tool_calls, "call", "calls")];
-    if let Some(ran) = run_time(summary, now) {
-        parts.push(duration(ran));
+) -> (String, String) {
+    let parts = worker_parts(summary, now, viewing, usual);
+    let meta = parts
+        .iter()
+        .map(|part| part.words.as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    (worker_title(summary), meta)
+}
+
+/// A worker's title, or its ID while it has none.
+pub fn worker_title(summary: &WorkerData) -> String {
+    if summary.title.is_empty() {
+        summary.id.clone()
+    } else {
+        summary.title.clone()
     }
-    parts.push(state_word(summary.state).into());
+}
+
+/// A part of a worker's meta line, and when it gives way on a line too
+/// short for all of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetaPart {
+    pub words: String,
+    /// The parts with the lowest give way first.
+    pub keep: u8,
+}
+
+impl MetaPart {
+    fn new(words: impl Into<String>, keep: u8) -> Self {
+        Self {
+            words: words.into(),
+            keep,
+        }
+    }
+}
+
+// When each part of the meta line gives way ([`MetaPart::keep`]), the
+// steady ones before the live ones, and the state last.
+const SERVERS: u8 = 0;
+const SKILLS: u8 = 1;
+const PROFILE: u8 = 2;
+const MODEL: u8 = 3;
+const UNDER: u8 = 4;
+const FAMILY_COST: u8 = 5;
+const COST: u8 = 6;
+const TIME: u8 = 7;
+const CALLS: u8 = 8;
+const STATE: u8 = 9;
+
+/// The parts of a worker's meta line, in their order on it. Where the line
+/// is too short, the steady ones give way first (its servers, skills,
+/// profile, model and who started it), then the live ones (its costs, its
+/// time and its calls), and its state stays. `viewing` is the worker whose
+/// own view shows, which says who started it already. `usual` has the model
+/// and effort workers start with, which the line names only when the worker
+/// runs another.
+pub fn worker_parts(
+    summary: &WorkerData,
+    now: f64,
+    viewing: Option<&str>,
+    usual: &ModelsData,
+) -> Vec<MetaPart> {
+    let mut parts = vec![MetaPart::new(
+        plural(summary.tool_calls, "call", "calls"),
+        CALLS,
+    )];
+    if let Some(ran) = run_time(summary, now) {
+        parts.push(MetaPart::new(duration(ran), TIME));
+    }
+    parts.push(MetaPart::new(state_word(summary.state), STATE));
     if let Some(parent) = &summary.parent
         && Some(parent.as_str()) != viewing
     {
-        parts.push(format!("under {parent}"));
+        parts.push(MetaPart::new(format!("under {parent}"), UNDER));
     }
     let model = summary
         .model
@@ -362,41 +424,76 @@ pub fn worker_words(
         .effort
         .as_ref()
         .filter(|effort| **effort != usual.workers_effort);
-    match (model, effort) {
-        (Some(model), Some(effort)) => parts.push(format!("{model}, {effort}")),
-        (Some(model), None) => parts.push(model.clone()),
-        (None, Some(effort)) => parts.push(format!("{effort} effort")),
-        (None, None) => {}
-    }
+    let model = match (model, effort) {
+        (Some(model), Some(effort)) => Some(format!("{model}, {effort}")),
+        (Some(model), None) => Some(model.clone()),
+        (None, Some(effort)) => Some(format!("{effort} effort")),
+        (None, None) => None,
+    };
+    parts.extend(model.map(|model| MetaPart::new(model, MODEL)));
     if let Some(profile) = &summary.profile {
-        parts.push(format!("profile {profile}"));
+        parts.push(MetaPart::new(format!("profile {profile}"), PROFILE));
     }
     // Only a narrowed set is named. A worker with its starter's says nothing.
-    parts.extend(skills_words(summary.skills.as_deref()));
-    parts.extend(servers_words(summary.mcp.as_deref()));
-    for words in [
-        cost_words(summary.cost_billed, summary.cost_list),
-        family_cost_words(summary),
+    parts.extend(
+        skills_words(summary.skills.as_deref()).map(|skills| MetaPart::new(skills, SKILLS)),
+    );
+    parts.extend(
+        servers_words(summary.mcp.as_deref()).map(|servers| MetaPart::new(servers, SERVERS)),
+    );
+    for (words, keep) in [
+        (cost_words(summary.cost_billed, summary.cost_list), COST),
+        (family_cost_words(summary), FAMILY_COST),
     ] {
         if !words.is_empty() {
-            parts.push(words);
+            parts.push(MetaPart::new(words, keep));
         }
     }
-    let mut last = summary.last.clone().unwrap_or_default();
-    if summary.state == WorkerState::Finished
-        && let Some(line) = summary
-            .report
-            .as_deref()
-            .and_then(|report| report.lines().find(|line| !line.trim().is_empty()))
-    {
-        last = line.to_string();
-    }
-    let title = if summary.title.is_empty() {
-        summary.id.clone()
-    } else {
-        summary.title.clone()
+    parts
+}
+
+/// `parts` on one line of `room`, as `width` measures text, those that
+/// show in their order, a dot between them. The parts give way whole, those
+/// with the lowest keep first, and the last to go always shows.
+pub fn fit_parts(parts: &[MetaPart], room: usize, width: impl Fn(&str) -> usize) -> String {
+    let joined = |shown: &[usize]| {
+        shown
+            .iter()
+            .map(|at| parts[*at].words.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ")
     };
-    (title, parts.join(" · "), last.trim().to_string())
+    // Kept longest first, each with the dot before it. One part shows with
+    // none, so the room has a dot more.
+    let mut order: Vec<usize> = (0..parts.len()).collect();
+    order.sort_by_key(|at| std::cmp::Reverse(parts[*at].keep));
+    let sorted: Vec<crate::quiet::Part> = order
+        .iter()
+        .map(|at| crate::quiet::Part {
+            width: width(&format!(" · {}", parts[*at].words)),
+            keep: 0,
+        })
+        .collect();
+    let fit = crate::quiet::fit(0, 0, &sorted, room + width(" · "));
+    let mut shown = fit.parts.clamp(1, order.len().max(1));
+    loop {
+        let mut kept = order[..shown.min(order.len())].to_vec();
+        kept.sort_unstable();
+        let text = joined(&kept);
+        // (The browser may draw the whole a little wider than its parts.)
+        if shown <= 1 || width(&text) <= room {
+            return text;
+        }
+        shown -= 1;
+    }
+}
+
+/// The meta line of a worker the page has no summary of yet.
+pub fn unknown_parts() -> Vec<MetaPart> {
+    vec![
+        MetaPart::new(plural(0, "call", "calls"), CALLS),
+        MetaPart::new(state_word(WorkerState::Running), STATE),
+    ]
 }
 
 /// The word on a user's message for what became of it, when that isn't the
@@ -852,7 +949,7 @@ mod tests {
             workers_effort: "medium".into(),
             ..Default::default()
         };
-        let (title, meta, _) = worker_words(&summary, 130_000.0, None, &usual);
+        let (title, meta) = worker_words(&summary, 130_000.0, None, &usual);
         assert_eq!(title, "Task of r2");
         assert_eq!(
             meta,
@@ -864,6 +961,50 @@ mod tests {
                 .1
                 .contains("under")
         );
+    }
+
+    /// A worker card's meta line stays on one line. Where it's too long, its
+    /// parts give way whole, the lowest keep first, and those left show in
+    /// their order. The last to go always shows.
+    #[test]
+    fn a_workers_meta_line_gives_way_by_its_parts_keeps() {
+        let part = |words: &str, keep| MetaPart::new(words, keep);
+        let parts = [
+            part("a", 8),
+            part("bb", 7),
+            part("c", 9),
+            part("dd", 3),
+            part("e", 6),
+        ];
+        let width = |text: &str| text.chars().count();
+        let shown = |room| fit_parts(&parts, room, width);
+        let whole = "a · bb · c · dd · e";
+        assert_eq!(shown(width(whole)), whole);
+        let mut seen: Vec<String> = Vec::new();
+        for room in (0..width(whole)).rev() {
+            let now = shown(room);
+            assert!(width(&now) <= room || !now.contains('·'), "{now}");
+            if seen.last() != Some(&now) {
+                seen.push(now);
+            }
+        }
+        assert_eq!(seen, ["a · bb · c · e", "a · bb · c", "a · c", "c"]);
+        // The steady parts give way before the live ones, and the state last.
+        let mut summary = worker("r2");
+        summary.parent = Some("r1".into());
+        summary.model = Some("gpt-6.1-sol".into());
+        summary.profile = Some("judge".into());
+        summary.cost_billed = 0.12;
+        summary.cost_list = 0.12;
+        let keeps: Vec<u8> = worker_parts(&summary, 0.0, None, &ModelsData::default())
+            .iter()
+            .map(|part| part.keep)
+            .collect();
+        assert_eq!(keeps, [CALLS, STATE, UNDER, MODEL, PROFILE, COST]);
+        const {
+            assert!(SERVERS < SKILLS && SKILLS < PROFILE && PROFILE < MODEL && MODEL < UNDER);
+            assert!(UNDER < COST && COST < TIME && TIME < CALLS && CALLS < STATE);
+        }
     }
 
     /// The meta line names a worker's model and effort only when they aren't

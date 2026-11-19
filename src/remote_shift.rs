@@ -299,6 +299,18 @@ fn act(session: &mut Session, request: &Value) -> Value {
             let item = feed.ask_questions(&all, request["waits"].as_bool() == Some(true));
             json!({ "item": item })
         }
+        // What a worker runs with, and what it has cost (`model`, `effort`,
+        // `profile`, `cost`).
+        "worker_info" => {
+            let words = |name: &str| request[name].as_str().map(str::to_string);
+            let mut info = crate::remote::WorkerInfo::new();
+            info.model = words("model");
+            info.effort = words("effort");
+            info.profile = words("profile");
+            info.costs = request["cost"].as_f64().map(|cost| (cost, cost));
+            feed.worker_info(&text(request, "id"), info);
+            json!({})
+        }
         "dismissed" => {
             feed.set_question_state(
                 &text(request, "id"),

@@ -1564,6 +1564,15 @@ class Run {
       const id = `r${++this.workers}`;
       await this.feed({ do: 'worker', id, text: `Task ${this.words(4)}` });
       await this.settle('worker starts');
+      // (Every other worker runs another model, with a profile and a cost,
+      // so its card's second line is long, and its time grows past a
+      // minute. The card keeps its two lines.)
+      if (this.workers % 2 === 0) {
+        await this.feed({ do: 'worker_info', id, model: `model-${this.words(1)}`, effort: 'xhigh', profile: `profile-${this.words(1)}`, cost: 12.34 });
+        await this.settle('worker starts');
+        await this.evaluate('__meter.tick(75000)');
+        await this.settle('worker starts');
+      }
       await this.feed({ do: 'worker', id, change: 'finished', text: this.words(6) });
       await this.settle('worker ends');
     }

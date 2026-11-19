@@ -854,14 +854,12 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .wcard .wtitle { min-width: 0; overflow: hidden; font-size: 14.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .wcard .wid { margin-right: 6px; padding: 0 5px; border-radius: var(--r-sm); background: var(--secondary); font: 600 11px/16px var(--sans); vertical-align: 1px; }
 .wcard.running .wid { background: var(--tint); }
-/* The model, profile and cost make this line long, and a reader wants them, so it wraps. */
-.wcard .wmeta { grid-column: 1; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+/* One line, its parts given up to fit (transcript.rs), so the card keeps its
+   two lines as the time and the cost grow. The worker's view has them all.
+   (Its digits are the font's own, as the line is measured.) */
+.wcard .wmeta { grid-column: 1; min-width: 0; overflow: hidden; color: var(--muted); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
 .wcard.failed .wmeta { color: var(--error); }
-.wcard .wlast { grid-column: 1; overflow: hidden; color: var(--muted); font: 12px/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-.wcard .wgo { grid-column: 2; grid-row: 1 / span 3; color: var(--muted); }
-/* (With no last line, two rows, so no third one holds space under the card's
-   text.) */
-.wcard:not(:has(> .wlast)) > .wgo { grid-row: 1 / span 2; }
+.wcard .wgo { grid-column: 2; grid-row: 1 / span 2; color: var(--muted); }
 
 .jump {
   position: absolute;
