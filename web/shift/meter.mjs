@@ -548,6 +548,10 @@ class Run {
   constructor({ cdp, agent, meter, size, view, scrolled, seed }) {
     Object.assign(this, { cdp, agent, meter, size, view, scrolled });
     this.rng = new Rng(seed);
+    // The code runs' own numbers, which take the place of `rng` while one
+    // plays, so the rest of the session makes the choices it would make
+    // without them.
+    this.runs = new Rng(seed * 7919 + 1);
     this.word = 0;
     this.last = null;
     this.calls = [];
@@ -1124,7 +1128,11 @@ class Run {
   }
 
   async call() {
-    if (this.rng.chance(15)) return this.codeRun();
+    if (this.runs.chance(15)) {
+      [this.rng, this.runs] = [this.runs, this.rng];
+      await this.codeRun();
+      [this.rng, this.runs] = [this.runs, this.rng];
+    }
     const last = this.calls[this.calls.length - 1];
     const folder = this.folder;
     let kind;
