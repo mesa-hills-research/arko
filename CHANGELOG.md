@@ -80,6 +80,11 @@
   other OpenAI models at 222,800. Codex compacts a conversation at 90% of what the login takes
   (450k and 244,800), and the handover with its report now ends before that. They handed over at
   475k and 250k.
+- A worker on an OpenAI model in a session whose own models aren't OpenAI's goes by the way the
+  session reaches them. A Sol worker on the ChatGPT login handed over at 200k, the API key's size,
+  and `worker_options` said so. A workers' size set with `/handover-at` could also take it past
+  the 500k the login accepts, and now stops at 475k. Where the session reaches OpenAI by API key,
+  such a worker is billed per token as `/worker-billing` says, where it counted as on a plan.
 
 ## 0.23.1 (2026-11-18)
 

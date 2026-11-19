@@ -104,9 +104,11 @@ pub struct Settings {
     /// before it could be chosen, which ran PowerShell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows_shell: Option<WindowsShell>,
-    /// How the session reaches OpenAI models, when it has one, meaning the ChatGPT
-    /// login or an API key. `None` in sessions without OpenAI models, and
-    /// in those saved before it could be chosen, which used the ChatGPT
+    /// How the session reaches OpenAI models, meaning the ChatGPT login or an
+    /// API key. A session whose main agent and workers aren't on OpenAI
+    /// models takes the way its client reaches them each time it opens, for
+    /// the workers it starts on one. `None` when it doesn't reach them, and
+    /// in sessions saved before it could be chosen, which used the ChatGPT
     /// login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_auth: Option<OpenAiAuth>,
@@ -292,6 +294,15 @@ impl Settings {
     /// it changes before the conversation starts.
     pub fn workers_follow_main(&self) -> bool {
         !self.own_worker_model && self.worker.model == self.main.model
+    }
+
+    /// Whether the main agent's model or the workers' is an OpenAI model,
+    /// which keeps the way the session reaches OpenAI models.
+    pub fn has_openai_model(&self) -> bool {
+        [&self.main, &self.worker].iter().any(|model| {
+            crate::providers::resolve_model(&model.model)
+                .is_ok_and(|resolved| resolved.provider == arko_ai::Provider::OpenAI)
+        })
     }
 
     /// `model`'s settings as the banner and `/session` say them, with how
