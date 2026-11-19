@@ -561,6 +561,9 @@ details.call > .holds, .row.result > .holds {
   tab-size: 4;
 }
 .holds pre.held.plain, .holds .held.code { color: var(--text); }
+/* A text's line is a block of its own, so it can hang at its indent where
+   it wraps, and a blank one keeps its row. */
+.holds pre.held > .line { display: block; min-height: 18px; }
 .holds .held.code .line { display: flex; gap: 1ch; }
 .holds .held.code .line.note { color: var(--muted); }
 .holds .held.code .ln { flex: none; color: var(--muted); text-align: right; user-select: none; }

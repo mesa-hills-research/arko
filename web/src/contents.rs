@@ -181,8 +181,8 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
     view! { {lines}{door} }
 }
 
-/// The deepest a wrapped code line goes on under its code, in columns, so
-/// a deep indent leaves the code room on a phone.
+/// The deepest a wrapped line goes on at its own indent, in columns, so a
+/// deep indent leaves the line room on a phone.
 const HANG_MAX: usize = 16;
 
 /// The lines of a content `text` of `kind`, their numbers as wide as
@@ -249,9 +249,26 @@ fn lines_view(kind: ContentKind, text: &str, numbers: Option<usize>) -> AnyView 
                 .collect_view();
             view! { <div class="held code" class:diff=diff>{lines}</div> }.into_any()
         }
+        // Text, each line of which goes on at its own indent where it wraps,
+        // as a file's line does, so a job's output reads as it printed.
         _ => {
             let plain = kind == ContentKind::Plain;
-            view! { <pre class="held" class:plain=plain>{text.to_string()}</pre> }.into_any()
+            let lines = text
+                .split('\n')
+                .map(|line| {
+                    let hang = content::indent(line).min(HANG_MAX);
+                    view! {
+                        <span
+                            class="line"
+                            style:padding-left=format!("{hang}ch")
+                            style:text-indent=format!("-{hang}ch")
+                        >
+                            {line.to_string()}
+                        </span>
+                    }
+                })
+                .collect_view();
+            view! { <pre class="held" class:plain=plain>{lines}</pre> }.into_any()
         }
     }
 }

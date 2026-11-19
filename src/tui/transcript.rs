@@ -4416,16 +4416,11 @@ fn content_lines(item: &Item, theme: &Theme, width: usize, open: bool) -> Vec<Wr
         };
         let hang = lead.as_ref().map_or(0, |lead| text_width(&lead.content));
         let room = width.saturating_sub(hang).max(1);
-        // A file's line that wraps goes on under its code, at the code's own
-        // indent, so it reads as one line. (At most half the room, so a
-        // deep indent leaves the code some.)
-        let code_hang = match lead {
-            Some(_) => {
-                let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
-                content::indent(&text).min(room / 2)
-            }
-            None => 0,
-        };
+        // A line that wraps goes on at its own indent, so it reads as one
+        // line, a file's under its code and a job's output under its words.
+        // (At most half the room, so a deep indent leaves the line some.)
+        let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+        let code_hang = content::indent(&text).min(room / 2);
         let mut wrapped = wrap::wrap_lines(&spans, room, code_hang);
         // (The tint runs under the indent too.)
         if code_hang > 0
