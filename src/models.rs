@@ -262,6 +262,7 @@ mod tests {
         assert_eq!(display_name("astra"), "GPT-6.2 Astra");
         assert_eq!(display_name("gemini"), "Gemini 4 Carbon");
         assert_eq!(display_name("argon"), "Gemini 4 Argon");
+        assert_eq!(display_name("neon"), "Gemini 4 Neon");
         assert_eq!(display_name("flash"), "Gemini 4 Hydrogen");
         assert_eq!(display_name("cc:opus"), "Opus 5.5");
     }

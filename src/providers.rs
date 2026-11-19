@@ -50,7 +50,7 @@ const CLAUDE_CODE_LONG: &str = "claude-code:";
 /// the first in short (`carbon`, `hydrogen`). `gemini` names Google's most
 /// capable Gemini 4 model, and `flash` Gemini 4 Hydrogen, which Google names
 /// the upgrade from Gemini 3.8 Flash.
-pub const ALIASES: [(&str, &str); 14] = [
+pub const ALIASES: [(&str, &str); 15] = [
     ("opus", "claude-opus-5-5"),
     ("fable", "claude-fable-5-2"),
     ("sonnet", "claude-sonnet-5-5"),
@@ -63,6 +63,7 @@ pub const ALIASES: [(&str, &str); 14] = [
     ("carbon", "gemini-4-carbon"),
     ("gemini", "gemini-4-carbon"),
     ("argon", "gemini-4-argon"),
+    ("neon", "gemini-4-neon"),
     ("hydrogen", "gemini-4-hydrogen"),
     ("flash", "gemini-4-hydrogen"),
 ];
@@ -135,6 +136,7 @@ pub const OPENROUTER_EQUIVALENTS: &[(&str, &str)] = &[
     // Gemini
     ("gemini-4-carbon", "google/gemini-4-carbon"),
     ("gemini-4-argon", "google/gemini-4-argon"),
+    ("gemini-4-neon", "google/gemini-4-neon"),
     ("gemini-4-hydrogen", "google/gemini-4-hydrogen"),
     ("gemini-3.1-pro-preview", "google/gemini-3.1-pro-preview"),
     (
@@ -557,8 +559,8 @@ fn generation_of(model: &Model, effort: Effort, thinking_text: bool) -> Option<G
     generation(model, effort, false, false, thinking_text).ok()
 }
 
-/// Gemini thinks at low, medium or high, and Gemini 4 Hydrogen also at
-/// xhigh. Higher efforts are the highest level the model takes, and Gemini
+/// Gemini thinks at low, medium or high, and Gemini 4 Neon and Hydrogen also
+/// at xhigh. Higher efforts are the highest level the model takes, and Gemini
 /// 3 Pro, which has no medium, thinks high at medium.
 fn gemini_level(model: &Model, effort: Effort) -> GeminiThinkingLevel {
     match effort {
@@ -1086,6 +1088,7 @@ pub fn model_menu(
             &[
                 ("gemini-4-carbon", "carbon"),
                 ("gemini-4-argon", "argon"),
+                ("gemini-4-neon", "neon"),
                 ("gemini-4-hydrogen", "hydrogen"),
             ],
         ),
@@ -2400,6 +2403,7 @@ mod tests {
             ("gemini", Provider::Google, "gemini-4-carbon"),
             ("carbon", Provider::Google, "gemini-4-carbon"),
             ("Argon", Provider::Google, "gemini-4-argon"),
+            ("neon", Provider::Google, "gemini-4-neon"),
             ("hydrogen", Provider::Google, "gemini-4-hydrogen"),
             ("flash", Provider::Google, "gemini-4-hydrogen"),
             (
@@ -2576,8 +2580,9 @@ mod tests {
             Some(GeminiThinkingLevel::Medium)
         );
         assert_eq!(level("flash", Effort::Low), Some(GeminiThinkingLevel::Low));
-        // Gemini 4 Hydrogen thinks at xhigh, also at max, and Carbon at most high.
+        // Gemini 4 Neon and Hydrogen think at xhigh, also at max, and Carbon at most high.
         for effort in [Effort::Xhigh, Effort::Max] {
+            assert_eq!(level("neon", effort), Some(GeminiThinkingLevel::XHigh));
             assert_eq!(level("hydrogen", effort), Some(GeminiThinkingLevel::XHigh));
             assert_eq!(level("carbon", effort), Some(GeminiThinkingLevel::High));
         }
@@ -3928,6 +3933,7 @@ mod tests {
         );
         assert_eq!(efforts("gemini"), [Low, Medium, High]);
         assert_eq!(efforts("argon"), [Low, Medium, High]);
+        assert_eq!(efforts("neon"), [Low, Medium, High, Xhigh]);
         assert_eq!(efforts("hydrogen"), [Low, Medium, High, Xhigh]);
         assert_eq!(efforts("gemini-3.1-pro-preview"), [Low, Medium, High]);
         assert_eq!(efforts("gemini-3-pro-preview"), [Low, High]);
@@ -3935,6 +3941,7 @@ mod tests {
         assert_eq!(efforts("openrouter:x/y"), [Low, Medium, High, Xhigh, Max]);
         let fit = |name: &str, effort| fit_effort(&resolve_model(name).unwrap(), effort);
         assert_eq!(fit("gemini", Xhigh), High);
+        assert_eq!(fit("neon", Max), Xhigh);
         assert_eq!(fit("hydrogen", Max), Xhigh);
         assert_eq!(fit("gemini-3-pro-preview", Medium), Low);
         assert_eq!(fit("opus", Medium), Medium);
@@ -4138,6 +4145,7 @@ mod tests {
         assert_eq!(short_model_name("gpt-6.2-sol"), "sol");
         assert_eq!(short_model_name("gpt-6.1-sol"), "gpt-6.1-sol");
         assert_eq!(short_model_name("gemini-4-carbon"), "carbon");
+        assert_eq!(short_model_name("gemini-4-neon"), "neon");
         assert_eq!(short_model_name("gemini-4-hydrogen"), "hydrogen");
         assert_eq!(short_model_name("claude-opus-5-5"), "opus");
         assert_eq!(short_model_name("cc:claude-haiku-5-5"), "cc:haiku");

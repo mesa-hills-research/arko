@@ -141,7 +141,7 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
         "\n- opus, fable, sonnet, haiku, mythos · needs ANTHROPIC_API_KEY. The user adds it with /keys."
     ));
     assert!(text.contains(
-        "\n- carbon, argon, hydrogen · needs GEMINI_API_KEY. The user adds it with /keys."
+        "\n- carbon, argon, neon, hydrogen · needs GEMINI_API_KEY. The user adds it with /keys."
     ));
     assert!(text.contains(
         "\n- cc:opus, cc:fable, cc:sonnet, cc:haiku, cc:mythos · needs Claude Code signed in. The user signs in with `claude auth login`."
@@ -193,6 +193,7 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
         .unwrap();
     assert!(sol.ends_with(" · cache 30m, fixed"), "{sol}");
     assert!(text.contains("\n- carbon · efforts low to high · API, $"));
+    assert!(text.contains("\n- neon · efforts low to xhigh · API, $"));
     assert!(text.contains("\n- hydrogen · efforts low to xhigh · API, $"));
     assert!(text.contains("\n- openrouter:<slug> · any model OpenRouter serves · API · "));
     assert!(!text.contains("Not usable now"));

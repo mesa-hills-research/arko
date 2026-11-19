@@ -66,6 +66,12 @@
 - Ptyxis draws its own background behind the cells, so its margin keeps the profile's colour.
   `gsettings set org.gnome.Ptyxis disable-padding true` takes the margin away.
 
+### Models
+
+- Gemini 4 Neon, as `neon`, in the Gemini group of the model menu. Google places it between
+  Hydrogen and Carbon, for complex software engineering, knowledge work and science. Like
+  Hydrogen, it takes the xhigh effort, and max runs it at xhigh. It needs a Gemini API key.
+
 ## 0.23.1 (2026-11-18)
 
 ### The transcript

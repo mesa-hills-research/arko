@@ -34,7 +34,7 @@ pub(crate) struct Args {
     pub(crate) prompt: Option<String>,
 
     /// The model, as an ID or alias (opus, fable, sonnet, haiku, mythos, sol,
-    /// astra, terra, luna, carbon or gemini, argon, hydrogen or flash),
+    /// astra, terra, luna, carbon or gemini, argon, neon, hydrogen or flash),
     /// openrouter:<slug> for a model on
     /// OpenRouter (openrouter:anthropic/claude-opus-5.5), or cc:<model> for
     /// a Claude model in your installed Claude Code, on your Claude plan

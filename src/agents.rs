@@ -1339,6 +1339,7 @@ mod tests {
         assert_eq!(resolve_model("gemini").unwrap().id, "gemini-4-carbon");
         assert_eq!(resolve_model("Carbon").unwrap().id, "gemini-4-carbon");
         assert_eq!(resolve_model("argon").unwrap().id, "gemini-4-argon");
+        assert_eq!(resolve_model("neon").unwrap().id, "gemini-4-neon");
         assert_eq!(resolve_model("hydrogen").unwrap().id, "gemini-4-hydrogen");
         assert_eq!(resolve_model("flash").unwrap().id, "gemini-4-hydrogen");
         assert_eq!(
