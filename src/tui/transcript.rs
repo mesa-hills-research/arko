@@ -4786,7 +4786,117 @@ fn call_room(item: &Item, width: usize, who: bool, clock: Option<&str>, in_row: 
 /// Whether a call's Full line at `width` cuts its words, so the call opens
 /// to them whole. (Not counting how long it has run.)
 fn call_cut(item: &Item, width: usize, in_row: bool) -> bool {
-    text_width(&call_words(item)) > call_room(item, width, false, None, in_row)
+    call_fit(item, width, false, None, in_row).2
+}
+
+/// A call's words and what follows them as its Full line at `width` shows
+/// them, and whether it cut its words. Most lines cut their words to fit
+/// and keep the rest whole. A file tool's line keeps the file's name whole
+/// instead ([`FileLine`](crate::remote::FileLine)): its outcome's words
+/// give way first, down to its ✓ or ✗, then its folders from their left,
+/// down to "…/", and only then the name, at its end.
+fn call_fit(
+    item: &Item,
+    width: usize,
+    who: bool,
+    clock: Option<&str>,
+    in_row: bool,
+) -> (String, Vec<(String, Option<CallStatus>)>, bool) {
+    let words = call_words(item);
+    let mut tail = call_tail(item, clock, in_row);
+    let Some(file) = crate::remote::FileLine::of(&item.text, item.path) else {
+        let shown = cut_end(&words, call_room(item, width, who, clock, in_row));
+        let cut = shown != words;
+        return (shown, tail, cut);
+    };
+    let part = |text: &str| rendered(wrap::clean(text).replace('\n', " "));
+    let (lead, folders, name) = (part(file.lead), part(file.folders), part(file.name));
+    let who = if who { text_width(&item.agent) + 1 } else { 0 };
+    let room = width.saturating_sub(MARGIN + who).max(1);
+    // The outcome's words, after its ✓ or ✗, once the call ended.
+    let words_at = tail
+        .iter()
+        .position(|(_, mark)| mark.is_some())
+        .map(|at| at + 1)
+        .filter(|at| *at < tail.len());
+    let tail_width = |tail: &[(String, Option<CallStatus>)]| -> usize {
+        tail.iter().map(|(part, _)| text_width(part)).sum()
+    };
+    let fixed = text_width(&lead) + tail_width(&tail[..words_at.unwrap_or(tail.len())]);
+    let outcome = words_at.map_or(0, |at| text_width(&tail[at].0));
+    let fit = file_fit(
+        [fixed, outcome, text_width(&folders), text_width(&name)],
+        room,
+    );
+    if let Some(at) = words_at {
+        match fit.outcome {
+            0 => tail.truncate(at),
+            kept => tail[at].0 = cut_end(&tail[at].0, kept),
+        }
+    }
+    if !fit.cut {
+        return (words, tail, false);
+    }
+    let folders = match fit.folders {
+        0 => String::new(),
+        kept => cut_start(&folders, kept),
+    };
+    let line = format!("{lead}{folders}{name}");
+    (
+        cut_end(&line, fit.name + text_width(&lead) + text_width(&folders)),
+        tail,
+        true,
+    )
+}
+
+/// The columns each part of a file tool's line keeps in `room` columns
+/// ([`file_fit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileFit {
+    /// The outcome's words.
+    outcome: usize,
+    folders: usize,
+    /// The file's name and the rest of the line.
+    name: usize,
+    /// The folders or the name gave way, so the call opens to its words.
+    cut: bool,
+}
+
+/// How a file tool's line fits `room` columns, given the widths of its
+/// parts: what never gives way (its verb, and its ✓ or ✗ or how long it has
+/// run), its outcome's words, its folders and its name with the rest of the
+/// line. The outcome's words give way first, and go once fewer than 3
+/// columns are left for them. Then the folders give way from their left,
+/// down to 2 columns ("…/"), and only then the name.
+fn file_fit([fixed, outcome, folders, name]: [usize; 4], room: usize) -> FileFit {
+    let whole = FileFit {
+        outcome,
+        folders,
+        name,
+        cut: false,
+    };
+    if fixed + outcome + folders + name <= room {
+        return whole;
+    }
+    let left = room.saturating_sub(fixed + folders + name);
+    if left >= 3 {
+        return FileFit {
+            outcome: left,
+            ..whole
+        };
+    }
+    let left = room.saturating_sub(fixed + name);
+    let kept = if folders <= left {
+        folders
+    } else {
+        left.max(2).min(folders)
+    };
+    FileFit {
+        outcome: 0,
+        folders: kept,
+        name: name.min(room.saturating_sub(fixed + kept)),
+        cut: kept < folders || name > room.saturating_sub(fixed + kept),
+    }
 }
 
 /// A call's line as the Full view says it, the call as written and how it
@@ -4812,12 +4922,10 @@ fn call_line(
             theme.text().add_modifier(Modifier::BOLD),
         ));
     }
-    let words = call_words(item);
-    let shown = cut_end(&words, call_room(item, width, who, clock, in_row));
-    let cut = shown != words;
+    let (shown, tail, cut) = call_fit(item, width, who, clock, in_row);
     let style = if in_row { theme.dim() } else { theme.text() };
     spans.push(Span::styled(shown, style));
-    for (part, mark) in call_tail(item, clock, in_row) {
+    for (part, mark) in tail {
         let style = match mark {
             Some(CallStatus::Ok) => theme.success(),
             Some(CallStatus::Failed) => theme.error(),
@@ -4829,7 +4937,7 @@ fn call_line(
     let mut line =
         Wrapped::line(fit_spans(spans, room)).decorated(marker(fold_symbol(fold), theme.dim()));
     if cut {
-        line.whole = Some(words);
+        line.whole = Some(call_words(item));
     }
     vec![line]
 }
@@ -5290,6 +5398,27 @@ pub(super) fn cut_end(text: &str, width: usize) -> String {
     }
     // (The ellipsis follows the last word, not a space after it.)
     cut.trim_end().to_string() + &glyphs::render("…")
+}
+
+/// `text` in `width` columns, cut at its start with an ellipsis, so a path
+/// keeps its end.
+fn cut_start(text: &str, width: usize) -> String {
+    if text_width(text) <= width {
+        return text.to_string();
+    }
+    let ellipsis = glyphs::render("…");
+    let room = width.saturating_sub(text_width(&ellipsis));
+    let clusters: Vec<(&str, usize)> = termelon::text::graphemes(text)
+        .map(|(c, w)| (c, usize::from(w)))
+        .collect();
+    let mut start = clusters.len();
+    let mut used = 0;
+    while start > 0 && used + clusters[start - 1].1 <= room {
+        start -= 1;
+        used += clusters[start].1;
+    }
+    let kept: String = clusters[start..].iter().map(|(c, _)| *c).collect();
+    format!("{ellipsis}{kept}")
 }
 
 /// `text` in `width` columns, cut in its middle with an ellipsis, so a path
@@ -6819,6 +6948,74 @@ mod tests {
         user.text.clear();
         let lines = entry_lines(&user, &theme, 60, false, Look::default());
         assert_eq!(lines.len(), 2);
+    }
+
+    /// A file tool's line keeps the file's name whole. As its room narrows,
+    /// the outcome's words give way first, and go before they're down to an
+    /// ellipsis, then the folders, down to "…/", and the name only after
+    /// them. The line fits whenever what never gives way does.
+    #[test]
+    fn a_file_line_gives_way_outcome_first_then_folders_then_name() {
+        // The verb with the ✓, the outcome's words, the folders, the name.
+        for parts in [
+            [8, 8, 16, 15],
+            [8, 0, 16, 15],
+            [8, 8, 0, 15],
+            [12, 3, 2, 40],
+        ] {
+            let [fixed, outcome, folders, name] = parts;
+            let mut last = file_fit(parts, 200);
+            assert_eq!(
+                last,
+                FileFit {
+                    outcome,
+                    folders,
+                    name,
+                    cut: false
+                }
+            );
+            let mut stages = vec![0];
+            for room in (1..200).rev() {
+                let fit = file_fit(parts, room);
+                let at = format!("{parts:?} in {room}: {fit:?}");
+                assert!(
+                    fit.outcome <= last.outcome
+                        && fit.folders <= last.folders
+                        && fit.name <= last.name,
+                    "{at}"
+                );
+                assert!(
+                    fit.outcome == outcome || fit.outcome == 0 || fit.outcome >= 3,
+                    "{at}"
+                );
+                if fit.folders < folders {
+                    assert_eq!(fit.outcome, 0, "{at}");
+                    assert!(fit.folders >= 2.min(folders), "{at}");
+                }
+                if fit.name < name {
+                    assert_eq!((fit.outcome, fit.folders), (0, 2.min(folders)), "{at}");
+                }
+                if room >= fixed + 2 {
+                    assert!(fixed + fit.outcome + fit.folders + fit.name <= room, "{at}");
+                }
+                assert_eq!(fit.cut, fit.folders < folders || fit.name < name, "{at}");
+                let stage = match () {
+                    _ if fit.name < name => 3,
+                    _ if fit.folders < folders => 2,
+                    _ if fit.outcome < outcome => 1,
+                    _ => 0,
+                };
+                if stages.last() != Some(&stage) {
+                    stages.push(stage);
+                }
+                last = fit;
+            }
+            let expected: Vec<usize> = [(0, true), (1, outcome > 0), (2, folders > 2), (3, true)]
+                .into_iter()
+                .filter_map(|(stage, comes)| comes.then_some(stage))
+                .collect();
+            assert_eq!(stages, expected, "{parts:?}");
+        }
     }
 
     /// The rows of `lines` as drawn.

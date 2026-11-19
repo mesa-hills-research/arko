@@ -449,6 +449,22 @@ button.cache { padding: 0; border: 0; background: none; }
 .call-line .outcome::before { content: "· "; color: var(--muted); }
 .call-line .ok { color: var(--success); }
 .call-line .failed { color: var(--error); }
+/* A file's line keeps the file's name whole. Its outcome's words give way
+   first, down to its ✓ or ✗, then its folders from their left, down to
+   "…/", and only then the name, at its end, as in the terminal. (The far
+   larger shrink factors make each part give way before the next.) */
+.call-line .said.file > .outcome { display: flex; flex: 0 1000000 auto; min-width: 3ch; overflow: visible; }
+.call-line .said.file > .outcome::before { flex: none; white-space: pre; }
+.call-line .said.file > .outcome > :not(.words) { flex: none; }
+.call-line .said.file > .outcome > .words { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.call-line .said.file > .what { display: flex; flex: 0 1 auto; min-width: 0; }
+.call-line .what.file > * { overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.call-line .what.file > .lead { flex: none; }
+.call-line .what.file > .name { flex: 0 1 auto; min-width: 0; }
+/* The folders are cut at their left, as text that runs right to left is,
+   and read left to right inside. */
+.call-line .what.file > .folders { flex: 0 1000000 auto; min-width: 2ch; direction: rtl; }
+.call-line .what.file > .folders > span { direction: ltr; unicode-bidi: isolate; }
 /* The spinner is a still square box with a ring inside, two arcs of a
    third of a turn half a turn apart, so the ink stays centred. The arcs go
    round by the angle of the ring's mask, which the browser paints, so they

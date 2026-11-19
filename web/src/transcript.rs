@@ -12,7 +12,7 @@ use crate::files::SentFiles;
 use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
-use crate::protocol::{ActKind, CallStatus, ItemData, Kind, Level, Source, WorkerState};
+use crate::protocol::{ActKind, CallStatus, FileLine, ItemData, Kind, Level, Source, WorkerState};
 use crate::shimmer::Shimmer;
 use crate::spinner::Spinner;
 use crate::store::{Entry, MAIN, call_actions};
@@ -279,6 +279,15 @@ fn overflows(root: &web_sys::Element, selector: &str) -> bool {
         .is_some_and(|found| found.scroll_width() > found.client_width())
 }
 
+/// Whether the words (`.what`) of the line under `root` show less than
+/// their text, cut with an ellipsis. A file's line cuts its folders or its
+/// name ([`FileLine`]).
+fn words_cut(root: &web_sys::Element) -> bool {
+    [".what", ".what > .folders", ".what > .name"]
+        .into_iter()
+        .any(|selector| overflows(root, selector))
+}
+
 /// The element an event's handler is on.
 fn handler_element(event: &web_sys::Event) -> Option<web_sys::Element> {
     use wasm_bindgen::JsCast;
@@ -302,7 +311,7 @@ fn cut_words(
         // and its frame goes with it.)
         crate::frame::next_frame(move || {
             if let Some(summary) = summary.get_untracked() {
-                cut.set(overflows(&summary, ".what"));
+                cut.set(words_cut(&summary));
             }
         });
     });
@@ -438,7 +447,7 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                         let opening = !page.quiet_open.contains_untracked(id);
                         if opening {
                             let cuts = handler_element(&event)
-                                .is_some_and(|summary| overflows(&summary, ".what"));
+                                .is_some_and(|summary| words_cut(&summary));
                             cut.set(cuts);
                             if !opens() && !cuts {
                                 return;
@@ -558,7 +567,7 @@ fn quiet_member(
                     on:click=move |event| {
                         if !page.calls_open.contains_untracked(id) {
                             let cuts = handler_element(&event)
-                                .is_some_and(|line| overflows(&line, ".what"));
+                                .is_some_and(|line| words_cut(&line));
                             cut.set(cuts);
                             if !folds() && !cuts {
                                 return;
@@ -1013,7 +1022,10 @@ fn call_line(
                 Some(status) => {
                     let failed = status == CallStatus::Failed;
                     let title = item.outcome.clone().unwrap_or_default();
-                    let words = item.outcome.as_ref().map(|outcome| format!(" {outcome}"));
+                    let words = item
+                        .outcome
+                        .as_ref()
+                        .map(|outcome| view! { <span class="words">{format!(" {outcome}")}</span> });
                     Some(
                         view! {
                             <span class="outcome" title=title>
@@ -1032,12 +1044,30 @@ fn call_line(
                 Some(CallStatus::Running) => (None, outcome),
                 _ => (outcome, None),
             };
+            // A file's line keeps the file's name whole ([`FileLine`]).
+            let file = FileLine::of(&item.text, item.path);
+            let what = match file {
+                Some(file) => view! {
+                    <span class="what file" title=item.text.clone()>
+                        <span class="lead">{file.lead.to_string()}</span>
+                        {(!file.folders.is_empty()).then(|| view! {
+                            <span class="folders"><span>{file.folders.to_string()}</span></span>
+                        })}
+                        <span class="name">{file.name.to_string()}</span>
+                    </span>
+                }
+                .into_any(),
+                None => view! {
+                    <span class="what" class:long=long_words(&item.text) title=item.text.clone()>{item.text.clone()}</span>
+                }
+                .into_any(),
+            };
             view! {
                 <span class="call-line">
                     <span class="mark">{mark}</span>
                     {who.map(|who| view! { <span class="who">{who}</span> })}
-                    <span class="said">
-                        <span class="what" class:long=long_words(&item.text) title=item.text.clone()>{item.text.clone()}</span>
+                    <span class="said" class:file=file.is_some()>
+                        {what}
                         {said}
                     </span>
                     {spin}
@@ -1098,7 +1128,7 @@ fn call_row(cell: RowCell) -> AnyView {
                         return;
                     }
                     let cuts = handler_element(&event)
-                        .is_some_and(|summary| overflows(&summary, ".what"));
+                        .is_some_and(|summary| words_cut(&summary));
                     cut.set(cuts);
                     if folds() && !full_open(page, id, command) {
                         page.flipped.toggle(id);

@@ -91,6 +91,11 @@ pub struct Item {
     /// before the first.
     pub turn: Option<u64>,
     pub text: String,
+    /// Where a file tool's call names its file in `text` (bytes), whose
+    /// folders a narrow line shortens from the left, so the file's name
+    /// stays whole ([`FileLine`](super::protocol::FileLine)).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<(usize, usize)>,
     /// More, shown folded or under the text, such as a call's whole
     /// parameter or a command's first lines of output.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -250,6 +255,7 @@ impl Item {
             agent: MAIN_AGENT.to_string(),
             turn: None,
             text: text.into(),
+            path: None,
             detail: None,
             level: None,
             source: None,

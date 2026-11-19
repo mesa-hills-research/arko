@@ -1363,7 +1363,7 @@ impl EventPrinter {
             | APPLY_DIFF_TOOL_NAME | LIST_FILES_TOOL_NAME => {
                 // (This line has no outcome, so it says how many edits a
                 // call of several makes.)
-                let (verb, detail) = file_call(tool, parameters, true);
+                let (verb, detail, _) = file_call(tool, parameters, true);
                 format!("{bullet} {} {detail}", self.output.bold(verb))
             }
             SHELL_TOOL_NAME => {
@@ -1577,7 +1577,7 @@ pub fn brief_waiting_for(
         SHELL_TOOL_NAME => command_line(text("command")),
         READ_FILE_TOOL_NAME | WRITE_FILE_TOOL_NAME | EDIT_FILE_TOOL_NAME | APPLY_DIFF_TOOL_NAME
         | LIST_FILES_TOOL_NAME => {
-            let (verb, detail) = file_call(tool, parameters, false);
+            let (verb, detail, _) = file_call(tool, parameters, false);
             format!("{verb} {detail}")
         }
         crew::MESSAGE_AGENT => match text("to") {
@@ -1636,22 +1636,46 @@ pub fn diff_edits(parameters: &HashMap<String, serde_json::Value>) -> usize {
         })
 }
 
-/// A file tool's call, meaning its verb (`read`, `write`, `edit`, `list`) and what
+/// A file tool's call as [`brief`] says it, and where in it the file's path
+/// is (bytes), or `None` for a call of another tool.
+pub fn file_line(
+    tool: &str,
+    parameters: &HashMap<String, serde_json::Value>,
+) -> Option<(String, (usize, usize))> {
+    if ![
+        READ_FILE_TOOL_NAME,
+        WRITE_FILE_TOOL_NAME,
+        EDIT_FILE_TOOL_NAME,
+        APPLY_DIFF_TOOL_NAME,
+        LIST_FILES_TOOL_NAME,
+    ]
+    .contains(&tool)
+    {
+        return None;
+    }
+    let (verb, detail, path) = file_call(tool, parameters, false);
+    let start = verb.len() + 1;
+    Some((format!("{verb} {detail}"), (start, start + path)))
+}
+
+/// A file tool's call, meaning its verb (`read`, `write`, `edit`, `list`), what
 /// it reads or changes (`src/main.rs:10-40`, `src/new.rs (12 lines)`,
-/// `src/lib.rs (all)` for an edit of every occurrence). With `counted`, an
-/// `apply_diff` call of several blocks says how many edits it makes
-/// (`src/lib.rs (3 edits)`), for a line that shows no outcome.
+/// `src/lib.rs (all)` for an edit of every occurrence), and how long the
+/// path that starts it is, in bytes. With `counted`, an `apply_diff` call
+/// of several blocks says how many edits it makes (`src/lib.rs (3 edits)`),
+/// for a line that shows no outcome. A `replace_all` call's edits are the
+/// places it finds, which only its result says.
 fn file_call(
     tool: &str,
     parameters: &HashMap<String, serde_json::Value>,
     counted: bool,
-) -> (&'static str, String) {
+) -> (&'static str, String, usize) {
     let text = |name: &str| match parameters.get(name) {
         Some(serde_json::Value::String(text)) => text.trim().to_string(),
         Some(serde_json::Value::Number(number)) => number.to_string(),
         _ => String::new(),
     };
-    let path = cut(&text("path"), 160);
+    let path = cut_path(&text("path"), 160);
     match tool {
         READ_FILE_TOOL_NAME => {
             let range = match (text("start_line").as_str(), text("end_line").as_str()) {
@@ -1660,7 +1684,7 @@ fn file_call(
                 ("", end) => format!(":1-{end}"),
                 (start, end) => format!(":{start}-{end}"),
             };
-            ("read", format!("{path}{range}"))
+            ("read", format!("{path}{range}"), path.len())
         }
         WRITE_FILE_TOOL_NAME => {
             let lines = parameters
@@ -1670,6 +1694,7 @@ fn file_call(
             (
                 "write",
                 format!("{path} ({})", plural(lines, "line", "lines")),
+                path.len(),
             )
         }
         // (`edit_file` in sessions saved while the agents edited with it.)
@@ -1683,6 +1708,7 @@ fn file_call(
             if counted && edits > 1 && !all {
                 notes.push(plural(edits, "edit", "edits"));
             }
+            let named = path.len();
             (
                 "edit",
                 if notes.is_empty() {
@@ -1690,18 +1716,16 @@ fn file_call(
                 } else {
                     format!("{path} ({})", notes.join(", "))
                 },
+                named,
             )
         }
         _ => {
-            let directory = cut(&text("directory"), 160);
-            (
-                "list",
-                if directory.is_empty() {
-                    ".".into()
-                } else {
-                    directory
-                },
-            )
+            let directory = match cut_path(&text("directory"), 160) {
+                directory if directory.is_empty() => ".".to_string(),
+                directory => directory,
+            };
+            let named = directory.len();
+            ("list", directory, named)
         }
     }
 }
@@ -1785,6 +1809,24 @@ pub fn cut(text: &str, limit: usize) -> String {
     } else {
         format!("{}…", single.chars().take(limit).collect::<String>())
     }
+}
+
+/// [`cut`] for a path, which keeps the file's own name whole, however
+/// long, and as many of its folders' last characters as fit
+/// ("…/nested/app.rs").
+pub fn cut_path(path: &str, limit: usize) -> String {
+    let single = path.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = single
+        .trim_end_matches(['/', '\\'])
+        .rfind(['/', '\\'])
+        .map_or(0, |at| at + 1);
+    let folders: Vec<char> = single[..name].chars().collect();
+    let room = limit.saturating_sub(single[name..].chars().count()).max(1);
+    if folders.len() <= room {
+        return single;
+    }
+    let kept: String = folders[folders.len() - room..].iter().collect();
+    format!("…{kept}{}", &single[name..])
 }
 
 #[cfg(test)]

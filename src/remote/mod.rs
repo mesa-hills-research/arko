@@ -68,7 +68,9 @@ pub use links::Kind as LinkKind;
 pub use links::{HOST_VARIABLE, Interface, Link};
 #[cfg(not(feature = "remote"))]
 pub use no_server::Server;
-pub use protocol::{Confirm, Partial, Refusal, RefusalKind, Verdict, duration, noun, plural};
+pub use protocol::{
+    Confirm, FileLine, Partial, Refusal, RefusalKind, Verdict, duration, noun, plural,
+};
 pub(crate) use render::duration_words;
 pub(crate) use render::outcome as call_outcome;
 #[cfg(feature = "remote")]

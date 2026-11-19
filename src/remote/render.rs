@@ -136,7 +136,7 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         ..Act::default()
     };
     let path = |name: &str| {
-        let path = text(name);
+        let path = ui::cut_path(&raw(name), 160);
         if path.is_empty() {
             ".".to_string()
         } else {
@@ -687,6 +687,11 @@ fn index_name(index: &str) -> String {
 /// A call's item, as the terminal shows it.
 fn line(tool: &str, parameters: &Parameters, lead: &str) -> Option<Item> {
     let call = |line: String| Item::new(Kind::Call, line);
+    if let Some((text, path)) = ui::file_line(tool, parameters) {
+        let mut item = call(text);
+        item.path = Some(path);
+        return Some(item);
+    }
     Some(match tool {
         "complete_task" | ASK_USER_TOOL_NAME => return None,
         HANDOVER_REPORT_TOOL_NAME => call("handover report".into()),
@@ -2680,6 +2685,83 @@ mod tests {
                 assert_eq!(number(&said(&[&replaced, &blocks])), Some(7), "{tool}");
             }
         }
+    }
+
+    /// A file tool's line says where it names its file, whose folders and
+    /// name a narrow line tells apart ([`FileLine`](super::super::FileLine)).
+    #[test]
+    fn a_file_tools_line_says_where_its_file_is() {
+        let parts = |tool: &str, pairs: &[(&str, Value)]| {
+            let item = call(tool, &params(pairs)).unwrap();
+            let file = super::super::FileLine::of(&item.text, item.path).unwrap();
+            (
+                file.lead.to_string(),
+                file.folders.to_string(),
+                file.name.to_string(),
+            )
+        };
+        let path = |path: &str| vec![("path", Value::from(path))];
+        for tool in [
+            READ_FILE_TOOL_NAME,
+            WRITE_FILE_TOOL_NAME,
+            EDIT_FILE_TOOL_NAME,
+            APPLY_DIFF_TOOL_NAME,
+        ] {
+            let (lead, folders, name) = parts(tool, &path("src/remote/render.rs"));
+            assert_eq!(
+                (folders.as_str(), name.split_whitespace().next()),
+                ("src/remote/", Some("render.rs")),
+                "{tool}"
+            );
+            assert!(
+                lead.ends_with(' ') && !lead.contains("src"),
+                "{tool}: {lead:?}"
+            );
+        }
+        let (_, folders, name) = parts(
+            READ_FILE_TOOL_NAME,
+            &[("path", "a/b.rs".into()), ("start_line", 3.into())],
+        );
+        assert_eq!(folders, "a/");
+        assert!(name.starts_with("b.rs") && name.contains('3'), "{name}");
+        let (_, folders, name) =
+            parts(LIST_FILES_TOOL_NAME, &[("directory", "src/remote/".into())]);
+        assert_eq!((folders.as_str(), name.as_str()), ("src/", "remote/"));
+        let (_, folders, name) = parts(EDIT_FILE_TOOL_NAME, &path("C:\\Users\\ada\\a.rs"));
+        assert_eq!(
+            (folders.as_str(), name.as_str()),
+            ("C:\\Users\\ada\\", "a.rs")
+        );
+        let (_, folders, name) = parts(WRITE_FILE_TOOL_NAME, &path("new.rs"));
+        assert!(folders.is_empty() && name.starts_with("new.rs"));
+        // A path too long for the line loses its start, never its name.
+        let deep = format!("{}app.rs", "nested/".repeat(40));
+        let (_, folders, name) = parts(APPLY_DIFF_TOOL_NAME, &path(&deep));
+        assert!(
+            folders.starts_with('…') && folders.ends_with("nested/"),
+            "{folders}"
+        );
+        assert_eq!(name, "app.rs");
+        let act = call(APPLY_DIFF_TOOL_NAME, &params(&path(&deep)))
+            .unwrap()
+            .act
+            .unwrap();
+        assert!(act.target.ends_with("/app.rs"), "{}", act.target);
+        // A name longer than the line's limit stays whole too.
+        let long = format!("{}.rs", "a".repeat(200));
+        for folders in ["src/".to_string(), deep.replace("app.rs", "")] {
+            let (_, kept, name) = parts(READ_FILE_TOOL_NAME, &path(&format!("{folders}{long}")));
+            assert_eq!((kept.as_str(), name.as_str()), ("…/", long.as_str()));
+        }
+        // Other calls name no file, and a place outside the line is none.
+        assert_eq!(
+            call(SHELL_TOOL_NAME, &params(&[("command", "ls src/".into())]))
+                .unwrap()
+                .path,
+            None
+        );
+        assert_eq!(super::super::FileLine::of("edit é.rs", Some((6, 9))), None);
+        assert_eq!(super::super::FileLine::of("edit a.rs", Some((5, 99))), None);
     }
 
     /// Each call says what it does for the Quiet view, and its result

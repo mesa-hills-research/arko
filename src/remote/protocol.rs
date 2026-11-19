@@ -489,6 +489,9 @@ pub struct ItemData {
     pub agent: String,
     pub turn: Option<u64>,
     pub text: String,
+    /// Where a file tool's call names its file in `text` ([`FileLine`]).
+    #[serde(default)]
+    pub path: Option<(usize, usize)>,
     #[serde(default)]
     pub detail: Option<String>,
     #[serde(default)]
@@ -1459,6 +1462,39 @@ impl Approval {
 
 fn first_line(text: &str) -> String {
     text.trim().lines().next().unwrap_or_default().to_string()
+}
+
+/// A file tool's call line in three parts, so that a narrow line can keep
+/// the file's name whole. It cuts the outcome first, then the folders from
+/// their left ("edit …/app.rs"), and the name only after them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileLine<'a> {
+    /// What comes before the path ("edit ").
+    pub lead: &'a str,
+    /// The path's folders, each with the separator after it ("src/remote/"),
+    /// or nothing for a file named alone.
+    pub folders: &'a str,
+    /// The file's own name and the rest of the line ("app.rs (all)").
+    pub name: &'a str,
+}
+
+impl<'a> FileLine<'a> {
+    /// The parts of `text`, whose file's path is at `path` (bytes), or
+    /// `None` without one.
+    pub fn of(text: &'a str, path: Option<(usize, usize)>) -> Option<Self> {
+        let (start, end) = path?;
+        let named = text.get(start..end)?;
+        // (A folder's own name is its last, whatever separator ends it.)
+        let folders = named
+            .trim_end_matches(['/', '\\'])
+            .rfind(['/', '\\'])
+            .map_or(0, |at| at + 1);
+        Some(Self {
+            lead: &text[..start],
+            folders: &text[start..start + folders],
+            name: &text[start + folders..],
+        })
+    }
 }
 
 /// "a", "a and b", "a, b and c".
