@@ -3186,10 +3186,28 @@ impl Transcript {
         {
             usize::from(block.gap)
         } else {
-            // (Its last line of text, above the blank row at the end.)
+            // (Its content's last line, its door, above a code run's calls
+            // and the blank row at the end.)
+            let after = self.run_lines(index, theme, width);
             let own = matches!(filter, Filter::Worker(..));
-            self.new_rows(block, theme, width, own).saturating_sub(1)
+            self.new_rows(block, theme, width, own)
+                .saturating_sub(1 + after)
         }
+    }
+
+    /// How many lines of the entry `index`'s block follow its content in
+    /// Full, a code run's calls after its code.
+    fn run_lines(&self, index: usize, theme: &Theme, width: usize) -> usize {
+        let item = &self.entries[index].item;
+        if item.content != Some(ContentKind::Code) {
+            return 0;
+        }
+        let calls = item
+            .call
+            .and_then(|call| self.item(call))
+            .and_then(|call| call.act.as_ref()?.calls.as_ref());
+        let inner = width.saturating_sub(MARGIN).max(1);
+        calls.map_or(0, |calls| run_full_lines(calls, theme, inner).len())
     }
 
     /// Opens or closes the fold of the item `item`, its line held where it
@@ -5911,6 +5929,22 @@ mod tests {
                 shown[at..].iter().any(|row| row == "│ 31 arko_agents"),
                 "{shown:?}"
             );
+            // A click on the door opens it, and one on what the calls did
+            // opens nothing, in Full the last of the calls' lines too, the
+            // last line of the code's block.
+            let fold = |t: &mut Transcript, y: usize| {
+                t.fold_at(4, y as u16, &filter, &theme)
+                    .map(|fold| fold.item)
+            };
+            assert_eq!(fold(&mut t, at), Some(call + 1), "{view:?}");
+            assert_eq!(fold(&mut t, at + 1), None, "{view:?}");
+            if view == View::Full {
+                let last = (at + 1..shown.len())
+                    .take_while(|y| shown[*y].starts_with("│ · "))
+                    .last()
+                    .unwrap_or_else(|| panic!("{shown:?}"));
+                assert_eq!(fold(&mut t, last), None, "{}", shown[last]);
+            }
             t.toggle(call + 1, at as u16, &filter, &theme);
             let opened = rows(&mut t, &filter, 100, 90);
             assert_eq!(
