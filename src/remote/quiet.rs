@@ -12,8 +12,9 @@
 //! happened. A call's row is
 //! decided when the call comes, from what is known then, and nothing that
 //! comes later moves it. So a long call (a command, a wait, an MCP call)
-//! shows on its row while it runs ("Ran 4 commands · running cargo build"),
-//! and a call that fails or goes on in the background stays in its row,
+//! is its row's words while it runs ("Running cargo build"), until the row
+//! says what its calls did ("Ran 4 commands (cargo)"), and a call that
+//! fails or goes on in the background stays in its row,
 //! which shows one ✗. A failure ends its row, so a call that comes after it
 //! starts a row of its own, and so does a row of one call that the reader
 //! opened, which keeps its form ([`Call::sealed`]). A test run and a call of another kind have rows of
@@ -125,8 +126,8 @@ pub struct Words {
     pub news: Option<String>,
     /// A call of it failed, which one ✗ at the row's right says.
     pub failed: bool,
-    /// More, said after it, muted, such as how a call's job is going, what
-    /// came while it waited, or what of it still runs.
+    /// More, said after it, muted, such as how a call's job is going, or
+    /// what came while it waited.
     pub note: Option<String>,
     /// A call a stop or a compaction cut short, whose row is muted.
     pub muted: bool,
@@ -294,12 +295,12 @@ impl Member<'_> {
         }
     }
 
-    /// A call that can run long, which a row shows as it runs ("· running
-    /// cargo build").
+    /// A call that can run long, which a row of several says while it runs
+    /// ("Running cargo build").
     fn long(&self) -> bool {
         matches!(
             self.act.kind,
-            ActKind::Command | ActKind::Wait | ActKind::Mcp | ActKind::Check
+            ActKind::Command | ActKind::Wait | ActKind::JobWait | ActKind::Mcp | ActKind::Check
         )
     }
 
@@ -418,8 +419,9 @@ impl<'a> Group<'a> {
         let kind = member.act.kind;
         let target = member.act.target.as_str();
         if self.kind() == Some(kind) {
-            // A job's checks and an MCP tool's calls merge one target only.
-            let one_target = matches!(kind, ActKind::Check | ActKind::Mcp);
+            // A job's checks and waits, and an MCP tool's calls, merge one
+            // target only.
+            let one_target = matches!(kind, ActKind::Check | ActKind::JobWait | ActKind::Mcp);
             if one_target && self.calls[0].act.target != target {
                 return Err(member);
             }
@@ -554,6 +556,10 @@ struct Names {
 
 impl Names {
     fn of(&mut self, turn: Option<u64>, act: &Act) -> String {
+        // (A job's look and wait have its whole ID, by which they merge.)
+        if matches!(act.kind, ActKind::JobWait | ActKind::Check) {
+            return job_name(&act.target);
+        }
         if !matches!(
             act.kind,
             ActKind::Read | ActKind::Write | ActKind::Edit | ActKind::List
@@ -580,6 +586,13 @@ impl Names {
             last_parts(path, 2)
         }
     }
+}
+
+/// A job as the transcript names it, by the start of its ID `id` ("job
+/// 4d2c1a9b").
+pub fn job_name(id: &str) -> String {
+    let id = id.trim();
+    format!("job {}", id.get(..8).unwrap_or(id))
 }
 
 fn file_name(path: &str) -> &str {
@@ -662,28 +675,22 @@ fn distinct<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<String> {
 
 /// What a row of `group` says.
 fn words(group: &Group) -> Words {
-    // A long call that runs shows after what the calls before it did ("Ran
-    // 4 commands · running cargo build").
+    // While a long call of a row of several runs, the row says what runs
+    // ("Running cargo build", "Waiting for workers"), and the lines of the
+    // calls inside say what the others did. A ✗ of one that failed stays.
     let (live, done): (Vec<&Member>, Vec<&Member>) = group
         .calls
         .iter()
         .partition(|member| member.long() && member.running());
-    if !live.is_empty()
-        && let Some((first, rest)) = done.split_first()
+    if let Some((first, rest)) = live.split_first()
+        && !done.is_empty()
     {
-        let mut before = Group::new((*first).clone());
+        let mut now = Group::new((*first).clone());
         for member in rest {
-            before.push((*member).clone());
+            now.push((*member).clone());
         }
-        let mut words = words(&before);
-        let running = match live.as_slice() {
-            [one] => lower_first(&phrases(one).doing),
-            many => format!("running {} more", many.len()),
-        };
-        words.note = Some(match words.note {
-            Some(note) => format!("{note} · {running}"),
-            None => running,
-        });
+        let mut words = words(&now);
+        words.failed |= done.iter().any(|member| member.failed());
         words.running = true;
         return words;
     }
@@ -804,22 +811,11 @@ fn words(group: &Group) -> Words {
                 1..=3 if !implicit => listed(&runs, 3),
                 _ => "workers".to_string(),
             };
-            let mut came = Came::default();
-            let mut any = false;
-            for call in calls {
-                if let Some(theirs) = &call.act.came {
-                    any = true;
-                    came.finished.extend(theirs.finished.iter().cloned());
-                    came.stopped.extend(theirs.stopped.iter().cloned());
-                    came.messages += theirs.messages;
-                    came.updates += theirs.updates;
-                }
-            }
-            if any {
-                note.push(came_words(&came));
-            }
+            // (What came to each wait is on its line inside.)
             format!("{} for {who}", tense("Waiting", "Waited"))
         }
+        // (What each wait found is on its line inside.)
+        Some(ActKind::JobWait) => format!("{} for {}", tense("Waiting", "Waited"), calls[0].name),
         Some(ActKind::Check) => format!(
             "{} {} {count} times",
             tense("Checking", "Checked"),
@@ -1111,6 +1107,11 @@ fn phrases(member: &Member) -> Phrases {
                 format!("wait for {who}"),
             )
         }
+        ActKind::JobWait => three(
+            format!("Waiting for {name}"),
+            format!("Waited for {name}"),
+            format!("wait for {name}"),
+        ),
         ActKind::Check => three(
             format!("Checking {name}"),
             format!("Checked {name}"),
@@ -1200,12 +1201,17 @@ fn one(member: &Member) -> Words {
             failed: true,
             ..Words::default()
         },
-        // What came while it waited, else its news, and how its job is
-        // going.
+        // What came while it waited, what it found of its job, else its
+        // news, and how its job is going.
         Some(CallStatus::Ok) => match &act.came {
             Some(came) if act.kind == ActKind::Wait => Words {
                 text: done,
                 note: Some(came_words(came)),
+                ..Words::default()
+            },
+            _ if act.kind == ActKind::JobWait => Words {
+                text: done,
+                note: news,
                 ..Words::default()
             },
             _ => Words {
@@ -1874,7 +1880,7 @@ mod tests {
             .collect()
     }
 
-    use ActKind::{Command, Edit, Message, Read, Wait, Write};
+    use ActKind::{Command, Edit, JobWait, Message, Read, Wait, Write};
     use CallStatus::{Failed, Ok, Running};
 
     fn ok(kind: ActKind, target: &str) -> Option<(Act, CallStatus)> {
@@ -2321,9 +2327,9 @@ mod tests {
         );
     }
 
-    /// A long call joins the row above as it comes and shows there while it
-    /// runs, as quick calls join at once. A row of calls that all run
-    /// speaks in the present.
+    /// A long call joins the row above as it comes, as quick calls join at
+    /// once, and while it runs the row says what it does, as the call alone
+    /// would. A row of calls that all run speaks in the present.
     #[test]
     fn running_calls() {
         assert_eq!(
@@ -2331,8 +2337,43 @@ mod tests {
                 ok(Command, "rg x"),
                 Some((act(Command, "cargo build"), Running))
             ]),
-            ["Ran rg x · running cargo build"]
+            [doing(&act(Command, "cargo build"))]
         );
+        // Two that run at once are said as a row of the two would be.
+        assert_eq!(
+            shown(&[
+                ok(Command, "rg x"),
+                Some((act(Command, "cargo build"), Running)),
+                Some((act(Command, "npm test"), Running)),
+            ]),
+            shown(&[
+                Some((act(Command, "cargo build"), Running)),
+                Some((act(Command, "npm test"), Running)),
+            ])
+        );
+        // One that failed keeps the row's ✗ while one that came as it ran
+        // still runs.
+        let (rg, build) = (act(Command, "rg x"), act(Command, "cargo build"));
+        let steps = [
+            Step::Call(Call {
+                id: 1,
+                act: Some(&rg),
+                status: Some(Failed),
+                ended: Some(3),
+                ..Call::default()
+            }),
+            Step::Call(Call {
+                id: 2,
+                act: Some(&build),
+                status: Some(Running),
+                ..Call::default()
+            }),
+        ];
+        let [Piece::Row(row)]: [Piece; 1] = rows(&steps).try_into().unwrap() else {
+            panic!()
+        };
+        assert_eq!(row.words.text, doing(&build));
+        assert!(row.words.failed && row.words.running);
         assert_eq!(
             shown(&[ok(Command, "rg x"), ok(Command, "cargo build")]),
             ["Ran 2 commands (rg, cargo)"]
@@ -2432,10 +2473,7 @@ mod tests {
             call(2, &build, Running),
             call(3, &read, Ok),
         ];
-        assert_eq!(
-            said(&running),
-            ["Ran rg x · running cargo build", "Read a.rs"]
-        );
+        assert_eq!(said(&running), [doing(&build).as_str(), "Read a.rs"]);
         let settled = [call(1, &rg, Ok), call(2, &build, Ok), call(3, &read, Ok)];
         assert_eq!(said(&settled), ["Ran 2 commands (rg, cargo)", "Read a.rs"]);
         let failed = [
@@ -2576,7 +2614,9 @@ mod tests {
         assert_eq!(doing(&act(Read, "src/tui/app.rs")), "Reading app.rs");
     }
 
-    /// Back-to-back waits are one row that says what came.
+    /// Back-to-back waits are one row, which says whom they waited for.
+    /// What came to each is on its own line inside, and a wait alone says
+    /// it on its row.
     #[test]
     fn waits_merge_and_say_what_came() {
         let wait = |runs: &str, came: Came| Act {
@@ -2600,7 +2640,7 @@ mod tests {
                 Some((wait("r91, r92, r93, r94", finished.clone()), Ok)),
                 Some((wait("r92, r93, r94", update.clone()), Ok)),
             ]),
-            ["Waited for workers · r91 finished, 3 updates"]
+            ["Waited for workers"]
         );
         assert_eq!(
             shown(&[Some((wait("r3", finished.clone()), Ok))]),
@@ -2617,16 +2657,77 @@ mod tests {
                 Some((wait("", Came::default()), Ok)),
                 Some((wait("r1", finished.clone()), Ok))
             ]),
-            ["Waited for workers · r91 finished"]
+            ["Waited for workers"]
         );
-        // One that waits shows on the row while it waits.
+        // While one waits, the row says so, and only that.
         assert_eq!(
             shown(&[
                 Some((wait("r3", update.clone()), Ok)),
                 Some((act(Wait, "r3"), Running))
             ]),
-            ["Waited for r3 · 1 update · waiting for r3"]
+            [doing(&act(Wait, "r3"))]
         );
+    }
+
+    /// A wait on a job merges with waits on the same job only, by its whole
+    /// ID, and never with a wait for workers. Alone it says what it found,
+    /// and a row of several says that only on each wait's own line.
+    #[test]
+    fn waits_on_a_job_merge_by_the_job() {
+        let job = |id: &str, news: &str| Act {
+            news: news.into(),
+            ..act(JobWait, id)
+        };
+        let (a, b) = (
+            "c876812b-5f3e-4a1d-9b7c-2e8f0a6d4c13",
+            "c876812b-0000-4000-8000-000000000001",
+        );
+        let rows_of = |calls: &[(Act, CallStatus)]| -> Vec<Row> {
+            let steps: Vec<Step> = calls
+                .iter()
+                .enumerate()
+                .map(|(at, (act, status))| {
+                    Step::Call(Call {
+                        id: at as u64 + 1,
+                        act: Some(act),
+                        status: Some(*status),
+                        ..Call::default()
+                    })
+                })
+                .collect();
+            rows(&steps)
+                .into_iter()
+                .filter_map(|piece| match piece {
+                    Piece::Row(row) => Some(row),
+                    Piece::Step(_) => None,
+                })
+                .collect()
+        };
+        let merged = rows_of(&[(job(a, "new output"), Ok), (job(a, "finished"), Ok)]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].members, [0, 1]);
+        assert_eq!(
+            (merged[0].words.news.clone(), merged[0].words.note.clone()),
+            (None, None)
+        );
+        // While a wait on it runs, the row says that wait's words.
+        let running = rows_of(&[(job(a, "new output"), Ok), (job(a, ""), Running)]);
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].words.text, doing(&job(a, "")));
+        assert!(running[0].words.running);
+        // Two jobs whose IDs begin alike are two rows, each with what its
+        // wait found.
+        let two = rows_of(&[(job(a, "new output"), Ok), (job(b, "nothing new"), Ok)]);
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[0].words.note.as_deref(), Some("new output"));
+        assert_eq!(two[1].words.note.as_deref(), Some("nothing new"));
+        // A wait for workers beside it is a row of its own.
+        let mixed = rows_of(&[(job(a, "nothing new"), Ok), (act(Wait, "r4"), Running)]);
+        assert_eq!(mixed.len(), 2);
+        assert_eq!(mixed[1].words.text, doing(&act(Wait, "r4")));
+        // It names the job by the start of its ID, as the terminal does.
+        assert!(doing(&job(a, "")).ends_with(&job_name(a)));
+        assert!(!doing(&job(a, "")).contains(a));
     }
 
     /// A thinking sits where it happened. Between two calls of one row it is
@@ -2785,13 +2886,32 @@ mod tests {
         };
         assert_eq!(row.words.text, "Started npm run dev in a terminal");
         assert_eq!(row.words.note.as_deref(), Some("running"));
+        // A row whose call runs says what runs first, with no note, so a
+        // narrow line keeps it and the row's buttons.
+        let (rg, build) = (act(Command, "rg x"), act(Command, "cargo build"));
+        let steps = [
+            Step::Call(Call {
+                id: 1,
+                act: Some(&rg),
+                status: Some(Ok),
+                ..Call::default()
+            }),
+            Step::Call(Call {
+                id: 2,
+                act: Some(&build),
+                status: Some(Running),
+                ..Call::default()
+            }),
+        ];
+        let [Piece::Row(row)]: [Piece; 1] = rows(&steps).try_into().unwrap() else {
+            panic!()
+        };
+        assert_eq!(row.words.text, doing(&build));
         assert_eq!(
-            shown(&[
-                ok(Command, "rg x"),
-                Some((act(Command, "cargo build"), Running))
-            ]),
-            ["Ran rg x · running cargo build"]
+            (row.words.news.as_deref(), row.words.note.as_deref()),
+            (None, None)
         );
+        assert!(row.words.running);
     }
 
     /// A file whose name another file of the turn had first gets its folder.

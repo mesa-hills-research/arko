@@ -8005,10 +8005,7 @@ mod tests {
         t.apply(Update::Item(call(3, ActKind::Read, "a.rs", CallStatus::Ok)));
         let quiet = Filter::Main(View::Quiet);
         let before = rows(&mut t, &quiet, 50, 4);
-        assert_eq!(
-            before[..2],
-            ["▸ Ran rg x · running cargo build …", "· Read a.rs"]
-        );
+        assert_eq!(before[..2], ["▸ Running cargo build …", "· Read a.rs"]);
         rows(&mut t, &Filter::Main(View::Full), 50, 4);
         assert_eq!(rows(&mut t, &quiet, 50, 4), before);
         // It ends in its row, and no row comes or goes.

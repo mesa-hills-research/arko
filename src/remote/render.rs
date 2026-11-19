@@ -16,6 +16,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use arko_agents::LOAD_SKILL_TOOL_NAME;
+use arko_agents::terminal;
 use arko_agents::tool::ToolReceipt;
 
 use super::content;
@@ -143,7 +144,10 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
             path
         }
     };
-    let job = || ui::job_name(&text("job_id"));
+    let job = || quiet::job_name(&text("job_id"));
+    // (A look at a job and a wait on it keep its whole ID, by which their
+    // rows merge.)
+    let job_id = || text("job_id");
     match tool {
         READ_FILE_TOOL_NAME | "Read" => {
             let name = if tool == "Read" { "file_path" } else { "path" };
@@ -195,9 +199,9 @@ fn act(tool: &str, parameters: &Parameters, lead: &str) -> Act {
         // The runs it names. One that names none waits for the agent's
         // workers, which its row calls so ([`quiet`]).
         crew::WAIT_FOR_AGENTS => on(ActKind::Wait, ui::waited_runs(parameters, &[]).join(", ")),
-        "terminal_status" => on(ActKind::Check, job()),
+        "terminal_status" => on(ActKind::Check, job_id()),
         "terminal_control" => match text("action").as_str() {
-            "wait" => on(ActKind::Wait, job()),
+            "wait" => on(ActKind::JobWait, job_id()),
             "list" => other(
                 "Listing jobs".into(),
                 "Listed jobs".into(),
@@ -874,6 +878,160 @@ fn started_job(output: &str) -> Option<Uuid> {
     value.get("job_id")?.as_str()?.parse().ok()
 }
 
+/// What a call of a terminal tool (`terminal_status`, `terminal_control`,
+/// `terminal_input`) did, from its result, which is the tool's JSON. A look
+/// at a job and a wait on it say how the job stands, and open to its output
+/// when they found any. The other calls' words already say what they did,
+/// and a list says how many jobs there are. `None` for any other call, and
+/// for a result that isn't the tool's JSON.
+fn terminal_outcome(tool: &str, parameters: &Parameters, output: &str) -> Option<Outcome> {
+    let mut outcome = match (tool, text(parameters, "action")) {
+        ("terminal_status", _) | ("terminal_control", "wait") => {
+            let job: terminal::TerminalSnapshot = serde_json::from_str(output.trim()).ok()?;
+            // A wait asks for what came after the revision it names.
+            let since = (tool == "terminal_control").then(|| match parameters.get("revision") {
+                Some(Value::Number(number)) => number.as_u64(),
+                Some(Value::String(text)) => text.trim().parse().ok(),
+                _ => None,
+            });
+            let found = job_found(&job, since);
+            let mut outcome = Outcome::ok(found.words());
+            if tool == "terminal_control" {
+                outcome.settled.news = Some(found.words());
+            }
+            if found != JobFound::Nothing {
+                outcome.block =
+                    Content::new(ContentKind::Plain, job_output(&job), None).map(Content::block);
+            }
+            outcome
+        }
+        ("terminal_control", "list") => {
+            let jobs: Vec<Value> = serde_json::from_str(output.trim()).ok()?;
+            Outcome::ok(match jobs.len() {
+                0 => "no jobs".to_string(),
+                count => plural(count, "job", "jobs"),
+            })
+        }
+        ("terminal_control", "cancel" | "forget") | ("terminal_input", _) => {
+            serde_json::from_str::<serde_json::Map<String, Value>>(output.trim()).ok()?;
+            Outcome::ok("")
+        }
+        _ => return None,
+    };
+    outcome.output = Some(output.into());
+    Some(outcome)
+}
+
+/// What a look at a job or a wait on it found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobFound {
+    /// It ended, in `state` with `code` when it exited.
+    Ended(terminal::JobState, Option<i32>),
+    /// It asks for input.
+    Input,
+    /// It runs, and a wait found it printed more.
+    Output,
+    /// It runs, as a look found it.
+    Running,
+    /// A wait found it as it was.
+    Nothing,
+}
+
+impl JobFound {
+    fn words(self) -> String {
+        match self {
+            JobFound::Ended(terminal::JobState::Succeeded, _) => "finished".into(),
+            JobFound::Ended(terminal::JobState::Failed, Some(code)) => {
+                format!("failed (exit {code})")
+            }
+            JobFound::Ended(terminal::JobState::Failed, None) => "failed".into(),
+            JobFound::Ended(terminal::JobState::TimedOut, _) => "timed out".into(),
+            JobFound::Ended(terminal::JobState::Interrupted, _) => "interrupted".into(),
+            JobFound::Ended(terminal::JobState::Cancelled | terminal::JobState::Running, _) => {
+                "stopped".into()
+            }
+            JobFound::Input => "asks for input".into(),
+            JobFound::Output => "new output".into(),
+            JobFound::Running => JOB_RUNNING.into(),
+            JobFound::Nothing => "nothing new".into(),
+        }
+    }
+}
+
+/// What `job` says of the job, for a wait that asked for what came after the
+/// revision `since`, else for a look.
+fn job_found(job: &terminal::TerminalSnapshot, since: Option<Option<u64>>) -> JobFound {
+    if job.state.is_terminal() {
+        return JobFound::Ended(job.state, job.exit_code);
+    }
+    if job.input.is_some() {
+        return JobFound::Input;
+    }
+    match since {
+        None => JobFound::Running,
+        Some(since) if since.is_none_or(|since| job.revision > since) => JobFound::Output,
+        Some(_) => JobFound::Nothing,
+    }
+}
+
+/// The output of `job` as a look or a wait got it, as plain text
+/// ([`terminal_text`]). Where it starts after the job's first output or
+/// ends before its last, a line says where the rest is. The prompt of a job
+/// that asks for input, and why a job failed, come at the end when the
+/// output doesn't say them.
+fn job_output(job: &terminal::TerminalSnapshot) -> String {
+    let window = &job.output;
+    let printed = terminal_text(&window.text);
+    // (What the job printed is checked for the prompt and the error alone.)
+    let prompt = job
+        .input
+        .as_ref()
+        .map(|input| terminal_text(&input.prompt))
+        .filter(|prompt| {
+            !prompt.trim().is_empty() && !printed.trim_end().ends_with(prompt.trim_end())
+        });
+    let error = job
+        .error
+        .as_deref()
+        .map(str::trim)
+        .filter(|error| !error.is_empty() && !printed.contains(error));
+    let log = job.log_path.display();
+    let mut parts = Vec::new();
+    if window.start > 0 || window.gap {
+        parts.push(if job.log_truncated {
+            "… The earlier output wasn’t kept.".to_string()
+        } else {
+            format!("… The earlier output is in {log}.")
+        });
+    }
+    parts.push(printed.clone());
+    if window.end < window.available_end {
+        parts.push(format!("… The later output is in {log}."));
+    }
+    parts.extend(prompt);
+    parts.extend(error.map(str::to_string));
+    parts.retain(|part| !part.is_empty());
+    parts.join("\n")
+}
+
+/// `text` a job printed in a terminal as plain lines, without the terminal's
+/// styles and control characters, and a line a progress bar drew again as it
+/// was drawn last.
+fn terminal_text(text: &str) -> String {
+    super::plain(text)
+        .lines()
+        .map(|line| {
+            line.rsplit('\r')
+                .find(|part| !part.trim().is_empty())
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| *c == '\t' || !c.is_control())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// How long something ran, in a few words, as `40 s`, `4 min`, `2 h 5 min`.
 pub fn duration_words(duration: std::time::Duration) -> String {
     let seconds = duration.as_secs();
@@ -1113,6 +1271,9 @@ pub(crate) fn outcome_after(
         let mut outcome = Outcome::ok(if running { MONITORING } else { "ended at once" });
         outcome.output = Some(output.into());
         outcome.job = Some(monitor);
+        return outcome;
+    }
+    if let Some(outcome) = terminal_outcome(tool, parameters, output) {
         return outcome;
     }
     let mut outcome = brief(tool, output);
@@ -2278,24 +2439,248 @@ mod tests {
         ]);
         let item = super::call("terminal_control", &parameters, "main").unwrap();
         assert_eq!(item.text, "waiting for job 4d2c1a9b");
+        // (Its act has the job's whole ID, by which waits on it merge, and
+        // names it by the ID's start.)
         let act = item.act.unwrap();
         assert_eq!(
             (act.kind, act.target.as_str()),
-            (ActKind::Wait, "job 4d2c1a9b")
+            (ActKind::JobWait, "4d2c1a9b-0000")
         );
         assert_eq!(quiet::doing(&act), "Waiting for job 4d2c1a9b");
         // Its other actions and a look at the job stay as they were.
         let status = super::act("terminal_status", &parameters, "main");
         assert_eq!(
             (status.kind, status.target.as_str()),
-            (ActKind::Check, "job 4d2c1a9b")
+            (ActKind::Check, "4d2c1a9b-0000")
         );
+        assert_eq!(quiet::doing(&status), "Checking job 4d2c1a9b");
         let list = super::call(
             "terminal_control",
             &params(&[("action", "list".into())]),
             "main",
         );
         assert_eq!(list.unwrap().text, "terminal control");
+    }
+
+    /// A job as the terminal tools return it, as JSON.
+    fn snapshot(
+        state: &str,
+        exit_code: Option<i32>,
+        revision: u64,
+        input: Option<&str>,
+        output: (&str, u64, u64, u64),
+        error: Option<&str>,
+    ) -> String {
+        let (text, start, end, available_end) = output;
+        serde_json::json!({
+            "error": error,
+            "exit_code": exit_code,
+            "input": input.map(|prompt| serde_json::json!({
+                "prompt": prompt,
+                "prompt_truncated": false,
+                "source": {"kind": "prompt_rule", "rule": "[y/N]"},
+            })),
+            "job_id": "c876812b-5f3e-4a1d-9b7c-2e8f0a6d4c13",
+            "log_path": "/home/ada/proj/.arko/jobs/c876812b.log",
+            "log_truncated": false,
+            "output": {
+                "available_end": available_end,
+                "end": end,
+                "gap": false,
+                "start": start,
+                "text": text,
+            },
+            "revision": revision,
+            "state": state,
+            "terminal": true,
+        })
+        .to_string()
+    }
+
+    /// A wait on a job, and a look at it, say what they found of the job in
+    /// words, each finding its own, never the tool's JSON. What a wait found
+    /// is its row's news. Each opens to the job's output when it found
+    /// something, as plain text without the terminal's styles, and a wait
+    /// that found nothing new has nothing to open.
+    #[test]
+    fn a_wait_on_a_job_says_what_it_found() {
+        let wait = params(&[
+            ("action", "wait".into()),
+            ("job_id", "c876812b-5f3e-4a1d-9b7c-2e8f0a6d4c13".into()),
+            ("revision", 3.into()),
+        ]);
+        let printed = (
+            "   Compiling arko v0.24.0\r\n\u{1b}[32mok\u{1b}[0m 40%\r\u{1b}[32mok\u{1b}[0m 100%\r\n",
+            0,
+            60,
+            60,
+        );
+        let found = [
+            ("output", snapshot("running", None, 9, None, printed, None)),
+            ("nothing", snapshot("running", None, 3, None, printed, None)),
+            (
+                "input",
+                snapshot("running", None, 9, Some("Apply? [y/N] "), printed, None),
+            ),
+            (
+                "finished",
+                snapshot("succeeded", Some(0), 9, None, printed, None),
+            ),
+            (
+                "failed",
+                snapshot("failed", Some(1), 9, None, printed, None),
+            ),
+            (
+                "stopped",
+                snapshot("cancelled", None, 9, None, printed, None),
+            ),
+            (
+                "timed out",
+                snapshot("timed_out", None, 9, None, printed, None),
+            ),
+            (
+                "interrupted",
+                snapshot("interrupted", None, 9, None, printed, None),
+            ),
+        ];
+        let mut said = std::collections::HashSet::new();
+        for (case, output) in &found {
+            let outcome = super::outcome("terminal_control", &wait, output);
+            assert_eq!(outcome.status, CallStatus::Ok, "{case}");
+            let text = outcome.text.clone().unwrap_or_default();
+            assert!(
+                !text.is_empty() && !text.contains(['{', '"']),
+                "{case}: {text}"
+            );
+            assert!(said.insert(text.clone()), "{case}: {text} again");
+            assert_eq!(
+                outcome.settled.news.as_deref(),
+                Some(text.as_str()),
+                "{case}"
+            );
+            match (*case, &outcome.block) {
+                ("nothing", block) => assert!(block.is_none(), "{case}"),
+                // (The job's output as it last stood, and a prompt it asks
+                // with after it.)
+                (case, Some(block)) => {
+                    let output = "   Compiling arko v0.24.0\nok 100%";
+                    let shown = match case {
+                        "input" => format!("{output}\nApply? [y/N] "),
+                        _ => output.to_string(),
+                    };
+                    assert_eq!(block.content, Some(ContentKind::Plain), "{case}");
+                    assert_eq!(block.text, shown, "{case}");
+                }
+                (_, None) => panic!("{case}: nothing to open"),
+            }
+        }
+        // A failure names its exit code, and a success needn't.
+        let code = |output: &str| super::outcome("terminal_control", &wait, output).text;
+        assert!(code(&found[4].1).unwrap().contains('1'));
+        assert!(!code(&found[3].1).unwrap().contains('0'));
+        // A look says how the job stands, which a wait that found nothing
+        // new or new output doesn't say.
+        let status = params(&[("job_id", "c876812b-5f3e-4a1d-9b7c-2e8f0a6d4c13".into())]);
+        let look = super::outcome("terminal_status", &status, &found[0].1);
+        assert!(!said.contains(look.text.as_deref().unwrap()));
+        assert!(look.settled.news.is_none());
+        // The terminal's other calls say nothing more than their words, and
+        // a list counts its jobs.
+        for (tool, action, output) in [
+            ("terminal_input", "", r#"{"input_written":true}"#),
+            (
+                "terminal_control",
+                "cancel",
+                r#"{"cancellation_requested":true}"#,
+            ),
+            ("terminal_control", "forget", r#"{"forgotten":true}"#),
+        ] {
+            let parameters = params(&[("action", action.into())]);
+            let outcome = super::outcome(tool, &parameters, output);
+            assert_eq!(
+                (outcome.text, outcome.block),
+                (None, None),
+                "{tool} {action}"
+            );
+        }
+        let list = super::outcome(
+            "terminal_control",
+            &params(&[("action", "list".into())]),
+            r#"[{"job_id":"a","state":"running","revision":1},{"job_id":"b","state":"succeeded","revision":4}]"#,
+        );
+        assert!(list.text.unwrap().contains('2'));
+        // A result that isn't the tool's JSON reads as any tool's.
+        let other = super::outcome("terminal_control", &wait, "no such job");
+        assert_eq!(other.text.as_deref(), Some("no such job"));
+    }
+
+    /// A job's output, as a wait or a look opens to it, says where the
+    /// output it leaves out is, and ends with the job's prompt and its error
+    /// when the output doesn't hold them, once.
+    #[test]
+    fn a_jobs_output_says_what_it_leaves_out() {
+        let wait = params(&[
+            ("action", "wait".into()),
+            ("job_id", "c876812b-5f3e-4a1d-9b7c-2e8f0a6d4c13".into()),
+            ("revision", 3.into()),
+        ]);
+        let opened = |output: &str| {
+            super::outcome("terminal_control", &wait, output)
+                .block
+                .map(|block| block.text)
+                .unwrap_or_default()
+        };
+        let log = "/home/ada/proj/.arko/jobs/c876812b.log";
+        // Output before and after the window it got.
+        let window = opened(&snapshot(
+            "running",
+            None,
+            9,
+            None,
+            ("middle", 4000, 4006, 9000),
+            None,
+        ));
+        let lines: Vec<&str> = window.lines().collect();
+        assert_eq!(lines.len(), 3, "{window}");
+        assert!(lines[0].contains(log) && lines[2].contains(log), "{window}");
+        assert_eq!(lines[1], "middle");
+        // A prompt the output ends with, of several lines, shows once, also
+        // when later output follows the window.
+        let prompt = "Enter value:\r\n> ";
+        for available in [40, 9000] {
+            let shown = opened(&snapshot(
+                "running",
+                None,
+                9,
+                Some(prompt),
+                ("Starting\r\nEnter value:\r\n> ", 0, 40, available),
+                None,
+            ));
+            assert_eq!(shown.matches("Enter value:").count(), 1, "{shown}");
+        }
+        // One the output doesn't show comes at the end.
+        let shown = opened(&snapshot(
+            "running",
+            None,
+            9,
+            Some("Apply? [y/N] "),
+            ("Starting", 0, 8, 8),
+            None,
+        ));
+        assert!(shown.trim_end().ends_with("Apply? [y/N]"), "{shown}");
+        // Why it failed, when its output doesn't say it.
+        let why = "couldn't read the process's output";
+        let shown = opened(&snapshot("failed", None, 9, None, ("", 0, 0, 0), Some(why)));
+        assert_eq!(shown, why);
+        let shown = opened(&snapshot(
+            "failed",
+            None,
+            9,
+            None,
+            (why, 0, 35, 35),
+            Some(why),
+        ));
+        assert_eq!(shown.matches(why).count(), 1, "{shown}");
     }
 
     #[test]

@@ -268,7 +268,8 @@ pub struct Act {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub verb: String,
     /// What its row says of how it went once it ended, such as a test run's counts
-    /// ("24 passed"), "no results", a command's exit code ("exit 101").
+    /// ("24 passed"), "no results", a command's exit code ("exit 101"), what a
+    /// wait on a job found ("new output").
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub news: String,
     /// It has a row of its own whatever its neighbours are (a test run).
@@ -323,9 +324,11 @@ pub enum ActKind {
     Search,
     Skill,
     Message,
-    /// A wait for agent runs (`wait_for_agents`) or for a job
-    /// (`terminal_control wait`).
+    /// A wait for agent runs (`wait_for_agents`).
     Wait,
+    /// A wait on a job (`terminal_control wait`), which merges only with
+    /// waits on the same job.
+    JobWait,
     /// A look at a job (`terminal_status`).
     Check,
     Note,

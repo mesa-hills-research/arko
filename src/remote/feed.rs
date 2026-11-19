@@ -5795,12 +5795,22 @@ mod tests {
                 .collect()
         };
         assert_eq!(rows(&live), rows(&restored));
+        // The waits are one row, and each says on its own line what came.
         assert!(
             rows(&live)
                 .iter()
-                .any(|row| row.contains("Waited for workers") && row.contains("nothing new")),
+                .any(|row| row.contains("Waited for workers") && row.contains("merged true")),
             "{:?}",
             rows(&live)
+        );
+        assert!(
+            live.iter()
+                .filter(|item| item
+                    .act
+                    .as_ref()
+                    .is_some_and(|act| act.kind == ActKind::Wait))
+                .all(|item| item.outcome.as_deref() == Some("nothing new")),
+            "{live:?}"
         );
         // The failed build joined the commands before it, and the command
         // after it has a row of its own.

@@ -1014,21 +1014,49 @@ pub fn link_names(links: &[Link]) -> String {
     links::names(links)
 }
 
-/// `text` without its terminal styles (the escape sequences of colors and
-/// weights).
+/// `text` without its terminal escape sequences: its styles (colors and
+/// weights), cursor moves, window titles and links, and the other controls
+/// that start with `ESC`.
 pub fn plain(text: &str) -> String {
     let mut plain = String::with_capacity(text.len());
-    let mut chars = text.chars();
+    let mut chars = text.chars().peekable();
+    let intermediate = |c: char| (' '..='/').contains(&c);
     while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // `ESC [ ... letter`
-            for c in chars.by_ref() {
-                if c.is_ascii_alphabetic() {
-                    break;
+        if c != '\x1b' {
+            plain.push(c);
+            continue;
+        }
+        match chars.next() {
+            // `ESC [`, its parameters, then a final character from `@` to `~`.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
                 }
             }
-        } else {
-            plain.push(c);
+            // `ESC ]` (a title, a link) up to BEL or `ESC \`.
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' {
+                        chars.next_if_eq(&'\\');
+                        break;
+                    }
+                }
+            }
+            // Any other, such as `ESC ( B` or `ESC 7`, ends at its first
+            // character past the spaces and punctuation that may lead it.
+            Some(c) if intermediate(c) => {
+                for c in chars.by_ref() {
+                    if !intermediate(c) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
         }
     }
     plain
@@ -1063,6 +1091,17 @@ mod tests {
             plain("\x1b[2m$1.20\x1b[0m · \x1b[1mw1\x1b[0m"),
             "$1.20 · w1"
         );
+        // A terminal's other controls go too, and none takes text with it.
+        assert_eq!(plain("\x1b]0;Build\x07hello"), "hello");
+        assert_eq!(
+            plain("\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\ done"),
+            "link done"
+        );
+        assert_eq!(
+            plain("\x1b7saved\x1b8 \x1b(Bcharset \x1b[?25lcursor"),
+            "saved charset cursor"
+        );
+        assert_eq!(plain("ends\x1b"), "ends");
     }
 
     #[test]

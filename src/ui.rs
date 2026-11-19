@@ -1537,12 +1537,6 @@ pub fn waiting_for(parameters: &HashMap<String, serde_json::Value>, own: &[Strin
     }
 }
 
-/// A job as the transcript names it, by the start of its ID ("job 4d2c1a9b").
-pub fn job_name(id: &str) -> String {
-    let id = id.trim();
-    format!("job {}", id.get(..8).unwrap_or(id))
-}
-
 /// What a `terminal_control wait` call waits for, in words ("waiting for
 /// job 4d2c1a9b"), as a `wait_for_agents` call says its runs.
 fn waiting_for_job(parameters: &HashMap<String, serde_json::Value>) -> String {
@@ -1550,7 +1544,7 @@ fn waiting_for_job(parameters: &HashMap<String, serde_json::Value>) -> String {
         .get("job_id")
         .and_then(|value| value.as_str())
         .unwrap_or_default();
-    format!("waiting for {}", job_name(id))
+    format!("waiting for {}", crate::remote::quiet::job_name(id))
 }
 
 /// A worker's call, briefly.

@@ -1628,7 +1628,7 @@ mod tests {
         assert_eq!(ids(&running), ["i1", "q2"]);
         assert_eq!(
             said(&running),
-            ("Ran rg x · running cargo build".into(), true)
+            (quiet::doing(items[2].act.as_ref().unwrap()), true)
         );
         items[2].status = Some(CallStatus::Ok);
         let settled = layout(&items, View::Quiet, None);
