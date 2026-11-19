@@ -17,10 +17,11 @@ style 3 35 40 fg=#dedede bg=#131313
 text 4 "▸ Ran code to count TODO comments per c…"
 style 4 0 2 fg=#9d9d9d bg=#131313
 style 4 2 40 fg=#dedede bg=#131313
-text 5 "▸ Ran code to rename the setting in…   ✗"
+text 5 "▸ Ran code to rename the setting in…  ✗"
 style 5 0 2 fg=#9d9d9d bg=#131313
-style 5 2 39 fg=#dedede bg=#131313
-style 5 39 40 fg=#ff5257 bg=#131313
+style 5 2 38 fg=#dedede bg=#131313
+style 5 38 39 fg=#ff5257 bg=#131313
+style 5 39 40 fg=#dedede bg=#131313
 text 6 "▸ Ran code to clean the build folders"
 style 6 0 2 fg=#9d9d9d bg=#131313
 style 6 2 40 fg=#dedede bg=#131313

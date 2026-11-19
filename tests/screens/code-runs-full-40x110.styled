@@ -51,20 +51,20 @@ style 9 5 10 fg=#87b1f6 bg=#232323
 style 9 10 20 fg=#dedede bg=#232323
 style 9 20 25 fg=#87b1f6 bg=#232323
 style 9 25 40 fg=#dedede bg=#232323
-text 10 "│  tools.list_files({ directory:"
+text 10 "│    tools.list_files({ directory:"
 style 10 0 2 fg=#9d9d9d bg=#131313
-style 10 2 9 fg=#dedede bg=#232323
-style 10 9 19 fg=#bcc4e0 bg=#232323
-style 10 19 22 fg=#dedede bg=#232323
-style 10 22 31 fg=#bcc4e0 bg=#232323
-style 10 31 40 fg=#dedede bg=#232323
-text 11 "│  `crates/${name}/src` });"
+style 10 2 11 fg=#dedede bg=#232323
+style 10 11 21 fg=#bcc4e0 bg=#232323
+style 10 21 24 fg=#dedede bg=#232323
+style 10 24 33 fg=#bcc4e0 bg=#232323
+style 10 33 40 fg=#dedede bg=#232323
+text 11 "│    `crates/${name}/src` });"
 style 11 0 2 fg=#9d9d9d bg=#131313
-style 11 2 3 fg=#dedede bg=#232323
-style 11 3 11 fg=#a3e09f bg=#232323
-style 11 11 18 fg=#dedede bg=#232323
-style 11 18 23 fg=#a3e09f bg=#232323
-style 11 23 40 fg=#dedede bg=#232323
+style 11 2 5 fg=#dedede bg=#232323
+style 11 5 13 fg=#a3e09f bg=#232323
+style 11 13 20 fg=#dedede bg=#232323
+style 11 20 25 fg=#a3e09f bg=#232323
+style 11 25 40 fg=#dedede bg=#232323
 text 12 "│    const paths = listed"
 style 12 0 2 fg=#9d9d9d bg=#131313
 style 12 2 5 fg=#dedede bg=#232323
@@ -89,13 +89,13 @@ style 15 0 2 fg=#9d9d9d bg=#131313
 style 15 2 8 fg=#dedede bg=#232323
 style 15 8 14 fg=#bcc4e0 bg=#232323
 style 15 14 40 fg=#dedede bg=#232323
-text 16 "│  line.endsWith(\".rs\"));"
+text 16 "│      line.endsWith(\".rs\"));"
 style 16 0 2 fg=#9d9d9d bg=#131313
-style 16 2 8 fg=#dedede bg=#232323
-style 16 8 16 fg=#bcc4e0 bg=#232323
-style 16 16 17 fg=#dedede bg=#232323
-style 16 17 22 fg=#a3e09f bg=#232323
-style 16 22 40 fg=#dedede bg=#232323
+style 16 2 12 fg=#dedede bg=#232323
+style 16 12 20 fg=#bcc4e0 bg=#232323
+style 16 20 21 fg=#dedede bg=#232323
+style 16 21 26 fg=#a3e09f bg=#232323
+style 16 26 40 fg=#dedede bg=#232323
 text 17 "│    let count = 0;"
 style 17 0 2 fg=#9d9d9d bg=#131313
 style 17 2 5 fg=#dedede bg=#232323
@@ -119,22 +119,22 @@ style 19 7 12 fg=#87b1f6 bg=#232323
 style 19 12 20 fg=#dedede bg=#232323
 style 19 20 25 fg=#87b1f6 bg=#232323
 style 19 25 40 fg=#dedede bg=#232323
-text 20 "│  tools.read_file({ path:"
+text 20 "│      tools.read_file({ path:"
 style 20 0 2 fg=#9d9d9d bg=#131313
-style 20 2 9 fg=#dedede bg=#232323
-style 20 9 18 fg=#bcc4e0 bg=#232323
-style 20 18 21 fg=#dedede bg=#232323
-style 20 21 25 fg=#bcc4e0 bg=#232323
-style 20 25 40 fg=#dedede bg=#232323
-text 21 "│  `crates/${name}/src/${path}` });"
+style 20 2 13 fg=#dedede bg=#232323
+style 20 13 22 fg=#bcc4e0 bg=#232323
+style 20 22 25 fg=#dedede bg=#232323
+style 20 25 29 fg=#bcc4e0 bg=#232323
+style 20 29 40 fg=#dedede bg=#232323
+text 21 "│      `crates/${name}/src/${path}` });"
 style 21 0 2 fg=#9d9d9d bg=#131313
-style 21 2 3 fg=#dedede bg=#232323
-style 21 3 11 fg=#a3e09f bg=#232323
-style 21 11 18 fg=#dedede bg=#232323
-style 21 18 23 fg=#a3e09f bg=#232323
-style 21 23 30 fg=#dedede bg=#232323
-style 21 30 31 fg=#a3e09f bg=#232323
-style 21 31 40 fg=#dedede bg=#232323
+style 21 2 7 fg=#dedede bg=#232323
+style 21 7 15 fg=#a3e09f bg=#232323
+style 21 15 22 fg=#dedede bg=#232323
+style 21 22 27 fg=#a3e09f bg=#232323
+style 21 27 34 fg=#dedede bg=#232323
+style 21 34 35 fg=#a3e09f bg=#232323
+style 21 35 40 fg=#dedede bg=#232323
 text 22 "│      count += (text.match(/TODO/g) ??"
 style 22 0 2 fg=#9d9d9d bg=#131313
 style 22 2 22 fg=#dedede bg=#232323
@@ -144,11 +144,11 @@ style 22 29 33 fg=#a3e09f bg=#232323
 style 22 33 34 fg=#dedede bg=#232323
 style 22 34 35 fg=#a3e09f bg=#232323
 style 22 35 40 fg=#dedede bg=#232323
-text 23 "│  []).length;"
+text 23 "│      []).length;"
 style 23 0 2 fg=#9d9d9d bg=#131313
-style 23 2 7 fg=#dedede bg=#232323
-style 23 7 13 fg=#bcc4e0 bg=#232323
-style 23 13 40 fg=#dedede bg=#232323
+style 23 2 11 fg=#dedede bg=#232323
+style 23 11 17 fg=#bcc4e0 bg=#232323
+style 23 17 40 fg=#dedede bg=#232323
 text 24 "│    }"
 style 24 0 2 fg=#9d9d9d bg=#131313
 style 24 2 40 fg=#dedede bg=#232323
@@ -203,10 +203,11 @@ style 35 14 40 fg=#dedede bg=#131313
 text 36 ""
 style 36 0 40 fg=#dedede bg=#131313
 text 37 "▾ run_cod… · ✗ The code threw on line 2…"
-style 37 0 2 fg=#ff5257 bg=#131313
+style 37 0 2 fg=#9d9d9d bg=#131313
 style 37 2 10 fg=#dedede bg=#131313
 style 37 10 13 fg=#9d9d9d bg=#131313
-style 37 13 40 fg=#ff5257 bg=#131313
+style 37 13 14 fg=#ff5257 bg=#131313
+style 37 14 40 fg=#9d9d9d bg=#131313
 text 38 "│ run_code rename the setting in every"
 style 38 0 38 fg=#9d9d9d bg=#131313
 style 38 38 40 fg=#dedede bg=#131313
@@ -239,13 +240,13 @@ style 43 5 10 fg=#87b1f6 bg=#232323
 style 43 10 18 fg=#dedede bg=#232323
 style 43 18 23 fg=#87b1f6 bg=#232323
 style 43 23 40 fg=#dedede bg=#232323
-text 44 "│  tools.read_file({ path });"
+text 44 "│    tools.read_file({ path });"
 style 44 0 2 fg=#9d9d9d bg=#131313
-style 44 2 9 fg=#dedede bg=#232323
-style 44 9 18 fg=#bcc4e0 bg=#232323
-style 44 18 21 fg=#dedede bg=#232323
-style 44 21 25 fg=#bcc4e0 bg=#232323
-style 44 25 40 fg=#dedede bg=#232323
+style 44 2 11 fg=#dedede bg=#232323
+style 44 11 20 fg=#bcc4e0 bg=#232323
+style 44 20 23 fg=#dedede bg=#232323
+style 44 23 27 fg=#bcc4e0 bg=#232323
+style 44 27 40 fg=#dedede bg=#232323
 text 45 "│    await tools.write_file({ path,"
 style 45 0 2 fg=#9d9d9d bg=#131313
 style 45 2 5 fg=#dedede bg=#232323
@@ -255,281 +256,280 @@ style 45 17 27 fg=#bcc4e0 bg=#232323
 style 45 27 30 fg=#dedede bg=#232323
 style 45 30 34 fg=#bcc4e0 bg=#232323
 style 45 34 40 fg=#dedede bg=#232323
-text 46 "│  content: text.replaceAll(\"keep_warm\","
+text 46 "│    content:"
 style 46 0 2 fg=#9d9d9d bg=#131313
-style 46 2 3 fg=#dedede bg=#232323
-style 46 3 10 fg=#bcc4e0 bg=#232323
-style 46 10 17 fg=#dedede bg=#232323
-style 46 17 27 fg=#bcc4e0 bg=#232323
-style 46 27 28 fg=#dedede bg=#232323
-style 46 28 39 fg=#a3e09f bg=#232323
-style 46 39 40 fg=#dedede bg=#232323
-text 47 "│  \"warm\") });"
+style 46 2 5 fg=#dedede bg=#232323
+style 46 5 12 fg=#bcc4e0 bg=#232323
+style 46 12 40 fg=#dedede bg=#232323
+text 47 "│    text.replaceAll(\"keep_warm\","
 style 47 0 2 fg=#9d9d9d bg=#131313
-style 47 2 3 fg=#dedede bg=#232323
-style 47 3 9 fg=#a3e09f bg=#232323
-style 47 9 40 fg=#dedede bg=#232323
-text 48 "│  }"
+style 47 2 10 fg=#dedede bg=#232323
+style 47 10 20 fg=#bcc4e0 bg=#232323
+style 47 20 21 fg=#dedede bg=#232323
+style 47 21 32 fg=#a3e09f bg=#232323
+style 47 32 40 fg=#dedede bg=#232323
+text 48 "│    \"warm\") });"
 style 48 0 2 fg=#9d9d9d bg=#131313
-style 48 2 40 fg=#dedede bg=#232323
-text 49 "│ · read crates/arko_ai/src… · ✓ 2 lines"
-style 49 0 31 fg=#9d9d9d bg=#131313
-style 49 31 32 fg=#30d158 bg=#131313
-style 49 32 40 fg=#9d9d9d bg=#131313
-text 50 "│ · write crates/arko_ai/src/config… · ✓"
-style 50 0 39 fg=#9d9d9d bg=#131313
-style 50 39 40 fg=#30d158 bg=#131313
-text 51 "│ · read cr… · ✗ No such file or direct…"
-style 51 0 2 fg=#9d9d9d bg=#131313
-style 51 2 4 fg=#ff5257 bg=#131313
-style 51 4 15 fg=#9d9d9d bg=#131313
-style 51 15 40 fg=#ff5257 bg=#131313
-text 52 "│ The code threw on line 2, at a call of"
-style 52 0 40 fg=#9d9d9d bg=#131313
-text 53 "│ read_file that failed: No such file or"
+style 48 2 5 fg=#dedede bg=#232323
+style 48 5 11 fg=#a3e09f bg=#232323
+style 48 11 40 fg=#dedede bg=#232323
+text 49 "│  }"
+style 49 0 2 fg=#9d9d9d bg=#131313
+style 49 2 40 fg=#dedede bg=#232323
+text 50 "│ · read crates/arko_ai/src… · ✓ 2 lines"
+style 50 0 31 fg=#9d9d9d bg=#131313
+style 50 31 32 fg=#30d158 bg=#131313
+style 50 32 40 fg=#9d9d9d bg=#131313
+text 51 "│ · write crates/arko_ai/src/config… · ✓"
+style 51 0 39 fg=#9d9d9d bg=#131313
+style 51 39 40 fg=#30d158 bg=#131313
+text 52 "│ · read cr… · ✗ No such file or direct…"
+style 52 0 15 fg=#9d9d9d bg=#131313
+style 52 15 16 fg=#ff5257 bg=#131313
+style 52 16 40 fg=#9d9d9d bg=#131313
+text 53 "│ The code threw on line 2, at a call of"
 style 53 0 40 fg=#9d9d9d bg=#131313
-text 54 "│ directory (os error 2)"
-style 54 0 24 fg=#9d9d9d bg=#131313
-style 54 24 40 fg=#dedede bg=#131313
-text 55 "│ Before it ended, the code wrote 1"
-style 55 0 35 fg=#9d9d9d bg=#131313
-style 55 35 40 fg=#dedede bg=#131313
-text 56 "│ file."
-style 56 0 7 fg=#9d9d9d bg=#131313
-style 56 7 40 fg=#dedede bg=#131313
-text 57 ""
-style 57 0 40 fg=#dedede bg=#131313
-text 58 "▾ run_code clean the build… · ✓ 2 lines"
-style 58 0 2 fg=#9d9d9d bg=#131313
-style 58 2 27 fg=#dedede bg=#131313
-style 58 27 30 fg=#9d9d9d bg=#131313
-style 58 30 31 fg=#30d158 bg=#131313
-style 58 31 39 fg=#9d9d9d bg=#131313
-style 58 39 40 fg=#dedede bg=#131313
-text 59 "│ run_code clean the build folders"
-style 59 0 34 fg=#9d9d9d bg=#131313
-style 59 34 40 fg=#dedede bg=#131313
-text 60 "│  for (const name of [\"target\","
-style 60 0 2 fg=#9d9d9d bg=#131313
-style 60 2 3 fg=#dedede bg=#232323
-style 60 3 6 fg=#87b1f6 bg=#232323
-style 60 6 8 fg=#dedede bg=#232323
-style 60 8 13 fg=#87b1f6 bg=#232323
-style 60 13 19 fg=#dedede bg=#232323
-style 60 19 21 fg=#87b1f6 bg=#232323
-style 60 21 23 fg=#dedede bg=#232323
-style 60 23 31 fg=#a3e09f bg=#232323
-style 60 31 40 fg=#dedede bg=#232323
-text 61 "│  \"web/dist\"]) {"
+text 54 "│ read_file that failed: No such file or"
+style 54 0 40 fg=#9d9d9d bg=#131313
+text 55 "│ directory (os error 2)"
+style 55 0 24 fg=#9d9d9d bg=#131313
+style 55 24 40 fg=#dedede bg=#131313
+text 56 "│ Before it ended, the code wrote 1"
+style 56 0 35 fg=#9d9d9d bg=#131313
+style 56 35 40 fg=#dedede bg=#131313
+text 57 "│ file."
+style 57 0 7 fg=#9d9d9d bg=#131313
+style 57 7 40 fg=#dedede bg=#131313
+text 58 ""
+style 58 0 40 fg=#dedede bg=#131313
+text 59 "▾ run_code clean the build… · ✓ 2 lines"
+style 59 0 2 fg=#9d9d9d bg=#131313
+style 59 2 27 fg=#dedede bg=#131313
+style 59 27 30 fg=#9d9d9d bg=#131313
+style 59 30 31 fg=#30d158 bg=#131313
+style 59 31 39 fg=#9d9d9d bg=#131313
+style 59 39 40 fg=#dedede bg=#131313
+text 60 "│ run_code clean the build folders"
+style 60 0 34 fg=#9d9d9d bg=#131313
+style 60 34 40 fg=#dedede bg=#131313
+text 61 "│  for (const name of [\"target\","
 style 61 0 2 fg=#9d9d9d bg=#131313
 style 61 2 3 fg=#dedede bg=#232323
-style 61 3 13 fg=#a3e09f bg=#232323
-style 61 13 40 fg=#dedede bg=#232323
-text 62 "│    try {"
+style 61 3 6 fg=#87b1f6 bg=#232323
+style 61 6 8 fg=#dedede bg=#232323
+style 61 8 13 fg=#87b1f6 bg=#232323
+style 61 13 19 fg=#dedede bg=#232323
+style 61 19 21 fg=#87b1f6 bg=#232323
+style 61 21 23 fg=#dedede bg=#232323
+style 61 23 31 fg=#a3e09f bg=#232323
+style 61 31 40 fg=#dedede bg=#232323
+text 62 "│  \"web/dist\"]) {"
 style 62 0 2 fg=#9d9d9d bg=#131313
-style 62 2 5 fg=#dedede bg=#232323
-style 62 5 8 fg=#87b1f6 bg=#232323
-style 62 8 40 fg=#dedede bg=#232323
-text 63 "│      await tools.shell({ command: `rm"
+style 62 2 3 fg=#dedede bg=#232323
+style 62 3 13 fg=#a3e09f bg=#232323
+style 62 13 40 fg=#dedede bg=#232323
+text 63 "│    try {"
 style 63 0 2 fg=#9d9d9d bg=#131313
-style 63 2 7 fg=#dedede bg=#232323
-style 63 7 12 fg=#87b1f6 bg=#232323
-style 63 12 19 fg=#dedede bg=#232323
-style 63 19 24 fg=#bcc4e0 bg=#232323
-style 63 24 27 fg=#dedede bg=#232323
-style 63 27 34 fg=#bcc4e0 bg=#232323
-style 63 34 36 fg=#dedede bg=#232323
-style 63 36 39 fg=#a3e09f bg=#232323
-style 63 39 40 fg=#dedede bg=#232323
-text 64 "│  -rf ${name}` });"
+style 63 2 5 fg=#dedede bg=#232323
+style 63 5 8 fg=#87b1f6 bg=#232323
+style 63 8 40 fg=#dedede bg=#232323
+text 64 "│      await tools.shell({ command: `rm"
 style 64 0 2 fg=#9d9d9d bg=#131313
-style 64 2 3 fg=#dedede bg=#232323
-style 64 3 7 fg=#a3e09f bg=#232323
-style 64 7 14 fg=#dedede bg=#232323
-style 64 14 15 fg=#a3e09f bg=#232323
-style 64 15 40 fg=#dedede bg=#232323
-text 65 "│    } catch (error) {"
+style 64 2 7 fg=#dedede bg=#232323
+style 64 7 12 fg=#87b1f6 bg=#232323
+style 64 12 19 fg=#dedede bg=#232323
+style 64 19 24 fg=#bcc4e0 bg=#232323
+style 64 24 27 fg=#dedede bg=#232323
+style 64 27 34 fg=#bcc4e0 bg=#232323
+style 64 34 36 fg=#dedede bg=#232323
+style 64 36 39 fg=#a3e09f bg=#232323
+style 64 39 40 fg=#dedede bg=#232323
+text 65 "│      -rf ${name}` });"
 style 65 0 2 fg=#9d9d9d bg=#131313
 style 65 2 7 fg=#dedede bg=#232323
-style 65 7 12 fg=#87b1f6 bg=#232323
-style 65 12 40 fg=#dedede bg=#232323
-text 66 "│      console.log(`${name}:"
+style 65 7 11 fg=#a3e09f bg=#232323
+style 65 11 18 fg=#dedede bg=#232323
+style 65 18 19 fg=#a3e09f bg=#232323
+style 65 19 40 fg=#dedede bg=#232323
+text 66 "│    } catch (error) {"
 style 66 0 2 fg=#9d9d9d bg=#131313
-style 66 2 15 fg=#dedede bg=#232323
-style 66 15 18 fg=#bcc4e0 bg=#232323
-style 66 18 19 fg=#dedede bg=#232323
-style 66 19 20 fg=#a3e09f bg=#232323
-style 66 20 27 fg=#dedede bg=#232323
-style 66 27 28 fg=#a3e09f bg=#232323
-style 66 28 40 fg=#dedede bg=#232323
-text 67 "│  ${error.message}`);"
+style 66 2 7 fg=#dedede bg=#232323
+style 66 7 12 fg=#87b1f6 bg=#232323
+style 66 12 40 fg=#dedede bg=#232323
+text 67 "│      console.log(`${name}:"
 style 67 0 2 fg=#9d9d9d bg=#131313
-style 67 2 11 fg=#dedede bg=#232323
-style 67 11 18 fg=#bcc4e0 bg=#232323
+style 67 2 15 fg=#dedede bg=#232323
+style 67 15 18 fg=#bcc4e0 bg=#232323
 style 67 18 19 fg=#dedede bg=#232323
 style 67 19 20 fg=#a3e09f bg=#232323
-style 67 20 40 fg=#dedede bg=#232323
-text 68 "│    }"
+style 67 20 27 fg=#dedede bg=#232323
+style 67 27 28 fg=#a3e09f bg=#232323
+style 67 28 40 fg=#dedede bg=#232323
+text 68 "│      ${error.message}`);"
 style 68 0 2 fg=#9d9d9d bg=#131313
-style 68 2 40 fg=#dedede bg=#232323
-text 69 "│  }"
+style 68 2 15 fg=#dedede bg=#232323
+style 68 15 22 fg=#bcc4e0 bg=#232323
+style 68 22 23 fg=#dedede bg=#232323
+style 68 23 24 fg=#a3e09f bg=#232323
+style 68 24 40 fg=#dedede bg=#232323
+text 69 "│    }"
 style 69 0 2 fg=#9d9d9d bg=#131313
 style 69 2 40 fg=#dedede bg=#232323
-text 70 "│  return \"Done.\";"
+text 70 "│  }"
 style 70 0 2 fg=#9d9d9d bg=#131313
-style 70 2 3 fg=#dedede bg=#232323
-style 70 3 9 fg=#87b1f6 bg=#232323
-style 70 9 10 fg=#dedede bg=#232323
-style 70 10 17 fg=#a3e09f bg=#232323
-style 70 17 40 fg=#dedede bg=#232323
-text 71 "│ · $ rm -rf target · ✗ refused"
+style 70 2 40 fg=#dedede bg=#232323
+text 71 "│  return \"Done.\";"
 style 71 0 2 fg=#9d9d9d bg=#131313
-style 71 2 4 fg=#ff5257 bg=#131313
-style 71 4 22 fg=#9d9d9d bg=#131313
-style 71 22 31 fg=#ff5257 bg=#131313
-style 71 31 40 fg=#dedede bg=#131313
-text 72 "│ · $ rm -rf web/dist · ✓ 0.1 s"
-style 72 0 24 fg=#9d9d9d bg=#131313
-style 72 24 25 fg=#30d158 bg=#131313
-style 72 25 31 fg=#9d9d9d bg=#131313
+style 71 2 3 fg=#dedede bg=#232323
+style 71 3 9 fg=#87b1f6 bg=#232323
+style 71 9 10 fg=#dedede bg=#232323
+style 71 10 17 fg=#a3e09f bg=#232323
+style 71 17 40 fg=#dedede bg=#232323
+text 72 "│ · $ rm -rf target · ✗ refused"
+style 72 0 22 fg=#9d9d9d bg=#131313
+style 72 22 23 fg=#ff5257 bg=#131313
+style 72 23 31 fg=#9d9d9d bg=#131313
 style 72 31 40 fg=#dedede bg=#131313
-text 73 "│ target: refused (The command guard"
-style 73 0 36 fg=#9d9d9d bg=#131313
-style 73 36 40 fg=#dedede bg=#131313
-text 74 "│ refused it.)"
-style 74 0 14 fg=#9d9d9d bg=#131313
-style 74 14 40 fg=#dedede bg=#131313
-text 75 "│ Done."
-style 75 0 7 fg=#9d9d9d bg=#131313
-style 75 7 40 fg=#dedede bg=#131313
-text 76 ""
-style 76 0 40 fg=#dedede bg=#131313
-text 77 "▾ run_code build each crate · ✗ stopped"
-style 77 0 2 fg=#ff5257 bg=#131313
-style 77 2 27 fg=#dedede bg=#131313
-style 77 27 30 fg=#9d9d9d bg=#131313
-style 77 30 39 fg=#ff5257 bg=#131313
-style 77 39 40 fg=#dedede bg=#131313
-text 78 "│  for (const name of [\"arko_ai\","
+text 73 "│ · $ rm -rf web/dist · ✓ 0.1 s"
+style 73 0 24 fg=#9d9d9d bg=#131313
+style 73 24 25 fg=#30d158 bg=#131313
+style 73 25 31 fg=#9d9d9d bg=#131313
+style 73 31 40 fg=#dedede bg=#131313
+text 74 "│ target: refused (The command guard"
+style 74 0 36 fg=#9d9d9d bg=#131313
+style 74 36 40 fg=#dedede bg=#131313
+text 75 "│ refused it.)"
+style 75 0 14 fg=#9d9d9d bg=#131313
+style 75 14 40 fg=#dedede bg=#131313
+text 76 "│ Done."
+style 76 0 7 fg=#9d9d9d bg=#131313
+style 76 7 40 fg=#dedede bg=#131313
+text 77 ""
+style 77 0 40 fg=#dedede bg=#131313
+text 78 "▾ run_code build each crate · ✗ stopped"
 style 78 0 2 fg=#9d9d9d bg=#131313
-style 78 2 3 fg=#dedede bg=#232323
-style 78 3 6 fg=#87b1f6 bg=#232323
-style 78 6 8 fg=#dedede bg=#232323
-style 78 8 13 fg=#87b1f6 bg=#232323
-style 78 13 19 fg=#dedede bg=#232323
-style 78 19 21 fg=#87b1f6 bg=#232323
-style 78 21 23 fg=#dedede bg=#232323
-style 78 23 32 fg=#a3e09f bg=#232323
-style 78 32 40 fg=#dedede bg=#232323
-text 79 "│  \"arko_agents\"]) {"
+style 78 2 27 fg=#dedede bg=#131313
+style 78 27 30 fg=#9d9d9d bg=#131313
+style 78 30 31 fg=#ff5257 bg=#131313
+style 78 31 39 fg=#9d9d9d bg=#131313
+style 78 39 40 fg=#dedede bg=#131313
+text 79 "│  for (const name of [\"arko_ai\","
 style 79 0 2 fg=#9d9d9d bg=#131313
 style 79 2 3 fg=#dedede bg=#232323
-style 79 3 16 fg=#a3e09f bg=#232323
-style 79 16 40 fg=#dedede bg=#232323
-text 80 "│    await tools.shell({ command: `cargo"
+style 79 3 6 fg=#87b1f6 bg=#232323
+style 79 6 8 fg=#dedede bg=#232323
+style 79 8 13 fg=#87b1f6 bg=#232323
+style 79 13 19 fg=#dedede bg=#232323
+style 79 19 21 fg=#87b1f6 bg=#232323
+style 79 21 23 fg=#dedede bg=#232323
+style 79 23 32 fg=#a3e09f bg=#232323
+style 79 32 40 fg=#dedede bg=#232323
+text 80 "│  \"arko_agents\"]) {"
 style 80 0 2 fg=#9d9d9d bg=#131313
-style 80 2 5 fg=#dedede bg=#232323
-style 80 5 10 fg=#87b1f6 bg=#232323
-style 80 10 17 fg=#dedede bg=#232323
-style 80 17 22 fg=#bcc4e0 bg=#232323
-style 80 22 25 fg=#dedede bg=#232323
-style 80 25 32 fg=#bcc4e0 bg=#232323
-style 80 32 34 fg=#dedede bg=#232323
-style 80 34 40 fg=#a3e09f bg=#232323
-text 81 "│  build -p ${name}` });"
+style 80 2 3 fg=#dedede bg=#232323
+style 80 3 16 fg=#a3e09f bg=#232323
+style 80 16 40 fg=#dedede bg=#232323
+text 81 "│    await tools.shell({ command: `cargo"
 style 81 0 2 fg=#9d9d9d bg=#131313
-style 81 2 3 fg=#dedede bg=#232323
-style 81 3 12 fg=#a3e09f bg=#232323
-style 81 12 19 fg=#dedede bg=#232323
-style 81 19 20 fg=#a3e09f bg=#232323
-style 81 20 40 fg=#dedede bg=#232323
-text 82 "│  }"
+style 81 2 5 fg=#dedede bg=#232323
+style 81 5 10 fg=#87b1f6 bg=#232323
+style 81 10 17 fg=#dedede bg=#232323
+style 81 17 22 fg=#bcc4e0 bg=#232323
+style 81 22 25 fg=#dedede bg=#232323
+style 81 25 32 fg=#bcc4e0 bg=#232323
+style 81 32 34 fg=#dedede bg=#232323
+style 81 34 40 fg=#a3e09f bg=#232323
+text 82 "│    build -p ${name}` });"
 style 82 0 2 fg=#9d9d9d bg=#131313
-style 82 2 40 fg=#dedede bg=#232323
-text 83 "│ · $ cargo build -p arko_ai · ✓ 41.2 s"
-style 83 0 31 fg=#9d9d9d bg=#131313
-style 83 31 32 fg=#30d158 bg=#131313
-style 83 32 39 fg=#9d9d9d bg=#131313
-style 83 39 40 fg=#dedede bg=#131313
-text 84 "│ · $ cargo build -p arko_a… · ✗ stopped"
-style 84 0 2 fg=#9d9d9d bg=#131313
-style 84 2 4 fg=#ff5257 bg=#131313
-style 84 4 31 fg=#9d9d9d bg=#131313
-style 84 31 40 fg=#ff5257 bg=#131313
-text 85 ""
-style 85 0 40 fg=#dedede bg=#131313
-text 86 "▾ run_code run each crate's tes… · 41s …"
-style 86 0 2 fg=#9d9d9d bg=#131313
-style 86 2 32 fg=#dedede bg=#131313
-style 86 32 40 fg=#9d9d9d bg=#131313
-text 87 "│  for (const name of [\"arko_index\","
+style 82 2 5 fg=#dedede bg=#232323
+style 82 5 14 fg=#a3e09f bg=#232323
+style 82 14 21 fg=#dedede bg=#232323
+style 82 21 22 fg=#a3e09f bg=#232323
+style 82 22 40 fg=#dedede bg=#232323
+text 83 "│  }"
+style 83 0 2 fg=#9d9d9d bg=#131313
+style 83 2 40 fg=#dedede bg=#232323
+text 84 "│ · $ cargo build -p arko_ai · ✓ 41.2 s"
+style 84 0 31 fg=#9d9d9d bg=#131313
+style 84 31 32 fg=#30d158 bg=#131313
+style 84 32 39 fg=#9d9d9d bg=#131313
+style 84 39 40 fg=#dedede bg=#131313
+text 85 "│ · $ cargo build -p arko_a… · ✗ stopped"
+style 85 0 31 fg=#9d9d9d bg=#131313
+style 85 31 32 fg=#ff5257 bg=#131313
+style 85 32 40 fg=#9d9d9d bg=#131313
+text 86 ""
+style 86 0 40 fg=#dedede bg=#131313
+text 87 "▾ run_code run each crate's tes… · 41s …"
 style 87 0 2 fg=#9d9d9d bg=#131313
-style 87 2 3 fg=#dedede bg=#232323
-style 87 3 6 fg=#87b1f6 bg=#232323
-style 87 6 8 fg=#dedede bg=#232323
-style 87 8 13 fg=#87b1f6 bg=#232323
-style 87 13 19 fg=#dedede bg=#232323
-style 87 19 21 fg=#87b1f6 bg=#232323
-style 87 21 23 fg=#dedede bg=#232323
-style 87 23 35 fg=#a3e09f bg=#232323
-style 87 35 40 fg=#dedede bg=#232323
-text 88 "│  \"arko_ai\"]) {"
+style 87 2 32 fg=#dedede bg=#131313
+style 87 32 40 fg=#9d9d9d bg=#131313
+text 88 "│  for (const name of [\"arko_index\","
 style 88 0 2 fg=#9d9d9d bg=#131313
 style 88 2 3 fg=#dedede bg=#232323
-style 88 3 12 fg=#a3e09f bg=#232323
-style 88 12 40 fg=#dedede bg=#232323
-text 89 "│    const output = await tools.shell({"
+style 88 3 6 fg=#87b1f6 bg=#232323
+style 88 6 8 fg=#dedede bg=#232323
+style 88 8 13 fg=#87b1f6 bg=#232323
+style 88 13 19 fg=#dedede bg=#232323
+style 88 19 21 fg=#87b1f6 bg=#232323
+style 88 21 23 fg=#dedede bg=#232323
+style 88 23 35 fg=#a3e09f bg=#232323
+style 88 35 40 fg=#dedede bg=#232323
+text 89 "│  \"arko_ai\"]) {"
 style 89 0 2 fg=#9d9d9d bg=#131313
-style 89 2 5 fg=#dedede bg=#232323
-style 89 5 10 fg=#87b1f6 bg=#232323
-style 89 10 20 fg=#dedede bg=#232323
-style 89 20 25 fg=#87b1f6 bg=#232323
-style 89 25 32 fg=#dedede bg=#232323
-style 89 32 37 fg=#bcc4e0 bg=#232323
-style 89 37 40 fg=#dedede bg=#232323
-text 90 "│  command: `cargo test -p ${name}` });"
+style 89 2 3 fg=#dedede bg=#232323
+style 89 3 12 fg=#a3e09f bg=#232323
+style 89 12 40 fg=#dedede bg=#232323
+text 90 "│    const output = await tools.shell({"
 style 90 0 2 fg=#9d9d9d bg=#131313
-style 90 2 3 fg=#dedede bg=#232323
-style 90 3 10 fg=#bcc4e0 bg=#232323
-style 90 10 12 fg=#dedede bg=#232323
-style 90 12 27 fg=#a3e09f bg=#232323
-style 90 27 34 fg=#dedede bg=#232323
-style 90 34 35 fg=#a3e09f bg=#232323
-style 90 35 40 fg=#dedede bg=#232323
-text 91 "│"
+style 90 2 5 fg=#dedede bg=#232323
+style 90 5 10 fg=#87b1f6 bg=#232323
+style 90 10 20 fg=#dedede bg=#232323
+style 90 20 25 fg=#87b1f6 bg=#232323
+style 90 25 32 fg=#dedede bg=#232323
+style 90 32 37 fg=#bcc4e0 bg=#232323
+style 90 37 40 fg=#dedede bg=#232323
+text 91 "│    command: `cargo test -p ${name}`"
 style 91 0 2 fg=#9d9d9d bg=#131313
-style 91 2 40 fg=#dedede bg=#232323
-text 92 "│  console.log(output.split(\"\\n\").pop())"
+style 91 2 5 fg=#dedede bg=#232323
+style 91 5 12 fg=#bcc4e0 bg=#232323
+style 91 12 14 fg=#dedede bg=#232323
+style 91 14 29 fg=#a3e09f bg=#232323
+style 91 29 36 fg=#dedede bg=#232323
+style 91 36 37 fg=#a3e09f bg=#232323
+style 91 37 40 fg=#dedede bg=#232323
+text 92 "│    });"
 style 92 0 2 fg=#9d9d9d bg=#131313
-style 92 2 11 fg=#dedede bg=#232323
-style 92 11 14 fg=#bcc4e0 bg=#232323
-style 92 14 22 fg=#dedede bg=#232323
-style 92 22 27 fg=#bcc4e0 bg=#232323
-style 92 27 28 fg=#dedede bg=#232323
-style 92 28 32 fg=#a3e09f bg=#232323
-style 92 32 34 fg=#dedede bg=#232323
-style 92 34 37 fg=#bcc4e0 bg=#232323
-style 92 37 40 fg=#dedede bg=#232323
-text 93 "│  ;"
+style 92 2 40 fg=#dedede bg=#232323
+text 93 "│    console.log(output.split(\"\\n\").pop("
 style 93 0 2 fg=#9d9d9d bg=#131313
-style 93 2 40 fg=#dedede bg=#232323
-text 94 "│  }"
+style 93 2 13 fg=#dedede bg=#232323
+style 93 13 16 fg=#bcc4e0 bg=#232323
+style 93 16 24 fg=#dedede bg=#232323
+style 93 24 29 fg=#bcc4e0 bg=#232323
+style 93 29 30 fg=#dedede bg=#232323
+style 93 30 34 fg=#a3e09f bg=#232323
+style 93 34 36 fg=#dedede bg=#232323
+style 93 36 39 fg=#bcc4e0 bg=#232323
+style 93 39 40 fg=#dedede bg=#232323
+text 94 "│    ));"
 style 94 0 2 fg=#9d9d9d bg=#131313
 style 94 2 40 fg=#dedede bg=#232323
-text 95 "│ · list crates · ✓ 4 entries"
-style 95 0 18 fg=#9d9d9d bg=#131313
-style 95 18 19 fg=#30d158 bg=#131313
-style 95 19 29 fg=#9d9d9d bg=#131313
-style 95 29 40 fg=#dedede bg=#131313
-text 96 "│ · $ cargo test -p arko_… · ✓ 24 passed"
-style 96 0 29 fg=#9d9d9d bg=#131313
-style 96 29 30 fg=#30d158 bg=#131313
-style 96 30 40 fg=#9d9d9d bg=#131313
-text 97 "│ · $ cargo test -p arko_ai …"
+text 95 "│  }"
+style 95 0 2 fg=#9d9d9d bg=#131313
+style 95 2 40 fg=#dedede bg=#232323
+text 96 "│ · list crates · ✓ 4 entries"
+style 96 0 18 fg=#9d9d9d bg=#131313
+style 96 18 19 fg=#30d158 bg=#131313
+style 96 19 29 fg=#9d9d9d bg=#131313
+style 96 29 40 fg=#dedede bg=#131313
+text 97 "│ · $ cargo test -p arko_… · ✓ 24 passed"
 style 97 0 29 fg=#9d9d9d bg=#131313
-style 97 29 40 fg=#dedede bg=#131313
-text 98 ""
-style 98 0 40 fg=#dedede bg=#131313
+style 97 29 30 fg=#30d158 bg=#131313
+style 97 30 40 fg=#9d9d9d bg=#131313
+text 98 "│ · $ cargo test -p arko_ai …"
+style 98 0 29 fg=#9d9d9d bg=#131313
+style 98 29 40 fg=#dedede bg=#131313
 text 99 ""
 style 99 0 40 fg=#dedede bg=#131313
 text 100 ""

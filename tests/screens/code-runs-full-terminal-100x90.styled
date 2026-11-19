@@ -66,9 +66,10 @@ text 26 "│ 4 arko_index"
 style 26 0 14 dim
 text 27 ""
 text 28 "▾ run_code rename the setting in… · ✗ The code threw on line 2, at a call of read_file that failed…"
-style 28 0 2 fg=red
+style 28 0 2 dim
 style 28 33 36 dim
-style 28 36 99 fg=red
+style 28 36 37 fg=red
+style 28 37 99 dim
 text 29 "│ run_code rename the setting in every crate"
 style 29 0 44 dim
 text 30 "│  for (const path of [\"crates/arko_ai/src/config.rs\", \"crates/arko_ui/src/config.rs\"]) {"
@@ -87,10 +88,9 @@ text 35 "│ · write crates/arko_ai/src/config.rs (1 line) · ✓"
 style 35 0 50 dim
 style 35 50 51 fg=green
 text 36 "│ · read crates/arko_ui/src/config.rs · ✗ No such file or directory (os error 2)"
-style 36 0 2 dim
-style 36 2 4 fg=red
-style 36 4 40 dim
-style 36 40 80 fg=red
+style 36 0 40 dim
+style 36 40 41 fg=red
+style 36 41 80 dim
 text 37 "│ The code threw on line 2, at a call of read_file that failed: No such file or directory (os error"
 style 37 0 99 dim
 text 38 "│ 2)"
@@ -120,10 +120,9 @@ style 48 0 2 dim
 text 49 "│  return \"Done.\";"
 style 49 0 2 dim
 text 50 "│ · $ rm -rf target · ✗ refused"
-style 50 0 2 dim
-style 50 2 4 fg=red
-style 50 4 22 dim
-style 50 22 31 fg=red
+style 50 0 22 dim
+style 50 22 23 fg=red
+style 50 23 31 dim
 text 51 "│ · $ rm -rf web/dist · ✓ 0.1 s"
 style 51 0 24 dim
 style 51 24 25 fg=green
@@ -134,9 +133,10 @@ text 53 "│ Done."
 style 53 0 7 dim
 text 54 ""
 text 55 "▾ run_code build each crate · ✗ stopped"
-style 55 0 2 fg=red
+style 55 0 2 dim
 style 55 27 30 dim
-style 55 30 39 fg=red
+style 55 30 31 fg=red
+style 55 31 39 dim
 text 56 "│  for (const name of [\"arko_ai\", \"arko_agents\"]) {"
 style 56 0 2 dim
 text 57 "│    await tools.shell({ command: `cargo build -p ${name}` });"
@@ -148,10 +148,9 @@ style 59 0 31 dim
 style 59 31 32 fg=green
 style 59 32 39 dim
 text 60 "│ · $ cargo build -p arko_agents · ✗ stopped"
-style 60 0 2 dim
-style 60 2 4 fg=red
-style 60 4 35 dim
-style 60 35 44 fg=red
+style 60 0 35 dim
+style 60 35 36 fg=red
+style 60 36 44 dim
 text 61 ""
 text 62 "▾ run_code run each crate's tests · 41s …"
 style 62 0 2 dim

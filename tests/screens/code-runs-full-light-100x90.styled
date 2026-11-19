@@ -233,10 +233,11 @@ style 26 14 100 fg=#000000 bg=#f9f9f9
 text 27 ""
 style 27 0 100 fg=#000000 bg=#f9f9f9
 text 28 "▾ run_code rename the setting in… · ✗ The code threw on line 2, at a call of read_file that failed…"
-style 28 0 2 fg=#d21f07 bg=#f9f9f9
+style 28 0 2 fg=#696969 bg=#f9f9f9
 style 28 2 33 fg=#000000 bg=#f9f9f9
 style 28 33 36 fg=#696969 bg=#f9f9f9
-style 28 36 99 fg=#d21f07 bg=#f9f9f9
+style 28 36 37 fg=#d21f07 bg=#f9f9f9
+style 28 37 99 fg=#696969 bg=#f9f9f9
 style 28 99 100 fg=#000000 bg=#f9f9f9
 text 29 "│ run_code rename the setting in every crate"
 style 29 0 44 fg=#696969 bg=#f9f9f9
@@ -305,10 +306,9 @@ style 35 0 50 fg=#696969 bg=#f9f9f9
 style 35 50 51 fg=#2a8300 bg=#f9f9f9
 style 35 51 100 fg=#000000 bg=#f9f9f9
 text 36 "│ · read crates/arko_ui/src/config.rs · ✗ No such file or directory (os error 2)"
-style 36 0 2 fg=#696969 bg=#f9f9f9
-style 36 2 4 fg=#d21f07 bg=#f9f9f9
-style 36 4 40 fg=#696969 bg=#f9f9f9
-style 36 40 80 fg=#d21f07 bg=#f9f9f9
+style 36 0 40 fg=#696969 bg=#f9f9f9
+style 36 40 41 fg=#d21f07 bg=#f9f9f9
+style 36 41 80 fg=#696969 bg=#f9f9f9
 style 36 80 100 fg=#000000 bg=#f9f9f9
 text 37 "│ The code threw on line 2, at a call of read_file that failed: No such file or directory (os error"
 style 37 0 99 fg=#696969 bg=#f9f9f9
@@ -405,10 +405,9 @@ style 49 9 10 fg=#000000 bg=#efefef
 style 49 10 17 fg=#036a07 bg=#efefef
 style 49 17 100 fg=#000000 bg=#efefef
 text 50 "│ · $ rm -rf target · ✗ refused"
-style 50 0 2 fg=#696969 bg=#f9f9f9
-style 50 2 4 fg=#d21f07 bg=#f9f9f9
-style 50 4 22 fg=#696969 bg=#f9f9f9
-style 50 22 31 fg=#d21f07 bg=#f9f9f9
+style 50 0 22 fg=#696969 bg=#f9f9f9
+style 50 22 23 fg=#d21f07 bg=#f9f9f9
+style 50 23 31 fg=#696969 bg=#f9f9f9
 style 50 31 100 fg=#000000 bg=#f9f9f9
 text 51 "│ · $ rm -rf web/dist · ✓ 0.1 s"
 style 51 0 24 fg=#696969 bg=#f9f9f9
@@ -424,10 +423,11 @@ style 53 7 100 fg=#000000 bg=#f9f9f9
 text 54 ""
 style 54 0 100 fg=#000000 bg=#f9f9f9
 text 55 "▾ run_code build each crate · ✗ stopped"
-style 55 0 2 fg=#d21f07 bg=#f9f9f9
+style 55 0 2 fg=#696969 bg=#f9f9f9
 style 55 2 27 fg=#000000 bg=#f9f9f9
 style 55 27 30 fg=#696969 bg=#f9f9f9
-style 55 30 39 fg=#d21f07 bg=#f9f9f9
+style 55 30 31 fg=#d21f07 bg=#f9f9f9
+style 55 31 39 fg=#696969 bg=#f9f9f9
 style 55 39 100 fg=#000000 bg=#f9f9f9
 text 56 "│  for (const name of [\"arko_ai\", \"arko_agents\"]) {"
 style 56 0 2 fg=#696969 bg=#f9f9f9
@@ -470,10 +470,9 @@ style 59 31 32 fg=#2a8300 bg=#f9f9f9
 style 59 32 39 fg=#696969 bg=#f9f9f9
 style 59 39 100 fg=#000000 bg=#f9f9f9
 text 60 "│ · $ cargo build -p arko_agents · ✗ stopped"
-style 60 0 2 fg=#696969 bg=#f9f9f9
-style 60 2 4 fg=#d21f07 bg=#f9f9f9
-style 60 4 35 fg=#696969 bg=#f9f9f9
-style 60 35 44 fg=#d21f07 bg=#f9f9f9
+style 60 0 35 fg=#696969 bg=#f9f9f9
+style 60 35 36 fg=#d21f07 bg=#f9f9f9
+style 60 36 44 fg=#696969 bg=#f9f9f9
 style 60 44 100 fg=#000000 bg=#f9f9f9
 text 61 ""
 style 61 0 100 fg=#000000 bg=#f9f9f9

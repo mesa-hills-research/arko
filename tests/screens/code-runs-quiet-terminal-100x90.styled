@@ -5,9 +5,9 @@ style 0 0 2 fg=cyan
 text 1 ""
 text 2 "▸ Ran code to count TODO comments per crate"
 style 2 0 2 dim
-text 3 "▸ Ran code to rename the setting in every crate                                                    ✗"
+text 3 "▸ Ran code to rename the setting in every crate                                                   ✗"
 style 3 0 2 dim
-style 3 99 100 fg=red
+style 3 98 99 fg=red
 text 4 "▸ Ran code to clean the build folders"
 style 4 0 2 dim
 text 5 "▸ Ran code to build each crate (stopped)"

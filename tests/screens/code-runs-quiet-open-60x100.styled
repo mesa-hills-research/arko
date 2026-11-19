@@ -47,13 +47,13 @@ style 7 32 42 fg=#bcc4e0 bg=#232323
 style 7 42 45 fg=#dedede bg=#232323
 style 7 45 54 fg=#bcc4e0 bg=#232323
 style 7 54 60 fg=#dedede bg=#232323
-text 8 "│  `crates/${name}/src` });"
+text 8 "│    `crates/${name}/src` });"
 style 8 0 2 fg=#9d9d9d bg=#131313
-style 8 2 3 fg=#dedede bg=#232323
-style 8 3 11 fg=#a3e09f bg=#232323
-style 8 11 18 fg=#dedede bg=#232323
-style 8 18 23 fg=#a3e09f bg=#232323
-style 8 23 60 fg=#dedede bg=#232323
+style 8 2 5 fg=#dedede bg=#232323
+style 8 5 13 fg=#a3e09f bg=#232323
+style 8 13 20 fg=#dedede bg=#232323
+style 8 20 25 fg=#a3e09f bg=#232323
+style 8 25 60 fg=#dedede bg=#232323
 text 9 "│    const paths = listed"
 style 9 0 2 fg=#9d9d9d bg=#131313
 style 9 2 5 fg=#dedede bg=#232323
@@ -109,15 +109,15 @@ style 15 32 41 fg=#bcc4e0 bg=#232323
 style 15 41 44 fg=#dedede bg=#232323
 style 15 44 48 fg=#bcc4e0 bg=#232323
 style 15 48 60 fg=#dedede bg=#232323
-text 16 "│  `crates/${name}/src/${path}` });"
+text 16 "│      `crates/${name}/src/${path}` });"
 style 16 0 2 fg=#9d9d9d bg=#131313
-style 16 2 3 fg=#dedede bg=#232323
-style 16 3 11 fg=#a3e09f bg=#232323
-style 16 11 18 fg=#dedede bg=#232323
-style 16 18 23 fg=#a3e09f bg=#232323
-style 16 23 30 fg=#dedede bg=#232323
-style 16 30 31 fg=#a3e09f bg=#232323
-style 16 31 60 fg=#dedede bg=#232323
+style 16 2 7 fg=#dedede bg=#232323
+style 16 7 15 fg=#a3e09f bg=#232323
+style 16 15 22 fg=#dedede bg=#232323
+style 16 22 27 fg=#a3e09f bg=#232323
+style 16 27 34 fg=#dedede bg=#232323
+style 16 34 35 fg=#a3e09f bg=#232323
+style 16 35 60 fg=#dedede bg=#232323
 text 17 "│      count += (text.match(/TODO/g) ?? []).length;"
 style 17 0 2 fg=#9d9d9d bg=#131313
 style 17 2 22 fg=#dedede bg=#232323
@@ -168,10 +168,11 @@ style 26 0 14 fg=#9d9d9d bg=#131313
 style 26 14 60 fg=#dedede bg=#131313
 text 27 ""
 style 27 0 60 fg=#dedede bg=#131313
-text 28 "▾ Ran code to rename the setting in every crate            ✗"
+text 28 "▾ Ran code to rename the setting in every crate           ✗"
 style 28 0 2 fg=#9d9d9d bg=#131313
-style 28 2 59 fg=#dedede bg=#131313
-style 28 59 60 fg=#ff5257 bg=#131313
+style 28 2 58 fg=#dedede bg=#131313
+style 28 58 59 fg=#ff5257 bg=#131313
+style 28 59 60 fg=#dedede bg=#131313
 text 29 "│  for (const path of [\"crates/arko_ai/src/config.rs\","
 style 29 0 2 fg=#9d9d9d bg=#131313
 style 29 2 3 fg=#dedede bg=#232323
@@ -210,25 +211,26 @@ style 32 30 34 fg=#bcc4e0 bg=#232323
 style 32 34 36 fg=#dedede bg=#232323
 style 32 36 43 fg=#bcc4e0 bg=#232323
 style 32 43 60 fg=#dedede bg=#232323
-text 33 "│  text.replaceAll(\"keep_warm\", \"warm\") });"
+text 33 "│    text.replaceAll(\"keep_warm\", \"warm\") });"
 style 33 0 2 fg=#9d9d9d bg=#131313
-style 33 2 8 fg=#dedede bg=#232323
-style 33 8 18 fg=#bcc4e0 bg=#232323
-style 33 18 19 fg=#dedede bg=#232323
-style 33 19 30 fg=#a3e09f bg=#232323
-style 33 30 32 fg=#dedede bg=#232323
-style 33 32 38 fg=#a3e09f bg=#232323
-style 33 38 60 fg=#dedede bg=#232323
+style 33 2 10 fg=#dedede bg=#232323
+style 33 10 20 fg=#bcc4e0 bg=#232323
+style 33 20 21 fg=#dedede bg=#232323
+style 33 21 32 fg=#a3e09f bg=#232323
+style 33 32 34 fg=#dedede bg=#232323
+style 33 34 40 fg=#a3e09f bg=#232323
+style 33 40 60 fg=#dedede bg=#232323
 text 34 "│  }"
 style 34 0 2 fg=#9d9d9d bg=#131313
 style 34 2 60 fg=#dedede bg=#232323
 text 35 "│ Read 1 file and wrote 1 file"
 style 35 0 30 fg=#9d9d9d bg=#131313
 style 35 30 60 fg=#dedede bg=#131313
-text 36 "│ Couldn’t read config.rs · No such file or directory (o…  ✗"
+text 36 "│ Couldn’t read config.rs · No such file or directory (o… ✗"
 style 36 0 2 fg=#9d9d9d bg=#131313
-style 36 2 59 fg=#dedede bg=#131313
-style 36 59 60 fg=#ff5257 bg=#131313
+style 36 2 58 fg=#dedede bg=#131313
+style 36 58 59 fg=#ff5257 bg=#131313
+style 36 59 60 fg=#dedede bg=#131313
 text 37 "│ The code threw on line 2, at a call of read_file that"
 style 37 0 55 fg=#9d9d9d bg=#131313
 style 37 55 60 fg=#dedede bg=#131313
@@ -308,10 +310,11 @@ style 49 17 60 fg=#dedede bg=#232323
 text 50 "│ Ran 1 command"
 style 50 0 15 fg=#9d9d9d bg=#131313
 style 50 15 60 fg=#dedede bg=#131313
-text 51 "│ Couldn’t run rm -rf target · refused                     ✗"
+text 51 "│ Couldn’t run rm -rf target · refused                    ✗"
 style 51 0 2 fg=#9d9d9d bg=#131313
-style 51 2 59 fg=#dedede bg=#131313
-style 51 59 60 fg=#ff5257 bg=#131313
+style 51 2 58 fg=#dedede bg=#131313
+style 51 58 59 fg=#ff5257 bg=#131313
+style 51 59 60 fg=#dedede bg=#131313
 text 52 "│ target: refused (The command guard refused it.)"
 style 52 0 49 fg=#9d9d9d bg=#131313
 style 52 49 60 fg=#dedede bg=#131313
@@ -349,7 +352,7 @@ style 57 34 50 fg=#a3e09f bg=#232323
 style 57 50 57 fg=#dedede bg=#232323
 style 57 57 58 fg=#a3e09f bg=#232323
 style 57 58 60 fg=#dedede bg=#232323
-text 58 "│  });"
+text 58 "│    });"
 style 58 0 2 fg=#9d9d9d bg=#131313
 style 58 2 60 fg=#dedede bg=#232323
 text 59 "│  }"
@@ -389,13 +392,13 @@ style 64 37 40 fg=#dedede bg=#232323
 style 64 40 47 fg=#bcc4e0 bg=#232323
 style 64 47 49 fg=#dedede bg=#232323
 style 64 49 60 fg=#a3e09f bg=#232323
-text 65 "│  -p ${name}` });"
+text 65 "│    -p ${name}` });"
 style 65 0 2 fg=#9d9d9d bg=#131313
-style 65 2 3 fg=#dedede bg=#232323
-style 65 3 6 fg=#a3e09f bg=#232323
-style 65 6 13 fg=#dedede bg=#232323
-style 65 13 14 fg=#a3e09f bg=#232323
-style 65 14 60 fg=#dedede bg=#232323
+style 65 2 5 fg=#dedede bg=#232323
+style 65 5 8 fg=#a3e09f bg=#232323
+style 65 8 15 fg=#dedede bg=#232323
+style 65 15 16 fg=#a3e09f bg=#232323
+style 65 16 60 fg=#dedede bg=#232323
 text 66 "│    console.log(output.split(\"\\n\").pop());"
 style 66 0 2 fg=#9d9d9d bg=#131313
 style 66 2 13 fg=#dedede bg=#232323

@@ -11,10 +11,11 @@ style 2 0 60 fg=#dedede bg=#131313
 text 3 "▸ Ran code to count TODO comments per crate"
 style 3 0 2 fg=#9d9d9d bg=#131313
 style 3 2 60 fg=#dedede bg=#131313
-text 4 "▸ Ran code to rename the setting in every crate            ✗"
+text 4 "▸ Ran code to rename the setting in every crate           ✗"
 style 4 0 2 fg=#9d9d9d bg=#131313
-style 4 2 59 fg=#dedede bg=#131313
-style 4 59 60 fg=#ff5257 bg=#131313
+style 4 2 58 fg=#dedede bg=#131313
+style 4 58 59 fg=#ff5257 bg=#131313
+style 4 59 60 fg=#dedede bg=#131313
 text 5 "▸ Ran code to clean the build folders"
 style 5 0 2 fg=#9d9d9d bg=#131313
 style 5 2 60 fg=#dedede bg=#131313

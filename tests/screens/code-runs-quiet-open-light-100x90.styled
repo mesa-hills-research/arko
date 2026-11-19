@@ -211,10 +211,11 @@ style 23 0 14 fg=#696969 bg=#f9f9f9
 style 23 14 100 fg=#000000 bg=#f9f9f9
 text 24 ""
 style 24 0 100 fg=#000000 bg=#f9f9f9
-text 25 "▾ Ran code to rename the setting in every crate                                                    ✗"
+text 25 "▾ Ran code to rename the setting in every crate                                                   ✗"
 style 25 0 2 fg=#696969 bg=#f9f9f9
-style 25 2 99 fg=#000000 bg=#f9f9f9
-style 25 99 100 fg=#d21f07 bg=#f9f9f9
+style 25 2 98 fg=#000000 bg=#f9f9f9
+style 25 98 99 fg=#d21f07 bg=#f9f9f9
+style 25 99 100 fg=#000000 bg=#f9f9f9
 text 26 "│  for (const path of [\"crates/arko_ai/src/config.rs\", \"crates/arko_ui/src/config.rs\"]) {"
 style 26 0 2 fg=#696969 bg=#f9f9f9
 style 26 2 3 fg=#000000 bg=#efefef
@@ -272,10 +273,11 @@ style 29 2 100 fg=#000000 bg=#efefef
 text 30 "│ Read 1 file and wrote 1 file"
 style 30 0 30 fg=#696969 bg=#f9f9f9
 style 30 30 100 fg=#000000 bg=#f9f9f9
-text 31 "│ Couldn’t read config.rs · No such file or directory (os error 2)                                 ✗"
+text 31 "│ Couldn’t read config.rs · No such file or directory (os error 2)                                ✗"
 style 31 0 2 fg=#696969 bg=#f9f9f9
-style 31 2 99 fg=#000000 bg=#f9f9f9
-style 31 99 100 fg=#d21f07 bg=#f9f9f9
+style 31 2 98 fg=#000000 bg=#f9f9f9
+style 31 98 99 fg=#d21f07 bg=#f9f9f9
+style 31 99 100 fg=#000000 bg=#f9f9f9
 text 32 "│ The code threw on line 2, at a call of read_file that failed: No such file or directory (os error"
 style 32 0 99 fg=#696969 bg=#f9f9f9
 style 32 99 100 fg=#000000 bg=#f9f9f9
@@ -369,10 +371,11 @@ style 44 17 100 fg=#000000 bg=#efefef
 text 45 "│ Ran 1 command"
 style 45 0 15 fg=#696969 bg=#f9f9f9
 style 45 15 100 fg=#000000 bg=#f9f9f9
-text 46 "│ Couldn’t run rm -rf target · refused                                                             ✗"
+text 46 "│ Couldn’t run rm -rf target · refused                                                            ✗"
 style 46 0 2 fg=#696969 bg=#f9f9f9
-style 46 2 99 fg=#000000 bg=#f9f9f9
-style 46 99 100 fg=#d21f07 bg=#f9f9f9
+style 46 2 98 fg=#000000 bg=#f9f9f9
+style 46 98 99 fg=#d21f07 bg=#f9f9f9
+style 46 99 100 fg=#000000 bg=#f9f9f9
 text 47 "│ target: refused (The command guard refused it.)"
 style 47 0 49 fg=#696969 bg=#f9f9f9
 style 47 49 100 fg=#000000 bg=#f9f9f9
