@@ -465,6 +465,16 @@ button.cache { padding: 0; border: 0; background: none; }
    and read left to right inside. */
 .call-line .what.file > .folders { flex: 0 1000000 auto; min-width: 2ch; direction: rtl; }
 .call-line .what.file > .folders > span { direction: ltr; unicode-bidi: isolate; }
+/* A browser draws an ellipsis right after the characters it keeps, so a
+   box that isn't a whole number of characters wide leaves a gap before
+   "…". Once the words give way, their box is a whole number of characters
+   (and a pixel, for the rounding of each character's advance), so its
+   parts give way a character at a time. It leaves the outcome the said's
+   6 px gap and 3 characters ("· ✓"). */
+@supports (width: round(down, 100%, 1ch)) {
+  .call-line .said.file > .what { max-width: calc(round(down, 100%, 1ch) + 1px); }
+  .call-line .said.file:has(> .outcome) > .what { max-width: calc(round(down, 100% - 6px - 3ch, 1ch) + 1px); }
+}
 /* The spinner is a still square box with a ring inside, two arcs of a
    third of a turn half a turn apart, so the ink stays centred. The arcs go
    round by the angle of the ring's mask, which the browser paints, so they
