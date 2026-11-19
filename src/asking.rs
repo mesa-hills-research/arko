@@ -16,13 +16,22 @@
 //! turn for it, a working one takes it at its next step, and a stopped one
 //! when it goes on. Arko posts any kept note not posted yet, or lost with a
 //! crash, as the session opens.
+//!
+//! Only the answer panel answers, or a message the user sent with questions
+//! attached. Any other message is an ordinary one, and a wait ends for it
+//! with [`WAIT_MESSAGE`] (see [`Harness::wake_waits`]), so it reaches the
+//! agent at once and the questions stay open. At the line prompt, which has
+//! no answer panel, the next line answers the questions waited for
+//! ([`Harness::line_answers`]).
 
 use arko_agents::questions::{self as notes, Answers, QuestionAnswer};
 use uuid::Uuid;
 
 use crate::harness::{Conversation, Harness, News, Prompt, TurnEnd};
 use crate::inputs::{Answering, Inputs, Question};
-use crate::questions::{AgentQuestion, Pending, QuestionState, WAIT_ANSWERED, is_agent_id};
+use crate::questions::{
+    AgentQuestion, Pending, QuestionState, WAIT_ANSWERED, WAIT_MESSAGE, is_agent_id,
+};
 use crate::remote::{Delivery, Level, Partial, RefusalKind, Source};
 use crate::sending::Reply as SendReply;
 
@@ -383,21 +392,20 @@ impl Harness {
     }
 
     /// A message the user sends (to start a turn, or as a note) with the
-    /// questions `attached` (the "Replying to" chip), or, without any, while
-    /// the agent waits for an answer, which it is. The questions it answers
-    /// are no longer open, and the message as the agent reads it ("(This
-    /// message answers q3.)" before it) is kept and posted as their note,
-    /// which is how it reaches the agent. Returns what it did, and whether
-    /// that note could be posted now.
+    /// questions `attached`, those it answers (the "Replying to" chip, or the
+    /// questions waited for at the line prompt). They are no longer open,
+    /// and the message as the agent reads it ("(This message answers q3.)"
+    /// before it) is kept and posted as their note, which is how it reaches
+    /// the agent. A message without any answers nothing. Returns what it
+    /// did, and whether that note could be posted now.
     pub(crate) fn reply_text(&mut self, text: &str, attached: &[String]) -> Replied {
         let run = self.feed.questions_conversation();
-        let ids = self.replied_ids(attached);
-        let (settled, pending) = if ids.is_empty() {
+        let (settled, pending) = if attached.is_empty() {
             (Vec::new(), None)
         } else {
             self.feed.settle_noting(
                 run,
-                &ids,
+                attached,
                 |_| QuestionState::AnsweredInMessage,
                 |settled, open| crate::questions::message_note(settled, open, text),
             )
@@ -424,12 +432,13 @@ impl Harness {
         }
     }
 
-    /// The questions a message of the user's answers, meaning those `attached` to
-    /// it, or, without any, those the agent waits for in the current
-    /// conversation.
-    fn replied_ids(&self, attached: &[String]) -> Vec<String> {
-        if !attached.is_empty() {
-            return attached.to_vec();
+    /// The questions a line typed now answers. At the line prompt, which has
+    /// no answer panel and asks for the answer as the next line, those the
+    /// agent waits for in the current conversation. Elsewhere none, since a
+    /// message answers only the questions the user sent it with.
+    pub(crate) fn line_answers(&self) -> Vec<String> {
+        if !self.output.at_line_prompt() {
+            return Vec::new();
         }
         let run = self.feed.questions_conversation();
         self.waiting
@@ -440,12 +449,35 @@ impl Harness {
     }
 
     /// Why the user's message `text` can't be sent as the answer to the
-    /// questions it answers ([`reply_text`](Self::reply_text)), or `None`.
+    /// questions `attached` ([`reply_text`](Self::reply_text)), or `None`.
     /// Checked before anything is settled, so they stay open.
     pub(crate) fn reply_refused(&self, text: &str, attached: &[String]) -> Option<String> {
-        let ids = self.replied_ids(attached);
         let run = self.feed.questions_conversation()?;
-        crate::questions::reply_refusal(&self.feed.open_questions_of(run), &ids, text)
+        crate::questions::reply_refusal(&self.feed.open_questions_of(run), attached, text)
+    }
+
+    /// The user sent the agent a message that answers none of its
+    /// questions, and it went as a note, which the run reads at its next
+    /// step. A run that waits for an answer takes no step until the wait
+    /// ends, so the current conversation's waits for the agent's questions
+    /// end now with [`WAIT_MESSAGE`], and the note follows. The questions
+    /// stay open, no longer waited for, and their answers reach the agent
+    /// as a note. (A wait for a question Arko asks, without ids, takes its
+    /// answer from the answer panel.)
+    pub(crate) fn wake_waits(&mut self) {
+        let run = self.feed.questions_conversation();
+        let (woken, kept): (Vec<Waiting>, Vec<Waiting>) = std::mem::take(&mut self.waiting)
+            .into_iter()
+            .partition(|waiting| !waiting.plain() && Some(waiting.run) == run);
+        self.waiting = kept;
+        for waiting in woken {
+            match waiting.answer {
+                Answering::Text(answer) => {
+                    let _ = answer.send(WAIT_MESSAGE.to_string());
+                }
+            }
+            self.feed.questions_unwaited(&waiting.ids);
+        }
     }
 
     /// The open questions of the card `item`, which an answer to it from

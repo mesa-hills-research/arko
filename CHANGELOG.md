@@ -39,6 +39,21 @@
   on the web page, and only output coming above it moves it. It used to wait below "Working…", so
   it moved down and up with it and swapped rows with it when the agent read it.
 
+### Questions
+
+- Only the answer panel answers the agent's questions, or a message sent with them attached (Esc
+  in the panel, "Replying to" on the page). A message from the message box used to answer the
+  question the agent waited for, and the question left the panel. Now it is an ordinary message
+  in the full-screen view, on the web page and in an app, and the question stays open.
+- Such a message reaches an agent that waits for an answer at once, in Arko's own runtime and in
+  Claude Code. A message typed while the agent asked, before it began to wait, used to sit pending
+  until the answer came, and the agent then got it together with the answer.
+- Messages typed while the agent asks show in the order they were sent. The one taken as the
+  answer used to come before the one typed first.
+- In a worker's view, a message goes to that worker also while the main agent waits for an answer.
+- At the line prompt (`--repl`), which has no answer panel, the line typed after a question still
+  answers it.
+
 ## 0.23.1 (2026-11-18)
 
 ### The transcript

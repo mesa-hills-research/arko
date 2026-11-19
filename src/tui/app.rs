@@ -1728,7 +1728,7 @@ impl App {
         // In a worker's own view, continuing it when its cache expired
         // goes once it was asked about.
         if self.panel.attached.is_empty()
-            && let Some(id) = self.watching.clone().filter(|_| !self.agent_waits())
+            && let Some(id) = self.watching.clone()
             && self.confirms_continue(&format!("/message {id} {}", trimmed.trim()), trimmed)
         {
             return;
@@ -1756,14 +1756,13 @@ impl App {
             ));
             return;
         }
-        // In a worker's own view it goes to that worker, unless the main
-        // agent waits for an answer, and then it is the answer, as anywhere.
+        // In a worker's own view it goes to that worker.
         match &self.watching {
-            Some(id) if !self.agent_waits() => {
+            Some(id) => {
                 let line = format!("/message {id} {}", text.trim());
                 self.send_typed(&line, &text, message_switch);
             }
-            _ => self.send_typed(text.trim_end(), &text, message_switch),
+            None => self.send_typed(text.trim_end(), &text, message_switch),
         }
     }
 
@@ -3293,7 +3292,8 @@ pub(super) mod tests {
     }
 
     /// In a worker's own view, what is sent goes to that worker (as
-    /// `/message`), but for commands and the main agent's answer.
+    /// `/message`), also while the main agent waits for an answer, but for
+    /// commands.
     #[test]
     fn a_workers_view_sends_to_that_worker() {
         let mut app = app();
@@ -3305,16 +3305,16 @@ pub(super) mod tests {
         type_text(&mut app, "/workers");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(sent(&mut app), ["/workers"]);
-        // The main agent's question it waits for takes the answer, in any
-        // view. (Keys came just now, so the panel stays closed.)
+        // While the main agent waits for an answer, a message still goes to
+        // the worker. (Keys came just now, so the panel stays closed.)
         let mut waiting = asking();
         waiting.questions.truncate(1);
         waiting.questions[0].waits = true;
         app.set_reading(waiting);
         assert!(!app.panel.open);
-        type_text(&mut app, "tabs");
+        type_text(&mut app, "Keep going.");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(sent(&mut app), ["tabs"]);
+        assert_eq!(sent(&mut app), ["/message r1 Keep going."]);
         // Back on the main agent, a message is the main agent's.
         app.watch(None);
         app.set_reading(Reading::default());

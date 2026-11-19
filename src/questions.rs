@@ -327,6 +327,11 @@ pub(crate) struct Pending {
 pub(crate) const WAIT_ANSWERED: &str =
     "The user replied to your questions. What they said is in the note that follows.";
 
+/// What the agent's wait for its questions reads when the user sent it a
+/// message without answering them. The message comes as a note, as any
+/// message to a working agent does, and the questions stay open.
+pub(crate) const WAIT_MESSAGE: &str = "The user sent you a message instead of answering, and your questions stay open. What they said is in the note that follows.";
+
 /// How a wait's reply ends when the user's answer reached the agent before
 /// the wait came, in a note it read while the turn that asked went on.
 pub(crate) const READ_ALREADY: &str = "in a note you've already read. There's nothing new.";

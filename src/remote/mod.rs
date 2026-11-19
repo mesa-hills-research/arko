@@ -118,8 +118,8 @@ pub const KEY_FILE: &str = "remote.key";
 #[non_exhaustive]
 pub enum Action {
     /// A message, as if typed at the prompt, with the files the page sent
-    /// with it. It's a note while the agent works, a new turn when it is
-    /// idle, the answer to its question, or a command.
+    /// with it. It's a note while the agent works or waits for an answer,
+    /// a new turn when it is idle, or a command. It answers no question.
     Message {
         text: String,
         files: Vec<crate::attachments::Attached>,

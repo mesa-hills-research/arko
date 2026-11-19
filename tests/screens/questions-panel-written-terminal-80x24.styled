@@ -74,7 +74,7 @@ text 20 " ● asks you"
 style 20 1 11 fg=cyan
 text 21 "────────────────────────────────────────────────────────────────────────────────"
 style 21 0 80 dim
-text 22 " › Answer the agent's question  / for commands"
-style 22 1 46 dim
+text 22 " › Message  / for commands"
+style 22 1 26 dim
 text 23 "────────────────────────────────────────────────────────────────────────────────"
 style 23 0 80 dim

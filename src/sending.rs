@@ -201,7 +201,8 @@ impl Harness {
         match event {
             Event::Input(Some(Input::Line(line))) => {
                 let line = input.coalesce(line).await;
-                sent(line, self.input_source, Vec::new(), reply)
+                let answers = self.line_answers();
+                sent(line, self.input_source, answers, reply)
             }
             Event::Input(Some(Input::Message(message))) => Read::Sent(Sent {
                 line: message.text,

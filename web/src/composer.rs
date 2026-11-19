@@ -433,8 +433,7 @@ pub fn Composer() -> impl IntoView {
             }
         }));
         // In a worker's view, it goes to that worker. With questions
-        // attached, it answers them (and while the agent waits on a
-        // question, a message answers it).
+        // attached, it answers them, and any other message answers none.
         let answers = match page.worker.get_untracked() {
             Some(_) => Vec::new(),
             None => ask.attached.get_untracked(),

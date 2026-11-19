@@ -33,6 +33,12 @@ the settings and other windows, which come back when the panel closes. The termi
 new questions while its window isn't focused. On a Mac, Alt+Q is Option+Q, which needs Option to
 work as Alt. In the Terminal app, turn on Use Option as Meta key.
 
+Only the answer panel answers, or a message you send with the questions attached. Any other message
+from the message box is an ordinary one, also while the agent waits for an answer. It reaches the
+agent at once, and starts a turn when the agent is idle. The questions stay open in the panel, and
+the agent replies and reminds you of them. At the line prompt (`--repl`), which has no answer panel,
+the line you type after a question answers it.
+
 A question shows in one place at a time. While it is open it is in the answer panel, and the
 transcript has one quiet line where it was asked ("Arko asked 2 questions"). Click that line to
 open the panel. Once a question is answered, closed or dismissed, the line becomes the ask's record,
@@ -59,11 +65,12 @@ Still open: q5.
 ```
 
 A message you send with the questions attached starts with "(This message answers q3 and q4.)".
-Any other message ends with the questions still open, "(Still open: q5.)". "Not now" tells the
-agent "The user dismissed q5." A reply that isn't an answer, such as a new request, leaves the
-question unanswered. The agent replies to it, asks the question again in the same words, and
-reminds you that it is still waiting for your answer. A resumed session's transcript shows your messages as you wrote
-them.
+Any other message ends with the questions still open, "(Still open: q5.)". An agent that waits for
+an answer hears that you sent a message instead and that the questions stay open, and the message
+follows. "Not now" tells the agent "The user dismissed q5." A message sent as the answer that isn't
+one, such as a new request, leaves the question unanswered. The agent replies to it, repeats the
+question in the same words, and reminds you that it is still waiting for your answer. A resumed
+session's transcript shows your messages as you wrote them.
 
 The session keeps its questions in its folder (`questions.json`), with the answers the agent hasn't
 read yet, so open questions are open again when you resume it, and an answer given before you quit
@@ -84,7 +91,7 @@ after its text.
 |---|---|
 | `POST /api/questions/answer` | `{"answers": [{"id": "q3", "choices": ["Spaces"]}, {"id": "q4", "you_decide": true}, {"id": "q5", "text": "main"}, {"id": "q6"}]}` |
 | `POST /api/questions/dismiss` | `{"ids": ["q5"]}` |
-| `POST /api/message` | `{"text": "...", "answers": ["q3", "q4"]}` answers them in a message |
+| `POST /api/message` | `{"text": "...", "answers": ["q3", "q4"]}` answers them in a message, and without `answers` it answers none |
 
 Each answers with the session's verdict (`arko::Verdict`) as JSON. Answers and dismissals are
 refused as `not_open` when none of their questions is open, and when only some were, the others are

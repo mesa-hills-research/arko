@@ -828,10 +828,11 @@ fn note(text: String) -> Option<Item> {
 
 /// The items of the user's answer to questions the agent waited for, meaning their
 /// message. (A note of the answers, which their card shows, and the wait's
-/// own replies, which point to that note, have none.)
+/// own replies, which point to a note or say why the wait ended, have none.)
 fn answer_items(text: &str) -> Vec<Item> {
     let trimmed = text.trim();
     if trimmed.ends_with(crate::questions::WAIT_ANSWERED)
+        || trimmed.ends_with(crate::questions::WAIT_MESSAGE)
         || trimmed.ends_with(crate::questions::READ_ALREADY)
         || is_answer_note(text)
     {

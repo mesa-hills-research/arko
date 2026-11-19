@@ -183,10 +183,10 @@ fn draw_input(
     let rect = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
     let height = rect.height;
     let prompt = glyphs::render("› ").into_owned();
-    let answering = app.agent_waits();
+    // (Bold while what it sends answers questions.)
     let prompt_style = if app.list_focus.is_some() || app.panel.open || app.tray.focused {
         theme.dim()
-    } else if answering {
+    } else if !app.panel.attached.is_empty() {
         theme.accent().add_modifier(Modifier::BOLD)
     } else {
         theme.accent()
@@ -202,11 +202,9 @@ fn draw_input(
     if app.editor.is_empty() && !app.editor.has_tentative() {
         let placeholder = if !app.panel.attached.is_empty() {
             "Your answer".to_string()
-        } else if answering {
-            "Answer the agent's question".to_string()
         } else if let Some(id) = &app.watching {
             format!("Message {id}")
-        } else if app.activity.working {
+        } else if app.activity.working && !app.agent_waits() {
             "Add to the task".to_string()
         } else {
             "Message".to_string()

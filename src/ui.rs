@@ -199,6 +199,12 @@ impl Output {
         *self.feed.lock().unwrap() = Some(feed);
     }
 
+    /// Whether the line prompt shows the session, meaning no full-screen
+    /// view or app shows its feed.
+    pub(crate) fn at_line_prompt(&self) -> bool {
+        self.feed.lock().unwrap().is_none()
+    }
+
     /// Clears the line the cursor is on (the prompt's).
     #[cfg(feature = "tui")]
     pub fn clear_line(&self) {

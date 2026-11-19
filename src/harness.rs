@@ -4177,6 +4177,12 @@ impl Harness {
                             }
                             self.flush_printer().await;
                             self.question_asked(question);
+                            // What the user typed that the agent hasn't read
+                            // reaches it at once, though it waits now (in
+                            // Claude Code it waits once the turn ended).
+                            if !unread_notes(&notes, &workflow).is_empty() {
+                                self.wake_waits();
+                            }
                             continue;
                         }
                         Event::Woken | Event::Finished(_) | Event::Alert(_) => continue,
@@ -4265,7 +4271,8 @@ impl Harness {
                     let images = std::mem::take(&mut self.pending_images);
                     let shown = std::mem::take(&mut self.pending_refs);
                     // A message that answers questions the agent waits for
-                    // is the answer.
+                    // is the answer. Any other goes as a note, which a
+                    // wait for an answer ends for.
                     match self.reply_text(&read, &attached) {
                         Replied::Answered { not_posted } => {
                             self.output.echo(&self.output.dim("  ✎ answered"));
@@ -4276,12 +4283,14 @@ impl Harness {
                         }
                         // One that answers questions went as their note, which
                         // the agent reads at its next step (its images with
-                        // it, in a note of their own).
+                        // it, in a note of their own). A wait for others ends
+                        // for it.
                         Replied::Noted { not_posted, .. } => {
                             self.output.echo(&self.output.dim(
                                 "  ✎ added to the task, and the agent reads it at its next step",
                             ));
                             let item = self.feed.user_with_files(&text, source, Delivery::Note, Vec::new(), files);
+                            let posted = not_posted.is_none();
                             let mut not_passed = joined(not_posted, files_words);
                             if !images.is_empty()
                                 && let Some(run) = self.feed.questions_conversation()
@@ -4307,6 +4316,9 @@ impl Harness {
                             }
                             let partial = self.partly(&reply, Vec::new(), not_passed);
                             reply.accept_partly(Delivery::Note, Some(item), partial);
+                            if posted {
+                                self.wake_waits();
+                            }
                         }
                         Replied::Plain { text: labelled, .. } if self.queue_lines => {
                             let item = self.feed.user_with_files(&text, source, Delivery::Queued, Vec::new(), files);
@@ -4329,6 +4341,7 @@ impl Harness {
                                     notes.push((seq.seq, unread));
                                     let partial = self.partly(&reply, Vec::new(), files_words);
                                     reply.accept_partly(Delivery::Note, Some(item), partial);
+                                    self.wake_waits();
                                 }
                                 // Refused only when nothing of it happened. One
                                 // that answered Arko's own question did that.
@@ -5896,6 +5909,13 @@ pub(crate) mod tests {
     mod apply_diff {
         use super::*;
         include!("apply_diff_tests.rs");
+    }
+
+    /// The user's messages while the agent waits for an answer, end to
+    /// end, in their own file.
+    mod question_messages {
+        use super::*;
+        include!("question_message_tests.rs");
     }
 
     /// What the model is sent, measured (an ignored test), in its own file.
@@ -9354,7 +9374,7 @@ pub(crate) mod tests {
 
     /// A question without ids (a host's own `ask_user`, or a wait saved by
     /// an older version) takes the user's words as its answer, from the
-    /// panel or a message.
+    /// panel or the line typed at the line prompt.
     #[tokio::test]
     async fn a_question_without_ids_takes_the_users_words() {
         let temp = tempfile::tempdir().unwrap();
@@ -9379,7 +9399,9 @@ pub(crate) mod tests {
                         .is_none()
                 );
             } else {
-                assert_eq!(harness.reply_text("main.rs", &[]).text(), None);
+                let line = harness.line_answers();
+                assert_eq!(line, std::slice::from_ref(&id));
+                assert_eq!(harness.reply_text("main.rs", &line).text(), None);
             }
             assert_eq!(answered.try_recv().unwrap(), "main.rs");
             assert!(harness.waiting.is_empty());
@@ -9993,7 +10015,13 @@ pub(crate) mod tests {
                 )
                 .is_none()
         );
-        assert_eq!(harness.reply_refused(&long, &[]).as_deref(), Some(refusal));
+        // At the line prompt the next line answers it, so it's held to it.
+        let line = harness.line_answers();
+        assert_eq!(
+            harness.reply_refused(&long, &line).as_deref(),
+            Some(refusal)
+        );
+        assert_eq!(harness.reply_refused(&long, &[]), None);
         assert!(answered.try_recv().is_err());
         assert_eq!(harness.feed.open_questions().len(), 3);
         assert!(harness.feed.queued_notes(run).is_empty());
@@ -10054,10 +10082,11 @@ pub(crate) mod tests {
 
     /// A message answers the questions attached to it and no others. One
     /// asked after they were attached stays open, waited for or not.
-    /// Without questions attached, it answers only those the agent waits
+    /// Without questions attached, it answers none, also while the agent
+    /// waits. At the line prompt, a line answers only those the agent waits
     /// for, not one asked without waiting.
     #[tokio::test]
-    async fn a_message_answers_only_the_questions_attached_or_waited_for() {
+    async fn a_message_answers_only_the_questions_attached() {
         let temp = tempfile::tempdir().unwrap();
         let (mut harness, _inputs, _sender) = harness(temp.path(), LLMClient::new(), true);
         let run = uuid::Uuid::new_v4();
@@ -10097,9 +10126,22 @@ pub(crate) mod tests {
         assert!(text.starts_with("(This message answers q2.)"), "{text}");
         assert!(answered.try_recv().is_err());
         assert_eq!(open(&harness), ["q3"]);
-        // Nothing attached, so the question waited for, not q4.
+        // Nothing attached, so none, though the agent waits.
         ask_later(&mut harness, run, "q4", "Squash the commits?");
-        assert_eq!(harness.reply_text("main", &[]).text(), None);
+        assert_eq!(
+            harness.reply_text("Hold on.", &[]).text().as_deref(),
+            Some("Hold on.\n\n(Still open: q3 and q4.)")
+        );
+        assert!(answered.try_recv().is_err());
+        assert_eq!(open(&harness), ["q3", "q4"]);
+        // A line from the message box answers none either.
+        harness.output.to_feed(harness.feed.clone());
+        assert!(harness.line_answers().is_empty());
+        harness.output.detach();
+        // The line prompt's line answers the question waited for, not q4.
+        let line = harness.line_answers();
+        assert_eq!(line, ["q3"]);
+        assert_eq!(harness.reply_text("main", &line).text(), None);
         assert_eq!(
             answered.try_recv().unwrap(),
             crate::questions::WAIT_ANSWERED
