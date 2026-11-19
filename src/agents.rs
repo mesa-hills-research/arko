@@ -463,13 +463,21 @@ const INDEXES_NAMED: usize = 20;
 /// `max_workers` for no limit on how many workers run at once.
 pub const NO_LIMIT: u32 = u32::MAX;
 
-/// What the handover size leaves free below the input limit of the
-/// ChatGPT login's backend, meaning the report request and the report the agent
-/// writes (a few thousand tokens), and the tool results of a step past
-/// the size. The size is checked before each request with its new tool
-/// results counted, so a step goes past it only by what the estimate
-/// misses.
+/// What the handover size leaves free on the ChatGPT login below the point
+/// where Codex compacts a conversation ([`chatgpt_compaction_point`]),
+/// meaning the report request and the report the agent writes (a few
+/// thousand tokens), and the tool results of a step past the size. The size
+/// is checked before each request with its new tool results counted, so a
+/// step goes past it only by what the estimate misses.
 pub const CHATGPT_HANDOVER_ROOM: usize = 22_000;
+
+/// Where Codex compacts a conversation on a model whose context window on
+/// the ChatGPT login is `limit`, 90% of it. That is Codex's
+/// `ModelInfo::auto_compact_token_limit` for a model whose catalog entry
+/// sets no lower one, 450k on the 500k models and 244,800 on the 272k ones.
+fn chatgpt_compaction_point(limit: usize) -> usize {
+    limit * 9 / 10
+}
 
 /// The handover size of an agent on a Claude model that accepts 1M tokens,
 /// by API key or in Claude Code, which is the most `/handover-at` takes
@@ -480,17 +488,17 @@ pub const CLAUDE_HANDOVER: usize = 950_000;
 /// unless `--handover-at` says otherwise, in a session that reaches OpenAI
 /// models by `openai_auth`. No default is above what [`max_handover`]
 /// allows, 95% of what the model accepts. An OpenAI model on the ChatGPT
-/// login hands over [`CHATGPT_HANDOVER_ROOM`] below what that login's
-/// backend accepts
+/// login hands over [`CHATGPT_HANDOVER_ROOM`] below where Codex compacts its
+/// conversations, 90% of what that login's backend accepts
 /// ([`chatgpt_oauth_max_input_tokens`](arko_ai::input_limit::chatgpt_oauth_max_input_tokens),
 /// 500k on GPT-6.2 Sol, GPT-6.1 Sol and GPT-6.1 Terra and 272k on the
-/// others, less than the API's limit), or at 95% when that is less, so at
-/// 475k or 250k. A Claude model by API key or in Claude Code hands over (or
-/// compacts) at [`CLAUDE_HANDOVER`], or at 95% of what it accepts when that
-/// is less. Others hand over at 500k on Claude models on OpenRouter, 200k
-/// on the rest, and at most 80% of what the model accepts, or at
-/// [`providers::UNKNOWN_LIMIT_HANDOVER`] when that isn't known (an
-/// OpenRouter model without its catalog).
+/// others, less than the API's limit), so at 428k or 222,800, and its
+/// report ends below that point. A Claude model by API key or in Claude
+/// Code hands over (or compacts) at [`CLAUDE_HANDOVER`], or at 95% of what
+/// it accepts when that is less. Others hand over at 500k on Claude models
+/// on OpenRouter, 200k on the rest, and at most 80% of what the model
+/// accepts, or at [`providers::UNKNOWN_LIMIT_HANDOVER`] when that isn't
+/// known (an OpenRouter model without its catalog).
 pub fn default_handover(model: &Model, openai_auth: Option<OpenAiAuth>) -> usize {
     let chatgpt = on_chatgpt(model, openai_auth);
     let Some(limit) = effective_max_input_tokens(model, chatgpt) else {
@@ -498,7 +506,7 @@ pub fn default_handover(model: &Model, openai_auth: Option<OpenAiAuth>) -> usize
     };
     let most = limit / 5 * 4;
     let default = match model.provider {
-        _ if chatgpt => limit.saturating_sub(CHATGPT_HANDOVER_ROOM),
+        _ if chatgpt => chatgpt_compaction_point(limit).saturating_sub(CHATGPT_HANDOVER_ROOM),
         Provider::Anthropic | Provider::ClaudeCode => CLAUDE_HANDOVER,
         Provider::OpenRouter if providers::is_claude_slug(&model.id) => most.min(500_000),
         _ => most.min(200_000),
@@ -2317,30 +2325,31 @@ mod tests {
             CLAUDE_HANDOVER
         );
         let astra = resolve_model("astra").unwrap();
-        // The ChatGPT backend's 272k, less the room, not the API's limit,
-        // which an API key has.
+        // On the ChatGPT backend's 272k, not the API's limit, which an API
+        // key has. Codex compacts at 90% of it, 244,800, and the room is
+        // below that.
         assert!(astra.max_input_tokens > 272_000);
-        assert_eq!(default_handover(&astra, Some(OpenAiAuth::ChatGpt)), 250_000);
+        assert_eq!(default_handover(&astra, Some(OpenAiAuth::ChatGpt)), 222_800);
         assert_eq!(default_handover(&astra, Some(OpenAiAuth::ApiKey)), 200_000);
         // Sol and Terra take 500k on the ChatGPT login, as Codex's catalog
-        // says, and hand over at the 95% the room would go past.
+        // says, where Codex compacts at 450k.
         let sol = resolve_model("sol").unwrap();
         for name in ["sol", "gpt-6.1-sol", "terra"] {
             let model = resolve_model(name).unwrap();
             assert_eq!(
                 default_handover(&model, Some(OpenAiAuth::ChatGpt)),
-                475_000,
+                428_000,
                 "{name}"
             );
         }
         assert_eq!(default_handover(&sol, Some(OpenAiAuth::ApiKey)), 200_000);
         // Off Claude, never past 80% of what the model accepts, and on the
-        // ChatGPT login the room below what it accepts.
+        // ChatGPT login the room below where Codex compacts.
         let mut small = sol.clone();
         small.max_input_tokens = 200_000;
         assert_eq!(default_handover(&small, Some(OpenAiAuth::ApiKey)), 160_000);
         small.max_input_tokens = 128_000;
-        assert_eq!(default_handover(&small, Some(OpenAiAuth::ChatGpt)), 106_000);
+        assert_eq!(default_handover(&small, Some(OpenAiAuth::ChatGpt)), 93_200);
         // The largest size /handover-at takes, which is 95% of what the model
         // accepts, on Claude Code too, and of what the ChatGPT login takes.
         assert_eq!(max_handover(&opus, None), Some(950_000));
@@ -2395,6 +2404,24 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// On the ChatGPT login, every OpenAI model's handover, report included,
+    /// ends before Codex would compact the conversation, at 90% of what the
+    /// login takes.
+    #[test]
+    fn chatgpt_handovers_end_before_codex_compacts() {
+        let openai = Model::list(Provider::OpenAI);
+        assert!(!openai.is_empty());
+        for model in &openai {
+            let takes = effective_max_input_tokens(model, true).unwrap();
+            let default = default_handover(model, Some(OpenAiAuth::ChatGpt));
+            assert!(
+                default + CHATGPT_HANDOVER_ROOM <= takes / 10 * 9,
+                "{}: {default} of {takes}",
+                model.id
+            );
         }
     }
 

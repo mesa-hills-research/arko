@@ -74,6 +74,13 @@
   Hydrogen and Carbon, for complex software engineering, knowledge work and science. Like
   Hydrogen, it takes the xhigh effort, and max runs it at xhigh. It needs a Gemini API key.
 
+### Handovers
+
+- On the ChatGPT login, GPT-6.2 Sol, GPT-6.1 Sol and GPT-6.1 Terra hand over at 428k, and the
+  other OpenAI models at 222,800. Codex compacts a conversation at 90% of what the login takes
+  (450k and 244,800), and the handover with its report now ends before that. They handed over at
+  475k and 250k.
+
 ## 0.23.1 (2026-11-18)
 
 ### The transcript

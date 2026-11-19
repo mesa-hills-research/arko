@@ -132,9 +132,13 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
         "\n\nModels usable now (the plan that pays, or API and the price per million input and output tokens, and the size where a worker hands over to a fresh conversation)\n"
     ));
     assert!(
-        text.contains("\n- sol · efforts low to max · ChatGPT plan 5 h 12%, 7 d 40%, shared with the user's own use · hands over at 475k · cache 30m, fixed"),
+        text.contains("\n- sol · efforts low to max · ChatGPT plan 5 h 12%, 7 d 40%, shared with the user's own use · hands over at 428k · cache 30m, fixed"),
         "{text}"
     );
+    // A size that isn't whole thousands shows whole, as the workers get it.
+    let astra = text.split("\n- astra · ").nth(1).unwrap();
+    let astra = astra.lines().next().unwrap();
+    assert!(astra.contains(" · hands over at 222,800 · "), "{astra}");
     assert!(text.contains("\n- luna · efforts low to max · "));
     assert!(text.contains("\nNot usable now\n"));
     assert!(text.contains(
@@ -290,13 +294,12 @@ fn the_options_say_how_workers_are_paid_for() {
 }
 
 #[test]
-fn efforts_and_sizes_read_briefly() {
+fn efforts_read_as_a_range() {
     let efforts = |name: &str| efforts_range(&resolve_model(name).unwrap());
     assert_eq!(efforts("opus"), "low to max");
     assert_eq!(efforts("gemini"), "low to high");
     assert_eq!(efforts("gpt-5-pro-2025-10-06"), "high");
     assert_eq!(efforts("gpt-5.4-nano-2026-03-17"), "low to xhigh");
-    assert_eq!(thousands(950_000), "950k");
 }
 
 /// The tools with real parts, meaning a crew in a temporary session folder, keys that

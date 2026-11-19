@@ -312,11 +312,6 @@ fn efforts_range(model: &Model) -> String {
     }
 }
 
-/// `950000` as `950k`.
-fn thousands(tokens: usize) -> String {
-    crate::remote::protocol::tokens(tokens as u64)
-}
-
 fn model_line(
     model: &Model,
     alias: &str,
@@ -340,7 +335,7 @@ fn model_line(
     };
     let mut handover = format!(
         "hands over at {}",
-        thousands(crate::agents::default_handover(
+        crate::handover::shown(crate::agents::default_handover(
             model,
             basis.providers.openai_auth
         ))

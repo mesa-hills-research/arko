@@ -886,11 +886,12 @@ async fn a_handover_size_set_from_the_web_page_is_announced() {
     assert_eq!(harness.handover.at(), 150_000);
 }
 
-/// A session on the ChatGPT login hands over by itself at 250k. Its
+/// A session on the ChatGPT login hands over by itself at 222,800 on its
+/// 272k model, below the 244,800 where Codex would compact. Its
 /// configuration says so, and Arko doesn't ask too.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_chatgpt_session_hands_over_at_250k() {
+async fn a_chatgpt_session_hands_over_below_where_codex_compacts() {
     let temp = tempfile::tempdir().unwrap();
     let bodies: Bodies = Arc::default();
     let server = ModelServer::start(Arc::new({
@@ -903,12 +904,12 @@ async fn a_chatgpt_session_hands_over_at_250k() {
                     if body.contains("call_m1") {
                         crate::mock_model::with_input(
                             tool_call("m2", SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
-                            251_000,
+                            223_000,
                         )
                     } else {
                         crate::mock_model::with_input(
                             tool_call("m1", SHELL_TOOL, serde_json::json!({"command": "echo hi"})),
-                            240_000,
+                            215_000,
                         )
                     },
                     complete("m3", "Done."),
@@ -923,10 +924,10 @@ async fn a_chatgpt_session_hands_over_at_250k() {
         &model,
         Some(providers::OpenAiAuth::ChatGpt),
     ));
-    assert_eq!(harness.settings.main.handover_at, Some(250_000));
+    assert_eq!(harness.settings.main.handover_at, Some(222_800));
     harness.main_config = agents::main_config(&agent_settings_of(&harness)).unwrap();
     let _managers = equip(&mut harness, false);
-    assert_eq!(harness.handover.at(), 250_000);
+    assert_eq!(harness.handover.at(), 222_800);
     let end = tokio::time::timeout(
         Duration::from_secs(30),
         harness.turn(Prompt::User("Work long.".into()), &mut inputs),
@@ -935,13 +936,13 @@ async fn a_chatgpt_session_hands_over_at_250k() {
     .unwrap();
     assert!(matches!(end, TurnEnd::Answered));
     assert_eq!(handovers(&harness), 1);
-    // Not at 240k, but at 251k.
+    // Not at 215k, but at 223k.
     assert!(!body(&bodies, "call_m1", "call_m2").contains("Your conversation is getting long"));
     assert!(body(&bodies, "Your conversation is getting long", "").contains("call_m2"));
     assert!(says(
         &harness.feed,
         "notice",
-        "the agent is writing a handover report (at 251k tokens)"
+        "the agent is writing a handover report (at 223k tokens)"
     ));
 }
 
