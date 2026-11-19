@@ -2945,6 +2945,8 @@ async function spacedSession(run) {
   await run.feed({ do: 'worker', id: 'r1', change: 'finished', text: `${run.some(8, 4)}\n\n- ${run.words(5)}\n- ${run.words(4)}\n\n\`\`\`sh\ncargo test\n\`\`\`` });
   await run.feed({ do: 'worker', id: 'r2', text: `Task ${run.words(4)}` });
   await run.feed({ do: 'worker', id: 'r2', change: 'finished', text: `${run.some(8, 4)}\n\n> ${run.words(6)}` });
+  // (r3 runs on with no calls yet, so its card has no last line.)
+  await run.feed({ do: 'worker', id: 'r3', text: `Task ${run.words(4)}` });
   await run.feed({ do: 'ask', id: 'q1', text: `${run.some(4, 4)}?` });
   await run.feed({ do: 'answered', id: 'q1', text: run.words(3) });
   await run.feed({ do: 'text', text: `${run.some(6, 4)}\n\n\`\`\`rust\nfn main() {\n    println!("{}", 1);\n}\n\`\`\`` });

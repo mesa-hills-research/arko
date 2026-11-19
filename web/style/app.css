@@ -817,6 +817,9 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .wcard.failed .wmeta { color: var(--error); }
 .wcard .wlast { grid-column: 1; overflow: hidden; color: var(--muted); font: 12px/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .wcard .wgo { grid-column: 2; grid-row: 1 / span 3; color: var(--muted); }
+/* (With no last line, two rows, so no third one holds space under the card's
+   text.) */
+.wcard:not(:has(> .wlast)) > .wgo { grid-row: 1 / span 2; }
 
 .jump {
   position: absolute;
