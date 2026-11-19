@@ -90,25 +90,30 @@ pub struct Fitted {
     pub words: String,
     /// How many of the parts after its words show, from the first.
     pub parts: usize,
+    /// It cut its words.
+    pub words_cut: bool,
     /// It cut its words or left out a part.
     pub cut: bool,
 }
 
 /// `words` and the parts after them (`parts`, the room each takes with the
-/// gap and dot before it) fitted to `room` pixels, where `fixed` is the
-/// width of what never gives way among them (a call's ✓ or ✗).
-pub fn line(words: &str, fixed: f64, parts: &[f64], room: f64, m: Metrics) -> Fitted {
-    let parts: Vec<usize> = parts.iter().map(|part| units(*part)).collect();
-    let fit = quiet::fit(
-        units(m.text(words)),
-        units(quiet::WORDS_KEEP as f64 * m.ch),
-        units(fixed),
-        &parts,
-        units(room),
-    );
+/// gap and dot before it, and the columns the words keep before it gives
+/// way, [`quiet::WORDS_KEEP`] or [`quiet::WORDS_KEEP_RUNNING`]) fitted to
+/// `room` pixels, where `fixed` is the width of what never gives way among
+/// them (a call's ✓ or ✗).
+pub fn line(words: &str, fixed: f64, parts: &[(f64, usize)], room: f64, m: Metrics) -> Fitted {
+    let parts: Vec<quiet::Part> = parts
+        .iter()
+        .map(|(width, keep)| quiet::Part {
+            width: units(*width),
+            keep: units(*keep as f64 * m.ch),
+        })
+        .collect();
+    let fit = quiet::fit(units(m.text(words)), units(fixed), &parts, units(room));
     let shown = cut(words, fit.words, m);
     Fitted {
         cut: shown != words || fit.parts < parts.len(),
+        words_cut: shown != words,
         words: shown,
         parts: fit.parts,
     }
@@ -126,7 +131,7 @@ fn cut(text: &str, room: usize, m: Metrics) -> String {
     let ellipsis = units(m.ellipsis);
     let mut left = room.saturating_sub(ellipsis);
     loop {
-        let kept = quiet::cut_at_word(&clusters, left);
+        let kept = quiet::cut_at_word(&clusters, left, units(quiet::WORDS_KEEP as f64 * m.ch));
         let shown: String = clusters[..kept].iter().map(|(c, _)| *c).collect::<String>() + "…";
         let over = units(m.text(&shown)).saturating_sub(room);
         if over == 0 || kept == 0 {
@@ -143,6 +148,8 @@ pub struct FittedFile {
     pub name: String,
     /// Its outcome's words show.
     pub outcome: bool,
+    /// It cut its folders or its name.
+    pub words_cut: bool,
     /// It cut its folders or its name, or left out its outcome's words.
     pub cut: bool,
 }
@@ -201,6 +208,7 @@ pub fn file(
     }
     let dropped = outcome.is_some() && !fit.outcome;
     FittedFile {
+        words_cut: shown_folders != folders || shown_name != name,
         cut: shown_folders != folders || shown_name != name || dropped,
         folders: shown_folders,
         name: shown_name,
@@ -502,21 +510,28 @@ mod tests {
     /// parts after them whole, as the terminal does in its cells.
     #[test]
     fn a_line_gives_way_as_the_terminals_does() {
-        let note = GAP + M.dot() + M.text("running");
+        let note = (GAP + M.dot() + M.text("running"), quiet::WORDS_KEEP);
+        let live = (GAP + M.dot() + M.text("2 calls"), quiet::WORDS_KEEP_RUNNING);
         // Room for all of it.
         let all = line("Started cargo build", 0.0, &[note], 400.0, M);
         assert_eq!(
             (all.words.as_str(), all.parts, all.cut),
             ("Started cargo build", 1, false)
         );
-        // The note goes whole before the words keep less than 24 columns.
+        // How it runs goes while the words would keep less than 24 columns,
+        // and what happened only below 12. The words take what's left.
         let words = "Started cargo build --release in a terminal";
-        let narrow = line(words, 0.0, &[note], 30.0 * 8.0, M);
-        assert_eq!(narrow.parts, 0);
-        assert_eq!(narrow.words, "Started cargo build --release…");
+        let narrow = line(words, 0.0, &[note, live], 30.0 * 8.0, M);
+        assert_eq!(narrow.parts, 1);
+        assert_eq!(narrow.words, "Started cargo build…");
         assert!(narrow.cut);
-        let narrower = line(words, 0.0, &[note], 26.0 * 8.0, M);
-        assert_eq!(narrower.words, "Started cargo build…");
+        let narrower = line(words, 0.0, &[note], 22.0 * 8.0, M);
+        assert_eq!((narrower.words.as_str(), narrower.parts), ("Started…", 1));
+        let narrowest = line(words, 0.0, &[note], 21.0 * 8.0, M);
+        assert_eq!(
+            (narrowest.words.as_str(), narrowest.parts),
+            ("Started cargo build…", 0)
+        );
         // A word too long for half the room is cut inside.
         let path = line("$ ./target/release/arko-something", 0.0, &[], 20.0 * 8.0, M);
         assert_eq!(path.words, "$ ./target/release/…");

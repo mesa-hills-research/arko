@@ -2924,7 +2924,7 @@ impl Feed {
             JobState::Stopped => (CallStatus::Ok, "stopped"),
             _ => (CallStatus::Ok, "ended"),
         };
-        let settled = render::Settled::job();
+        let settled = render::Settled::job(false);
         if let Some(call) = lane.change(item, |call| {
             call.settle(status, Some(text.to_string()), &settled, next);
         }) {
@@ -3143,10 +3143,14 @@ impl Feed {
             return;
         }
         let (status, text) = monitor_outcome(job);
-        if call.outcome.as_deref() == Some(text.as_str()) && call.status == Some(status) {
+        let runs = job.state == JobState::Running;
+        if call.outcome.as_deref() == Some(text.as_str())
+            && call.status == Some(status)
+            && call.act.as_ref().is_none_or(|act| act.job_runs == runs)
+        {
             return;
         }
-        let settled = render::Settled::job();
+        let settled = render::Settled::job(runs);
         if let Some(call) =
             lane.change(item, |call| call.settle(status, Some(text), &settled, next))
         {
@@ -3207,7 +3211,7 @@ impl Feed {
             JobState::Interrupted => (CallStatus::Failed, "interrupted".to_string()),
             _ => (CallStatus::Failed, "stopped".to_string()),
         };
-        let settled = render::Settled::job();
+        let settled = render::Settled::job(false);
         let Some(call) = lane.change(item, |call| call.settle(status, Some(text), &settled, next))
         else {
             return;
@@ -4882,6 +4886,9 @@ mod tests {
         let item = line(&feed);
         assert_eq!(item.outcome.as_deref(), Some("monitoring"));
         assert_eq!(item.job, Some(job.to_string()));
+        // (While it runs, what its line says of it is how it runs.)
+        let runs = |item: &Item| item.act.as_ref().is_some_and(|act| act.job_runs);
+        assert!(runs(&item));
         let summary = feed.subscribe().0.jobs[0].clone();
         assert_eq!(
             (summary.kind, summary.watching.as_deref(), summary.alerts),
@@ -4893,6 +4900,7 @@ mod tests {
             line(&feed).outcome.as_deref(),
             Some("monitoring · 3 alerts")
         );
+        assert!(runs(&line(&feed)));
         assert_eq!(feed.subscribe().0.jobs[0].alerts, Some(3));
         feed.job_ended(job, JobState::Expired, None);
         let ended = line(&feed);
@@ -4900,6 +4908,7 @@ mod tests {
             (ended.status, ended.outcome.as_deref()),
             (Some(CallStatus::Ok), Some("ended after 30 min · 3 alerts"))
         );
+        assert!(!runs(&ended));
 
         // A command that exited, and a monitor that ended at once.
         let feed = Feed::new("main");
@@ -4927,6 +4936,7 @@ mod tests {
             ),
         );
         assert_eq!(line(&feed).outcome.as_deref(), Some("ended at once"));
+        assert!(!runs(&line(&feed)));
         // Its later news doesn't change that.
         feed.job_ended(job, JobState::Failed, Some("exit 1".into()));
         assert_eq!(line(&feed).outcome.as_deref(), Some("ended at once"));
@@ -4940,8 +4950,10 @@ mod tests {
             format!("Monitor {job} started. It runs …"),
         );
         assert_eq!(feed.moved_jobs(), [job]);
+        assert!(runs(&line(&feed)));
         feed.job_ended_earlier(job, JobState::Interrupted);
         assert_eq!(line(&feed).outcome.as_deref(), Some("interrupted"));
+        assert!(!runs(&line(&feed)));
     }
 
     /// A `terminal_start` call's line says how the job it started goes,
@@ -4969,11 +4981,14 @@ mod tests {
                 receipt: None,
             };
             feed.event(&event("main", result), None);
+            let runs = |item: &Item| item.act.as_ref().is_some_and(|act| act.job_runs);
             let line = call_item(feed, "npm test");
             assert_eq!(line.outcome.as_deref(), Some(render::JOB_RUNNING));
             assert_eq!(line.job, Some(job.to_string()));
+            assert!(runs(&line));
             feed.job_ended(job, ended, Some("exit 1".into()));
             let line = call_item(feed, "npm test");
+            assert!(!runs(&line));
             (line.status, line.outcome)
         };
         assert_eq!(
@@ -5014,6 +5029,8 @@ mod tests {
         assert_eq!(item.status, Some(CallStatus::Ok));
         assert_eq!(item.outcome.as_deref(), Some("in the background"));
         assert_eq!(item.job, Some(job.to_string()));
+        let runs = |item: &Item| item.act.as_ref().is_some_and(|act| act.job_runs);
+        assert!(runs(&item));
 
         let (_, mut receiver) = feed.subscribe();
         feed.job_started(JobStart {
@@ -5057,6 +5074,7 @@ mod tests {
             item.outcome.as_deref(),
             Some("finished in the background · 4 min")
         );
+        assert!(!runs(&item));
         let ended = &feed.subscribe().0.jobs[0];
         assert_eq!(ended.state, JobState::Finished);
         assert!(ended.ended_at.is_some());

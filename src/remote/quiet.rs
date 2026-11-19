@@ -138,6 +138,10 @@ pub struct Words {
     /// More, said after it, muted, such as how a call's job is going, or
     /// what came while it waited.
     pub note: Option<String>,
+    /// Its note says how its job runs, while it runs ("running",
+    /// "monitoring"), which gives way before its words do
+    /// ([`WORDS_KEEP_RUNNING`]) and stands through the run.
+    pub note_runs: bool,
     /// How it runs, said after its note, muted, which gives way first where
     /// the line is narrow, its last part first (a code run's count of calls,
     /// then the call that runs).
@@ -163,6 +167,30 @@ impl Words {
             said.push_str(&format!(" · {live}"));
         }
         said
+    }
+
+    /// What an open row shows of what its line left out, where the line
+    /// showed `shown` of the parts after its words ([`Fit::parts`]). With
+    /// `words` (its words whole, where the line cut them), the parts it left
+    /// out follow them as the line says them. Without, the parts alone
+    /// ("failed (exit 1)"), since the line shows its words. None where it
+    /// left out neither.
+    pub fn left_out(&self, words: Option<&str>, shown: usize) -> Option<String> {
+        let parts = self
+            .news
+            .iter()
+            .map(|news| (true, news))
+            .chain(self.note.iter().chain(&self.live).map(|part| (false, part)))
+            .skip(shown);
+        let mut said = words.unwrap_or_default().to_string();
+        for (news, part) in parts {
+            match (said.is_empty(), news) {
+                (true, _) => said.push_str(part),
+                (false, true) => said.push_str(&format!(" ({part})")),
+                (false, false) => said.push_str(&format!(" · {part}")),
+            }
+        }
+        (!said.is_empty()).then_some(said)
     }
 }
 
@@ -208,6 +236,31 @@ pub fn mark(status: Option<CallStatus>, act: Option<&Act>) -> Option<CallStatus>
         (CallStatus::Ok, Some(JobFound::Input | JobFound::Stopped)) => None,
         (CallStatus::Running, _) => None,
         (status, _) => Some(status),
+    }
+}
+
+/// The words a call's line says after its mark once it ended, from how it
+/// went (`status`) and its outcome's words ("41.0 s", "failed (exit 1)").
+/// A call that failed says so, whatever else it has to say.
+pub fn ended<'a>(status: Option<CallStatus>, outcome: Option<&'a str>) -> Option<&'a str> {
+    match status {
+        Some(CallStatus::Failed) => Some(outcome.unwrap_or(FAILED)),
+        Some(CallStatus::Ok) => outcome,
+        _ => None,
+    }
+    .map(str::trim)
+    .filter(|outcome| !outcome.is_empty())
+}
+
+/// What an open call shows of what its line left out, each once. That is
+/// its `words` whole where the line cut them (and its detail isn't the
+/// whole command), then its `outcome`'s words where the line left them out,
+/// alone where the line shows its words. Never its mark, which its line
+/// shows.
+pub fn call_left_out(words: Option<&str>, outcome: Option<&str>) -> Option<String> {
+    match (words, outcome) {
+        (Some(words), Some(outcome)) => Some(format!("{words} · {outcome}")),
+        (words, outcome) => words.or(outcome).map(str::to_string),
     }
 }
 
@@ -1464,6 +1517,7 @@ fn one(member: &Member) -> Words {
                 text: done,
                 news,
                 note: outcome.filter(|_| member.call.job).map(str::to_string),
+                note_runs: member.call.job && act.job_runs,
                 failed: found_failed(act),
                 ..Words::default()
             },
@@ -1480,14 +1534,52 @@ fn one(member: &Member) -> Words {
 // Every client draws a row's line on one line and cuts it by one rule, in
 // whatever unit it measures (the terminal's columns, the page's pixels).
 // What never gives way stays, meaning a marker, a worker's name, ✓ or ✗, how
-// long a call has run, the spinner and the buttons. The words keep their
-// start, [`WORDS_KEEP`] columns or all of them where they're shorter (a
-// file's line keeps its file's name). Then the parts after the words give
-// way, the last first, each whole (how a row runs, its note, its outcome's
-// words). Then the words take what's left, cut where a word ends.
+// long a call has run, the spinner and the buttons. How a row runs gives way
+// first, while its words have under [`WORDS_KEEP_RUNNING`] columns. What
+// happened (a call's outcome, a row's news and note) gives way only when the
+// words would have under [`WORDS_KEEP`], since it says more than the rest of
+// what was done, such as a job's ID. Each part goes whole, the last first.
+// The words take what's left, cut where a word ends. A file's line keeps
+// its file's name in their place, and its folders give way before it.
 
-/// The columns a line's words keep before the parts after them give way.
-pub const WORDS_KEEP: usize = 24;
+/// The columns a line's words keep before what happened gives way, enough
+/// to say what was done ("Waited for job…", "$ cargo build…"), or all of
+/// them where they're shorter.
+pub const WORDS_KEEP: usize = 12;
+
+/// The columns a line's words keep before how a row runs gives way, such as
+/// a code run's count of calls and the call that runs, or a job's state
+/// while it runs.
+pub const WORDS_KEEP_RUNNING: usize = 24;
+
+/// The columns a call line's words keep before its outcome's words give
+/// way, from its act. That says how its job runs while its job runs
+/// ([`Act::job_runs`]), and else what happened.
+pub fn outcome_keep(act: Option<&Act>) -> usize {
+    match act.is_some_and(|act| act.job_runs) {
+        true => WORDS_KEEP_RUNNING,
+        false => WORDS_KEEP,
+    }
+}
+
+/// The columns a Quiet row's words keep before its note gives way, the
+/// same way ([`Words::note_runs`]).
+pub fn note_keep(words: &Words) -> usize {
+    match words.note_runs {
+        true => WORDS_KEEP_RUNNING,
+        false => WORDS_KEEP,
+    }
+}
+
+/// A part of a row's line after its words, which gives way whole ([`fit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Part {
+    /// The room it takes, with the gap and the dot before it.
+    pub width: usize,
+    /// The room the words keep before it gives way ([`WORDS_KEEP`],
+    /// [`WORDS_KEEP_RUNNING`], in the unit `width` is in).
+    pub keep: usize,
+}
 
 /// How a row's line fits its room ([`fit`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1498,16 +1590,16 @@ pub struct Fit {
     pub parts: usize,
 }
 
-/// How a row's line fits `room`, from the width of its words, the room
-/// they keep before anything after them gives way (`keep`), the width of
-/// what never gives way (`fixed`), and the widths of the parts after its
-/// words that give way (`parts`), the last first and each whole.
-pub fn fit(words: usize, keep: usize, fixed: usize, parts: &[usize], room: usize) -> Fit {
-    let after = |shown: usize| parts[..shown].iter().sum::<usize>();
+/// How a row's line fits `room`, from the width of its words, the width of
+/// what never gives way (`fixed`), and the parts after its words (`parts`),
+/// which give way the last first, each whole, once the words would have
+/// less than the part keeps them (or less than all of them where they're
+/// shorter).
+pub fn fit(words: usize, fixed: usize, parts: &[Part], room: usize) -> Fit {
+    let after = |shown: usize| parts[..shown].iter().map(|part| part.width).sum::<usize>();
     let mut shown = parts.len();
     if fixed + words + after(shown) > room {
-        let keep = keep.min(words);
-        while shown > 0 && fixed + keep + after(shown) > room {
+        while shown > 0 && fixed + parts[shown - 1].keep.min(words) + after(shown) > room {
             shown -= 1;
         }
     }
@@ -1520,9 +1612,11 @@ pub fn fit(words: usize, keep: usize, fixed: usize, parts: &[usize], room: usize
 /// How many of a line's words' `clusters` (its characters, each with its
 /// width) show in `room`, which leaves out the ellipsis after them. The cut
 /// falls where a word ends, and a group in parentheses ("(7 more lines)")
-/// shows whole or not at all. Where that keeps less than half the room (one
-/// long path), the cut falls inside the word, and a space before it goes.
-pub fn cut_at_word<S: AsRef<str>>(clusters: &[(S, usize)], room: usize) -> usize {
+/// shows whole or not at all. Only a word wider than `long` (a path, an ID,
+/// in the unit the widths are in) is cut inside, where the last word that
+/// ends keeps less than half the room, and then a space before it goes. So
+/// is a first word that doesn't fit, where nothing ends before it.
+pub fn cut_at_word<S: AsRef<str>>(clusters: &[(S, usize)], room: usize, long: usize) -> usize {
     let space = |at: usize| clusters[at].0.as_ref().chars().all(char::is_whitespace);
     let mut used = 0;
     let mut depth = 0usize;
@@ -1556,7 +1650,21 @@ pub fn cut_at_word<S: AsRef<str>>(clusters: &[(S, usize)], room: usize) -> usize
     if inside == clusters.len() {
         return inside;
     }
-    if word.0 > 0 && word.1 * 2 >= room {
+    // The width of the word the cut falls in, whole.
+    let cut_word = || {
+        let start = (0..inside)
+            .rev()
+            .find(|at| space(*at))
+            .map_or(0, |at| at + 1);
+        let end = (inside..clusters.len())
+            .find(|at| space(*at))
+            .unwrap_or(clusters.len());
+        clusters[start..end]
+            .iter()
+            .map(|(_, width)| width)
+            .sum::<usize>()
+    };
+    if word.0 > 0 && (word.1 * 2 >= room || cut_word() <= long) {
         return word.0;
     }
     // (Never inside a group, which goes whole.)
@@ -1821,6 +1929,7 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                 "Monitor 7f3e9a1c-1111-2222-3333-444455556666 started.",
                 Act {
                     detail: "every 30 s, when its output changes, for 30 min".into(),
+                    job_runs: true,
                     ..other(
                         "Starting to watch grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log",
                         "Started watching grep -c \"^EXIT\" /home/user/work/logs/build-linux.log /home/user/work/logs/build-windows.log",
@@ -1963,7 +2072,10 @@ pub(crate) fn fixtures() -> Vec<Fixture> {
                 "shell",
                 r#"{"command": "cargo build"}"#,
                 "in the background as job 4d2c1a9b-1111-2222-3333-444455556666, 600.0 s\nterminal_status shows how it goes.",
-                command("cargo build"),
+                Act {
+                    job_runs: true,
+                    ..command("cargo build")
+                },
                 "$ cargo build",
                 "Ran cargo build · in the background",
             )
@@ -3307,12 +3419,15 @@ mod tests {
     }
 
     /// A line's words keep their start, the parts after them give way whole,
-    /// the last first, and then the words are cut where a word ends.
+    /// the last first, each when the words would keep less than it lets
+    /// them, and then the words are cut where a word ends.
     #[test]
     fn a_line_gives_way_its_parts_whole_then_its_words_at_a_word() {
+        let part = |width, keep| Part { width, keep };
+        let parts = [part(8, 24), part(6, 24)];
         // All of it fits.
         assert_eq!(
-            fit(20, 24, 4, &[8, 6], 40),
+            fit(20, 4, &parts, 40),
             Fit {
                 words: 22,
                 parts: 2
@@ -3320,7 +3435,7 @@ mod tests {
         );
         // The parts stay while the words keep 24, which take the rest.
         assert_eq!(
-            fit(30, 24, 0, &[8, 6], 40),
+            fit(30, 0, &parts, 40),
             Fit {
                 words: 26,
                 parts: 2
@@ -3328,14 +3443,14 @@ mod tests {
         );
         // Then the last part goes first, whole.
         assert_eq!(
-            fit(30, 24, 0, &[8, 6], 37),
+            fit(30, 0, &parts, 37),
             Fit {
                 words: 29,
                 parts: 1
             }
         );
         assert_eq!(
-            fit(30, 24, 0, &[8, 6], 31),
+            fit(30, 0, &parts, 31),
             Fit {
                 words: 31,
                 parts: 0
@@ -3343,7 +3458,7 @@ mod tests {
         );
         // Words shorter than 24 keep only their own width.
         assert_eq!(
-            fit(10, 24, 0, &[8], 18),
+            fit(10, 0, &[part(8, 24)], 18),
             Fit {
                 words: 10,
                 parts: 1
@@ -3351,20 +3466,56 @@ mod tests {
         );
         // What never gives way stays, and the words take what's left.
         assert_eq!(
-            fit(30, 24, 10, &[8], 20),
+            fit(30, 10, &[part(8, 24)], 20),
             Fit {
                 words: 10,
+                parts: 0
+            }
+        );
+        // What happened (keep 12) stays after how it runs (keep 24) went,
+        // until the words would keep less than 12.
+        let parts = [part(16, WORDS_KEEP), part(8, WORDS_KEEP_RUNNING)];
+        assert_eq!(
+            fit(23, 0, &parts, 40),
+            Fit {
+                words: 24,
+                parts: 1
+            }
+        );
+        assert_eq!(
+            fit(23, 0, &parts, 28),
+            Fit {
+                words: 12,
+                parts: 1
+            }
+        );
+        assert_eq!(
+            fit(23, 0, &parts, 27),
+            Fit {
+                words: 27,
                 parts: 0
             }
         );
         let cut = |text: &str, room: usize| {
             let clusters: Vec<(String, usize)> = text.chars().map(|c| (c.to_string(), 1)).collect();
             text.chars()
-                .take(cut_at_word(&clusters, room))
+                .take(cut_at_word(&clusters, room, WORDS_KEEP))
                 .collect::<String>()
         };
         // At the end of a word, without the space after it.
         assert_eq!(cut("Waiting for job c876812b", 9), "Waiting");
+        // A word that fits the room the words keep is never cut inside, even
+        // where the word before it keeps less than half the room.
+        assert_eq!(cut("Started migrate in a terminal", 14), "Started");
+        // A wider one is, a path, an ID or a long word.
+        assert_eq!(
+            cut("Ran ./target/debug/arko-tui-something", 30),
+            "Ran ./target/debug/arko-tui-so"
+        );
+        assert_eq!(
+            cut("Ran internationalization checks", 16),
+            "Ran internationa"
+        );
         assert_eq!(
             cut("Running cargo build --release -p arko", 22),
             "Running cargo build"
@@ -3381,6 +3532,52 @@ mod tests {
         );
         assert_eq!(cut("abcdefghij", 4), "abcd");
         assert_eq!(cut("short", 9), "short");
+    }
+
+    /// An open row or call shows each thing its line left out once, its
+    /// words whole where the line cut them and what happened where the line
+    /// left it out, and nothing its line shows.
+    #[test]
+    fn what_a_line_left_out_shows_once() {
+        let words = Words {
+            text: "Waited for job 4d2c1a9b".into(),
+            news: Some("1 failed".into()),
+            note: Some("failed (exit 1)".into()),
+            ..Words::default()
+        };
+        // Its words cut and every part left out.
+        assert_eq!(
+            words.left_out(Some(&words.text), 0).as_deref(),
+            Some("Waited for job 4d2c1a9b (1 failed) · failed (exit 1)")
+        );
+        // Its words whole and its note left out, the note alone.
+        assert_eq!(words.left_out(None, 1).as_deref(), Some("failed (exit 1)"));
+        assert_eq!(
+            words.left_out(None, 0).as_deref(),
+            Some("1 failed · failed (exit 1)")
+        );
+        // Its words cut and every part shown, the words.
+        assert_eq!(words.left_out(Some("x y"), 2).as_deref(), Some("x y"));
+        assert_eq!(words.left_out(None, 2), None);
+        // A call, by the same rule, never with its mark.
+        assert_eq!(
+            call_left_out(Some("$ cargo build --release"), Some("41.0 s")).as_deref(),
+            Some("$ cargo build --release · 41.0 s")
+        );
+        assert_eq!(
+            call_left_out(None, Some("failed (exit 1)")).as_deref(),
+            Some("failed (exit 1)")
+        );
+        assert_eq!(call_left_out(Some("$ ls"), None).as_deref(), Some("$ ls"));
+        assert_eq!(call_left_out(None, None), None);
+        // What a call says once it ended. One that failed says so.
+        assert_eq!(ended(Some(CallStatus::Failed), None), Some(FAILED));
+        assert_eq!(
+            ended(Some(CallStatus::Ok), Some(" 3 lines ")),
+            Some("3 lines")
+        );
+        assert_eq!(ended(Some(CallStatus::Ok), Some(" ")), None);
+        assert_eq!(ended(Some(CallStatus::Running), Some("x")), None);
     }
 
     /// A path's folders give way from their start, a whole folder at a time.
@@ -3740,6 +3937,29 @@ mod tests {
         };
         assert_eq!(row.words.text, "Started npm run dev in a terminal");
         assert_eq!(row.words.note.as_deref(), Some("running"));
+        // While its job runs, its note says how the job runs, which gives way
+        // before the words do and stands through the run.
+        let runs = Act {
+            job_runs: true,
+            ..started.clone()
+        };
+        let steps = [Step::Call(Call {
+            act: Some(&runs),
+            status: Some(Ok),
+            outcome: Some("running"),
+            job: true,
+            ..Call::default()
+        })];
+        let [Piece::Row(row)]: [Piece; 1] = rows(&steps).try_into().unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            (row.words.note.as_deref(), row.words.note_runs),
+            (Some("running"), true)
+        );
+        assert_eq!(note_keep(&row.words), WORDS_KEEP_RUNNING);
+        assert_eq!(outcome_keep(Some(&runs)), WORDS_KEEP_RUNNING);
+        assert_eq!(outcome_keep(Some(&started)), WORDS_KEEP);
         // A long call that runs has a row of its own, which says what runs
         // with no note, so a narrow line keeps it and the row's buttons.
         let (rg, build) = (act(Command, "rg x"), act(Command, "cargo build"));

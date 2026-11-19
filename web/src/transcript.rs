@@ -429,31 +429,40 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                 .collect_view()
         })
     };
-    // Where its line cut its words, a row of one call opens to the call as
-    // written, unless its detail is the whole command or query, and where it
-    // left out its news or note, to its words whole with them.
+    // A row of one call opens to what its line left out, each once. Where
+    // the line cut its words, the call as written, unless its detail is the
+    // whole command or query, and where it left out its news or note, them,
+    // after its words whole where it cut those too.
     let whole = move || {
-        if left_out() && !data.with(|row| row.merged) {
-            return Some(view! { <pre class="held">{steady_words().said()}</pre> }.into_any());
+        if data.with(|row| row.merged) {
+            return None;
         }
-        (cut.get() && !data.with(|row| row.merged))
-            .then(|| members().first().copied().and_then(cell))
-            .flatten()
-            .filter(|cell| !cell.data.with(detail_is_whole))
-            .map(|cell| {
-                // (A code run's words whole, which its call as written only
-                // repeats with the tool's name.)
-                let code = cell.data.with(|item| {
-                    item.act
-                        .as_ref()
-                        .is_some_and(|act| act.kind == ActKind::Code)
-                });
-                let text = match code {
-                    true => words().text,
-                    false => cell.data.with(|item| item.text.clone()),
-                };
-                view! { <pre class="held">{text}</pre> }.into_any()
-            })
+        let (words_cut, parts) =
+            steady.with(|steady| steady.as_ref().map(|fit| (fit.words_cut, fit.parts)))?;
+        let cell = members().first().copied().and_then(cell);
+        let words_cut = words_cut
+            && !cell
+                .as_ref()
+                .is_some_and(|cell| cell.data.with(detail_is_whole));
+        if left_out() {
+            let steady = steady_words();
+            let text = steady.left_out(words_cut.then_some(steady.text.as_str()), parts)?;
+            return Some(view! { <pre class="held">{text}</pre> }.into_any());
+        }
+        words_cut.then_some(cell).flatten().map(|cell| {
+            // (A code run's words whole, which its call as written only
+            // repeats with the tool's name.)
+            let code = cell.data.with(|item| {
+                item.act
+                    .as_ref()
+                    .is_some_and(|act| act.kind == ActKind::Code)
+            });
+            let text = match code {
+                true => words().text,
+                false => cell.data.with(|item| item.text.clone()),
+            };
+            view! { <pre class="held">{text}</pre> }.into_any()
+        })
     };
     // (The call as written is the first of what its one call holds, so it
     // goes in that call's place on the rail.)
@@ -494,8 +503,8 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                         // (Its triangle turns as it opens. A row with nothing
                         // to open has a dot.)
                         <span class="mark">{move || if opens() || cut.get() { "▸" } else { STILL }}</span>
-                        // (Its words keep 24 columns, and what follows them
-                        // gives way, the last first, as in the terminal.)
+                        // (What follows its words gives way whole, the last
+                        // first, by the rule the terminal's line follows.)
                         {move || {
                             let words = words();
                             let fitted = fitted.get();
@@ -546,17 +555,18 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
 
 /// The room each part after a Quiet row's words takes on its line with its
 /// gap and its dot or parentheses, its news, its note and how it runs, in
-/// the order they come ([`quiet::Words`]).
-fn quiet_parts(words: &quiet::Words, m: fit::Metrics) -> Vec<f64> {
+/// the order they come ([`quiet::Words`]), each with the columns the words
+/// keep before it gives way. (Its news and note say what happened.)
+fn quiet_parts(words: &quiet::Words, m: fit::Metrics) -> Vec<(f64, usize)> {
     let mut parts = Vec::new();
     if let Some(news) = &words.news {
-        parts.push(fit::GAP + m.text(&format!("({news})")));
+        parts.push((fit::GAP + m.text(&format!("({news})")), quiet::WORDS_KEEP));
     }
     if let Some(note) = &words.note {
-        parts.push(fit::GAP + m.dot() + m.text(note));
+        parts.push((fit::GAP + m.dot() + m.text(note), quiet::note_keep(words)));
     }
     for live in &words.live {
-        parts.push(fit::GAP + m.dot() + m.text(live));
+        parts.push((fit::GAP + m.dot() + m.text(live), quiet::WORDS_KEEP_RUNNING));
     }
     parts
 }
@@ -602,7 +612,7 @@ fn quiet_member(
     let folds = move || has_content || data.with(|item| item.detail.is_some());
     // Its line cut its words or left out its outcome's words.
     let cut = RwSignal::new(LineCut::default());
-    let open = move || !merged() || ((folds() || cut.get().cut) && page.calls_open.contains(id));
+    let open = move || !merged() || ((folds() || cut.get().cut()) && page.calls_open.contains(id));
     // What it holds, its detail and its content.
     let contents: Vec<RwSignal<ItemData>> = results
         .iter()
@@ -649,7 +659,7 @@ fn quiet_member(
     };
     let line = move || {
         merged().then(|| {
-            let mark = move || match (folds() || cut.get().cut, open()) {
+            let mark = move || match (folds() || cut.get().cut(), open()) {
                 (false, _) => STILL,
                 (true, false) => "▸",
                 (true, true) => "▾",
@@ -659,7 +669,7 @@ fn quiet_member(
                     on:click=move |_| {
                         if !page.calls_open.contains_untracked(id)
                             && !folds()
-                            && !cut.get_untracked().cut
+                            && !cut.get_untracked().cut()
                         {
                             return;
                         }
@@ -1145,7 +1155,16 @@ fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
             }
     };
     let words = move || {
-        let whole = cut().then(|| view! { <pre class="held">{said().said()}</pre> });
+        // (What its line left out, each once, its words whole where it cut
+        // them and its note where it left it out.)
+        let whole = steady
+            .get()
+            .filter(|fitted| fitted.cut)
+            .and_then(|fitted| {
+                let said = said();
+                said.left_out(fitted.words_cut.then_some(said.text.as_str()), fitted.parts)
+            })
+            .map(|text| view! { <pre class="held">{text}</pre> });
         let body = if report() {
             view! { <Md id=id text=cell.text code=cell.code /> }.into_any()
         } else {
@@ -1269,7 +1288,7 @@ fn call_line(
                 fitted
                     .as_ref()
                     .map_or(LineCut::default(), |fitted| LineCut {
-                        cut: fitted.cut,
+                        words_cut: fitted.words_cut,
                         left_out: !fitted.outcome,
                     })
             });
@@ -1370,16 +1389,7 @@ fn call_line(
 /// without one the words alone). A call that failed says so whatever else
 /// it says. Nothing while it runs.
 fn call_outcome(item: &ItemData) -> (Option<CallStatus>, Option<String>) {
-    let status = match item.status {
-        Some(status @ (CallStatus::Ok | CallStatus::Failed)) => status,
-        _ => return (None, None),
-    };
-    let words = match status {
-        CallStatus::Failed => Some(item.outcome.as_deref().unwrap_or(quiet::FAILED)),
-        _ => item.outcome.as_deref(),
-    }
-    .map(str::trim)
-    .filter(|words| !words.is_empty());
+    let words = quiet::ended(item.status, item.outcome.as_deref());
     let mark = quiet::mark(item.status, item.act.as_ref());
     let words = words.map(|words| match mark {
         Some(_) => format!(" {words}"),
@@ -1388,50 +1398,31 @@ fn call_outcome(item: &ItemData) -> (Option<CallStatus>, Option<String>) {
     (mark, words)
 }
 
-/// What a call line's fit left out, which the call opens to whole.
+/// What a call line's fit left out, which the call opens to.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct LineCut {
-    /// It cut its words or left out its outcome's words.
-    cut: bool,
+    /// It cut its words (or a file's folders or name).
+    words_cut: bool,
     /// It left out its outcome's words.
     left_out: bool,
 }
 
-/// `item`'s line whole, its words and how it went, as a line that cuts them
-/// opens to.
-fn call_whole(item: &ItemData) -> String {
-    let (mark, words) = call_outcome(item);
-    let mut whole = item.text.clone();
-    match mark {
-        Some(mark) => {
-            whole.push_str(if mark == CallStatus::Failed {
-                " · ✗"
-            } else {
-                " · ✓"
-            });
-            whole.push_str(&words.unwrap_or_default());
-        }
-        None => {
-            if let Some(words) = words {
-                whole.push_str(&format!(" · {words}"));
-            }
-        }
+impl LineCut {
+    /// It cut its words or left out its outcome's words.
+    fn cut(self) -> bool {
+        self.words_cut || self.left_out
     }
-    whole
 }
 
 /// What an open call shows over its detail of what its line left out
-/// (`cut`). Where the line left out its outcome's words, its line whole
-/// ([`call_whole`]). Where it cut only its words, the call as written,
-/// unless the detail is the whole command or query.
+/// (`cut`), each once ([`quiet::call_left_out`]). Where the line cut its
+/// words, the call as written, unless the detail is the whole command or
+/// query. Where it left out its outcome's words, them. Never its mark.
 fn shown_whole(item: &ItemData, cut: LineCut) -> Option<String> {
-    match () {
-        _ if cut.left_out => Some(call_whole(item)),
-        _ if cut.cut && !(item.detail.is_some() && detail_is_whole(item)) => {
-            Some(item.text.clone())
-        }
-        _ => None,
-    }
+    let words = (cut.words_cut && !(item.detail.is_some() && detail_is_whole(item)))
+        .then_some(item.text.as_str());
+    let outcome = quiet::ended(item.status, item.outcome.as_deref()).filter(|_| cut.left_out);
+    quiet::call_left_out(words, outcome)
 }
 
 /// A call line's words as they fit.
@@ -1451,8 +1442,8 @@ struct CallFit {
     words: FitWords,
     /// Its outcome's words show.
     outcome: bool,
-    /// It cut its words or left out its outcome's words.
-    cut: bool,
+    /// It cut its words (or a file's folders or name).
+    words_cut: bool,
 }
 
 /// `item`'s line fitted to `room` pixels by the rule every row's line
@@ -1479,16 +1470,18 @@ fn fit_call(item: &ItemData, room: f64) -> CallFit {
                     name: fitted.name,
                 },
                 outcome: fitted.outcome,
-                cut: fitted.cut,
+                words_cut: fitted.words_cut,
             }
         }
         None => {
-            let parts: Vec<f64> = outcome.into_iter().collect();
+            let keep = quiet::outcome_keep(item.act.as_ref());
+            let parts: Vec<(f64, usize)> =
+                outcome.into_iter().map(|outcome| (outcome, keep)).collect();
             let fitted = fit::line(&item.text.replace('\n', " "), fixed, &parts, room, m);
             CallFit {
                 outcome: fitted.parts == parts.len(),
                 words: FitWords::Plain(fitted.words),
-                cut: fitted.cut,
+                words_cut: fitted.words_cut,
             }
         }
     }
@@ -1509,7 +1502,7 @@ fn call_row(cell: RowCell) -> AnyView {
     // is drawn for one view.)
     let folds = move || {
         let own = data.with(|item| item.agent == MAIN) || page.worker.get_untracked().is_some();
-        data.with(|item| item.detail.is_some()) || (own && content.get()) || cut.get().cut
+        data.with(|item| item.detail.is_some()) || (own && content.get()) || cut.get().cut()
     };
     let open = move || folds() && full_open(page, id, command);
     // (Its triangle turns as it opens.)
@@ -1620,7 +1613,10 @@ fn run_line(line: crate::protocol::CallLine) -> AnyView {
                     )
                 }
                 None => {
-                    let parts: Vec<f64> = outcome.into_iter().collect();
+                    let parts: Vec<(f64, usize)> = outcome
+                        .into_iter()
+                        .map(|outcome| (outcome, quiet::WORDS_KEEP))
+                        .collect();
                     let fitted = fit::line(&text, fixed, &parts, room, m);
                     (FitWords::Plain(fitted.words), fitted.parts == parts.len())
                 }

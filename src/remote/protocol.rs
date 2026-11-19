@@ -291,6 +291,12 @@ pub struct Act {
     /// the call went well whatever became of the job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub found: Option<JobFound>,
+    /// For a call that made a job (it moved to the background, or started a
+    /// terminal or a monitor), the job still runs. What its line says of the
+    /// job ("running", "monitoring") is then how it runs, which gives way
+    /// before its words do ([`quiet::WORDS_KEEP_RUNNING`](super::quiet::WORDS_KEEP_RUNNING)).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub job_runs: bool,
     /// What the row's words cut that the reader may need, whole, as one
     /// muted line over the call's content: a command's whole text with its
     /// folder, a long search's query, a monitor's settings. Empty when the

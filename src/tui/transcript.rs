@@ -2222,14 +2222,19 @@ impl Transcript {
                     Kind::Call => {
                         calls = item.act.as_ref().and_then(|act| act.calls.as_ref());
                         let detail = item.act.as_ref().map_or("", |act| act.detail.as_str());
-                        // Where its line cut its words, the call as written,
-                        // unless the detail is the whole command or query,
-                        // and where it left out its news or note, its words
-                        // whole with them.
+                        // What its line left out, each once. Where it cut its
+                        // words, the call as written, unless the detail is
+                        // the whole command or query, and where it left out
+                        // its news or note, them, after its words whole where
+                        // it cut those too.
                         let fit = quiet_steady(&row.words, width);
+                        let words = fit.words_cut && !detail_is_whole(item);
                         let whole = if fit.left_out {
-                            Some(rendered(steady_words(&row.words).said()))
-                        } else if fit.cut && !detail_is_whole(item) {
+                            let steady = steady_words(&row.words);
+                            steady
+                                .left_out(words.then_some(steady.text.as_str()), fit.parts)
+                                .map(rendered)
+                        } else if words {
                             // (A code run's words whole, which its call as
                             // written only repeats with the tool's name.)
                             Some(match item.act.as_ref().map(|act| act.kind) {
@@ -4496,18 +4501,20 @@ fn fold_symbol(fold: Option<bool>) -> &'static str {
 }
 
 /// The parts after a Quiet row's words that give way where its line is
-/// narrow, the last first ([`quiet::fit`]). That is its news, its note, and
-/// how it runs ([`quiet::Words::live`]).
-fn quiet_parts(words: &quiet::Words) -> Vec<String> {
+/// narrow, the last first ([`quiet::fit`]), each with the columns the words
+/// keep before it goes. That is its news and its note, which say what
+/// happened (or how its job runs, [`quiet::Words::note_runs`]), and how it
+/// runs ([`quiet::Words::live`]).
+fn quiet_parts(words: &quiet::Words) -> Vec<(String, usize)> {
     let mut parts = Vec::new();
     if let Some(news) = &words.news {
-        parts.push(rendered(format!(" ({news})")));
+        parts.push((rendered(format!(" ({news})")), quiet::WORDS_KEEP));
     }
     if let Some(note) = &words.note {
-        parts.push(rendered(format!(" · {note}")));
+        parts.push((rendered(format!(" · {note}")), quiet::note_keep(words)));
     }
     for live in &words.live {
-        parts.push(rendered(format!(" · {live}")));
+        parts.push((rendered(format!(" · {live}")), quiet::WORDS_KEEP_RUNNING));
     }
     parts
 }
@@ -4538,6 +4545,10 @@ struct QuietFit {
     tail: String,
     /// It cut its words or left out a part.
     cut: bool,
+    /// It cut its words.
+    words_cut: bool,
+    /// How many of the parts after its words show ([`quiet::Fit::parts`]).
+    parts: usize,
     /// It left out a part.
     left_out: bool,
 }
@@ -4552,21 +4563,27 @@ fn quiet_fit(words: &quiet::Words, width: usize, lead: usize, clock: Option<&str
     let text = rendered(&words.text);
     let parts = quiet_parts(words);
     let end = quiet_end(words, clock);
-    let widths: Vec<usize> = parts.iter().map(|part| text_width(part)).collect();
-    let fit = quiet::fit(
-        text_width(&text),
-        quiet::WORDS_KEEP,
-        text_width(&end),
-        &widths,
-        room,
-    );
+    let widths: Vec<quiet::Part> = parts
+        .iter()
+        .map(|(part, keep)| quiet::Part {
+            width: text_width(part),
+            keep: *keep,
+        })
+        .collect();
+    let fit = quiet::fit(text_width(&text), text_width(&end), &widths, room);
     let shown = cut_words(&text, fit.words);
     let left_out = fit.parts < parts.len();
+    let tail: String = parts[..fit.parts]
+        .iter()
+        .map(|(part, _)| part.as_str())
+        .collect();
     QuietFit {
         cut: shown != text || left_out,
+        words_cut: shown != text,
+        parts: fit.parts,
         left_out,
         words: shown,
-        tail: parts[..fit.parts].concat() + &end,
+        tail: tail + &end,
     }
 }
 
@@ -4611,7 +4628,7 @@ pub(super) fn cut_words(text: &str, room: usize) -> String {
     let clusters: Vec<(&str, usize)> = termelon::text::graphemes(text)
         .map(|(c, w)| (c, usize::from(w)))
         .collect();
-    let kept = quiet::cut_at_word(&clusters, left);
+    let kept = quiet::cut_at_word(&clusters, left, quiet::WORDS_KEEP);
     let words: String = clusters[..kept].iter().map(|(c, _)| *c).collect();
     words + &ellipsis
 }
@@ -5014,14 +5031,19 @@ fn status_lines(
     if words.failed {
         cross_at_right(&mut lines, theme, width);
     }
-    // (Open, where its line cut its words or left out its note, its words
-    // whole.)
-    if cut && look.folds && look.open {
-        let inner = width.saturating_sub(MARGIN).max(1);
-        lines.extend(railed(
-            detail_lines(&rendered(words.said()), theme, inner),
-            theme,
-        ));
+    // (Open, what its line left out, each once, its words whole where it cut
+    // them and its note where it left it out.)
+    if look.folds && look.open {
+        let steady = steady_words(&words);
+        let fit = quiet_fit(&steady, width, text_width(&who), None);
+        let left_out = steady.left_out(fit.words_cut.then_some(steady.text.as_str()), fit.parts);
+        if let Some(left_out) = left_out.filter(|_| fit.cut) {
+            let inner = width.saturating_sub(MARGIN).max(1);
+            lines.extend(railed(
+                detail_lines(&rendered(left_out), theme, inner),
+                theme,
+            ));
+        }
     }
     if row == quiet::WorkerRow::Reported && look.folds && look.open {
         let body = markdown::render(
@@ -5159,14 +5181,8 @@ fn call_tail(
     in_row: bool,
 ) -> (Vec<(String, Option<CallStatus>)>, Option<String>) {
     match item.status {
-        Some(status @ (CallStatus::Ok | CallStatus::Failed)) => {
-            // (A call that failed says so, whatever else it has to say.)
-            let outcome = match status {
-                CallStatus::Failed => Some(item.outcome.as_deref().unwrap_or(quiet::FAILED)),
-                _ => item.outcome.as_deref(),
-            }
-            .map(str::trim)
-            .filter(|outcome| !outcome.is_empty());
+        Some(CallStatus::Ok | CallStatus::Failed) => {
+            let outcome = ended_outcome(item);
             // (Its words muted, as a call's that went well, and only the
             // mark in the success's or the error's colour.)
             match quiet::mark(item.status, item.act.as_ref()) {
@@ -5207,31 +5223,57 @@ fn call_tail(
 /// outcome's words, so the call opens to them whole ([`shown_whole`]). (Not
 /// counting how long it has run.)
 fn call_cut(item: &Item, width: usize, who: bool, in_row: bool) -> bool {
-    call_fit(item, width, who, None, in_row, true).2
+    call_fit(item, width, who, None, in_row, true).cut()
 }
 
 /// What an open call shows over its detail of what its line at `width`
-/// left out. Where the line left out its outcome's words, its line whole
-/// ([`call_whole`]). Where it cut only its words, its words whole, unless
-/// the detail is the whole command or query.
+/// left out, each once. Where the line cut its words, its words whole,
+/// unless the detail is the whole command or query. Where it left out its
+/// outcome's words, them, after its words whole where they show, and alone
+/// where the line shows its words. Never its mark, which its line shows.
 fn shown_whole(item: &Item, width: usize, who: bool, in_row: bool) -> Option<String> {
-    let (_, tail, cut) = call_fit(item, width, who, None, in_row, true);
-    let (fixed, outcome) = match item.status == Some(CallStatus::Running) {
-        true => (Vec::new(), None),
-        false => call_tail(item, None, in_row),
-    };
-    let left_out = outcome.is_some() && tail.len() == fixed.len();
-    match () {
-        _ if left_out => Some(call_whole(item)),
-        _ if cut && !(item.detail.is_some() && detail_is_whole(item)) => Some(call_words(item)),
-        _ => None,
+    let fit = call_fit(item, width, who, None, in_row, true);
+    let words = (fit.words_cut && !(item.detail.is_some() && detail_is_whole(item)))
+        .then(|| call_words(item));
+    let outcome = ended_outcome(item).filter(|_| fit.left_out);
+    quiet::call_left_out(words.as_deref(), outcome).map(rendered)
+}
+
+/// A call's outcome's words once it ended ([`quiet::ended`]).
+fn ended_outcome(item: &Item) -> Option<&str> {
+    quiet::ended(item.status, item.outcome.as_deref())
+}
+
+/// The columns a call line's words keep before its outcome's words give
+/// way ([`quiet::outcome_keep`]).
+fn outcome_keep(item: &Item) -> usize {
+    quiet::outcome_keep(item.act.as_ref())
+}
+
+/// A call's Full line as [`call_fit`] fits it.
+struct CallFit {
+    /// Its words, cut where they don't fit.
+    words: String,
+    /// What follows them, each part with the mark it is, if any.
+    tail: Vec<(String, Option<CallStatus>)>,
+    /// It cut its words (or a file's folders or name).
+    words_cut: bool,
+    /// It left out its outcome's words.
+    left_out: bool,
+}
+
+impl CallFit {
+    /// It cut its words or left out its outcome's words.
+    fn cut(&self) -> bool {
+        self.words_cut || self.left_out
     }
 }
 
 /// A call's words and what follows them as its Full line at `width` shows
-/// them, and whether it cut its words, by the rule every row's line follows
-/// ([`quiet::fit`]). The words keep their start, then the outcome's words
-/// give way whole, then the words take what's left, cut where a word ends.
+/// them, and what it cut, by the rule every row's line follows
+/// ([`quiet::fit`]). The words keep their start ([`quiet::WORDS_KEEP`]),
+/// then the outcome's words give way whole, then the words take what's
+/// left, cut where a word ends.
 /// A file tool's line keeps the file's name whole instead
 /// ([`FileLine`](crate::remote::FileLine), [`quiet::file_fit`]). Its
 /// outcome's words show only beside that, then its folders give way from
@@ -5245,7 +5287,7 @@ fn call_fit(
     clock: Option<&str>,
     in_row: bool,
     steady: bool,
-) -> (String, Vec<(String, Option<CallStatus>)>, bool) {
+) -> CallFit {
     let words = call_words(item);
     // (Steady, without what ends a running line, which comes and goes.)
     let (mut tail, outcome) = match steady && item.status == Some(CallStatus::Running) {
@@ -5257,15 +5299,25 @@ fn call_fit(
     let fixed: usize = tail.iter().map(|(part, _)| text_width(part)).sum();
     let outcome_width = outcome.as_deref().map_or(0, text_width);
     let Some(file) = crate::remote::FileLine::of(&item.text, item.path) else {
-        let parts: Vec<usize> = outcome.iter().map(|_| outcome_width).collect();
-        let fit = quiet::fit(text_width(&words), quiet::WORDS_KEEP, fixed, &parts, room);
-        let dropped = outcome.is_some() && fit.parts == 0;
-        if !dropped {
+        let parts: Vec<quiet::Part> = outcome
+            .iter()
+            .map(|_| quiet::Part {
+                width: outcome_width,
+                keep: outcome_keep(item),
+            })
+            .collect();
+        let fit = quiet::fit(text_width(&words), fixed, &parts, room);
+        let left_out = outcome.is_some() && fit.parts == 0;
+        if !left_out {
             tail.extend(outcome.map(|outcome| (outcome, None)));
         }
         let shown = cut_words(&words, fit.words);
-        let cut = shown != words || dropped;
-        return (shown, tail, cut);
+        return CallFit {
+            words_cut: shown != words,
+            words: shown,
+            tail,
+            left_out,
+        };
     };
     let part = |text: &str| rendered(wrap::clean(text).replace('\n', " "));
     let (lead, folders, name) = (part(file.lead), part(file.folders), part(file.name));
@@ -5278,8 +5330,8 @@ fn call_fit(
         text_width(&elided),
         room,
     );
-    let dropped = outcome.is_some() && !fit.outcome;
-    if !dropped {
+    let left_out = outcome.is_some() && !fit.outcome;
+    if !left_out {
         tail.extend(outcome.map(|outcome| (outcome, None)));
     }
     let shown_folders = if fit.folders >= text_width(&folders) {
@@ -5295,12 +5347,16 @@ fn call_fit(
     // (The name with the rest of the line after it, "app.rs (all)", cut
     // as words are, so a group in parentheses goes whole.)
     let shown_name = cut_words(&name, fit.name);
-    let cut = shown_folders != folders || shown_name != name || dropped;
-    (format!("{lead}{shown_folders}{shown_name}"), tail, cut)
+    CallFit {
+        words_cut: shown_folders != folders || shown_name != name,
+        words: format!("{lead}{shown_folders}{shown_name}"),
+        tail,
+        left_out,
+    }
 }
 
-/// A call's line whole, its words and how it went, as a line that cuts
-/// them opens to.
+/// A call's line whole, its words and how it went, as a copy of a line
+/// that cuts them copies it.
 fn call_whole(item: &Item) -> String {
     let (tail, outcome) = call_tail(item, None, false);
     let mut whole = call_words(item);
@@ -5333,10 +5389,11 @@ fn call_line(
             theme.text().add_modifier(Modifier::BOLD),
         ));
     }
-    let (shown, tail, cut) = call_fit(item, width, who, clock, in_row, false);
+    let fit = call_fit(item, width, who, clock, in_row, false);
+    let cut = fit.cut();
     let style = if in_row { theme.dim() } else { theme.text() };
-    spans.push(Span::styled(shown, style));
-    for (part, mark) in tail {
+    spans.push(Span::styled(fit.words, style));
+    for (part, mark) in fit.tail {
         let style = match mark {
             Some(CallStatus::Ok) => theme.success(),
             Some(CallStatus::Failed) => theme.error(),
@@ -7536,9 +7593,72 @@ mod tests {
         }
     }
 
-    /// Narrowing a line, its outcome's words go whole while its words keep
-    /// their start (24 columns), then its words give way where a word ends,
-    /// and the line fits. The line then opens to what it left out.
+    /// What a wait found stays on its line as the line narrows, and its
+    /// job's ID gives way first, until its words would keep less than 12
+    /// columns, in Full and in Quiet, whatever it found. Open, the line
+    /// shows what it left out once, and never its mark.
+    #[test]
+    fn a_waits_outcome_stays_before_its_jobs_id() {
+        use crate::remote::JobFound;
+        for (found, said) in [
+            (JobFound::Failed, "failed (exit 1)"),
+            (JobFound::Input, "asks for input"),
+            (JobFound::Stopped, "stopped"),
+            (JobFound::Finished, "finished"),
+            (JobFound::Running, "new output"),
+        ] {
+            let mut wait = item(1, Kind::Call, "waiting for job 4d2c1a9b");
+            wait.status = Some(CallStatus::Ok);
+            wait.outcome = Some(said.into());
+            wait.act = Some(Act {
+                kind: ActKind::JobWait,
+                target: "4d2c1a9b".into(),
+                found: Some(found),
+                ..Act::default()
+            });
+            let (fixed, outcome) = call_tail(&wait, None, false);
+            let fixed: usize = fixed.iter().map(|(part, _)| text_width(part)).sum();
+            let least = MARGIN + fixed + quiet::WORDS_KEEP + text_width(&outcome.unwrap());
+            for width in 16..70 {
+                let fit = call_fit(&wait, width, false, None, false, false);
+                let tail: String = fit.tail.iter().map(|(part, _)| part.as_str()).collect();
+                assert!(MARGIN + text_width(&fit.words) + text_width(&tail) <= width);
+                assert_eq!(tail.contains(said), width >= least, "{found:?} {width}");
+                let whole = shown_whole(&wait, width, false, false).unwrap_or_default();
+                assert!(!whole.contains('✓') && !whole.contains('✗'), "{whole}");
+                match (fit.words_cut, fit.left_out) {
+                    (true, false) => assert_eq!(whole, "waiting for job 4d2c1a9b"),
+                    (false, true) => assert_eq!(whole, said),
+                    (true, true) => assert_eq!(whole, format!("waiting for job 4d2c1a9b · {said}")),
+                    (false, false) => assert_eq!(whole, ""),
+                }
+            }
+            // At the narrowest that keeps it, the ID went whole.
+            let fit = call_fit(&wait, least, false, None, false, false);
+            assert_eq!(fit.words, "waiting for…", "{found:?}");
+            // Quiet's row says it in its note, by the same rule.
+            let quiet = quiet::Words {
+                text: "Waited for job 4d2c1a9b".into(),
+                note: Some(said.into()),
+                failed: found == JobFound::Failed,
+                ..quiet::Words::default()
+            };
+            let cross = if quiet.failed { CROSS } else { 0 };
+            let least =
+                MARGIN + cross + quiet::WORDS_KEEP + text_width(&rendered(format!(" · {said}")));
+            for width in 16..70 {
+                let fit = quiet_fit(&quiet, width, 0, None);
+                assert!(MARGIN + cross + text_width(&fit.words) + text_width(&fit.tail) <= width);
+                assert_eq!(fit.tail.contains(said), width >= least, "{found:?} {width}");
+            }
+            assert_eq!(quiet_fit(&quiet, least, 0, None).words, "Waited for…");
+        }
+    }
+
+    /// Narrowing a line, its words give way where a word ends while they
+    /// keep their start (12 columns), then its outcome's words go whole, and
+    /// the line fits. The line then opens to what it left out, each once,
+    /// and never to its mark.
     #[test]
     fn a_narrow_line_drops_its_outcome_whole_and_cuts_its_words_at_a_word() {
         let words = "$ cargo build --release -p arko";
@@ -7547,8 +7667,9 @@ mod tests {
         call.outcome = Some("41.0 s".into());
         let mut dropped_at = None;
         for width in (12..60).rev() {
-            let (shown, tail, cut) = call_fit(&call, width, false, None, false, false);
-            let tail: String = tail.iter().map(|(part, _)| part.as_str()).collect();
+            let fit = call_fit(&call, width, false, None, false, false);
+            let (shown, cut) = (fit.words.clone(), fit.cut());
+            let tail: String = fit.tail.iter().map(|(part, _)| part.as_str()).collect();
             let said = format!("{shown}{tail}");
             // It fits, and its mark never gives way.
             assert!(MARGIN + text_width(&said) <= width, "{width}: {said}");
@@ -7556,13 +7677,16 @@ mod tests {
             // The outcome shows whole or not at all.
             let outcome = tail.contains("41.0 s");
             assert!(outcome || !tail.contains("41"), "{width}: {said}");
-            // While it shows, the words keep their start.
+            assert_eq!(fit.left_out, !outcome, "{width}");
+            assert_eq!(fit.words_cut, shown != words, "{width}");
+            // While it shows, the words keep the room of their start (and
+            // show it to where a word ends), and it goes only where they
+            // would keep less.
+            let room = width - MARGIN - text_width(" · ✓");
             if outcome {
-                assert!(
-                    text_width(&shown) >= quiet::WORDS_KEEP.min(text_width(words)),
-                    "{width}"
-                );
+                assert!(room >= quiet::WORDS_KEEP + text_width(" 41.0 s"), "{width}");
             } else {
+                assert!(room < quiet::WORDS_KEEP + text_width(" 41.0 s"), "{width}");
                 dropped_at.get_or_insert(width);
             }
             // The words are cut where a word ends, unless the last word that
@@ -7574,16 +7698,28 @@ mod tests {
                     assert!(last * 2 < text_width(kept) + 1, "{width}: {shown}");
                 }
             }
-            // The line opens to what it left out.
+            // The line opens to what it left out, each once, never its mark.
             assert_eq!(cut, shown != words || !outcome, "{width}");
             let whole = shown_whole(&call, width, false, false);
-            match outcome {
-                false => assert!(whole.is_some_and(|whole| whole.contains("41.0 s"))),
-                true if cut => assert_eq!(whole.as_deref(), Some(words), "{width}"),
-                true => assert_eq!(whole, None),
-            }
+            let expected = match (shown != words, outcome) {
+                (true, false) => Some(format!("{words} · 41.0 s")),
+                (false, false) => Some("41.0 s".to_string()),
+                (true, true) => Some(words.to_string()),
+                (false, true) => None,
+            };
+            assert_eq!(whole, expected, "{width}");
         }
         assert!(dropped_at.is_some());
+        // Its words whole and a long outcome left out, the outcome alone.
+        let mut short = item(2, Kind::Call, "$ ls");
+        short.status = Some(CallStatus::Failed);
+        short.outcome = Some("No such file or directory (os error 2)".into());
+        let fit = call_fit(&short, 30, false, None, false, true);
+        assert!(fit.left_out && !fit.words_cut);
+        assert_eq!(
+            shown_whole(&short, 30, false, false).as_deref(),
+            Some("No such file or directory (os error 2)")
+        );
         // A Quiet row's note goes whole the same way, and the row opens.
         let quiet = quiet::Words {
             text: "Started cargo build --release in a terminal".into(),
@@ -7597,6 +7733,13 @@ mod tests {
                 fit.tail.is_empty() || fit.tail.contains("running"),
                 "{width}"
             );
+            // (The note stays while the words keep 12 columns.)
+            if fit.tail.is_empty() {
+                assert!(
+                    width < MARGIN + quiet::WORDS_KEEP + text_width(" · running"),
+                    "{width}"
+                );
+            }
             assert_eq!(quiet_cut(&quiet, width), fit.cut, "{width}");
         }
         assert!(!quiet_cut(&quiet, 80));
@@ -7613,8 +7756,9 @@ mod tests {
         call.status = Some(CallStatus::Ok);
         call.outcome = Some("1 edit".into());
         for width in 20..80 {
-            let (shown, tail, _) = call_fit(&call, width, false, None, false, false);
-            let tail: String = tail.iter().map(|(part, _)| part.as_str()).collect();
+            let fit = call_fit(&call, width, false, None, false, false);
+            let shown = fit.words;
+            let tail: String = fit.tail.iter().map(|(part, _)| part.as_str()).collect();
             assert!(
                 MARGIN + text_width(&shown) + text_width(&tail) <= width,
                 "{width}"
@@ -7730,7 +7874,7 @@ mod tests {
         call.path = Some((6, 27));
         call.status = Some(CallStatus::Ok);
         for width in 16..50 {
-            let (shown, _, _) = call_fit(&call, width, false, None, false, false);
+            let shown = call_fit(&call, width, false, None, false, false).words;
             let kept = shown.trim_end_matches('…');
             assert!(
                 !kept.contains('(') || kept.ends_with(')'),

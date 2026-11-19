@@ -26,9 +26,11 @@ style 8 0 40 fg=#dedede bg=#131313
 text 9 "▸ Read parser.rs and made 1 edit"
 style 9 0 2 fg=#9d9d9d bg=#131313
 style 9 2 40 fg=#dedede bg=#131313
-text 10 "▸ Ran cargo test --lib parser         ✗"
+text 10 "▸ Ran cargo… (1 failed, 3 passed)     ✗"
 style 10 0 2 fg=#9d9d9d bg=#131313
-style 10 2 38 fg=#dedede bg=#131313
+style 10 2 12 fg=#dedede bg=#131313
+style 10 12 33 fg=#9d9d9d bg=#131313
+style 10 33 38 fg=#dedede bg=#131313
 style 10 38 39 fg=#ff5257 bg=#131313
 style 10 39 40 fg=#dedede bg=#131313
 text 11 "! retrying in 2 s"

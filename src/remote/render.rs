@@ -1224,6 +1224,8 @@ pub struct Settled {
     job_output_end: Option<u64>,
     /// How a look at a job or a wait on it found the job.
     found: Option<JobFound>,
+    /// Whether the job the call made still runs ([`Act::job_runs`]).
+    job_runs: Option<bool>,
 }
 
 impl Outcome {
@@ -1323,10 +1325,12 @@ impl Outcome {
 
 impl Settled {
     /// How a job a call started (a command that went on in the background,
-    /// a monitor) went on, so what its result first said no longer stands.
-    pub fn job() -> Self {
+    /// a monitor) went on, so what its result first said no longer stands,
+    /// and whether it still `runs`.
+    pub fn job(runs: bool) -> Self {
         Self {
             news: Some(String::new()),
+            job_runs: Some(runs),
             ..Self::default()
         }
     }
@@ -1372,6 +1376,9 @@ impl Settled {
         }
         if settled.found.is_some() {
             act.found = settled.found;
+        }
+        if let Some(runs) = settled.job_runs {
+            act.job_runs = runs;
         }
     }
 }
@@ -1450,6 +1457,7 @@ pub(crate) fn outcome_after(
         let mut outcome = Outcome::ok(MOVED_OUTCOME);
         outcome.output = Some(output.into());
         outcome.job = Some(job);
+        outcome.settled.job_runs = Some(true);
         return outcome;
     }
     // Its line says how the job it started goes, not what started it.
@@ -1457,6 +1465,7 @@ pub(crate) fn outcome_after(
         let mut outcome = Outcome::ok(JOB_RUNNING);
         outcome.output = Some(output.into());
         outcome.job = started_job(output);
+        outcome.settled.job_runs = Some(true);
         return outcome;
     }
     if tool == "monitor_start"
@@ -1465,6 +1474,7 @@ pub(crate) fn outcome_after(
         let mut outcome = Outcome::ok(if running { MONITORING } else { "ended at once" });
         outcome.output = Some(output.into());
         outcome.job = Some(monitor);
+        outcome.settled.job_runs = Some(running);
         return outcome;
     }
     if let Some(outcome) = terminal_outcome(tool, parameters, output, seen) {
@@ -2194,6 +2204,7 @@ fn command_outcome(output: &str) -> Outcome {
     let settled = Settled {
         news: Some(tests.clone().unwrap_or_default()),
         ran: true,
+        job_runs: Some(job.is_some()),
         ..Settled::default()
     };
     let text = if job.is_some() {
@@ -3562,8 +3573,11 @@ mod tests {
         );
         // A job that goes on in the background says how it ended instead.
         let mut moved = Some(tested.clone());
-        Settled::job().apply(&mut moved);
-        assert_eq!(moved.map(|act| act.news).as_deref(), Some(""));
+        Settled::job(false).apply(&mut moved);
+        assert_eq!(
+            moved.map(|act| (act.news, act.job_runs)),
+            Some((String::new(), false))
+        );
         // (It runs tests, so it stands alone even when it prints no counts.)
         let built = settled(SHELL_TOOL_NAME, "exit code 2, 3.0 s\nerror", shell.clone());
         assert_eq!((built.news.as_str(), built.alone), ("", true));
@@ -3703,6 +3717,31 @@ mod tests {
         );
         assert_eq!(started.text.as_deref(), Some(JOB_RUNNING));
         assert_eq!(started.job.map(|job| job.to_string()).as_deref(), Some(job));
+        // Its job runs, as one that moved to the background and a monitor's
+        // do, and a call that made none has no job that runs.
+        let runs = |outcome: &Outcome| {
+            let mut act = Some(Act::default());
+            outcome.settled.apply(&mut act);
+            act.unwrap().job_runs
+        };
+        assert!(runs(&started));
+        let moved = outcome(
+            SHELL_TOOL_NAME,
+            &format!("in the background as job {job}, 600.0 s\nIt goes on running."),
+        );
+        assert!(runs(&moved));
+        assert!(!runs(&outcome(
+            SHELL_TOOL_NAME,
+            "exit code 0, 0.1 s\n(no output)"
+        )));
+        let monitor = |output: &str| super::outcome("monitor_start", &params(&[]), output);
+        assert!(runs(&monitor(&format!("Monitor {job} started. It runs …"))));
+        assert!(!runs(&monitor(&format!(
+            "Monitor {job} ended at once, because its command exited with code 1."
+        ))));
+        // An act saved without it has no job that runs.
+        let saved: Act = serde_json::from_str(r#"{"kind": "other"}"#).unwrap();
+        assert!(!saved.job_runs);
     }
 
     /// A command's words are its whole first line, however long, since each
