@@ -205,6 +205,13 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
 /// deep indent leaves the line room on a phone.
 const HANG_MAX: usize = 16;
 
+/// The line break a blank line of a content holds, since each line is a
+/// block of its own and a selection copies an empty block as nothing. With
+/// it, a copy of the lines has their blank lines too.
+fn blank_break(line: &str) -> Option<AnyView> {
+    line.trim().is_empty().then(|| view! { <br /> }.into_any())
+}
+
 /// A line of code `text`, painted as `html`, which goes on under its code
 /// at the code's own indent where it wraps, so it reads as one line. An
 /// indent that fits doesn't wrap, so the first line holds code.
@@ -222,6 +229,7 @@ fn code_text(text: &str, html: String) -> impl IntoView {
         <span class="text" style:padding-left=format!("{hang}ch") style:text-indent=format!("-{hang}ch")>
             {indent.map(|indent| view! { <span class="indent">{indent}</span> })}
             <span inner_html=html></span>
+            {blank_break(text)}
         </span>
     }
 }
@@ -303,6 +311,7 @@ fn lines_view(kind: ContentKind, text: &str, numbers: Option<usize>) -> AnyView 
                             style:text-indent=format!("-{hang}ch")
                         >
                             {line.to_string()}
+                            {blank_break(line)}
                         </span>
                     }
                 })
