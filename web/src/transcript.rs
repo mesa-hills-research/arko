@@ -884,10 +884,11 @@ fn item_row(id: u64, key: String, cell: RowCell, thinking: Memo<Option<u64>>) ->
     let title = local_time(item.at);
     let body = match item.kind {
         Kind::User => {
-            let tags = move || {
+            // Its tags, as they read now, or (`pending`) while it waited.
+            let tags_of = move |pending: bool| {
                 data.with(|item| {
                     let mut tags = Vec::new();
-                    if let Some(tag) = words::delivery_tag(item) {
+                    if let Some(tag) = words::delivery_tag(item.delivery, pending) {
                         tags.push(tag.to_string());
                     }
                     match item.source {
@@ -900,13 +901,29 @@ fn item_row(id: u64, key: String, cell: RowCell, thinking: Memo<Option<u64>>) ->
                     (!tags.is_empty()).then(|| tags.join(" · "))
                 })
             };
+            // A note the agent read after it waited keeps the room its tags
+            // had then, under the ones it has now, so its row keeps its
+            // height.
+            let tags = move || {
+                let now = tags_of(data.with(|item| item.pending));
+                match data.with(|item| item.waited_as.is_some()).then(|| tags_of(true)).flatten() {
+                    Some(then) => Some(view! {
+                        <span class="tag kept">
+                            <span class="room" aria-hidden="true">{then}</span>
+                            <span>{now}</span>
+                        </span>
+                    }
+                    .into_any()),
+                    None => now.map(|tags| view! { <span class="tag">{tags}</span> }.into_any()),
+                }
+            };
             // Its images and files, then its words, and under it its tags
             // and Copy (when it has words).
             let worded = move || !text.with(|text| text.trim().is_empty());
             view! {
                 <div class="bubble"><Thumbnails data=data /><SentFiles data=data />{move || text.get()}</div>
                 <div class="actions">
-                    {move || tags().map(|tags| view! { <span class="tag">{tags}</span> })}
+                    {tags}
                     <Show when=worded>
                         <CopyButton label="Copy message" text=text />
                     </Show>

@@ -5300,9 +5300,17 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
             for sent in &item.files {
                 lines.extend(plain(&sent.file.line(), theme.dim(), inner));
             }
-            if let Some(tag) = user_tag(item) {
-                // (Not the user's text, so a copy leaves it out.)
-                let tag = cut_end(&tag, inner);
+            // (Not the user's text, so a copy leaves it out.)
+            let tag = user_tag(item).map(|tag| cut_end(&tag, inner));
+            // A note that waited keeps the room of its "pending" tag once
+            // read, so its row keeps its height.
+            let waited = item
+                .waited_as
+                .and_then(|_| tag_of(item.delivery, true, item.source))
+                .map(|tag| cut_end(&tag, inner));
+            let room = tag.iter().chain(&waited).map(|tag| text_width(tag)).max();
+            if let Some(room) = room {
+                let tag = tag.unwrap_or_default();
                 let tag_width = text_width(&tag);
                 let style = theme.dim().add_modifier(Modifier::ITALIC);
                 // At the right of the first row, two columns from its text,
@@ -5311,11 +5319,13 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
                 // under the last.
                 let wraps = lines.iter().any(|line| line.join != Join::Break);
                 match lines.first_mut() {
-                    Some(first) if !wraps && spans_width(&first.spans) + 2 + tag_width <= inner => {
-                        let tail = inner - spans_width(&first.spans);
-                        let gap = " ".repeat(tail - tag_width);
-                        first.spans.push(Span::styled(format!("{gap}{tag}"), style));
-                        first.tail += tail;
+                    Some(first) if !wraps && spans_width(&first.spans) + 2 + room <= inner => {
+                        if !tag.is_empty() {
+                            let tail = inner - spans_width(&first.spans);
+                            let gap = " ".repeat(tail - tag_width);
+                            first.spans.push(Span::styled(format!("{gap}{tag}"), style));
+                            first.tail += tail;
+                        }
                     }
                     _ => {
                         let gap = " ".repeat(inner.saturating_sub(tag_width));
@@ -5757,13 +5767,19 @@ fn cut_middle(text: &str, width: usize) -> String {
 /// note the agent hasn't read is "pending", and once it has, it is a message
 /// like any other. A command reads as one by itself.
 fn user_tag(item: &Item) -> Option<String> {
-    let delivery = match item.delivery {
-        Some(Delivery::Note) if item.pending => Some("pending"),
+    tag_of(item.delivery, item.pending, item.source)
+}
+
+/// [`user_tag`] of a message that went as `delivery` from `source`, and
+/// waits to be read when `pending`.
+fn tag_of(delivery: Option<Delivery>, pending: bool, source: Option<Source>) -> Option<String> {
+    let delivery = match delivery {
+        Some(Delivery::Note) if pending => Some("pending"),
         Some(Delivery::Answer) => Some("answer"),
         Some(Delivery::Queued) => Some("queued"),
         _ => None,
     };
-    let web = (item.source == Some(Source::Web)).then_some("from the web page");
+    let web = (source == Some(Source::Web)).then_some("from the web page");
     match (delivery, web) {
         (Some(d), Some(w)) => Some(rendered(format!("{d} · {w}"))),
         (d, w) => d.or(w).map(str::to_string),

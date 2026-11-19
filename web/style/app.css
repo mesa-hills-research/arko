@@ -418,6 +418,11 @@ button.cache { padding: 0; border: 0; background: none; }
 /* A note the agent hasn't read yet is an outline in muted text. */
 .row.user.pending .bubble { background: none; box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); }
 .tag { margin-top: 3px; color: var(--muted); font-size: 12px; }
+/* A note the agent read after it waited keeps the room of its tags from
+   then ("pending"), under the ones it has now. */
+.tag.kept { display: inline-grid; justify-items: end; }
+.tag.kept > * { grid-area: 1 / 1; }
+.tag.kept > .room { visibility: hidden; }
 
 .label { display: block; margin-bottom: 2px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .row.message .label { color: var(--link); }

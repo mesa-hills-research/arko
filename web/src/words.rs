@@ -2,7 +2,7 @@
 
 pub use crate::protocol::plural;
 use crate::protocol::{
-    self, CacheData, Delivery, ItemData, KeepWarmData, KeepWarmSettingData, ModelsData, StatusData,
+    self, CacheData, Delivery, KeepWarmData, KeepWarmSettingData, ModelsData, StatusData,
     WorkerData, WorkerState,
 };
 
@@ -400,10 +400,11 @@ pub fn worker_words(
 }
 
 /// The word on a user's message for what became of it, when that isn't the
-/// usual (a new turn).
-pub fn delivery_tag(item: &ItemData) -> Option<&'static str> {
-    match item.delivery {
-        Some(Delivery::Note) if item.pending => Some("pending"),
+/// usual (a new turn), for one that went as `delivery`, and waits to be read
+/// when `pending`.
+pub fn delivery_tag(delivery: Option<Delivery>, pending: bool) -> Option<&'static str> {
+    match delivery {
+        Some(Delivery::Note) if pending => Some("pending"),
         Some(Delivery::Answer) => Some("answer"),
         Some(Delivery::Queued) => Some("queued"),
         Some(Delivery::Refresh) => Some("kept the cache warm"),
@@ -1185,13 +1186,13 @@ mod tests {
     fn a_user_message_is_tagged_only_for_what_is_unusual() {
         use crate::protocol::Kind;
         let mut item = crate::store::tests::item(1, Kind::User, "main", "hi");
-        assert_eq!(delivery_tag(&item), None);
+        assert_eq!(delivery_tag(item.delivery, item.pending), None);
         item.delivery = Some(Delivery::Note);
-        assert_eq!(delivery_tag(&item), None);
+        assert_eq!(delivery_tag(item.delivery, item.pending), None);
         item.pending = true;
-        assert_eq!(delivery_tag(&item), Some("pending"));
+        assert_eq!(delivery_tag(item.delivery, item.pending), Some("pending"));
         item.delivery = Some(Delivery::Answer);
-        assert_eq!(delivery_tag(&item), Some("answer"));
+        assert_eq!(delivery_tag(item.delivery, item.pending), Some("answer"));
     }
 
     /// The page reads figures as the terminal does, tokens in the largest unit
