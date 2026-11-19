@@ -281,6 +281,7 @@ pub mod tests {
             agent: agent.into(),
             turn: Some(1),
             text: text.into(),
+            path: None,
             detail: None,
             level: None,
             source: None,
