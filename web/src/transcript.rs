@@ -1283,8 +1283,9 @@ fn result_row(id: u64, key: String, data: RwSignal<ItemData>) -> AnyView {
 
 /// What the calls of the code run `call` did, after `content` when that is
 /// the run's code, as they come. In Quiet (`full` unset) that is one muted
-/// line of what those that went well did, then a line with ✗ for each that
-/// failed or was refused. In Full it is each call's line, muted.
+/// line of what those that went well did and a line with ✗ for each that
+/// failed or was refused, in the order they came. In Full it is each call's
+/// line, muted.
 fn run_calls(call: u64, content: RwSignal<ItemData>, full: bool) -> impl IntoView {
     let code = content.with_untracked(|item| item.content == Some(ContentKind::Code));
     let calls = move || {
@@ -1327,23 +1328,34 @@ fn run_calls(call: u64, content: RwSignal<ItemData>, full: bool) -> impl IntoVie
                 .collect_view();
             return Some(view! { <div class="run-calls full">{lines}</div> }.into_any());
         }
-        let summary = (!calls.summary.is_empty()).then(|| {
+        // (In the order they came, so each keeps its place as the rest come.
+        // The summary stands where the first call that went well ended.)
+        let summary = || {
             view! { <div class="run-summary" title=calls.summary.clone()>{calls.summary.clone()}</div> }
-        });
-        let failed = calls
-            .lines
-            .into_iter()
-            .filter(|line| !line.failed.is_empty())
-            .map(|line| {
-                view! {
-                    <div class="run-failed">
-                        <span class="what" title=line.failed.clone()>{line.failed.clone()}</span>
-                        <span class="failed">"✗"</span>
-                    </div>
-                }
-            })
-            .collect_view();
-        Some(view! { <div class="run-calls">{summary}{failed}</div> }.into_any())
+            .into_any()
+        };
+        let mut summed = calls.summary.is_empty();
+        let mut lines = Vec::new();
+        for line in &calls.lines {
+            if !line.failed.is_empty() {
+                lines.push(
+                    view! {
+                        <div class="run-failed">
+                            <span class="what" title=line.failed.clone()>{line.failed.clone()}</span>
+                            <span class="failed">"✗"</span>
+                        </div>
+                    }
+                    .into_any(),
+                );
+            } else if line.status != CallStatus::Running && !summed {
+                lines.push(summary());
+                summed = true;
+            }
+        }
+        if !summed {
+            lines.push(summary());
+        }
+        Some(view! { <div class="run-calls">{lines}</div> }.into_any())
     }
 }
 

@@ -361,14 +361,14 @@ style 67 3 9 fg=#87b1f6 bg=#232323
 style 67 9 10 fg=#dedede bg=#232323
 style 67 10 17 fg=#a3e09f bg=#232323
 style 67 17 40 fg=#dedede bg=#232323
-text 68 "│ Ran 1 command"
-style 68 0 15 fg=#9d9d9d bg=#131313
-style 68 15 40 fg=#dedede bg=#131313
-text 69 "│ Couldn’t run rm -rf target · refus… ✗"
-style 69 0 2 fg=#9d9d9d bg=#131313
-style 69 2 38 fg=#dedede bg=#131313
-style 69 38 39 fg=#ff5257 bg=#131313
-style 69 39 40 fg=#dedede bg=#131313
+text 68 "│ Couldn’t run rm -rf target · refus… ✗"
+style 68 0 2 fg=#9d9d9d bg=#131313
+style 68 2 38 fg=#dedede bg=#131313
+style 68 38 39 fg=#ff5257 bg=#131313
+style 68 39 40 fg=#dedede bg=#131313
+text 69 "│ Ran 1 command"
+style 69 0 15 fg=#9d9d9d bg=#131313
+style 69 15 40 fg=#dedede bg=#131313
 text 70 "│ target: refused (The command guard"
 style 70 0 36 fg=#9d9d9d bg=#131313
 style 70 36 40 fg=#dedede bg=#131313

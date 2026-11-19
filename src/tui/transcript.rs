@@ -4350,8 +4350,8 @@ struct Look<'a> {
 }
 
 /// What a code run's calls did, after its code in its open Quiet row, one
-/// muted line of what those that went well did, then a line with ✗ at its
-/// right for each that failed or was refused.
+/// muted line of what those that went well did and a line with ✗ at its
+/// right for each that failed or was refused, in the order they came.
 fn run_quiet_lines(calls: &Calls, theme: &Theme, width: usize) -> Vec<Wrapped> {
     // Each one line, cut to fit (Full has every call whole).
     let line = |text: &str, style: Style, room: usize| {
@@ -4363,14 +4363,22 @@ fn run_quiet_lines(calls: &Calls, theme: &Theme, width: usize) -> Vec<Wrapped> {
         }
         line
     };
+    // (In the order they came, so each keeps its row as the rest come. The
+    // summary stands where the first call that went well ended.)
     let mut lines = Vec::new();
-    if !calls.summary.is_empty() {
-        lines.push(line(&calls.summary, theme.dim(), width));
+    let mut summed = calls.summary.is_empty();
+    for call in &calls.lines {
+        if !call.failed.is_empty() {
+            let mut row = vec![line(&call.failed, theme.text(), width.saturating_sub(3))];
+            cross_at_right(&mut row, theme, width);
+            lines.extend(row);
+        } else if call.status != CallStatus::Running && !summed {
+            lines.push(line(&calls.summary, theme.dim(), width));
+            summed = true;
+        }
     }
-    for failed in calls.lines.iter().filter(|line| !line.failed.is_empty()) {
-        let mut row = vec![line(&failed.failed, theme.text(), width.saturating_sub(3))];
-        cross_at_right(&mut row, theme, width);
-        lines.extend(row);
+    if !summed {
+        lines.push(line(&calls.summary, theme.dim(), width));
     }
     lines
 }
