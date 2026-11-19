@@ -381,7 +381,8 @@ struct State {
     line: f64,
     /// The position and the view's height as an edit of a field began.
     editing: Option<(f64, f64)>,
-    /// The part of the position below a CSS pixel, which moves the rows.
+    /// What the position falls short of the whole CSS pixel the scroller
+    /// stands at, which moves the rows down.
     fraction: f64,
     queued: bool,
     closures: Vec<Box<dyn std::any::Any>>,
@@ -887,10 +888,13 @@ impl State {
     }
 
     /// Puts the view's top at `wanted`. The browser
-    /// keeps a scroller's position on whole CSS pixels, so the part below
-    /// one moves the rows up as a transform. The floor sits under the
-    /// content at the view's bottom edge. Returns the position as the
-    /// browser laid it out.
+    /// keeps a scroller's position on whole CSS pixels, so the scroller
+    /// stands at `wanted` rounded up to one, and the difference moves the
+    /// rows down as a transform. The browser's range then ends
+    /// where the end that follows stands, at the view's bottom edge, so its
+    /// own scroll to the end (a drag of the scrollbar, a wheel) stops where
+    /// the page put the view, with no blank under the end. The floor ends
+    /// at that edge too. Returns the position as the browser laid it out.
     fn place(
         &mut self,
         log: &HtmlElement,
@@ -898,19 +902,21 @@ impl State {
         geometry: &Geometry,
         wanted: f64,
     ) -> f64 {
-        let whole = wanted.floor();
-        let fraction = exact(wanted - whole);
+        // (The difference is cut to a thousandth of a pixel downward, so the
+        // rows never stand below where they're wanted.)
+        let whole = wanted.ceil();
+        let fraction = ((whole - wanted) * 1000.0).floor() / 1000.0;
         if let Some(floor) = &self.floor {
-            let _ = floor.style().set_property(
-                "top",
-                &format!("{}px", (wanted + geometry.height).ceil() - 1.0),
-            );
+            let bottom = whole + f64::from(log.client_height());
+            let _ = floor
+                .style()
+                .set_property("top", &format!("{}px", bottom - 1.0));
         }
         if fraction != self.fraction {
             self.fraction = fraction;
             if let Some(rows) = rows.dyn_ref::<HtmlElement>() {
                 let transform = if fraction > 0.0 {
-                    format!("translateY({}px)", -fraction)
+                    format!("translateY({fraction}px)")
                 } else {
                     String::new()
                 };

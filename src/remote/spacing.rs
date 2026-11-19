@@ -12,6 +12,8 @@
 //! The steps are between line boxes and the edges of what is drawn. Where an
 //! edge is a line of text, the page adds that line's half-leading at the
 //! header and the composer, so they stand where the next line's em box would.
+//! The composer's edge is the top of the line drawn above it (its border),
+//! where the end of a transcript that follows meets the view's bottom edge.
 //!
 //! Every match here names every class, so a new kind of row doesn't compile
 //! until its spacing is decided.
