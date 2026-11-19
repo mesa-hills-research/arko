@@ -506,7 +506,7 @@ button.cache { padding: 0; border: 0; background: none; }
    first, down to its ✓ or ✗, then its folders from their left, down to
    "…/", and only then the name, at its end, as in the terminal. (The far
    larger shrink factors make each part give way before the next.) */
-.call-line .said.file > .outcome { display: flex; flex: 0 1000000 auto; min-width: 3ch; overflow: visible; }
+.call-line .said.file:not(.fitted) > .outcome { display: flex; flex: 0 1000000 auto; min-width: 3ch; overflow: visible; }
 .call-line .said.file > .outcome::before { flex: none; white-space: pre; }
 .call-line .said.file > .outcome > :not(.words) { flex: none; }
 .call-line .said.file > .outcome > .words { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
@@ -525,9 +525,19 @@ button.cache { padding: 0; border: 0; background: none; }
    parts give way a character at a time. It leaves the outcome the said's
    6 px gap and 3 characters ("· ✓"). */
 @supports (width: round(down, 100%, 1ch)) {
-  .call-line .said.file > .what { max-width: calc(round(down, 100%, 1ch) + 1px); }
-  .call-line .said.file:has(> .outcome) > .what { max-width: calc(round(down, 100% - 6px - 3ch, 1ch) + 1px); }
+  .call-line .said.file:not(.fitted) > .what { max-width: calc(round(down, 100%, 1ch) + 1px); }
+  .call-line .said.file:not(.fitted):has(> .outcome) > .what { max-width: calc(round(down, 100% - 6px - 3ch, 1ch) + 1px); }
 }
+/* Once the page has fitted a line to its room (web/src/fit.rs), what it
+   shows is as wide as its words and parts, and nothing in it gives way or
+   is capped. The rules above apply only before that, to a line not yet
+   measured. */
+.call-line .said.fitted,
+.call-line .said.fitted > *,
+.call-line .said.file.fitted > .what,
+.call-line .said.file.fitted > .outcome,
+.call-line .said.fitted .what.file > *,
+.call-line .said.fitted > .outcome > .words { flex-shrink: 0; min-width: 0; max-width: none; }
 /* The spinner is a still square box with a ring inside, two arcs of a
    third of a turn half a turn apart, so the ink stays centred. The arcs go
    round by the angle of the ring's mask, which the browser paints, so they
@@ -645,11 +655,19 @@ details.call > .holds, .row.result > .holds {
   white-space: nowrap;
 }
 .run-calls > .run-failed { display: flex; gap: 1ch; color: var(--text); font: 12px/18px var(--mono); }
-.run-calls > .run-failed .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-calls > .run-failed .what { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .run-calls > .run-failed .failed { flex: none; color: var(--error); }
 .run-calls.full .call-line { font: 13px/20px var(--mono); }
 .run-calls.full .call-line .what { color: var(--muted); }
 .run-calls.full .call-line .running { flex: none; color: var(--muted); }
+/* A call that failed is its line whole, wrapped under its words, since
+   what failed is what the reader opened the run to see. */
+.run-calls.full .call-line.wraps { display: block; padding-left: 16px; text-indent: -16px; }
+.run-calls.full .call-line.wraps > .mark { margin-right: 6px; text-indent: 0; }
+.run-calls.full .call-line.wraps > .said > .outcome { margin-left: 6px; }
+.run-calls.full .call-line.wraps > .said,
+.run-calls.full .call-line.wraps .what,
+.run-calls.full .call-line.wraps .outcome { display: inline; overflow: visible; max-width: none; text-indent: 0; white-space: normal; overflow-wrap: anywhere; }
 /* The door to the rest of a content, muted text. */
 .holds .door {
   display: block;

@@ -19,7 +19,7 @@ use crate::protocol::{
 use crate::shimmer::Shimmer;
 use crate::spinner::Spinner;
 use crate::store::{Entry, MAIN, call_actions};
-use crate::{contents, scroll, words};
+use crate::{contents, fit, quiet, scroll, words};
 
 /// The marker of a row or line with nothing to open, running or not, as the
 /// terminal draws it. One that opens has a triangle.
@@ -300,15 +300,6 @@ fn overflows(root: &web_sys::Element, selector: &str) -> bool {
         .is_some_and(|found| found.scroll_width() > found.client_width())
 }
 
-/// Whether the words (`.what`) of the line under `root` show less than
-/// their text, cut with an ellipsis, as drawn. A file's line cuts its
-/// folders or its name ([`FileLine`]).
-fn drawn_cut(root: &web_sys::Element) -> bool {
-    [".what", ".what > .folders", ".what > .name"]
-        .into_iter()
-        .any(|selector| overflows(root, selector))
-}
-
 /// The element an event's handler is on.
 fn handler_element(event: &web_sys::Event) -> Option<web_sys::Element> {
     use wasm_bindgen::JsCast;
@@ -321,73 +312,6 @@ fn detail_is_whole(item: &ItemData) -> bool {
     item.act.as_ref().is_some_and(|act| {
         matches!(act.kind, ActKind::Command | ActKind::Search) && !act.detail.is_empty()
     })
-}
-
-/// Whether the words of the line under `root` are cut ([`drawn_cut`]), with
-/// how it runs left out (a code run's count of calls and the call that
-/// runs), so its words whole don't come into an open row as those come and
-/// take room, as in the terminal. The parts that say how it runs come out
-/// for the measure and go back in the same task, so no frame shows them out.
-fn words_cut(root: &web_sys::Element) -> bool {
-    use wasm_bindgen::JsCast;
-    let Some(said) = root.query_selector(".said.has-live").ok().flatten() else {
-        return drawn_cut(root);
-    };
-    let children = said.children();
-    let parts: Vec<web_sys::HtmlElement> = (0..children.length())
-        .filter_map(|at| children.item(at))
-        .filter_map(|child| child.dyn_into::<web_sys::HtmlElement>().ok())
-        .collect();
-    let what = parts.iter().find(|part| part.class_list().contains("what"));
-    let lives: Vec<&web_sys::HtmlElement> = parts
-        .iter()
-        .filter(|part| part.class_list().contains("live"))
-        .collect();
-    let basis = what.map(|what| {
-        what.style()
-            .get_property_value("flex-basis")
-            .unwrap_or_default()
-    });
-    let _ = said.class_list().remove_1("has-live");
-    if let Some(what) = what {
-        let _ = what.style().remove_property("flex-basis");
-    }
-    for live in lives.iter().copied() {
-        let _ = live.style().set_property("display", "none");
-    }
-    let cut = drawn_cut(root);
-    for live in lives.iter().copied() {
-        let _ = live.style().remove_property("display");
-    }
-    if let (Some(what), Some(basis)) = (what, basis.filter(|basis| !basis.is_empty())) {
-        let _ = what.style().set_property("flex-basis", &basis);
-    }
-    let _ = said.class_list().add_1("has-live");
-    cut
-}
-
-/// Whether the words (`.what`) of the line `summary` holds are cut, as
-/// drawn but for how it runs ([`words_cut`]), measured once the line
-/// shows and again whenever `words` say something else or the transcript's
-/// width changes. A line that cuts its words opens to them whole.
-fn cut_words(
-    summary: NodeRef<leptos::html::Summary>,
-    words: impl Fn() -> String + Send + Sync + 'static,
-) -> RwSignal<bool> {
-    let cut = RwSignal::new(false);
-    let width = page().width;
-    Effect::new(move |_| {
-        words();
-        width.track();
-        // (Once the browser has laid the line out. The row may go first,
-        // and its frame goes with it.)
-        crate::frame::next_frame(move || {
-            if let Some(summary) = summary.get_untracked() {
-                cut.set(words_cut(&summary));
-            }
-        });
-    });
-    cut
 }
 
 /// Calls in a few words (Quiet), by the first one's ID. The row keeps its
@@ -410,16 +334,39 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
             .clone()
     });
     let data = RwSignal::from(&shared);
-    let summary = NodeRef::<leptos::html::Summary>::new();
-    // (Move to background and Stop take room from the words as they come.)
-    let cut = cut_words(summary, move || {
+    let words = move || data.with(|row| row.words.clone());
+    // Its words and what follows them fitted to the room its line leaves
+    // them, which Move to background and Stop take from as they come.
+    let line = NodeRef::<leptos::html::Span>::new();
+    let room = fit::watch(line, move || {
         page.movable.track();
         page.running_jobs.track();
-        data.with(|row| row.words.said())
+        data.track();
     });
+    let fitted = Memo::new(move |_| room.get().map(|room| quiet_fit(&words(), room.now)));
+    // (Not counting how it runs, the spinner or the buttons, so the row
+    // doesn't come to open, nor its words whole come into it, as those come
+    // and go.)
+    let steady_words = move || quiet::Words {
+        live: Vec::new(),
+        running: false,
+        ..words()
+    };
+    let steady = Memo::new(move |_| {
+        room.get()
+            .map(|room| quiet_fit(&steady_words(), room.steady))
+    });
+    let cut =
+        Signal::derive(move || steady.with(|steady| steady.as_ref().is_some_and(|fit| fit.cut)));
+    let left_out = move || {
+        steady.with(|steady| {
+            steady
+                .as_ref()
+                .is_some_and(|fit| fit.parts < quiet_parts(&steady_words(), fit::metrics()).len())
+        })
+    };
     let opens = move || data.with(|row| row.opens);
     let open = move || (opens() || cut.get()) && page.quiet_open.contains(id);
-    let words = move || data.with(|row| row.words.clone());
     // The row's calls, by ID.
     let members = move || {
         data.with(|row| {
@@ -483,8 +430,12 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         })
     };
     // Where its line cut its words, a row of one call opens to the call as
-    // written, unless its detail is the whole command or query.
+    // written, unless its detail is the whole command or query, and where it
+    // left out its news or note, to its words whole with them.
     let whole = move || {
+        if left_out() && !data.with(|row| row.merged) {
+            return Some(view! { <pre class="held">{steady_words().said()}</pre> }.into_any());
+        }
         (cut.get() && !data.with(|row| row.merged))
             .then(|| members().first().copied().and_then(cell))
             .flatten()
@@ -523,18 +474,12 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         <div class=class data-id=id data-row=key data-gap=spaced.gap() data-gap-open=spaced.gap_open() data-end=spaced.end() data-end-open=spaced.end_open()>
             <details class="call quiet" prop:open=open>
                 <summary
-                    node_ref=summary
                     tabindex=move || if opens() || cut.get() { "0" } else { "-1" }
                     on:click=move |event| {
                         event.prevent_default();
                         let opening = !page.quiet_open.contains_untracked(id);
-                        if opening {
-                            let cuts = handler_element(&event)
-                                .is_some_and(|summary| words_cut(&summary));
-                            cut.set(cuts);
-                            if !opens() && !cuts {
-                                return;
-                            }
+                        if opening && !opens() && !cut.get_untracked() {
+                            return;
                         }
                         page.quiet_open.toggle(id);
                         // A row of one call the reader opened keeps its form.
@@ -545,35 +490,43 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                         }
                     }
                 >
-                    <span class="call-line">
+                    <span class="call-line" node_ref=line>
                         // (Its triangle turns as it opens. A row with nothing
                         // to open has a dot.)
                         <span class="mark">{move || if opens() || cut.get() { "▸" } else { STILL }}</span>
-                        // (How it runs gives way while its words have 24
-                        // columns, as in the terminal.)
-                        <span class="said" class:has-live=move || !words().live.is_empty()>
-                            <span
-                                class="what"
-                                class:long=move || long_words(&words().text)
-                                style:flex-basis=move || {
-                                    let words = words();
-                                    (!words.live.is_empty())
-                                        .then(|| format!("{}ch", words.text.chars().count().min(24)))
-                                }
-                                title=move || words().said()
-                            >
-                                {move || words().text}
-                            </span>
-                            {move || words().news.map(|news| view! { <span class="news">{format!("({news})")}</span> })}
-                            {move || words().note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
-                            {move || {
-                                words()
-                                    .live
-                                    .into_iter()
-                                    .map(|live| view! { <span class="outcome live" title=live.clone()>{live.clone()}</span> })
-                                    .collect_view()
-                            }}
-                        </span>
+                        // (Its words keep 24 columns, and what follows them
+                        // gives way, the last first, as in the terminal.)
+                        {move || {
+                            let words = words();
+                            let fitted = fitted.get();
+                            let shown = fitted.as_ref().map_or(usize::MAX, |fitted| fitted.parts);
+                            let text = fitted.map_or_else(|| words.text.clone(), |fitted| fitted.words);
+                            let mut parts = 0;
+                            let mut next = || {
+                                parts += 1;
+                                parts <= shown
+                            };
+                            let news = words.news.clone().filter(|_| next());
+                            let note = words.note.clone().filter(|_| next());
+                            let live: Vec<String> = words.live.iter().filter(|_| next()).cloned().collect();
+                            view! {
+                                <span class="said" class:has-live=room.get().is_none() && !words.live.is_empty() class:fitted=room.get().is_some()>
+                                    <span
+                                        class="what"
+                                        class:long=room.get().is_none() && long_words(&words.text)
+                                        title=steady_words().said()
+                                    >
+                                        {text}
+                                    </span>
+                                    {news.map(|news| view! { <span class="news">{format!("({news})")}</span> })}
+                                    {note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
+                                    {live
+                                        .into_iter()
+                                        .map(|live| view! { <span class="outcome live" title=live.clone()>{live.clone()}</span> })
+                                        .collect_view()}
+                                </span>
+                            }
+                        }}
                         {move || words().running.then(|| view! {
                             <span class="outcome"><Spinner /></span>
                         })}
@@ -589,6 +542,31 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
         </div>
     }
     .into_any()
+}
+
+/// The room each part after a Quiet row's words takes on its line with its
+/// gap and its dot or parentheses, its news, its note and how it runs, in
+/// the order they come ([`quiet::Words`]).
+fn quiet_parts(words: &quiet::Words, m: fit::Metrics) -> Vec<f64> {
+    let mut parts = Vec::new();
+    if let Some(news) = &words.news {
+        parts.push(fit::GAP + m.text(&format!("({news})")));
+    }
+    if let Some(note) = &words.note {
+        parts.push(fit::GAP + m.dot() + m.text(note));
+    }
+    for live in &words.live {
+        parts.push(fit::GAP + m.dot() + m.text(live));
+    }
+    parts
+}
+
+/// A Quiet row's (or a worker's status row's) words and what follows them
+/// fitted to `room` pixels by the rule every row's line follows
+/// ([`fit::line`]).
+fn quiet_fit(words: &quiet::Words, room: f64) -> fit::Fitted {
+    let m = fit::metrics();
+    fit::line(&words.text, 0.0, &quiet_parts(words, m), room, m)
 }
 
 /// What an open Quiet row shows of one of its calls, on the row's rail.
@@ -622,9 +600,9 @@ fn quiet_member(
     let merged = move || quiet.with(|row| row.merged);
     let has_content = !results.is_empty();
     let folds = move || has_content || data.with(|item| item.detail.is_some());
-    // Its line cut its words as the reader opened it.
-    let cut = RwSignal::new(false);
-    let open = move || !merged() || ((folds() || cut.get()) && page.calls_open.contains(id));
+    // Its line cut its words or left out its outcome's words.
+    let cut = RwSignal::new(LineCut::default());
+    let open = move || !merged() || ((folds() || cut.get().cut) && page.calls_open.contains(id));
     // What it holds, its detail and its content.
     let contents: Vec<RwSignal<ItemData>> = results
         .iter()
@@ -651,8 +629,10 @@ fn quiet_member(
     // (Where its detail is the whole command, its line's words don't show
     // twice.)
     let whole = move || {
-        (merged() && cut.get() && !data.with(|item| item.detail.is_some() && detail_is_whole(item)))
-            .then(|| view! { <pre class="held">{data.with(|item| item.text.clone())}</pre> })
+        merged()
+            .then(|| data.with(|item| shown_whole(item, cut.get())))
+            .flatten()
+            .map(|whole| view! { <pre class="held">{whole}</pre> })
     };
     let holds = move || {
         open().then(|| {
@@ -669,25 +649,23 @@ fn quiet_member(
     };
     let line = move || {
         merged().then(|| {
-            let mark = move || match (folds() || cut.get(), open()) {
+            let mark = move || match (folds() || cut.get().cut, open()) {
                 (false, _) => STILL,
                 (true, false) => "▸",
                 (true, true) => "▾",
             };
             view! {
                 <button type="button" class="member-line"
-                    on:click=move |event| {
-                        if !page.calls_open.contains_untracked(id) {
-                            let cuts = handler_element(&event)
-                                .is_some_and(|line| words_cut(&line));
-                            cut.set(cuts);
-                            if !folds() && !cuts {
-                                return;
-                            }
+                    on:click=move |_| {
+                        if !page.calls_open.contains_untracked(id)
+                            && !folds()
+                            && !cut.get_untracked().cut
+                        {
+                            return;
                         }
                         page.calls_open.toggle(id);
                     }>
-                    {call_line(data, mark, true)}
+                    {call_line(data, mark, true, Some(cut))}
                 </button>
             }
         })
@@ -1141,21 +1119,40 @@ fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
     let result = Memo::new(move |_| crate::app::content_of(id));
     let content = move || Some(crate::app::cell(result.get()?)?.for_row().data);
     let report = move || matches!(row.get(), Some((crate::quiet::WorkerRow::Reported, _)));
+    let said = move || row.get().map(|(_, words)| words).unwrap_or_default();
+    // Its words and note fitted to the room its line leaves them. Where
+    // they cut its words or left out its note, it opens to them whole.
+    let line = NodeRef::<leptos::html::Span>::new();
+    let room = fit::watch(line, move || row.track());
+    let fitted = Memo::new(move |_| room.get().map(|room| quiet_fit(&said(), room.now)));
+    // (Without the spinner, which comes and goes.)
+    let steady = Memo::new(move |_| {
+        room.get().map(|room| {
+            let said = quiet::Words {
+                running: false,
+                ..said()
+            };
+            quiet_fit(&said, room.steady)
+        })
+    });
+    let cut = move || steady.with(|fitted| fitted.as_ref().is_some_and(|fitted| fitted.cut));
     let opens = move || {
-        if report() {
-            cell.text.with(|text| !text.trim().is_empty())
-        } else {
-            result.get().is_some()
-        }
+        cut()
+            || if report() {
+                cell.text.with(|text| !text.trim().is_empty())
+            } else {
+                result.get().is_some()
+            }
     };
     let words = move || {
-        if report() {
+        let whole = cut().then(|| view! { <pre class="held">{said().said()}</pre> });
+        let body = if report() {
             view! { <Md id=id text=cell.text code=cell.code /> }.into_any()
         } else {
             content().map(contents::content_view).into_any()
-        }
+        };
+        view! { {whole}{body} }
     };
-    let said = move || row.get().map(|(_, words)| words).unwrap_or_default();
     let class = move || {
         let said = said();
         let mut class = "row call status".to_string();
@@ -1181,12 +1178,17 @@ fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
                         }
                     }
                 >
-                    <span class="call-line">
+                    <span class="call-line" node_ref=line>
                         <span class="mark">{move || if opens() { "▸" } else { STILL }}</span>
                         <span class="who">{agent}</span>
-                        <span class="said">
-                            <span class="what" class:long=move || long_words(&said().text)>{move || said().text}</span>
-                            {move || said().note.map(|note| view! { <span class="outcome">{note}</span> })}
+                        <span class="said" class:fitted=move || room.get().is_some()>
+                            <span class="what" class:long=move || room.get().is_none() && long_words(&said().text) title=move || said().said()>
+                                {move || fitted.get().map_or_else(|| said().text, |fitted| fitted.words)}
+                            </span>
+                            {move || {
+                                let shows = fitted.get().is_none_or(|fitted| fitted.parts > 0);
+                                said().note.filter(|_| shows).map(|note| view! { <span class="outcome">{note}</span> })
+                            }}
                         </span>
                         {move || said().running.then(|| view! {
                             <span class="outcome"><Spinner /></span>
@@ -1218,15 +1220,19 @@ fn is_command(item: &ItemData) -> bool {
 }
 
 /// A call's line, as the terminal's Full line: its fold's triangle (`mark`),
-/// whose it is (a worker's in the main view), what it does, ✓ or ✗ and its
-/// outcome, and the spinner, Move to background or Stop while those apply,
-/// except in a Quiet row (`in_row`), whose own line has them. Its actions
-/// follow the status only while the call runs and the jobs only while it
-/// has one, so the many settled calls of a long session follow neither.
+/// whose it is (a worker's in the main view), what it does, its mark and
+/// outcome ([`quiet::mark`]), and the spinner, Move to background or Stop
+/// while those apply, except in a Quiet row (`in_row`), whose own line has
+/// them. Its actions follow the status only while the call runs and the
+/// jobs only while it has one, so the many settled calls of a long session
+/// follow neither. Its words and outcome fit its width by the rule every
+/// row's line follows ([`fit`]), and `cut`, where given, says whether they
+/// cut its words or left out its outcome's words.
 fn call_line(
     data: RwSignal<ItemData>,
     mark: impl Fn() -> &'static str + Clone + Send + Sync + 'static,
     in_row: bool,
+    cut: Option<RwSignal<LineCut>>,
 ) -> impl IntoView {
     let page = page();
     let id = data.with_untracked(|item| item.id);
@@ -1242,65 +1248,106 @@ fn call_line(
             )
         })
     });
+    let line = NodeRef::<leptos::html::Span>::new();
+    let room = fit::watch(line, move || {
+        data.track();
+        actions.track();
+    });
+    let fitted = Memo::new(move |_| {
+        let room = room.get()?;
+        Some(data.with(|item| fit_call(item, room.now)))
+    });
+    if let Some(cut) = cut {
+        // (Whether it opens to what it left out, without the spinner and
+        // the buttons, which come and go.)
+        let steady = Memo::new(move |_| {
+            let room = room.get()?;
+            Some(data.with(|item| fit_call(item, room.steady)))
+        });
+        Effect::new(move |_| {
+            let cuts = steady.with(|fitted| {
+                fitted
+                    .as_ref()
+                    .map_or(LineCut::default(), |fitted| LineCut {
+                        cut: fitted.cut,
+                        left_out: !fitted.outcome,
+                    })
+            });
+            if cut.get_untracked() != cuts {
+                cut.set(cuts);
+            }
+        });
+    }
     move || {
         data.with(|item| {
             let who = (item.agent != MAIN && page.worker.get_untracked().is_none())
                 .then(|| item.agent.clone());
             let mark = mark.clone();
+            let fitted = fitted.get();
+            let is_fitted = fitted.is_some();
+            let (marked, words) = call_outcome(item);
+            let shows_words = fitted.as_ref().is_none_or(|fitted| fitted.outcome);
             let outcome = match item.status {
                 Some(CallStatus::Running) if in_row => None,
                 Some(CallStatus::Running) => Some(
                     view! { <span class="outcome"><Spinner /></span> }
                         .into_any(),
                 ),
-                Some(status) => {
-                    let failed = status == CallStatus::Failed;
+                Some(_) if marked.is_some() || (words.is_some() && shows_words) => {
                     let title = item.outcome.clone().unwrap_or_default();
-                    let words = item
-                        .outcome
-                        .as_ref()
-                        .map(|outcome| view! { <span class="words">{format!(" {outcome}")}</span> });
+                    let glyph = marked.map(|mark| {
+                        let failed = mark == CallStatus::Failed;
+                        view! { <span class=if failed { "failed" } else { "ok" }>{if failed { "✗" } else { "✓" }}</span> }
+                    });
+                    let words = words
+                        .filter(|_| shows_words)
+                        .map(|words| view! { <span class="words">{words}</span> });
                     Some(
-                        view! {
-                            <span class="outcome" title=title>
-                                <span class=if failed { "failed" } else { "ok" }>{if failed { "✗" } else { "✓" }}</span>
-                                {words}
-                            </span>
-                        }
-                        .into_any(),
+                        view! { <span class="outcome" title=title>{glyph}{words}</span> }
+                            .into_any(),
                     )
                 }
-                None => None,
+                _ => None,
             };
             // (The spinner and the buttons stay whole, and what the line
-            // says gives way to them.)
+            // says fits the room they leave.)
             let (said, spin) = match item.status {
                 Some(CallStatus::Running) => (None, outcome),
                 _ => (outcome, None),
             };
             // A file's line keeps the file's name whole ([`FileLine`]).
             let file = FileLine::of(&item.text, item.path);
-            let what = match file {
-                Some(file) => view! {
-                    <span class="what file" title=item.text.clone()>
-                        <span class="lead">{file.lead.to_string()}</span>
-                        {(!file.folders.is_empty()).then(|| view! {
-                            <span class="folders"><span>{file.folders.to_string()}</span></span>
-                        })}
-                        <span class="name">{file.name.to_string()}</span>
-                    </span>
+            let what = match (file, fitted.map(|fitted| fitted.words)) {
+                (Some(file), fitted) => {
+                    let (folders, name) = match fitted {
+                        Some(FitWords::File { folders, name }) => (folders, name),
+                        _ => (file.folders.to_string(), file.name.to_string()),
+                    };
+                    view! {
+                        <span class="what file" title=item.text.clone()>
+                            <span class="lead">{file.lead.to_string()}</span>
+                            {(!folders.is_empty()).then(|| view! {
+                                <span class="folders"><span>{folders}</span></span>
+                            })}
+                            <span class="name">{name}</span>
+                        </span>
+                    }
+                    .into_any()
+                }
+                (None, Some(FitWords::Plain(words))) => view! {
+                    <span class="what" title=item.text.clone()>{words}</span>
                 }
                 .into_any(),
-                None => view! {
+                (None, _) => view! {
                     <span class="what" class:long=long_words(&item.text) title=item.text.clone()>{item.text.clone()}</span>
                 }
                 .into_any(),
             };
             view! {
-                <span class="call-line">
+                <span class="call-line" node_ref=line>
                     <span class="mark">{mark}</span>
                     {who.map(|who| view! { <span class="who">{who}</span> })}
-                    <span class="said" class:file=file.is_some()>
+                    <span class="said" class:file=file.is_some() class:fitted=is_fitted>
                         {what}
                         {said}
                     </span>
@@ -1318,6 +1365,135 @@ fn call_line(
     }
 }
 
+/// What follows a call's words once it ended, its mark ([`quiet::mark`]) and
+/// its outcome's words, as its line says them (" 41.0 s" after a mark, and
+/// without one the words alone). A call that failed says so whatever else
+/// it says. Nothing while it runs.
+fn call_outcome(item: &ItemData) -> (Option<CallStatus>, Option<String>) {
+    let status = match item.status {
+        Some(status @ (CallStatus::Ok | CallStatus::Failed)) => status,
+        _ => return (None, None),
+    };
+    let words = match status {
+        CallStatus::Failed => Some(item.outcome.as_deref().unwrap_or(quiet::FAILED)),
+        _ => item.outcome.as_deref(),
+    }
+    .map(str::trim)
+    .filter(|words| !words.is_empty());
+    let mark = quiet::mark(item.status, item.act.as_ref());
+    let words = words.map(|words| match mark {
+        Some(_) => format!(" {words}"),
+        None => words.to_string(),
+    });
+    (mark, words)
+}
+
+/// What a call line's fit left out, which the call opens to whole.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LineCut {
+    /// It cut its words or left out its outcome's words.
+    cut: bool,
+    /// It left out its outcome's words.
+    left_out: bool,
+}
+
+/// `item`'s line whole, its words and how it went, as a line that cuts them
+/// opens to.
+fn call_whole(item: &ItemData) -> String {
+    let (mark, words) = call_outcome(item);
+    let mut whole = item.text.clone();
+    match mark {
+        Some(mark) => {
+            whole.push_str(if mark == CallStatus::Failed {
+                " · ✗"
+            } else {
+                " · ✓"
+            });
+            whole.push_str(&words.unwrap_or_default());
+        }
+        None => {
+            if let Some(words) = words {
+                whole.push_str(&format!(" · {words}"));
+            }
+        }
+    }
+    whole
+}
+
+/// What an open call shows over its detail of what its line left out
+/// (`cut`). Where the line left out its outcome's words, its line whole
+/// ([`call_whole`]). Where it cut only its words, the call as written,
+/// unless the detail is the whole command or query.
+fn shown_whole(item: &ItemData, cut: LineCut) -> Option<String> {
+    match () {
+        _ if cut.left_out => Some(call_whole(item)),
+        _ if cut.cut && !(item.detail.is_some() && detail_is_whole(item)) => {
+            Some(item.text.clone())
+        }
+        _ => None,
+    }
+}
+
+/// A call line's words as they fit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FitWords {
+    Plain(String),
+    /// A file tool's line, its folders and its name.
+    File {
+        folders: String,
+        name: String,
+    },
+}
+
+/// A call line's words and outcome as they fit `room` pixels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CallFit {
+    words: FitWords,
+    /// Its outcome's words show.
+    outcome: bool,
+    /// It cut its words or left out its outcome's words.
+    cut: bool,
+}
+
+/// `item`'s line fitted to `room` pixels by the rule every row's line
+/// follows ([`fit::line`], [`fit::file`]). Its mark with its gap and dot never
+/// gives way, and its outcome's words give way whole.
+fn fit_call(item: &ItemData, room: f64) -> CallFit {
+    let m = fit::metrics();
+    let (mark, words) = call_outcome(item);
+    let fixed = match mark {
+        Some(_) => fit::GAP + m.dot() + m.mark,
+        None => 0.0,
+    };
+    // (Without a mark, the outcome's gap and dot go with its words.)
+    let outcome = words.as_deref().map(|words| match mark {
+        Some(_) => m.text(words),
+        None => fit::GAP + m.dot() + m.text(words),
+    });
+    match FileLine::of(&item.text, item.path) {
+        Some(file) => {
+            let fitted = fit::file(file.lead, file.folders, file.name, fixed, outcome, room, m);
+            CallFit {
+                words: FitWords::File {
+                    folders: fitted.folders,
+                    name: fitted.name,
+                },
+                outcome: fitted.outcome,
+                cut: fitted.cut,
+            }
+        }
+        None => {
+            let parts: Vec<f64> = outcome.into_iter().collect();
+            let fitted = fit::line(&item.text.replace('\n', " "), fixed, &parts, room, m);
+            CallFit {
+                outcome: fitted.parts == parts.len(),
+                words: FitWords::Plain(fitted.words),
+                cut: fitted.cut,
+            }
+        }
+    }
+}
+
 /// A call's row in Full, its line, which opens to its detail and its
 /// content (its result's row, under it) when it has them. A command's is
 /// open from the start. The images its tool returned show under it, open or
@@ -1327,17 +1503,13 @@ fn call_row(cell: RowCell) -> AnyView {
     let data = cell.data;
     let (id, command) = data.with_untracked(|item| (item.id, is_command(item)));
     let content = Memo::new(move |_| crate::app::content_of(id).is_some());
-    let summary = NodeRef::<leptos::html::Summary>::new();
-    let cut = cut_words(summary, move || {
-        page.movable.track();
-        page.running_jobs.track();
-        data.with(|item| item.text.clone())
-    });
+    // (Its line cut its words or left out its outcome's words.)
+    let cut = RwSignal::new(LineCut::default());
     // (A worker's call in the main view shows without its content. A row
     // is drawn for one view.)
     let folds = move || {
         let own = data.with(|item| item.agent == MAIN) || page.worker.get_untracked().is_some();
-        data.with(|item| item.detail.is_some()) || (own && content.get()) || cut.get()
+        data.with(|item| item.detail.is_some()) || (own && content.get()) || cut.get().cut
     };
     let open = move || folds() && full_open(page, id, command);
     // (Its triangle turns as it opens.)
@@ -1346,20 +1518,19 @@ fn call_row(cell: RowCell) -> AnyView {
         open().then(|| {
             // (A command's detail is the whole command, so its line's words
             // don't show twice.)
-            let whole = (cut.get()
-                && !data.with(|item| item.detail.is_some() && detail_is_whole(item)))
-            .then(|| view! { <pre class="held">{data.with(|item| item.text.clone())}</pre> });
+            let whole = data
+                .with(|item| shown_whole(item, cut.get()))
+                .map(|whole| view! { <pre class="held">{whole}</pre> });
             let detail = data
                 .with(|item| item.detail.clone())
                 .map(|detail| view! { <pre class="held">{detail}</pre> });
-            (cut.get() || detail.is_some())
+            (whole.is_some() || detail.is_some())
                 .then(|| view! { <div class="holds">{whole}{detail}</div> })
         })
     };
     view! {
         <details class="call" prop:open=open>
             <summary
-                node_ref=summary
                 tabindex=move || if folds() { "0" } else { "-1" }
                 on:click=move |event| {
                     event.prevent_default();
@@ -1367,15 +1538,12 @@ fn call_row(cell: RowCell) -> AnyView {
                         page.flipped.toggle(id);
                         return;
                     }
-                    let cuts = handler_element(&event)
-                        .is_some_and(|summary| words_cut(&summary));
-                    cut.set(cuts);
                     if folds() && !full_open(page, id, command) {
                         page.flipped.toggle(id);
                     }
                 }
             >
-                {call_line(data, mark, false)}
+                {call_line(data, mark, false, Some(cut))}
             </summary>
             {detail}
         </details>
@@ -1396,13 +1564,137 @@ fn result_row(id: u64, key: String, data: RwSignal<ItemData>) -> AnyView {
         (Some(call), Some(command)) => full_open(page, call, command),
         _ => true,
     };
-    let calls = call.map(|call| run_calls(call, data, true));
+    // (A code run's calls come with its content, while it shows, so their
+    // lines fit the room they have when they show.)
+    let holds = move || {
+        shown().then(|| {
+            view! {
+                {contents::content_view(data)}
+                {call.map(|call| run_calls(call, data, true))}
+            }
+        })
+    };
     view! {
         <div class="row result" class:closed=move || !shown() data-id=id data-row=key data-gap=spaced.gap() data-gap-open=spaced.gap_open() data-end=spaced.end() data-end-open=spaced.end_open() style:display=move || if shown() { "" } else { "none" }>
-            <div class="holds">{move || shown().then(|| contents::content_view(data))}{calls}</div>
+            <div class="holds">{holds}</div>
         </div>
     }
     .into_any()
+}
+
+/// A call a code run's code made, as its Full line under the run says it,
+/// muted, its words and outcome fitted to its width ([`fit`]). The one that
+/// runs ends in "…", and the run's own line has the spinner.
+fn run_line(line: crate::protocol::CallLine) -> AnyView {
+    let node = NodeRef::<leptos::html::Span>::new();
+    let room = fit::watch(node, || ());
+    let running = line.status == CallStatus::Running;
+    let failed = line.status == CallStatus::Failed;
+    let words = (!running && !line.outcome.is_empty()).then(|| format!(" {}", line.outcome));
+    // A file's line keeps the file's name whole ([`FileLine`]). One that
+    // failed is whole, wrapped under its words, since what failed is what
+    // the reader opened the run to see.
+    let fitted = Memo::new({
+        let (text, path, words) = (line.text.clone(), line.path, words.clone());
+        move |_| {
+            if failed {
+                return None;
+            }
+            let room = room.get()?.now;
+            let m = fit::metrics();
+            let fixed = match running {
+                true => fit::GAP + m.text("…"),
+                false => fit::GAP + m.dot() + m.mark,
+            };
+            let outcome = words.as_deref().map(|words| m.text(words));
+            Some(match FileLine::of(&text, path) {
+                Some(file) => {
+                    let fitted =
+                        fit::file(file.lead, file.folders, file.name, fixed, outcome, room, m);
+                    (
+                        FitWords::File {
+                            folders: fitted.folders,
+                            name: fitted.name,
+                        },
+                        fitted.outcome,
+                    )
+                }
+                None => {
+                    let parts: Vec<f64> = outcome.into_iter().collect();
+                    let fitted = fit::line(&text, fixed, &parts, room, m);
+                    (FitWords::Plain(fitted.words), fitted.parts == parts.len())
+                }
+            })
+        }
+    });
+    let text = line.text.clone();
+    let path = line.path;
+    let what = move || {
+        let file = FileLine::of(&text, path).filter(|_| !failed);
+        match (file, fitted.get().map(|(words, _)| words)) {
+            (Some(file), fitted) => {
+                let (folders, name) = match fitted {
+                    Some(FitWords::File { folders, name }) => (folders, name),
+                    _ => (file.folders.to_string(), file.name.to_string()),
+                };
+                view! {
+                    <span class="what file" title=text.clone()>
+                        <span class="lead">{file.lead.to_string()}</span>
+                        {(!folders.is_empty()).then(|| view! {
+                            <span class="folders"><span>{folders}</span></span>
+                        })}
+                        <span class="name">{name}</span>
+                    </span>
+                }
+                .into_any()
+            }
+            (None, Some(FitWords::Plain(words))) => {
+                view! { <span class="what" title=text.clone()>{words}</span> }.into_any()
+            }
+            (None, _) => {
+                view! { <span class="what" title=text.clone()>{text.clone()}</span> }.into_any()
+            }
+        }
+    };
+    let outcome = (!running).then(|| {
+        let words = words.clone();
+        view! {
+            <span class="outcome" title=line.outcome.clone()>
+                <span class=if failed { "failed" } else { "ok" }>{if failed { "✗" } else { "✓" }}</span>
+                {move || {
+                    words
+                        .clone()
+                        .filter(|_| fitted.get().is_none_or(|(_, shows)| shows))
+                        .map(|words| view! { <span class="words">{words}</span> })
+                }}
+            </span>
+        }
+    });
+    let file = FileLine::of(&line.text, line.path).is_some() && !failed;
+    view! {
+        <span class="call-line" class:wraps=failed node_ref=node>
+            <span class="mark">"·"</span>
+            <span class="said" class:file=file class:fitted=move || room.get().is_some()>
+                {what}
+                {running.then(|| view! { <span class="running">"…"</span> })}
+                {outcome}
+            </span>
+        </span>
+    }
+    .into_any()
+}
+
+/// `text` in one line of the box it's in, cut where a word ends to fit the
+/// box's width ([`fit`]), as the terminal cuts it.
+fn fitted_text(text: String) -> impl IntoView {
+    let node = NodeRef::<leptos::html::Span>::new();
+    let room = fit::watch(node, || ());
+    let words = text.clone();
+    let shown = move || match room.get() {
+        Some(room) => fit::line(&words, 0.0, &[], room.now, fit::metrics_of(fit::RUN_FONT)).words,
+        None => words.clone(),
+    };
+    view! { <span class="fitted" node_ref=node>{shown}</span> }
 }
 
 /// What the calls of the code run `call` did, after `content` when that is
@@ -1425,42 +1717,14 @@ fn run_calls(call: u64, content: RwSignal<ItemData>, full: bool) -> impl IntoVie
             if calls.lines.is_empty() {
                 return None;
             }
-            let lines = calls
-                .lines
-                .into_iter()
-                .map(|line| {
-                    // (The one that runs ends in "…", and the run's own line
-                    // has the spinner.)
-                    let running = (line.status == CallStatus::Running)
-                        .then(|| view! { <span class="running">"…"</span> });
-                    let outcome = (line.status != CallStatus::Running).then(|| {
-                        let failed = line.status == CallStatus::Failed;
-                        let words = (!line.outcome.is_empty()).then(|| format!(" {}", line.outcome));
-                        view! {
-                            <span class="outcome" title=line.outcome.clone()>
-                                <span class=if failed { "failed" } else { "ok" }>{if failed { "✗" } else { "✓" }}</span>
-                                {words}
-                            </span>
-                        }
-                    });
-                    view! {
-                        <div class="call-line">
-                            <span class="mark">"·"</span>
-                            <span class="said">
-                                <span class="what" class:long=long_words(&line.text) title=line.text.clone()>{line.text.clone()}</span>
-                                {running}
-                                {outcome}
-                            </span>
-                        </div>
-                    }
-                })
-                .collect_view();
+            let lines = calls.lines.into_iter().map(run_line).collect_view();
             return Some(view! { <div class="run-calls full">{lines}</div> }.into_any());
         }
         // (In the order they came, so each keeps its place as the rest come.
         // The summary stands where the first call that went well ended.)
         let summary = || {
-            view! { <div class="run-summary" title=calls.summary.clone()>{calls.summary.clone()}</div> }
+            let title = calls.summary.clone();
+            view! { <div class="run-summary" title=title>{fitted_text(calls.summary.clone())}</div> }
             .into_any()
         };
         let mut summed = calls.summary.is_empty();
@@ -1470,7 +1734,7 @@ fn run_calls(call: u64, content: RwSignal<ItemData>, full: bool) -> impl IntoVie
                 lines.push(
                     view! {
                         <div class="run-failed">
-                            <span class="what" title=line.failed.clone()>{line.failed.clone()}</span>
+                            <span class="what">{line.failed.clone()}</span>
                             <span class="failed">"✗"</span>
                         </div>
                     }
@@ -2013,37 +2277,6 @@ mod tests {
             let gone = RwSignal::new(true);
             gone.dispose();
             answered(gone, false);
-        });
-    }
-
-    /// A row that goes before the frame it measures its line at (the reader
-    /// left its view) measures nothing, as what it would read went with it.
-    /// One that stays measures once at the frame after its words change.
-    #[test]
-    fn a_row_that_goes_before_its_frame_measures_nothing() {
-        let owner = Owner::new();
-        owner.with(|| {
-            crate::testing::page();
-            let words = RwSignal::new("Ran 3 commands".to_string());
-            let row = |owner: &Owner| {
-                owner.with(|| {
-                    cut_words(NodeRef::new(), move || words.get());
-                });
-                crate::testing::run_effects();
-            };
-            let goes = Owner::new();
-            row(&goes);
-            drop(goes);
-            crate::frame::run();
-
-            let stays = Owner::new();
-            row(&stays);
-            assert_eq!(crate::frame::waiting(), 1);
-            words.set("Ran 4 commands".into());
-            crate::testing::run_effects();
-            assert_eq!(crate::frame::waiting(), 1);
-            crate::frame::run();
-            assert_eq!(crate::frame::waiting(), 0);
         });
     }
 }

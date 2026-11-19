@@ -2476,8 +2476,8 @@ async function pixelCases(cdp, agent) {
     }
     // A row whose words and spinner leave little room still shows its
     // button whole, on one line, inside the row, and its words give way,
-    // down to 8 characters. A Quiet row of several calls says what runs
-    // first, with nothing after it.
+    // with at least 8 characters' room. A Quiet row of several calls says
+    // what runs first, with nothing after it.
     for (const view of ['quiet', 'full']) {
       await play(ratio, `touch: a running row with Move to background fits a phone (${view})`, async (run) => {
         await run.metrics(390, 844);
@@ -2503,13 +2503,23 @@ async function pixelCases(cdp, agent) {
           document.body.appendChild(zero);
           const eight = zero.getBoundingClientRect().width;
           zero.remove();
+          // (The room the line leaves its words and what follows them, as
+          // the page measures it to fit them, web/src/fit.rs.)
+          const said = line.querySelector(':scope > .said');
+          let after = 0;
+          for (let each = said.nextElementSibling; each; each = each.nextElementSibling) {
+            const style = getComputedStyle(each);
+            const margins = each.className.includes('call-action') ? parseFloat(style.marginLeft) + parseFloat(style.marginRight) : 0;
+            after += each.getBoundingClientRect().width + 6 + margins;
+          }
           return {
             past: right - row.right,
             line: line.getBoundingClientRect().height,
             button: button.getBoundingClientRect().height,
             clipped: button.scrollWidth > button.clientWidth,
-            what: what.getBoundingClientRect().width,
-            cut: what.scrollWidth > what.clientWidth,
+            room: line.getBoundingClientRect().right - said.getBoundingClientRect().left - after,
+            // (The page cuts its words itself, where a word ends, with "…".)
+            cut: what.scrollWidth > what.clientWidth || what.textContent.endsWith('…'),
             eight,
             note: [...line.querySelectorAll('.outcome')].some((each) => each.textContent.includes('running')),
           };
@@ -2527,7 +2537,7 @@ async function pixelCases(cdp, agent) {
         if (shot.clipped || shot.button > 24.5) return `the button wraps or is cut (${shot.button} px tall)`;
         if (shot.line > 20.5) return `the line is ${shot.line} px tall`;
         if (!shot.cut) return 'the words fit whole, so nothing gave way';
-        if (shot.what < shot.eight - 1) return `the words are ${shot.what} px, under 8 characters (${shot.eight} px)`;
+        if (shot.room < shot.eight - 1) return `the words have ${shot.room} px, under 8 characters (${shot.eight} px)`;
         return null;
       }, view);
     }
@@ -2723,7 +2733,8 @@ async function pixelCases(cdp, agent) {
         const summary = row.querySelector('summary');
         const what = summary.querySelector('.what');
         const r = summary.getBoundingClientRect();
-        return { x: r.left + 30, y: r.top + r.height / 2, open: row.querySelector('details').open, cut: what.scrollWidth > what.clientWidth + 0.5 };
+        // (The page cuts its words itself, where a word ends, with "…".)
+        return { x: r.left + 30, y: r.top + r.height / 2, open: row.querySelector('details').open, cut: what.scrollWidth > what.clientWidth + 0.5 || what.textContent.endsWith('…') };
       })()`;
       const shut = await run.evaluate(line);
       if (!shut) return 'no Quiet row';

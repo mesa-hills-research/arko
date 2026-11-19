@@ -20,6 +20,8 @@ lucide-leptos = { version = "3.61.0", default-features = false, features = ["acc
 pulldown-cmark = { version = "0.13.5", default-features = false }
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = { version = "1.0.115", features = ["raw_value"] }
+# A line is cut between grapheme clusters, as the terminal cuts it.
+unicode-segmentation = "1.12.0"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
