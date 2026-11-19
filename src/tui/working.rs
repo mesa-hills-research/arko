@@ -1,6 +1,7 @@
 //! The "Working…" line's spacing, measured on the whole screen. It has as
-//! many blank rows below it (before the status line's rule, or the notes
-//! that wait under it) as above it, whatever started the turn.
+//! many blank rows below it (before the status line's rule) as above it (up
+//! to what was said, or the notes that wait above it), whatever started the
+//! turn.
 
 #[cfg(test)]
 mod tests {
@@ -90,7 +91,7 @@ mod tests {
 
     /// An app whose agent works, with `above` the last row before its
     /// "Working…" line, on enough earlier turns to fill the screen, and a
-    /// note the agent hasn't read waiting under the line when `note`.
+    /// note the agent hasn't read waiting above the line when `note`.
     fn working(above: Above, note: bool, view: View) -> App {
         let mut app = new_app();
         app.view = view;
@@ -160,7 +161,7 @@ mod tests {
         }
     }
 
-    /// A note the agent hasn't read, which waits under the line.
+    /// A note the agent hasn't read, which waits above the line.
     fn unread_note(id: u64) -> Item {
         let mut note = item(id, Kind::User, "Use tabs.");
         note.delivery = Some(Delivery::Note);
@@ -225,8 +226,8 @@ mod tests {
     /// user's message, the agent's text, a message, a notice, a command's
     /// output, a reply), none on either side among the agent's calls (a
     /// call, its output, a worker's line), where it stands flush against the
-    /// status line's rule. With a note waiting under it, which has a blank row
-    /// of its own, a blank row on each side in every case. In every view, at
+    /// status line's rule. With a note waiting above it, a blank row on each
+    /// side in every case. In every view, at
     /// every size, with ARKO_SYMBOLS=ascii and with the command menu docked.
     #[test]
     fn the_working_line_has_as_much_room_below_as_above() {
@@ -246,9 +247,12 @@ mod tests {
                     let (above_rows, below_rows, next) =
                         padding(&rows).unwrap_or_else(|| panic!("no Working…: {case}"));
                     if above == Above::Nothing {
-                        // Nothing above it, so it is the first row.
-                        assert_eq!(above_rows, 0, "{case}");
-                        assert!(is_working(&rows[0]), "{case}");
+                        // Nothing above it, so it is the first row, or the
+                        // note is, with a blank row between them.
+                        let first = if note { 2 } else { 0 };
+                        assert_eq!(above_rows, first / 2, "{case}");
+                        assert!(is_working(&rows[first]), "{case}");
+                        assert_eq!(note, rows[0].contains("Use tabs."), "{case}");
                         continue;
                     }
                     assert_eq!(above_rows, below_rows, "{case}");
@@ -262,13 +266,14 @@ mod tests {
                         _ => above.blank_rows(),
                     };
                     assert_eq!(above_rows, wanted, "{case}");
-                    // What follows the blank rows below, the note that
-                    // waits, or the rule above the status line.
+                    // The note waits above the line's blank row, and the
+                    // rule above the status line follows the blank rows
+                    // below.
                     if note {
-                        assert!(rows[next].contains("Use tabs."), "{case}");
-                    } else {
-                        assert!(is_rule(&rows[next], width), "{case}");
+                        let at = next - below_rows - 1;
+                        assert!(rows[at - above_rows - 1].contains("Use tabs."), "{case}");
                     }
+                    assert!(is_rule(&rows[next], width), "{case}");
                 }
             }
         }
@@ -292,7 +297,7 @@ mod tests {
         /// notice.
         Answers,
         /// What the user typed that the agent didn't read, which waits
-        /// under the line.
+        /// above the line.
         Unread,
         /// A model switch's new conversation.
         Switch,
@@ -443,8 +448,8 @@ mod tests {
     /// comes in before the agent's own output (a worker's calls, a queued
     /// worker's card, a worker's warning), the line has the room the
     /// user's message gives it, a blank row above and one below, before
-    /// the note that waits, the chip, the panel, the menu or the status
-    /// line's rule.
+    /// the chip, the panel, the menu or the status line's rule. The notes
+    /// the user typed wait above it.
     #[test]
     fn a_turn_that_starts_by_itself_gives_the_line_the_room_a_message_does() {
         let (width, height) = (80, 30);
@@ -464,14 +469,16 @@ mod tests {
                         let rows = screen(&mut app, width, height);
                         let case = format!("{start:?}, then {then:?}, below {below:?}, {view:?}");
                         let room = padding(&rows).map(|(before, after, next)| {
+                            let at = next - after - 1;
                             let next = &rows[next];
-                            let follows = match (start, below) {
-                                (Start::Unread, _) => next.contains("Use tabs."),
-                                (_, Below::Nothing) => is_rule(next, width),
-                                (_, Below::Chip) => next.contains("Alt+Q"),
+                            let follows = match below {
+                                Below::Nothing => is_rule(next, width),
+                                Below::Chip => next.contains("Alt+Q"),
                                 _ => !is_rule(next, width),
                             };
-                            (before, after, follows)
+                            let note = start != Start::Unread
+                                || rows[at - before - 1].contains("Use tabs.");
+                            (before, after, follows && note)
                         });
                         if room != Some((1, 1, true)) {
                             failed.push(format!("{case}: {room:?}"));

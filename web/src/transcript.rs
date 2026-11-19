@@ -61,7 +61,7 @@ pub fn Transcript() -> impl IntoView {
                 working && (live || layout::running_shown(&rows, &store, worker.as_deref()));
             let working = working && !elsewhere;
             let room = !working && (room || elsewhere);
-            let rows = layout::with_working(rows, working || room, &store);
+            let rows = layout::with_working(rows, working || room);
             (feed, rows, room)
         })
     });

@@ -149,10 +149,11 @@ of single lines under it.
   stays where it is on screen. A command that ends with nothing to show, or a thought that ends on
   its one line, stacks again, and the gap below it goes.
 - Working… has as much space below it as above. In the terminal it has no blank row among the
-  agent's calls, and one on each side after what was said, after anything open, or above a message
-  waiting to be read. Such a message has a blank row above it and one below it, before the status
-  line. The page keeps the line's room at the end while a call or a thinking shows that the agent
-  works.
+  agent's calls, and one on each side after what was said, after anything open, or below a message
+  waiting to be read. Such a message waits under the agent's output with a blank row above it and
+  one below it, and Working… stands below it, so the message keeps its row as Working… comes and
+  goes and as the agent reads it. The page keeps the line's room at the end, below the messages
+  waiting, while a call or a thinking shows that the agent works.
 - In the terminal and on the page the reader chooses to follow the end or to read, and only their
   own way toward or away from the end changes that. A scroll up or Home that moves a line, or Ctrl+G's line going
   above the screen, chooses to read, even with the end in sight, so what comes next doesn't move

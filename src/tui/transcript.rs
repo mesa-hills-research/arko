@@ -1614,28 +1614,21 @@ impl Transcript {
             self.quiet_cache.retain(|key, _| keys.contains(key));
         }
         if self.motion.working {
-            // Where the agent's output comes next, above the notes it hasn't
-            // read, which wait at the end.
-            let mut at = blocks.len();
-            while at > 0
-                && matches!(blocks[at - 1].shown, Shown::Entry(index) if self.entries[index].item.pending)
-            {
-                at -= 1;
-            }
+            // At the end, below the notes the agent hasn't read, so a note
+            // keeps its row as Working… comes and goes and as the agent
+            // reads it.
+            let at = blocks.len();
             // It has as many blank lines below as above, whatever started the
             // turn. Among the agent's own calls (a call, its result, its
             // thinking, a worker's line) it is one more row of that list,
             // which runs together and stands against the status line's rule,
             // none on either side. After anything else (the user's message,
-            // the agent's text, a message, a notice, a command's output) it
-            // is a paragraph of its own, a blank line on each side. So it is
-            // before the agent's first call of the turn, under the calls of
-            // its workers or the card of one that started from the queue,
-            // as it is under the user's message. Anything open above sets it
-            // apart as text does. The notes it stands above (they wait at
-            // the end) set it apart below with their own blank line, so it has
-            // one above too.
-            let notes_below = at < blocks.len();
+            // a note waiting, the agent's text, a message, a notice, a
+            // command's output) it is a paragraph of its own, a blank line on
+            // each side. So it is before the agent's first call of the turn,
+            // under the calls of its workers or the card of one that started
+            // from the queue, as it is under the user's message. Anything
+            // open above sets it apart as text does.
             let among_calls = at
                 .checked_sub(1)
                 .is_some_and(|last| self.is_call_run(&blocks[last]))
@@ -1643,13 +1636,14 @@ impl Transcript {
                     .under_way(filter)
                     .is_some_and(|(agent, since)| self.calls_begun(agent, since));
             let after_open = at.checked_sub(1).is_some_and(|last| blocks[last].open);
-            let apart = at > 0 && (notes_below || !among_calls || after_open);
+            let apart = at > 0 && (!among_calls || after_open);
             let mut working = Block::other(WORKING_KEY, Shown::Working, apart);
-            working.tail = apart && !notes_below;
-            blocks.insert(at, working);
+            working.tail = apart;
+            blocks.push(working);
         }
         // The notes the agent hasn't read wait at the end, with a blank line
-        // below them, before the status line, as there is above them.
+        // below them, before the status line, as there is above them. Below
+        // them, Working… brings its own.
         if let Some(last) = blocks.last_mut()
             && matches!(last.shown, Shown::Entry(index) if self.entries[index].item.pending)
         {
@@ -6954,11 +6948,12 @@ mod tests {
         }
     }
 
-    /// "Working…" stands where the agent's output comes next, above a
-    /// note the agent hasn't read, which waits at the end. The note has a
-    /// blank line above it and one below it, before the status line.
+    /// "Working…" stands at the end, below a note the agent hasn't read,
+    /// which waits under the agent's output with a blank line above it and
+    /// one below it. The note keeps its row as Working… goes and comes, and
+    /// as the agent reads it.
     #[test]
-    fn working_stands_above_a_note_waiting_to_be_read() {
+    fn working_stands_below_a_note_waiting_to_be_read() {
         let mut t = Transcript::new();
         t.working = Some(0);
         let mut call = item(1, Kind::Call, "$ make");
@@ -6968,18 +6963,32 @@ mod tests {
         note.delivery = Some(Delivery::Note);
         note.pending = true;
         t.apply(Update::Item(note));
-        // The note's blank line sets it apart below, so it has one above too.
-        let note = format!("▎ Use tabs.{}pending", " ".repeat(22));
+        let pending = format!("▎ Use tabs.{}pending", " ".repeat(22));
         let shown = rows(&mut t, &full(), 40, 6);
-        assert_eq!(shown[..2], ["· $ make · ✓", ""]);
-        assert!(is_working(&shown[2]), "{shown:?}");
-        assert_eq!(shown[3..], ["", note.as_str(), ""]);
-        // While a call runs, with no Working line, the same.
+        assert_eq!(shown[..4], ["· $ make · ✓", "", pending.as_str(), ""]);
+        assert!(is_working(&shown[4]), "{shown:?}");
+        assert_eq!(shown[5], "");
+        // While a call runs, with no Working line, the note has the blank
+        // line below it.
         let mut call = item(3, Kind::Call, "$ make test");
         call.status = Some(CallStatus::Running);
-        t.apply(Update::Item(call));
+        t.apply(Update::Item(call.clone()));
         let shown = rows(&mut t, &full(), 40, 5);
-        assert_eq!(shown[1..], ["· $ make test …", "", note.as_str(), ""]);
+        assert_eq!(shown[1..], ["· $ make test …", "", pending.as_str(), ""]);
+        // The call ends and Working… comes below the note again, and the
+        // agent reads it, which comes again as the feed sends it.
+        call.status = Some(CallStatus::Ok);
+        t.apply(Update::Change(call));
+        let shown = rows(&mut t, &full(), 40, 7);
+        assert_eq!(shown[1..5], ["· $ make test · ✓", "", pending.as_str(), ""]);
+        assert!(is_working(&shown[5]), "{shown:?}");
+        t.apply(Update::Remove { id: 2 });
+        let mut read = item(4, Kind::User, "Use tabs.");
+        read.delivery = Some(Delivery::Note);
+        t.apply(Update::Item(read));
+        let shown = rows(&mut t, &full(), 40, 7);
+        assert_eq!(shown[1..5], ["· $ make test · ✓", "", "▎ Use tabs.", ""]);
+        assert!(is_working(&shown[5]), "{shown:?}");
     }
 
     /// In a worker's own view, "Working…" says the worker waits on its

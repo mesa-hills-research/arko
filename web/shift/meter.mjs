@@ -214,15 +214,13 @@ const INSTRUMENT = `(() => {
     const lines = [];
     let endZone = null;
     const children = rows.children;
-    // "Working…", which rides on the end, and the notes waiting after the
-    // rest.
+    // The notes waiting after the rest, and "Working…" below them, which
+    // ride on the end.
     for (let at = children.length - 1; at >= 0; at--) {
       const row = children[at];
-      if (row.matches('.user.pending')) endZone = row.getBoundingClientRect().top;
+      if (row.matches('.working, .user.pending')) endZone = row.getBoundingClientRect().top;
       else break;
     }
-    const working = rows.querySelector(':scope > .working');
-    if (working) endZone = Math.min(endZone ?? Infinity, working.getBoundingClientRect().top);
     let last = null;
     for (const row of children) {
       const rect = row.getBoundingClientRect();

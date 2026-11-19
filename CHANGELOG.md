@@ -32,6 +32,13 @@
   run lacks, and says that a conversation Claude Code compacts keeps the tools it started with,
   where it promised them at the next handover.
 
+### The transcript
+
+- A message sent while the agent works keeps its row until the agent reads it and after. It waits
+  under the agent's output and "Working…" stands below it, in the terminal and on the web page.
+  The message used to wait below "Working…", so it moved down and up as "Working…" came and went,
+  and swapped rows with it when the agent read it.
+
 ## 0.23.1 (2026-11-18)
 
 ### The transcript

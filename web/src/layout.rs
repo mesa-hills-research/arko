@@ -648,20 +648,13 @@ pub fn in_quiet_row(rows: &[Row], id: u64) -> bool {
     })
 }
 
-/// `rows` with the "Working…" row, when `working`, where the agent's
-/// output comes next, at the end, above the notes it hasn't read.
-pub fn with_working(mut rows: Vec<Row>, working: bool, store: &Store) -> Vec<Row> {
-    if !working {
-        return rows;
+/// `rows` with the "Working…" row, when `working`, at the end, below the
+/// notes the agent hasn't read, so a note keeps its place as the row comes
+/// and goes and as the agent reads it.
+pub fn with_working(mut rows: Vec<Row>, working: bool) -> Vec<Row> {
+    if working {
+        rows.push(Row::Working);
     }
-    let mut at = rows.len();
-    while at > 0
-        && let Row::Item(id, _) = rows[at - 1]
-        && store.get(id).is_some_and(|item| item.pending)
-    {
-        at -= 1;
-    }
-    rows.insert(at, Row::Working);
     rows
 }
 
@@ -1066,14 +1059,14 @@ mod tests {
     }
 
     #[test]
-    fn working_stands_above_the_notes_the_agent_hasnt_read_and_isnt_new() {
+    fn working_stands_below_the_notes_the_agent_hasnt_read_and_isnt_new() {
         let mut store = Store::default();
         store.add(item(1, Kind::User, MAIN, "go"), 0.0);
         let mut note = item(2, Kind::User, MAIN, "and this");
         note.pending = true;
         store.add(note, 0.0);
-        let rows = with_working(layout(&store.items, View::Full, None), true, &store);
-        assert_eq!(ids(&rows), ["i1", "working", "i2"]);
+        let rows = with_working(layout(&store.items, View::Full, None), true);
+        assert_eq!(ids(&rows), ["i1", "i2", "working"]);
         assert_eq!(unseen(&rows, &store, 1), 1);
     }
 
