@@ -38,6 +38,8 @@
   agent reads it. It waits under the agent's output with "Working…" below it, in the terminal and
   on the web page, and only output coming above it moves it. It used to wait below "Working…", so
   it moved down and up with it and swapped rows with it when the agent read it.
+- An answer, or words sent with an approval, now shows after a message you typed before it. It
+  used to show above that message.
 
 ### Questions
 
