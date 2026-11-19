@@ -282,6 +282,30 @@ const INSTRUMENT = `(() => {
       }
       lines.push(...mine);
     }
+    // The last rows' boxes (key, top, bottom, device px), which say what
+    // changed at the end, and the spacing under the last one, as it is and
+    // as the end rule gives it (device px, unrounded).
+    let tailEnd = null;
+    for (let at = children.length - 1; at >= 0; at--) {
+      const row = children[at];
+      const rect = row.getBoundingClientRect();
+      if (rect.height <= 0) continue;
+      const style = getComputedStyle(row);
+      const number = (value) => parseFloat(value) || 0;
+      const framed = style.getPropertyValue('--lead-end').trim() === '0px';
+      const lead = framed ? 0 : (number(style.lineHeight) - number(style.fontSize)) / 2;
+      const rule = Math.max(number(style.getPropertyValue('--gap-above')), number(style.getPropertyValue('--gap-below'))) + lead;
+      const actual = rows.getBoundingClientRect().bottom - rect.bottom;
+      tailEnd = { actual: actual * dpr, rule: rule * dpr };
+      break;
+    }
+    const tail = [];
+    for (let at = children.length - 1; at >= 0 && tail.length < 6; at--) {
+      const rect = children[at].getBoundingClientRect();
+      if (rect.height <= 0) continue;
+      const key = children[at].getAttribute('data-row') || (children[at].classList.contains('working') ? 'working' : children[at].className);
+      tail.unshift([key, Math.round(rect.top * dpr), Math.round(rect.bottom * dpr)]);
+    }
     const jump = document.querySelector('.jump');
     const marker = jump && jump.classList.contains('shown') ? jump.textContent.trim() : '';
     const following = log.classList.contains('pinned') || log.classList.contains('following');
@@ -298,6 +322,8 @@ const INSTRUMENT = `(() => {
       bottom: Math.round(bottom * dpr),
       end: last ? Math.round((last.bottom + parseFloat(getComputedStyle(rows).paddingBottom || '0')) * dpr) : null,
       endRaw: last ? (last.bottom + parseFloat(getComputedStyle(rows).paddingBottom || '0')) * dpr : null,
+      tail,
+      tailEnd,
       bottomRaw: bottom * dpr,
       endZone: endZone === null ? null : Math.round(endZone * dpr),
       start: children.length ? Math.round(children[0].getBoundingClientRect().top * dpr) >= Math.round(top * dpr) : true,
@@ -562,6 +588,27 @@ const BLANK_STEPS = new Set([
   'worker ends',
   'turn ends',
 ]);
+
+/// Whether the one change at the end between two frames is that "Working…"
+/// went: the last rows of `before` are those of `after` and "Working…" after
+/// them, each other row in the same place and of the same size, to the
+/// device pixel, and the row now last has the spacing under it the end rule
+/// gives it. The blank that comes is then the line "Working…" took (rule 1),
+/// in whatever step it goes, as when the agent waits on the reader's answer,
+/// and any other change at the end in that frame (a row or the end's
+/// spacing a pixel shorter) still fails.
+function onlyWorkingWent(before, after) {
+  const was = before.tail ?? [];
+  const now = after.tail ?? [];
+  if (!was.length || was[was.length - 1][0] !== 'working' || now.some(([key]) => key === 'working')) return false;
+  const kept = was.slice(0, -1);
+  const tail = now.slice(-kept.length);
+  if (!kept.length || tail.length !== kept.length) return false;
+  if (!kept.every(([key, top, bottom], at) => tail[at][0] === key && tail[at][1] === top && tail[at][2] === bottom)) return false;
+  // (And the row now last has the end's spacing the rule gives it, so
+  // the blank is the line "Working…" took and nothing besides.)
+  return !!after.tailEnd && Math.round(after.tailEnd.actual - after.tailEnd.rule) === 0;
+}
 
 // ----- sizes -----
 
@@ -894,7 +941,10 @@ class Run {
       const grew = Math.round(blankOf(after) - blankOf(before));
       if (grew > 0) {
         this.meter.tally(this.meter.blanks, `${step}|${this.view}`).add(grew);
-        if (!blankAllowed(step)) this.failures.push(`${grew} device px of blank came below the end at "${step}" (${this.view})`);
+        if (!blankAllowed(step) && !onlyWorkingWent(before, after)) {
+          const tail = (shot) => (shot.tail ?? []).map(([key, top, bottom]) => `${key} ${top}-${bottom}`).join(', ');
+          this.failures.push(`${grew} device px of blank came below the end at "${step}" (${this.view}); the last rows were ${tail(before)}, then ${tail(after)}`);
+        }
       }
     }
     const key = (kind) => `${kind}|${step}|${this.view}`;
@@ -1734,6 +1784,19 @@ async function pixelCases(cdp, agent) {
     for (const failure of run.failures) failures.push(`@${ratio} ${name}: ${failure}`);
     await run.close();
   };
+  // The blank guard's own case, on two frames made up: "Working…" goes from
+  // under a row, and that row has the end's spacing the rule gives it, which
+  // passes; or a device pixel less, which must fail; or the row moved.
+  count++;
+  {
+    const before = { tail: [['i1', 0, 300], ['working', 312, 372]], tailEnd: { actual: 22.5, rule: 22.5 } };
+    const right = { tail: [['i1', 0, 300]], tailEnd: { actual: 22.5, rule: 22.5 } };
+    const short = { tail: [['i1', 0, 300]], tailEnd: { actual: 21.5, rule: 22.5 } };
+    const moved = { tail: [['i1', 0, 299]], tailEnd: { actual: 22.5, rule: 22.5 } };
+    if (!onlyWorkingWent(before, right)) failures.push('pixel case the blank guard: the line "Working…" took failed');
+    if (onlyWorkingWent(before, short)) failures.push('pixel case the blank guard: a device pixel more blank passed');
+    if (onlyWorkingWent(before, moved)) failures.push('pixel case the blank guard: a row that moved passed');
+  }
   const follows = (shot) => shot.choice === 'follow' && shot.following;
   const blankOf = (shot) => shot.bottom - shot.end;
   // (Unrounded, so a change is rounded once, as a line's move is.)
