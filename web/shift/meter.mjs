@@ -1887,6 +1887,29 @@ async function pixelCases(cdp, agent) {
         return Math.abs(blankOf(b) - want) <= 1 ? null : `blank ${blankOf(b)} below the end, not ${want}`;
       });
     }
+    // A worker's view, with a call, opened and left again before the next
+    // frame, so the rows it drew go before the frames they asked for. The
+    // page stopping fails the case, as any error in its console does.
+    for (const view of ['full', 'quiet']) {
+      await play(ratio, `a worker's view opened and left before the next frame, ${view}`, async (run) => {
+        await run.fill();
+        await run.feed({ do: 'worker', id: 'r1', text: `Task ${run.words(4)}` });
+        const { call } = await run.feed({ do: 'call', worker: 'r1', tool: 'shell', parameters: { command: `ls ${run.words(2)}` } });
+        await run.feed({ do: 'result', worker: 'r1', call, tool: 'shell', output: 'exit code 0, 0.1 s' });
+        await run.settle(null);
+        const left = await run.evaluate(`(async () => {
+          const card = [...document.querySelectorAll('#rows .wcard')].pop();
+          if (!card) return false;
+          card.click();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+          return true;
+        })()`);
+        if (!left) return 'no worker card';
+        await run.settle(null);
+        return null;
+      }, view);
+    }
     await play(ratio, 'the keyboard takes only blank while reading, a scroll down follows, and it goes', async (run) => {
       await run.fill();
       await run.blank(300 * ratio);
