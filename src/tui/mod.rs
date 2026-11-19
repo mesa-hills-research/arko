@@ -295,13 +295,20 @@ impl Screen {
 /// mouse (buttons, the wheel and drags, not every motion, which would wake
 /// the view at every move), pastes and focus reported, and Shift+Enter told
 /// apart from Enter where the terminal can (the kitty keyboard protocol).
-/// From then on termelon's writer sends it everything. When it fails, the
-/// terminal is as it was.
+/// From then on termelon's writer sends it everything, and on Windows a
+/// console control event gives it back. When it fails, the terminal is as it
+/// was.
 fn open() -> termelon::Result<Terminal> {
     install_panic_hook();
     // (The view's own hook gives the terminal back, by its rules.)
     let terminal = Terminal::open(Options::default().panic_hook(false))?;
     *crate::lock(&TERMINAL) = Some(terminal.restore_handle());
+    // Ctrl+Break, the console window closing, logoff and shutdown give the
+    // console back before Windows ends Arko.
+    #[cfg(windows)]
+    if let Err(error) = terminal.restore_on_console_events() {
+        log::warn!("The console won't be given back on Ctrl+Break or when it closes ({error})");
+    }
     Ok(terminal)
 }
 
