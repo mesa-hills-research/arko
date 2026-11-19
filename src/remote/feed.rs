@@ -6232,8 +6232,13 @@ mod tests {
                 .map(|text| (text.to_string(), false))
                 .collect();
             assert_eq!(shown(&feed), sent, "{delivery:?}");
+            let ids: Vec<u64> = items(&feed).iter().map(|item| item.id).collect();
+            let (_, mut receiver) = feed.subscribe();
             feed.event(&event("main", read(&[1, 2])), None);
             assert_eq!(shown(&feed), sent, "{delivery:?}");
+            let now: Vec<u64> = items(&feed).iter().map(|item| item.id).collect();
+            assert_eq!(now, ids, "{delivery:?}");
+            assert!(updates(&mut receiver).is_empty(), "{delivery:?}");
             assert!(feed.lock().early_reads.is_empty(), "{delivery:?}");
             feed.note("One more.", Source::Terminal, 3, Vec::new());
             assert!(items(&feed).last().unwrap().pending, "{delivery:?}");
