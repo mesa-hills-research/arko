@@ -12,8 +12,8 @@
 //! waiting at the end go down as what comes above them takes their rows,
 //! into the blank rows below the end, and while the reader reads on past the
 //! bottom row, and up as what stood above them goes. A note the agent reads
-//! stood at the end, and it may move as they do while it stays at or below
-//! the row where the end began. A worker's start keeps its words in their columns
+//! in the frame where output comes above it goes down by that output's rows
+//! and no further. A worker's start keeps its words in their columns
 //! as the worker's ID comes.
 //!
 //! `SHIFT_METER_SEEDS` plays that many sessions at more sizes, and
@@ -522,6 +522,12 @@ fn moves(
     (was_end, end): (usize, usize),
 ) -> Moved {
     let (was, now) = (lines(before), lines(after));
+    // (The rows of lines `before` doesn't show, from where its end began.)
+    let new: Vec<usize> = now
+        .iter()
+        .filter(|(id, y)| **y >= was_end && !was.contains_key(*id))
+        .map(|(_, y)| *y)
+        .collect();
     let mut moved = Moved::default();
     let mut highest: Option<(usize, usize)> = None;
     for (id, from) in was {
@@ -538,10 +544,11 @@ fn moves(
         };
         // ("Working…" and the notes waiting go down as what comes above them
         // takes their rows, and while the reader reads, up as what stood
-        // above them goes. A note the agent reads stood at the end, and stays
-        // at or below where the end began.)
-        let at_end = to >= end || (from >= was_end && to >= was_end);
-        if at_end && (to > from || !following) {
+        // above them goes. A note the agent reads as output comes above it
+        // goes down by that output's rows and no further.)
+        let pushed = new.iter().filter(|y| **y < to).count();
+        let read = from >= was_end && to > from && to - from <= pushed;
+        if (to >= end || read) && (to > from || !following) {
             moved.room = moved.room.max(rows);
             continue;
         }
@@ -1715,6 +1722,57 @@ fn no_line_moves_down_as_an_agent_works() {
             "{}",
             step.name()
         );
+    }
+}
+
+/// A note the agent reads in the frame its call's result comes goes down by
+/// the result's lines and no further, following and scrolled up. (The
+/// frames are those of the Full view with blank rows below the end.)
+#[test]
+fn a_read_note_goes_down_by_the_output_above_it_and_no_further() {
+    let rows = |rows: &[&str]| -> Vec<String> { rows.iter().map(|row| row.to_string()).collect() };
+    let call = "▾ $ cargo w517 w518 · ✓ exit 0";
+    let content = "│ w519 w520 w521 ok";
+    let before = rows(&[
+        call,
+        content,
+        "",
+        "· $ cargo w522 w523 …",
+        "",
+        "▎ Also w524 w525 w526 w527 w528 w529 w530            pending",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+    ]);
+    let after = |blank: usize| {
+        let mut after = rows(&[
+            call,
+            content,
+            "",
+            "▾ $ cargo w522 w523 · ✓ exit 0",
+            "│ w531 w532 w533 ok",
+            "│ w534 w535 w536 ok",
+            "",
+        ]);
+        after.extend((0..blank).map(|_| String::new()));
+        after.extend(rows(&[
+            "▎ Also w524 w525 w526 w527 w528 w529 w530",
+            "",
+            "⣻ Working…",
+        ]));
+        after.resize(before.len(), String::new());
+        after
+    };
+    for following in [true, false] {
+        // The result's two lines push the note down two rows.
+        let moved = moves(&before, &after(0), following, None, (4, 8));
+        assert_eq!((moved.rows, moved.room), (0, 2), "following {following}");
+        // Two blank rows more are a move of four.
+        let moved = moves(&before, &after(2), following, None, (4, 10));
+        assert_eq!(moved.rows, 4, "following {following}");
     }
 }
 
