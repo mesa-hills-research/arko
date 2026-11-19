@@ -3039,6 +3039,43 @@ impl Transcript {
             .map_or(0, |at| at + 1)
     }
 
+    /// The keys of the blocks that show the call `call` or its contents, its
+    /// own block, its contents' blocks or the Quiet row that holds it
+    /// (tests).
+    #[cfg(test)]
+    pub(super) fn keys_of_call(
+        &mut self,
+        call: u64,
+        filter: &Filter,
+        theme: &Theme,
+    ) -> HashSet<u64> {
+        let width = self.drawn.area.width as usize;
+        let blocks = self.blocks(filter, theme, width);
+        let of = |index: usize| {
+            let item = &self.entries[index].item;
+            item.id == call || item.call == Some(call)
+        };
+        blocks
+            .iter()
+            .filter(|block| match &block.shown {
+                Shown::Entry(index) => of(*index),
+                Shown::Quiet(row) => row.members.iter().any(|member| of(*member)),
+                _ => false,
+            })
+            .map(|block| block.key)
+            .collect()
+    }
+
+    /// The key of the block each row of the last frame shows (tests).
+    #[cfg(test)]
+    pub(super) fn row_keys(&self) -> Vec<Option<u64>> {
+        self.drawn
+            .rows
+            .iter()
+            .map(|row| row.map(|row| row.key))
+            .collect()
+    }
+
     /// Whether the last frame showed the transcript's first row on its top
     /// row (tests).
     #[cfg(test)]

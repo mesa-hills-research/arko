@@ -8,13 +8,16 @@
 //! Scrolled up, no line moves. A fold the reader opens or closes, by the
 //! mouse or the keyboard, moves no line above it, up, down or along its row.
 //! That goes for a long content's "N more lines" too, which opens the rest
-//! below its preview and closes it again. One move is allowed. "Working…" and the notes
-//! waiting at the end go down as what comes above them takes their rows,
-//! into the blank rows below the end, and while the reader reads on past the
-//! bottom row, and up as what stood above them goes. A note the agent reads
-//! in the frame where output comes above it goes down by that output's rows
-//! and no further. A worker's start keeps its words in their columns
-//! as the worker's ID comes.
+//! below its preview and closes it again. Two moves are allowed. "Working…"
+//! and the notes waiting at the end go down as what comes above them takes
+//! their rows, into the blank rows below the end, and while the reader reads
+//! on past the bottom row, and up as what stood above them goes. A note the
+//! agent reads in the frame where output comes above it goes down by that
+//! output's rows and no further. And rows that came after an open call go
+//! down by the rows its content grows by above them as it comes, a command's
+//! output in Full and a code run's calls and its result in any view where
+//! the run is open. A worker's start keeps its words in their columns as the
+//! worker's ID comes.
 //!
 //! `SHIFT_METER_SEEDS` plays that many sessions at more sizes, and
 //! `SHIFT_METER_OUT` names a file for the tables of every step and view.
@@ -226,6 +229,11 @@ enum Allowed {
     /// "Working…" or a note waiting at the end went down into the blank
     /// rows below the end, as what came above them took those rows.
     Room,
+    /// Rows that came after an open call went down by the rows its content
+    /// grew by above them, as its content came. That is a command's output
+    /// in Full, and a code run's calls and its result in any view where the
+    /// run is open.
+    Arrived,
 }
 
 /// What the sessions measured.
@@ -383,6 +391,7 @@ impl Meter {
                 .collect();
             let kind = match kind {
                 Allowed::Room => "the end makes room",
+                Allowed::Arrived => "an open call's content comes above later rows",
             };
             let _ = writeln!(out, "| {kind} | {} | {} |", step.name(), cells.join(" | "));
         }
@@ -514,19 +523,25 @@ struct Moved {
     /// The most rows "Working…" or a note waiting at the end went down, as
     /// what came above them took their rows, or while the reader reads, up.
     room: u32,
+    /// The most rows a line that came after an open call went down, by as
+    /// many as the call's content grew above it ([`Allowed::Arrived`]).
+    arrived: u32,
 }
 
 /// How the lines of `before` that `after` shows again moved, where a line
 /// going up counts only when `following` is false. Rows of `before` below
 /// `below` are left out (the fold a click toggled there moves them). From
 /// `end` on, `after` shows "Working…", the notes waiting to be read and the
-/// blank rows below the end, and from `was_end` on, `before` does.
+/// blank rows below the end, and from `was_end` on, `before` does. With
+/// `call`, which rows of `before` and of `after` show the call whose content
+/// came ([`Allowed::Arrived`]).
 fn moves(
     before: &[String],
     after: &[String],
     following: bool,
     below: Option<usize>,
     (was_end, end): (usize, usize),
+    call: Option<(&[bool], &[bool])>,
 ) -> Moved {
     let (was, now) = (lines(before), lines(after));
     // (The rows of lines `before` doesn't show, from where its end began.)
@@ -559,6 +574,26 @@ fn moves(
             moved.room = moved.room.max(rows);
             continue;
         }
+        // (A line below the call's rows, down by as many rows as those grew
+        // above it, past what the whole screen moved, as the call's first
+        // row did.)
+        if let Some((was, now)) = call
+            && to > from
+            && !now.get(to).copied().unwrap_or(false)
+            && let Some(first_was) = was.iter().position(|of| *of)
+            && let Some(first_now) = now.iter().position(|of| *of)
+            && first_was < from
+            && first_now < to
+        {
+            let count =
+                |of: &[bool], upto: usize| of.iter().take(upto).filter(|of| **of).count() as i64;
+            let grew = count(now, to) - count(was, from);
+            let by = (to as i64 - from as i64) - (first_now as i64 - first_was as i64);
+            if grew > 0 && by == grew {
+                moved.arrived = moved.arrived.max(rows);
+                continue;
+            }
+        }
         if highest.is_none_or(|(at, _)| from < at) {
             highest = Some((from, to));
         }
@@ -583,6 +618,8 @@ struct Shot {
     /// The first row of "Working…", the notes waiting to be read and the
     /// blank rows below the end.
     end: usize,
+    /// The key of the block each row shows.
+    keys: Vec<Option<u64>>,
 }
 
 /// The Markdown of the reply that is open as it streams.
@@ -667,6 +704,9 @@ struct Run<'m> {
     /// Whether its turns start workers, and how many they started.
     starts: bool,
     workers: u64,
+    /// The call whose content comes in the next frame, and whether it is a
+    /// code run.
+    arriving: Option<(u64, bool)>,
 }
 
 /// The step a click on `row` makes when it's a content's door ("… 6 more
@@ -732,6 +772,7 @@ impl<'m> Run<'m> {
             clicks: 0,
             starts: false,
             workers: 0,
+            arriving: None,
         }
     }
 
@@ -802,6 +843,7 @@ impl<'m> Run<'m> {
             gap: self.app.transcript.gap(),
             start: self.app.transcript.shows_start(),
             end: self.app.transcript.end_starts(),
+            keys: self.app.transcript.row_keys(),
         }
     }
 
@@ -811,12 +853,48 @@ impl<'m> Run<'m> {
     /// line above it counts that moves, up as well as down.
     fn frame_below(&mut self, step: Step, below: Option<usize>) {
         let shot = self.shot();
+        // The call whose content came in this frame, where it is open: a
+        // command's in Full and a code run's in any view.
+        let arriving = self
+            .arriving
+            .take()
+            .filter(|(_, code)| *code || View::ALL[self.view] == View::Full);
+        let call = match (arriving, &self.last) {
+            (Some((call, _)), Some(last)) => {
+                let (filter, theme) = (self.app.filter(), self.app.theme.clone());
+                let keys = self.app.transcript.keys_of_call(call, &filter, &theme);
+                // (Its rows, and the blank rows right after them, the gap
+                // the row after it has from it.)
+                let of = |keyed: &[Option<u64>], rows: &[String]| -> Vec<bool> {
+                    let mut of: Vec<bool> = keyed
+                        .iter()
+                        .map(|key| key.is_some_and(|key| keys.contains(&key)))
+                        .collect();
+                    for y in 1..of.len() {
+                        if of[y - 1] && rows.get(y).is_some_and(|row| row.trim().is_empty()) {
+                            of[y] = true;
+                        }
+                    }
+                    of
+                };
+                Some((of(&last.keys, &last.rows), of(&shot.keys, &shot.rows)))
+            }
+            _ => None,
+        };
         if let Some(last) = &self.last {
             let following = shot.following && last.following;
             // (Following, a line may go up as what comes at the end pushes
             // it, but not in the frame of a toggle.)
             let rises = following && below.is_none();
-            let moved = moves(&last.rows, &shot.rows, rises, below, (last.end, shot.end));
+            let moved = moves(
+                &last.rows,
+                &shot.rows,
+                rises,
+                below,
+                (last.end, shot.end),
+                call.as_ref()
+                    .map(|(was, now)| (was.as_slice(), now.as_slice())),
+            );
             if let Some(row) = below {
                 for (id, from, to) in moved_aside(&last.rows, &shot.rows, row) {
                     let rows: Vec<String> = last
@@ -841,6 +919,13 @@ impl<'m> Run<'m> {
                     .entry((Allowed::Room, step, self.view))
                     .or_default()
                     .add(moved.room);
+            }
+            if moved.arrived > 0 {
+                self.meter
+                    .allowed
+                    .entry((Allowed::Arrived, step, self.view))
+                    .or_default()
+                    .add(moved.arrived);
             }
             let rows = moved.rows;
             let reader = if following {
@@ -1269,6 +1354,7 @@ impl<'m> Run<'m> {
             self.read_early = true;
             self.frame(Step::ResultRead);
         } else {
+            self.arriving = Some((id, false));
             self.frame(Step::Result);
         }
         if long && self.doors.chance(90) {
@@ -1347,6 +1433,7 @@ impl<'m> Run<'m> {
             });
             call.act.as_mut().unwrap().calls = Some(calls.clone());
             self.update(Update::Change(call.clone()));
+            self.arriving = Some((id, true));
             self.frame(Step::RunCall);
             self.meanwhile();
             let refused = self.rng.chance(15);
@@ -1365,6 +1452,7 @@ impl<'m> Run<'m> {
             calls.summary = quiet::called(&done);
             call.act.as_mut().unwrap().calls = Some(calls.clone());
             self.update(Update::Change(call.clone()));
+            self.arriving = Some((id, true));
             self.frame(Step::RunCallEnds);
             self.meanwhile();
         }
@@ -1379,6 +1467,7 @@ impl<'m> Run<'m> {
         result.content = Some(ContentKind::Muted);
         self.add(result);
         self.live = Live::Result;
+        self.arriving = Some((id, true));
         self.frame(Step::Result);
         if long && self.rng.chance(90) {
             self.door();
@@ -1829,7 +1918,7 @@ fn no_line_moves_down_as_an_agent_works() {
         meter.cause_table()
     );
     let table = format!(
-        "{table}\nThe moves the test allows. \"Working…\" and a note waiting at the end go down as what comes above them takes their rows, into the blank rows below the end, and while the reader reads on past the bottom row, and up as what stood above them goes. Each cell is frames · the most rows / all rows.\n\n{}",
+        "{table}\nThe moves the test allows. \"Working…\" and a note waiting at the end go down as what comes above them takes their rows, into the blank rows below the end, and while the reader reads on past the bottom row, and up as what stood above them goes. Rows that came after an open call go down by the rows its content grows by above them as it comes, a command's output in Full and a code run's calls and its result in any view where the run is open. Each cell is frames · the most rows / all rows.\n\n{}",
         meter.allowed_table()
     );
     if let Ok(path) = std::env::var("SHIFT_METER_OUT") {
@@ -1906,11 +1995,92 @@ fn a_read_note_goes_down_by_the_output_above_it_and_no_further() {
     };
     for following in [true, false] {
         // The result's two lines push the note down two rows.
-        let moved = moves(&before, &after(0), following, None, (4, 8));
+        let moved = moves(&before, &after(0), following, None, (4, 8), None);
         assert_eq!((moved.rows, moved.room), (0, 2), "following {following}");
         // Two blank rows more are a move of four.
-        let moved = moves(&before, &after(2), following, None, (4, 10));
+        let moved = moves(&before, &after(2), following, None, (4, 10), None);
         assert_eq!(moved.rows, 4, "following {following}");
+    }
+}
+
+/// A row that came after an open call goes down by the rows the call's
+/// content grew by above it, and that is allowed, following and scrolled
+/// up. A row down by a row more, a row of the call itself that moves, and
+/// one above the call that does count as moves.
+#[test]
+fn a_row_after_an_open_call_goes_down_by_its_content_and_no_further() {
+    let rows = |rows: &[&str]| -> Vec<String> { rows.iter().map(|row| row.to_string()).collect() };
+    let before = rows(&[
+        "  w601 w602",
+        "▾ run_code w603 w604 …",
+        "│  w605 w606",
+        "│ · $ cargo w607 w608 · ✓ 2 lines",
+        "",
+        "! w609 w610",
+        "",
+        "",
+        "",
+    ]);
+    let was = [false, true, true, true, false, false, false, false, false];
+    let after = rows(&[
+        "  w601 w602",
+        "▾ run_code w603 w604 …",
+        "│  w605 w606",
+        "│ · $ cargo w607 w608 · ✓ 2 lines",
+        "│ · $ cargo w611 w612 …",
+        "",
+        "! w609 w610",
+        "",
+        "",
+    ]);
+    let now = [false, true, true, true, true, false, false, false, false];
+    for following in [true, false] {
+        let moved = moves(&before, &after, following, None, (9, 9), Some((&was, &now)));
+        assert_eq!((moved.rows, moved.arrived), (0, 1), "following {following}");
+        // Without the call's rows, it's a move.
+        let moved = moves(&before, &after, following, None, (9, 9), None);
+        assert_eq!(moved.rows, 1, "following {following}");
+        // A row more.
+        let mut further = after.clone();
+        further.insert(6, String::new());
+        further.pop();
+        let moved = moves(
+            &before,
+            &further,
+            following,
+            None,
+            (9, 9),
+            Some((&was, &now)),
+        );
+        assert_eq!(moved.rows, 2, "following {following}");
+        // The call's code moves down inside it.
+        let mut inside = after.clone();
+        inside.insert(2, "│  w613".into());
+        inside.pop();
+        let grew = [false, true, true, true, true, true, false, false, false];
+        let moved = moves(
+            &before,
+            &inside,
+            following,
+            None,
+            (9, 9),
+            Some((&was, &grew)),
+        );
+        assert!(moved.rows > 0, "following {following}");
+        // A row above the call moves.
+        let mut above = after.clone();
+        above.insert(0, String::new());
+        above.pop();
+        let shifted = [false, false, true, true, true, true, false, false, false];
+        let moved = moves(
+            &before,
+            &above,
+            following,
+            None,
+            (9, 9),
+            Some((&was, &shifted)),
+        );
+        assert!(moved.rows > 0, "following {following}");
     }
 }
 
