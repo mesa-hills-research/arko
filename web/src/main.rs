@@ -47,6 +47,11 @@ mod content;
 #[path = "../../src/remote/quiet.rs"]
 mod quiet;
 
+// The space between the transcript's rows, as the terminal spaces them.
+#[allow(dead_code)]
+#[path = "../../src/remote/spacing.rs"]
+mod spacing;
+
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;

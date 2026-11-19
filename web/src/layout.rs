@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::protocol::{CallStatus, Delivery, ItemData, Kind, Level, StatusData, WorkerState};
 use crate::quiet::{self, Words};
+use crate::spacing::{self, Above, Below, Class, Step};
 use crate::store::{MAIN, Store};
 
 /// The transcript's views.
@@ -699,6 +700,102 @@ pub fn with_working(mut rows: Vec<Row>, working: bool) -> Vec<Row> {
     rows
 }
 
+/// What a row is for the space around it ([`spacing`]), as it stands
+/// closed. Whether it's open is the page's to say, which the row draws.
+pub fn spacing_class(row: &Row) -> Class {
+    match row {
+        Row::Item(_, kind) => match kind {
+            Kind::User => Class::User,
+            Kind::Text | Kind::Reply | Kind::Message | Kind::Question | Kind::Output => Class::Said,
+            Kind::Call | Kind::Thinking | Kind::Notice => Class::Work,
+            Kind::Result => Class::Held,
+            Kind::Turn | Kind::Conversation => Class::TurnEnd,
+            Kind::WorkerLine => Class::Card,
+        },
+        Row::Count { .. } | Row::Quiet { .. } | Row::Status(_) | Row::Working => Class::Work,
+    }
+}
+
+/// The space above a row, from the row shown before it, closed or open,
+/// and, on the last row shown, the space below it, closed or open.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gaps {
+    pub above: Step,
+    /// When the row before it is open.
+    pub above_open: Step,
+    /// On the last row: closed, and open.
+    pub below: Option<(Step, Step)>,
+}
+
+/// The space around each row of `rows` that `shown` says shows, by its key
+/// ([`Row::key`]). A row that doesn't show has none, and the row after it
+/// takes its space from the one before.
+pub fn gaps(rows: &[Row], shown: impl Fn(&Row) -> bool) -> HashMap<String, Gaps> {
+    let mut gaps = HashMap::new();
+    let mut before: Option<Class> = None;
+    let mut last: Option<(String, Class)> = None;
+    for row in rows.iter().filter(|row| shown(row)) {
+        let class = spacing_class(row);
+        let above = match before {
+            None => spacing::gap(Above::Start, Below::Row(class)),
+            Some(before) => spacing::gap(Above::Row(before), Below::Row(class)),
+        };
+        let above_open = match before {
+            None => above,
+            Some(_) => spacing::gap(Above::Row(Class::Open), Below::Row(class)),
+        };
+        gaps.insert(
+            row.key(),
+            Gaps {
+                above,
+                above_open,
+                below: None,
+            },
+        );
+        before = Some(class);
+        last = Some((row.key(), class));
+    }
+    if let Some((key, class)) = last
+        && let Some(gaps) = gaps.get_mut(&key)
+    {
+        gaps.below = Some((
+            spacing::gap(Above::Row(class), Below::Composer),
+            spacing::gap(Above::Row(Class::Open), Below::Composer),
+        ));
+    }
+    gaps
+}
+
+/// The space between the lines on an open Quiet row's rail, its members
+/// ([`quiet_members`]), by their keys. They're spaced as rows are, but the
+/// rail starts with its first and ends with its last, so the first has none
+/// above it and the last none below. (The rail itself stands under its
+/// line as what an open line holds.)
+pub fn rail_gaps(members: &[Row]) -> HashMap<String, Gaps> {
+    let mut gaps = HashMap::new();
+    let mut before: Option<Class> = None;
+    for row in members {
+        let class = spacing_class(row);
+        let (above, above_open) = match before {
+            None => (Step::None, Step::None),
+            Some(before) => (
+                spacing::gap(Above::Row(before), Below::Row(class)),
+                spacing::gap(Above::Row(Class::Open), Below::Row(class)),
+            ),
+        };
+        gaps.insert(
+            row.key(),
+            Gaps {
+                above,
+                above_open,
+                below: None,
+            },
+        );
+        before = Some(class);
+    }
+    gaps
+}
+
 /// Whether `item` is one thing to read. A call's results and a command's
 /// output belong to what they follow. The end of a turn, a new conversation
 /// and a worker's place are marks, and a notice counts only when it opens a
@@ -1168,6 +1265,43 @@ mod tests {
         let rows = with_working(layout(&store.items, View::Full, None), true);
         assert_eq!(ids(&rows), ["i1", "i2", "working"]);
         assert_eq!(unseen(&rows, &store, 1), 1);
+    }
+
+    /// Each row takes the space above it from the row shown before it, by
+    /// the shared table, for that row closed and open. The first row takes
+    /// it from the header, and the last also the space below it. A row that
+    /// doesn't show takes none, and the row after it spaces from the one
+    /// before.
+    #[test]
+    fn each_rows_space_comes_from_the_row_shown_before_it() {
+        let rows = [
+            Row::Item(1, Kind::User),
+            Row::Item(2, Kind::Text),
+            Row::Item(3, Kind::Call),
+            Row::Item(4, Kind::Result),
+            Row::Item(5, Kind::Call),
+            Row::Item(6, Kind::Turn),
+        ];
+        let gaps = gaps(&rows, |row| *row != Row::Item(4, Kind::Result));
+        let of = |key: &str| gaps[key];
+        assert_eq!(of("i1").above, Step::Turn, "the header, as a message above");
+        assert_eq!(of("i2").above, Step::Apart);
+        assert_eq!(of("i3").above, Step::Apart);
+        assert!(!gaps.contains_key("i4"), "a content its call hides");
+        assert_eq!(of("i5").above, Step::Stack, "a call under a call");
+        assert_eq!(of("i5").above_open, Step::Apart, "a call under an open one");
+        assert_eq!(of("i6").above, Step::Apart);
+        assert_eq!(of("i6").below, Some((Step::Turn, Step::Apart)));
+        assert!(
+            rows[..5]
+                .iter()
+                .all(|row| gaps.get(&row.key()).is_none_or(|gaps| gaps.below.is_none()))
+        );
+        // Shown, the content stacks under its call and the next call stands
+        // apart from it.
+        let gaps = super::gaps(&rows, |_| true);
+        assert_eq!(gaps["i4"].above_open, Step::Stack);
+        assert_eq!(gaps["i5"].above, Step::Apart);
     }
 
     /// A turn's count in Messages stands at the thinking that led to its

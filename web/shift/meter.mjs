@@ -154,8 +154,11 @@ class Agent {
     });
   }
 
+  /// A step for the session. A step about a worker, a question or an
+  /// approval names it in `id`, which the answer echoes, so that name is the
+  /// request's own.
   ask(request) {
-    const id = ++this.id;
+    const id = request.id ?? ++this.id;
     return new Promise((resolve, reject) => {
       this.waiting.set(id, (answer) => (answer.error ? reject(new Error(answer.error)) : resolve(answer)));
       this.socket.write(`${JSON.stringify({ ...request, id })}\n`);
@@ -169,9 +172,43 @@ class Agent {
 
 // ----- in the page -----
 
+// The table of gaps (src/remote/spacing.rs), said again here so the checks
+// don't read the page's own answer. Each kind's step above and below it, the
+// larger of two neighbours' (an open line and what it holds stack), in CSS
+// px. The header and the composer stand where a row of the neighbour's kind
+// would, so the first and the last row add the half-leading of their line,
+// none where their edge is drawn (a bubble, a card, a report). `endOf` is
+// the space under the last row, to the bottom of the column.
+const TABLE = `(() => {
+  const PX = { none: 0, stack: 4, apart: 12, turn: 24 };
+  const ABOVE = { User: 'turn', Said: 'apart', Card: 'apart', TurnEnd: 'apart', Work: 'stack', Open: 'stack', Held: 'stack' };
+  const BELOW = { User: 'apart', Said: 'apart', Card: 'apart', Open: 'apart', Held: 'apart', Work: 'stack', TurnEnd: 'turn' };
+  const step = (a, b) => (a === 'Open' && b === 'Held' ? 'stack' : PX[ABOVE[b]] >= PX[BELOW[a]] ? ABOVE[b] : BELOW[a]);
+  const isOpen = (row) => row.matches(':has(> details[open]), .thinking.open');
+  const kindOf = (row) => {
+    const c = row.classList;
+    if (c.contains('user')) return 'User';
+    if (c.contains('wline')) return 'Card';
+    if (c.contains('turn') || c.contains('conversation')) return 'TurnEnd';
+    if (c.contains('result')) return 'Held';
+    if (c.contains('working') || c.contains('count') || c.contains('notice') || c.contains('thinking') || c.contains('call')) return isOpen(row) ? 'Open' : 'Work';
+    return 'Said';
+  };
+  const framed = (row) => row.matches('.user, .wline, .report');
+  const leadOf = (row) => {
+    if (framed(row)) return 0;
+    const s = getComputedStyle(row);
+    return (parseFloat(s.lineHeight) - parseFloat(s.fontSize)) / 2;
+  };
+  const nextOf = (kind) => (kind === 'Held' ? 'Open' : kind);
+  const endOf = (row) => PX[step(kindOf(row), nextOf(kindOf(row)))] + leadOf(row);
+  return { PX, step, isOpen, kindOf, framed, leadOf, nextOf, endOf };
+})()`;
+
 // Counts the stream's events, holds the page's one-second clock and its time,
 // and measures the transcript's lines.
 const INSTRUMENT = `(() => {
+  const table = ${TABLE};
   const meter = { events: 0, ahead: 0, ticks: [] };
   window.__meter = meter;
   const now = Date.now.bind(Date);
@@ -284,17 +321,14 @@ const INSTRUMENT = `(() => {
     }
     // The last rows' boxes (key, top, bottom, device px), which say what
     // changed at the end, and the spacing under the last one, as it is and
-    // as the end rule gives it (device px, unrounded).
+    // as the table gives it (device px, unrounded).
     let tailEnd = null;
     for (let at = children.length - 1; at >= 0; at--) {
       const row = children[at];
       const rect = row.getBoundingClientRect();
       if (rect.height <= 0) continue;
-      const style = getComputedStyle(row);
-      const number = (value) => parseFloat(value) || 0;
-      const framed = style.getPropertyValue('--lead-end').trim() === '0px';
-      const lead = framed ? 0 : (number(style.lineHeight) - number(style.fontSize)) / 2;
-      const rule = Math.max(number(style.getPropertyValue('--gap-above')), number(style.getPropertyValue('--gap-below'))) + lead;
+      // (Anything else at the end, such as a case's spacer, has none.)
+      const rule = row.classList.contains('row') ? table.endOf(row) : 0;
       const actual = rows.getBoundingClientRect().bottom - rect.bottom;
       tailEnd = { actual: actual * dpr, rule: rule * dpr };
       break;
@@ -1622,11 +1656,12 @@ const RATIOS = [1, 1.25, 1.5, 2];
 
 /// The gap under the transcript's last item, to the composer's divider,
 /// against the gap between two items of its kind (CSS px), em box to em box
-/// for a row of text and frame to frame for a framed one (`--lead-end: 0`).
-/// A kind's gap is the larger of its gaps above and below (`--gap-above`,
-/// `--gap-below`), by its own line metrics. `pair` is the gap of the last
-/// two rows of its kind that stand together on the screen, if any.
+/// for a row of text and frame to frame for a framed one. A kind's gap is
+/// the table's step between two rows of its kind (an open row's next is an
+/// open row) and its half-leading on both sides. `pair` is the gap of the
+/// last two rows of its kind that stand together on the screen, if any.
 const LAST_GAP = `(() => {
+  const table = ${TABLE};
   const rows = document.getElementById('rows');
   const bottom = document.querySelector('.bottom');
   if (!rows || !bottom) return null;
@@ -1634,15 +1669,13 @@ const LAST_GAP = `(() => {
   const shown = [...rows.children].filter((row) => row.getBoundingClientRect().height > 0);
   const last = shown[shown.length - 1];
   if (!last) return null;
-  const kindOf = (row) => [...row.classList].filter((name) => name !== 'row' && name !== 'still' && name !== 'muted').sort().join(' ');
+  const kindOf = (row) => [...row.classList].filter((name) => name !== 'row' && name !== 'still' && name !== 'muted').sort().join(' ') + (table.isOpen(row) ? ' (open)' : '');
   const metrics = (row) => {
     const style = getComputedStyle(row);
     const number = (value) => parseFloat(value) || 0;
-    const framed = style.getPropertyValue('--lead-end').trim() === '0px';
+    const framed = table.framed(row);
     return {
-      lead: framed ? 0 : (number(style.lineHeight) - number(style.fontSize)) / 2,
-      above: number(style.getPropertyValue('--gap-above')),
-      below: number(style.getPropertyValue('--gap-below')),
+      lead: table.leadOf(row),
       padTop: framed ? 0 : number(style.paddingTop) + number(style.borderTopWidth),
       padBottom: framed ? 0 : number(style.paddingBottom) + number(style.borderBottomWidth),
     };
@@ -1650,13 +1683,14 @@ const LAST_GAP = `(() => {
   const emTop = (row) => row.getBoundingClientRect().top + metrics(row).padTop + metrics(row).lead;
   const emBottom = (row) => row.getBoundingClientRect().bottom - metrics(row).padBottom - metrics(row).lead;
   const kind = kindOf(last);
-  const own = metrics(last);
+  const own = table.kindOf(last);
   let pair = null;
   for (let at = shown.length - 2; at > 0 && pair === null; at--) {
     const [a, b] = [shown[at - 1], shown[at]];
     if (kindOf(a) === kind && kindOf(b) === kind) pair = emTop(b) - emBottom(a);
   }
-  return { kind, under: divider - emBottom(last), standard: Math.max(own.above, own.below) + 2 * own.lead, pair, dpr: devicePixelRatio };
+  const standard = table.PX[table.step(own, table.nextOf(own))] + 2 * metrics(last).lead;
+  return { kind, under: divider - emBottom(last), standard, pair, dpr: devicePixelRatio };
 })()`;
 
 /// A command whose line is longer than a phone's, as a push and a look at
@@ -2766,6 +2800,57 @@ async function pixelCases(cdp, agent) {
       await run.settle(null);
       return (await run.evaluate(`document.getElementById('log').dataset.held`)) === 'false' ? null : 'a lost release holds';
     });
+    // The space between the rows is the shared table's in each view, folds
+    // closed and open, the header's and the composer's included.
+    for (const view of VIEWS) {
+      await play(ratio, `every gap is the table's step (${view})`, async (run) => {
+        await spacedSession(run);
+        const problems = [];
+        const check = async (when) => {
+          for (const off of await run.evaluate(SPACING)) problems.push(`${when}: ${off}`);
+        };
+        await check('closed');
+        await run.evaluate(OPEN_FOLDS);
+        await run.settle(null);
+        await check('open');
+        // (Quiet's rows of several calls open to a rail of their lines.)
+        await run.evaluate(OPEN_MEMBERS);
+        await run.settle(null);
+        // (A line open on a rail with a line shown after it, so the gap
+        // under an open line is measured.)
+        const opened = await run.evaluate(`[...document.querySelectorAll('#rows .quiet-calls > :is(.quiet-member.open, .row.thinking.open)')].filter((el) => { const next = el.nextElementSibling; return next && next.getBoundingClientRect().height > 0; }).length`);
+        if (view === 'quiet' && !opened) problems.push('no line on a rail opened with one after it');
+        await check('its lines open');
+        return problems.length ? problems.slice(0, 6).join('; ') : null;
+      }, view);
+    }
+    // A framed block holds what it says alike above and below.
+    await play(ratio, 'every framed block holds its content alike top and bottom', async (run) => {
+      await spacedSession(run);
+      const problems = [];
+      await run.evaluate(OPEN_FOLDS);
+      await run.settle(null);
+      problems.push(...(await run.evaluate(FRAMES)).map((off) => `main: ${off}`));
+      // Each worker's view, with its report.
+      for (const worker of ['r1', 'r2']) {
+        const card = await run.evaluate(`(() => {
+          const card = [...document.querySelectorAll('#rows .wcard')].find((card) => card.textContent.includes('${worker}'));
+          if (!card) return null;
+          card.scrollIntoView({ block: 'center' });
+          const r = card.getBoundingClientRect();
+          return { x: r.left + 20, y: r.top + r.height / 2 };
+        })()`);
+        if (!card) return `no card of ${worker}`;
+        await run.settle(null);
+        await run.click(card.x, card.y);
+        await run.settle(null);
+        if (!(await run.evaluate(`!!document.querySelector('#rows .row.report')`))) return `no report in ${worker}'s view`;
+        problems.push(...(await run.evaluate(FRAMES)).map((off) => `${worker}'s view: ${off}`));
+        await run.key('Escape', 'Escape');
+        await run.settle(null);
+      }
+      return problems.length ? problems.slice(0, 6).join('; ') : null;
+    }, 'full');
   }
   // A code span that closes while a reply streams draws its words in the
   // code font, on the baselines they stood on. On a phone, following, with
@@ -2829,6 +2914,159 @@ async function pixelCases(cdp, agent) {
   });
   return { failures, count, skipped };
 }
+
+// A session with every kind of row: the user's messages and a note waiting,
+// text, a list and a code block, calls run and running, a thought, a notice,
+// a question answered, a worker's card and its report, and turns' lines.
+async function spacedSession(run) {
+  const call = async (tool, parameters, output, worker) => {
+    const who = worker ? { worker } : {};
+    const { call: id } = await run.feed({ do: 'call', tool, parameters, ...who });
+    if (output !== undefined) await run.feed({ do: 'result', call: id, tool, output, ...who });
+  };
+  const lines = (n) => Array.from({ length: n }, (_, at) => `${String(at + 1).padStart(4)} | ${run.words(4)}`).join('\n');
+  await run.feed({ do: 'user', text: `Please ${run.words(6)}` });
+  await run.feed({ do: 'text', text: run.some(8, 6) });
+  await call('shell', { command: `git status ${run.words(1)}` }, 'exit code 0, 0.1 s\n M Cargo.toml');
+  await call('read_file', { path: '/home/ada/proj/src/main.rs' }, lines(12));
+  // (Quiet merges the two reads into a row whose rail has a line for each.)
+  await call('read_file', { path: '/home/ada/proj/src/lib.rs' }, lines(6));
+  await run.feed({ do: 'think', text: run.some(10, 6) });
+  await call('shell', { command: `cargo check ${run.words(1)}` }, 'exit code 0, 0.2 s\n');
+  await run.feed({ do: 'notice', text: run.some(5, 4) });
+  await run.feed({ do: 'text', text: `${run.some(6, 4)}\n\n- ${run.words(5)}\n- ${run.words(4)}` });
+  await run.feed({ do: 'worker', id: 'r1', text: `Task ${run.words(4)}` });
+  await run.feed({ do: 'text', text: run.some(6, 4), worker: 'r1' });
+  await call('shell', { command: `cargo test ${run.words(1)}` }, 'exit code 0, 0.3 s\nok', 'r1');
+  // (Its report ends with a code block, and r2's with a quote, drawn edges.)
+  await run.feed({ do: 'worker', id: 'r1', change: 'finished', text: `${run.some(8, 4)}\n\n- ${run.words(5)}\n- ${run.words(4)}\n\n\`\`\`sh\ncargo test\n\`\`\`` });
+  await run.feed({ do: 'worker', id: 'r2', text: `Task ${run.words(4)}` });
+  await run.feed({ do: 'worker', id: 'r2', change: 'finished', text: `${run.some(8, 4)}\n\n> ${run.words(6)}` });
+  await run.feed({ do: 'ask', id: 'q1', text: `${run.some(4, 4)}?` });
+  await run.feed({ do: 'answered', id: 'q1', text: run.words(3) });
+  await run.feed({ do: 'text', text: `${run.some(6, 4)}\n\n\`\`\`rust\nfn main() {\n    println!("{}", 1);\n}\n\`\`\`` });
+  await run.feed({ do: 'end' });
+  await run.feed({ do: 'user', text: `And ${run.words(5)}` });
+  await run.feed({ do: 'text', text: run.some(6, 4) });
+  await call('shell', { command: `cargo build ${run.words(1)}` });
+  await run.feed({ do: 'note', text: `Also ${run.words(4)}`, seq: 1 });
+  await run.evaluate('__meter.tick(2600)');
+  await run.settle(null);
+}
+
+// Opens every fold the transcript shows, from the last up, so an open row's
+// neighbours are measured too.
+const OPEN_FOLDS = `(() => {
+  const folds = [...document.querySelectorAll('#rows > .row > details:not([open]) > summary, #rows > .row.count > button[aria-expanded="false"], #rows > .row.thinking:not(.open) > .thought')];
+  for (const fold of folds.reverse()) fold.click();
+})()`;
+
+// Opens every line on an open row's rail, a call's and a thought's, from the
+// last up.
+const OPEN_MEMBERS = `(() => {
+  const folds = [...document.querySelectorAll('#rows .quiet-calls > .quiet-member:not(.open) > .member-line, #rows .quiet-calls > .row.thinking:not(.open) > .thought')];
+  for (const fold of folds.reverse()) fold.click();
+})()`;
+
+// Each gap against the table (TABLE), in CSS px between the rows' boxes, the
+// header's and the composer's included. A list of what's off, empty when
+// every gap is the table's.
+const SPACING = `(() => {
+  const { PX, step, kindOf: kind, leadOf: lead, endOf } = ${TABLE};
+  const rows = [...document.querySelectorAll('#rows > .row')].filter((row) => row.getBoundingClientRect().height > 0);
+  const column = document.getElementById('rows').getBoundingClientRect();
+  const off = [];
+  const say = (row) => kind(row) + ' "' + row.textContent.trim().replace(/\\s+/g, ' ').slice(0, 24) + '"';
+  const test = (what, want, got) => { if (Math.abs(want - got) > 0.5) off.push(what + ' wants ' + want + ', got ' + Math.round(got * 10) / 10); };
+  if (!rows.length) return off;
+  const first = rows[0];
+  const shut = (k) => (k === 'Open' || k === 'Held' ? 'Work' : k);
+  test('the header above ' + say(first), PX[step(shut(kind(first)), shut(kind(first)))] + lead(first), first.getBoundingClientRect().top - column.top);
+  for (let at = 1; at < rows.length; at++) {
+    const a = rows[at - 1];
+    const b = rows[at];
+    test(say(a) + ' above ' + say(b), PX[step(kind(a), kind(b))], b.getBoundingClientRect().top - a.getBoundingClientRect().bottom);
+  }
+  const last = rows[rows.length - 1];
+  test(say(last) + ' above the composer', endOf(last), column.bottom - last.getBoundingClientRect().bottom);
+  // The lines on an open Quiet row's rail, spaced as rows, which the rail
+  // starts with.
+  const member = (el) => (el.matches('.quiet-member.open, .row.thinking.open') ? 'Open' : el.classList.contains('row') ? kind(el) : 'Work');
+  for (const rail of document.querySelectorAll('#rows .quiet-calls')) {
+    const members = [...rail.children].filter((el) => el.getBoundingClientRect().height > 0);
+    if (!members.length) continue;
+    test('the rail above ' + say(members[0]), 0, members[0].getBoundingClientRect().top - rail.getBoundingClientRect().top);
+    for (let at = 1; at < members.length; at++) {
+      const a = members[at - 1];
+      const b = members[at];
+      test('on a rail, ' + say(a) + ' above ' + say(b), PX[step(member(a), member(b))], b.getBoundingClientRect().top - a.getBoundingClientRect().bottom);
+    }
+  }
+  return off;
+})()`;
+
+// Each framed block's inner space above and below what it holds, to the
+// ink, a line of text by its em box and anything drawn by its box, with what
+// lies over its corner left out. A list of the blocks that hold it unevenly,
+// by more than a pixel (two for code, whose monospaced glyph box sits about
+// 0.85 px off its line's middle), and of a bubble or a card that holds it
+// other than 12 px from its frame.
+const FRAMES = `(() => {
+  const KINDS = [['bubble', '.row.user .bubble'], ['report', '.row.report'], ['worker card', '.wcard'], ['question record', '.record-box'], ['code block', '.md pre'], ['output', '.row.output pre']];
+  const shows = (el, frame) => {
+    for (let e = el; e && e !== frame.parentElement; e = e.parentElement) {
+      const s = getComputedStyle(e);
+      if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return false;
+      if (e !== frame && s.position === 'absolute') return false;
+      const up = e.parentElement;
+      if (up && up.tagName === 'DETAILS' && !up.open && e.tagName !== 'SUMMARY') return false;
+    }
+    return true;
+  };
+  const drawn = (s) => (s.backgroundColor && !/rgba\\(.*,\\s*0\\)$/.test(s.backgroundColor) && s.backgroundColor !== 'transparent') || ['Top', 'Bottom', 'Left', 'Right'].some((side) => parseFloat(s['border' + side + 'Width']) > 0);
+  const off = [];
+  for (const [name, selector] of KINDS) {
+    for (const frame of document.querySelectorAll('#rows ' + selector)) {
+      const box = frame.getBoundingClientRect();
+      if (box.height <= 0) continue;
+      const fs = getComputedStyle(frame);
+      const inner = { top: box.top + parseFloat(fs.borderTopWidth), bottom: box.bottom - parseFloat(fs.borderBottomWidth) };
+      let top = Infinity;
+      let bottom = -Infinity;
+      const walker = document.createTreeWalker(frame, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+      walker.nextNode();
+      for (let node = walker.currentNode; node; node = walker.nextNode()) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          if (!node.textContent.trim() || !shows(node.parentElement, frame)) continue;
+          const size = parseFloat(getComputedStyle(node.parentElement).fontSize);
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          for (const r of range.getClientRects()) {
+            const mid = (r.top + r.bottom) / 2;
+            if (r.width <= 0.01 || mid < inner.top || mid > inner.bottom) continue;
+            top = Math.min(top, mid - size / 2);
+            bottom = Math.max(bottom, mid + size / 2);
+          }
+        } else if (node !== frame && shows(node, frame)) {
+          const r = node.getBoundingClientRect();
+          if (r.height > 0 && (['svg', 'img'].includes(node.tagName.toLowerCase()) || drawn(getComputedStyle(node)))) {
+            top = Math.min(top, Math.max(r.top, inner.top));
+            bottom = Math.max(bottom, Math.min(r.bottom, inner.bottom));
+          }
+        }
+      }
+      if (top === Infinity) continue;
+      const above = top - inner.top;
+      const below = inner.bottom - bottom;
+      const code = name === 'code block' || name === 'output';
+      const said = name + ' "' + frame.textContent.trim().slice(0, 20) + '" holds it ' + Math.round(above * 10) / 10 + ' above and ' + Math.round(below * 10) / 10 + ' below';
+      if (Math.abs(above - below) > (code ? 2 : 1)) off.push(said);
+      // (A bubble and the cards hold it 12 px from their frame.)
+      else if (!code && (Math.abs(above - 12) > 1 || Math.abs(below - 12) > 1)) off.push(said + ', not 12');
+    }
+  }
+  return off;
+})()`;
 
 // ----- the runs -----
 

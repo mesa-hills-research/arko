@@ -11,6 +11,10 @@
 }
 
 :root {
+  /* The transcript's steps (src/remote/spacing.rs). */
+  --space-stack: 4px;
+  --space-apart: 12px;
+  --space-turn: 24px;
   --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   /* The side margins, wider than the notch in landscape. */
@@ -365,32 +369,45 @@ button.cache { padding: 0; border: 0; background: none; }
    gets shorter leaves blank below it. */
 .log > .floor { position: absolute; left: 0; width: 1px; height: 1px; visibility: hidden; pointer-events: none; }
 
-/* The composer stands where the next item of the last one's kind would, as
-   the eye measures, em box to em box (a framed row, `--lead-end: 0`, by its
-   frame). The last item shown (a closed call's content stays in the
-   column, hidden) has the gap two items of its kind have between them, the
-   larger of its gaps above and below, and the half-leading a next line of
-   its kind would bring, all as its own bottom margin, outside its box,
-   which the column keeps inside itself (flow-root). */
-.rows { display: flow-root; padding: 16px 0 0; }
-.rows > :nth-last-child(1 of :not(.closed)) {
-  margin-bottom: calc(max(var(--gap-above), var(--gap-below)) + var(--lead-end, (1lh - 1em) / 2));
-}
 .empty { max-width: 520px; margin: 30vh auto 0; padding: 0 var(--gutter); color: var(--muted); text-align: center; white-space: pre-wrap; }
 .empty:empty { display: none; }
 
-/* What is said stands 12 px from its neighbours, and the user's message
-   24 px from what is above it. The agent's work is a list of single lines
-   4 px apart, and anything open has 12 px below it and its 4 px above, so
-   opening or closing it moves nothing above it. Margins collapse, so gaps
-   never add up. */
-.row { --gap-above: 12px; --gap-below: 12px; margin: var(--gap-above) 0 var(--gap-below); overflow-wrap: anywhere; }
-.row:is(.call, .count, .thinking, .working, .notice) { --gap-above: 4px; --gap-below: 4px; }
-.row:is(.call:has(> details[open]), .thinking.open) { --gap-below: 12px; }
-/* A call's content in Full is under its line, and the gap is after it. */
-.row.call:has(> details[open]):has(+ .row.result) { --gap-below: 0px; }
+/* The space between the rows comes from one table, which the terminal
+   follows too (src/remote/spacing.rs). Lines of one list of work
+   stack, what is said and cards stand apart, as does what follows anything
+   open, and a turn stands between the user's message and what's above it,
+   and after a turn's line. Each row carries the step above it (data-gap),
+   the step when the row above it shows open (data-gap-open), and the last
+   row the step below it (data-end, data-end-open). A row has one margin
+   above it and, last, one below it, and holds its own margins, so nothing
+   collapses. The header and the composer stand where a row of their
+   neighbour's kind would, em box to em box, so the first and the last row
+   add the half-leading of their line, or none where their edge is drawn
+   (a bubble, a card, a report). */
+.rows { display: flow-root; }
+.row { overflow-wrap: anywhere; }
+#rows > .row { --lead: calc((1lh - 1em) / 2); margin: var(--above, 0px) 0 var(--below, 0px); }
+#rows > .row:not(.user, .thinking, .working) { display: flow-root; }
+#rows > :is(.user, .wline, .report) { --lead: 0px; }
+/* (The lines on an open row's rail are spaced by the same table, and the
+   rail starts and ends with them.) */
+.quiet-calls > * { --above: 0px; display: flow-root; margin: var(--above) 0 0; }
+:is(#rows, .quiet-calls) > [data-gap="stack"] { --above: var(--space-stack); }
+:is(#rows, .quiet-calls) > [data-gap="apart"] { --above: var(--space-apart); }
+:is(#rows, .quiet-calls) > [data-gap="turn"] { --above: var(--space-turn); }
+:is(#rows, .quiet-calls) > :is(.row:has(> details[open]), .row.thinking.open, .quiet-member.open) + [data-gap-open="none"] { --above: 0px; }
+:is(#rows, .quiet-calls) > :is(.row:has(> details[open]), .row.thinking.open, .quiet-member.open) + [data-gap-open="stack"] { --above: var(--space-stack); }
+:is(#rows, .quiet-calls) > :is(.row:has(> details[open]), .row.thinking.open, .quiet-member.open) + [data-gap-open="apart"] { --above: var(--space-apart); }
+:is(#rows, .quiet-calls) > :is(.row:has(> details[open]), .row.thinking.open, .quiet-member.open) + [data-gap-open="turn"] { --above: var(--space-turn); }
+#rows > .row:first-child { margin-top: calc(var(--above, 0px) + var(--lead)); }
+#rows > [data-end="stack"] { --below: calc(var(--space-stack) + var(--lead)); }
+#rows > [data-end="apart"] { --below: calc(var(--space-apart) + var(--lead)); }
+#rows > [data-end="turn"] { --below: calc(var(--space-turn) + var(--lead)); }
+#rows > [data-end-open="stack"]:is(:has(> details[open]), .thinking.open) { --below: calc(var(--space-stack) + var(--lead)); }
+#rows > [data-end-open="apart"]:is(:has(> details[open]), .thinking.open) { --below: calc(var(--space-apart) + var(--lead)); }
+#rows > [data-end-open="turn"]:is(:has(> details[open]), .thinking.open) { --below: calc(var(--space-turn) + var(--lead)); }
 
-.row.user { display: flex; flex-direction: column; align-items: flex-end; --gap-above: 24px; --lead-end: 0px; }
+.row.user { display: flex; flex-direction: column; align-items: flex-end; }
 .bubble {
   max-width: min(85%, 760px);
   padding: 8px 12px;
@@ -416,18 +433,29 @@ button.cache { padding: 0; border: 0; background: none; }
 }
 /* The hairline, not the accent, since a record needs nothing from the user. */
 .record-box { margin-top: 6px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); }
+/* A card holds what it says 12 px from its frame to the ink, top and
+   bottom, as a bubble holds its text. Its first and last lines start at its
+   padding, em box to the frame, their half-leading trimmed, so the inset
+   doesn't depend on the font of what it holds. */
+:is(.row.report, .wcard, .record-box) > :first-child { margin-top: calc((1em - 1lh) / 2); }
+.wcard > :nth-last-child(1 of :not(.wgo)),
+.record-box > :last-child,
+.row.report .md .mdb:nth-last-child(1 of :not(:empty)) > :is(p, ul, ol, h3, h4, h5):last-child { margin-bottom: calc((1em - 1lh) / 2); }
 .record { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
 .record li { display: flex; gap: 6px; }
 .record-number { flex: none; min-width: 16px; color: var(--muted); }
 .record-outcome { color: var(--muted); font-size: 14px; }
 .record-outcome.answer { color: var(--text); }
 .row.report {
-  --lead-end: 0px;
-  padding: 10px 14px;
+  position: relative;
+  padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   background: var(--surface);
 }
+/* A report's Copy stands in its corner, as a code block's does, so the card
+   ends with what it says. */
+.row.report > .actions:not(:has(.tag)) { position: absolute; top: 6px; right: 6px; margin: 0; }
 
 /* A call is one line, its words in the text colour and cut to fit, and
    how it went muted after them, whole. */
@@ -547,24 +575,23 @@ details.quiet > summary { display: block; }
    words do. In a row of several, each call's line is muted, its marker
    16 px in and its words and content 32 px in, and it opens to what it
    holds. The thinking between the calls stands in their words' column.
-   Lines on the rail stack 4 px apart, and anything open has 12 px below
-   it, but never at the rail's end. */
-.quiet-calls { margin: 4px 0 0 4px; padding-left: 10px; border-left: 2px solid var(--line); }
-.quiet-calls > * { display: flow-root; margin: 0; }
-.quiet-calls > * + * { margin-top: 4px; }
-.quiet-calls > .open + * { margin-top: 12px; }
+   Lines on the rail stack, and anything open stands apart from what
+   follows it, by the table (data-gap above), but never at the rail's ends.
+   A rail stands a stack under its line, as what an open line holds. */
+.quiet-calls { margin: var(--space-stack) 0 0 4px; padding-left: 10px; border-left: 2px solid var(--line); }
 .quiet-member.own > .holds { padding-left: 16px; }
 .quiet-member .member-line { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .quiet-member .call-line .what { color: var(--muted); }
 details.call[open] > summary .mark { transform: rotate(90deg); }
 
-/* A call's content under it in Full, on a rail at its left. */
+/* A call's content under it in Full, on a rail at its left, a stack under
+   its line. (The content's own row has that space above it.) */
 details.call > .holds, .row.result > .holds {
-  margin: 4px 0 0 4px;
+  margin: var(--space-stack) 0 0 4px;
   padding-left: 10px;
   border-left: 2px solid var(--line);
 }
-.row.result { --gap-above: 0px; }
+.row.result > .holds { margin-top: 0; }
 /* What a call holds, its detail and its content, muted but for a command's
    output, a message, a file's lines and a diff, its lines 4 px apart. */
 .holds > * + * { margin-top: 4px; }
@@ -745,7 +772,6 @@ pre.block {
 @keyframes spin { to { --turn: 1turn; } }
 
 .row.turn, .row.conversation {
-  margin: 16px 0 22px;
   color: var(--muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -767,13 +793,16 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   align-items: center;
   column-gap: 10px;
   width: 100%;
-  padding: 8px 12px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   background: var(--surface);
   line-height: 1.35;
   text-align: left;
 }
+/* (Its first line holds its id's badge, drawn 1 px above the line's middle,
+   so the trim of its half-leading leaves that pixel.) */
+.wcard > .wtitle:first-child { margin-top: calc((1em - 1lh) / 2 + 1px); }
 @media (hover: hover) {
   .wcard:hover { border-color: var(--muted); }
 }
@@ -788,8 +817,6 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .wcard.failed .wmeta { color: var(--error); }
 .wcard .wlast { grid-column: 1; overflow: hidden; color: var(--muted); font: 12px/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .wcard .wgo { grid-column: 2; grid-row: 1 / span 3; color: var(--muted); }
-/* (A framed row, whose edge is its frame's.) */
-.row.wline { --lead-end: 0px; }
 
 .jump {
   position: absolute;
@@ -817,7 +844,10 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 
 .md .mdb:empty { display: none; }
 .md p, .md ul, .md ol, .md pre, .md blockquote, .md .table, .md h3, .md h4, .md h5 { margin: 0 0 0.7em; }
-.md .mdb:last-child > :last-child { margin-bottom: 0; }
+/* What is said starts and ends with its first and last block. (The last
+   block is the last that holds something, since the one for text still
+   coming is there, empty, once it's done.) */
+.md .mdb:nth-last-child(1 of :not(:empty)) > :last-child { margin-bottom: 0; }
 .md .mdb:first-child > :first-child { margin-top: 0; }
 .md h3, .md h4, .md h5 { margin-top: 1em; font-size: 1em; line-height: 1.3; }
 .md ul { padding-left: 1.4em; }
@@ -839,7 +869,14 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .md ol > li::marker { font-variant-numeric: tabular-nums; }
 .md li { margin: 0.15em 0; }
 .md li > p { margin: 0; }
+/* What is said starts and ends with its text, so a card holds a list as it
+   holds a paragraph. */
+.md .mdb:first-child > :is(ul, ol):first-child > li:first-child { margin-top: 0; }
+.md .mdb:nth-last-child(1 of :not(:empty)) > :is(ul, ol):last-child > li:last-child { margin-bottom: 0; }
 .md blockquote { padding-left: 12px; border-left: 3px solid var(--line); color: var(--muted); }
+/* (A quote's rule ends with its text, so a quote that ends what is said
+   ends it there.) */
+.md blockquote > :last-child { margin-bottom: 0; }
 .md hr { margin: 1em 0; border: 0; border-top: 1px solid var(--line); }
 .md a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .md code { padding: 1px 4px; border-radius: var(--r-sm); background: var(--code); font: 0.88em/1 var(--mono); }
@@ -854,7 +891,7 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   background: var(--surface);
   font: 12.5px/1.5 var(--mono);
 }
-.md pre code { padding: 0; background: none; font: inherit; white-space: pre; }
+.md pre code { display: block; padding: 0; background: none; font: inherit; white-space: pre; }
 /* A table keeps the width its cells ask for and scrolls sideways inside its
    wrapper, as Studio's tables do, rather than squeeze its columns until
    every cell wraps. A cell wraps past 40 characters (padding included), so
@@ -969,8 +1006,9 @@ html.keyboard .bottom { padding-bottom: 10px; }
 /* A message's files, as chips in its bubble before its text, each a
    download of its file, its name over its kind and size. An image's
    thumbnail opens the viewer. */
-.bubble .sent { margin: 2px 0 6px; white-space: normal; }
-.bubble .sent.alone { margin-bottom: 0; }
+/* (Where its text would start, 12 px from its edge to the ink.) */
+.bubble .sent { margin: 4px 0 6px; white-space: normal; }
+.bubble .sent.alone { margin-bottom: 4px; }
 .sent .chip-file { padding-right: 12px; }
 .chip-open { flex: none; display: flex; padding: 0; border: 0; border-radius: var(--r-inner); background: none; cursor: zoom-in; }
 .chip-link { display: flex; flex-direction: column; min-width: 0; color: inherit; line-height: 1.3; text-decoration: none; }
@@ -1361,7 +1399,6 @@ html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
 
 @media (orientation: landscape) and (max-height: 500px) {
   .bar { min-height: 40px; }
-  .rows { padding-top: 8px; }
   .bottom { padding-top: 6px; }
   .field textarea { max-height: calc(3lh + 14px); }
 }
@@ -1377,22 +1414,40 @@ html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
 .copy.copied .copy-icon { opacity: 0; }
 .copy.copied .copied-icon { opacity: 1; }
 
-/* A message's actions keep their room under it, so showing them moves
-   nothing. Where a pointer hovers they show with it or the focus, and on
-   touch screens always. */
+/* A message's actions show without moving anything. On touch screens they
+   keep a line of their own under it, always shown. Where a pointer hovers
+   they show with it or the focus, and a footer that holds only buttons
+   takes no room. They stand in a reply's or a message's corner, over its
+   first line, as a code block's do, and beside a user's bubble. A footer
+   that says something (a tag) stays a line under the message. */
 .actions { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+/* (Under what is said, where its next paragraph would stand.) */
+.md + .actions { margin-top: 0.7em; }
 .row.user .actions { justify-content: flex-end; }
 .actions .tag { margin-top: 0; }
 @media (hover: hover) {
   .actions .btn { opacity: 0; }
   .row:hover .actions .btn, .actions .btn:focus-visible, .actions .btn.copied { opacity: 1; }
+  .row:is(.reply, .message):not(.report) { position: relative; }
+  .row:is(.reply, .message):not(.report) > .actions:not(:has(.tag)) {
+    position: absolute;
+    top: 0;
+    right: 0;
+    margin: 0;
+    padding-left: 4px;
+    border-radius: var(--r-md);
+  }
+  .row:is(.reply, .message):not(.report):is(:hover, :focus-within) > .actions:not(:has(.tag)) { background: var(--bg); }
+  .row.report:is(:hover, :focus-within) > .actions:not(:has(.tag)) { border-radius: var(--r-md); background: var(--surface); }
+  .row.user:not(:has(.tag)) { flex-direction: row; justify-content: flex-end; align-items: flex-end; gap: 4px; }
+  .row.user:not(:has(.tag)) > .actions { order: -1; margin: 0; }
 }
 
 /* A code block's language and copy button, in its corner, over its first
    line where that runs long, as GPUI Kit draws them. */
 .md .code { position: relative; margin: 0 0 0.7em; }
 .md .code > pre { margin: 0; }
-.md .mdb:last-child > .code:last-child { margin-bottom: 0; }
+.md .mdb:nth-last-child(1 of :not(:empty)) > .code:last-child { margin-bottom: 0; }
 .code-actions {
   position: absolute;
   top: 6px;
@@ -1415,7 +1470,7 @@ html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
 
 /* Tiles of one size, so a row keeps its height as they load. */
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
-.bubble .thumbs { margin: 2px 0 6px; white-space: normal; }
+.bubble .thumbs { margin: 4px 0 6px; white-space: normal; }
 .row.call .thumbs { margin: 4px 0 6px 14px; }
 .thumb {
   display: flex;

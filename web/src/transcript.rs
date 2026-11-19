@@ -55,6 +55,38 @@ pub fn Transcript() -> impl IntoView {
     });
     let rows = Memo::new(move |_| live.with(|(feed, rows, _)| (*feed, rows.clone())));
     let thinking = Memo::new(move |_| live.with(|(_, _, thinking)| *thinking));
+    // The space around each row, from the shared table, which the rows read
+    // ([`Spaced`]). A call's content that its closed call hides takes none.
+    // The lines on an open Quiet row's rail are spaced by it too.
+    let gaps = Memo::new(move |_| {
+        rows.with(|(_, rows)| {
+            STORE.with(|store| {
+                let store = store.borrow();
+                let mut gaps = layout::gaps(rows, |row| match row {
+                    Row::Item(id, Kind::Result) => {
+                        let call = store.get(*id).and_then(|item| item.call);
+                        let command = call.and_then(|call| store.get(call).map(is_command));
+                        match (call, command) {
+                            (Some(call), Some(command)) => full_open(page, call, command),
+                            _ => true,
+                        }
+                    }
+                    _ => true,
+                });
+                for row in rows {
+                    if let Row::Quiet { row, .. } = row {
+                        let members: Vec<Row> = layout::quiet_members(&row.calls)
+                            .into_iter()
+                            .map(|(member, _)| member)
+                            .collect();
+                        gaps.extend(layout::rail_gaps(&members));
+                    }
+                }
+                gaps
+            })
+        })
+    });
+    GAPS.with(|cell| cell.set(Some(gaps)));
     // Quiet rows that stay follow their words and calls.
     Effect::new(move |_| rows.with(|(_, rows)| sync_quiet(rows)));
     let marker = page.scroll.marker;
@@ -195,8 +227,9 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
                 let worker = page.worker.get();
                 STORE.with(|store| layout::working_label(&store.borrow(), worker.as_deref()))
             });
+            let spaced = Spaced::of(&key);
             view! {
-                <div class="row working">
+                <div class="row working" data-gap=spaced.gap() data-gap-open=spaced.gap_open() data-end=spaced.end() data-end-open=spaced.end_open()>
                     <span class="mark"><Spinner /></span>
                     <Shimmer class="what" text=move || label.get() active=|| true />
                 </div>
@@ -221,6 +254,7 @@ fn row_view(row: Row, thinking: Memo<Option<u64>>) -> AnyView {
 /// it came, and closes it again, its line staying where it is.
 fn count_row(id: u64, key: String, count: Count) -> AnyView {
     let page = page();
+    let spaced = Spaced::of(&key);
     let Count {
         calls,
         failed,
@@ -228,7 +262,7 @@ fn count_row(id: u64, key: String, count: Count) -> AnyView {
     } = count;
     let open = move || page.counts_open.with(|open| open.contains(&id));
     view! {
-        <div class="row count" data-id=id data-row=key>
+        <div class="row count" data-id=id data-row=key data-gap=spaced.gap() data-gap-open=spaced.gap_open() data-end=spaced.end() data-end-open=spaced.end_open()>
             <button type="button" class="call-line" aria-expanded=move || open().to_string()
                 on:click=move |_| {
                     page.counts_open.update(|open| {
@@ -323,6 +357,7 @@ fn cut_words(
 /// tool returned under the line, as Full does, whatever row it's in.
 fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<u64>>) -> AnyView {
     let page = page();
+    let spaced = Spaced::of(&key);
     let shared = QUIET.with(|quiet| {
         quiet
             .borrow_mut()
@@ -422,25 +457,26 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                     true => words().text,
                     false => cell.data.with(|item| item.text.clone()),
                 };
-                view! { <div class="holds"><pre class="held">{text}</pre></div> }
+                view! { <pre class="held">{text}</pre> }.into_any()
             })
     };
+    // (The call as written is the first of what its one call holds, so it
+    // goes in that call's place on the rail.)
     let inside = move || {
         open().then(|| {
             view! {
-                {whole}
                 <For
                     each=move || data.with(|row| layout::quiet_members(&row.calls))
                     key=|(row, results)| {
                         (row_key(None, row), results.iter().map(Row::key).collect::<Vec<_>>())
                     }
-                    children=move |(row, results)| quiet_member(row, results, data, thinking)
+                    children=move |(row, results)| quiet_member(row, results, data, thinking, whole)
                 />
             }
         })
     };
     view! {
-        <div class=class data-id=id data-row=key>
+        <div class=class data-id=id data-row=key data-gap=spaced.gap() data-gap-open=spaced.gap_open() data-end=spaced.end() data-end-open=spaced.end_open()>
             <details class="call quiet" prop:open=open>
                 <summary
                     node_ref=summary
@@ -522,6 +558,7 @@ fn quiet_member(
     results: Vec<Row>,
     quiet: RwSignal<layout::QuietRow>,
     thinking: Memo<Option<u64>>,
+    written: impl Fn() -> Option<AnyView> + Copy + Send + Sync + 'static,
 ) -> AnyView {
     let page = page();
     let Row::Item(id, Kind::Call) = row else {
@@ -536,6 +573,7 @@ fn quiet_member(
     let Some(cell) = cell(id) else {
         return ().into_any();
     };
+    let spaced = Spaced::of(&row.key());
     let data = cell.for_row().data;
     let merged = move || quiet.with(|row| row.merged);
     let has_content = !results.is_empty();
@@ -575,6 +613,7 @@ fn quiet_member(
     let holds = move || {
         open().then(|| {
             view! {
+                {move || (!merged()).then(written).flatten()}
                 {whole}
                 {detail}
                 {contents
@@ -609,9 +648,10 @@ fn quiet_member(
             }
         })
     };
-    // (Open, its line and what it holds have a gap below them.)
+    // (Spaced on the rail by the table, as rows are, [`layout::rail_gaps`].)
     view! {
-        <div class="quiet-member" class:own=merged class:open=move || merged() && open()>
+        <div class="quiet-member" class:own=merged class:open=move || merged() && open()
+            data-gap=spaced.gap() data-gap-open=spaced.gap_open()>
             {line}
             <div class="holds">
                 {holds}
@@ -637,6 +677,7 @@ fn thought_row(
     inside: bool,
 ) -> AnyView {
     let page = page();
+    let spaced = Spaced::of(&key);
     let text = cell.text;
     // (Full keeps its thoughts open apart from the other views.)
     let opened = move || {
@@ -682,7 +723,7 @@ fn thought_row(
         }
     };
     view! {
-        <div class="row thinking" class:open=move || open.get() data-id=id data-row=key>
+        <div class="row thinking" class:open=move || open.get() data-id=id data-row=key data-gap=spaced.gap() data-gap-open=spaced.gap_open() data-end=spaced.end() data-end-open=spaced.end_open()>
             <span class="mark">{move || (thinking.get() == Some(id)).then(|| view! { <Spinner /> })}</span>
             <div class="thought" role="button" tabindex="0"
                 aria-expanded=move || open.get().to_string()
@@ -705,6 +746,44 @@ thread_local! {
     /// and a new layout updates ([`sync_quiet`]).
     static QUIET: std::cell::RefCell<HashMap<u64, ArcRwSignal<layout::QuietRow>>> =
         std::cell::RefCell::new(HashMap::new());
+    /// The space around each row of the transcript, by its key
+    /// ([`layout::gaps`]).
+    static GAPS: std::cell::Cell<Option<Memo<HashMap<String, layout::Gaps>>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The space around a row of the transcript, as its attributes say it to
+/// the page's style: the step above it (`data-gap`), the step above it when
+/// the row before is open (`data-gap-open`), and on the last row the step
+/// below it, closed and open (`data-end`, `data-end-open`). The style picks
+/// by what shows open, and a row inside another has none.
+#[derive(Clone, Copy)]
+struct Spaced(Memo<Option<layout::Gaps>>);
+
+impl Spaced {
+    fn of(key: &str) -> Self {
+        let gaps = GAPS.with(std::cell::Cell::get);
+        let key = key.to_string();
+        Spaced(Memo::new(move |_| {
+            gaps.and_then(|gaps| gaps.with(|gaps| gaps.get(&key).copied()))
+        }))
+    }
+
+    fn gap(self) -> impl Fn() -> Option<&'static str> + Copy + Send + Sync + 'static {
+        move || self.0.get().map(|gaps| gaps.above.name())
+    }
+
+    fn gap_open(self) -> impl Fn() -> Option<&'static str> + Copy + Send + Sync + 'static {
+        move || self.0.get().map(|gaps| gaps.above_open.name())
+    }
+
+    fn end(self) -> impl Fn() -> Option<&'static str> + Copy + Send + Sync + 'static {
+        move || self.0.get()?.below.map(|(closed, _)| closed.name())
+    }
+
+    fn end_open(self) -> impl Fn() -> Option<&'static str> + Copy + Send + Sync + 'static {
+        move || self.0.get()?.below.map(|(_, open)| open.name())
+    }
 }
 
 /// Gives each Quiet row of `rows` what it shows as laid out now, and lets
@@ -736,6 +815,7 @@ fn local_time(at: i64) -> String {
 
 fn item_row(id: u64, key: String, cell: RowCell, thinking: Memo<Option<u64>>) -> AnyView {
     let page = page();
+    let spaced = Spaced::of(&key);
     let item = cell.data.get_untracked();
     let data = cell.data;
     let text = cell.text;
@@ -869,7 +949,7 @@ fn item_row(id: u64, key: String, cell: RowCell, thinking: Memo<Option<u64>>) ->
         }
     });
     view! {
-        <div class=class data-id=id data-row=key title=title>
+        <div class=class data-id=id data-row=key title=title data-gap=spaced.gap() data-gap-open=spaced.gap_open() data-end=spaced.end() data-end-open=spaced.end_open()>
             {body}
             {more}
         </div>
@@ -902,6 +982,7 @@ fn kind_class(kind: Kind) -> &'static str {
 /// Markdown and the message as its call's content has it, once there are
 /// any.
 fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
+    let spaced = Spaced::of(&key);
     let data = cell.data;
     let agent = data.with_untracked(|item| item.agent.clone());
     // The worker's lead, whose view it shows in.
@@ -966,7 +1047,7 @@ fn status_row(id: u64, key: String, cell: RowCell) -> AnyView {
         class
     };
     view! {
-        <div class=class data-id=id data-row=key>
+        <div class=class data-id=id data-row=key data-gap=spaced.gap() data-gap-open=spaced.gap_open() data-end=spaced.end() data-end-open=spaced.end_open()>
             <details class="call">
                 <summary
                     tabindex=move || if opens() { "0" } else { "-1" }
@@ -1183,6 +1264,7 @@ fn call_row(cell: RowCell) -> AnyView {
 /// whose call is gone shows as it is.
 fn result_row(id: u64, key: String, data: RwSignal<ItemData>) -> AnyView {
     let page = page();
+    let spaced = Spaced::of(&key);
     let call = data.with_untracked(|item| item.call);
     let command =
         call.and_then(|call| STORE.with(|store| store.borrow().get(call).map(is_command)));
@@ -1192,7 +1274,7 @@ fn result_row(id: u64, key: String, data: RwSignal<ItemData>) -> AnyView {
     };
     let calls = call.map(|call| run_calls(call, data, true));
     view! {
-        <div class="row result" class:closed=move || !shown() data-id=id data-row=key style:display=move || if shown() { "" } else { "none" }>
+        <div class="row result" class:closed=move || !shown() data-id=id data-row=key data-gap=spaced.gap() data-gap-open=spaced.gap_open() data-end=spaced.end() data-end-open=spaced.end_open() style:display=move || if shown() { "" } else { "none" }>
             <div class="holds">{move || shown().then(|| contents::content_view(data))}{calls}</div>
         </div>
     }
