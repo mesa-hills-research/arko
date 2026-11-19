@@ -4176,11 +4176,13 @@ impl Harness {
                                 continue;
                             }
                             self.flush_printer().await;
+                            let run = question.run;
                             self.question_asked(question);
-                            // What the user typed that the agent hasn't read
-                            // reaches it at once, though it waits now (in
-                            // Claude Code it waits once the turn ended).
-                            if !unread_notes(&notes, &workflow).is_empty() {
+                            // What the user sent that the agent hasn't read,
+                            // typed or an answer kept for it, reaches it at
+                            // once, though it waits now (in Claude Code it
+                            // waits once the turn ended).
+                            if !unread_notes(&notes, &workflow).is_empty() || self.notes_waiting(run) {
                                 self.wake_waits();
                             }
                             continue;

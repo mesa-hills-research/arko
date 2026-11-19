@@ -518,3 +518,72 @@ async fn an_answer_to_another_question_reaches_an_agent_that_waits() {
     );
     assert!(state("q2").is_open());
 }
+
+/// An answer to an earlier question, which the agent didn't wait for, sent
+/// while the agent decides to ask another, reaches it when it begins to wait
+/// for that one. Its note was unread then, so the wait ends at once.
+#[tokio::test]
+async fn an_answer_sent_before_the_agent_waits_for_another_question_reaches_it() {
+    let bodies: Bodies = Arc::default();
+    let asking = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = ModelServer::start(Arc::new({
+        let (bodies, asking, release) = (bodies.clone(), asking.clone(), release.clone());
+        move |_, body: String| {
+            bodies.lock().unwrap().push(body.clone());
+            let (asking, release) = (asking.clone(), release.clone());
+            Box::pin(async move {
+                if body.contains("(This message answers q1.)") {
+                    complete("m3", "Squashing them.")
+                } else if body.contains("Asked q1.") {
+                    // (The answer comes while the agent decides to ask.)
+                    asking.notify_one();
+                    release.notified().await;
+                    asks("m2")
+                } else {
+                    tool_call(
+                        "m1",
+                        ASK_USER_TOOL_NAME,
+                        serde_json::json!({"questions": ["Squash the commits?"], "wait": false}),
+                    )
+                }
+            })
+        }
+    }))
+    .await;
+    let temp = tempfile::tempdir().unwrap();
+    let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+    on_screen(&harness);
+    let feed = harness.feed.clone();
+    let typing = tokio::spawn(async move {
+        asking.notified().await;
+        sender
+            .send(Input::Message(crate::ui::Message {
+                text: "Yes, squash them.".into(),
+                answers: vec!["q1".into()],
+                ..Default::default()
+            }))
+            .unwrap();
+        until(|| users(&feed).iter().any(|text| text == "Yes, squash them.")).await;
+        release.notify_one();
+        sender
+    });
+    let end = tokio::time::timeout(
+        Duration::from_secs(30),
+        harness.turn(Prompt::User("Tidy the branch.".into()), &mut inputs),
+    )
+    .await
+    .expect("the answer reached the agent as it began to wait, and it went on");
+    let _sender = typing.await.unwrap();
+    assert!(matches!(end, TurnEnd::Answered));
+    assert_eq!(summary(&harness), "Squashing them.");
+    let last = bodies.lock().unwrap().last().unwrap().clone();
+    assert!(last.contains(crate::questions::WAIT_MESSAGE), "{last}");
+    assert_eq!(
+        last.matches("(This message answers q1.)").count(),
+        1,
+        "{last}"
+    );
+    let question = the_question(&harness);
+    assert!(question.state.is_open() && !question.waits, "{question:?}");
+}
