@@ -1888,6 +1888,22 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
         Some(room) => words.with(|(_, parts)| fit_meta(parts, room.now)),
         None => whole.get(),
     });
+    // The title on its line, in the room its ID's chip leaves, cut where a
+    // word ends with "…" right after it.
+    let title_line = NodeRef::<leptos::html::Span>::new();
+    let title_room = crate::fit::watch(title_line, move || words.track());
+    let title = Memo::new({
+        let id = id.clone();
+        move |_| {
+            words.with(|(title, _)| match title_room.get() {
+                Some(room) => {
+                    let chip = crate::fit::text_width(ID_FONT, &id) + ID_ROOM;
+                    crate::fit::cut_text(TITLE_FONT, title, room.now - chip)
+                }
+                None => title.clone(),
+            })
+        }
+    });
     let open = id.clone();
     let label = {
         let id = id.clone();
@@ -1903,7 +1919,7 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
                 show_worker(page, Some(open.clone()));
             }
         >
-            <span class="wtitle"><span class="wid">{id.clone()}</span>{move || words.with(|words| words.0.clone())}</span>
+            <span class="wtitle"><span class="wid">{id.clone()}</span><span node_ref=title_line class="fitted">{move || title.get()}</span></span>
             <span class="wgo"><ChevronRight size=16 /></span>
             <span class="wmeta"><span node_ref=line class="fitted">{move || meta.get()}</span></span>
         </button>
@@ -1912,6 +1928,13 @@ pub fn WorkerCard(id: String, listed: bool) -> impl IntoView {
 
 /// The font of a worker card's meta line (`.wcard .wmeta` in app.css).
 const META_FONT: &str = "12.5px var(--sans)";
+
+/// The fonts of a worker card's title and of its ID's chip, and the room
+/// the chip takes besides its ID, its padding and its margin
+/// (`.wcard .wtitle` and `.wcard .wid` in app.css).
+const TITLE_FONT: &str = "600 14.5px var(--sans)";
+const ID_FONT: &str = "600 11px var(--sans)";
+const ID_ROOM: f64 = 5.0 + 5.0 + 6.0;
 
 /// A worker card's meta line in `room` pixels, on one line
 /// ([`words::fit_parts`]).

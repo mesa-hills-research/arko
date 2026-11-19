@@ -895,43 +895,6 @@ pub fn card_view(id: u64, cell: RowCell) -> AnyView {
     .into_any()
 }
 
-/// `text` in `room` pixels of `font` ([`cut_to`]).
-fn cut_line(font: &'static str, text: &str, room: f64) -> String {
-    let units = |px: f64| (px * 100.0).round().max(0.0) as usize;
-    cut_to(text, units(room), |text| {
-        units(crate::fit::text_width(font, text))
-    })
-}
-
-/// `text` in `room`, as `width` measures text, cut where a word ends
-/// ([`quiet::cut_at_word`](crate::quiet::cut_at_word)) with an ellipsis
-/// after it, or whole where it fits.
-fn cut_to(text: &str, room: usize, width: impl Fn(&str) -> usize) -> String {
-    use unicode_segmentation::UnicodeSegmentation;
-    if width(text) <= room {
-        return text.to_string();
-    }
-    // (A line holds a few hundred clusters at most, so those after them
-    // never show.)
-    let clusters: Vec<(&str, usize)> = text
-        .graphemes(true)
-        .take(1000)
-        .map(|cluster| (cluster, width(cluster)))
-        .collect();
-    // (A word longer than a row's line keeps is cut inside.)
-    let long = crate::quiet::WORDS_KEEP * width("0");
-    let mut left = room.saturating_sub(width("…"));
-    loop {
-        let kept = crate::quiet::cut_at_word(&clusters, left, long);
-        let shown: String = clusters[..kept].iter().map(|(c, _)| *c).collect::<String>() + "…";
-        let over = width(&shown).saturating_sub(room);
-        if over == 0 || kept == 0 {
-            return shown;
-        }
-        left = left.saturating_sub(over.max(1));
-    }
-}
-
 /// Shows the line of the question `id` whole, or cut again.
 fn flip(whole: RwSignal<Vec<String>>, id: &str) {
     whole.update(|whole| match whole.iter().position(|known| known == id) {
@@ -1002,7 +965,7 @@ fn RecordQuestion(
         said.with(|(said, _)| said.split_whitespace().collect::<Vec<_>>().join(" "))
     });
     let shown = Memo::new(move |_| match room.get() {
-        Some(room) => one.with(|one| cut_line(HELD_FONT, one, room.now)),
+        Some(room) => one.with(|one| crate::fit::cut_text(HELD_FONT, one, room.now)),
         None => one.get(),
     });
     let cut = Memo::new(move |_| {
@@ -1090,18 +1053,6 @@ mod tests {
             assert!(!answered(ask, &q1, Posted::Kept, None));
             assert!(ask.answering.get_untracked().is_empty());
         });
-    }
-
-    /// A question's line is cut where a word ends, with an ellipsis, to fit
-    /// its room, and shows whole where it fits.
-    #[test]
-    fn a_line_is_cut_where_a_word_ends() {
-        let width = |text: &str| text.chars().count();
-        assert_eq!(cut_to("Spaces", 10, width), "Spaces");
-        let answer = "Spaces, four wide, and tabs in the Makefile";
-        let cut = cut_to(answer, 24, width);
-        assert_eq!(cut, "Spaces, four wide, and…");
-        assert!(width(&cut) <= 24);
     }
 
     #[test]

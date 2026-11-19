@@ -493,9 +493,70 @@ pub fn text_width(font: &'static str, text: &str) -> f64 {
     measure(font, text)
 }
 
+/// `text` on one line of `room` pixels of `font` ([`cut_to`]).
+pub fn cut_text(font: &'static str, text: &str, room: f64) -> String {
+    cut_to(text, units(room), |text| units(text_width(font, text)))
+}
+
+/// `text` in `room`, as `width` measures text, cut where a word ends
+/// ([`quiet::cut_at_word`]) with an ellipsis after it, or whole where it
+/// fits.
+pub fn cut_to(text: &str, room: usize, width: impl Fn(&str) -> usize) -> String {
+    if width(text) <= room {
+        return text.to_string();
+    }
+    // (A line holds a few hundred clusters at most, so those after them
+    // never show.)
+    let clusters: Vec<(&str, usize)> = text
+        .graphemes(true)
+        .take(1000)
+        .map(|cluster| (cluster, width(cluster)))
+        .collect();
+    // (A word longer than a row's line keeps is cut inside.)
+    let long = quiet::WORDS_KEEP * width("0");
+    let mut left = room.saturating_sub(width("…"));
+    loop {
+        let kept = quiet::cut_at_word(&clusters, left, long);
+        let shown: String = clusters[..kept].iter().map(|(c, _)| *c).collect::<String>() + "…";
+        let over = width(&shown).saturating_sub(room);
+        if over == 0 || kept == 0 {
+            return shown;
+        }
+        left = left.saturating_sub(over.max(1));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A text is cut where a word ends, with an ellipsis right after it, to
+    /// fit its room, and shows whole where it fits.
+    #[test]
+    fn a_text_is_cut_where_a_word_ends() {
+        let width = |text: &str| text.chars().count();
+        assert_eq!(cut_to("Spaces", 10, width), "Spaces");
+        let answer = "Spaces, four wide, and tabs in the Makefile";
+        let cut = cut_to(answer, 24, width);
+        assert_eq!(cut, "Spaces, four wide, and…");
+        assert!(width(&cut) <= 24);
+        // In any room that holds its first word, the cut fits it and ends
+        // where a word ends, the ellipsis right after the word's last
+        // character.
+        let title = "Check the callers of the parser";
+        for room in width("Check…")..width(title) {
+            let cut = cut_to(title, room, width);
+            let kept = cut
+                .strip_suffix('…')
+                .unwrap_or_else(|| panic!("{room}: {cut}"));
+            assert!(width(&cut) <= room, "{room}: {cut}");
+            assert!(!kept.ends_with(' '), "{room}: {cut}");
+            assert!(
+                kept.is_empty() || title[kept.len()..].starts_with(' '),
+                "{room}: {cut}"
+            );
+        }
+    }
 
     const M: Metrics = Metrics {
         font: CALL_FONT,
