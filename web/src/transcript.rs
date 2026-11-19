@@ -300,9 +300,9 @@ fn overflows(root: &web_sys::Element, selector: &str) -> bool {
 }
 
 /// Whether the words (`.what`) of the line under `root` show less than
-/// their text, cut with an ellipsis. A file's line cuts its folders or its
-/// name ([`FileLine`]).
-fn words_cut(root: &web_sys::Element) -> bool {
+/// their text, cut with an ellipsis, as drawn. A file's line cuts its
+/// folders or its name ([`FileLine`]).
+fn drawn_cut(root: &web_sys::Element) -> bool {
     [".what", ".what > .folders", ".what > .name"]
         .into_iter()
         .any(|selector| overflows(root, selector))
@@ -322,10 +322,53 @@ fn detail_is_whole(item: &ItemData) -> bool {
     })
 }
 
+/// Whether the words of the line under `root` are cut ([`drawn_cut`]), with
+/// how it runs left out (a code run's count of calls and the call that
+/// runs), so its words whole don't come into an open row as those come and
+/// take room, as in the terminal. The parts that say how it runs come out
+/// for the measure and go back in the same task, so no frame shows them out.
+fn words_cut(root: &web_sys::Element) -> bool {
+    use wasm_bindgen::JsCast;
+    let Some(said) = root.query_selector(".said.has-live").ok().flatten() else {
+        return drawn_cut(root);
+    };
+    let children = said.children();
+    let parts: Vec<web_sys::HtmlElement> = (0..children.length())
+        .filter_map(|at| children.item(at))
+        .filter_map(|child| child.dyn_into::<web_sys::HtmlElement>().ok())
+        .collect();
+    let what = parts.iter().find(|part| part.class_list().contains("what"));
+    let lives: Vec<&web_sys::HtmlElement> = parts
+        .iter()
+        .filter(|part| part.class_list().contains("live"))
+        .collect();
+    let basis = what.map(|what| {
+        what.style()
+            .get_property_value("flex-basis")
+            .unwrap_or_default()
+    });
+    let _ = said.class_list().remove_1("has-live");
+    if let Some(what) = what {
+        let _ = what.style().remove_property("flex-basis");
+    }
+    for live in lives.iter().copied() {
+        let _ = live.style().set_property("display", "none");
+    }
+    let cut = drawn_cut(root);
+    for live in lives.iter().copied() {
+        let _ = live.style().remove_property("display");
+    }
+    if let (Some(what), Some(basis)) = (what, basis.filter(|basis| !basis.is_empty())) {
+        let _ = what.style().set_property("flex-basis", &basis);
+    }
+    let _ = said.class_list().add_1("has-live");
+    cut
+}
+
 /// Whether the words (`.what`) of the line `summary` holds are cut, as
-/// drawn, measured once the line shows and again whenever `words` say
-/// something else or the transcript's width changes. A line that cuts its
-/// words opens to them whole.
+/// drawn but for how it runs ([`words_cut`]), measured once the line
+/// shows and again whenever `words` say something else or the transcript's
+/// width changes. A line that cuts its words opens to them whole.
 fn cut_words(
     summary: NodeRef<leptos::html::Summary>,
     words: impl Fn() -> String + Send + Sync + 'static,

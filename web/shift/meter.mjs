@@ -2680,6 +2680,47 @@ async function pixelCases(cdp, agent) {
         return null;
       }, view);
     }
+    // An open code run whose words fit on its line alone keeps its lines as
+    // its count of calls and the call that runs come and take room on the
+    // line, so its words whole don't come in above its code. (The window is
+    // as narrow as makes those cut the words on the line.)
+    await play(ratio, "an open code run keeps its lines as its count of calls comes (quiet)", async (run) => {
+      await run.metrics(560, 800);
+      await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+      const code = Array.from({ length: 4 }, () => run.some(2, 3)).join('\n');
+      const { call } = await run.feed({ do: 'call', tool: 'run_code', parameters: { code, purpose: 'rename the setting in every crate' } });
+      await run.settle(null);
+      const line = `(() => {
+        const row = [...document.querySelectorAll('#rows .row.quiet')].pop();
+        if (!row) return null;
+        const summary = row.querySelector('summary');
+        const what = summary.querySelector('.what');
+        const r = summary.getBoundingClientRect();
+        return { x: r.left + 30, y: r.top + r.height / 2, open: row.querySelector('details').open, cut: what.scrollWidth > what.clientWidth + 0.5 };
+      })()`;
+      const shut = await run.evaluate(line);
+      if (!shut) return 'no Quiet row';
+      if (shut.cut) return 'its words are cut before its calls come';
+      await run.click(shut.x, shut.y);
+      await run.settle(null);
+      if (!(await run.evaluate(line)).open) return "the row didn't open";
+      const before = await run.look();
+      let cut = false;
+      for (let n = 1; n <= 2; n++) {
+        const { call: inner } = await run.feed({ do: 'nested', run: call, tool: 'read_file', parameters: { path: `src/${run.words(1)}.rs` } });
+        await run.settle(null);
+        const now = await run.look();
+        cut ||= (await run.evaluate(line)).cut;
+        const moved = Case.moved(before, now);
+        if (moved !== 0) return `its lines moved (${Number.isNaN(moved) ? 'some, not all' : `${moved} device px`}) as call ${n} came`;
+        await run.feed({ do: 'nested_end', run: call, call: inner, tool: 'read_file', outcome: 'finished', output: `1 | ${run.words(2)}` });
+        await run.settle(null);
+        const ended = Case.moved(before, await run.look());
+        if (ended !== 0) return `its lines moved (${Number.isNaN(ended) ? 'some, not all' : `${ended} device px`}) as call ${n} ended`;
+      }
+      // (Else the count never took the room this case is about.)
+      return cut ? null : "the count of calls didn't cut its words on the line";
+    }, 'quiet');
     // A long command's details show the whole command once: in Full, where
     // a command is open from the start, and in a merged Quiet row whose
     // member the reader opens.
