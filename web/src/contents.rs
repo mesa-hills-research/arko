@@ -269,6 +269,24 @@ fn lines_view(kind: ContentKind, text: &str, numbers: Option<usize>) -> AnyView 
                 .collect_view();
             view! { <div class="held code" class:diff=diff>{lines}</div> }.into_any()
         }
+        // Code as written, on the editor surface, highlighted.
+        ContentKind::Code => {
+            let mut painted = markdown::code_lines_html(text)
+                .unwrap_or_default()
+                .into_iter();
+            let lines = text
+                .split('\n')
+                .map(|line| {
+                    let html = painted.next().unwrap_or_else(|| {
+                        let mut html = String::new();
+                        markdown::escape(&mut html, line);
+                        html
+                    });
+                    view! { <div class="line"><span class="text" inner_html=html></span></div> }
+                })
+                .collect_view();
+            view! { <div class="held code source">{lines}</div> }.into_any()
+        }
         // Text, each line of which goes on at its own indent where it wraps,
         // as a file's line does, so a job's output reads as it printed.
         _ => {

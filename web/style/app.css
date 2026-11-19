@@ -447,6 +447,13 @@ button.cache { padding: 0; border: 0; background: none; }
 .call-line .outcome { flex: none; max-width: calc(100% - 8ch - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .call-line .said > .outcome { flex: 0 1 auto; min-width: 0; max-width: none; }
 .call-line .outcome::before { content: "· "; color: var(--muted); }
+/* A row that says how it runs (a code run's count of calls and the call
+   that runs) keeps 24 columns of its words before those give way, the last
+   first, as in the terminal. A part that doesn't fit whole goes to a second
+   line, which is hidden. */
+.call-line .said.has-live { flex-wrap: wrap; height: 20px; overflow: hidden; }
+.call-line .said.has-live > .what { flex-grow: 1; flex-shrink: 1; min-width: 8ch; max-width: max-content; }
+.call-line .said.has-live > .outcome.live { flex: none; max-width: none; }
 .call-line .ok { color: var(--success); }
 .call-line .failed { color: var(--error); }
 /* A file's line keeps the file's name whole. Its outcome's words give way
@@ -572,6 +579,29 @@ details.call > .holds, .row.result > .holds {
 .holds .held.code .indent { white-space: pre; }
 .holds .held.diff .add { background: color-mix(in srgb, var(--success) 14%, transparent); }
 .holds .held.diff .del { background: color-mix(in srgb, var(--error) 12%, transparent); }
+/* A code run's code is on the editor's surface, as a code block is. */
+.holds .held.code.source {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+/* What a code run's calls did, after its code, one muted line cut to fit,
+   and a line for each call that failed, with its ✗ at the right as a row's
+   is. In Full, each call's line, muted, as a merged row's are. */
+.run-calls > .run-summary {
+  overflow: hidden;
+  color: var(--muted);
+  font: 12px/18px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-calls > .run-failed { display: flex; gap: 1ch; color: var(--text); font: 12px/18px var(--mono); }
+.run-calls > .run-failed .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-calls > .run-failed .failed { flex: none; color: var(--error); }
+.run-calls.full .call-line { font: 13px/20px var(--mono); }
+.run-calls.full .call-line .what { color: var(--muted); }
+.run-calls.full .call-line .running { flex: none; color: var(--muted); }
 /* The door to the rest of a content, muted text. */
 .holds .door {
   display: block;

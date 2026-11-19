@@ -182,6 +182,52 @@ fn act(session: &mut Session, request: &Value) -> Value {
             });
             json!({ "call": call.to_string() })
         }
+        // A call a code run's code makes, which starts and then ends.
+        "nested" => {
+            let call = Uuid::new_v4();
+            let parameters: HashMap<String, Value> = request["parameters"]
+                .as_object()
+                .map(|parameters| {
+                    parameters
+                        .iter()
+                        .map(|(name, value)| (name.clone(), value.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            send(AgentEvent::NestedToolCallStarted {
+                outer_tool_call_id: request["run"]
+                    .as_str()
+                    .and_then(|run| run.parse().ok())
+                    .unwrap_or_default(),
+                tool_call_id: call,
+                tool_name: text(request, "tool"),
+                parameters_bytes: request["parameters"].to_string().len(),
+                parameters,
+            });
+            json!({ "call": call.to_string() })
+        }
+        "nested_end" => {
+            let output = text(request, "output");
+            let outcome = match request["outcome"].as_str() {
+                Some("refused") => arko_agents::NestedCallOutcome::Refused,
+                _ => arko_agents::NestedCallOutcome::Finished,
+            };
+            let id = |name: &str| {
+                request[name]
+                    .as_str()
+                    .and_then(|id| id.parse().ok())
+                    .unwrap_or_default()
+            };
+            send(AgentEvent::NestedToolCallFinished {
+                outer_tool_call_id: id("run"),
+                tool_call_id: id("call"),
+                tool_name: text(request, "tool"),
+                outcome,
+                output_bytes: output.len(),
+                output,
+            });
+            json!({})
+        }
         "result" => {
             send(AgentEvent::ToolResult {
                 tool_call_id: request["call"]

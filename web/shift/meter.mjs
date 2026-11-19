@@ -488,6 +488,8 @@ const ORDER = [
   'call joins a row of one file',
   'call joins a row of its kind',
   'call → its result',
+  "code run's call starts",
+  "code run's call ends",
   'result → reply',
   'thought → reply',
   'reply streams',
@@ -1088,7 +1090,41 @@ class Run {
     }
   }
 
+  // A code run. Its call and its code come together, then each call its
+  // code makes starts and ends on the run's row, a few of them refused, then
+  // its result comes. Now and then its code is longer than a preview shows.
+  async codeRun() {
+    const purpose = this.words(3);
+    const lines = this.rng.chance(30) ? 17 + this.rng.below(10) : 1 + this.rng.below(6);
+    const code = Array.from({ length: lines }, () => this.some(2, 4)).join('\n');
+    const step = this.live === 'thought' ? 'thought → call' : 'Working… → call';
+    const { call: run } = await this.feed({ do: 'call', tool: 'run_code', parameters: { code, purpose } });
+    this.calls.push({ kind: 'code', target: purpose });
+    await this.settle(step);
+    await this.meanwhile();
+    for (let n = 1 + this.rng.below(4); n > 0; n--) {
+      const target = `${this.folder}/${this.words(1)}.rs`;
+      const { call } = await this.feed({ do: 'nested', run, tool: 'read_file', parameters: { path: target } });
+      await this.settle("code run's call starts");
+      await this.meanwhile();
+      const refused = this.rng.chance(15);
+      await this.feed({
+        do: 'nested_end', run, call, tool: 'read_file',
+        outcome: refused ? 'refused' : 'finished',
+        output: refused ? 'Refused.' : `1 | ${this.some(2, 3)}\n2 | ${this.some(2, 3)}`,
+      });
+      await this.settle("code run's call ends");
+      await this.meanwhile();
+    }
+    const output = Array.from({ length: 1 + this.rng.below(4) }, () => this.some(1, 4)).join('\n');
+    await this.feed({ do: 'result', call: run, tool: 'run_code', output });
+    this.live = 'result';
+    await this.settle('call → its result');
+    await this.meanwhile();
+  }
+
   async call() {
+    if (this.rng.chance(15)) return this.codeRun();
     const last = this.calls[this.calls.length - 1];
     const folder = this.folder;
     let kind;

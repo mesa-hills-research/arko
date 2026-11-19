@@ -12,7 +12,9 @@ use crate::files::SentFiles;
 use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
-use crate::protocol::{ActKind, CallStatus, FileLine, ItemData, Kind, Level, Source, WorkerState};
+use crate::protocol::{
+    ActKind, CallStatus, ContentKind, FileLine, ItemData, Kind, Level, Source, WorkerState,
+};
 use crate::shimmer::Shimmer;
 use crate::spinner::Spinner;
 use crate::store::{Entry, MAIN, call_actions};
@@ -423,7 +425,17 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                 })
             })
             .map(|cell| {
-                let text = cell.data.with(|item| item.text.clone());
+                // (A code run's words whole, which its call as written only
+                // repeats with the tool's name.)
+                let code = cell.data.with(|item| {
+                    item.act
+                        .as_ref()
+                        .is_some_and(|act| act.kind == ActKind::Code)
+                });
+                let text = match code {
+                    true => words().text,
+                    false => cell.data.with(|item| item.text.clone()),
+                };
                 view! { <div class="holds"><pre class="held">{text}</pre></div> }
             })
     };
@@ -471,10 +483,30 @@ fn quiet_row(id: u64, key: String, row: layout::QuietRow, thinking: Memo<Option<
                         // (Its triangle turns as it opens. A row with nothing
                         // to open has a dot.)
                         <span class="mark">{move || if opens() || cut.get() { "▸" } else { STILL }}</span>
-                        <span class="said">
-                            <span class="what" class:long=move || long_words(&words().text) title=move || words().said()>{move || words().text}</span>
+                        // (How it runs gives way while its words have 24
+                        // columns, as in the terminal.)
+                        <span class="said" class:has-live=move || !words().live.is_empty()>
+                            <span
+                                class="what"
+                                class:long=move || long_words(&words().text)
+                                style:flex-basis=move || {
+                                    let words = words();
+                                    (!words.live.is_empty())
+                                        .then(|| format!("{}ch", words.text.chars().count().min(24)))
+                                }
+                                title=move || words().said()
+                            >
+                                {move || words().text}
+                            </span>
                             {move || words().news.map(|news| view! { <span class="news">{format!("({news})")}</span> })}
                             {move || words().note.map(|note| view! { <span class="outcome" title=note.clone()>{note.clone()}</span> })}
+                            {move || {
+                                words()
+                                    .live
+                                    .into_iter()
+                                    .map(|live| view! { <span class="outcome live" title=live.clone()>{live.clone()}</span> })
+                                    .collect_view()
+                            }}
                         </span>
                         {move || words().running.then(|| view! {
                             <span class="outcome"><Spinner /></span>
@@ -557,7 +589,10 @@ fn quiet_member(
             view! {
                 {whole}
                 {detail}
-                {contents.iter().map(|data| contents::content_view(*data)).collect_view()}
+                {contents
+                    .iter()
+                    .map(|data| view! { {contents::content_view(*data)}{run_calls(id, *data, false)} })
+                    .collect_view()}
             }
         })
     };
@@ -982,11 +1017,11 @@ fn full_open(page: Page, id: u64, command: bool) -> bool {
 }
 
 /// Whether `item` is a command's call, whose content shows in Full from the
-/// start.
+/// start, or a code run's, whose code, calls and result do.
 fn is_command(item: &ItemData) -> bool {
     item.act
         .as_ref()
-        .is_some_and(|act| act.kind == ActKind::Command)
+        .is_some_and(|act| matches!(act.kind, ActKind::Command | ActKind::Code))
 }
 
 /// A call's line, as the terminal's Full line: its fold's triangle (`mark`),
@@ -1161,12 +1196,79 @@ fn result_row(id: u64, key: String, data: RwSignal<ItemData>) -> AnyView {
         (Some(call), Some(command)) => full_open(page, call, command),
         _ => true,
     };
+    let calls = call.map(|call| run_calls(call, data, true));
     view! {
         <div class="row result" data-id=id data-row=key style:display=move || if shown() { "" } else { "none" }>
-            <div class="holds">{move || shown().then(|| contents::content_view(data))}</div>
+            <div class="holds">{move || shown().then(|| contents::content_view(data))}{calls}</div>
         </div>
     }
     .into_any()
+}
+
+/// What the calls of the code run `call` did, after `content` when that is
+/// the run's code, as they come. In Quiet (`full` unset) that is one muted
+/// line of what those that went well did, then a line with ✗ for each that
+/// failed or was refused. In Full it is each call's line, muted.
+fn run_calls(call: u64, content: RwSignal<ItemData>, full: bool) -> impl IntoView {
+    let code = content.with_untracked(|item| item.content == Some(ContentKind::Code));
+    let calls = move || {
+        code.then(|| cell(call))
+            .flatten()
+            .and_then(|cell| cell.data.with(|item| item.act.as_ref()?.calls.clone()))
+    };
+    move || {
+        let calls = calls()?;
+        if full {
+            let lines = calls
+                .lines
+                .into_iter()
+                .map(|line| {
+                    // (The one that runs ends in "…", and the run's own line
+                    // has the spinner.)
+                    let running = (line.status == CallStatus::Running)
+                        .then(|| view! { <span class="running">"…"</span> });
+                    let outcome = (line.status != CallStatus::Running).then(|| {
+                        let failed = line.status == CallStatus::Failed;
+                        let words = (!line.outcome.is_empty()).then(|| format!(" {}", line.outcome));
+                        view! {
+                            <span class="outcome" title=line.outcome.clone()>
+                                <span class=if failed { "failed" } else { "ok" }>{if failed { "✗" } else { "✓" }}</span>
+                                {words}
+                            </span>
+                        }
+                    });
+                    view! {
+                        <div class="call-line">
+                            <span class="mark">"·"</span>
+                            <span class="said">
+                                <span class="what" class:long=long_words(&line.text) title=line.text.clone()>{line.text.clone()}</span>
+                                {running}
+                                {outcome}
+                            </span>
+                        </div>
+                    }
+                })
+                .collect_view();
+            return Some(view! { <div class="run-calls full">{lines}</div> }.into_any());
+        }
+        let summary = (!calls.summary.is_empty()).then(|| {
+            view! { <div class="run-summary" title=calls.summary.clone()>{calls.summary.clone()}</div> }
+        });
+        let failed = calls
+            .lines
+            .into_iter()
+            .filter(|line| !line.failed.is_empty())
+            .map(|line| {
+                view! {
+                    <div class="run-failed">
+                        <span class="what" title=line.failed.clone()>{line.failed.clone()}</span>
+                        <span class="failed">"✗"</span>
+                    </div>
+                }
+            })
+            .collect_view();
+        Some(view! { <div class="run-calls">{summary}{failed}</div> }.into_any())
+    }
 }
 
 #[component]
