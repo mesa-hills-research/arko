@@ -714,8 +714,14 @@ class Run {
       });
   }
 
-  async open() {
-    const { targetId } = await this.cdp.send('Target.createTarget', { url: 'about:blank', enableBeginFrameControl: true });
+  /// Opens the page on a session of its own, or on `url`, an earlier
+  /// page's. Each page has a browser context of its own, so nothing a page
+  /// stored (the view a case picked, a draft) reaches a later one that the
+  /// system gave the same port.
+  async open({ url: earlier } = {}) {
+    const { browserContextId } = await this.cdp.send('Target.createBrowserContext', {});
+    this.context = browserContextId;
+    const { targetId } = await this.cdp.send('Target.createTarget', { url: 'about:blank', enableBeginFrameControl: true, browserContextId });
     this.target = targetId;
     const { sessionId } = await this.cdp.send('Target.attachToTarget', { targetId, flatten: true });
     this.session = sessionId;
@@ -768,7 +774,8 @@ class Run {
       }, sessionId).catch(() => {});
     });
     if (this.patterns.length) await this.cdp.send('Fetch.enable', { patterns: this.patterns }, sessionId);
-    const { url } = await this.agent.ask({ do: 'session' });
+    const { url } = earlier ? { url: earlier } : await this.agent.ask({ do: 'session' });
+    this.url = url;
     this.frameTime = 1000;
     await this.cdp.send('Page.navigate', { url }, sessionId);
     for (let at = 0; at < 600; at++) {
@@ -777,12 +784,16 @@ class Run {
       if (ready) break;
       await sleep(10);
     }
+    // (A page in a view the run didn't ask for measures something else.)
+    const view = await this.evaluate(`localStorage.getItem('arko.view')`);
+    if (view !== this.view) this.failures.push(`the page opened in the view ${view}, not ${this.view}`);
     this.lineHeight = await this.evaluate('__meter.lineHeight()');
     await this.settle(null);
   }
 
   async close() {
     await this.cdp.send('Target.closeTarget', { targetId: this.target }).catch(() => {});
+    await this.cdp.send('Target.disposeBrowserContext', { browserContextId: this.context }).catch(() => {});
   }
 
   async metrics(width, height) {
@@ -1835,6 +1846,20 @@ async function pixelCases(cdp, agent) {
   const blankOf = (shot) => shot.bottom - shot.end;
   // (Unrounded, so a change is rounded once, as a line's move is.)
   const rawBlank = (shot) => Math.max(0, shot.bottomRaw - shot.endRaw);
+  // A page opened on an earlier page's address, as a case's is when the
+  // system gives its session that page's port again, starts with nothing
+  // the earlier page stored, and in the view it asks for.
+  await play(1, 'a page on an earlier page\'s address starts clean', async (run) => {
+    await run.evaluate(`localStorage.setItem('arko.view', 'messages'); localStorage.setItem('arko.draft', 'left over'); true`);
+    const next = new Case({ cdp, agent, meter: new Meter(), size: run.size, view: 'full', scrolled: false, seed: 7 });
+    await next.open({ url: run.url });
+    try {
+      const [view, draft] = await next.evaluate(`[localStorage.getItem('arko.view'), localStorage.getItem('arko.draft')]`);
+      return view === 'full' && draft === null ? null : `it opened in the view ${view} with the draft ${JSON.stringify(draft)}`;
+    } finally {
+      await next.close();
+    }
+  }, 'quiet');
   for (const ratio of RATIOS) {
     await play(ratio, 'three scrolls up of 0.4 in one gesture', async (run) => {
       const a = await run.fill();
