@@ -304,14 +304,7 @@ fn choose_at(
         effort,
         fast,
         cache_1h: long_cache && providers::takes_long_cache(&model, basis.providers.openai_auth),
-        handover_at: if same_model {
-            basis.worker.handover_at
-        } else {
-            Some(agents::default_handover(
-                &model,
-                basis.providers.openai_auth,
-            ))
-        },
+        handover_at: handover_for(basis, &model),
     };
     // Fast mode is checked as the settings are built, so a model without it
     // says so.
@@ -379,6 +372,21 @@ fn choose_at(
         setup.tools_added.push(MCP_TOOL_NAME.to_string());
     }
     Ok(setup)
+}
+
+/// The size a worker on `model` is set up to hand over at, meaning the session's
+/// worker model's own size, else `model`'s default on the session's way to
+/// OpenAI. `None` leaves it to the session's (`Basis::handover_at`). A
+/// workers' size the user sets goes in its place as the worker runs
+/// ([`crate::handover::Handover::worker_at`]).
+pub(crate) fn handover_for(basis: &Basis, model: &Model) -> Option<usize> {
+    let name = providers::model_name(model);
+    let same_model = providers::resolve_model(&basis.worker.model)
+        .is_ok_and(|session| providers::model_name(&session) == name);
+    match same_model {
+        true => basis.worker.handover_at,
+        false => Some(agents::default_handover(model, basis.providers.openai_auth)),
+    }
 }
 
 /// "1 level" or "3 levels".

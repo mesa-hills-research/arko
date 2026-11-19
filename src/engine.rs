@@ -3317,114 +3317,121 @@ mod tests {
 
     /// In a session on no OpenAI model, a worker started on Sol reaches it
     /// over the ChatGPT login the client has, and goes by that login's sizes.
-    /// worker_options says it hands over at 428k, below the 450k where Codex
-    /// compacts, its setup has that size, and a larger workers' size the user
-    /// sets stops at the 95% of the login's 500k it leaves room for.
+    /// Its setup hands over at 428k, below the 450k where Codex compacts, and
+    /// a larger workers' size the user sets stops at the 95% of the login's
+    /// 500k it leaves room for. worker_options says the size the worker goes
+    /// by, both ways.
     #[tokio::test]
     async fn a_sol_worker_goes_by_the_chatgpt_login_the_client_reaches_it_by() {
         use crate::agents::WORKER;
-        let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
-        let server = ModelServer::start(Arc::new({
-            let bodies = bodies.clone();
-            move |index, body: String| {
-                bodies.lock().unwrap().push(body.clone());
-                Box::pin(async move {
-                    let id = format!("a{index}");
-                    if body.contains("You are agent run r1,") {
-                        complete(&id, "Reviewed.")
-                    } else if body.contains("Started r1") {
-                        crate::mock_model::gemini_reply(&id, "Started.")
-                    } else if body.contains("Models usable now") {
-                        crate::mock_model::gemini_tool_call(
-                            &id,
-                            crew::START_AGENT,
-                            serde_json::json!({"agent": WORKER, "task": "Review it.", "model": "sol"}),
-                        )
-                    } else {
-                        crate::mock_model::gemini_tool_call(
-                            &id,
-                            crew::WORKER_OPTIONS,
-                            serde_json::json!({}),
-                        )
-                    }
-                })
-            }
-        }))
-        .await;
-        let client = server.chatgpt_client().with_google_client(
-            arko_ai::providers::google::GoogleClient::new("AIza-test").with_base_url(server.url()),
-        );
-        let temp = tempfile::tempdir().unwrap();
-        let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
-        std::fs::create_dir_all(&project).unwrap();
-        let running = spawn(
-            Options {
-                root: Some(root.clone()),
-                session: SessionChoice::New,
-                workspace: Some(project.clone()),
-                model: Some("gemini".into()),
-                cache_1h: Some(false),
-                text_replies: Some(true),
-                workers_handover_at: Some(2_000_000),
-                worker_billing: Some(crate::billing::WorkerBilling::Api),
-                client: Some(GivenClient(Arc::new(client))),
-                ..Options::default()
-            },
-            Arc::new(NoPrompter),
-        );
-        let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        seam.input
-            .send(Input::Message(app_message("Review the files.")))
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                let workers = seam.feed.worker_summaries();
-                if workers.len() == 1
-                    && workers[0].state == remote::WorkerState::Finished
-                    && !seam.feed.activity().working
-                {
-                    break;
+        for (workers, goes_by) in [(None, 428_000), (Some(2_000_000), 475_000)] {
+            let bodies: Arc<Mutex<Vec<String>>> = Arc::default();
+            let server = ModelServer::start(Arc::new({
+                let bodies = bodies.clone();
+                move |index, body: String| {
+                    bodies.lock().unwrap().push(body.clone());
+                    Box::pin(async move {
+                        let id = format!("a{index}");
+                        if body.contains("You are agent run r1,") {
+                            complete(&id, "Reviewed.")
+                        } else if body.contains("Started r1") {
+                            crate::mock_model::gemini_reply(&id, "Started.")
+                        } else if body.contains("Models usable now") {
+                            crate::mock_model::gemini_tool_call(
+                                &id,
+                                crew::START_AGENT,
+                                serde_json::json!({"agent": WORKER, "task": "Review it.", "model": "sol"}),
+                            )
+                        } else {
+                            crate::mock_model::gemini_tool_call(
+                                &id,
+                                crew::WORKER_OPTIONS,
+                                serde_json::json!({}),
+                            )
+                        }
+                    })
                 }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the worker finished");
+            }))
+            .await;
+            let client = server.chatgpt_client().with_google_client(
+                arko_ai::providers::google::GoogleClient::new("AIza-test")
+                    .with_base_url(server.url()),
+            );
+            let temp = tempfile::tempdir().unwrap();
+            let (root, project) = (temp.path().join("arko"), temp.path().join("project"));
+            std::fs::create_dir_all(&project).unwrap();
+            let running = spawn(
+                Options {
+                    root: Some(root.clone()),
+                    session: SessionChoice::New,
+                    workspace: Some(project.clone()),
+                    model: Some("gemini".into()),
+                    cache_1h: Some(false),
+                    text_replies: Some(true),
+                    workers_handover_at: workers,
+                    worker_billing: Some(crate::billing::WorkerBilling::Api),
+                    client: Some(GivenClient(Arc::new(client))),
+                    ..Options::default()
+                },
+                Arc::new(NoPrompter),
+            );
+            let seam = tokio::time::timeout(Duration::from_secs(30), running.opened)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            seam.input
+                .send(Input::Message(app_message("Review the files.")))
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let workers = seam.feed.worker_summaries();
+                    if workers.len() == 1
+                        && workers[0].state == remote::WorkerState::Finished
+                        && !seam.feed.activity().working
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the worker finished");
 
-        // What worker_options told the main agent.
-        let listed = bodies
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|body| body.contains("Models usable now"))
-            .cloned()
+            // What the worker was set up with.
+            let setups: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(seam.session.dir.join("worker-models.json")).unwrap(),
+            )
             .unwrap();
-        let sol = listed.split("\\n- sol · ").nth(1).unwrap();
-        let sol = sol.split("\\n").next().unwrap();
-        assert!(sol.contains("ChatGPT plan"), "{sol}");
-        assert!(sol.contains(" · hands over at 428k · "), "{sol}");
-        // What the worker was set up with.
-        let setups: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(seam.session.dir.join("worker-models.json")).unwrap(),
-        )
-        .unwrap();
-        let setups: Vec<_> = setups.as_object().unwrap().values().collect();
-        assert_eq!(setups.len(), 1);
-        assert_eq!(setups[0]["llm_config"]["model_id"], "gpt-6.2-sol");
-        assert_eq!(setups[0]["handover"]["at_input_tokens"], 428_000);
-        // The workers' 2M goes by the most the login leaves room for.
-        let reading = seam.meter.read();
-        let r1 = reading
-            .agents
-            .iter()
-            .find(|agent| agent.id == "r1")
-            .unwrap();
-        assert_eq!(r1.handover_at, Some(475_000));
-        quit(seam, running.ended).await;
+            let setups: Vec<_> = setups.as_object().unwrap().values().collect();
+            assert_eq!(setups.len(), 1);
+            assert_eq!(setups[0]["llm_config"]["model_id"], "gpt-6.2-sol");
+            assert_eq!(setups[0]["handover"]["at_input_tokens"], 428_000);
+            // What it goes by.
+            let reading = seam.meter.read();
+            let r1 = reading
+                .agents
+                .iter()
+                .find(|agent| agent.id == "r1")
+                .unwrap();
+            assert_eq!(r1.handover_at, Some(goes_by), "{workers:?}");
+            // What worker_options told the main agent before it started.
+            let listed = bodies
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|body| body.contains("Models usable now"))
+                .cloned()
+                .unwrap();
+            let sol = listed.split("\\n- sol · ").nth(1).unwrap();
+            let sol = sol.split("\\n").next().unwrap();
+            assert!(sol.contains("ChatGPT plan"), "{sol}");
+            assert!(
+                sol.contains(&format!(" · hands over at {} · ", handover::shown(goes_by))),
+                "{workers:?}: {sol}"
+            );
+            quit(seam, running.ended).await;
+        }
     }
 
     /// In a session on no OpenAI model whose client reaches OpenAI by API key,

@@ -25,6 +25,7 @@ use crate::agents::{Effort, ModelChoice};
 use crate::billing::WorkerBilling;
 use crate::chooser::Basis;
 use crate::crew::{Crew, MCP_PARAM, SAVE_WORKER_PROFILE, SKILLS_PARAM, WORKER_OPTIONS};
+use crate::handover::Handover;
 use crate::inputs::Asker;
 use crate::keys::Keys;
 use crate::profiles::{self, Author, Place, Profile};
@@ -33,12 +34,14 @@ use crate::remote::Level;
 use crate::ui::Stats;
 
 /// What both tools read, meaning the crew (the profiles' places and the session's
-/// worker settings), the keys, the plans' usage, and whom to ask.
+/// worker settings), the keys, the plans' usage, whom to ask, and the
+/// workers' handover sizes.
 struct Context {
     crew: Arc<Crew>,
     keys: Arc<Keys>,
     stats: Arc<Mutex<Stats>>,
     asker: Arc<Asker>,
+    handover: Arc<Handover>,
 }
 
 impl std::fmt::Debug for Context {
@@ -53,12 +56,14 @@ pub fn tools(
     keys: Arc<Keys>,
     stats: Arc<Mutex<Stats>>,
     asker: Arc<Asker>,
+    handover: Arc<Handover>,
 ) -> Vec<Arc<dyn Tool>> {
     let context = Arc::new(Context {
         crew,
         keys,
         stats,
         asker,
+        handover,
     });
     vec![
         Arc::new(WorkerOptions(context.clone())),
@@ -133,9 +138,20 @@ impl Tool for WorkerOptions {
             .basis;
         let plans = crate::lock(&self.0.stats).plans.clone();
         let keys = self.0.keys.clone();
+        let handover = self.0.handover.clone();
         // (Claude Code's login check may run a command.)
         let text = tokio::task::spawn_blocking(move || {
-            options_text(&basis, show, &|model| keys.needs(model), &plans)
+            options_text(
+                &basis,
+                show,
+                &|model| keys.needs(model),
+                &plans,
+                &|model, configured| {
+                    handover
+                        .worker_at(model, Some(configured))
+                        .unwrap_or(configured)
+                },
+            )
         })
         .await
         .map_err(|error| refused(format!("Couldn't list the options ({error})")))?;
@@ -151,15 +167,21 @@ enum Show {
     All,
 }
 
+/// The size a worker on a model hands over at, from the size its setup
+/// gives it, as the session's runs go by it (with a workers' size the user
+/// set, up to what the model leaves room for).
+type HandoverOf<'a> = &'a dyn Fn(&Model, usize) -> usize;
+
 /// The text `worker_options` gives, meaning the profiles in force, those that can't
 /// be read, and the models usable now with those that aren't. `needs` says
-/// what a model needs that the session doesn't have, and `plans` is each
-/// plan's latest usage.
+/// what a model needs that the session doesn't have, `plans` is each
+/// plan's latest usage, and `handover_of` gives the sizes the workers go by.
 fn options_text(
     basis: &Basis,
     show: Show,
     needs: &dyn Fn(&Model) -> Option<String>,
     plans: &BTreeMap<String, String>,
+    handover_of: HandoverOf,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
     match basis.choice {
@@ -180,7 +202,7 @@ fn options_text(
         parts.push(profiles_text(basis, needs));
     }
     if show != Show::Profiles {
-        parts.push(models_text(basis, needs, plans));
+        parts.push(models_text(basis, needs, plans, handover_of));
     }
     parts.join("\n\n")
 }
@@ -317,6 +339,7 @@ fn model_line(
     alias: &str,
     basis: &Basis,
     plans: &BTreeMap<String, String>,
+    handover_of: HandoverOf,
 ) -> String {
     let name = if alias.is_empty() {
         providers::model_name(model)
@@ -333,12 +356,11 @@ fn model_line(
         Some(name) => plan(name),
         None => crate::billing::api_label(model),
     };
+    // What a worker started on it now hands over at.
+    let configured = crate::chooser::handover_for(basis, model).unwrap_or(basis.handover_at);
     let mut handover = format!(
         "hands over at {}",
-        crate::handover::shown(crate::agents::default_handover(
-            model,
-            basis.providers.openai_auth
-        ))
+        crate::handover::shown(handover_of(model, configured))
     );
     if model.provider == Provider::ClaudeCode && basis.cc_compact {
         handover.push_str(", Claude Code compacts");
@@ -365,6 +387,7 @@ fn models_text(
     basis: &Basis,
     needs: &dyn Fn(&Model) -> Option<String>,
     plans: &BTreeMap<String, String>,
+    handover_of: HandoverOf,
 ) -> String {
     let menu = providers::model_menu(
         |sample| {
@@ -410,11 +433,16 @@ fn models_text(
                 continue;
             };
             usable.push('\n');
-            usable.push_str(&model_line(&resolved, alias, basis, plans));
+            usable.push_str(&model_line(&resolved, alias, basis, plans, handover_of));
             if resolved.provider == Provider::OpenRouter {
-                usable.push_str(
-                    "\n- openrouter:<slug> · any model OpenRouter serves · API · hands over at 100k unless Arko knows its limit",
+                let unknown = handover_of(
+                    &Model::openrouter("<slug>"),
+                    providers::UNKNOWN_LIMIT_HANDOVER,
                 );
+                usable.push_str(&format!(
+                    "\n- openrouter:<slug> · any model OpenRouter serves · API · hands over at {} unless Arko knows its limit",
+                    crate::handover::shown(unknown)
+                ));
             }
         }
     }

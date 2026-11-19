@@ -53,6 +53,11 @@ fn needs(model: &Model) -> Option<String> {
     }
 }
 
+/// The size a worker's setup gives it, with no workers' size set.
+fn as_set_up(_: &Model, configured: usize) -> usize {
+    configured
+}
+
 fn plans() -> BTreeMap<String, String> {
     BTreeMap::from([(
         "ChatGPT plan".to_string(),
@@ -95,7 +100,7 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
         "future",
         "---\ndescription: From a newer Arko\nmodel: gpt9\n---\n",
     );
-    let text = options_text(&basis, Show::All, &needs, &plans());
+    let text = options_text(&basis, Show::All, &needs, &plans(), &as_set_up);
 
     // How workers are paid for comes first.
     assert!(
@@ -153,11 +158,11 @@ fn the_options_list_the_profiles_and_the_models_usable_now() {
     assert!(text.contains("needs OPENROUTER_API_KEY. The user adds it with /keys."));
 
     // One part alone.
-    let profiles_only = options_text(&basis, Show::Profiles, &needs, &plans());
+    let profiles_only = options_text(&basis, Show::Profiles, &needs, &plans(), &as_set_up);
     assert!(
         profiles_only.contains("\n\nWorker profiles") && !profiles_only.contains("Models usable")
     );
-    let models_only = options_text(&basis, Show::Models, &needs, &plans());
+    let models_only = options_text(&basis, Show::Models, &needs, &plans(), &as_set_up);
     assert!(models_only.contains("\n\nModels usable now") && !models_only.contains("3d-judge"));
 }
 
@@ -171,7 +176,7 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
         "Claude plan".to_string(),
         "Claude plan 5 h 62%, 7 d 31%".to_string(),
     )]);
-    let text = options_text(&basis, Show::Models, &everything, &plans);
+    let text = options_text(&basis, Show::Models, &everything, &plans, &as_set_up);
     let opus = resolve_model("opus").unwrap();
     // (The prices of today, as the tool prints them, because a model's price can
     // have a period that starts on a date.)
@@ -203,14 +208,14 @@ fn a_claude_model_by_key_shows_its_prices_and_cache_and_a_plan_model_its_usage()
     assert!(!text.contains("Not usable now"));
     // A session that hands over in Claude Code says so.
     basis.cc_compact = false;
-    let text = options_text(&basis, Show::Models, &everything, &plans);
+    let text = options_text(&basis, Show::Models, &everything, &plans, &as_set_up);
     assert!(
         text.contains("hands over at 950k · cache short (5m) or long (1h, when you choose none")
     );
     // On an API key, OpenAI's long cache is 12 hours, at 2.5 times the input
     // price to write.
     basis.providers = providers::Setup::new(Some(providers::OpenAiAuth::ApiKey));
-    let text = options_text(&basis, Show::Models, &everything, &plans);
+    let text = options_text(&basis, Show::Models, &everything, &plans, &as_set_up);
     let sol = text
         .lines()
         .find(|line| line.starts_with("- sol ·"))
@@ -229,6 +234,7 @@ fn a_setting_that_limits_the_choice_is_said_first() {
         Show::Profiles,
         &needs,
         &plans(),
+        &as_set_up,
     );
     assert!(profiles_only.starts_with(
         "The user lets you start workers with a profile only (/worker-models profiles)"
@@ -238,6 +244,7 @@ fn a_setting_that_limits_the_choice_is_said_first() {
         Show::Profiles,
         &needs,
         &plans(),
+        &as_set_up,
     );
     assert!(session.starts_with(
         "The user has every worker run the session's worker model (/worker-models session)"
@@ -266,7 +273,7 @@ fn the_options_say_how_workers_are_paid_for() {
     let everything = |_: &Model| None;
     for billing in crate::billing::WorkerBilling::ALL {
         basis.billing = billing;
-        let text = options_text(&basis, Show::All, &everything, &BTreeMap::new());
+        let text = options_text(&basis, Show::All, &everything, &BTreeMap::new(), &as_set_up);
         assert!(
             text.starts_with(crate::agents::billing_words(billing)),
             "{text}"
@@ -289,7 +296,7 @@ fn the_options_say_how_workers_are_paid_for() {
     }
     // With every worker on the session's model, there's nothing to choose.
     basis.choice = ModelChoice::Session;
-    let text = options_text(&basis, Show::All, &everything, &BTreeMap::new());
+    let text = options_text(&basis, Show::All, &everything, &BTreeMap::new(), &as_set_up);
     assert!(!text.contains("Prefer the models"), "{text}");
 }
 
@@ -385,11 +392,19 @@ fn fixture(choice: ModelChoice, can_ask: bool) -> Fixture {
         feed: None,
         approvals: crate::approvals::Approvals::new(Some(feed.clone()), can_ask, None),
     });
+    let handover = Arc::new(crate::handover::Handover::new(
+        Arc::default(),
+        None,
+        None,
+        Arc::new(Output::new(None, true)),
+        feed.clone(),
+    ));
     let mut tools = tools(
         crew.clone(),
         keys,
         Arc::new(Mutex::new(Stats::default())),
         asker,
+        handover,
     );
     let save = tools.pop().unwrap();
     let options = tools.pop().unwrap();
@@ -1022,7 +1037,7 @@ fn worker_options_lists_the_first_profiles_and_counts_the_rest() {
             "no front matter",
         );
     }
-    let text = options_text(&basis, Show::Profiles, &needs, &plans());
+    let text = options_text(&basis, Show::Profiles, &needs, &plans(), &as_set_up);
     assert!(text.contains("\n- p39 (project)"), "{text}");
     assert!(!text.contains("p40"), "{text}");
     assert!(
@@ -1169,7 +1184,7 @@ async fn a_saved_profile_keeps_the_skills_and_servers_it_names() {
     assert!(profiles::read(&fixture.basis.roots, "typo").is_err());
     // The list of options says what the profile narrows.
     let basis = fixture.crew.new_workers().unwrap().basis;
-    let text = options_text(&basis, Show::Profiles, &needs, &plans());
+    let text = options_text(&basis, Show::Profiles, &needs, &plans(), &as_set_up);
     assert!(
         text.contains("\n- narrow (session, made by you) · the worker model, only the skills ponytail and release-notes, no MCP servers · Reads"),
         "{text}"

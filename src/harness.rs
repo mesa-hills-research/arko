@@ -1017,6 +1017,7 @@ impl Harness {
                 self.keys.clone(),
                 self.stats.clone(),
                 self.asker.clone(),
+                self.handover.clone(),
             ) {
                 builder = builder.agent_tool(MAIN, tool);
             }

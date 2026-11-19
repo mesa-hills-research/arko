@@ -85,6 +85,8 @@
   and `worker_options` said so. A workers' size set with `/handover-at` could also take it past
   the 500k the login accepts, and now stops at 475k. Where the session reaches OpenAI by API key,
   such a worker is billed per token as `/worker-billing` says, where it counted as on a plan.
+- `worker_options` gives the size a worker started now hands over at, with the workers' size set
+  with `/handover-at` up to what each model leaves room for. It gave each model's own size.
 
 ## 0.23.1 (2026-11-18)
 
