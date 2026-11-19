@@ -10,9 +10,10 @@ text 2 "│ 43           end += 1;"
 style 2 0 7 dim
 text 3 ""
 text 4 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
-style 4 0 2 fg=red
+style 4 0 2 dim
 style 4 27 30 dim
-style 4 30 61 fg=red
+style 4 30 31 fg=red
+style 4 31 61 dim
 text 5 "│ running 4 tests"
 style 5 0 2 dim
 text 6 "│ test parser::tests::reads ... ok"

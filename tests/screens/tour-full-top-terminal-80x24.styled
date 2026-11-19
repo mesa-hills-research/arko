@@ -43,9 +43,10 @@ style 17 0 2 dim
 style 17 20 23 dim
 style 17 23 24 fg=green
 text 18 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed            ↓ end"
-style 18 0 2 fg=red
+style 18 0 2 dim
 style 18 27 30 dim
-style 18 30 61 fg=red
+style 18 30 31 fg=red
+style 18 31 61 dim
 style 18 72 79 reverse
 text 19 "────────────────────────────────────────────────────────────────────────────────"
 style 19 0 80 dim

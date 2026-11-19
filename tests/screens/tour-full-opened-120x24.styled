@@ -37,10 +37,11 @@ style 3 23 120 fg=#dedede bg=#131313
 text 4 ""
 style 4 0 120 fg=#dedede bg=#131313
 text 5 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
-style 5 0 2 fg=#ff5257 bg=#131313
+style 5 0 2 fg=#9d9d9d bg=#131313
 style 5 2 27 fg=#dedede bg=#131313
 style 5 27 30 fg=#9d9d9d bg=#131313
-style 5 30 61 fg=#ff5257 bg=#131313
+style 5 30 31 fg=#ff5257 bg=#131313
+style 5 31 61 fg=#9d9d9d bg=#131313
 style 5 61 120 fg=#dedede bg=#131313
 text 6 "│ running 4 tests"
 style 6 0 2 fg=#9d9d9d bg=#131313

@@ -1,10 +1,11 @@
 size 80 24
 cursor 3 22 visible default
 text 0 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
-style 0 0 2 fg=red reverse
+style 0 0 2 dim reverse
 style 0 2 27 reverse
 style 0 27 30 dim reverse
-style 0 30 61 fg=red reverse
+style 0 30 31 fg=red reverse
+style 0 31 61 dim reverse
 style 0 61 80 reverse
 text 1 "│ running 4 tests"
 style 1 0 2 dim

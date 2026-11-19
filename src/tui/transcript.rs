@@ -4750,11 +4750,14 @@ fn call_tail(item: &Item, clock: Option<&str>, in_row: bool) -> Vec<(String, Opt
             }
             parts
         }
+        // (Its words muted, as a call's that went well, and only the ✗
+        // in the error's colour.)
         Some(CallStatus::Failed) => {
-            let outcome = item.outcome.as_deref().unwrap_or("failed");
+            let outcome = item.outcome.as_deref().unwrap_or(quiet::FAILED);
             vec![
                 (rendered(" · "), None),
-                (rendered(format!("✗ {outcome}")), Some(CallStatus::Failed)),
+                (glyphs::render("✗").into_owned(), Some(CallStatus::Failed)),
+                (rendered(format!(" {outcome}")), None),
             ]
         }
         _ if in_row => Vec::new(),
@@ -4809,7 +4812,6 @@ fn call_line(
             theme.text().add_modifier(Modifier::BOLD),
         ));
     }
-    let failed = item.status == Some(CallStatus::Failed);
     let words = call_words(item);
     let shown = cut_end(&words, call_room(item, width, who, clock, in_row));
     let cut = shown != words;
@@ -4823,10 +4825,9 @@ fn call_line(
         };
         spans.push(Span::styled(part, style));
     }
-    let marker_style = if failed { theme.error() } else { theme.dim() };
     let room = width.saturating_sub(MARGIN).max(1);
     let mut line =
-        Wrapped::line(fit_spans(spans, room)).decorated(marker(fold_symbol(fold), marker_style));
+        Wrapped::line(fit_spans(spans, room)).decorated(marker(fold_symbol(fold), theme.dim()));
     if cut {
         line.whole = Some(words);
     }

@@ -1,10 +1,11 @@
 size 80 24
 cursor 3 22 visible default
 text 0 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
-style 0 0 2 fg=#ff5257 bg=#3f638b
+style 0 0 2 fg=#9d9d9d bg=#3f638b
 style 0 2 27 fg=#dedede bg=#3f638b
 style 0 27 30 fg=#9d9d9d bg=#3f638b
-style 0 30 61 fg=#ff5257 bg=#3f638b
+style 0 30 31 fg=#ff5257 bg=#3f638b
+style 0 31 61 fg=#9d9d9d bg=#3f638b
 style 0 61 80 fg=#dedede bg=#3f638b
 text 1 "│ running 4 tests"
 style 1 0 2 fg=#9d9d9d bg=#131313

@@ -42,9 +42,10 @@ style 16 0 2 dim
 style 16 20 23 dim
 style 16 23 24 fg=green
 text 17 "▾ $ cargo test --lib parser · ✗ exit 101 · 1 failed, 3 passed"
-style 17 0 2 fg=red
+style 17 0 2 dim
 style 17 27 30 dim
-style 17 30 61 fg=red
+style 17 30 31 fg=red
+style 17 31 61 dim
 text 18 "│ running 4 tests"
 style 18 0 2 dim
 text 19 "│ test parser::tests::reads ... ok"
