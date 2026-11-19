@@ -54,7 +54,7 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   display: flex;
   flex-direction: column;
-  height: 100dvh;
+  height: var(--app-height, 100dvh);
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
@@ -365,7 +365,17 @@ button.cache { padding: 0; border: 0; background: none; }
    gets shorter leaves blank below it. */
 .log > .floor { position: absolute; left: 0; width: 1px; height: 1px; visibility: hidden; pointer-events: none; }
 
-.rows { padding: 16px 0 24px; }
+/* The composer stands where the next item of the last one's kind would, as
+   the eye measures, em box to em box (a framed row, `--lead-end: 0`, by its
+   frame). The last item shown (a closed call's content stays in the
+   column, hidden) has the gap two items of its kind have between them, the
+   larger of its gaps above and below, and the half-leading a next line of
+   its kind would bring, all as its own bottom margin, outside its box,
+   which the column keeps inside itself (flow-root). */
+.rows { display: flow-root; padding: 16px 0 0; }
+.rows > :nth-last-child(1 of :not(.closed)) {
+  margin-bottom: calc(max(var(--gap-above), var(--gap-below)) + var(--lead-end, (1lh - 1em) / 2));
+}
 .empty { max-width: 520px; margin: 30vh auto 0; padding: 0 var(--gutter); color: var(--muted); text-align: center; white-space: pre-wrap; }
 .empty:empty { display: none; }
 
@@ -374,13 +384,13 @@ button.cache { padding: 0; border: 0; background: none; }
    4 px apart, and anything open has 12 px below it and its 4 px above, so
    opening or closing it moves nothing above it. Margins collapse, so gaps
    never add up. */
-.row { margin: 12px 0; overflow-wrap: anywhere; }
-.row:is(.call, .count, .thinking, .working, .notice) { margin: 4px 0; }
-.row:is(.call:has(> details[open]), .thinking.open) { margin-bottom: 12px; }
+.row { --gap-above: 12px; --gap-below: 12px; margin: var(--gap-above) 0 var(--gap-below); overflow-wrap: anywhere; }
+.row:is(.call, .count, .thinking, .working, .notice) { --gap-above: 4px; --gap-below: 4px; }
+.row:is(.call:has(> details[open]), .thinking.open) { --gap-below: 12px; }
 /* A call's content in Full is under its line, and the gap is after it. */
-.row.call:has(> details[open]):has(+ .row.result) { margin-bottom: 0; }
+.row.call:has(> details[open]):has(+ .row.result) { --gap-below: 0px; }
 
-.row.user { display: flex; flex-direction: column; align-items: flex-end; margin: 24px 0 12px; }
+.row.user { display: flex; flex-direction: column; align-items: flex-end; --gap-above: 24px; --lead-end: 0px; }
 .bubble {
   max-width: min(85%, 760px);
   padding: 8px 12px;
@@ -412,6 +422,7 @@ button.cache { padding: 0; border: 0; background: none; }
 .record-outcome { color: var(--muted); font-size: 14px; }
 .record-outcome.answer { color: var(--text); }
 .row.report {
+  --lead-end: 0px;
   padding: 10px 14px;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
@@ -553,7 +564,7 @@ details.call > .holds, .row.result > .holds {
   padding-left: 10px;
   border-left: 2px solid var(--line);
 }
-.row.result { margin: 0 0 12px; }
+.row.result { --gap-above: 0px; }
 /* What a call holds, its detail and its content, muted but for a command's
    output, a message, a file's lines and a diff, its lines 4 px apart. */
 .holds > * + * { margin-top: 4px; }
@@ -651,13 +662,19 @@ pre.block {
 .row.count button[aria-expanded="true"] .mark { transform: rotate(90deg); }
 .row.count .failed { color: var(--error); }
 
-.row.notice { color: var(--muted); font-size: 14px; line-height: 20px; white-space: pre-wrap; }
+/* (A work row's line, 13 px on 20 px, as a call's, so a notice taking the
+   live line's place at the end keeps the end where it was.) */
+.row.notice { color: var(--muted); font-size: 13px; line-height: 20px; white-space: pre-wrap; }
 .row.notice.level-warn { color: var(--warn); }
 .row.notice.level-error { color: var(--error); }
 
 /* A thought, the agent's words to itself, muted italic in the words'
    column, one line until it opens. Its paragraphs stand 8 px apart. */
-.row.thinking { display: flex; gap: 6px; min-width: 0; color: var(--muted); font: italic 14px/20px var(--sans); }
+/* (Its line has the live line's metrics, as "Working…" has a call row's, so
+   the one taking the other's place keeps the end where it was. Open, its
+   words read at the body's size.) */
+.row.thinking { display: flex; gap: 6px; min-width: 0; color: var(--muted); font: italic 13px/20px var(--sans); }
+.row.thinking .md { font-size: 14px; }
 .row.thinking > .thought { flex: 1; min-width: 0; cursor: pointer; }
 .row.thinking .first { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row.thinking .md :is(p, ul, ol, pre, blockquote, .table, h3, h4, h5) { margin: 0 0 8px; }
@@ -665,9 +682,11 @@ pre.block {
    in the markers' column and its words where a thought's start. */
 .row:is(.thinking, .working) > .mark { display: flex; flex: none; align-items: center; justify-content: center; height: 20px; }
 .row:is(.thinking, .working) > .mark .spinner { margin: 0 -1px; }
-.row.working { display: flex; gap: 6px; color: var(--muted); font: 14px/20px var(--sans); }
-/* Its room, while something else shows that the agent works. */
-.row.working.room { visibility: hidden; }
+/* (The live line has a call row's line metrics, 13 px on a 20 px line, so
+   one taking the other's place at the end keeps the end where it was.) */
+.row.working { display: flex; gap: 6px; color: var(--muted); font: 13px/20px var(--sans); }
+/* One line, its end cut, as a folded thought's, whatever the call it names. */
+.row.working > .what { flex: 1 1 auto; white-space: nowrap; text-overflow: ellipsis; }
 /* A copy of the label in the text color lies on the label, with the
    label's box and font, so it matches even when the label wraps or is
    clipped. The copy stays put and only its mask, a band 60% of the label
@@ -769,7 +788,8 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
 .wcard.failed .wmeta { color: var(--error); }
 .wcard .wlast { grid-column: 1; overflow: hidden; color: var(--muted); font: 12px/1.4 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .wcard .wgo { grid-column: 2; grid-row: 1 / span 3; color: var(--muted); }
-.row.wline { margin: 12px 0; }
+/* (A framed row, whose edge is its frame's.) */
+.row.wline { --lead-end: 0px; }
 
 .jump {
   position: absolute;
@@ -853,6 +873,10 @@ details.more > summary { width: max-content; padding: 4px 0; color: var(--link);
   border-top: 1px solid var(--line);
   background: var(--bg);
 }
+/* While a phone's keyboard is up, the page is the visual viewport, at its
+   place (viewport.rs), and the keyboard covers the home indicator. */
+html.keyboard body { position: fixed; top: var(--app-top, 0px); left: 0; right: 0; }
+html.keyboard .bottom { padding-bottom: 10px; }
 
 .error { margin: 0 0 6px; color: var(--error); font-size: 14px; }
 .note-line { margin: 0 0 6px; color: var(--muted); font-size: 14px; }

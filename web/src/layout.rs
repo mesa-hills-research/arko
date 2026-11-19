@@ -587,29 +587,77 @@ fn under_way(store: &Store, status: &StatusData, worker: Option<&str>) -> Option
     }
 }
 
-/// Whether the room the "Working…" row takes stays at the end, unseen,
-/// because something else shows that the agent of a view works (a call
-/// of its own that runs, its thinking or its text as they stream), so
-/// nothing above moves as they come and go.
-pub fn room(
+/// The thinking that streams, and whether the Working row ("Working…", or
+/// what the agent's call does) stands at the end of `rows`, the view's rows
+/// without it. Nothing stands in its place while it doesn't show, so the
+/// last row has only its own gap under it, and the Working row moves the
+/// lines up a line as it comes, as any output does. The thinking that
+/// streams is the live line on its row, and so is a call that runs on the
+/// last row (it stands alone while it runs), and text that streams until
+/// it pauses. Where rows came after the call's (a lead's message, a
+/// notice), the Working row says what the call does, as it does in
+/// Messages, which counts the call on its turn's line.
+pub fn live_line(
+    rows: &[Row],
     store: &Store,
     status: &StatusData,
     view: View,
     worker: Option<&str>,
     now: f64,
-) -> bool {
-    !motion(store, status, view, worker, now).1
-        && under_way(store, status, worker).is_some_and(|since| {
-            !matches!(
-                busy(&store.items, worker.unwrap_or(MAIN), since),
-                Busy::Done
-            )
-        })
+) -> (Option<u64>, bool) {
+    let (thinking, working) = motion(store, status, view, worker, now);
+    let tool = under_way(store, status, worker)
+        .is_some_and(|since| busy(&store.items, worker.unwrap_or(MAIN), since) == Busy::Tool);
+    if tool && let Some(call) = running(store, worker) {
+        let shown = match call_stands(rows, store, call.id) {
+            Stands::Last => false,
+            Stands::Above => true,
+            // (Messages counts it on its turn's line.)
+            Stands::Unshown => working,
+        };
+        return (thinking, shown);
+    }
+    let live = thinking.is_some_and(|id| rows.contains(&Row::Item(id, Kind::Thinking)));
+    (thinking, working && !live)
+}
+
+/// Where the row of the call `id` that runs stands among `rows`.
+#[derive(Debug, PartialEq)]
+enum Stands {
+    /// It's the last row.
+    Last,
+    /// Rows came after it.
+    Above,
+    /// The view shows no row of it.
+    Unshown,
+}
+
+fn call_stands(rows: &[Row], store: &Store, id: u64) -> Stands {
+    let holds = |row: &Row| match row {
+        Row::Item(item, Kind::Call) => *item == id,
+        Row::Quiet { row, .. } => row
+            .calls
+            .iter()
+            .any(|call| matches!(call, Row::Item(item, Kind::Call) if *item == id)),
+        _ => false,
+    };
+    let Some(at) = rows.iter().rposition(holds) else {
+        return Stands::Unshown;
+    };
+    // (The agent's other calls, side by side with it, their results and
+    // the notes waiting at the end are its own work below it.)
+    let came = rows[at + 1..].iter().any(|row| match row {
+        Row::Item(_, Kind::Call | Kind::Result) | Row::Quiet { .. } | Row::Count { .. } => false,
+        Row::Item(item, _) => store.get(*item).is_none_or(|item| !item.pending),
+        _ => true,
+    });
+    if came { Stands::Above } else { Stands::Last }
 }
 
 /// What the "Working…" line says. While a call of the agent runs (which
-/// the Messages view alone shows the line for) it says what the call does,
-/// as its Quiet row would ("Waiting for r91…").
+/// Messages shows the line for, as do the other views once rows came after
+/// the call's) it says what the call does, as its Quiet row would
+/// ("Waiting for r91…").
 pub fn working_label(store: &Store, worker: Option<&str>) -> String {
     running(store, worker)
         .and_then(|item| item.act.as_ref())
@@ -631,17 +679,9 @@ fn running<'a>(store: &'a Store, worker: Option<&str>) -> Option<&'a ItemData> {
     })
 }
 
-/// Whether the agent's call that runs has a row of its own among `rows`,
-/// which shows that it runs, as it does in Messages where its turn's count
-/// is open.
-pub fn running_shown(rows: &[Row], store: &Store, worker: Option<&str>) -> bool {
-    running(store, worker).is_some_and(|call| {
-        in_quiet_row(rows, call.id) || rows.contains(&Row::Item(call.id, Kind::Call))
-    })
-}
-
 /// Whether the item `id` is in a Quiet row of `rows` (a thinking after a
 /// call is, from the start).
+#[cfg(test)]
 pub fn in_quiet_row(rows: &[Row], id: u64) -> bool {
     rows.iter().rev().any(|row| {
         matches!(row, Row::Quiet { row, .. }
@@ -954,10 +994,9 @@ mod tests {
         }
     }
 
-    /// The Working row shows while the agent waits on its model, and its
-    /// room stays, unseen, while something else shows that the agent works
-    /// (its thinking or text as they stream, a call that runs), so nothing
-    /// above moves as they come and go.
+    /// The Working row shows while the agent waits on its model, and not
+    /// while something else shows that the agent works (its thinking or
+    /// text as they stream, a call that runs).
     #[test]
     fn working_shows_while_the_agent_waits_on_its_model_and_its_thinking_moves_as_it_streams() {
         let mut store = Store::default();
@@ -966,17 +1005,13 @@ mod tests {
             since: Some(0),
             ..StatusData::default()
         };
-        let room = |store: &Store, view, now| room(store, &status, view, None, now);
         store.add(item(1, Kind::User, MAIN, "go"), 0.0);
         assert_eq!(motion(&store, &status, View::Full, None, 0.0), (None, true));
-        assert!(!room(&store, View::Full, 0.0));
         store.add(item(2, Kind::Thinking, MAIN, "hmm"), 0.0);
         assert_eq!(
             motion(&store, &status, View::Full, None, 0.0),
             (Some(2), false)
         );
-        assert!(room(&store, View::Full, 0.0));
-        assert!(!room(&store, View::Messages, 0.0));
         // (Messages shows the Working row unless its open count shows the
         // thinking, which the transcript's rows say.)
         assert_eq!(
@@ -988,12 +1023,10 @@ mod tests {
             motion(&store, &status, View::Full, None, 500.0),
             (None, false)
         );
-        assert!(room(&store, View::Full, 500.0));
         assert_eq!(
             motion(&store, &status, View::Full, None, 100.0 + QUIET_MS),
             (None, true)
         );
-        assert!(!room(&store, View::Full, 100.0 + QUIET_MS));
         let mut call = item(4, Kind::Call, MAIN, "ls");
         call.status = Some(CallStatus::Running);
         call.act = Some(crate::protocol::Act {
@@ -1006,8 +1039,6 @@ mod tests {
             motion(&store, &status, View::Full, None, 0.0),
             (None, false)
         );
-        assert!(room(&store, View::Full, 0.0));
-        assert!(room(&store, View::Quiet, 0.0));
         // The Messages view counts calls, so its line at the end says what
         // the call that runs does.
         assert_eq!(
@@ -1024,7 +1055,6 @@ mod tests {
             motion(&store, &status, View::Full, None, 0.0),
             (None, false)
         );
-        assert!(!room(&store, View::Full, 0.0), "its reply ended it");
         // While it asks, it waits on the user.
         let asking = StatusData {
             question: Some(crate::protocol::Question {
@@ -1037,6 +1067,75 @@ mod tests {
             motion(&store, &asking, View::Full, None, 0.0),
             (None, false)
         );
+    }
+
+    /// A call that runs on the last row is the live line, with nothing under
+    /// it. Once rows come after its row, the Working row says what it does,
+    /// and "Working…" again once it ends.
+    #[test]
+    fn a_call_that_runs_is_the_live_line_until_rows_come_after_it() {
+        use crate::protocol::{Act, ActKind};
+        let status = StatusData {
+            working: true,
+            since: Some(0),
+            ..StatusData::default()
+        };
+        let command = |id: u64, line: &str, status: CallStatus| ItemData {
+            status: Some(status),
+            act: Some(Act {
+                kind: ActKind::Command,
+                target: line.into(),
+                ..Act::default()
+            }),
+            turn: Some(1),
+            ..item(id, Kind::Call, MAIN, line)
+        };
+        let mut store = Store::default();
+        store.add(item(1, Kind::User, MAIN, "go"), 0.0);
+        let line = |store: &Store, view| {
+            let rows = layout(&store.items, view, None);
+            live_line(&rows, store, &status, view, None, 0.0).1
+        };
+        for view in [View::Quiet, View::Full] {
+            assert!(line(&store, view), "{view:?}");
+        }
+        store.add(item(2, Kind::Text, MAIN, "Checking."), 0.0);
+        store.add(command(3, "ls", CallStatus::Running), 0.0);
+        for view in [View::Quiet, View::Full] {
+            assert!(!line(&store, view), "{view:?}: its row is the live line");
+        }
+        // (Messages counts it, so the Working row says what it does.)
+        assert!(line(&store, View::Messages));
+        store.change(command(3, "ls", CallStatus::Ok), 0.0);
+        assert!(line(&store, View::Quiet));
+        assert_eq!(working_label(&store, None), "Working…");
+        store.add(command(4, "cargo test", CallStatus::Running), 0.0);
+        // (In Quiet it is on the last row, alone or in the row above.)
+        for view in [View::Quiet, View::Full] {
+            assert!(!line(&store, view), "{view:?}");
+        }
+        let mut notice = item(5, Kind::Notice, MAIN, "r1 reported");
+        notice.level = Some(Level::Info);
+        store.add(notice, 0.0);
+        for view in [View::Quiet, View::Full] {
+            assert!(line(&store, view), "{view:?}: a row came after it");
+        }
+        assert_eq!(working_label(&store, None), "Running cargo test…");
+        // A message to the agent, as its lead's to a worker, does the same.
+        store.remove(5);
+        let mut message = item(6, Kind::Message, MAIN, "Also the docs.");
+        message.from = Some("r1".into());
+        store.add(message, 0.0);
+        for view in [View::Quiet, View::Full] {
+            assert!(line(&store, view), "{view:?}: a message came after it");
+        }
+        assert_eq!(working_label(&store, None), "Running cargo test…");
+        // A note waiting at the end isn't a row after it.
+        store.remove(6);
+        let mut note = item(7, Kind::User, MAIN, "and this");
+        note.pending = true;
+        store.add(note, 0.0);
+        assert!(!line(&store, View::Full));
     }
 
     #[test]
@@ -1288,8 +1387,8 @@ mod tests {
             let (sealed, leads) = (HashSet::new(), HashMap::new());
             layout_sealed(&store.items, View::Messages, None, &sealed, &leads, &open)
         };
-        assert!(running_shown(&laid(&[10]), &store, None));
-        assert!(!running_shown(&laid(&[]), &store, None));
+        assert_eq!(call_stands(&laid(&[10]), &store, 11), Stands::Last);
+        assert_eq!(call_stands(&laid(&[]), &store, 11), Stands::Unshown);
     }
 
     #[test]

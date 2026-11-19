@@ -1294,7 +1294,9 @@ pub(crate) fn take_change(page: Page, item: ItemData, code: bool, now: f64) {
     let Some(old) = STORE.with(|store| store.borrow_mut().change(item.clone(), now)) else {
         return;
     };
-    let moves = crate::layout::moves_rows(&old, &item, page.view.get_untracked());
+    // (A call's status also says what stands at the end for the live line.)
+    let moves = crate::layout::moves_rows(&old, &item, page.view.get_untracked())
+        || old.status != item.status;
     if let Some(cell) = cell(item.id) {
         refresh(&cell, item, code);
     }

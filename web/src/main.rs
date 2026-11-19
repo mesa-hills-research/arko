@@ -29,6 +29,7 @@ mod store;
 mod testing;
 mod theme_list;
 mod transcript;
+mod viewport;
 mod words;
 
 // The protocol, compiled from the server's own file.
@@ -74,6 +75,7 @@ fn main() {
     {
         let _ = root.set_attribute("class", "apple");
     }
+    viewport::attach();
     leptos::mount::mount_to_body(App);
 }
 

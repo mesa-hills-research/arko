@@ -396,8 +396,9 @@ struct Motion {
     thinking: Option<u64>,
     /// The "Working…" line, at the end.
     working: bool,
-    /// What that line says instead of "Working…", in the Messages view
-    /// while a call of the agent runs ("Waiting for r91…").
+    /// What that line says instead of "Working…" while a call of the agent
+    /// runs, in the Messages view or where rows came after the call's
+    /// ("Waiting for r91…").
     label: Option<String>,
 }
 
@@ -1375,8 +1376,11 @@ impl Transcript {
         let thinking_shown = |id: u64| {
             filter.view() != View::Messages || self.index(id).is_some_and(|at| opened.contains(&at))
         };
+        // (A call of the agent's that runs, which rows came after, such as
+        // its lead's message, is what the line says.)
         let working = |working| Motion {
             working,
+            label: self.doing(agent),
             ..Motion::default()
         };
         match self.busy(agent, since) {
@@ -1415,6 +1419,28 @@ impl Transcript {
         self.running(agent)
             .and_then(|at| self.entries[at].item.act.as_ref())
             .map(|act| format!("{}…", quiet::doing(act)))
+    }
+
+    /// Whether rows came after the block among `blocks` that holds the
+    /// entry `at` (a call that runs), besides the agent's own work (its
+    /// other calls side by side with it and their results) and the notes
+    /// waiting at the end. False where no block holds it.
+    fn came_after(&self, blocks: &[Block], at: usize) -> bool {
+        let Some(holder) = blocks.iter().rposition(|block| match &block.shown {
+            Shown::Entry(index) => *index == at,
+            Shown::Quiet(row) => row.members.contains(&at),
+            _ => false,
+        }) else {
+            return false;
+        };
+        blocks[holder + 1..].iter().any(|block| match &block.shown {
+            Shown::Entry(index) => {
+                let item = &self.entries[*index].item;
+                !item.pending && !matches!(item.kind, Kind::Call | Kind::Result)
+            }
+            Shown::Quiet(_) | Shown::Counter { .. } => false,
+            _ => true,
+        })
     }
 
     /// The entry of the latest call of `agent` that runs.
@@ -1627,6 +1653,21 @@ impl Transcript {
         if quiet || !opened.is_empty() {
             let keys: HashSet<u64> = blocks.iter().map(|block| block.key).collect();
             self.quiet_cache.retain(|key, _| keys.contains(key));
+        }
+        // Rows that came after the agent's call that runs (a lead's message,
+        // a notice) leave its row above the end, so the live line at the end
+        // says what it does.
+        if !self.motion.working
+            && let Some((agent, since)) = self.under_way(filter)
+            && self.busy(agent, since) == Busy::Tool
+            && let Some(at) = self.running(agent)
+            && self.came_after(&blocks, at)
+        {
+            self.motion = Motion {
+                working: true,
+                label: self.doing(agent),
+                ..Motion::default()
+            };
         }
         if self.motion.working {
             // At the end, below the notes the agent hasn't read, so a note
@@ -2191,11 +2232,7 @@ impl Transcript {
                         let detail = item.act.as_ref().map_or("", |act| act.detail.as_str());
                         // Where its line cut its words, the call as written,
                         // unless the detail is the whole command or query.
-                        let whole = item.act.as_ref().is_some_and(|act| {
-                            matches!(act.kind, ActKind::Command | ActKind::Search)
-                                && !act.detail.is_empty()
-                        });
-                        if quiet_cut(&row.words, width) && !whole {
+                        if quiet_cut(&row.words, width) && !detail_is_whole(item) {
                             // (A code run's words whole, which its call as
                             // written only repeats with the tool's name.)
                             let words = match item.act.as_ref().map(|act| act.kind) {
@@ -2254,7 +2291,9 @@ impl Transcript {
                         call_line(item, theme, inner, true, None, folds.then_some(open), true);
                     rail(&mut lines, line, 0);
                     if open {
-                        if call_cut(item, inner, true) {
+                        if call_cut(item, inner, true)
+                            && !(item.detail.is_some() && detail_is_whole(item))
+                        {
                             rail(
                                 &mut lines,
                                 detail_lines(&call_words(item), theme, room),
@@ -4875,6 +4914,14 @@ fn worker_spans(face: &WorkerFace, theme: &Theme, room: usize) -> Vec<Span<'stat
     fit_spans(spans, room)
 }
 
+/// Whether `item` is a command or a search whose detail is the whole
+/// command or query, which says all its line does.
+fn detail_is_whole(item: &Item) -> bool {
+    item.act.as_ref().is_some_and(|act| {
+        matches!(act.kind, ActKind::Command | ActKind::Search) && !act.detail.is_empty()
+    })
+}
+
 /// A call's words as its Full line says them, the call as written, on one
 /// line.
 fn call_words(item: &Item) -> String {
@@ -5235,7 +5282,10 @@ fn entry_lines(item: &Item, theme: &Theme, width: usize, own: bool, look: Look) 
             let fold = folds.then_some(open);
             let mut lines = call_line(item, theme, width, own, clock, fold, false);
             if folds && open {
-                if call_cut(item, width, false) {
+                // (A command's detail is the whole command, so its line's
+                // words don't show twice.)
+                if call_cut(item, width, false) && !(item.detail.is_some() && detail_is_whole(item))
+                {
                     lines.extend(railed(detail_lines(&call_words(item), theme, inner), theme));
                 }
                 if let Some(detail) = &item.detail {
@@ -8289,6 +8339,96 @@ mod tests {
             !shown.iter().any(|row| row.contains("Waiting for")),
             "{shown:?}"
         );
+    }
+
+    /// A call that runs is the live line on its row. Once rows come after it
+    /// (a notice, its lead's message), the line at the end says what it
+    /// does, as the page's does, and "Working…" once it ended.
+    #[test]
+    fn the_line_at_the_end_says_what_a_running_call_does_once_rows_come_after_it() {
+        use crate::remote::{Act, ActKind};
+        let mut t = Transcript::new();
+        t.working = Some(0);
+        let mut user = item(1, Kind::User, "Run the tests");
+        user.turn = Some(1);
+        t.apply(Update::Item(user));
+        let mut call = item(2, Kind::Call, "$ cargo test");
+        call.turn = Some(1);
+        call.status = Some(CallStatus::Running);
+        call.act = Some(Act {
+            kind: ActKind::Command,
+            target: "cargo test".into(),
+            ..Act::default()
+        });
+        t.apply(Update::Item(call.clone()));
+        let says =
+            |shown: &[String], words: &str| shown.iter().filter(|row| row.contains(words)).count();
+        for view in [View::Quiet, View::Full] {
+            let shown = rows(&mut t, &Filter::Main(view), 50, 8);
+            assert_eq!(
+                says(&shown, "Working…") + says(&shown, "Running cargo test…"),
+                0,
+                "{view:?} {shown:?}"
+            );
+        }
+        let mut notice = item(3, Kind::Notice, "r1 reported");
+        notice.turn = Some(1);
+        t.apply(Update::Item(notice));
+        for view in [View::Quiet, View::Full] {
+            let shown = rows(&mut t, &Filter::Main(view), 50, 8);
+            let last = shown
+                .iter()
+                .rposition(|row| !row.trim().is_empty())
+                .unwrap();
+            assert!(
+                shown[last].contains("Running cargo test…"),
+                "{view:?} {shown:?}"
+            );
+        }
+        // Its lead's message after it, which the agent's latest item is.
+        t.apply(Update::Remove { id: 3 });
+        let mut message = item(4, Kind::Message, "Also the docs.");
+        message.turn = Some(1);
+        message.from = Some("r1".into());
+        t.apply(Update::Item(message));
+        let shown = rows(&mut t, &Filter::Main(View::Quiet), 50, 8);
+        let last = shown
+            .iter()
+            .rposition(|row| !row.trim().is_empty())
+            .unwrap();
+        assert!(shown[last].contains("Running cargo test…"), "{shown:?}");
+        call.status = Some(CallStatus::Ok);
+        t.apply(Update::Change(call));
+        let shown = rows(&mut t, &Filter::Main(View::Quiet), 50, 8);
+        assert_eq!(says(&shown, "Working…"), 1, "{shown:?}");
+        assert_eq!(says(&shown, "Running cargo test…"), 0, "{shown:?}");
+    }
+
+    /// A long command that runs, open in Full at 40 columns, shows its
+    /// detail, the whole command, once, and not its line's words again above
+    /// it, as the page does.
+    #[test]
+    fn a_long_command_shows_its_whole_line_once() {
+        use crate::remote::{Act, ActKind};
+        let command =
+            "cd /home/ada/proj && git push -u origin release-1.4 2>&1 | tail -3; echo pushed-ok";
+        let mut t = Transcript::new();
+        t.working = Some(0);
+        let mut call = item(1, Kind::Call, &format!("$ {command}"));
+        call.turn = Some(1);
+        call.status = Some(CallStatus::Running);
+        call.detail = Some(command.into());
+        call.act = Some(Act {
+            kind: ActKind::Command,
+            target: command.into(),
+            detail: command.into(),
+            ..Act::default()
+        });
+        t.apply(Update::Item(call));
+        let shown = rows(&mut t, &full(), 40, 20);
+        assert!(shown[0].contains("$ cd /home/ada"), "{shown:?}");
+        let ends = shown.iter().filter(|row| row.contains("pushed-ok")).count();
+        assert_eq!(ends, 1, "{shown:?}");
     }
 
     /// An open Quiet row draws again when an item it shows changes, such

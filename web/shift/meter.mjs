@@ -297,6 +297,8 @@ const INSTRUMENT = `(() => {
       top: Math.round(top * dpr),
       bottom: Math.round(bottom * dpr),
       end: last ? Math.round((last.bottom + parseFloat(getComputedStyle(rows).paddingBottom || '0')) * dpr) : null,
+      endRaw: last ? (last.bottom + parseFloat(getComputedStyle(rows).paddingBottom || '0')) * dpr : null,
+      bottomRaw: bottom * dpr,
       endZone: endZone === null ? null : Math.round(endZone * dpr),
       start: children.length ? Math.round(children[0].getBoundingClientRect().top * dpr) >= Math.round(top * dpr) : true,
       dpr,
@@ -376,6 +378,7 @@ class Meter {
     this.trips = new Map(); // what|view → { trips, failed, max }
     this.tripExamples = new Map();
     this.steps = new Set();
+    this.blanks = new Map(); // step|view
   }
 
   tally(map, key) {
@@ -462,6 +465,18 @@ class Meter {
     return markdown(rows);
   }
 
+  blankTable() {
+    const rows = [['Step', ...VIEWS], ['---', ...VIEWS.map(() => '---')]];
+    const steps = [...new Set([...this.blanks.keys()].map((key) => key.split('|')[0]))];
+    for (const step of ORDER.filter((step) => steps.includes(step))) {
+      rows.push([step, ...VIEWS.map((view) => {
+        const tally = this.blanks.get(`${step}|${view}`);
+        return tally ? `${tally.frames} · ${tally.max} / ${tally.total}` : '–';
+      })]);
+    }
+    return markdown(rows);
+  }
+
   exampleText() {
     let out = '';
     for (const [key, [, text]] of [...this.examples.entries()].sort()) {
@@ -517,6 +532,36 @@ const ORDER = [
   'worker ends',
   'turn ends',
 ];
+
+// Where blank may come below the end while following, as the end gets
+// shorter (rule 1, and rows 23 and 25 of the table in DESIGN.md section 9).
+// Blank in any other step fails ([`Run.compare`]), so the agent's calls
+// coming and ending, a job ending, notices and the live line coming and
+// going leave none.
+// (Row 23's shrink, a Full command that ends with nothing to show, doesn't
+// come up, as every command here shows output.)
+function blankAllowed(step) {
+  return BLANK_STEPS.has(step);
+}
+const BLANK_STEPS = new Set([
+  // "Working…" or the thought that was the live line goes into the last row.
+  'call joins a row of one file',
+  'call joins a row of its kind',
+  'thought → call',
+  // A reply wraps again shorter, or the line before it folds.
+  'reply streams',
+  'result → reply',
+  'thought → reply',
+  'Working… → reply goes on',
+  // The reader closes a fold.
+  'fold closes near the end',
+  // The last item shrinks or goes (row 25): a note read, a worker's row as
+  // the worker starts and ends, "Working…" as the turn ends.
+  'waiting message read',
+  'worker starts',
+  'worker ends',
+  'turn ends',
+]);
 
 // ----- sizes -----
 
@@ -840,6 +885,18 @@ class Run {
       }
     }
     if (step === null || step === undefined) return 0;
+    // Blank left below the end while following, by step. It comes where the
+    // end gets shorter (rule 1), and only in the steps [`blankAllowed`]
+    // names, so blank in any other step fails.
+    if (following && after.clientHeight === before.clientHeight && before.endRaw !== null && after.endRaw !== null) {
+      // (Rounded as a line's move is, by how far the end itself moved.)
+      const blankOf = (shot) => Math.max(0, shot.bottomRaw - shot.endRaw);
+      const grew = Math.round(blankOf(after) - blankOf(before));
+      if (grew > 0) {
+        this.meter.tally(this.meter.blanks, `${step}|${this.view}`).add(grew);
+        if (!blankAllowed(step)) this.failures.push(`${grew} device px of blank came below the end at "${step}" (${this.view})`);
+      }
+    }
     const key = (kind) => `${kind}|${step}|${this.view}`;
     if (room > 0) this.meter.tally(this.meter.allowed, key('the end makes room')).add(room);
     if (pushed > 0) this.meter.tally(this.meter.allowed, key('below a change on the screen')).add(pushed);
@@ -1513,6 +1570,49 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // sleeps.
 const RATIOS = [1, 1.25, 1.5, 2];
 
+/// The gap under the transcript's last item, to the composer's divider,
+/// against the gap between two items of its kind (CSS px), em box to em box
+/// for a row of text and frame to frame for a framed one (`--lead-end: 0`).
+/// A kind's gap is the larger of its gaps above and below (`--gap-above`,
+/// `--gap-below`), by its own line metrics. `pair` is the gap of the last
+/// two rows of its kind that stand together on the screen, if any.
+const LAST_GAP = `(() => {
+  const rows = document.getElementById('rows');
+  const bottom = document.querySelector('.bottom');
+  if (!rows || !bottom) return null;
+  const divider = bottom.getBoundingClientRect().top;
+  const shown = [...rows.children].filter((row) => row.getBoundingClientRect().height > 0);
+  const last = shown[shown.length - 1];
+  if (!last) return null;
+  const kindOf = (row) => [...row.classList].filter((name) => name !== 'row' && name !== 'still' && name !== 'muted').sort().join(' ');
+  const metrics = (row) => {
+    const style = getComputedStyle(row);
+    const number = (value) => parseFloat(value) || 0;
+    const framed = style.getPropertyValue('--lead-end').trim() === '0px';
+    return {
+      lead: framed ? 0 : (number(style.lineHeight) - number(style.fontSize)) / 2,
+      above: number(style.getPropertyValue('--gap-above')),
+      below: number(style.getPropertyValue('--gap-below')),
+      padTop: framed ? 0 : number(style.paddingTop) + number(style.borderTopWidth),
+      padBottom: framed ? 0 : number(style.paddingBottom) + number(style.borderBottomWidth),
+    };
+  };
+  const emTop = (row) => row.getBoundingClientRect().top + metrics(row).padTop + metrics(row).lead;
+  const emBottom = (row) => row.getBoundingClientRect().bottom - metrics(row).padBottom - metrics(row).lead;
+  const kind = kindOf(last);
+  const own = metrics(last);
+  let pair = null;
+  for (let at = shown.length - 2; at > 0 && pair === null; at--) {
+    const [a, b] = [shown[at - 1], shown[at]];
+    if (kindOf(a) === kind && kindOf(b) === kind) pair = emTop(b) - emBottom(a);
+  }
+  return { kind, under: divider - emBottom(last), standard: Math.max(own.above, own.below) + 2 * own.lead, pair, dpr: devicePixelRatio };
+})()`;
+
+/// A command whose line is longer than a phone's, as a push and a look at
+/// its CI run make.
+const LONG_COMMAND = 'cd /home/ada/proj/wt/release && git push -u origin release-1.4 2>&1 | tail -3; sleep 8; gh run list --repo example/proj --branch release-1.4 --limit 3 --json databaseId,headSha,status,conclusion,event';
+
 class Case extends Run {
   constructor(options) {
     super(options);
@@ -1590,7 +1690,9 @@ class Case extends Run {
   /// Blank of `device` pixels below the end, made by an end that gets
   /// that much shorter while following.
   async blank(device) {
-    await this.evaluate(`(() => { const rows = document.getElementById('rows'); const spacer = document.createElement('div'); spacer.id = 'case-spacer'; spacer.style.height = '${device / this.size.dpr}px'; rows.appendChild(spacer); })()`);
+    // (The spacer isn't an item, so the last item keeps its gap, as a
+    // closed call's content does.)
+    await this.evaluate(`(() => { const rows = document.getElementById('rows'); const spacer = document.createElement('div'); spacer.id = 'case-spacer'; spacer.className = 'closed'; spacer.style.height = '${device / this.size.dpr}px'; rows.appendChild(spacer); })()`);
     await this.settle(null);
     this.grown = await this.look();
     await this.evaluate(`document.getElementById('case-spacer').remove()`);
@@ -1634,6 +1736,8 @@ async function pixelCases(cdp, agent) {
   };
   const follows = (shot) => shot.choice === 'follow' && shot.following;
   const blankOf = (shot) => shot.bottom - shot.end;
+  // (Unrounded, so a change is rounded once, as a line's move is.)
+  const rawBlank = (shot) => Math.max(0, shot.bottomRaw - shot.endRaw);
   for (const ratio of RATIOS) {
     await play(ratio, 'three scrolls up of 0.4 in one gesture', async (run) => {
       const a = await run.fill();
@@ -2296,10 +2400,279 @@ async function pixelCases(cdp, agent) {
         if (view === 'quiet' && shot.note) return 'the row says what runs after its words, not first';
         if (shot.past > 0.5) return `the row runs ${shot.past} px past its right edge`;
         if (shot.clipped || shot.button > 24.5) return `the button wraps or is cut (${shot.button} px tall)`;
-        if (shot.line > 24.5) return `the line is ${shot.line} px tall`;
+        if (shot.line > 20.5) return `the line is ${shot.line} px tall`;
         if (!shot.cut) return 'the words fit whole, so nothing gave way';
         if (shot.what < shot.eight - 1) return `the words are ${shot.what} px, under 8 characters (${shot.eight} px)`;
         return null;
+      }, view);
+    }
+    // A long command at a phone's width. The live line is one line in each
+    // view, a row keeps its height as its button comes and goes, and the
+    // end keeps its place as the call ends (no blank comes below it).
+    for (const view of ['quiet', 'full', 'messages']) {
+      await play(ratio, `touch: a long command's live line is one line, and its end keeps its place (${view})`, async (run) => {
+        await run.metrics(390, 844);
+        await run.fill(8);
+        await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+        await run.feed({ do: 'text', text: `${run.some(8, 4)}.` });
+        await run.settle(null);
+        const { call } = await run.feed({ do: 'call', tool: 'shell', parameters: { command: LONG_COMMAND } });
+        await run.settle('Working… → call');
+        const live = `(() => {
+          const working = document.querySelector('#rows > .working > .what');
+          const line = [...document.querySelectorAll('#rows .call-line')].pop();
+          return {
+            working: working ? working.getBoundingClientRect().height : 0,
+            row: line ? line.closest('.row').getBoundingClientRect().height : 0,
+            button: !!(line && line.querySelector('.call-action')),
+          };
+        })()`;
+        const before = await run.evaluate(live);
+        await run.feed({ do: 'movable' });
+        // (The status, which says the call may move, comes every 2 s.)
+        let after = before;
+        for (let at = 0; at < 40 && view !== 'messages' && !after.button; at++) {
+          await run.settle(null);
+          after = await run.evaluate(live);
+          if (!after.button) await sleep(100);
+        }
+        // (Each check is made, and the call ends, before the first problem
+        // is said, so the meter's own check of the blank sees the end too.)
+        const problems = [];
+        if (view !== 'messages' && !after.button) problems.push('no Move to background');
+        if (Math.max(before.working, after.working) > 20.5) problems.push(`the live line is ${Math.max(before.working, after.working)} px tall`);
+        if (Math.abs(after.row - before.row) > 0.5) problems.push(`the row went from ${before.row} to ${after.row} px as its button came`);
+        const running = await run.look();
+        await run.feed({ do: 'result', call, tool: 'shell', output: 'exit code 0, 9.0 s\nok' });
+        await run.feed({ do: 'movable' });
+        await run.settle('call → its result');
+        const ended = await run.look();
+        const grew = Math.round(rawBlank(ended) - rawBlank(running));
+        if (grew > 0) problems.push(`${grew} device px of blank came below the end as the call ended`);
+        return problems[0] ?? null;
+      }, view);
+    }
+    // A fold above a running call opens, the call ends meanwhile, and the
+    // fold closes. No line is lower than before, and no blank is left.
+    for (const view of ['quiet', 'full']) {
+      await play(ratio, `touch: a fold above a running call, which ends while it's open (${view})`, async (run) => {
+        await run.metrics(390, 844);
+        await run.fill(8);
+        await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+        const ls = await run.feed({ do: 'call', tool: 'shell', parameters: { command: `ls ${run.words(2).split(' ').join('/')}` } });
+        const listing = Array.from({ length: 4 }, () => run.words(2)).join('\n');
+        await run.feed({ do: 'result', call: ls.call, tool: 'shell', output: `exit code 0, 0.1 s\n${listing}` });
+        await run.feed({ do: 'text', text: `${run.some(8, 4)}.` });
+        const { call } = await run.feed({ do: 'call', tool: 'shell', parameters: { command: LONG_COMMAND } });
+        await run.feed({ do: 'movable' });
+        for (let at = 0; at < 40; at++) {
+          await run.settle(null);
+          if (await run.evaluate(`!!document.querySelector('#rows .call-action')`)) break;
+          await sleep(100);
+        }
+        const a = await run.look();
+        if (!follows(a)) return `the case began ${a.choice}`;
+        const fold = `(() => {
+          const line = [...document.querySelectorAll('#rows .call-line')].find((line) => /\\bls\\b/.test(line.textContent) && !line.querySelector('.call-action'));
+          if (!line) return null;
+          const r = line.getBoundingClientRect();
+          return [r.left + 30, r.top + r.height / 2];
+        })()`;
+        const at = await run.evaluate(fold);
+        if (!at) return 'no fold above the running call';
+        await run.click(at[0], at[1]);
+        await run.settle(null);
+        await run.feed({ do: 'result', call, tool: 'shell', output: 'exit code 0, 9.0 s\nok' });
+        await run.feed({ do: 'movable' });
+        await run.settle(null);
+        const again = await run.evaluate(fold);
+        if (!again) return 'the fold went';
+        await run.click(again[0], again[1]);
+        await run.settle(null);
+        const c = await run.look();
+        for (const [id, line] of a.ids) {
+          const now = c.ids.get(id);
+          if (now && Math.round(now.raw - line.raw) > 0) return `${id} is ${Math.round(now.raw - line.raw)} device px lower`;
+        }
+        const left = Math.round(rawBlank(c) - rawBlank(a));
+        if (left > 0) return `${left} device px of blank left below the end`;
+        return null;
+      }, view);
+    }
+    // A command that runs stands on a row of its own after its group of
+    // ended commands, and joins it as it ends, "Working…" taking its line:
+    // no line moves down and no blank comes below the end, in either step.
+    for (const view of ['quiet', 'full']) {
+      await play(ratio, `touch: a call that runs on its own row joins its group as it ends (${view})`, async (run) => {
+        await run.metrics(390, 844);
+        await run.fill(8);
+        await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+        const ls = () => `ls ${run.words(2).split(' ').join('/')}`;
+        for (let n = 0; n < 2; n++) {
+          const ended = await run.feed({ do: 'call', tool: 'shell', parameters: { command: ls() } });
+          await run.feed({ do: 'result', call: ended.call, tool: 'shell', output: 'exit code 0, 0.1 s\na.rs' });
+        }
+        await run.settle(null);
+        const before = await run.look();
+        const { call } = await run.feed({ do: 'call', tool: 'shell', parameters: { command: ls() } });
+        await run.feed({ do: 'movable' });
+        await run.settle('Working… → call');
+        const running = await run.look();
+        const rows = `[...document.querySelectorAll('#rows > .row')].filter((row) => row.getBoundingClientRect().height > 0).map((row) => row.className + ' ' + row.textContent.trim().replace(/\\s+/g, ' ').slice(0, 60))`;
+        const runningRows = await run.evaluate(rows);
+        if (view === 'quiet' && !/Running/.test(runningRows[runningRows.length - 1])) return `the running call isn't on the last row: ${runningRows.slice(-2).join(' | ')}`;
+        if (view === 'quiet' && /Ran 2/.test(runningRows[runningRows.length - 1])) return 'the running call is in its group';
+        await run.feed({ do: 'result', call, tool: 'shell', output: 'exit code 0, 0.1 s\na.rs' });
+        await run.feed({ do: 'movable' });
+        await run.settle('call → its result');
+        const ended = await run.look();
+        const endedRows = await run.evaluate(rows);
+        if (view === 'quiet' && !endedRows.some((row) => /Ran 3 commands/.test(row))) return `it didn't join its group: ${endedRows.slice(-2).join(' | ')}`;
+        for (const [from, to] of [[before, running], [running, ended]]) {
+          for (const [id, line] of from.ids) {
+            const now = to.ids.get(id);
+            if (now && now.text === line.text && Math.round(now.raw - line.raw) > 0) return `${id} went ${Math.round(now.raw - line.raw)} device px down`;
+          }
+          const grew = Math.round(rawBlank(to) - rawBlank(from));
+          if (grew > 0) return `${grew} device px of blank came below the end`;
+        }
+        return null;
+      }, view);
+    }
+    // A command that runs, a row below it the reader opened, and the command
+    // ends: nothing regroups or closes, and no line moves down.
+    for (const view of ['quiet', 'full']) {
+      await play(ratio, `touch: a call that runs ends while a row below it is open (${view})`, async (run) => {
+        await run.metrics(390, 844);
+        await run.fill(8);
+        await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+        const ls = () => `ls ${run.words(2).split(' ').join('/')}`;
+        const ended = await run.feed({ do: 'call', tool: 'shell', parameters: { command: ls() } });
+        await run.feed({ do: 'result', call: ended.call, tool: 'shell', output: 'exit code 0, 0.1 s\na.rs' });
+        const { call } = await run.feed({ do: 'call', tool: 'shell', parameters: { command: ls() } });
+        const read = await run.feed({ do: 'call', tool: 'read_file', parameters: { path: `src/${run.words(1)}.rs` } });
+        await run.feed({ do: 'result', call: read.call, tool: 'read_file', output: '1 | fn main() {}\n2 | }' });
+        await run.settle(null);
+        const below = await run.evaluate(`(() => {
+          const line = [...document.querySelectorAll('#rows .call-line')].filter((line) => /\\.rs/.test(line.textContent)).pop();
+          if (!line) return null;
+          const r = line.getBoundingClientRect();
+          return [r.left + 30, r.top + r.height / 2];
+        })()`);
+        if (!below) return 'no row below the running call';
+        await run.click(below[0], below[1]);
+        await run.settle(null);
+        // (The row the reader opened, by its key.)
+        const readOpen = `(() => {
+          const line = [...document.querySelectorAll('#rows .call-line')].filter((line) => /\\.rs/.test(line.textContent)).pop();
+          return !!line && !!line.closest('details[open]');
+        })()`;
+        if (!(await run.evaluate(readOpen))) return "the row below didn't open";
+        const before = await run.look();
+        await run.feed({ do: 'result', call, tool: 'shell', output: 'exit code 0, 0.1 s\na.rs' });
+        await run.settle('call → its result');
+        const after = await run.look();
+        if (!(await run.evaluate(readOpen))) return 'the row below closed as the call ended';
+        for (const [id, line] of before.ids) {
+          const now = after.ids.get(id);
+          if (now && now.text === line.text && Math.round(now.raw - line.raw) > 0) return `${id} went ${Math.round(now.raw - line.raw)} device px down`;
+        }
+        return null;
+      }, view);
+    }
+    // A long command's details show the whole command once: in Full, where
+    // a command is open from the start, and in a merged Quiet row whose
+    // member the reader opens.
+    for (const view of ['full', 'quiet']) {
+      await play(ratio, `touch: a long command's details show the command once (${view})`, async (run) => {
+        await run.metrics(390, 844);
+        await run.fill(4);
+        await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+        const first = await run.feed({ do: 'call', tool: 'shell', parameters: { command: `ls ${run.words(2).split(' ').join('/')}` } });
+        await run.feed({ do: 'result', call: first.call, tool: 'shell', output: 'exit code 0, 0.1 s\na.rs' });
+        const long = await run.feed({ do: 'call', tool: 'shell', parameters: { command: LONG_COMMAND } });
+        await run.feed({ do: 'result', call: long.call, tool: 'shell', output: 'exit code 0, 9.0 s\nok' });
+        await run.settle(null);
+        const click = async (selector) => {
+          const at = await run.evaluate(`(() => { const all = [...document.querySelectorAll(${JSON.stringify(selector)})]; const el = all[all.length - 1]; if (!el) return null; const r = el.getBoundingClientRect(); return [r.left + 30, r.top + r.height / 2]; })()`);
+          if (!at) return false;
+          await run.click(at[0], at[1]);
+          await run.settle(null);
+          return true;
+        };
+        if (view === 'quiet') {
+          if (!(await click('#rows .row.quiet summary'))) return 'no Quiet row';
+          if (!(await click('#rows .member-line'))) return 'no member line in the open row';
+        }
+        const copies = await run.evaluate(`[...document.querySelectorAll('#rows .held')].filter((held) => held.textContent.includes('databaseId,headSha')).length`);
+        return copies === 1 ? null : `the whole command shows ${copies} times`;
+      }, view);
+    }
+    // The composer stands where the next item of the last one's kind would,
+    // em box to em box (a line box less its half-leading): the gap under the
+    // last item, to the composer's divider, is the gap between two items of
+    // its kind, by their margins and line metrics, and the gap two such rows
+    // on the screen have. For a call that runs and ends, "Working…", text as
+    // it streams and the turn's line, and again after a fold above opens and
+    // closes.
+    for (const view of ['quiet', 'full', 'messages']) {
+      await play(ratio, `touch: the composer stands where the next item of the last one's kind would (${view})`, async (run) => {
+        await run.metrics(390, 844);
+        await run.fill(8);
+        const problems = [];
+        let at = 0;
+        const check = async (what) => {
+          await run.settle(null);
+          // (End first, as blank an end that got shorter left (rule 1) is
+          // not the gap.)
+          await run.press('End', 'End', (at += 100), 35);
+          const gap = await run.evaluate(LAST_GAP);
+          if (!gap) return problems.push(`${what}: nothing to measure`);
+          const device = (px) => Math.round(px * gap.dpr);
+          if (device(gap.under) !== device(gap.standard)) problems.push(`${what}: ${gap.kind} has ${gap.under} px under it to the composer, and two of its kind ${gap.standard}`);
+          if (gap.pair !== null && device(gap.pair) !== device(gap.standard)) problems.push(`${what}: two ${gap.kind} rows on the screen are ${gap.pair} px apart, not ${gap.standard}`);
+          return null;
+        };
+        await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
+        await check('"Working…"');
+        await run.feed({ do: 'text', text: `${run.some(8, 4)}.` });
+        await check('text as it streams');
+        const read = await run.feed({ do: 'call', tool: 'read_file', parameters: { path: `src/${run.words(1)}.rs` } });
+        await check('a call that runs');
+        await run.feed({ do: 'result', call: read.call, tool: 'read_file', output: '1 | fn main() {}' });
+        await check('"Working…" after a call');
+        // A note waiting at the end, the user's message, whose top margin
+        // (24 px) is more than its bottom one (12 px).
+        await run.feed({ do: 'note', text: `And ${run.words(3)}`, seq: 1 });
+        await check('a note waiting at the end');
+        await run.feed({ do: 'read', seq: 1 });
+        const ls = await run.feed({ do: 'call', tool: 'shell', parameters: { command: `ls ${run.words(2).split(' ').join('/')}` } });
+        await check('a second call that runs');
+        // (A fold above, opened and closed, changes nothing at the end.)
+        const fold = await run.evaluate(`(() => {
+          const line = [...document.querySelectorAll('#rows .call-line')].find((line) => /\\.rs/.test(line.textContent));
+          if (!line) return null;
+          const r = line.getBoundingClientRect();
+          return [r.left + 30, r.top + r.height / 2];
+        })()`);
+        if (fold) {
+          await run.click(fold[0], fold[1]);
+          await run.settle(null);
+          await run.click(fold[0], fold[1]);
+          await check('a call that runs, after a fold above opened and closed');
+        }
+        await run.feed({ do: 'result', call: ls.call, tool: 'shell', output: 'exit code 0, 0.1 s\na.rs' });
+        await check('"Working…" after two calls');
+        await run.feed({ do: 'text', text: `${run.some(8, 4)}.` });
+        await check('the reply');
+        await run.feed({ do: 'end' });
+        await check('the turn line');
+        // A read last, its content closed (Full keeps it in the column,
+        // hidden), as a worker that finished leaves it.
+        const last = await run.feed({ do: 'call', tool: 'read_file', parameters: { path: `src/${run.words(1)}.rs` } });
+        await run.feed({ do: 'result', call: last.call, tool: 'read_file', output: '1 | fn main() {}' });
+        await check('a read with its content closed');
+        return problems[0] ?? null;
       }, view);
     }
     await play(ratio, 'touch: a finger lifted without a drag catches up to the end', async (run) => {
@@ -2454,7 +2827,7 @@ async function main() {
     agent.close();
     browser.close();
   }
-  const tables = `${meter.frames()} frames, ${meter.shifted()} moved a line, ${meter.tripsFailed()} round trips left a line elsewhere. Each cell is frames · frames that moved a line · the most device pixels / all device pixels.\n\n${meter.table()}\n${meter.sizeTable()}\n${meter.causeTable()}\nThe moves the meter allows. Each cell is frames · the most device pixels / all device pixels.\n\n${meter.allowedTable()}\nPanels, the message box and the window, opened and closed with nothing between. Each cell is round trips · those that left a line elsewhere · the most device pixels.\n\n${meter.tripTable()}`;
+  const tables = `${meter.frames()} frames, ${meter.shifted()} moved a line, ${meter.tripsFailed()} round trips left a line elsewhere. Each cell is frames · frames that moved a line · the most device pixels / all device pixels.\n\n${meter.table()}\n${meter.sizeTable()}\n${meter.causeTable()}\nThe moves the meter allows. Each cell is frames · the most device pixels / all device pixels.\n\n${meter.allowedTable()}\nPanels, the message box and the window, opened and closed with nothing between. Each cell is round trips · those that left a line elsewhere · the most device pixels.\n\n${meter.tripTable()}\nBlank that came below the end while following, by step (rule 1). Each cell is frames · the most device pixels / all device pixels.\n\n${meter.blankTable()}`;
   if (OUT) writeFileSync(OUT, `${tables}\n## The largest move of each cause, step and view\n\n${meter.exampleText()}`);
   console.log(tables);
   if (caseCount) console.log(`${caseCount} pixel cases, ${failures.filter((failure) => failure.startsWith('pixel case')).length} failed.`);

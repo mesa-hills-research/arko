@@ -93,6 +93,20 @@
 - A session saved before the way to OpenAI could be chosen goes on over the ChatGPT login it used,
   and its workers go by that login. A Sol worker in one handed over at 200k.
 
+### The web page
+
+- A call that runs leaves no blank under it. The hidden "Working…" line under a running call
+  carried the call's whole command and wrapped on a phone, up to half the screen, and that blank
+  stayed once the call ended. The live line is one line now, a call that runs on the last row is
+  the live line itself, and text that streams has nothing under it until it pauses.
+- Rows that come below a call that still runs, such as the lead's message to a worker, put the
+  line "Running cargo test…" at the end, in the terminal too, so the end says the agent works.
+- The message box stands where the next item would, so the last item has as much space under it
+  as two items of its kind have between them.
+- With an iPhone's keyboard up, the page takes the height of what shows above the keyboard, so a
+  scroll over the message box no longer shows an empty band under it.
+- A running command's details in Full show the command once.
+
 ## 0.23.1 (2026-11-18)
 
 ### The transcript
