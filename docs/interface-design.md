@@ -138,38 +138,54 @@ of single lines under it.
 - Exactly one line is live. While the agent waits on its model it is "Working…". While it thinks it
   is the thought itself, whose words grow in place. While a call runs, its row says so with its
   timer, and there is no Working line beside it. The spinner turns in the marker column.
-- Lines of work stack. A gap stands between what is said and the work, and after anything open,
-  also on a rail, and gaps never add up. The gap comes only below what is open, so opening or
-  closing a fold leaves every line above it where it was, in all three interfaces. The item and
-  what follows it grow downward, as a file tree does, and so does what opens by itself (a command's
-  output in the Full view, a thought shown whole as it streams). In the terminal the gap is one
-  blank line. On the page work stacks 4 px apart, what is said stands 12 px apart, anything open
-  has 12 px below it, the user's message is 24 px below what's above it, and an open thought's
-  paragraphs are 8 px apart. A rail never starts or ends with a gap. The line the reader opened
-  stays where it is on screen. A command that ends with nothing to show, or a thought that ends on
-  its one line, stacks again, and the gap below it goes.
-- Working… has as much space below it as above. In the terminal it has no blank row among the
-  agent's calls, and one on each side after what was said, after anything open, or below a message
-  waiting to be read. Such a message waits under the agent's output with a blank row above it and
-  one below it, and Working… stands below it, so the message keeps its row as Working… comes and
-  goes and as the agent reads it. The page keeps the line's room at the end, below the messages
-  waiting, while a call or a thinking shows that the agent works.
+- The space between rows comes from one table, `src/remote/spacing.rs`, which the terminal and
+  the page read. A row's class is what it draws (the user's message, what is said, a
+  worker's card, a line of work, an open line, what an open line holds, the line after a turn), and
+  the step above it comes from the row above. Lines of work stack. What is said and cards stand
+  apart from their neighbours, and so does what follows anything open, also on a rail. An exchange
+  starts with the user's message and ends with the line after a turn, so a turn stands before the
+  one and after the other. Opening a row never changes
+  the space above it, so opening or closing a fold leaves every line above it where it was, in all
+  three interfaces. The item and what follows it grow downward, as a file tree does, and so does
+  what opens by itself (a command's output in the Full view, a thought shown whole as it streams).
+  A rail never starts or ends with a gap. The line the reader opened stays where it is on screen.
+  A command that ends with nothing to show, or a thought that ends on its one line, stacks again,
+  and the gap below it goes.
+- Each surface sizes the steps. On the page stack is 4 px, apart 12 px and turn 24 px, between
+  line boxes and the edges of what is drawn, one margin above each row and none that collapse. In
+  the terminal stack is no blank row, and apart and turn are one each, since the user's bar sets an
+  exchange apart.
+- The header and the message box stand where a row of their neighbour's kind would. Under the last
+  row there's the gap one more row of its kind would have, and above the first the gap a row of
+  its kind would have above it, em box to em box on the page (a line's half-leading added, none
+  where the edge is drawn). The terminal draws nothing above its first row, so it starts at the
+  screen's top, and on a screen of one row that row shows text rather than the blank under it.
+- Working… is a line of work, so it runs on from a call, a notice or a worker's line, stands apart
+  from what was said, from anything open and from a message waiting to be read, and has a stack
+  below it before the message box (in the terminal no blank row before the status line). A message waiting to be read waits under the
+  agent's output, and Working… stands below it, so the message keeps its row as Working… comes and
+  goes and as the agent reads it.
+- A framed block (a bubble, a worker's card, a report, a question's record) holds what it says
+  12 px from its frame to the ink, top and bottom. Its first and last lines start at its padding,
+  em box to the frame, unless what is there is drawn (a code block, a table, a quote).
 - In the terminal and on the page the reader chooses to follow the end or to read, and only their
-  own way toward or away from the end changes that. A scroll up or Home that moves a line, or Ctrl+G's line going
-  above the screen, chooses to read, even with the end in sight, so what comes next doesn't move
-  the lines they went back to. A scroll down that reaches the end, End, Esc, the "↓ N new lines"
-  marker and sending a message choose to follow. A press holds the view while the button is down,
-  and a click, a fold, another view or losing the focus leaves the choice as it was. The view
-  follows when the reader chose to, nothing holds it and the end shows. Following, nothing above
-  moves down. When the end gets shorter (Working… giving way to a shorter row, a closing mark
-  re-wrapping a line, a fold closing), blank rows stand below it until more comes, and only End,
-  the marker, sending, another width or another view close them. A scroll down stops where the
-  end reaches the last row, so at the end it moves nothing. A panel below the transcript that
-  opens and closes again puts every line back on its row, and a taller window adds blank rows.
-  Reading, the row at the top keeps its text through streaming, folds elsewhere, another width and
-  another view, and output fills the blank rows. Once it passes the bottom row, the marker counts
-  the new rows below the last row. A fold opened or closed, with a click or a key, keeps its line
-  on its row, and a follower follows from there where the end shows. A plain click while output
+  own way toward or away from the end changes that. A scroll up or Home that moves a line, or
+  Ctrl+G's line going above the screen, chooses to read, even with the end in sight, so what comes
+  next doesn't move the lines they went back to. A scroll down that reaches the end, End, Esc, the
+  "↓ N new lines" marker and sending a message choose to follow. A press holds the view while the
+  button is down, and a click, a fold, another view or losing the focus leaves the choice as it was.
+  The view follows when the reader chose to, nothing holds it and the end shows. In the terminal
+  that is the end down to its blank row, and the marker goes by the end's last line, so a fold
+  opened at the end whose last line reaches the last row waits with no marker and the clicked line
+  on its row. Following, nothing above moves down. When the end gets shorter (Working… giving way to
+  a shorter row, a closing mark re-wrapping a line, a fold closing), blank rows stand below it until
+  more comes, and only End, the marker, sending, another width or another view close them. A scroll
+  down stops where the end reaches the last row, so at the end it moves nothing. A panel below the
+  transcript that opens and closes again puts every line back on its row, and a taller window adds
+  blank rows. Reading, the row at the top keeps its text through streaming, folds elsewhere, another
+  width and another view, and output fills the blank rows. Once it passes the bottom row, the marker
+  counts the new rows below the last row. A fold opened or closed, with a click or a key, keeps its
+  line on its row, and a follower follows from there where the end shows. A plain click while output
   takes a follower's end off the screen catches up to it. The page reads these rules in device
   pixels. It applies the wheel, a touchpad and the keys that scroll the transcript itself, in the
   frame they come, with no glide and no bounce at either end, and its marker counts lines of body
