@@ -8753,26 +8753,64 @@ pub(crate) mod tests {
         drop(answering.await.unwrap());
     }
 
+    /// The user's items of the transcript, by their ids, with how each went
+    /// and whether it waits.
+    fn users_said(feed: &remote::Feed) -> Vec<(u64, String, Option<Delivery>, bool)> {
+        feed.subscribe()
+            .0
+            .items
+            .into_iter()
+            .filter(|item| item.kind == remote::Kind::User)
+            .map(|item| (item.id, item.text, item.delivery, item.pending))
+            .collect()
+    }
+
+    /// Their texts, how each went and whether it waits.
+    fn texts_said(
+        said: &[(u64, String, Option<Delivery>, bool)],
+    ) -> Vec<(&str, Option<Delivery>, bool)> {
+        said.iter()
+            .map(|(_, text, delivery, pending)| (text.as_str(), *delivery, *pending))
+            .collect()
+    }
+
     /// A message typed while the request that asks is in flight waits, and
-    /// the answer typed once the question waits reaches the agent at once.
-    /// The transcript has them in the order they were sent, the message
-    /// read before the answer, and the agent's read of the message, which
-    /// comes with the answer, leaves its item as it is.
+    /// the wait that begins with it unread ends for it, so the agent reads
+    /// it at once and the question stays open. The answer the user then
+    /// sends with the question comes after the message, as they were sent,
+    /// and the agent goes on with it without asking again.
     #[tokio::test]
     async fn a_message_typed_before_the_agent_asks_comes_before_the_answer() {
         use crate::mock_model::{ModelServer, complete, tool_call};
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let given = Arc::new(AtomicBool::new(false));
-        let asking = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
+        let bodies: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let (asking, release) = (
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        let (read, answered) = (
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+        );
         let server = ModelServer::start(Arc::new({
-            let (given, asking, release) = (given.clone(), asking.clone(), release.clone());
+            let (bodies, asking, release) = (bodies.clone(), asking.clone(), release.clone());
+            let (read, answered) = (read.clone(), answered.clone());
             move |_, body: String| {
-                let (given, asking, release) = (given.clone(), asking.clone(), release.clone());
+                bodies.lock().unwrap().push(body.clone());
+                let (asking, release) = (asking.clone(), release.clone());
+                let (read, answered) = (read.clone(), answered.clone());
                 Box::pin(async move {
                     if body.contains("Two spaces, please.") {
-                        given.store(body.contains("Also check the docs."), Ordering::SeqCst);
-                        complete("m2", "Indented with two spaces.")
+                        complete("m3", "Indented with two spaces.")
+                    } else if body.contains("Also check the docs.") {
+                        // (The wait ended for the message. The answer comes
+                        // while the agent goes on.)
+                        read.notify_one();
+                        answered.notified().await;
+                        tool_call(
+                            "m2",
+                            crate::message::MESSAGE_USER,
+                            serde_json::json!({"message": "Checking the docs."}),
+                        )
                     } else {
                         // (The message comes while this request is in flight.)
                         asking.notify_one();
@@ -8780,7 +8818,7 @@ pub(crate) mod tests {
                         tool_call(
                             "m1",
                             ASK_USER_TOOL_NAME,
-                            serde_json::json!({"questions": "Tabs or spaces?", "wait": true}),
+                            serde_json::json!({"questions": ["Tabs or spaces?"], "wait": true}),
                         )
                     }
                 })
@@ -8789,58 +8827,145 @@ pub(crate) mod tests {
         .await;
         let temp = tempfile::tempdir().unwrap();
         let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        // (As the full-screen view runs it, where a line is the message box's.)
+        harness.output.to_feed(harness.feed.clone());
         let feed = harness.feed.clone();
-        let said = |feed: &crate::remote::Feed| -> Vec<(u64, String, Option<Delivery>, bool)> {
-            feed.subscribe()
-                .0
-                .items
-                .into_iter()
-                .filter(|item| item.kind == crate::remote::Kind::User)
-                .map(|item| (item.id, item.text, item.delivery, item.pending))
-                .collect()
-        };
-        async fn until(done: impl Fn() -> bool) {
-            while !done() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }
         let typing = tokio::spawn(async move {
             asking.notified().await;
             sender
                 .send(Input::Line("Also check the docs.".into()))
                 .unwrap();
-            until(|| said(&feed).iter().any(|(_, _, _, pending)| *pending)).await;
+            until(|| users_said(&feed).iter().any(|(_, _, _, pending)| *pending)).await;
             release.notify_one();
-            until(|| feed.open_questions().iter().any(|question| question.waits)).await;
+            read.notified().await;
+            until(|| users_said(&feed).iter().all(|(_, _, _, pending)| !pending)).await;
+            let read = users_said(&feed);
             sender
-                .send(Input::Line("Two spaces, please.".into()))
+                .send(Input::Message(crate::ui::Message {
+                    text: "Two spaces, please.".into(),
+                    answers: vec!["q1".into()],
+                    ..Default::default()
+                }))
                 .unwrap();
-            until(|| said(&feed).len() == 2).await;
-            (sender, said(&feed))
+            until(|| users_said(&feed).len() == 2).await;
+            let sent = users_said(&feed);
+            answered.notify_one();
+            (sender, read, sent)
         });
         let end = tokio::time::timeout(
             Duration::from_secs(30),
             harness.turn(Prompt::User("Indent the file.".into()), &mut inputs),
         )
         .await
-        .unwrap();
-        let (_sender, answered) = typing.await.unwrap();
+        .expect("the agent went on with the message and the answer");
+        let (_sender, read, sent) = typing.await.unwrap();
         assert!(matches!(end, TurnEnd::Answered));
         assert_eq!(summary(&harness), "Indented with two spaces.");
-        assert!(given.load(Ordering::SeqCst), "the agent read the message");
-        let shown: Vec<(String, Option<Delivery>, bool)> = answered
-            .iter()
-            .map(|(_, text, delivery, pending)| (text.clone(), *delivery, *pending))
-            .collect();
+        // The message was read, as the wait ended, before the answer went.
         assert_eq!(
-            shown,
+            texts_said(&read),
+            [("Also check the docs.", Some(Delivery::Note), false)]
+        );
+        let bodies = bodies.lock().unwrap().clone();
+        assert_eq!(bodies.len(), 3, "no new ask");
+        assert!(
+            bodies[1].contains(crate::questions::WAIT_MESSAGE),
+            "{}",
+            bodies[1]
+        );
+        assert_eq!(question_cards(&harness), 1);
+        // The answer after it, as they were sent, and the same items after
+        // the agent's read of the answer.
+        assert_eq!(sent[..1], read[..]);
+        assert_eq!(
+            texts_said(&sent)[1],
+            ("Two spaces, please.", Some(Delivery::Note), false)
+        );
+        assert_eq!(users_said(&harness.feed), sent);
+    }
+
+    /// An answer the user sends with a question the agent asked without
+    /// waiting, while a message they typed before it waits, comes after
+    /// that message, which is read with it. Both reach the agent at its next
+    /// step, and its read of the message then moves nothing.
+    #[tokio::test]
+    async fn an_answer_sent_while_a_message_waits_comes_after_it() {
+        use crate::mock_model::{ModelServer, complete, tool_call};
+        let bodies: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let (working, release) = (
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        let server = ModelServer::start(Arc::new({
+            let (bodies, working, release) = (bodies.clone(), working.clone(), release.clone());
+            move |_, body: String| {
+                bodies.lock().unwrap().push(body.clone());
+                let (working, release) = (working.clone(), release.clone());
+                Box::pin(async move {
+                    if body.contains("Two spaces, please.") {
+                        complete("m3", "Indented with two spaces.")
+                    } else if body.contains("Asked q1.") {
+                        // (Both come while the agent works on.)
+                        working.notify_one();
+                        release.notified().await;
+                        tool_call(
+                            "m2",
+                            crate::message::MESSAGE_USER,
+                            serde_json::json!({"message": "Still working."}),
+                        )
+                    } else {
+                        tool_call(
+                            "m1",
+                            ASK_USER_TOOL_NAME,
+                            serde_json::json!({"questions": ["Tabs or spaces?"], "wait": false}),
+                        )
+                    }
+                })
+            }
+        }))
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+        let (mut harness, mut inputs, sender) = harness(temp.path(), server.client(), true);
+        harness.output.to_feed(harness.feed.clone());
+        let feed = harness.feed.clone();
+        let typing = tokio::spawn(async move {
+            working.notified().await;
+            sender
+                .send(Input::Line("Also check the docs.".into()))
+                .unwrap();
+            until(|| users_said(&feed).iter().any(|(_, _, _, pending)| *pending)).await;
+            sender
+                .send(Input::Message(crate::ui::Message {
+                    text: "Two spaces, please.".into(),
+                    answers: vec!["q1".into()],
+                    ..Default::default()
+                }))
+                .unwrap();
+            until(|| users_said(&feed).len() == 2).await;
+            let sent = users_said(&feed);
+            release.notify_one();
+            (sender, sent)
+        });
+        let end = tokio::time::timeout(
+            Duration::from_secs(30),
+            harness.turn(Prompt::User("Indent the file.".into()), &mut inputs),
+        )
+        .await
+        .expect("the agent went on with the message and the answer");
+        let (_sender, sent) = typing.await.unwrap();
+        assert!(matches!(end, TurnEnd::Answered));
+        assert_eq!(summary(&harness), "Indented with two spaces.");
+        assert_eq!(
+            texts_said(&sent),
             [
-                ("Also check the docs.".into(), Some(Delivery::Note), false),
-                ("Two spaces, please.".into(), Some(Delivery::Answer), false),
+                ("Also check the docs.", Some(Delivery::Note), false),
+                ("Two spaces, please.", Some(Delivery::Note), false),
             ]
         );
+        let last = bodies.lock().unwrap().last().unwrap().clone();
+        assert!(last.contains("Also check the docs."), "{last}");
         // (The same items, by their ids, after the agent's read.)
-        assert_eq!(said(&harness.feed), answered);
+        assert_eq!(users_said(&harness.feed), sent);
     }
 
     /// The words sent with an approval's answer come after the message the
