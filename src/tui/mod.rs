@@ -1681,7 +1681,7 @@ mod tests {
                 .iter()
                 .map(|shown| shown.map_or(back.to_string(), set))
                 .collect();
-            let (mut stopped, mut continued) = (false, false);
+            let (mut stopped, mut halted, mut continued) = (false, false, false);
             let (shown, succeeded) = in_a_terminal(case, over_default, |shown, child| {
                 if case != "stop" || continued {
                     return;
@@ -1699,7 +1699,10 @@ mod tests {
                 // SAFETY: asks after the child this test started, without waiting.
                 let changed =
                     unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED | libc::WNOHANG) };
-                if changed == pid && libc::WIFSTOPPED(status) && shown[rung..].contains(back) {
+                // (waitpid tells of the stop once, which can be before the
+                // reset the child wrote first has been read.)
+                halted |= changed == pid && libc::WIFSTOPPED(status);
+                if halted && shown[rung..].contains(back) {
                     // SAFETY: a signal to the child this test started.
                     unsafe { libc::kill(pid, libc::SIGCONT) };
                     continued = true;
