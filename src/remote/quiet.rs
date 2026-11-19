@@ -1909,49 +1909,57 @@ mod tests {
             ..act(Edit, target)
         };
         let failed = |act: Act| Some((act, Failed));
-        // (made, the row's calls, files named, files not named)
-        let cases: [(
-            Option<usize>,
-            Vec<Option<(Act, CallStatus)>>,
-            &[&str],
-            &[&str],
-        ); 5] = [
-            (
-                Some(2),
-                vec![Some((two("a.rs"), Ok)), failed(two("a.rs"))],
-                &["a.rs"],
-                &[],
-            ),
-            (
-                Some(3),
-                vec![
+        /// A row's calls, the edits they made, and the files its words
+        /// name and don't.
+        struct Case {
+            calls: Vec<Option<(Act, CallStatus)>>,
+            made: Option<usize>,
+            named: &'static [&'static str],
+            unnamed: &'static [&'static str],
+        }
+        let cases = [
+            Case {
+                calls: vec![Some((two("a.rs"), Ok)), failed(two("a.rs"))],
+                made: Some(2),
+                named: &["a.rs"],
+                unnamed: &[],
+            },
+            Case {
+                calls: vec![
                     ok(Edit, "a.rs"),
                     failed(two("b.rs")),
                     Some((two("c.rs"), Ok)),
                 ],
-                &["a.rs", "c.rs"],
-                &["b.rs"],
-            ),
-            (
-                None,
-                vec![failed(two("a.rs")), failed(act(Edit, "a.rs"))],
-                &["a.rs"],
-                &[],
-            ),
-            (
-                None,
-                vec![failed(act(Edit, "a.rs")), failed(act(Edit, "b.rs"))],
-                &["a.rs", "b.rs"],
-                &[],
-            ),
-            (
-                None,
-                vec![ok(Read, "a.rs"), failed(two("a.rs"))],
-                &["a.rs"],
-                &[],
-            ),
+                made: Some(3),
+                named: &["a.rs", "c.rs"],
+                unnamed: &["b.rs"],
+            },
+            Case {
+                calls: vec![failed(two("a.rs")), failed(act(Edit, "a.rs"))],
+                made: None,
+                named: &["a.rs"],
+                unnamed: &[],
+            },
+            Case {
+                calls: vec![failed(act(Edit, "a.rs")), failed(act(Edit, "b.rs"))],
+                made: None,
+                named: &["a.rs", "b.rs"],
+                unnamed: &[],
+            },
+            Case {
+                calls: vec![ok(Read, "a.rs"), failed(two("a.rs"))],
+                made: None,
+                named: &["a.rs"],
+                unnamed: &[],
+            },
         ];
-        for (made, calls, named, unnamed) in cases {
+        for Case {
+            calls,
+            made,
+            named,
+            unnamed,
+        } in cases
+        {
             let steps: Vec<Step> = calls
                 .iter()
                 .enumerate()
