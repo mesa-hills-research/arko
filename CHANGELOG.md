@@ -60,7 +60,9 @@
   a margin of a few pixels around the cells (VTE, 8 px in Windows Terminal) in their own
   background. While Arko runs, the terminal's background is now the theme's (OSC 11), where the
   terminal reports its own. It follows a theme the picker previews or keeps, and the `terminal`
-  theme puts the terminal's own back, as quitting, a stop, a panic and a signal do.
+  theme puts the terminal's own back as it was at start, as quitting, a stop, a panic, a signal and
+  on Windows Ctrl+Break or closing the console do. A colour a shell's theme set over the profile's
+  stays set.
 - Ptyxis draws its own background behind the cells, so its margin keeps the profile's colour.
   `gsettings set org.gnome.Ptyxis disable-padding true` takes the margin away.
 

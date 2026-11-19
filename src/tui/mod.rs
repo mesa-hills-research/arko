@@ -401,22 +401,38 @@ pub(crate) fn take_terminal() -> termelon::Result<impl Sized> {
     Ok(terminal)
 }
 
-/// What the terminals of tests answer the view's questions with. The kitty
-/// keyboard protocol, a background of #300a24, and the device's attributes,
-/// which end the questions.
+/// What a test's terminal answers the view's question number `asked` with.
+/// Its background is #300a24, its default, or set over a black default with
+/// `over_default`. The first question is the one at open (the kitty keyboard
+/// protocol, the background and the device's attributes, which end each
+/// question). The next is the first background's, the background after a
+/// reset.
 #[cfg(all(test, target_os = "linux"))]
-pub(crate) const TERMINAL_ANSWERS: &str = "\x1b[?1u\x1b]11;rgb:3030/0a0a/2424\x1b\\\x1b[?62c";
+pub(crate) fn terminal_answer(asked: usize, over_default: bool) -> &'static str {
+    match (asked, over_default) {
+        (0, _) => "\x1b[?1u\x1b]11;rgb:3030/0a0a/2424\x1b\\\x1b[?62c",
+        (_, false) => "\x1b]11;rgb:3030/0a0a/2424\x1b\\\x1b[?62c",
+        (_, true) => "\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[?62c",
+    }
+}
 
-/// What puts back the background of a terminal that answers as
-/// [`TERMINAL_ANSWERS`] do, the colour it said, then its default.
+/// What puts the background of a terminal that answers as
+/// [`terminal_answer`] does back as it was. Set over the default, it's set
+/// again. The default takes the colour the terminal said, then OSC 111.
 #[cfg(all(test, target_os = "linux"))]
-pub(crate) const BACKGROUND_BACK: &str = "\x1b]11;rgb:30/0a/24\x1b\\\x1b]111\x1b\\";
+pub(crate) fn background_back(over_default: bool) -> &'static str {
+    if over_default {
+        "\x1b]11;rgb:30/0a/24\x1b\\"
+    } else {
+        "\x1b]11;rgb:30/0a/24\x1b\\\x1b]111\x1b\\"
+    }
+}
 
-/// What giving the terminal back undoes, and its sequence, for tests.
+/// What giving the terminal back undoes, and its sequence, for tests. The
+/// background is [`background_back`].
 #[cfg(all(test, target_os = "linux"))]
-pub(crate) const UNDONE: [(&str, &str); 13] = [
+pub(crate) const UNDONE: [(&str, &str); 12] = [
     ("synchronized update", "\x1b[?2026l"),
-    ("the terminal's background", BACKGROUND_BACK),
     ("keyboard protocol", "\x1b[<1u"),
     ("bracketed paste", "\x1b[?2004l"),
     ("focus reports", "\x1b[?1004l"),
@@ -1503,12 +1519,14 @@ mod tests {
     }
 
     /// Runs [`follow_the_themes`] for `case` in a terminal of its own that
-    /// answers as [`TERMINAL_ANSWERS`] do, and calls `step` with what it
-    /// wrote so far and its process at each turn, until it ends. Returns what
-    /// it wrote, and whether it succeeded.
+    /// answers as [`terminal_answer`] does, its background set over the
+    /// default with `over_default`, and calls `step` with what it wrote so
+    /// far and its process at each turn, until it ends. Returns what it wrote,
+    /// and whether it succeeded.
     #[cfg(target_os = "linux")]
     fn in_a_terminal(
         case: &str,
+        over_default: bool,
         mut step: impl FnMut(&str, &std::process::Child),
     ) -> (String, bool) {
         use std::io::{Read, Write};
@@ -1570,7 +1588,7 @@ mod tests {
         );
         let started = std::time::Instant::now();
         let mut output = Vec::new();
-        let (mut answered, mut ended) = (false, None);
+        let (mut answered, mut ended) = (0, None);
         let mut quiet_since = std::time::Instant::now();
         loop {
             let shown = String::from_utf8_lossy(&output).into_owned();
@@ -1591,9 +1609,11 @@ mod tests {
                     quiet_since = std::time::Instant::now();
                 }
             }
-            if !answered && shown.contains("\x1b[c") {
-                master.write_all(TERMINAL_ANSWERS.as_bytes()).unwrap();
-                answered = true;
+            // (Each question ends with the device's attributes.)
+            while answered < shown.matches("\x1b[c").count() {
+                let answer = terminal_answer(answered, over_default);
+                master.write_all(answer.as_bytes()).unwrap();
+                answered += 1;
             }
             step(&shown, &child.0);
             if ended.is_none() {
@@ -1618,7 +1638,9 @@ mod tests {
     /// default at start, one the picker previews, the default as Esc cancels
     /// it, the terminal's own for `terminal`, then the default, and it goes
     /// back to the terminal's own when the view closes, breaks, and stops
-    /// (where it's the theme's again once the view runs again).
+    /// (where it's the theme's again once the view runs again). The terminal's
+    /// own is as it was at open, its default, or a colour set over it, which
+    /// stays set.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_terminals_background_follows_the_theme() {
@@ -1650,13 +1672,17 @@ mod tests {
         let default = shows[0].unwrap();
         assert!(shows[1].is_some_and(|previewed| previewed != default));
         assert_eq!(shows[2..], [Some(default), None, Some(default)]);
-        let changes: Vec<String> = shows
-            .iter()
-            .map(|shown| shown.map_or(BACKGROUND_BACK.to_string(), set))
-            .collect();
-        for case in ["close", "panic", "stop"] {
+        let cases = ["close", "panic", "stop"]
+            .into_iter()
+            .flat_map(|case| [(case, false), (case, true)]);
+        for (case, over_default) in cases {
+            let back = background_back(over_default);
+            let changes: Vec<String> = shows
+                .iter()
+                .map(|shown| shown.map_or(back.to_string(), set))
+                .collect();
             let (mut stopped, mut continued) = (false, false);
-            let (shown, succeeded) = in_a_terminal(case, |shown, child| {
+            let (shown, succeeded) = in_a_terminal(case, over_default, |shown, child| {
                 if case != "stop" || continued {
                     return;
                 }
@@ -1673,32 +1699,30 @@ mod tests {
                 // SAFETY: asks after the child this test started, without waiting.
                 let changed =
                     unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED | libc::WNOHANG) };
-                if changed == pid
-                    && libc::WIFSTOPPED(status)
-                    && shown[rung..].contains(BACKGROUND_BACK)
-                {
+                if changed == pid && libc::WIFSTOPPED(status) && shown[rung..].contains(back) {
                     // SAFETY: a signal to the child this test started.
                     unsafe { libc::kill(pid, libc::SIGCONT) };
                     continued = true;
                 }
             });
+            let case = format!("{case}, over the default {over_default}");
             assert!(succeeded, "{case}: {shown:?}");
             let mut at = 0;
             for change in &changes {
                 at = after(&shown, at, change) + change.len();
             }
-            if case == "stop" {
+            if case.starts_with("stop") {
                 let rung = after(&shown, at, "\x07");
-                let stopped = after(&shown, rung, BACKGROUND_BACK);
+                let stopped = after(&shown, rung, back);
                 at = after(&shown, stopped, &set(default));
             }
-            // It went back last, and nothing set it after.
-            let back = after(&shown, at, BACKGROUND_BACK);
-            let last = shown.rfind(BACKGROUND_BACK).unwrap();
-            let rest = &shown[last + BACKGROUND_BACK.len()..];
-            assert!(!rest.contains("\x1b]11;"), "{case}: {rest:?}");
-            if case == "panic" {
-                after(&shown, back, "the view broke");
+            // It went back last, and nothing set or reset it after.
+            let went_back = after(&shown, at, back);
+            let last = shown.rfind(back).unwrap();
+            let rest = &shown[last + back.len()..];
+            assert!(!rest.contains("\x1b]11"), "{case}: {rest:?}");
+            if case.starts_with("panic") {
+                after(&shown, went_back, "the view broke");
             }
         }
     }

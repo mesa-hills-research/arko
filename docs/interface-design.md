@@ -247,8 +247,9 @@ A theme paints every cell of the terminal, and the terminal's own background is 
 (OSC 11) while the view runs, so the margin most terminals keep around the cells (a few pixels in
 VTE, 8 in Windows Terminal) shows no frame of the profile's color. That's only where the terminal
 reports its background (OSC 11), so not in the classic Windows console, tmux or GNU screen. Arko
-puts the terminal's own back when it quits, stops, breaks or gets a signal, and for the `terminal`
-theme. After `kill -9`, `printf '\e]111\a'` puts it back. Ptyxis takes the color but draws its own
+puts the terminal's own back as it was at start when it quits, stops, breaks or gets a signal, on
+Windows also at Ctrl+Break or when the console closes, and for the `terminal` theme. A color a
+shell's theme set over the profile's stays set. After `kill -9`, `printf '\e]111\a'` puts it back. Ptyxis takes the color but draws its own
 background behind the cells, so its margin keeps the profile's color.
 `gsettings set org.gnome.Ptyxis disable-padding true` takes the margin away.
 

@@ -808,26 +808,34 @@ mod tests {
 
     /// A process whose usual end gets stuck, because its runtime is frozen,
     /// still gives the terminal back after the grace, with all the
-    /// full-screen view did to it undone and its modes as they were. A frame
-    /// stopped inside an escape sequence, and keeps standard output's lock.
+    /// full-screen view did to it undone and its modes as they were, its
+    /// background too, whether it was the terminal's default or set over it.
+    /// A frame stopped inside an escape sequence, and keeps standard output's
+    /// lock.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_stuck_end_gives_the_terminal_back() {
         if std::env::var_os(STUCK).is_some() {
             be_stuck();
         }
-        let (output, code, before, after) = run_stuck();
-        let shown = String::from_utf8_lossy(&output).to_string();
-        assert_eq!(code, Some(128 + libc::SIGTERM), "{shown:?}");
-        let stuck = shown.find(STUCK_NOW).expect("stuck") + STUCK_NOW.len();
-        let rest = &shown[stuck..];
-        assert!(rest.starts_with("\x1b[3"), "{rest:?}");
-        let reset = &rest[rest.find('\x18').expect("a CAN")..];
-        for (what, sequence) in tui::UNDONE {
-            assert!(reset.contains(sequence), "{what}: {reset:?}");
+        for over_default in [false, true] {
+            let (output, code, before, after) = run_stuck(over_default);
+            let shown = String::from_utf8_lossy(&output).to_string();
+            assert_eq!(code, Some(128 + libc::SIGTERM), "{shown:?}");
+            let stuck = shown.find(STUCK_NOW).expect("stuck") + STUCK_NOW.len();
+            let rest = &shown[stuck..];
+            assert!(rest.starts_with("\x1b[3"), "{rest:?}");
+            let reset = &rest[rest.find('\x18').expect("a CAN")..];
+            let background = tui::background_back(over_default);
+            let undone = tui::UNDONE.into_iter().chain([("background", background)]);
+            for (what, sequence) in undone {
+                assert!(reset.contains(sequence), "{what}: {reset:?}");
+            }
+            // (A colour set over the default stays set.)
+            assert_eq!(reset.contains("\x1b]111"), !over_default, "{reset:?}");
+            let modes = libc::ICANON | libc::ECHO | libc::ISIG;
+            assert_eq!(after & modes, before & modes, "the modes");
         }
-        let modes = libc::ICANON | libc::ECHO | libc::ISIG;
-        assert_eq!(after & modes, before & modes, "the modes");
     }
 
     /// Takes the terminal as the full-screen view does, and gets stuck
@@ -876,11 +884,12 @@ mod tests {
     }
 
     /// Runs [`be_stuck`] in a terminal of its own, answers its questions
-    /// about the keyboard and the device's attributes, and sends it SIGTERM
-    /// once it is stuck. Returns what it wrote, its exit code, and the
-    /// terminal's local modes before and after.
+    /// ([`tui::terminal_answer`], its background set over the default with
+    /// `over_default`), and sends it SIGTERM once it is stuck. Returns what
+    /// it wrote, its exit code, and the terminal's local modes before and
+    /// after.
     #[cfg(target_os = "linux")]
-    fn run_stuck() -> (Vec<u8>, Option<i32>, libc::tcflag_t, libc::tcflag_t) {
+    fn run_stuck(over_default: bool) -> (Vec<u8>, Option<i32>, libc::tcflag_t, libc::tcflag_t) {
         use std::io::{Read, Write};
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
         use std::os::unix::process::CommandExt;
@@ -949,7 +958,7 @@ mod tests {
         );
         let started = std::time::Instant::now();
         let mut output = Vec::new();
-        let (mut answered, mut signalled, mut ended) = (false, false, false);
+        let (mut answered, mut signalled, mut ended) = (0, false, false);
         let mut quiet_since = std::time::Instant::now();
         loop {
             assert!(
@@ -974,11 +983,11 @@ mod tests {
                 }
             }
             let shown = String::from_utf8_lossy(&output);
-            if !answered && shown.contains("\x1b[c") {
-                // The kitty keyboard protocol, the background, and the
-                // device's attributes, which end the questions.
-                master.write_all(tui::TERMINAL_ANSWERS.as_bytes()).unwrap();
-                answered = true;
+            // (Each question ends with the device's attributes.)
+            while answered < shown.matches("\x1b[c").count() {
+                let answer = tui::terminal_answer(answered, over_default);
+                master.write_all(answer.as_bytes()).unwrap();
+                answered += 1;
             }
             if !signalled && shown.contains(STUCK_NOW) {
                 // SAFETY: a signal to the child this test started.
