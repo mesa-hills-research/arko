@@ -205,6 +205,27 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
 /// deep indent leaves the line room on a phone.
 const HANG_MAX: usize = 16;
 
+/// A line of code `text`, painted as `html`, which goes on under its code
+/// at the code's own indent where it wraps, so it reads as one line. An
+/// indent that fits doesn't wrap, so the first line holds code.
+fn code_text(text: &str, html: String) -> impl IntoView {
+    let columns = content::indent(text);
+    let hang = columns.min(HANG_MAX);
+    let indent = &text[..text.len() - text.trim_start_matches([' ', '\t']).len()];
+    let (indent, html) = match html.strip_prefix(indent) {
+        Some(code) if (1..=HANG_MAX).contains(&columns) => {
+            (Some(indent.to_string()), code.to_string())
+        }
+        _ => (None, html),
+    };
+    view! {
+        <span class="text" style:padding-left=format!("{hang}ch") style:text-indent=format!("-{hang}ch")>
+            {indent.map(|indent| view! { <span class="indent">{indent}</span> })}
+            <span inner_html=html></span>
+        </span>
+    }
+}
+
 /// The lines of a content `text` of `kind`, their numbers as wide as
 /// `numbers` where its whole's widest number is known.
 fn lines_view(kind: ContentKind, text: &str, numbers: Option<usize>) -> AnyView {
@@ -235,31 +256,11 @@ fn lines_view(kind: ContentKind, text: &str, numbers: Option<usize>) -> AnyView 
                             html
                         });
                         let sign = diff.then(|| view! { <span class="sign">{mark.symbol().to_string()}</span> });
-                        // A line that wraps goes on under its code, at the
-                        // code's own indent, so it reads as one line. An
-                        // indent that fits doesn't wrap, so the first line
-                        // holds code.
-                        let columns = content::indent(text);
-                        let hang = columns.min(HANG_MAX);
-                        let indent = &text[..text.len() - text.trim_start_matches([' ', '\t']).len()];
-                        let (indent, html) = match html.strip_prefix(indent) {
-                            Some(code) if (1..=HANG_MAX).contains(&columns) => {
-                                (Some(indent.to_string()), code.to_string())
-                            }
-                            _ => (None, html),
-                        };
                         view! {
                             <div class=class>
                                 <span class="ln" style:min-width=format!("{width}ch")>{number.to_string()}</span>
                                 {sign}
-                                <span
-                                    class="text"
-                                    style:padding-left=format!("{hang}ch")
-                                    style:text-indent=format!("-{hang}ch")
-                                >
-                                    {indent.map(|indent| view! { <span class="indent">{indent}</span> })}
-                                    <span inner_html=html></span>
-                                </span>
+                                {code_text(text, html)}
                             </div>
                         }
                         .into_any()
@@ -282,7 +283,7 @@ fn lines_view(kind: ContentKind, text: &str, numbers: Option<usize>) -> AnyView 
                         markdown::escape(&mut html, line);
                         html
                     });
-                    view! { <div class="line"><span class="text" inner_html=html></span></div> }
+                    view! { <div class="line">{code_text(line, html)}</div> }
                 })
                 .collect_view();
             view! { <div class="held code source">{lines}</div> }.into_any()
