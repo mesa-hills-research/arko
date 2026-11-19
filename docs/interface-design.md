@@ -243,6 +243,15 @@ take the error and success colors faintly over the background, and the code's co
 until they read there. The `terminal` theme, which keeps the terminal's own colors, shows code in
 the text's color, and so does a terminal with 16 colors or `NO_COLOR` set.
 
+A theme paints every cell of the terminal, and the terminal's own background is set to the theme's
+(OSC 11) while the view runs, so the margin most terminals keep around the cells (a few pixels in
+VTE, 8 in Windows Terminal) shows no frame of the profile's color. That's only where the terminal
+reports its background (OSC 11), so not in the classic Windows console, tmux or GNU screen. Arko
+puts the terminal's own back when it quits, stops, breaks or gets a signal, and for the `terminal`
+theme. After `kill -9`, `printf '\e]111\a'` puts it back. Ptyxis takes the color but draws its own
+background behind the cells, so its margin keeps the profile's color.
+`gsettings set org.gnome.Ptyxis disable-padding true` takes the margin away.
+
 Every color on the page is one of these tokens. Something brought over from another interface or
 an earlier page keeps its shape but not its colors. It takes the token that means the same thing
 there, so it follows the chosen theme. The one fixed color is the white behind a QR code, which

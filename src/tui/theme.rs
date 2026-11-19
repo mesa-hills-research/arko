@@ -10,6 +10,12 @@
 //! the theme's own, with 256 the nearest of xterm's, and with fewer the
 //! `terminal` theme. The console's palette itself is never changed, because leaving
 //! the alternate screen brings its colours back.
+//!
+//! The terminal's own background is set to the theme's while the view runs
+//! ([`Theme::terminal_background`]), so the margin many terminals keep
+//! around the cells takes it too. That's only where the terminal said its
+//! own at start, and the view puts it back when it ends, also after a panic
+//! or a signal.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -613,6 +619,15 @@ impl Theme {
         self.background == Color::Reset
     }
 
+    /// What the terminal's own background is set to while this theme shows,
+    /// the theme's background as the terminal shows it, so the margin a
+    /// terminal keeps around its cells matches. `None` for `terminal`, which
+    /// keeps the terminal's.
+    pub fn terminal_background(&self) -> Option<termelon::caps::Rgb> {
+        let Rgb(r, g, b) = rgb(self.background)?;
+        Some(termelon::caps::Rgb::new(r, g, b))
+    }
+
     /// The screen, the theme's text on its background.
     pub fn base(&self) -> Style {
         Style::new().fg(self.text).bg(self.background)
@@ -849,6 +864,34 @@ mod tests {
         assert_eq!(Rgb(0xDE, 0xDE, 0xDE).xterm256(), 253);
         assert_eq!(Rgb(0x07, 0x7C, 0xFD).xterm256(), 33);
         assert_eq!(Rgb(0xF9, 0xF9, 0xF9).xterm256(), 231);
+    }
+
+    /// The terminal's own background takes the theme's as the terminal
+    /// shows it, and `terminal` keeps the terminal's.
+    #[test]
+    fn the_terminal_takes_the_themes_background() {
+        use termelon::caps::Rgb as Shown;
+        let catalog = Catalog::load(None);
+        let rgb = catalog.theme(DEFAULT, Depth::Rgb);
+        assert_eq!(
+            rgb.terminal_background(),
+            Some(Shown::new(0x13, 0x13, 0x13))
+        );
+        // (xterm's nearest to #131313 is the gray 233, #121212.)
+        let indexed = catalog.theme(DEFAULT, Depth::Ansi256);
+        assert_eq!(indexed.background, Color::Indexed(233));
+        assert_eq!(
+            indexed.terminal_background(),
+            Some(Shown::new(0x12, 0x12, 0x12))
+        );
+        assert_eq!(
+            catalog.theme(TERMINAL, Depth::Rgb).terminal_background(),
+            None
+        );
+        assert_eq!(
+            catalog.theme(DEFAULT, Depth::Ansi16).terminal_background(),
+            None
+        );
     }
 
     /// The highlight blends dim text into the text's colour in 24-bit and

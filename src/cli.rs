@@ -975,9 +975,9 @@ mod tests {
             }
             let shown = String::from_utf8_lossy(&output);
             if !answered && shown.contains("\x1b[c") {
-                // The kitty keyboard protocol, and the device's attributes,
-                // which end the questions.
-                master.write_all(b"\x1b[?1u\x1b[?62c").unwrap();
+                // The kitty keyboard protocol, the background, and the
+                // device's attributes, which end the questions.
+                master.write_all(tui::TERMINAL_ANSWERS.as_bytes()).unwrap();
                 answered = true;
             }
             if !signalled && shown.contains(STUCK_NOW) {

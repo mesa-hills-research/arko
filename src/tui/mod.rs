@@ -384,16 +384,32 @@ pub(crate) fn give_back_terminal_at_once(wait: Duration) {
     }
 }
 
-/// Takes the terminal as the view does, for a test of how it's given back.
+/// Takes the terminal as the view does, its background the default theme's,
+/// for a test of how it's given back.
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) fn take_terminal() -> termelon::Result<impl Sized> {
-    open()
+    let mut terminal = open()?;
+    let shown = theme::Catalog::load(None).theme(theme::DEFAULT, theme::Depth::Rgb);
+    terminal.set_background(shown.terminal_background())?;
+    Ok(terminal)
 }
+
+/// What the terminals of tests answer the view's questions with. The kitty
+/// keyboard protocol, a background of #300a24, and the device's attributes,
+/// which end the questions.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) const TERMINAL_ANSWERS: &str = "\x1b[?1u\x1b]11;rgb:3030/0a0a/2424\x1b\\\x1b[?62c";
+
+/// What puts back the background of a terminal that answers as
+/// [`TERMINAL_ANSWERS`] do, the colour it said, then its default.
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) const BACKGROUND_BACK: &str = "\x1b]11;rgb:30/0a/24\x1b\\\x1b]111\x1b\\";
 
 /// What giving the terminal back undoes, and its sequence, for tests.
 #[cfg(all(test, target_os = "linux"))]
-pub(crate) const UNDONE: [(&str, &str); 12] = [
+pub(crate) const UNDONE: [(&str, &str); 13] = [
     ("synchronized update", "\x1b[?2026l"),
+    ("the terminal's background", BACKGROUND_BACK),
     ("keyboard protocol", "\x1b[<1u"),
     ("bracketed paste", "\x1b[?2004l"),
     ("focus reports", "\x1b[?1004l"),
@@ -999,8 +1015,12 @@ fn draw_when_written(terminal: &mut Terminal, app: &mut App, title: &mut String)
 
 /// A frame of `app`, as one update where the terminal can (synchronized
 /// output), so it doesn't flicker, unless the terminal hasn't taken the
-/// last one. Whether it was drawn.
+/// last one. Whether it was drawn. The terminal's own background takes the
+/// theme's first, so the margin around the cells matches (a theme that
+/// changed changes it, and `terminal` puts the terminal's back).
 fn draw(terminal: &mut Terminal, app: &mut App) -> bool {
+    // (A terminal that takes no more output ends the loop at its next turn.)
+    let _ = terminal.set_background(app.theme.terminal_background());
     match terminal.draw(|frame| screen::draw(frame, app)) {
         Ok(Drawn::Held) => false,
         // Kept for Ctrl+S, which saves the frame on the screen without drawing.
@@ -1371,5 +1391,308 @@ mod tests {
             }
         }
         assert_eq!(closed, Some(crate::Verdict::closed()));
+    }
+
+    /// The variable that makes [`the_terminals_background_follows_the_theme`]
+    /// the process that takes the terminal, with how it ends.
+    #[cfg(target_os = "linux")]
+    const FOLLOWING: &str = "ARKO_TEST_BACKGROUND";
+
+    /// The themes a user goes through, with `each` after each, as a frame:
+    /// the default, the one the picker previews, the default again as Esc
+    /// cancels the preview, `terminal`, and the default once more.
+    #[cfg(target_os = "linux")]
+    fn through_the_themes(app: &mut App, mut each: impl FnMut(&mut App)) {
+        let press = |app: &mut App, code| app.key(KeyEvent::new(code, KeyModifiers::NONE));
+        each(app);
+        app.editor.set("/settings");
+        press(app, KeyCode::Enter);
+        press(app, KeyCode::Down);
+        press(app, KeyCode::Enter);
+        // (The notice about flashing, the first time.)
+        press(app, KeyCode::Enter);
+        press(app, KeyCode::Down);
+        assert!(app.preview(Instant::now() + app::PREVIEW_REST));
+        each(app);
+        press(app, KeyCode::Esc);
+        each(app);
+        app.theme = app.catalog.theme(theme::TERMINAL, app.depth);
+        each(app);
+        app.theme = app.catalog.theme(theme::DEFAULT, app.depth);
+        each(app);
+    }
+
+    /// Waits until the terminal took everything sent so far.
+    #[cfg(target_os = "linux")]
+    fn written(terminal: &Terminal) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let wait =
+            async { tokio::time::timeout(Duration::from_secs(10), terminal.written()).await };
+        runtime.block_on(wait).unwrap();
+    }
+
+    /// Takes the terminal as the view does and goes through the themes with
+    /// a frame after each, then ends as `case` says. "close" closes as the
+    /// view does, "panic" breaks on the view's thread, and "stop" rings, then
+    /// waits for a stop from outside and the run after it, and closes.
+    #[cfg(target_os = "linux")]
+    fn follow_the_themes(case: &str) {
+        let mut terminal = open().unwrap();
+        let mut app = app::tests::app();
+        let view = move || {
+            through_the_themes(&mut app, |app| {
+                draw(&mut terminal, app);
+            });
+            written(&terminal);
+            (terminal, app)
+        };
+        match case {
+            "close" => {
+                let (terminal, _) = view();
+                terminal.close_with_tail(b"").unwrap();
+            }
+            "panic" => {
+                let breaks = std::thread::Builder::new()
+                    .name(THREAD.into())
+                    .spawn(move || {
+                        let _kept = view();
+                        panic!("the view broke");
+                    })
+                    .unwrap();
+                assert!(breaks.join().is_err());
+            }
+            "stop" => {
+                let (mut terminal, mut app) = view();
+                terminal.bell().unwrap();
+                loop {
+                    match terminal.events().next_timeout(Duration::from_secs(20)) {
+                        Ok(Some(Event::Resumed)) => break,
+                        Ok(Some(_)) => {}
+                        other => panic!("{other:?}"),
+                    }
+                }
+                draw(&mut terminal, &mut app);
+                written(&terminal);
+                terminal.close_with_tail(b"").unwrap();
+            }
+            _ => unreachable!("{case}"),
+        }
+    }
+
+    /// A child process, killed when dropped, so a test that fails leaves it
+    /// running no longer.
+    #[cfg(target_os = "linux")]
+    struct Killed(std::process::Child);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for Killed {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Runs [`follow_the_themes`] for `case` in a terminal of its own that
+    /// answers as [`TERMINAL_ANSWERS`] do, and calls `step` with what it
+    /// wrote so far and its process at each turn, until it ends. Returns what
+    /// it wrote, and whether it succeeded.
+    #[cfg(target_os = "linux")]
+    fn in_a_terminal(
+        case: &str,
+        mut step: impl FnMut(&str, &std::process::Child),
+    ) -> (String, bool) {
+        use std::io::{Read, Write};
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::os::unix::process::CommandExt;
+        let (mut master, slave) = {
+            let (mut master, mut slave) = (0, 0);
+            let size = libc::winsize {
+                ws_row: 24,
+                ws_col: 80,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            // SAFETY: two descriptors and a size for a new terminal.
+            let made = unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    &size,
+                )
+            };
+            assert_eq!(made, 0);
+            // SAFETY: the descriptors `openpty` just opened, owned here.
+            unsafe {
+                (
+                    std::fs::File::from(OwnedFd::from_raw_fd(master)),
+                    OwnedFd::from_raw_fd(slave),
+                )
+            }
+        };
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "tui::tests::the_terminals_background_follows_the_theme",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env_clear()
+            .env("TERM", "xterm-256color")
+            .env(FOLLOWING, case)
+            .stdin(slave.try_clone().unwrap())
+            .stdout(slave.try_clone().unwrap())
+            .stderr(slave.try_clone().unwrap());
+        // SAFETY: only calls that are safe between fork and exec.
+        let mut child = Killed(
+            unsafe {
+                command.pre_exec(|| {
+                    libc::setsid();
+                    libc::ioctl(0, libc::TIOCSCTTY, 0);
+                    Ok(())
+                })
+            }
+            .spawn()
+            .unwrap(),
+        );
+        let started = std::time::Instant::now();
+        let mut output = Vec::new();
+        let (mut answered, mut ended) = (false, None);
+        let mut quiet_since = std::time::Instant::now();
+        loop {
+            let shown = String::from_utf8_lossy(&output).into_owned();
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "{case}: {shown:?}"
+            );
+            let mut poll = libc::pollfd {
+                fd: master.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: one descriptor to wait on.
+            if unsafe { libc::poll(&mut poll, 1, 50) } > 0 {
+                let mut chunk = [0; 4096];
+                if let Ok(count @ 1..) = master.read(&mut chunk) {
+                    output.extend_from_slice(&chunk[..count]);
+                    quiet_since = std::time::Instant::now();
+                }
+            }
+            if !answered && shown.contains("\x1b[c") {
+                master.write_all(TERMINAL_ANSWERS.as_bytes()).unwrap();
+                answered = true;
+            }
+            step(&shown, &child.0);
+            if ended.is_none() {
+                ended = child.0.try_wait().unwrap();
+            }
+            if ended.is_some() && quiet_since.elapsed() > Duration::from_millis(300) {
+                break;
+            }
+        }
+        let shown = String::from_utf8_lossy(&output).into_owned();
+        (shown, ended.is_some_and(|status| status.success()))
+    }
+
+    /// Where `what` is in `shown` from `from` on, which it must be.
+    #[cfg(target_os = "linux")]
+    fn after(shown: &str, from: usize, what: &str) -> usize {
+        let found = shown[from..].find(what);
+        from + found.unwrap_or_else(|| panic!("{what:?} after {from} in {shown:?}"))
+    }
+
+    /// The terminal's own background follows the theme the view shows, the
+    /// default at start, one the picker previews, the default as Esc cancels
+    /// it, the terminal's own for `terminal`, then the default, and it goes
+    /// back to the terminal's own when the view closes, breaks, and stops
+    /// (where it's the theme's again once the view runs again).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_terminals_background_follows_the_theme() {
+        if let Ok(case) = std::env::var(FOLLOWING) {
+            // (The view's panic hook only logs this thread's panics, so the
+            // test that reads this terminal shows why it failed.)
+            if let Err(panic) = std::panic::catch_unwind(|| follow_the_themes(&case)) {
+                let why = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied());
+                use std::io::Write;
+                let _ = writeln!(std::io::stdout(), "{case} broke: {why:?}");
+                std::panic::resume_unwind(panic);
+            }
+            return;
+        }
+        let set = |rgb: termelon::caps::Rgb| {
+            format!(
+                "\x1b]11;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+                rgb.r, rgb.g, rgb.b
+            )
+        };
+        let mut shows = Vec::new();
+        through_the_themes(&mut app::tests::app(), |app| {
+            shows.push(app.theme.terminal_background());
+        });
+        shows.dedup();
+        let default = shows[0].unwrap();
+        assert!(shows[1].is_some_and(|previewed| previewed != default));
+        assert_eq!(shows[2..], [Some(default), None, Some(default)]);
+        let changes: Vec<String> = shows
+            .iter()
+            .map(|shown| shown.map_or(BACKGROUND_BACK.to_string(), set))
+            .collect();
+        for case in ["close", "panic", "stop"] {
+            let (mut stopped, mut continued) = (false, false);
+            let (shown, succeeded) = in_a_terminal(case, |shown, child| {
+                if case != "stop" || continued {
+                    return;
+                }
+                let Some(rung) = shown.rfind('\x07') else {
+                    return;
+                };
+                let pid = child.id() as i32;
+                if !stopped {
+                    // SAFETY: a signal to the child this test started.
+                    unsafe { libc::kill(pid, libc::SIGTSTP) };
+                    stopped = true;
+                }
+                let mut status = 0;
+                // SAFETY: asks after the child this test started, without waiting.
+                let changed =
+                    unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED | libc::WNOHANG) };
+                if changed == pid
+                    && libc::WIFSTOPPED(status)
+                    && shown[rung..].contains(BACKGROUND_BACK)
+                {
+                    // SAFETY: a signal to the child this test started.
+                    unsafe { libc::kill(pid, libc::SIGCONT) };
+                    continued = true;
+                }
+            });
+            assert!(succeeded, "{case}: {shown:?}");
+            let mut at = 0;
+            for change in &changes {
+                at = after(&shown, at, change) + change.len();
+            }
+            if case == "stop" {
+                let rung = after(&shown, at, "\x07");
+                let stopped = after(&shown, rung, BACKGROUND_BACK);
+                at = after(&shown, stopped, &set(default));
+            }
+            // It went back last, and nothing set it after.
+            let back = after(&shown, at, BACKGROUND_BACK);
+            let last = shown.rfind(BACKGROUND_BACK).unwrap();
+            let rest = &shown[last + BACKGROUND_BACK.len()..];
+            assert!(!rest.contains("\x1b]11;"), "{case}: {rest:?}");
+            if case == "panic" {
+                after(&shown, back, "the view broke");
+            }
+        }
     }
 }

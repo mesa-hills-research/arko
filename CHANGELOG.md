@@ -54,6 +54,16 @@
 - At the line prompt (`--repl`), which has no answer panel, the line typed after a question still
   answers it.
 
+### The full-screen view
+
+- No frame of the terminal profile's background shows around a theme any more. Many terminals keep
+  a margin of a few pixels around the cells (VTE, 8 px in Windows Terminal) in their own
+  background. While Arko runs, the terminal's background is now the theme's (OSC 11), where the
+  terminal reports its own. It follows a theme the picker previews or keeps, and the `terminal`
+  theme puts the terminal's own back, as quitting, a stop, a panic and a signal do.
+- Ptyxis draws its own background behind the cells, so its margin keeps the profile's colour.
+  `gsettings set org.gnome.Ptyxis disable-padding true` takes the margin away.
+
 ## 0.23.1 (2026-11-18)
 
 ### The transcript
