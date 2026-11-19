@@ -13,7 +13,8 @@ use crate::images::Thumbnails;
 use crate::layout::{self, Count, Row, View};
 use crate::markdown::{self, Blocks};
 use crate::protocol::{
-    ActKind, CallStatus, ContentKind, FileLine, ItemData, Kind, Level, Source, WorkerState,
+    ActKind, CallStatus, ContentKind, Delivery, FileLine, ItemData, Kind, Level, Source,
+    WorkerState,
 };
 use crate::shimmer::Shimmer;
 use crate::spinner::Spinner;
@@ -862,9 +863,16 @@ fn item_row(id: u64, key: String, cell: RowCell, thinking: Memo<Option<u64>>) ->
     let item = cell.data.get_untracked();
     let data = cell.data;
     let text = cell.text;
+    let row = NodeRef::<leptos::html::Div>::new();
+    // A note whose only tag says it waits ("pending") says so beside its
+    // bubble where there's room ([`beside_room`]).
+    let beside = RwSignal::new(false);
     let class = move || {
         data.with(|item| {
             let mut class = format!("row {}", kind_class(item.kind));
+            if beside.get() {
+                class.push_str(" beside");
+            }
             if let Some(level) = item.level {
                 class.push_str(match level {
                     Level::Warn => " level-warn",
@@ -917,6 +925,32 @@ fn item_row(id: u64, key: String, cell: RowCell, thinking: Memo<Option<u64>>) ->
                     None => now.map(|tags| view! { <span class="tag">{tags}</span> }.into_any()),
                 }
             };
+            // (Only "pending", which goes once the agent reads it, on words
+            // alone, since images and files take their room as they load.)
+            let lone = move || {
+                data.with(|item| {
+                    item.delivery == Some(Delivery::Note)
+                        && (item.pending || item.waited_as.is_some())
+                        && item.images.is_empty()
+                        && item.files.is_empty()
+                }) && tags_of(false).is_none()
+            };
+            // (Decided as soon as the row is in the page, before the frame
+            // that settles the view, which then lays out the end with the
+            // tag where it stands, so no blank is left under the end.)
+            Effect::new(move |_| {
+                page.width.track();
+                text.track();
+                let lone = lone();
+                let decide = move || {
+                    let room = row.get_untracked().is_some_and(|row| beside_room(&row));
+                    beside.set(lone && room);
+                };
+                match row.get_untracked().is_some_and(|row| row.is_connected()) {
+                    true => decide(),
+                    false => crate::frame::next_frame(decide),
+                }
+            });
             // Its images and files, then its words, and under it its tags
             // and Copy (when it has words).
             let worded = move || !text.with(|text| text.trim().is_empty());
@@ -1009,12 +1043,42 @@ fn item_row(id: u64, key: String, cell: RowCell, thinking: Memo<Option<u64>>) ->
         }
     });
     view! {
-        <div class=class data-id=id data-row=key title=title data-gap=spaced.gap() data-gap-open=spaced.gap_open() data-end=spaced.end() data-end-open=spaced.end_open()>
+        <div node_ref=row class=class data-id=id data-row=key title=title data-gap=spaced.gap() data-gap-open=spaced.gap_open() data-end=spaced.end() data-end-open=spaced.end_open()>
             {body}
             {more}
         </div>
     }
     .into_any()
+}
+
+/// Whether the user's message `row` has room left of its bubble for its
+/// tag, with its bubble as wide as its words want, unwrapped, and Copy
+/// beside it, so the tag can stand there whatever the bubble's state.
+fn beside_room(row: &web_sys::HtmlDivElement) -> bool {
+    use wasm_bindgen::JsCast;
+    let find = |selector: &str| {
+        row.query_selector(selector)
+            .ok()
+            .flatten()
+            .and_then(|found| found.dyn_into::<web_sys::HtmlElement>().ok())
+    };
+    let (Some(bubble), Some(tag)) = (find(":scope > .bubble"), find(":scope > .actions .tag"))
+    else {
+        return false;
+    };
+    // (Neither shrunk beside Copy nor held to its width as drawn.)
+    let style = bubble.style();
+    let _ = style.set_property("flex", "none");
+    let _ = style.set_property("width", "max-content");
+    let _ = style.set_property("max-width", "none");
+    let wanted = bubble.get_bounding_client_rect().width();
+    let _ = style.remove_property("flex");
+    let _ = style.remove_property("width");
+    let _ = style.remove_property("max-width");
+    let copy = find(":scope > .actions .btn")
+        .map_or(0.0, |copy| copy.get_bounding_client_rect().width() + 4.0);
+    let width = row.get_bounding_client_rect().width();
+    wanted + copy + 4.0 + tag.scroll_width() as f64 <= width
 }
 
 fn kind_class(kind: Kind) -> &'static str {

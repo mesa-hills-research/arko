@@ -1452,8 +1452,13 @@ html:not(.apple) ::-webkit-scrollbar-corner { background: transparent; }
   }
   .row:is(.reply, .message):not(.report):is(:hover, :focus-within) > .actions:not(:has(.tag)) { background: var(--bg); }
   .row.report:is(:hover, :focus-within) > .actions:not(:has(.tag)) { border-radius: var(--r-md); background: var(--surface); }
-  .row.user:not(:has(.tag)) { flex-direction: row; justify-content: flex-end; align-items: flex-end; gap: 4px; }
-  .row.user:not(:has(.tag)) > .actions { order: -1; margin: 0; }
+  .row.user:is(:not(:has(.tag)), .beside) { flex-direction: row; justify-content: flex-end; align-items: flex-end; gap: 4px; }
+  .row.user:is(:not(:has(.tag)), .beside) > .actions { order: -1; margin: 0; }
+  /* A note whose only tag is "pending" says it beside its bubble, left of
+     Copy, where there's room, so it needs no line under the bubble and
+     keeps its height once read. */
+  .row.user.beside > .actions { position: relative; min-height: 24px; }
+  .row.user.beside .tag { position: absolute; right: 100%; bottom: 3px; margin-right: 4px; white-space: nowrap; }
 }
 
 /* A code block's language and copy button, in its corner, over its first
