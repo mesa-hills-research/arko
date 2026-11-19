@@ -510,6 +510,64 @@ fn moved_aside(before: &[String], after: &[String], below: usize) -> Vec<(String
         .collect()
 }
 
+/// Which rows of a frame show the call whose content came, its blocks' own
+/// rows, and the gap row right after them, which the row after the call has
+/// from it as the table puts it.
+#[derive(Debug, Clone, Default)]
+struct CallRows {
+    owned: Vec<bool>,
+    gap: Vec<bool>,
+}
+
+impl CallRows {
+    /// The rows of the call whose blocks have the keys `call`, by each row's
+    /// block and whether the row is the gap before it.
+    fn of(keyed: &[Option<(u64, bool)>], call: &HashSet<u64>) -> Self {
+        let owned: Vec<bool> = keyed
+            .iter()
+            .map(|row| row.is_some_and(|(key, gap)| !gap && call.contains(&key)))
+            .collect();
+        // (One row, the most a gap is.)
+        let gap = (0..owned.len())
+            .map(|y| {
+                y > 0
+                    && owned[y - 1]
+                    && keyed[y].is_some_and(|(key, gap)| gap && !call.contains(&key))
+            })
+            .collect();
+        Self { owned, gap }
+    }
+
+    /// The call's own rows `owned`, with no gap after them.
+    #[cfg(test)]
+    fn owned(owned: &[bool]) -> Self {
+        Self {
+            owned: owned.to_vec(),
+            gap: vec![false; owned.len()],
+        }
+    }
+
+    /// Its first row.
+    fn first(&self) -> Option<usize> {
+        self.owned.iter().position(|of| *of)
+    }
+
+    /// Whether row `at` is below every row of it, its gap's too.
+    fn above(&self, at: usize) -> bool {
+        self.first().is_some_and(|first| first < at)
+            && !self
+                .owned
+                .iter()
+                .zip(&self.gap)
+                .skip(at)
+                .any(|(owned, gap)| *owned || *gap)
+    }
+
+    fn rows(of: &[bool]) -> i64 {
+        of.iter().filter(|of| **of).count() as i64
+    }
+}
+
 /// How the lines of a frame moved from the frame before.
 #[derive(Default)]
 struct Moved {
@@ -541,7 +599,7 @@ fn moves(
     following: bool,
     below: Option<usize>,
     (was_end, end): (usize, usize),
-    call: Option<(&[bool], &[bool])>,
+    call: Option<(&CallRows, &CallRows)>,
 ) -> Moved {
     let (was, now) = (lines(before), lines(after));
     // (The rows of lines `before` doesn't show, from where its end began.)
@@ -574,22 +632,20 @@ fn moves(
             moved.room = moved.room.max(rows);
             continue;
         }
-        // (A line below the call's rows, down by as many rows as those grew
-        // above it, past what the whole screen moved, as the call's first
-        // row did.)
+        // (A line below all of the call's rows in both frames, down by as
+        // many rows as its own grew, and the gap the row after it has from
+        // it as it opened, past what the whole screen moved, as the call's
+        // first row did.)
         if let Some((was, now)) = call
             && to > from
-            && !now.get(to).copied().unwrap_or(false)
-            && let Some(first_was) = was.iter().position(|of| *of)
-            && let Some(first_now) = now.iter().position(|of| *of)
-            && first_was < from
-            && first_now < to
+            && was.above(from)
+            && now.above(to)
+            && let (Some(first_was), Some(first_now)) = (was.first(), now.first())
         {
-            let count =
-                |of: &[bool], upto: usize| of.iter().take(upto).filter(|of| **of).count() as i64;
-            let grew = count(now, to) - count(was, from);
+            let grew = CallRows::rows(&now.owned) - CallRows::rows(&was.owned);
+            let gap = CallRows::rows(&now.gap) - CallRows::rows(&was.gap);
             let by = (to as i64 - from as i64) - (first_now as i64 - first_was as i64);
-            if grew > 0 && by == grew {
+            if grew > 0 && by == grew + gap {
                 moved.arrived = moved.arrived.max(rows);
                 continue;
             }
@@ -618,8 +674,9 @@ struct Shot {
     /// The first row of "Working…", the notes waiting to be read and the
     /// blank rows below the end.
     end: usize,
-    /// The key of the block each row shows.
-    keys: Vec<Option<u64>>,
+    /// The key of the block each row shows, and whether the row is the gap
+    /// before that block.
+    keys: Vec<Option<(u64, bool)>>,
 }
 
 /// The Markdown of the reply that is open as it streams.
@@ -863,21 +920,10 @@ impl<'m> Run<'m> {
             (Some((call, _)), Some(last)) => {
                 let (filter, theme) = (self.app.filter(), self.app.theme.clone());
                 let keys = self.app.transcript.keys_of_call(call, &filter, &theme);
-                // (Its rows, and the blank rows right after them, the gap
-                // the row after it has from it.)
-                let of = |keyed: &[Option<u64>], rows: &[String]| -> Vec<bool> {
-                    let mut of: Vec<bool> = keyed
-                        .iter()
-                        .map(|key| key.is_some_and(|key| keys.contains(&key)))
-                        .collect();
-                    for y in 1..of.len() {
-                        if of[y - 1] && rows.get(y).is_some_and(|row| row.trim().is_empty()) {
-                            of[y] = true;
-                        }
-                    }
-                    of
-                };
-                Some((of(&last.keys, &last.rows), of(&shot.keys, &shot.rows)))
+                Some((
+                    CallRows::of(&last.keys, &keys),
+                    CallRows::of(&shot.keys, &keys),
+                ))
             }
             _ => None,
         };
@@ -892,8 +938,7 @@ impl<'m> Run<'m> {
                 rises,
                 below,
                 (last.end, shot.end),
-                call.as_ref()
-                    .map(|(was, now)| (was.as_slice(), now.as_slice())),
+                call.as_ref().map(|(was, now)| (was, now)),
             );
             if let Some(row) = below {
                 for (id, from, to) in moved_aside(&last.rows, &shot.rows, row) {
@@ -2035,7 +2080,14 @@ fn a_row_after_an_open_call_goes_down_by_its_content_and_no_further() {
     ]);
     let now = [false, true, true, true, true, false, false, false, false];
     for following in [true, false] {
-        let moved = moves(&before, &after, following, None, (9, 9), Some((&was, &now)));
+        let moved = moves(
+            &before,
+            &after,
+            following,
+            None,
+            (9, 9),
+            Some((&CallRows::owned(&was), &CallRows::owned(&now))),
+        );
         assert_eq!((moved.rows, moved.arrived), (0, 1), "following {following}");
         // Without the call's rows, it's a move.
         let moved = moves(&before, &after, following, None, (9, 9), None);
@@ -2050,7 +2102,7 @@ fn a_row_after_an_open_call_goes_down_by_its_content_and_no_further() {
             following,
             None,
             (9, 9),
-            Some((&was, &now)),
+            Some((&CallRows::owned(&was), &CallRows::owned(&now))),
         );
         assert_eq!(moved.rows, 2, "following {following}");
         // The call's code moves down inside it.
@@ -2064,7 +2116,7 @@ fn a_row_after_an_open_call_goes_down_by_its_content_and_no_further() {
             following,
             None,
             (9, 9),
-            Some((&was, &grew)),
+            Some((&CallRows::owned(&was), &CallRows::owned(&grew))),
         );
         assert!(moved.rows > 0, "following {following}");
         // A row above the call moves.
@@ -2078,10 +2130,143 @@ fn a_row_after_an_open_call_goes_down_by_its_content_and_no_further() {
             following,
             None,
             (9, 9),
-            Some((&was, &shifted)),
+            Some((&CallRows::owned(&was), &CallRows::owned(&shifted))),
         );
         assert!(moved.rows > 0, "following {following}");
+        // A line that was the call's and isn't after, down by a row while
+        // the call's rows stay as many, is a move.
+        let left = rows(&[
+            "  w601 w602",
+            "▾ run_code w603 w604 …",
+            "│  w605 w606",
+            "│ · $ cargo w611 w612 …",
+            "· w620 w621",
+            "",
+            "",
+            "",
+            "",
+        ]);
+        let was_left = [false, true, true, true, false, false, false, false, false];
+        let mut before_left = left.clone();
+        before_left.remove(3);
+        before_left.push(String::new());
+        let now_left = [false, true, true, true, false, false, false, false, false];
+        let moved = moves(
+            &before_left,
+            &left,
+            following,
+            None,
+            (9, 9),
+            Some((&CallRows::owned(&was_left), &CallRows::owned(&now_left))),
+        );
+        assert_eq!((moved.rows, moved.arrived), (1, 0), "following {following}");
+        // A line between rows of the call, which has rows below it too, is
+        // a move.
+        let between = [false, true, true, true, true, false, false, true, false];
+        let was_between = [false, true, true, true, false, false, true, false, false];
+        let moved = moves(
+            &before,
+            &after,
+            following,
+            None,
+            (9, 9),
+            Some((&CallRows::owned(&was_between), &CallRows::owned(&between))),
+        );
+        assert_eq!(moved.rows, 1, "following {following}");
     }
+}
+
+/// A call's rows are its blocks' own, and the gap after them that the row
+/// after the call has from it, which comes as the call opens with its
+/// content. A row after the call that goes down while the call's own rows
+/// stay as many is a move, whether a gap or a blank of a later block puts it
+/// down, and so is a row down by a blank that is no gap besides the call's
+/// growth.
+#[test]
+fn a_call_grows_by_its_own_rows_and_the_gap_it_opens_with() {
+    let rows = |rows: &[&str]| -> Vec<String> { rows.iter().map(|row| row.to_string()).collect() };
+    let call: HashSet<u64> = [7].into();
+    // (A row of block `key`, or the gap before it.)
+    let (row, gap) = (|key| Some((key, false)), |key| Some((key, true)));
+    let check = |before: &[String],
+                 was: &[Option<(u64, bool)>],
+                 after: &[String],
+                 now: &[Option<(u64, bool)>]| {
+        let (was, now) = (CallRows::of(was, &call), CallRows::of(now, &call));
+        let moved = moves(before, after, true, None, (6, 6), Some((&was, &now)));
+        (moved.rows, moved.arrived)
+    };
+    // Its content comes, and the row after it has a gap from it now.
+    let before = rows(&["· $ cargo w701 w702 …", "· w703 w704", "", "", "", ""]);
+    let after = rows(&[
+        "▾ $ cargo w701 w702 · ✓ exit 0",
+        "│ w705 ok",
+        "│ w706 ok",
+        "",
+        "· w703 w704",
+        "",
+    ]);
+    let now = [row(7), row(7), row(7), gap(8), row(8), None];
+    let rows_now = CallRows::of(&now, &call);
+    assert_eq!(rows_now.owned, [true, true, true, false, false, false]);
+    assert_eq!(rows_now.gap, [false, false, false, true, false, false]);
+    let was = [row(7), row(8), None, None, None, None];
+    assert_eq!(check(&before, &was, &after, &now), (0, 3));
+    // The same, with a blank line at the start of the later block that is
+    // no gap: a row more, a move.
+    let after_blank = rows(&[
+        "▾ $ cargo w701 w702 · ✓ exit 0",
+        "│ w705 ok",
+        "│ w706 ok",
+        "",
+        "",
+        "· w703 w704",
+    ]);
+    let now_blank = [row(7), row(7), row(7), gap(8), row(8), row(8)];
+    assert_eq!(check(&before, &was, &after_blank, &now_blank), (4, 0));
+    // The same, with a second row marked as the later block's gap: a row
+    // more, a move.
+    let now_twice = [row(7), row(7), row(7), gap(8), gap(8), row(8)];
+    assert_eq!(check(&before, &was, &after_blank, &now_twice), (4, 0));
+    // The call stays as it was, and a later row's gap grows by a row.
+    let before = rows(&[
+        "▾ $ cargo w711 w712 · ✓ exit 0",
+        "│ w713 ok",
+        "",
+        "· w714 w715",
+        "",
+        "",
+    ]);
+    let after = rows(&[
+        "▾ $ cargo w711 w712 · ✓ exit 0",
+        "│ w713 ok",
+        "",
+        "",
+        "· w714 w715",
+        "",
+    ]);
+    assert_eq!(
+        check(
+            &before,
+            &[row(7), row(7), gap(8), row(8), None, None],
+            &after,
+            &[row(7), row(7), gap(8), gap(8), row(8), None]
+        ),
+        (1, 0)
+    );
+    // A call with no gap after it, which stays as it was (closed), and the
+    // row after it gets a gap.
+    let before = rows(&["· $ cargo w721 w722 …", "· w723 w724", "", "", "", ""]);
+    let after = rows(&["· $ cargo w721 w722 …", "", "· w723 w724", "", "", ""]);
+    assert_eq!(
+        check(
+            &before,
+            &[row(7), row(8), None, None, None, None],
+            &after,
+            &[row(7), gap(8), row(8), None, None, None]
+        ),
+        (1, 0)
+    );
 }
 
 /// A message the agent reads in the frame its call's result comes, in Full

@@ -3066,13 +3066,14 @@ impl Transcript {
             .collect()
     }
 
-    /// The key of the block each row of the last frame shows (tests).
+    /// The key of the block each row of the last frame shows, and whether
+    /// the row is the gap before that block (tests).
     #[cfg(test)]
-    pub(super) fn row_keys(&self) -> Vec<Option<u64>> {
+    pub(super) fn row_keys(&self) -> Vec<Option<(u64, bool)>> {
         self.drawn
             .rows
             .iter()
-            .map(|row| row.map(|row| row.key))
+            .map(|row| row.map(|row| (row.key, row.gap)))
             .collect()
     }
 
