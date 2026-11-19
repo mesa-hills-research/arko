@@ -34,16 +34,19 @@ use crate::remote::{
 const KEY: &str = "c2hpZnQgbWV0ZXIgc2Vzc2lvbnMgMDE";
 
 /// The session's status, which says nothing changes but the calls a client
-/// may move to the background.
-#[derive(Default)]
+/// may move to the background and the questions open, as a session's says.
 struct Still {
     movable: std::sync::Mutex<Vec<u64>>,
+    feed: Feed,
 }
 
 impl Meter for Still {
     fn read(&self) -> Reading {
+        // (Its lock is let go before the feed's is taken.)
+        let movable = self.movable.lock().unwrap().clone();
         Reading {
-            movable: self.movable.lock().unwrap().clone(),
+            movable,
+            questions: self.feed.open_questions(),
             ..Reading::default()
         }
     }
@@ -102,7 +105,10 @@ fn answer_actions(feed: Feed, mut actions: mpsc::UnboundedReceiver<Action>) {
 /// Starts a session, served on a port of its own.
 fn start(root: &Path) -> Session {
     let feed = Feed::new("main");
-    let still = Arc::new(Still::default());
+    let still = Arc::new(Still {
+        movable: std::sync::Mutex::default(),
+        feed: feed.clone(),
+    });
     let (actions, received) = mpsc::unbounded_channel();
     let server = Server::start(
         "127.0.0.1:0".parse().unwrap(),

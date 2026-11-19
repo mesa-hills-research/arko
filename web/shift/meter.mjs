@@ -431,7 +431,7 @@ class Tally {
 const VIEWS = ['full', 'quiet', 'messages'];
 
 // The controls every run must work at least once.
-const COVERED = ['cut line toggled by a click', 'cut line toggled by Enter', 'cut line toggled by Space'];
+const COVERED = ['answer panel shown', 'cut line toggled by a click', 'cut line toggled by Enter', 'cut line toggled by Space'];
 
 class Meter {
   constructor() {
@@ -1016,7 +1016,12 @@ class Run {
       this.hidden += Math.max(0, -taller - blank / after.dpr);
     }
     if (viewport && following) {
-      if (up > 0 && taller < 0) this.owed += up;
+      // (What the shorter view hid, by how far the lines on the screen in
+      // both frames went up, or where none stayed on it, by how far the
+      // transcript scrolled to keep its end in sight, at most what the view
+      // lost.)
+      const scrolled = Math.max(0, Math.min(-taller, after.scrollTop - before.scrollTop));
+      if (taller < 0) this.owed += Math.max(up, Math.round(scrolled * after.dpr));
       if (rows > 0 && rows <= this.owed + 1) {
         this.meter.tally(this.meter.allowed, key('a taller view gives back')).add(rows);
         this.owed = Math.max(0, this.owed - rows);
@@ -1483,19 +1488,32 @@ class Run {
       const also = two ? [{ id: second, text: `${this.words(4)}?` }] : [];
       await this.feed({ do: 'ask', id, text: `${this.some(3, 5)}?`, also, waits: false });
       await this.settle('question comes', { viewport: true });
-      await this.trip('answer panel', async () => {
+      // The answer panel, opened by Alt+Q and closed by its ×, which leaves
+      // the questions as they are, or closed and opened again where it
+      // opened by itself as the questions came.
+      const shows = () => this.evaluate(`!!document.querySelector('section.answers')`);
+      const opens = async () => {
         this.begin('answer panel opens', { viewport: true });
         await this.during(() => this.cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'q', code: 'KeyQ', windowsVirtualKeyCode: 81, modifiers: 1 }, this.session));
         await this.during(() => this.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'q', code: 'KeyQ', windowsVirtualKeyCode: 81, modifiers: 1 }, this.session));
         await this.settle();
-      }, async () => {
-        // (Esc closes the panel, where it opened, and otherwise follows,
-        // which is the reader's own move.)
-        const open = await this.evaluate(`!!document.querySelector('section.answers')`);
-        this.begin(open ? 'answer panel closes' : null, { viewport: true });
-        await this.key('Escape', 'Escape');
+        if (await shows()) this.meter.work('answer panel shown');
+      };
+      const closes = async () => {
+        this.begin('answer panel closes', { viewport: true });
+        await this.evaluate(`document.querySelector('section.answers .answers-head button')?.click()`);
         await this.settle();
-      });
+      };
+      const shown = await shows();
+      if (shown) this.meter.work('answer panel shown');
+      // (A panel that opened by itself leaves the keyboard where it was, and
+      // Alt+Q gives it to the panel, so the trip takes it back out.)
+      const reopens = async () => {
+        await opens();
+        await this.evaluate(`document.activeElement?.closest('section.answers') && document.activeElement.blur()`);
+        await this.settle();
+      };
+      await this.trip('answer panel', shown ? closes : opens, shown ? reopens : closes);
       await this.feed({ do: 'answered', id, text: this.words(two ? 40 : 2) });
       await this.settle('question answered', { viewport: true });
       if (two) {

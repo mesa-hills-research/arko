@@ -3873,12 +3873,12 @@ impl Feed {
                         .join("\n"),
                 })
         };
+        // Every change of the questions goes out, also of those the agent
+        // doesn't wait on, so a client's list of the open ones (the page's
+        // panel and its chip) follows the cards at once.
         let mut state = self.lock();
-        let before = state.activity();
         state.question = latest;
-        if state.activity() != before {
-            self.publish(&mut state, Update::Activity);
-        }
+        self.publish(&mut state, Update::Activity);
     }
 
     // ----- approvals -----
@@ -7339,6 +7339,28 @@ mod tests {
             }
             assert_eq!(sent, 1, "{wait}");
         }
+    }
+
+    /// The status follows every change of the questions, also of one the
+    /// agent doesn't wait on, so a client's list of the open ones follows
+    /// their cards at once.
+    #[test]
+    fn every_change_of_the_questions_goes_out() {
+        use crate::questions::QuestionState;
+        let feed = Feed::new("main");
+        let run = Uuid::new_v4();
+        feed.questions_run(Some(run));
+        let (_, mut updates) = feed.subscribe();
+        let mut activity = || {
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .filter(|update| matches!(update, Update::Activity))
+                .count()
+        };
+        feed.ask(run, &[asked("q1", "Tabs or spaces?")], false);
+        assert_eq!(feed.activity().question, None, "the agent doesn't wait");
+        assert!(activity() > 0);
+        feed.set_question_state("q1", QuestionState::Dismissed);
+        assert!(activity() > 0);
     }
 
     /// A new card comes with its questions, numbered and naming it, in its
