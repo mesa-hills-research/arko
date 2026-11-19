@@ -2754,6 +2754,7 @@ async function pixelCases(cdp, agent) {
           if (!before || !after || !after.button) return problems.push(`no ${what}`);
           if (before.button) problems.push(`${what} showed before its step`);
           if (before.last) problems.push(`nothing waits below the line ${what} comes to`);
+          if (before.open !== true) problems.push(`the line ${what} comes to isn't open (${before.open})`);
           for (const key of ['words', 'mark', 'row', 'open', 'below']) {
             if (before[key] !== after[key]) problems.push(`${key} went from ${JSON.stringify(before[key])} to ${JSON.stringify(after[key])} as ${what} came`);
           }
@@ -2911,10 +2912,10 @@ async function pixelCases(cdp, agent) {
     }
     // An open code run whose words fit on its line alone keeps its lines,
     // and so does a row after it, as its first call starts. The count of
-    // calls and the call that runs come and take room on its line, so its
-    // words whole don't come in above its code, and the call shows nothing
-    // in the run yet, so the run doesn't grow. (The window is as narrow as
-    // makes the count cut the words on the line.)
+    // calls and the call that runs show only in the room its words leave,
+    // so its words stay whole and nothing comes in above its code, and the
+    // call shows nothing in the run yet, so the run doesn't grow. (The
+    // window is as narrow as leaves the count no room beside the words.)
     await play(ratio, "an open code run keeps its lines as its count of calls comes (quiet)", async (run) => {
       await run.metrics(560, 800);
       await run.feed({ do: 'user', text: `Please ${run.words(4)}` });
@@ -2943,8 +2944,7 @@ async function pixelCases(cdp, agent) {
       await run.feed({ do: 'nested', run: call, tool: 'read_file', parameters: { path: `src/${run.words(1)}.rs` } });
       await run.settle(null);
       const after = await run.look();
-      // (Else the count never took the room this case is about.)
-      if (!(await run.evaluate(line)).cut) return "the count of calls didn't cut its words on the line";
+      if ((await run.evaluate(line)).cut) return 'the count of calls cut its words on the line';
       const moved = Case.moved(before, after);
       return moved === 0 ? null : `lines moved (${Number.isNaN(moved) ? 'some, not all' : `all, ${moved} device px`}) as its first call started`;
     }, 'quiet');
