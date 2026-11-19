@@ -3600,36 +3600,32 @@ impl Feed {
             if state.questions.run().is_none() {
                 state.questions.set_run(Some(run));
             }
-            let questions: Vec<_> = asked
-                .iter()
-                .map(|asked| crate::questions::AgentQuestion::of(asked, waits, 0))
-                .collect();
             // Questions that have their card already (their ask's result
-            // gave them one before the wait came) keep it.
-            let (item, key) = match state.card_shown(run, asked) {
+            // gave them one before the wait came) keep it. A new card comes
+            // with its questions, numbered, so no client draws it without
+            // them.
+            let shown = state.card_shown(run, asked);
+            let (item, key) = match shown {
                 Some(item) => (item, None),
-                None => (
-                    self.push(
-                        &mut state,
-                        Item::new(Kind::Question, crate::questions::card_line(&questions)),
-                    ),
-                    Some(Uuid::new_v4()),
-                ),
+                // (The id the push below gives it.)
+                None => (state.next_id + 1, Some(Uuid::new_v4())),
             };
-            state.questions.ask(
-                run,
-                questions
-                    .into_iter()
-                    .map(|mut question| {
-                        question.item = item;
-                        question
-                    })
-                    .collect(),
-                key,
-            );
+            let questions = asked
+                .iter()
+                .map(|asked| crate::questions::AgentQuestion::of(asked, waits, item))
+                .collect();
+            state.questions.ask(run, questions, key);
             state.questions.number_card(item);
             state.questions.save();
-            self.refresh_card(&mut state, item);
+            if shown.is_some() {
+                self.refresh_card(&mut state, item);
+            } else {
+                let questions = state.questions.of_item(item);
+                let mut card = Item::new(Kind::Question, crate::questions::card_line(&questions));
+                card.questions = Some(questions);
+                let pushed = self.push(&mut state, card);
+                debug_assert_eq!(pushed, item, "the card has the id it was given");
+            }
             item
         };
         self.question_activity();
@@ -7343,6 +7339,34 @@ mod tests {
             }
             assert_eq!(sent, 1, "{wait}");
         }
+    }
+
+    /// A new card comes with its questions, numbered and naming it, in its
+    /// first update, so no client draws it without them.
+    #[test]
+    fn a_new_card_comes_with_its_questions() {
+        let feed = Feed::new("main");
+        let run = Uuid::new_v4();
+        feed.questions_run(Some(run));
+        let (_, mut updates) = feed.subscribe();
+        let both = [asked("q1", "Tabs or spaces?"), asked("q2", "Push now?")];
+        let id = feed.ask(run, &both, true);
+        let first = std::iter::from_fn(|| updates.try_recv().ok())
+            .find_map(|update| match update {
+                Update::Item(item) if item.kind == Kind::Question => Some(item),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(first.id, id);
+        let questions = first.questions.unwrap();
+        assert_eq!(
+            questions
+                .iter()
+                .map(|question| (question.id.as_str(), question.number, question.item))
+                .collect::<Vec<_>>(),
+            [("q1", Some(1), id), ("q2", Some(2), id)]
+        );
+        assert!(questions.iter().all(|question| question.waits));
     }
 
     /// After a restart, a wait for questions whose card the transcript no
