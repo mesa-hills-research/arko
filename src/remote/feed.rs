@@ -58,7 +58,8 @@ const WORKER_BUDGET: Budget = Budget {
 const CALL_ITEMS: usize = 512;
 /// The images kept for calls whose items haven't come yet.
 const EARLY_IMAGES: usize = 64;
-/// The notes the main agent read before their items came that are kept.
+/// The notes the main agent read before their items came that are kept,
+/// and so the notes read ahead whose reads are still to come.
 const EARLY_READS: usize = 64;
 /// Updates a client's stream may fall behind by before it starts over.
 const BACKLOG: usize = 2048;
@@ -1446,6 +1447,9 @@ struct State {
     /// The latest notes the main agent read before their items came, by
     /// number, since an item may come just after.
     early_reads: VecDeque<u64>,
+    /// The notes shown as read when a message of the user's after them
+    /// went, by number, whose reads by the agent are still to come.
+    read_ahead: VecDeque<u64>,
     /// The background jobs, in the order they started.
     jobs: Vec<JobSummary>,
     /// The latest jobs that ended without the feed having seen them run,
@@ -2461,7 +2465,26 @@ impl Feed {
         if delivery == Delivery::Turn {
             self.turn_event(&mut state, TurnEvent::Opened);
         }
+        // An answer (typed, or an approval's words) or the note an answer
+        // made reaches the agent no later than the notes typed before it, so
+        // it comes after them.
+        if matches!(delivery, Delivery::Answer | Delivery::Note) {
+            self.read_ahead(&mut state);
+        }
         self.push(&mut state, item)
+    }
+
+    /// The notes waiting are read now, as a message of the user's after them
+    /// goes, as at a turn's start (`notes_sent`). The agent's read of each,
+    /// which comes later, does nothing.
+    fn read_ahead(&self, state: &mut State) {
+        for (seq, id) in std::mem::take(&mut state.unread_notes) {
+            state.read_ahead.push_back(seq);
+            if state.read_ahead.len() > EARLY_READS {
+                state.read_ahead.pop_front();
+            }
+            self.move_read(state, id);
+        }
     }
 
     /// The user's text, with the images it sends, that went to the working
@@ -2511,6 +2534,10 @@ impl Feed {
 
     /// The main agent read the note `seq`.
     fn note_read(&self, state: &mut State, seq: u64) {
+        if let Some(at) = state.read_ahead.iter().position(|read| *read == seq) {
+            state.read_ahead.remove(at);
+            return;
+        }
         match state.unread_notes.iter().position(|(read, _)| *read == seq) {
             Some(at) => {
                 let (_, id) = state.unread_notes.remove(at);
