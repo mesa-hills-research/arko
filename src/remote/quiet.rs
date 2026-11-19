@@ -283,6 +283,17 @@ impl Member<'_> {
         self.call.status == Some(CallStatus::Failed) && !cut_short(self.call.outcome)
     }
 
+    /// The edits it made or is making, a call of several (an `apply_diff`
+    /// call's blocks, or the places a `replace_all` changed) counting each.
+    /// An edit that failed, or that a stop cut short, made none.
+    fn edits(&self) -> usize {
+        match (self.act.kind, self.call.status) {
+            (ActKind::Edit, Some(CallStatus::Failed)) => 0,
+            (ActKind::Edit, _) => self.act.edits.max(1) as usize,
+            _ => 0,
+        }
+    }
+
     /// A call that can run long, which a row shows as it runs ("· running
     /// cargo build").
     fn long(&self) -> bool {
@@ -688,8 +699,8 @@ fn words(group: &Group) -> Words {
     let now = calls.iter().all(Member::running);
     let tense = |present: &str, past: &str| if now { present } else { past }.to_string();
     let count = calls.len();
-    // The files it names, up to two, else how many and their folder.
-    let files = |noun: (&str, &str)| {
+    // The files `calls` name, up to two, else how many and their folder.
+    let files_of = |calls: &[Member], noun: (&str, &str)| {
         let names = distinct(calls.iter().map(|call| call.name.as_str()));
         if names.len() <= 2 {
             listed(&names, 2)
@@ -702,6 +713,7 @@ fn words(group: &Group) -> Words {
             }
         }
     };
+    let files = |noun: (&str, &str)| files_of(calls, noun);
     let targets = || distinct(calls.iter().map(|call| call.act.target.as_str()));
     let mut note = Vec::new();
     let text = match group.kind() {
@@ -718,12 +730,23 @@ fn words(group: &Group) -> Words {
         Some(ActKind::Write) => {
             format!("{} {}", tense("Writing", "Wrote"), files(("file", "files")))
         }
-        Some(ActKind::Edit) => format!(
-            "{} {} to {}",
-            tense("Making", "Made"),
-            plural(edits(calls), "edit", "edits"),
-            files(("file", "files"))
-        ),
+        // The edits made, to the files they went in, else that none did.
+        Some(ActKind::Edit) => {
+            let made: Vec<Member> = calls
+                .iter()
+                .filter(|call| call.edits() > 0)
+                .cloned()
+                .collect();
+            match made.as_slice() {
+                [] => format!("Couldn’t edit {}", files(("file", "files"))),
+                made => format!(
+                    "{} {} to {}",
+                    tense("Making", "Made"),
+                    plural(edits(made), "edit", "edits"),
+                    files_of(made, ("file", "files"))
+                ),
+            }
+        }
         Some(ActKind::Command) => {
             let programs = distinct(calls.iter().map(|call| program(&call.act.target)));
             format!(
@@ -833,19 +856,15 @@ fn words(group: &Group) -> Words {
     }
 }
 
-/// How many edits `calls` made, a call of several (an `apply_diff` call's
-/// blocks) counting each.
+/// How many edits `calls` made ([`Member::edits`]).
 fn edits(calls: &[Member]) -> usize {
-    calls
-        .iter()
-        .filter(|call| call.act.kind == ActKind::Edit)
-        .map(|call| call.act.edits.max(1) as usize)
-        .sum()
+    calls.iter().map(Member::edits).sum()
 }
 
 /// What a row of the reads and changes of one file says, each kind in
 /// turn, the file named once ("Read app.rs and made 3 edits", "Read app.rs,
-/// wrote it and made 1 edit"). Edits are counted, and a file read or
+/// wrote it and made 1 edit"). The edits made are counted, and edits that
+/// all failed say so ("Read app.rs and couldn’t edit it"). A file read or
 /// written again is still one.
 fn file_words(calls: &[Member], now: bool) -> String {
     let tense = |present: &str, past: &str| if now { present } else { past }.to_string();
@@ -867,6 +886,11 @@ fn file_words(calls: &[Member], now: bool) -> String {
         parts.push(match parts.is_empty() {
             true => format!("{} {made} to {name}", tense("Making", "Made")),
             false => format!("{} {made}", tense("making", "made")),
+        });
+    } else if has(ActKind::Edit) {
+        parts.push(match parts.is_empty() {
+            true => format!("Couldn’t edit {name}"),
+            false => "couldn’t edit it".to_string(),
         });
     }
     listed(&parts, 3)
@@ -1870,6 +1894,90 @@ mod tests {
         }
     }
 
+    /// A row counts only the edits its calls made, so a call that failed
+    /// adds none, and names only the files they went in. A row whose edits
+    /// all failed counts none and names its files. Either way it says a call
+    /// failed.
+    #[test]
+    fn a_row_counts_the_edits_made() {
+        let number = |text: &str| {
+            text.split_whitespace()
+                .find_map(|word| word.parse::<usize>().ok())
+        };
+        let two = |target: &str| Act {
+            edits: 2,
+            ..act(Edit, target)
+        };
+        let failed = |act: Act| Some((act, Failed));
+        // (made, the row's calls, files named, files not named)
+        let cases: [(
+            Option<usize>,
+            Vec<Option<(Act, CallStatus)>>,
+            &[&str],
+            &[&str],
+        ); 5] = [
+            (
+                Some(2),
+                vec![Some((two("a.rs"), Ok)), failed(two("a.rs"))],
+                &["a.rs"],
+                &[],
+            ),
+            (
+                Some(3),
+                vec![
+                    ok(Edit, "a.rs"),
+                    failed(two("b.rs")),
+                    Some((two("c.rs"), Ok)),
+                ],
+                &["a.rs", "c.rs"],
+                &["b.rs"],
+            ),
+            (
+                None,
+                vec![failed(two("a.rs")), failed(act(Edit, "a.rs"))],
+                &["a.rs"],
+                &[],
+            ),
+            (
+                None,
+                vec![failed(act(Edit, "a.rs")), failed(act(Edit, "b.rs"))],
+                &["a.rs", "b.rs"],
+                &[],
+            ),
+            (
+                None,
+                vec![ok(Read, "a.rs"), failed(two("a.rs"))],
+                &["a.rs"],
+                &[],
+            ),
+        ];
+        for (made, calls, named, unnamed) in cases {
+            let steps: Vec<Step> = calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| {
+                    let (act, status) = call.as_ref().unwrap();
+                    Step::Call(Call {
+                        id: index as u64 + 1,
+                        act: Some(act),
+                        status: Some(*status),
+                        turn: Some(1),
+                        ..Call::default()
+                    })
+                })
+                .collect();
+            let pieces = rows(&steps);
+            let [Piece::Row(row)] = pieces.as_slice() else {
+                panic!("{pieces:?}");
+            };
+            let text = &row.words.text;
+            assert_eq!(number(text), made, "{text}");
+            assert!(row.words.failed, "{text}");
+            assert!(named.iter().all(|name| text.contains(name)), "{text}");
+            assert!(!unnamed.iter().any(|name| text.contains(name)), "{text}");
+        }
+    }
+
     /// A row of one call says what it did in the past tense, with one ✗
     /// when it failed, and opens when it has a detail or content to show.
     /// A row with nothing to show has no fold.
@@ -2127,14 +2235,15 @@ mod tests {
             ]
         );
         // A failure stays in its row, which says so.
-        assert_eq!(
-            shown(&[
-                ok(Edit, "a.rs"),
-                Some((act(Edit, "a.rs"), Failed)),
-                ok(Edit, "a.rs")
-            ]),
-            ["Made 3 edits to a.rs ✗"]
-        );
+        let failing = shown(&[
+            ok(Edit, "a.rs"),
+            Some((act(Edit, "a.rs"), Failed)),
+            ok(Edit, "a.rs"),
+        ]);
+        let [row] = failing.as_slice() else {
+            panic!("{failing:?}");
+        };
+        assert!(row.ends_with('✗'), "{row}");
         // Thinking between calls of one row goes inside it.
         let calls = [ok(Read, "a.rs"), None, ok(Read, "b.rs")];
         let pieces = {
