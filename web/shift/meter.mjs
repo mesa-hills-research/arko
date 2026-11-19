@@ -2966,11 +2966,14 @@ const OPEN_FOLDS = `(() => {
   for (const fold of folds.reverse()) fold.click();
 })()`;
 
-// Opens every line on an open row's rail, a call's and a thought's, from the
-// last up.
+// Opens the first line on each open row's rail, a call's or a thought's,
+// which a line follows. (One a rail, as a line opened may draw its rail
+// again.)
 const OPEN_MEMBERS = `(() => {
-  const folds = [...document.querySelectorAll('#rows .quiet-calls > .quiet-member:not(.open) > .member-line, #rows .quiet-calls > .row.thinking:not(.open) > .thought')];
-  for (const fold of folds.reverse()) fold.click();
+  for (const rail of [...document.querySelectorAll('#rows .quiet-calls')].reverse()) {
+    const first = rail.querySelector(':scope > .quiet-member:not(.open) > .member-line, :scope > .row.thinking:not(.open) > .thought');
+    if (first) first.click();
+  }
 })()`;
 
 // Each gap against the table (TABLE), in CSS px between the rows' boxes, the
