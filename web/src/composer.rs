@@ -218,10 +218,13 @@ pub fn Composer() -> impl IntoView {
             crate::attach::shown_again();
         }
     });
-    // Files dragged over the page drop onto the box, wherever they're let go.
+    // Files dragged over the page drop onto the box, wherever they're let go,
+    // while it shows the main transcript (not a worker's, nor the lock).
     let dropping = RwSignal::new(false);
+    let takes_files =
+        move || page.worker.get_untracked().is_none() && page.locked.get_untracked().is_none();
     let _drag = window_event_listener(leptos::ev::dragover, move |event| {
-        if crate::attach::drags_files(&event) && page.worker.get_untracked().is_none() {
+        if crate::attach::drags_files(&event) && takes_files() {
             event.prevent_default();
             dropping.set(true);
         }
@@ -236,7 +239,7 @@ pub fn Composer() -> impl IntoView {
         dropping.set(false);
         if crate::attach::drags_files(&event) {
             event.prevent_default();
-            if page.worker.get_untracked().is_none() {
+            if takes_files() {
                 let files = event.data_transfer().and_then(|transfer| transfer.files());
                 crate::attach::attach(crate::attach::files_of(files));
             }

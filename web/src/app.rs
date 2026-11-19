@@ -783,6 +783,10 @@ pub(crate) fn outcome(asked: Option<u64>, answer: Option<(u16, String)>) -> Outc
 
 fn lock(page: Page, result: Login) {
     close_stream();
+    // (A sheet or the image viewer would keep the page behind it, the lock
+    // screen too.)
+    page.sheet.set(None);
+    page.image.set(None);
     page.locked.set(Some(match result {
         Login::Wait => WAIT,
         _ if EVER_LIVE.with(|live| live.get()) => ENDED,

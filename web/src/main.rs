@@ -90,20 +90,27 @@ fn App() -> impl IntoView {
     listen(page);
     copy::listen_for_code_copies();
     questions::follow();
+    // The lock screen hides the page's views rather than take them away, so
+    // what they hold (a message on its way, the box's text) goes on through
+    // a lock, and nothing that outlasts the lock reads a view that went.
+    Effect::new(move |_| {
+        let locked = page.locked.get().is_some();
+        if let Some(body) = document().body() {
+            let _ = body.class_list().toggle_with_force("locked", locked);
+        }
+    });
     view! {
-        <Show
-            when=move || page.locked.get().is_none()
-            fallback=|| view! { <chrome::Lock /> }
-        >
-            <chrome::Header />
-            <chrome::Banner />
-            <chrome::ConnectionLine />
-            <transcript::Transcript />
-            <composer::Composer />
-            <sheets::WorkersSheet />
-            <sheets::SettingsSheet />
-            <images::ImageViewer />
+        <Show when=move || page.locked.get().is_some()>
+            <chrome::Lock />
         </Show>
+        <chrome::Header />
+        <chrome::Banner />
+        <chrome::ConnectionLine />
+        <transcript::Transcript />
+        <composer::Composer />
+        <sheets::WorkersSheet />
+        <sheets::SettingsSheet />
+        <images::ImageViewer />
     }
 }
 

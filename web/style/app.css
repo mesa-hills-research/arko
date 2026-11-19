@@ -1234,6 +1234,8 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.36); }
 /* ----- the lock ----- */
 
 .lock { max-width: 380px; margin: 0 auto; padding: 18vh var(--gutter) 0; text-align: center; }
+/* Locked, the page's views stay, hidden, behind the lock screen. */
+body.locked > :not(.lock) { display: none; }
 .lock h1 { margin: 10px 0 6px; font-size: 22px; }
 .lock p { margin: 0; color: var(--muted); }
 .lock form { display: flex; flex-direction: column; gap: 8px; margin-top: 28px; text-align: left; }
