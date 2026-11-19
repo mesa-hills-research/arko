@@ -11,7 +11,9 @@
 //! below its preview and closes it again. One move is allowed. "Working…" and the notes
 //! waiting at the end go down as what comes above them takes their rows,
 //! into the blank rows below the end, and while the reader reads on past the
-//! bottom row, and up as what stood above them goes. A worker's start keeps its words in their columns
+//! bottom row, and up as what stood above them goes. A note the agent reads
+//! stood at the end, and it may move as they do while it stays at or below
+//! the row where the end began. A worker's start keeps its words in their columns
 //! as the worker's ID comes.
 //!
 //! `SHIFT_METER_SEEDS` plays that many sessions at more sizes, and
@@ -70,6 +72,7 @@ enum Step {
     Notice,
     Waits,
     Read,
+    ResultRead,
     FoldOpens,
     FoldCloses,
     DoorOpens,
@@ -79,7 +82,7 @@ enum Step {
 }
 
 impl Step {
-    const ALL: [Step; 23] = [
+    const ALL: [Step; 24] = [
         Step::Asked,
         Step::WorkingCall,
         Step::WorkingThought,
@@ -97,6 +100,7 @@ impl Step {
         Step::Notice,
         Step::Waits,
         Step::Read,
+        Step::ResultRead,
         Step::FoldOpens,
         Step::FoldCloses,
         Step::DoorOpens,
@@ -124,6 +128,7 @@ impl Step {
             Step::Notice => "notice",
             Step::Waits => "message waits",
             Step::Read => "waiting message read",
+            Step::ResultRead => "call → its result, a message read",
             Step::FoldOpens => "fold opens near the end",
             Step::FoldCloses => "fold closes near the end",
             Step::DoorOpens => "\"N more lines\" opens",
@@ -508,13 +513,13 @@ struct Moved {
 /// going up counts only when `following` is false. Rows of `before` below
 /// `below` are left out (the fold a click toggled there moves them). From
 /// `end` on, `after` shows "Working…", the notes waiting to be read and the
-/// blank rows below the end.
+/// blank rows below the end, and from `was_end` on, `before` does.
 fn moves(
     before: &[String],
     after: &[String],
     following: bool,
     below: Option<usize>,
-    end: usize,
+    (was_end, end): (usize, usize),
 ) -> Moved {
     let (was, now) = (lines(before), lines(after));
     let mut moved = Moved::default();
@@ -533,8 +538,10 @@ fn moves(
         };
         // ("Working…" and the notes waiting go down as what comes above them
         // takes their rows, and while the reader reads, up as what stood
-        // above them goes.)
-        if to >= end && (to > from || !following) {
+        // above them goes. A note the agent reads stood at the end, and stays
+        // at or below where the end began.)
+        let at_end = to >= end || (from >= was_end && to >= was_end);
+        if at_end && (to > from || !following) {
             moved.room = moved.room.max(rows);
             continue;
         }
@@ -602,6 +609,11 @@ struct Run<'m> {
     rng: Rng,
     /// Numbers for the long contents and their doors.
     doors: Rng,
+    /// Whether the agent now and then reads the message waiting in the
+    /// frame of a call's result (the sessions of `SHIFT_METER_SEEDS`), and
+    /// the numbers for it.
+    together: bool,
+    reads: Rng,
     id: u64,
     at: i64,
     word: u64,
@@ -626,6 +638,10 @@ struct Run<'m> {
     toggled: HashSet<(u64, bool)>,
     /// A message waiting to be read.
     waiting: Option<(u64, String)>,
+    /// The message waiting was read in the frame of a call's result. Until
+    /// the read it would have had, no other is typed, so the rest of the
+    /// session plays as it would have.
+    read_early: bool,
     clicks: u16,
     /// Whether its turns start workers, and how many they started.
     starts: bool,
@@ -670,6 +686,8 @@ impl<'m> Run<'m> {
             terminal: crate::tui::golden::terminal(size.0, size.1),
             rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
             doors: Rng(seed.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1),
+            reads: Rng(seed.wrapping_mul(0xA24B_AED4_963E_E407) | 1),
+            together: false,
             id: 0,
             at: chrono::Utc::now().timestamp_millis(),
             word: 0,
@@ -686,6 +704,7 @@ impl<'m> Run<'m> {
             opened: None,
             toggled: HashSet::new(),
             waiting: None,
+            read_early: false,
             clicks: 0,
             starts: false,
             workers: 0,
@@ -773,7 +792,7 @@ impl<'m> Run<'m> {
             // (Following, a line may go up as what comes at the end pushes
             // it, but not in the frame of a toggle.)
             let rises = following && below.is_none();
-            let moved = moves(&last.rows, &shot.rows, rises, below, shot.end);
+            let moved = moves(&last.rows, &shot.rows, rises, below, (last.end, shot.end));
             if let Some(row) = below {
                 for (id, from, to) in moved_aside(&last.rows, &shot.rows, row) {
                     let rows: Vec<String> = last
@@ -912,7 +931,7 @@ impl<'m> Run<'m> {
             self.update(Update::Change(call));
             self.frame(Step::JobEnds);
         }
-        if self.waiting.is_none() && self.rng.chance(1) {
+        if self.waiting.is_none() && !self.read_early && self.rng.chance(1) {
             let text = format!("Also {}", self.some(2, 8));
             let mut note = self.item(Kind::User, &text);
             note.delivery = Some(Delivery::Note);
@@ -930,12 +949,21 @@ impl<'m> Run<'m> {
     /// The agent reads the message waiting, which comes again where it
     /// read it.
     fn read_waiting(&mut self) {
+        self.read_early = false;
+        if self.waiting.is_some() {
+            self.read_note();
+            self.frame(Step::Read);
+        }
+    }
+
+    /// The agent reads the message waiting, as the feed sends it, in the
+    /// frame drawn next.
+    fn read_note(&mut self) {
         if let Some((id, text)) = self.waiting.take() {
             self.update(Update::Remove { id });
             let mut note = self.item(Kind::User, &text);
             note.delivery = Some(Delivery::Note);
             self.add(note);
-            self.frame(Step::Read);
         }
     }
 
@@ -1200,7 +1228,16 @@ impl<'m> Run<'m> {
             self.add(result);
         }
         self.live = Live::Result;
-        self.frame(Step::Result);
+        // (Now and then the agent reads the message waiting as the result
+        // comes, in one frame, as when both reach the screen within a
+        // frame's time.)
+        if self.together && self.waiting.is_some() && self.reads.chance(50) {
+            self.read_note();
+            self.read_early = true;
+            self.frame(Step::ResultRead);
+        } else {
+            self.frame(Step::Result);
+        }
         if long && self.doors.chance(90) {
             self.door();
         }
@@ -1616,6 +1653,7 @@ fn measure_with(seeds: Option<u64>, starts: bool) -> Meter {
                             + u64::from(scrolled);
                         let mut run = Run::new(seed, view, *size, scrolled, &mut meter);
                         run.starts = starts;
+                        run.together = seeds.is_some();
                         run.app.transcript.set_open_thinking(thinking);
                         for _ in 0..turns {
                             run.turn();
@@ -1677,6 +1715,100 @@ fn no_line_moves_down_as_an_agent_works() {
             "{}",
             step.name()
         );
+    }
+}
+
+/// A message the agent reads in the frame its call's result comes, in Full
+/// with blank rows below the end, goes down by the result's lines as it did
+/// while it waited, which is the end making room, following and scrolled
+/// up.
+#[test]
+fn a_message_read_as_its_calls_result_comes_moves_with_the_end() {
+    let _full = choose_symbols(Symbols::Full);
+    let full = View::ALL
+        .iter()
+        .position(|view| *view == View::Full)
+        .unwrap();
+    for scrolled in [false, true] {
+        let mut meter = Meter::default();
+        let mut run = Run::new(1, full, (60, 40), scrolled, &mut meter);
+        run.turn = 1;
+        run.works(true);
+        for _ in 0..6 {
+            let text = run.words(40);
+            let said = run.item(Kind::Text, &text);
+            run.add(said);
+        }
+        // A tall text that goes again, after the reader scrolls up, so
+        // blank rows stand below the end.
+        let text = run.words(200);
+        let tall = run.item(Kind::Text, &text);
+        let tall = run.add(tall);
+        run.moved();
+        if scrolled {
+            run.app.transcript.scroll(-3);
+            run.moved();
+        }
+        run.update(Update::Remove { id: tall });
+        run.moved();
+        let target = format!("cargo {}", run.words(2));
+        let mut call = run.item(Kind::Call, &format!("$ {target}"));
+        call.status = Some(CallStatus::Running);
+        call.act = Some(Act {
+            kind: ActKind::Command,
+            target,
+            ran: true,
+            ..Act::default()
+        });
+        let id = run.add(call.clone());
+        run.frame(Step::WorkingCall);
+        let text = format!("Also {}", run.words(6));
+        let mut note = run.item(Kind::User, &text);
+        note.delivery = Some(Delivery::Note);
+        note.pending = true;
+        let note = run.add(note);
+        run.waiting = Some((note, text));
+        run.frame(Step::Waits);
+        call.status = Some(CallStatus::Ok);
+        call.outcome = Some("exit 0".into());
+        run.update(Update::Change(call));
+        let output = format!("{} ok\n{} ok", run.words(3), run.words(3));
+        let mut result = run.item(Kind::Result, &output);
+        result.call = Some(id);
+        result.content = Some(ContentKind::Plain);
+        run.add(result);
+        run.read_note();
+        run.frame(Step::ResultRead);
+        let shown = run
+            .last
+            .as_ref()
+            .map(|shot| shot.rows.join("\n"))
+            .unwrap_or_default();
+        let state = (
+            run.app.transcript.end_shows(),
+            run.app.transcript.gap(),
+            run.app.transcript.following(),
+        );
+        assert!(
+            state.0 && state.1 > 0,
+            "scrolled {scrolled}: {state:?}\n{shown}"
+        );
+        assert_eq!(state.2, !scrolled, "{shown}");
+        drop(run);
+        assert_eq!(
+            meter.shifted(),
+            0,
+            "\n{}\n{}",
+            meter.table(),
+            meter.examples()
+        );
+        let room: u32 = meter
+            .allowed
+            .iter()
+            .filter(|((_, step, _), _)| *step == Step::ResultRead)
+            .map(|(_, tally)| tally.max)
+            .sum();
+        assert!(room > 0, "scrolled {scrolled}\n{}", meter.allowed_table());
     }
 }
 
