@@ -107,7 +107,14 @@ fn items_from(
                             let outcome = if result.is_error {
                                 render::Outcome::error(&tool, &result.output)
                             } else {
-                                render::outcome(&tool, &parameters, &result.output)
+                                let seen = render::job_seen(&tool, &parameters, items.iter());
+                                render::outcome_after(
+                                    &tool,
+                                    &parameters,
+                                    &result.output,
+                                    None,
+                                    seen,
+                                )
                             };
                             let next = items.len() as u64 + 1;
                             let call = &mut items[index];

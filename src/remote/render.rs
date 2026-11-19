@@ -884,19 +884,20 @@ fn started_job(output: &str) -> Option<Uuid> {
 /// when they found any. The other calls' words already say what they did,
 /// and a list says how many jobs there are. `None` for any other call, and
 /// for a result that isn't the tool's JSON.
-fn terminal_outcome(tool: &str, parameters: &Parameters, output: &str) -> Option<Outcome> {
+fn terminal_outcome(
+    tool: &str,
+    parameters: &Parameters,
+    output: &str,
+    seen: u64,
+) -> Option<Outcome> {
     let mut outcome = match (tool, text(parameters, "action")) {
         ("terminal_status", _) | ("terminal_control", "wait") => {
             let job: terminal::TerminalSnapshot = serde_json::from_str(output.trim()).ok()?;
-            // A wait asks for what came after the revision it names.
-            let since = (tool == "terminal_control").then(|| match parameters.get("revision") {
-                Some(Value::Number(number)) => number.as_u64(),
-                Some(Value::String(text)) => text.trim().parse().ok(),
-                _ => None,
-            });
-            let found = job_found(&job, since);
+            let wait = tool == "terminal_control";
+            let found = job_found(&job, wait, seen);
             let mut outcome = Outcome::ok(found.words());
-            if tool == "terminal_control" {
+            outcome.settled.job_output_end = Some(job.output.end);
+            if wait {
                 outcome.settled.news = Some(found.words());
             }
             if found != JobFound::Nothing {
@@ -958,20 +959,44 @@ impl JobFound {
     }
 }
 
-/// What `job` says of the job, for a wait that asked for what came after the
-/// revision `since`, else for a look.
-fn job_found(job: &terminal::TerminalSnapshot, since: Option<Option<u64>>) -> JobFound {
+/// What `job` says of the job, for a wait (`wait`) or a look, where the
+/// output the agent got of it before ends at `seen`. Only output past that
+/// is new, whatever else moved the job on (an input it was given).
+fn job_found(job: &terminal::TerminalSnapshot, wait: bool, seen: u64) -> JobFound {
     if job.state.is_terminal() {
         return JobFound::Ended(job.state, job.exit_code);
     }
     if job.input.is_some() {
         return JobFound::Input;
     }
-    match since {
-        None => JobFound::Running,
-        Some(since) if since.is_none_or(|since| job.revision > since) => JobFound::Output,
-        Some(_) => JobFound::Nothing,
+    match wait {
+        false => JobFound::Running,
+        true if job.output.end > seen => JobFound::Output,
+        true => JobFound::Nothing,
     }
+}
+
+/// How far into its job's output the agent got before a call of `tool` with
+/// `parameters` that looks at the job or waits on it, from its calls
+/// `earlier`: the furthest any of them got (a look may ask for earlier
+/// output), and 0 when none got any. 0 for any other call.
+pub(crate) fn job_seen<'a>(
+    tool: &str,
+    parameters: &Parameters,
+    earlier: impl Iterator<Item = &'a Item>,
+) -> u64 {
+    let looks = tool == "terminal_status"
+        || (tool == "terminal_control" && text(parameters, "action") == "wait");
+    let job = text(parameters, "job_id").trim();
+    if !looks || job.is_empty() {
+        return 0;
+    }
+    earlier
+        .filter_map(|item| item.act.as_ref())
+        .filter(|act| matches!(act.kind, ActKind::JobWait | ActKind::Check) && act.target == job)
+        .filter_map(|act| act.job_output_end)
+        .max()
+        .unwrap_or(0)
 }
 
 /// The output of `job` as a look or a wait got it, as plain text
@@ -1081,6 +1106,8 @@ pub struct Settled {
     done: Option<String>,
     /// The places in its file an edit changed, as its result says.
     edits: Option<usize>,
+    /// Where the output a look at a job or a wait on it got ends.
+    job_output_end: Option<u64>,
 }
 
 impl Outcome {
@@ -1218,6 +1245,9 @@ impl Settled {
                 many => u32::try_from(many).unwrap_or(u32::MAX),
             };
         }
+        if settled.job_output_end.is_some() {
+            act.job_output_end = settled.job_output_end;
+        }
     }
 }
 
@@ -1237,16 +1267,18 @@ const OUTCOME_CHARS: usize = 60;
 /// brief, with its content, and the whole of it for an app's view of the
 /// call.
 pub fn outcome(tool: &str, parameters: &Parameters, output: &str) -> Outcome {
-    outcome_after(tool, parameters, output, None)
+    outcome_after(tool, parameters, output, None, 0)
 }
 
 /// [`outcome`], with the tool's `receipt` of what the call did, which an
-/// edit's diff is made from.
+/// edit's diff is made from, and for a look at a job or a wait on it where
+/// the output the agent got of it before ends, `seen` ([`job_seen`]).
 pub(crate) fn outcome_after(
     tool: &str,
     parameters: &Parameters,
     output: &str,
     receipt: Option<&ToolReceipt>,
+    seen: u64,
 ) -> Outcome {
     let job = moved_job(output);
     if tool != SHELL_TOOL_NAME
@@ -1273,7 +1305,7 @@ pub(crate) fn outcome_after(
         outcome.job = Some(monitor);
         return outcome;
     }
-    if let Some(outcome) = terminal_outcome(tool, parameters, output) {
+    if let Some(outcome) = terminal_outcome(tool, parameters, output, seen) {
         return outcome;
     }
     let mut outcome = brief(tool, output);
@@ -2109,7 +2141,13 @@ mod tests {
                         _ => edited(before, given("old_string"), given("new_string"), all),
                     }
                 });
-                outcome_after(fixture.tool, &parameters, fixture.output, receipt.as_ref())
+                outcome_after(
+                    fixture.tool,
+                    &parameters,
+                    fixture.output,
+                    receipt.as_ref(),
+                    0,
+                )
             };
             // (Its result comes before the item 2.)
             item.settle(outcome.status, outcome.text.clone(), &outcome.settled, 2);
@@ -2309,6 +2347,7 @@ mod tests {
             ]),
             "Edited a.rs at line 1:\n1 | b\n2 | ",
             Some(&edited("a\n\n", "a", "b", false)),
+            0,
         );
         assert_eq!(edit.block.unwrap().text, "-1\ta\n+1\tb\n 2\t");
     }
@@ -2499,9 +2538,10 @@ mod tests {
 
     /// A wait on a job, and a look at it, say what they found of the job in
     /// words, each finding its own, never the tool's JSON. What a wait found
-    /// is its row's news. Each opens to the job's output when it found
-    /// something, as plain text without the terminal's styles, and a wait
-    /// that found nothing new has nothing to open.
+    /// is its row's news. Output is new only past what the agent got of the
+    /// job before, whatever else moved the job on. Each opens to the job's
+    /// output when it found something, as plain text without the terminal's
+    /// styles, and a wait that found nothing new has nothing to open.
     #[test]
     fn a_wait_on_a_job_says_what_it_found() {
         let wait = params(&[
@@ -2517,7 +2557,9 @@ mod tests {
         );
         let found = [
             ("output", snapshot("running", None, 9, None, printed, None)),
-            ("nothing", snapshot("running", None, 3, None, printed, None)),
+            // (At a later revision, as an input given to it makes, with no
+            // more output than the agent got.)
+            ("nothing", snapshot("running", None, 9, None, printed, None)),
             (
                 "input",
                 snapshot("running", None, 9, Some("Apply? [y/N] "), printed, None),
@@ -2545,7 +2587,8 @@ mod tests {
         ];
         let mut said = std::collections::HashSet::new();
         for (case, output) in &found {
-            let outcome = super::outcome("terminal_control", &wait, output);
+            let seen = if *case == "nothing" { 60 } else { 40 };
+            let outcome = outcome_after("terminal_control", &wait, output, None, seen);
             assert_eq!(outcome.status, CallStatus::Ok, "{case}");
             let text = outcome.text.clone().unwrap_or_default();
             assert!(
@@ -2612,6 +2655,43 @@ mod tests {
         // A result that isn't the tool's JSON reads as any tool's.
         let other = super::outcome("terminal_control", &wait, "no such job");
         assert_eq!(other.text.as_deref(), Some("no such job"));
+    }
+
+    /// What the agent got of a job before is the furthest any look at it or
+    /// wait on it got, whatever their order, and nothing of another job's.
+    #[test]
+    fn what_the_agent_got_of_a_job_is_the_furthest_it_got() {
+        let job = "c876812b-5f3e-4a1d-9b7c-2e8f0a6d4c13";
+        let got = |kind: ActKind, target: &str, end: u64| {
+            let mut item = Item::new(Kind::Call, "");
+            item.act = Some(Act {
+                kind,
+                target: target.into(),
+                job_output_end: Some(end),
+                ..Act::default()
+            });
+            item
+        };
+        let earlier = [
+            got(ActKind::JobWait, job, 30),
+            got(ActKind::Check, job, 12),
+            got(ActKind::JobWait, "4d2c1a9b-0000-4000-8000-000000000001", 90),
+        ];
+        let wait = params(&[("action", "wait".into()), ("job_id", job.into())]);
+        assert_eq!(job_seen("terminal_control", &wait, earlier.iter()), 30);
+        let look = params(&[("job_id", job.into())]);
+        assert_eq!(job_seen("terminal_status", &look, earlier.iter()), 30);
+        assert_eq!(job_seen("terminal_control", &wait, [].iter()), 0);
+        assert_eq!(job_seen(SHELL_TOOL_NAME, &wait, earlier.iter()), 0);
+        // So a wait whose output ends before that found nothing new.
+        let output = snapshot("running", None, 9, None, ("x", 0, 20, 20), None);
+        let seen = job_seen("terminal_control", &wait, earlier.iter());
+        let found = outcome_after("terminal_control", &wait, &output, None, seen);
+        assert_eq!(found.block, None);
+        assert_ne!(
+            found.text,
+            outcome_after("terminal_control", &wait, &output, None, 0).text
+        );
     }
 
     /// A job's output, as a wait or a look opens to it, says where the
@@ -3031,7 +3111,7 @@ mod tests {
         for tool in [APPLY_DIFF_TOOL_NAME, EDIT_FILE_TOOL_NAME] {
             let ended = |parameters: &Parameters, output: &str| {
                 let mut item = call(tool, parameters).unwrap();
-                let outcome = outcome_after(tool, parameters, output, None);
+                let outcome = outcome_after(tool, parameters, output, None, 0);
                 item.settle(outcome.status, outcome.text, &outcome.settled, 2);
                 item
             };
@@ -3087,7 +3167,7 @@ mod tests {
         ] {
             let parameters = params(&[("index", "arko".into()), ("query", query.into())]);
             let mut item = call("index_search", &parameters).unwrap();
-            let outcome = outcome_after("index_search", &parameters, output, None);
+            let outcome = outcome_after("index_search", &parameters, output, None, 0);
             item.settle(outcome.status, outcome.text.clone(), &outcome.settled, 2);
             let act = item.act.as_ref().unwrap();
             assert_eq!(

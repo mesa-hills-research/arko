@@ -281,6 +281,11 @@ pub struct Act {
     /// What came while a wait waited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub came: Option<Came>,
+    /// For a look at a job or a wait on it, where in the job's output what
+    /// it got ends, from which the next one tells whether the job printed
+    /// more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_output_end: Option<u64>,
     /// What the row's words cut that the reader may need, whole, as one
     /// muted line over the call's content: a command's whole text with its
     /// folder, a long search's query, a monitor's settings. Empty when the

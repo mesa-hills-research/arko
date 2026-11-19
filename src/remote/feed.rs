@@ -2272,8 +2272,20 @@ impl Feed {
                     Some(call) => (call.message.take(), std::mem::take(&mut call.parameters)),
                     None => (None, HashMap::new()),
                 };
+                // (A wait on a job tells new output from what the agent got
+                // of the job before.)
+                let seen = render::job_seen(
+                    tool_name,
+                    &parameters,
+                    state
+                        .lane(&agent)
+                        .0
+                        .items
+                        .iter()
+                        .filter(|item| item.agent == agent),
+                );
                 let outcome =
-                    render::outcome_after(tool_name, &parameters, output, receipt.as_ref());
+                    render::outcome_after(tool_name, &parameters, output, receipt.as_ref(), seen);
                 self.settle(&mut state, tool_call_id, outcome);
                 // The worker that got a message shows it in its own
                 // transcript (a message to the lead is its call's line).
@@ -5585,6 +5597,19 @@ mod tests {
         use super::super::quiet;
         use crate::crew;
         use arko_ai::{Content, Message, ToolCall, ToolResult};
+        const JOB: &str = "c876812b-5f3e-4a1d-9b7c-2e8f0a6d4c13";
+        // The job as the terminal's tools return it, at `revision`, its
+        // output ending at `end`.
+        let job_at = |revision: u64, end: u64| {
+            serde_json::json!({
+                "error": null, "exit_code": null, "input": null, "job_id": JOB,
+                "log_path": "/home/ada/proj/.arko/jobs/c876812b.log", "log_truncated": false,
+                "output": {"available_end": end, "end": end, "gap": false, "start": 0, "text": "x".repeat(end as usize)},
+                "revision": revision, "state": "running", "terminal": true,
+            })
+            .to_string()
+        };
+        let waits = [job_at(4, 12), job_at(5, 12), job_at(6, 30), job_at(8, 30)];
         let steps = [
             (
                 crew::START_AGENT,
@@ -5636,6 +5661,29 @@ mod tests {
                 crew::MESSAGE_AGENT,
                 serde_json::json!({"to": "r1", "message": "Thanks."}),
                 "Sent.",
+            ),
+            // Waits on a job: its output, then the same output at a later
+            // revision (an input it was given), and after a look that got
+            // more, that same output again.
+            (
+                "terminal_control",
+                serde_json::json!({"action": "wait", "job_id": JOB, "revision": 1}),
+                waits[0].as_str(),
+            ),
+            (
+                "terminal_control",
+                serde_json::json!({"action": "wait", "job_id": JOB, "revision": 4}),
+                waits[1].as_str(),
+            ),
+            (
+                "terminal_status",
+                serde_json::json!({"job_id": JOB}),
+                waits[2].as_str(),
+            ),
+            (
+                "terminal_control",
+                serde_json::json!({"action": "wait", "job_id": JOB, "revision": 6}),
+                waits[3].as_str(),
             ),
         ];
         // The agent's text before the command, which ends the run of calls
@@ -5812,6 +5860,20 @@ mod tests {
                 .all(|item| item.outcome.as_deref() == Some("nothing new")),
             "{live:?}"
         );
+        // Each wait on the job found new output only past what the agent
+        // got of it before, live and restored alike.
+        let found: Vec<Option<&str>> = live
+            .iter()
+            .filter(|item| {
+                item.act
+                    .as_ref()
+                    .is_some_and(|act| act.kind == ActKind::JobWait)
+            })
+            .map(|item| item.act.as_ref().map(|act| act.news.as_str()))
+            .collect();
+        assert_eq!(found.len(), 3);
+        assert_ne!(found[0], found[1]);
+        assert_eq!(found[1], found[2]);
         // The failed build joined the commands before it, and the command
         // after it has a row of its own.
         let said: Vec<String> = rows(&live);
