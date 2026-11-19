@@ -2060,7 +2060,10 @@ async function pixelCases(cdp, agent) {
           if (!door) return null;
           const r = door.getBoundingClientRect();
           const held = door.previousElementSibling;
-          const lines = held.matches('pre') ? held.textContent.split('\\n').length : held.querySelectorAll('.line').length;
+          // (Its lines as the page draws them, one .line each, or as text
+          // where it draws none.)
+          const drawn = held.querySelectorAll('.line').length;
+          const lines = drawn || (held.matches('pre') ? held.textContent.split('\\n').length : 0);
           return { x: r.left + 10, y: r.top + r.height / 2, top: r.top * devicePixelRatio, label: door.textContent, lines, below: r.bottom - (box.top + log.clientHeight), first: held.getBoundingClientRect().top - box.top };
         })()`;
         const shut = await run.evaluate(door);
