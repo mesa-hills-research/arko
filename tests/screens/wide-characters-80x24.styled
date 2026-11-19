@@ -71,7 +71,7 @@ text 15 "  •"
 style 15 0 80 fg=#dedede bg=#131313
 text 16 "    漢字とかなが行の終わりにかかると、次の行に移ります。漢字とかな漢字とかな漢字"
 style 16 0 80 fg=#dedede bg=#131313
-text 17 "    かな"
+text 17 "    とかな"
 style 17 0 80 fg=#dedede bg=#131313
 text 18 "  • 日本語 in code"
 style 18 0 4 fg=#dedede bg=#131313

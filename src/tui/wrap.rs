@@ -122,8 +122,10 @@ pub fn wrap_lines(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Wrapped>
     let mut join = Join::Break;
     let mut used = 0;
     // Where the line can break, after its last space, with the width
-    // before it.
+    // before it. (Not after the spaces that start it, which would leave a
+    // line of nothing.)
     let mut last_space: Option<(usize, usize)> = None;
+    let mut started = false;
     let room = |lines: &Vec<(Vec<Cluster>, Join)>| {
         if lines.is_empty() {
             width
@@ -132,13 +134,28 @@ pub fn wrap_lines(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Wrapped>
         }
     };
     for (c, w, style) in clusters {
-        if used + w > room(&lines) && !line.is_empty() {
+        // (Again while what a break carried is too wide for a line after
+        // the first, which has less room when they hang.)
+        let mut dropped = false;
+        while used + w > room(&lines) && !line.is_empty() {
             let (rest, next) = match last_space {
                 // Break after the space. The next line starts with the
                 // word that didn't fit.
                 Some((at, _)) if c != " " => (line.split_off(at), Join::Space),
-                _ if c == " " => (Vec::new(), Join::Space),
-                _ => (Vec::new(), Join::Direct),
+                _ if c == " " && used <= room(&lines) => (Vec::new(), Join::Space),
+                // Break the word where the room ends.
+                _ => {
+                    let mut fit = 0;
+                    let at = line
+                        .iter()
+                        .take_while(|(_, w, _)| {
+                            fit += w;
+                            fit <= room(&lines)
+                        })
+                        .count()
+                        .max(1);
+                    (line.split_off(at), Join::Direct)
+                }
             };
             // Spaces at the end of a line aren't drawn.
             while line.last().is_some_and(|(c, _, _)| *c == " ") {
@@ -149,14 +166,20 @@ pub fn wrap_lines(spans: &[Span<'_>], width: usize, hang: usize) -> Vec<Wrapped>
             line = rest;
             used = line.iter().map(|(_, w, _)| w).sum();
             last_space = None;
-            if c == " " && line.is_empty() {
-                continue;
-            }
+            started = !line.is_empty();
+            dropped = c == " " && line.is_empty();
+        }
+        if dropped {
+            continue;
         }
         line.push((c, w, style));
         used += w;
         if c == " " {
-            last_space = Some((line.len(), used));
+            if started {
+                last_space = Some((line.len(), used));
+            }
+        } else {
+            started = true;
         }
     }
     lines.push((line, join));
@@ -267,6 +290,53 @@ mod tests {
             shown,
             [(Join::Break, 0), (Join::Space, 2), (Join::Direct, 2)]
         );
+    }
+
+    /// Lines that hang keep every character and stay in their width, also
+    /// when the word a break carries is wider than a hanging line has room
+    /// for. A line that starts with spaces breaks in its first word rather
+    /// than after them.
+    #[test]
+    fn hanging_lines_keep_every_character_in_their_width() {
+        let squeezed = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for text in [
+            "        state.select(target);",
+            "    let target = state.targets.get(4).copied().unwrap_or_default();",
+            "a bcdefghijklmnopqrstuvwxyz",
+            "one two three four five six",
+            "abc defghij",
+            "abc defghij klmnopqrstu v",
+        ] {
+            let indent = text.len() - text.trim_start().len();
+            for columns in 4..=30 {
+                for hang in [0, 2, 4, 8] {
+                    let at = format!("{text:?} in {columns}, hanging {hang}");
+                    let lines = wrap_lines(&[Span::raw(text)], columns, hang);
+                    let mut joined = String::new();
+                    for (n, line) in lines.iter().enumerate() {
+                        let shown: String = line
+                            .spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect();
+                        assert!(width(&shown) <= columns.max(hang + 1), "{at}: {shown:?}");
+                        if n > 0 && line.join == Join::Space {
+                            joined.push(' ');
+                        }
+                        joined.push_str(&shown[line.skip..]);
+                    }
+                    assert_eq!(squeezed(&joined), squeezed(text), "{at}");
+                    if columns > indent {
+                        let first: String = lines[0]
+                            .spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect();
+                        assert!(!first.trim().is_empty(), "{at}: {lines:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

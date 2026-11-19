@@ -55,6 +55,25 @@ impl Mark {
     }
 }
 
+/// The columns between a file's line's tab stops, as the page draws them
+/// (the terminal draws a tab as 4 spaces).
+pub const TAB_COLUMNS: usize = 4;
+
+/// The columns of a file's line's own indent, its spaces and tabs before
+/// its code. A line that wraps goes on there, so it reads as one line.
+pub fn indent(text: &str) -> usize {
+    let mut columns = 0;
+    for c in text.chars() {
+        match c {
+            ' ' => columns += 1,
+            '\t' => columns += TAB_COLUMNS - columns % TAB_COLUMNS,
+            _ => return columns,
+        }
+    }
+    // (A line of spaces alone has no code to line up under.)
+    0
+}
+
 /// The line `line` of a content of `kind`, as a client draws it.
 pub fn line(kind: ContentKind, line: &str) -> Line<'_> {
     fn numbered(rest: &str, mark: Mark) -> Option<Line<'_>> {

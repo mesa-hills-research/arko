@@ -181,6 +181,10 @@ pub fn content_view(data: RwSignal<ItemData>) -> impl IntoView {
     view! { {lines}{door} }
 }
 
+/// The deepest a wrapped code line goes on under its code, in columns, so
+/// a deep indent leaves the code room on a phone.
+const HANG_MAX: usize = 16;
+
 /// The lines of a content `text` of `kind`, their numbers as wide as
 /// `numbers` where its whole's widest number is known.
 fn lines_view(kind: ContentKind, text: &str, numbers: Option<usize>) -> AnyView {
@@ -211,11 +215,31 @@ fn lines_view(kind: ContentKind, text: &str, numbers: Option<usize>) -> AnyView 
                             html
                         });
                         let sign = diff.then(|| view! { <span class="sign">{mark.symbol().to_string()}</span> });
+                        // A line that wraps goes on under its code, at the
+                        // code's own indent, so it reads as one line. An
+                        // indent that fits doesn't wrap, so the first line
+                        // holds code.
+                        let columns = content::indent(text);
+                        let hang = columns.min(HANG_MAX);
+                        let indent = &text[..text.len() - text.trim_start_matches([' ', '\t']).len()];
+                        let (indent, html) = match html.strip_prefix(indent) {
+                            Some(code) if (1..=HANG_MAX).contains(&columns) => {
+                                (Some(indent.to_string()), code.to_string())
+                            }
+                            _ => (None, html),
+                        };
                         view! {
                             <div class=class>
                                 <span class="ln" style:min-width=format!("{width}ch")>{number.to_string()}</span>
                                 {sign}
-                                <span class="text" inner_html=html></span>
+                                <span
+                                    class="text"
+                                    style:padding-left=format!("{hang}ch")
+                                    style:text-indent=format!("-{hang}ch")
+                                >
+                                    {indent.map(|indent| view! { <span class="indent">{indent}</span> })}
+                                    <span inner_html=html></span>
+                                </span>
                             </div>
                         }
                         .into_any()

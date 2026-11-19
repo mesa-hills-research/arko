@@ -545,6 +545,7 @@ details.call > .holds, .row.result > .holds {
   font: 12px/18px var(--mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  tab-size: 4;
 }
 .holds pre.held.plain, .holds .held.code { color: var(--text); }
 .holds .held.code .line { display: flex; gap: 1ch; }
@@ -552,6 +553,7 @@ details.call > .holds, .row.result > .holds {
 .holds .held.code .ln { flex: none; color: var(--muted); text-align: right; user-select: none; }
 .holds .held.code .sign { flex: none; width: 1ch; user-select: none; }
 .holds .held.code .text { min-width: 0; }
+.holds .held.code .indent { white-space: pre; }
 .holds .held.diff .add { background: color-mix(in srgb, var(--success) 14%, transparent); }
 .holds .held.diff .del { background: color-mix(in srgb, var(--error) 12%, transparent); }
 /* The door to the rest of a content, muted text. */
