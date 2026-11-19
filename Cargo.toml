@@ -61,9 +61,9 @@ dictation = ["dep:speech", "dep:cpal"]
 [dependencies]
 # The framework, from crates.io. CONTRIBUTING.md shows how to build against
 # a local checkout of it.
-arko_ai = "0.3.1"
-arko_agents = "0.9.1"
-arko_workflows = "0.10.1"
+arko_ai = "0.3.2"
+arko_agents = "0.10.0"
+arko_workflows = "0.11.0"
 arko_index = "0.3.2"
 
 async-trait = "0.1.79"
