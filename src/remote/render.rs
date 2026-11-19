@@ -23,7 +23,7 @@ use arko_agents::tool::ToolReceipt;
 use super::content;
 use super::feed::{Act, ActKind, CallStatus, Came, ContentKind, Item, Kind};
 use super::plural;
-use super::protocol::CallLine;
+use super::protocol::{CallLine, JobFound};
 use super::quiet;
 use crate::crew;
 use crate::message;
@@ -125,6 +125,7 @@ pub fn nested_call(tool: &str, parameters: &Parameters) -> (CallLine, Option<Act
         .map_or_else(|| tool.to_string(), |item| item.text.clone());
     let line = CallLine {
         text,
+        path: item.as_ref().and_then(|item| item.path),
         status: CallStatus::Running,
         outcome: String::new(),
         failed: String::new(),
@@ -156,6 +157,23 @@ pub fn nested_ended(
     let cut = whole > output.len();
     let words = match outcome.status {
         CallStatus::Ok if cut => None,
+        // (Its line has nothing to open, so it says the error's first line,
+        // whole, where the call's own line would say it failed. A line too
+        // narrow for it leaves it out whole.)
+        CallStatus::Failed if outcome.text.as_deref() == Some(quiet::FAILED) => {
+            let error = outcome.output.as_deref().unwrap_or(output);
+            let said = match edits_in_place(tool) {
+                true => without_advice(error),
+                false => error.to_string(),
+            };
+            Some(
+                said.lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or(quiet::FAILED)
+                    .trim()
+                    .to_string(),
+            )
+        }
         _ => outcome.text.filter(|text| !text.trim().is_empty()),
     };
     line.status = outcome.status;
@@ -974,10 +992,11 @@ fn terminal_outcome(
             let found = job_found(&job, wait, seen);
             let mut outcome = Outcome::ok(found.words());
             outcome.settled.job_output_end = Some(job.output.end);
+            outcome.settled.found = Some(found.job());
             if wait {
                 outcome.settled.news = Some(found.words());
             }
-            if found != JobFound::Nothing {
+            if found != Found::Nothing {
                 outcome.block =
                     Content::new(ContentKind::Plain, job_output(&job), None).map(Content::block);
             }
@@ -1002,7 +1021,7 @@ fn terminal_outcome(
 
 /// What a look at a job or a wait on it found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JobFound {
+enum Found {
     /// It ended, in `state` with `code` when it exited.
     Ended(terminal::JobState, Option<i32>),
     /// It asks for input.
@@ -1015,23 +1034,41 @@ enum JobFound {
     Nothing,
 }
 
-impl JobFound {
+impl Found {
     fn words(self) -> String {
         match self {
-            JobFound::Ended(terminal::JobState::Succeeded, _) => "finished".into(),
-            JobFound::Ended(terminal::JobState::Failed, Some(code)) => {
+            Found::Ended(terminal::JobState::Succeeded, _) => "finished".into(),
+            Found::Ended(terminal::JobState::Failed, Some(code)) => {
                 format!("failed (exit {code})")
             }
-            JobFound::Ended(terminal::JobState::Failed, None) => "failed".into(),
-            JobFound::Ended(terminal::JobState::TimedOut, _) => "timed out".into(),
-            JobFound::Ended(terminal::JobState::Interrupted, _) => "interrupted".into(),
-            JobFound::Ended(terminal::JobState::Cancelled | terminal::JobState::Running, _) => {
+            Found::Ended(terminal::JobState::Failed, None) => "failed".into(),
+            Found::Ended(terminal::JobState::TimedOut, _) => "timed out".into(),
+            Found::Ended(terminal::JobState::Interrupted, _) => "interrupted".into(),
+            Found::Ended(terminal::JobState::Cancelled | terminal::JobState::Running, _) => {
                 "stopped".into()
             }
-            JobFound::Input => "asks for input".into(),
-            JobFound::Output => "new output".into(),
-            JobFound::Running => JOB_RUNNING.into(),
-            JobFound::Nothing => "nothing new".into(),
+            Found::Input => "asks for input".into(),
+            Found::Output => "new output".into(),
+            Found::Running => JOB_RUNNING.into(),
+            Found::Nothing => "nothing new".into(),
+        }
+    }
+
+    /// How it found the job, as the call's act keeps it for its mark.
+    fn job(self) -> JobFound {
+        match self {
+            Found::Ended(terminal::JobState::Succeeded, _) => JobFound::Finished,
+            Found::Ended(
+                terminal::JobState::Failed
+                | terminal::JobState::TimedOut
+                | terminal::JobState::Interrupted,
+                _,
+            ) => JobFound::Failed,
+            Found::Ended(terminal::JobState::Cancelled | terminal::JobState::Running, _) => {
+                JobFound::Stopped
+            }
+            Found::Input => JobFound::Input,
+            Found::Output | Found::Running | Found::Nothing => JobFound::Running,
         }
     }
 }
@@ -1039,17 +1076,17 @@ impl JobFound {
 /// What `job` says of the job, for a wait (`wait`) or a look, where the
 /// output the agent got of it before ends at `seen`. Only output past that
 /// is new, whatever else moved the job on (an input it was given).
-fn job_found(job: &terminal::TerminalSnapshot, wait: bool, seen: u64) -> JobFound {
+fn job_found(job: &terminal::TerminalSnapshot, wait: bool, seen: u64) -> Found {
     if job.state.is_terminal() {
-        return JobFound::Ended(job.state, job.exit_code);
+        return Found::Ended(job.state, job.exit_code);
     }
     if job.input.is_some() {
-        return JobFound::Input;
+        return Found::Input;
     }
     match wait {
-        false => JobFound::Running,
-        true if job.output.end > seen => JobFound::Output,
-        true => JobFound::Nothing,
+        false => Found::Running,
+        true if job.output.end > seen => Found::Output,
+        true => Found::Nothing,
     }
 }
 
@@ -1185,6 +1222,8 @@ pub struct Settled {
     edits: Option<usize>,
     /// Where the output a look at a job or a wait on it got ends.
     job_output_end: Option<u64>,
+    /// How a look at a job or a wait on it found the job.
+    found: Option<JobFound>,
 }
 
 impl Outcome {
@@ -1202,18 +1241,20 @@ impl Outcome {
         }
     }
 
-    /// A call that failed with `message` (an error, a rejection), meaning its
-    /// first words on the call's line ("refused" for a rejection), and the
-    /// whole message as its content, muted. A stop's and a compaction's
+    /// A call that failed with `message` (an error, a rejection), meaning
+    /// what its line says of it, and the whole message as its content,
+    /// muted. Its line says [`quiet::FAILED`] ("refused" for a rejection),
+    /// so the error shows once, whole, where the call opens, in Full as in
+    /// the Quiet row that says it couldn't. A stop's and a compaction's
     /// words are all there is to say.
     pub fn failed(message: &str) -> Self {
         Self::failed_call(None, message)
     }
 
-    /// [`Outcome::failed`] for a call of `tool` whose tool failed. A failed
-    /// edit's line says only [`quiet::FAILED`], since its error names the
-    /// file and why each block didn't apply, which the line can't hold. Its
-    /// content is the whole error.
+    /// [`Outcome::failed`] for a call of `tool` whose tool failed. An
+    /// edit's content is its error without what the tool tells the agent to
+    /// do next ([`without_advice`]), as is a code run's, which may tell an
+    /// edit's error.
     pub fn error(tool: &str, message: &str) -> Self {
         Self::failed_call(Some(tool), message)
     }
@@ -1251,13 +1292,17 @@ impl Outcome {
                 "refused".to_string(),
                 format!("Refused. {}", upper_first(why)),
             ),
-            None if !said_all && tool.is_some_and(edits_in_place) => {
-                (quiet::FAILED.to_string(), message.to_string())
+            None if said_all => (message.to_string(), message.to_string()),
+            None => {
+                // (An edit's error, also as a code run's error tells it.)
+                let said = match tool
+                    .is_some_and(|tool| edits_in_place(tool) || tool == crate::code_mode::RUN_CODE)
+                {
+                    true => without_advice(message),
+                    false => message.to_string(),
+                };
+                (quiet::FAILED.to_string(), said)
             }
-            None => (
-                cut(message.lines().next().unwrap_or_default(), OUTCOME_CHARS),
-                message.to_string(),
-            ),
         };
         let block = (!said_all)
             .then(|| Content::new(ContentKind::Muted, said, None))
@@ -1325,7 +1370,47 @@ impl Settled {
         if settled.job_output_end.is_some() {
             act.job_output_end = settled.job_output_end;
         }
+        if settled.found.is_some() {
+            act.found = settled.found;
+        }
     }
+}
+
+/// The sentences arko_agents' edit tools end an error with to tell the
+/// agent what to do next. The person reads what happened, so the
+/// transcript leaves them out, and the agent still gets them in the tool's
+/// result.
+// shortcut: matches the framework's sentences, until arko_agents gives its
+// advice apart from the error.
+const ADVICE: [&str; 11] = [
+    "Read the lines again and copy them exactly.",
+    "Copy those exactly as the file has them.",
+    "Copy the indentation exactly as the file has it.",
+    "Leave those prefixes out.",
+    "To create it, use write_file.",
+    "To give it content, use write_file.",
+    "To create a file or replace all of it, use write_file.",
+    "To add lines, search for the lines next to them and repeat those in the replace part.",
+    "Add lines around them to make them unique, or set replace_all to change every occurrence.",
+    "Add surrounding lines to old_string to make it unique, or set replace_all to change every occurrence.",
+    "Make them one block.",
+];
+
+/// A tool's error as the transcript shows it, what happened without the
+/// sentences that tell the agent what to do next ([`ADVICE`]).
+fn without_advice(error: &str) -> String {
+    error
+        .lines()
+        .map(|line| {
+            let mut line = line.to_string();
+            for advice in ADVICE {
+                line = line.replace(&format!(" {advice}"), "");
+            }
+            line
+        })
+        .filter(|line| !ADVICE.contains(&line.trim()))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// `text` with its first letter in upper case.
@@ -1389,6 +1474,13 @@ pub(crate) fn outcome_after(
     // An apply_diff call's edits are its blocks, which applied together.
     if tool == APPLY_DIFF_TOOL_NAME && output.starts_with("Edited ") {
         outcome = edits_made(crate::ui::diff_edits(parameters).max(1));
+    }
+    // A wait's line names the runs it waits for, so what came doesn't name
+    // them again.
+    if tool == crew::WAIT_FOR_AGENTS
+        && let Some(came) = &outcome.settled.came
+    {
+        outcome.text = Some(quiet::came_words(came, &ui::waited_runs(parameters, &[])));
     }
     outcome.job = job;
     if tool != SHELL_TOOL_NAME && outcome.output.is_none() && !output.trim().is_empty() {
@@ -1533,7 +1625,7 @@ fn brief(tool: &str, output: &str) -> Outcome {
         // its line says what came as the user reads it.
         crew::WAIT_FOR_AGENTS => {
             let came = came(output);
-            let mut outcome = Outcome::ok(quiet::came_words(&came));
+            let mut outcome = Outcome::ok(quiet::came_words(&came, &[]));
             outcome.settled.came = Some(came);
             outcome
         }
@@ -2179,6 +2271,18 @@ fn tests(lines: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A call a code run's code made keeps where its line names its file,
+    /// so the line keeps the file's name whole as a call's own line does.
+    #[test]
+    fn a_code_runs_file_call_keeps_where_its_file_is() {
+        let path = "crates/arko_agents/src/runtime/loop.rs";
+        let (line, _) = nested_call(READ_FILE_TOOL_NAME, &params(&[("path", path.into())]));
+        let (start, end) = line.path.expect("where its file is");
+        assert_eq!(&line.text[start..end], path);
+        let (command, _) = nested_call(SHELL_TOOL_NAME, &params(&[("command", "ls".into())]));
+        assert_eq!(command.path, None);
+    }
 
     fn params(pairs: &[(&str, Value)]) -> Parameters {
         pairs
@@ -3099,12 +3203,14 @@ mod tests {
                 .is_none(),
             "no output, no block"
         );
+        // A failed call's line says it failed, and its content why, once.
         let failed = Outcome::failed(
             "Tool 'read_file' execution failed: I/O error during tool execution for tool 'read_file': No such file",
         );
-        assert_eq!(failed.text.as_deref(), Some("No such file"));
+        assert_eq!(failed.text.as_deref(), Some(quiet::FAILED));
+        assert_eq!(failed.block.unwrap().text, "No such file");
         let failed = Outcome::failed("Tool 'x' execution failed: boom\nat line 3");
-        assert_eq!(failed.text.as_deref(), Some("boom"));
+        assert_eq!(failed.text.as_deref(), Some(quiet::FAILED));
         assert_eq!(failed.block.unwrap().text, "boom\nat line 3");
         // Why it failed is its content, unless its line says it all.
         assert_eq!(
@@ -3116,10 +3222,9 @@ mod tests {
 
     /// A tool's error reads as the tool said it, once, whether it came with
     /// "Execution failed: " doubled after the call's own words (as sessions
-    /// saved with older arko_agents keep it) or not. A failed edit's line
-    /// says one word, the same for every edit's error, which names no file,
-    /// and its content is the whole error. Other tools' lines say the
-    /// error's first line, and a refusal or a stop stays as it is.
+    /// saved with older arko_agents keep it) or not. A failed call's line
+    /// says one word, the same for every error, which names no file, and its
+    /// content is the whole error. A refusal or a stop stays as it is.
     #[test]
     fn a_tools_error_reads_once_and_a_failed_edit_says_it_failed() {
         let why = "None of the 2 blocks applied, so src/app.rs is unchanged.\nBlock 1: not found.";
@@ -3155,7 +3260,8 @@ mod tests {
             "read_file",
             "Tool 'read_file' execution failed: No such file",
         );
-        assert_eq!(read.text.as_deref(), Some("No such file"));
+        assert_eq!(read.text.as_deref(), Some(quiet::FAILED));
+        assert_eq!(read.block.unwrap().text, "No such file");
         // A refusal and a stop of an edit say so, as any call's do.
         for (said, line) in [
             ("refused (outside access is off)", "refused"),

@@ -10,7 +10,7 @@
   can record the expected result while it runs.
 
 ▸ Changed note 1
-▸ Ran git worktree add ../cache-check -b cache-ch…
+▸ Ran git worktree add ../cache-check -b…
 ▸ Read 3 files in src
   The clock and the cache use the same units, so
   this looks like a boundary error rather than a
@@ -32,7 +32,7 @@
 ▸ Made 1 edit to cache.rs
   Now check the fixture independently.
 ▸ Changed note 1
-▸ Ran git worktree add ../fixture-check -b fixtur…
+▸ Ran git worktree add ../fixture-check -b…
 · r3 Check that the cache fixt… · 1 tool call · 2s
 ▾ r3 reported
 │ The fixture and assertion both use the deadline
@@ -42,7 +42,7 @@
   I misspelled the exact-test option. I should use
   the full test path instead of changing the test.
 
-▸ Ran cargo-locked test cache_tests::e… (1 passed)
+▸ Ran cargo-locked test… (1 passed)
   The focused check passes. The worker agrees with
   the fixture, and the background run has
   finished. The reply can explain the boundary

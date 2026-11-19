@@ -57,8 +57,8 @@ pub use arko_ai::{ExtraUsage, PlanCredits};
 pub(crate) use feed::family_order_of;
 pub use feed::{
     Act, ActKind, Activity, Batches, CallLine, CallStatus, Calls, Came, ContentKind, Delivery,
-    ENDED_JOBS, Feed, Following, Item, JobKind, JobStart, JobState, JobSummary, Kind, Level,
-    MAIN_AGENT, Question, REFRESH_MESSAGE, Received, Snapshot, Source, Update, WorkerChange,
+    ENDED_JOBS, Feed, Following, Item, JobFound, JobKind, JobStart, JobState, JobSummary, Kind,
+    Level, MAIN_AGENT, Question, REFRESH_MESSAGE, Received, Snapshot, Source, Update, WorkerChange,
     WorkerInfo, WorkerState, WorkerSummary, family_order, family_order_with_levels,
 };
 #[cfg(all(feature = "remote", feature = "tui"))]

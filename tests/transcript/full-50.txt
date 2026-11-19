@@ -4,7 +4,7 @@
 
   I’ll clear the scratch build first.
 · $ rm -rf target/x · ✓ 0.1 s
-▸ background $ cargo-locked test cac… · ✓ finished
+▸ background $ cargo-locked test… · ✓ finished
   The cache test is running in the background. I…
 ▸ keep_note · ✓ Changed note 1.
 ▾ $ git worktree add ../cache-check -b… · ✓ 0.1 s
@@ -22,7 +22,7 @@
 ▸ edit src/cache.rs · ✓ 1 edit
   Now check the fixture independently.
 ▸ keep_note · ✓ Changed note 1.
-▾ $ git worktree add ../fixture-check -… · ✓ 0.1 s
+▾ $ git worktree add ../fixture-check… · ✓ 0.1 s
 │ $ git worktree add ../fixture-check -b
 │ fixture-check
 │ Preparing worktree (new branch 'fixture-check')
@@ -31,12 +31,12 @@
 
 · r3 Check that the cache fixt… · 1 tool call · 2s
 ▸ r3 reported
-▾ $ cargo-locked test cache -- --exc… · ✗ exit 101
+▾ $ cargo-locked test cache --… · ✗ exit 101
 │ $ cargo-locked test cache -- --excat
 │ error: Unrecognized option: 'excat'
 
   I misspelled the exact-test option. I should us…
-▾ $ cargo-locked test cache_tests::e… · ✓ 1 passed
+▾ $ cargo-locked test… · ✓ 1 passed
 │ $ cargo-locked test
 │ cache_tests::expires_at_the_deadline -- --exact
 │ running 1 test

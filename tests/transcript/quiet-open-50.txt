@@ -14,7 +14,7 @@
 │ The cache fixture must expire before its value
 │ is read.
 
-▾ Ran git worktree add ../cache-check -b cache-ch…
+▾ Ran git worktree add ../cache-check -b…
 │ $ git worktree add ../cache-check -b cache-check
 │ Preparing worktree (new branch 'cache-check')
 │ HEAD is now at abc1234 Keep cached values until
@@ -58,7 +58,7 @@
 │ The cache fixture must expire before its value
 │ is read.
 
-▾ Ran git worktree add ../cache-check -b cache-ch…
+▾ Ran git worktree add ../cache-check -b…
 │ $ git worktree add ../cache-check -b cache-check
 │ Preparing worktree (new branch 'cache-check')
 │ HEAD is now at abc1234 Keep cached values until
@@ -128,7 +128,7 @@
 │ The cache fixture must expire before its value
 │ is read.
 
-▾ Ran git worktree add ../cache-check -b cache-ch…
+▾ Ran git worktree add ../cache-check -b…
 │ $ git worktree add ../cache-check -b cache-check
 │ Preparing worktree (new branch 'cache-check')
 │ HEAD is now at abc1234 Keep cached values until
@@ -180,7 +180,7 @@
 │ The comparison now expires the value at its
 │ deadline.
 
-▾ Ran git worktree add ../fixture-check -b fixtur…
+▾ Ran git worktree add ../fixture-check -b…
 │ $ git worktree add ../fixture-check -b
 │ fixture-check
 │ Preparing worktree (new branch 'fixture-check')
@@ -198,7 +198,7 @@
   I misspelled the exact-test option. I should use
   the full test path instead of changing the test.
 
-▾ Ran cargo-locked test cache_tests::e… (1 passed)
+▾ Ran cargo-locked test… (1 passed)
 │ $ cargo-locked test
 │ cache_tests::expires_at_the_deadline -- --exact
 │ running 1 test

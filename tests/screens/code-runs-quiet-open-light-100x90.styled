@@ -211,7 +211,7 @@ style 23 0 14 fg=#696969 bg=#f9f9f9
 style 23 14 100 fg=#000000 bg=#f9f9f9
 text 24 ""
 style 24 0 100 fg=#000000 bg=#f9f9f9
-text 25 "▾ Ran code to rename the setting in every crate                                                   ✗"
+text 25 "▾ Couldn’t run code to rename the setting in every crate                                          ✗"
 style 25 0 2 fg=#696969 bg=#f9f9f9
 style 25 2 98 fg=#000000 bg=#f9f9f9
 style 25 98 99 fg=#d21f07 bg=#f9f9f9

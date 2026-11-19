@@ -286,6 +286,11 @@ pub struct Act {
     /// more.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_output_end: Option<u64>,
+    /// For a look at a job or a wait on it, how it found the job, which the
+    /// mark on its line follows ([`quiet::mark`](super::quiet::mark)), since
+    /// the call went well whatever became of the job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub found: Option<JobFound>,
     /// What the row's words cut that the reader may need, whole, as one
     /// muted line over the call's content: a command's whole text with its
     /// folder, a long search's query, a monitor's settings. Empty when the
@@ -296,6 +301,22 @@ pub struct Act {
     /// session has none, since it keeps only the run's call and result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calls: Option<Calls>,
+}
+
+/// How a look at a job or a wait on it found the job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobFound {
+    /// It runs, with new output or none.
+    Running,
+    /// It ended well.
+    Finished,
+    /// It failed, ran out of time, or Arko stopped before it ended.
+    Failed,
+    /// The agent or the user stopped it.
+    Stopped,
+    /// It asks for input.
+    Input,
 }
 
 /// The calls a code run's code made (`run_code`), for its rows. Its Quiet
@@ -326,6 +347,10 @@ pub struct Calls {
 pub struct CallLine {
     /// The call as Full writes it ("read src/engine.rs").
     pub text: String,
+    /// Where a file tool's call names its file in `text` ([`FileLine`]),
+    /// whose name its line keeps whole as a call's own line does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<(usize, usize)>,
     pub status: CallStatus,
     /// Its result in a few words ("310 lines", "refused").
     #[serde(default, skip_serializing_if = "String::is_empty")]

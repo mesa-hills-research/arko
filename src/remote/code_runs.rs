@@ -434,7 +434,7 @@ mod tests {
                     2
                 ),
                 row(
-                    "Ran code to rename the setting in every crate",
+                    "Couldn’t run code to rename the setting in every crate",
                     true,
                     false,
                     false,

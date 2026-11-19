@@ -69,8 +69,8 @@ pub(crate) const WORKER_EVERY: Duration = Duration::from_millis(250);
 
 // The types the web page reads too, which it compiles from the same file.
 pub use super::protocol::{
-    Act, ActKind, Activity, CallLine, CallStatus, Calls, Came, ContentKind, Delivery, JobKind,
-    JobState, JobSummary, Kind, Level, Question, Source, WorkerState,
+    Act, ActKind, Activity, CallLine, CallStatus, Calls, Came, ContentKind, Delivery, JobFound,
+    JobKind, JobState, JobSummary, Kind, Level, Question, Source, WorkerState,
 };
 
 /// The message that keeps the prompt cache warm where the provider takes
@@ -6633,7 +6633,10 @@ mod tests {
         assert_eq!(
             outcomes,
             [
-                (Some(CallStatus::Failed), Some("no such file".into())),
+                (
+                    Some(CallStatus::Failed),
+                    Some(crate::remote::quiet::FAILED.into())
+                ),
                 (Some(CallStatus::Failed), Some("refused".into())),
                 (Some(CallStatus::Failed), Some("interrupted".into())),
                 (Some(CallStatus::Failed), Some("stopped".into())),

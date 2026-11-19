@@ -14,10 +14,10 @@ style 3 2 14 fg=#dedede bg=#131313
 style 3 14 25 fg=#ff5257 bg=#131313
 style 3 25 35 fg=#9d9d9d bg=#131313
 style 3 35 40 fg=#dedede bg=#131313
-text 4 "▸ Ran code to count TODO comments per c…"
+text 4 "▸ Ran code to count TODO comments per…"
 style 4 0 2 fg=#9d9d9d bg=#131313
 style 4 2 40 fg=#dedede bg=#131313
-text 5 "▸ Ran code to rename the setting in…  ✗"
+text 5 "▸ Couldn’t run code to rename the…    ✗"
 style 5 0 2 fg=#9d9d9d bg=#131313
 style 5 2 38 fg=#dedede bg=#131313
 style 5 38 39 fg=#ff5257 bg=#131313
@@ -27,10 +27,11 @@ style 6 0 2 fg=#9d9d9d bg=#131313
 style 6 2 40 fg=#dedede bg=#131313
 text 7 "▸ Ran code to build each crate (stopped)"
 style 7 0 40 fg=#9d9d9d bg=#131313
-text 8 "▸ Running code to run each crat… · 41s …"
+text 8 "▸ Running code to run each… · 41s …"
 style 8 0 2 fg=#9d9d9d bg=#131313
-style 8 2 32 fg=#dedede bg=#131313
-style 8 32 40 fg=#9d9d9d bg=#131313
+style 8 2 27 fg=#dedede bg=#131313
+style 8 27 35 fg=#9d9d9d bg=#131313
+style 8 35 40 fg=#dedede bg=#131313
 text 9 ""
 style 9 0 40 fg=#dedede bg=#131313
 text 10 ""

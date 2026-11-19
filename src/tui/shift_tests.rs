@@ -1472,6 +1472,7 @@ impl<'m> Run<'m> {
             calls.running = quiet::doing(&act);
             calls.lines.push(CallLine {
                 text,
+                path: None,
                 status: CallStatus::Running,
                 outcome: String::new(),
                 failed: String::new(),

@@ -48,7 +48,7 @@ style 22 0 12 dim
 text 23 "│ 4 arko_index"
 style 23 0 14 dim
 text 24 ""
-text 25 "▾ Ran code to rename the setting in every crate                                                   ✗"
+text 25 "▾ Couldn’t run code to rename the setting in every crate                                          ✗"
 style 25 0 2 dim
 style 25 98 99 fg=red
 text 26 "│  for (const path of [\"crates/arko_ai/src/config.rs\", \"crates/arko_ui/src/config.rs\"]) {"

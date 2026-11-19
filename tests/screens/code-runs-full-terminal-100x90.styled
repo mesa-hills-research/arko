@@ -65,114 +65,114 @@ style 25 0 12 dim
 text 26 "│ 4 arko_index"
 style 26 0 14 dim
 text 27 ""
-text 28 "▾ run_code rename the setting in… · ✗ The code threw on line 2, at a call of read_file that failed…"
+text 28 "▾ run_code rename the setting in every crate · ✗ Failed"
 style 28 0 2 dim
-style 28 33 36 dim
-style 28 36 37 fg=red
-style 28 37 99 dim
-text 29 "│ run_code rename the setting in every crate"
-style 29 0 44 dim
-text 30 "│  for (const path of [\"crates/arko_ai/src/config.rs\", \"crates/arko_ui/src/config.rs\"]) {"
+style 28 44 47 dim
+style 28 47 48 fg=red
+style 28 48 55 dim
+text 29 "│  for (const path of [\"crates/arko_ai/src/config.rs\", \"crates/arko_ui/src/config.rs\"]) {"
+style 29 0 2 dim
+text 30 "│    const text = await tools.read_file({ path });"
 style 30 0 2 dim
-text 31 "│    const text = await tools.read_file({ path });"
+text 31 "│    await tools.write_file({ path, content: text.replaceAll(\"keep_warm\", \"warm\") });"
 style 31 0 2 dim
-text 32 "│    await tools.write_file({ path, content: text.replaceAll(\"keep_warm\", \"warm\") });"
+text 32 "│  }"
 style 32 0 2 dim
-text 33 "│  }"
-style 33 0 2 dim
-text 34 "│ · read crates/arko_ai/src/config.rs · ✓ 2 lines"
-style 34 0 40 dim
-style 34 40 41 fg=green
-style 34 41 49 dim
-text 35 "│ · write crates/arko_ai/src/config.rs (1 line) · ✓"
-style 35 0 50 dim
-style 35 50 51 fg=green
-text 36 "│ · read crates/arko_ui/src/config.rs · ✗ No such file or directory (os error 2)"
-style 36 0 40 dim
-style 36 40 41 fg=red
-style 36 41 80 dim
-text 37 "│ The code threw on line 2, at a call of read_file that failed: No such file or directory (os error"
-style 37 0 99 dim
-text 38 "│ 2)"
-style 38 0 4 dim
-text 39 "│ Before it ended, the code wrote 1 file."
-style 39 0 41 dim
-text 40 ""
-text 41 "▾ run_code clean the build folders · ✓ 2 lines"
+text 33 "│ · read crates/arko_ai/src/config.rs · ✓ 2 lines"
+style 33 0 40 dim
+style 33 40 41 fg=green
+style 33 41 49 dim
+text 34 "│ · write crates/arko_ai/src/config.rs (1 line) · ✓"
+style 34 0 50 dim
+style 34 50 51 fg=green
+text 35 "│ · read crates/arko_ui/src/config.rs · ✗ No such file or directory (os error 2)"
+style 35 0 40 dim
+style 35 40 41 fg=red
+style 35 41 80 dim
+text 36 "│ The code threw on line 2, at a call of read_file that failed: No such file or directory (os error"
+style 36 0 99 dim
+text 37 "│ 2)"
+style 37 0 4 dim
+text 38 "│ Before it ended, the code wrote 1 file."
+style 38 0 41 dim
+text 39 ""
+text 40 "▾ run_code clean the build folders · ✓ 2 lines"
+style 40 0 2 dim
+style 40 34 37 dim
+style 40 37 38 fg=green
+style 40 38 46 dim
+text 41 "│  for (const name of [\"target\", \"web/dist\"]) {"
 style 41 0 2 dim
-style 41 34 37 dim
-style 41 37 38 fg=green
-style 41 38 46 dim
-text 42 "│  for (const name of [\"target\", \"web/dist\"]) {"
+text 42 "│    try {"
 style 42 0 2 dim
-text 43 "│    try {"
+text 43 "│      await tools.shell({ command: `rm -rf ${name}` });"
 style 43 0 2 dim
-text 44 "│      await tools.shell({ command: `rm -rf ${name}` });"
+text 44 "│    } catch (error) {"
 style 44 0 2 dim
-text 45 "│    } catch (error) {"
+text 45 "│      console.log(`${name}: ${error.message}`);"
 style 45 0 2 dim
-text 46 "│      console.log(`${name}: ${error.message}`);"
+text 46 "│    }"
 style 46 0 2 dim
-text 47 "│    }"
+text 47 "│  }"
 style 47 0 2 dim
-text 48 "│  }"
+text 48 "│  return \"Done.\";"
 style 48 0 2 dim
-text 49 "│  return \"Done.\";"
-style 49 0 2 dim
-text 50 "│ · $ rm -rf target · ✗ refused"
-style 50 0 22 dim
-style 50 22 23 fg=red
-style 50 23 31 dim
-text 51 "│ · $ rm -rf web/dist · ✓ 0.1 s"
-style 51 0 24 dim
-style 51 24 25 fg=green
-style 51 25 31 dim
-text 52 "│ target: refused (The command guard refused it.)"
-style 52 0 49 dim
-text 53 "│ Done."
-style 53 0 7 dim
-text 54 ""
-text 55 "▾ run_code build each crate · ✗ stopped"
+text 49 "│ · $ rm -rf target · ✗ refused"
+style 49 0 22 dim
+style 49 22 23 fg=red
+style 49 23 31 dim
+text 50 "│ · $ rm -rf web/dist · ✓ 0.1 s"
+style 50 0 24 dim
+style 50 24 25 fg=green
+style 50 25 31 dim
+text 51 "│ target: refused (The command guard refused it.)"
+style 51 0 49 dim
+text 52 "│ Done."
+style 52 0 7 dim
+text 53 ""
+text 54 "▾ run_code build each crate · ✗ stopped"
+style 54 0 2 dim
+style 54 27 30 dim
+style 54 30 31 fg=red
+style 54 31 39 dim
+text 55 "│  for (const name of [\"arko_ai\", \"arko_agents\"]) {"
 style 55 0 2 dim
-style 55 27 30 dim
-style 55 30 31 fg=red
-style 55 31 39 dim
-text 56 "│  for (const name of [\"arko_ai\", \"arko_agents\"]) {"
+text 56 "│    await tools.shell({ command: `cargo build -p ${name}` });"
 style 56 0 2 dim
-text 57 "│    await tools.shell({ command: `cargo build -p ${name}` });"
+text 57 "│  }"
 style 57 0 2 dim
-text 58 "│  }"
-style 58 0 2 dim
-text 59 "│ · $ cargo build -p arko_ai · ✓ 41.2 s"
-style 59 0 31 dim
-style 59 31 32 fg=green
-style 59 32 39 dim
-text 60 "│ · $ cargo build -p arko_agents · ✗ stopped"
-style 60 0 35 dim
-style 60 35 36 fg=red
-style 60 36 44 dim
-text 61 ""
-text 62 "▾ run_code run each crate's tests · 41s …"
+text 58 "│ · $ cargo build -p arko_ai · ✓ 41.2 s"
+style 58 0 31 dim
+style 58 31 32 fg=green
+style 58 32 39 dim
+text 59 "│ · $ cargo build -p arko_agents · ✗ stopped"
+style 59 0 35 dim
+style 59 35 36 fg=red
+style 59 36 44 dim
+text 60 ""
+text 61 "▾ run_code run each crate's tests · 41s …"
+style 61 0 2 dim
+style 61 33 41 dim
+text 62 "│  for (const name of [\"arko_index\", \"arko_ai\"]) {"
 style 62 0 2 dim
-style 62 33 41 dim
-text 63 "│  for (const name of [\"arko_index\", \"arko_ai\"]) {"
+text 63 "│    const output = await tools.shell({ command: `cargo test -p ${name}` });"
 style 63 0 2 dim
-text 64 "│    const output = await tools.shell({ command: `cargo test -p ${name}` });"
+text 64 "│    console.log(output.split(\"\\n\").pop());"
 style 64 0 2 dim
-text 65 "│    console.log(output.split(\"\\n\").pop());"
+text 65 "│  }"
 style 65 0 2 dim
-text 66 "│  }"
-style 66 0 2 dim
-text 67 "│ · list crates · ✓ 4 entries"
-style 67 0 18 dim
-style 67 18 19 fg=green
-style 67 19 29 dim
-text 68 "│ · $ cargo test -p arko_index · ✓ 24 passed"
-style 68 0 33 dim
-style 68 33 34 fg=green
-style 68 34 44 dim
-text 69 "│ · $ cargo test -p arko_ai …"
-style 69 0 29 dim
+text 66 "│ · list crates · ✓ 4 entries"
+style 66 0 18 dim
+style 66 18 19 fg=green
+style 66 19 29 dim
+text 67 "│ · $ cargo test -p arko_index · ✓ 24 passed"
+style 67 0 33 dim
+style 67 33 34 fg=green
+style 67 34 44 dim
+text 68 "│ · $ cargo test -p arko_ai …"
+style 68 0 4 dim
+style 68 27 29 dim
+text 69 ""
 text 70 ""
 text 71 ""
 text 72 ""

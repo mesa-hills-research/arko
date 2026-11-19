@@ -189,78 +189,82 @@ style 29 0 14 fg=#9d9d9d bg=#131313
 style 29 14 60 fg=#dedede bg=#131313
 text 30 ""
 style 30 0 60 fg=#dedede bg=#131313
-text 31 "▾ run_cod… · ✗ The code threw on line 2, at a call of read_…"
+text 31 "▾ run_code rename the setting in every crate · ✗ Failed"
 style 31 0 2 fg=#9d9d9d bg=#131313
-style 31 2 10 fg=#dedede bg=#131313
-style 31 10 13 fg=#9d9d9d bg=#131313
-style 31 13 14 fg=#ff5257 bg=#131313
-style 31 14 60 fg=#9d9d9d bg=#131313
-text 32 "│ run_code rename the setting in every crate"
-style 32 0 44 fg=#9d9d9d bg=#131313
-style 32 44 60 fg=#dedede bg=#131313
-text 33 "│  for (const path of [\"crates/arko_ai/src/config.rs\","
+style 31 2 44 fg=#dedede bg=#131313
+style 31 44 47 fg=#9d9d9d bg=#131313
+style 31 47 48 fg=#ff5257 bg=#131313
+style 31 48 55 fg=#9d9d9d bg=#131313
+style 31 55 60 fg=#dedede bg=#131313
+text 32 "│  for (const path of [\"crates/arko_ai/src/config.rs\","
+style 32 0 2 fg=#9d9d9d bg=#131313
+style 32 2 3 fg=#dedede bg=#232323
+style 32 3 6 fg=#87b1f6 bg=#232323
+style 32 6 8 fg=#dedede bg=#232323
+style 32 8 13 fg=#87b1f6 bg=#232323
+style 32 13 19 fg=#dedede bg=#232323
+style 32 19 21 fg=#87b1f6 bg=#232323
+style 32 21 23 fg=#dedede bg=#232323
+style 32 23 53 fg=#a3e09f bg=#232323
+style 32 53 60 fg=#dedede bg=#232323
+text 33 "│  \"crates/arko_ui/src/config.rs\"]) {"
 style 33 0 2 fg=#9d9d9d bg=#131313
 style 33 2 3 fg=#dedede bg=#232323
-style 33 3 6 fg=#87b1f6 bg=#232323
-style 33 6 8 fg=#dedede bg=#232323
-style 33 8 13 fg=#87b1f6 bg=#232323
-style 33 13 19 fg=#dedede bg=#232323
-style 33 19 21 fg=#87b1f6 bg=#232323
-style 33 21 23 fg=#dedede bg=#232323
-style 33 23 53 fg=#a3e09f bg=#232323
-style 33 53 60 fg=#dedede bg=#232323
-text 34 "│  \"crates/arko_ui/src/config.rs\"]) {"
+style 33 3 33 fg=#a3e09f bg=#232323
+style 33 33 60 fg=#dedede bg=#232323
+text 34 "│    const text = await tools.read_file({ path });"
 style 34 0 2 fg=#9d9d9d bg=#131313
-style 34 2 3 fg=#dedede bg=#232323
-style 34 3 33 fg=#a3e09f bg=#232323
-style 34 33 60 fg=#dedede bg=#232323
-text 35 "│    const text = await tools.read_file({ path });"
+style 34 2 5 fg=#dedede bg=#232323
+style 34 5 10 fg=#87b1f6 bg=#232323
+style 34 10 18 fg=#dedede bg=#232323
+style 34 18 23 fg=#87b1f6 bg=#232323
+style 34 23 30 fg=#dedede bg=#232323
+style 34 30 39 fg=#bcc4e0 bg=#232323
+style 34 39 42 fg=#dedede bg=#232323
+style 34 42 46 fg=#bcc4e0 bg=#232323
+style 34 46 60 fg=#dedede bg=#232323
+text 35 "│    await tools.write_file({ path, content:"
 style 35 0 2 fg=#9d9d9d bg=#131313
 style 35 2 5 fg=#dedede bg=#232323
 style 35 5 10 fg=#87b1f6 bg=#232323
-style 35 10 18 fg=#dedede bg=#232323
-style 35 18 23 fg=#87b1f6 bg=#232323
-style 35 23 30 fg=#dedede bg=#232323
-style 35 30 39 fg=#bcc4e0 bg=#232323
-style 35 39 42 fg=#dedede bg=#232323
-style 35 42 46 fg=#bcc4e0 bg=#232323
-style 35 46 60 fg=#dedede bg=#232323
-text 36 "│    await tools.write_file({ path, content:"
+style 35 10 17 fg=#dedede bg=#232323
+style 35 17 27 fg=#bcc4e0 bg=#232323
+style 35 27 30 fg=#dedede bg=#232323
+style 35 30 34 fg=#bcc4e0 bg=#232323
+style 35 34 36 fg=#dedede bg=#232323
+style 35 36 43 fg=#bcc4e0 bg=#232323
+style 35 43 60 fg=#dedede bg=#232323
+text 36 "│    text.replaceAll(\"keep_warm\", \"warm\") });"
 style 36 0 2 fg=#9d9d9d bg=#131313
-style 36 2 5 fg=#dedede bg=#232323
-style 36 5 10 fg=#87b1f6 bg=#232323
-style 36 10 17 fg=#dedede bg=#232323
-style 36 17 27 fg=#bcc4e0 bg=#232323
-style 36 27 30 fg=#dedede bg=#232323
-style 36 30 34 fg=#bcc4e0 bg=#232323
-style 36 34 36 fg=#dedede bg=#232323
-style 36 36 43 fg=#bcc4e0 bg=#232323
-style 36 43 60 fg=#dedede bg=#232323
-text 37 "│    text.replaceAll(\"keep_warm\", \"warm\") });"
+style 36 2 10 fg=#dedede bg=#232323
+style 36 10 20 fg=#bcc4e0 bg=#232323
+style 36 20 21 fg=#dedede bg=#232323
+style 36 21 32 fg=#a3e09f bg=#232323
+style 36 32 34 fg=#dedede bg=#232323
+style 36 34 40 fg=#a3e09f bg=#232323
+style 36 40 60 fg=#dedede bg=#232323
+text 37 "│  }"
 style 37 0 2 fg=#9d9d9d bg=#131313
-style 37 2 10 fg=#dedede bg=#232323
-style 37 10 20 fg=#bcc4e0 bg=#232323
-style 37 20 21 fg=#dedede bg=#232323
-style 37 21 32 fg=#a3e09f bg=#232323
-style 37 32 34 fg=#dedede bg=#232323
-style 37 34 40 fg=#a3e09f bg=#232323
-style 37 40 60 fg=#dedede bg=#232323
-text 38 "│  }"
-style 38 0 2 fg=#9d9d9d bg=#131313
-style 38 2 60 fg=#dedede bg=#232323
-text 39 "│ · read crates/arko_ai/src/config.rs · ✓ 2 lines"
-style 39 0 40 fg=#9d9d9d bg=#131313
-style 39 40 41 fg=#30d158 bg=#131313
-style 39 41 49 fg=#9d9d9d bg=#131313
-style 39 49 60 fg=#dedede bg=#131313
-text 40 "│ · write crates/arko_ai/src/config.rs (1 line) · ✓"
-style 40 0 50 fg=#9d9d9d bg=#131313
-style 40 50 51 fg=#30d158 bg=#131313
-style 40 51 60 fg=#dedede bg=#131313
-text 41 "│ · read crates/… · ✗ No such file or directory (os error 2)"
-style 41 0 20 fg=#9d9d9d bg=#131313
-style 41 20 21 fg=#ff5257 bg=#131313
-style 41 21 60 fg=#9d9d9d bg=#131313
+style 37 2 60 fg=#dedede bg=#232323
+text 38 "│ · read crates/arko_ai/src/config.rs · ✓ 2 lines"
+style 38 0 40 fg=#9d9d9d bg=#131313
+style 38 40 41 fg=#30d158 bg=#131313
+style 38 41 49 fg=#9d9d9d bg=#131313
+style 38 49 60 fg=#dedede bg=#131313
+text 39 "│ · write crates/arko_ai/src/config.rs (1 line) · ✓"
+style 39 0 50 fg=#9d9d9d bg=#131313
+style 39 50 51 fg=#30d158 bg=#131313
+style 39 51 60 fg=#dedede bg=#131313
+text 40 "│ · read crates/arko_ui/src/config.rs · ✗ No such file or"
+style 40 0 40 fg=#9d9d9d bg=#131313
+style 40 40 41 fg=#ff5257 bg=#131313
+style 40 41 57 fg=#9d9d9d bg=#131313
+style 40 57 60 fg=#dedede bg=#131313
+text 41 "│   directory (os error 2)"
+style 41 0 2 fg=#9d9d9d bg=#131313
+style 41 2 4 fg=#dedede bg=#131313
+style 41 4 26 fg=#9d9d9d bg=#131313
+style 41 26 60 fg=#dedede bg=#131313
 text 42 "│ The code threw on line 2, at a call of read_file that"
 style 42 0 55 fg=#9d9d9d bg=#131313
 style 42 55 60 fg=#dedede bg=#131313
@@ -472,7 +476,9 @@ style 75 33 34 fg=#30d158 bg=#131313
 style 75 34 44 fg=#9d9d9d bg=#131313
 style 75 44 60 fg=#dedede bg=#131313
 text 76 "│ · $ cargo test -p arko_ai …"
-style 76 0 29 fg=#9d9d9d bg=#131313
+style 76 0 4 fg=#9d9d9d bg=#131313
+style 76 4 27 fg=#dedede bg=#131313
+style 76 27 29 fg=#9d9d9d bg=#131313
 style 76 29 60 fg=#dedede bg=#131313
 text 77 ""
 style 77 0 60 fg=#dedede bg=#131313

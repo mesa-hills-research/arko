@@ -40,7 +40,7 @@ use std::collections::{HashMap, HashSet};
 
 #[cfg(test)]
 use super::protocol::ContentKind;
-use super::protocol::{Act, ActKind, CallStatus, Came, Kind, plural};
+use super::protocol::{Act, ActKind, CallStatus, Came, JobFound, Kind, plural};
 
 /// A call's outcome when a stop cancelled it.
 pub const STOPPED: &str = "stopped";
@@ -196,6 +196,27 @@ pub fn rows(steps: &[Step]) -> Vec<Piece> {
     out
 }
 
+/// The mark a call's line shows before its outcome, from how the call went
+/// (`status`), ✓ for one that went well ([`CallStatus::Ok`]), ✗ for one that
+/// failed, and none while it runs. A look at a job or a wait on it went well
+/// whatever became of the job, so its mark says what it found
+/// ([`Act::found`]), ✗ for a job that failed, none for one that asks for
+/// input or was stopped, and ✓ for one that runs or finished.
+pub fn mark(status: Option<CallStatus>, act: Option<&Act>) -> Option<CallStatus> {
+    match (status?, act.and_then(|act| act.found)) {
+        (CallStatus::Ok, Some(JobFound::Failed)) => Some(CallStatus::Failed),
+        (CallStatus::Ok, Some(JobFound::Input | JobFound::Stopped)) => None,
+        (CallStatus::Running, _) => None,
+        (status, _) => Some(status),
+    }
+}
+
+/// Whether a look at a job or a wait on it found its job failed, which its
+/// row's ✗ says as a call's failure does.
+fn found_failed(act: &Act) -> bool {
+    act.found == Some(JobFound::Failed)
+}
+
 /// What a call does while it runs, in a few words, as its row says it
 /// ("Running cargo test -p arko", "Waiting for r91").
 pub fn doing(act: &Act) -> String {
@@ -305,6 +326,12 @@ impl Member<'_> {
     /// It failed, which a call a stop or a compaction cut short didn't.
     fn failed(&self) -> bool {
         self.call.status == Some(CallStatus::Failed) && !cut_short(self.call.outcome)
+    }
+
+    /// Its row's ✗ says it failed, or that it looked at a job or waited on
+    /// it and found the job failed.
+    fn shows_failure(&self) -> bool {
+        self.failed() || (self.call.status == Some(CallStatus::Ok) && found_failed(self.act))
     }
 
     /// The edits it made or is making, a call of several (an `apply_diff`
@@ -746,8 +773,9 @@ fn distinct<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<String> {
 fn words(group: &Group) -> Words {
     let calls = &group.calls;
     let running = calls.iter().any(Member::running);
-    // (A call that failed stays in its row, which shows one ✗.)
-    let failed = calls.iter().any(Member::failed);
+    // (A call that failed stays in its row, which shows one ✗, as does a
+    // look or a wait that found its job failed.)
+    let failed = calls.iter().any(Member::shows_failure);
     if calls.len() == 1 {
         let mut words = one(&calls[0]);
         words.running = running;
@@ -1029,17 +1057,34 @@ pub fn mail_label(from: &str, to: &str) -> String {
     format!("{from} to {to}")
 }
 
-/// What came while waits waited, in a few words ("r91 finished, 3 updates").
-pub fn came_words(came: &Came) -> String {
+/// What came while waits for the runs `waited` waited, in a few words
+/// ("r91 finished, 3 updates"). `waited` are the runs the waits name, and
+/// none when they wait for any of the agent's workers. The wait's own words
+/// name those runs, so where the runs that finished (or stopped) are just
+/// those, they aren't named again ("finished", "both finished", "all
+/// finished").
+pub fn came_words(came: &Came, waited: &[String]) -> String {
     let mut parts = Vec::new();
-    let finished = distinct(came.finished.iter().map(String::as_str));
-    if !finished.is_empty() {
-        parts.push(format!("{} finished", listed(&finished, 3)));
-    }
-    let stopped = distinct(came.stopped.iter().map(String::as_str));
-    if !stopped.is_empty() {
-        parts.push(format!("{} stopped", listed(&stopped, 3)));
-    }
+    let waited = distinct(waited.iter().map(|run| run.trim()));
+    let ended = |runs: Vec<String>, verb: &str| match runs.len() {
+        0 => None,
+        count if count == waited.len() && runs.iter().all(|run| waited.contains(run)) => {
+            Some(match count {
+                1 => verb.to_string(),
+                2 => format!("both {verb}"),
+                _ => format!("all {verb}"),
+            })
+        }
+        _ => Some(format!("{} {verb}", listed(&runs, 3))),
+    };
+    parts.extend(ended(
+        distinct(came.finished.iter().map(String::as_str)),
+        "finished",
+    ));
+    parts.extend(ended(
+        distinct(came.stopped.iter().map(String::as_str)),
+        "stopped",
+    ));
     if came.messages > 0 {
         parts.push(plural(came.messages as usize, "message", "messages"));
     }
@@ -1140,12 +1185,7 @@ fn phrases(member: &Member) -> Phrases {
             format!("message {name}"),
         ),
         ActKind::Wait => {
-            let runs: Vec<String> = name
-                .split(',')
-                .map(str::trim)
-                .filter(|run| !run.is_empty())
-                .map(str::to_string)
-                .collect();
+            let runs = waited_runs(name);
             // (One that names no runs waits for the agent's workers.)
             let who = match runs.len() {
                 1..=3 => listed(&runs, 3),
@@ -1212,6 +1252,17 @@ fn phrases(member: &Member) -> Phrases {
             three(doing, done, verb)
         }
     }
+}
+
+/// The runs a wait's target names ("r3, r4"), none for a wait on any of
+/// the agent's workers.
+fn waited_runs(target: &str) -> Vec<String> {
+    target
+        .split(',')
+        .map(str::trim)
+        .filter(|run| !run.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// The indexes a search's target names ("arko, gpui").
@@ -1308,8 +1359,9 @@ fn upper_first(text: &str) -> String {
 
 /// What the row of a code run says, which is what its code is for, and
 /// while it runs how many calls the code made and the one that runs. A stop leaves
-/// it in the past tense, since what the code did stands.
-fn code_run(member: &Member, Phrases { doing, done, .. }: Phrases) -> Words {
+/// it in the past tense, since what the code did stands. One that failed
+/// says it couldn't, as any call that failed does.
+fn code_run(member: &Member, Phrases { doing, done, verb }: Phrases) -> Words {
     let calls = member.act.calls.as_ref();
     match member.call.status {
         Some(CallStatus::Running) | None => {
@@ -1343,7 +1395,7 @@ fn code_run(member: &Member, Phrases { doing, done, .. }: Phrases) -> Words {
             ..Words::default()
         },
         Some(CallStatus::Failed) => Words {
-            text: done,
+            text: format!("Couldn’t {verb}"),
             failed: true,
             ..Words::default()
         },
@@ -1399,18 +1451,20 @@ fn one(member: &Member) -> Words {
         Some(CallStatus::Ok) => match &act.came {
             Some(came) if act.kind == ActKind::Wait => Words {
                 text: done,
-                note: Some(came_words(came)),
+                note: Some(came_words(came, &waited_runs(&act.target))),
                 ..Words::default()
             },
             _ if act.kind == ActKind::JobWait => Words {
                 text: done,
                 note: news,
+                failed: found_failed(act),
                 ..Words::default()
             },
             _ => Words {
                 text: done,
                 news,
                 note: outcome.filter(|_| member.call.job).map(str::to_string),
+                failed: found_failed(act),
                 ..Words::default()
             },
         },
@@ -1418,6 +1472,169 @@ fn one(member: &Member) -> Words {
             text: doing,
             ..Words::default()
         },
+    }
+}
+
+// ----- How a row's line fits its width -----
+//
+// Every client draws a row's line on one line and cuts it by one rule, in
+// whatever unit it measures (the terminal's columns, the page's pixels).
+// What never gives way stays, meaning a marker, a worker's name, ✓ or ✗, how
+// long a call has run, the spinner and the buttons. The words keep their
+// start, [`WORDS_KEEP`] columns or all of them where they're shorter (a
+// file's line keeps its file's name). Then the parts after the words give
+// way, the last first, each whole (how a row runs, its note, its outcome's
+// words). Then the words take what's left, cut where a word ends.
+
+/// The columns a line's words keep before the parts after them give way.
+pub const WORDS_KEEP: usize = 24;
+
+/// How a row's line fits its room ([`fit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fit {
+    /// The room left for its words.
+    pub words: usize,
+    /// How many of the parts after its words show, from the first.
+    pub parts: usize,
+}
+
+/// How a row's line fits `room`, from the width of its words, the room
+/// they keep before anything after them gives way (`keep`), the width of
+/// what never gives way (`fixed`), and the widths of the parts after its
+/// words that give way (`parts`), the last first and each whole.
+pub fn fit(words: usize, keep: usize, fixed: usize, parts: &[usize], room: usize) -> Fit {
+    let after = |shown: usize| parts[..shown].iter().sum::<usize>();
+    let mut shown = parts.len();
+    if fixed + words + after(shown) > room {
+        let keep = keep.min(words);
+        while shown > 0 && fixed + keep + after(shown) > room {
+            shown -= 1;
+        }
+    }
+    Fit {
+        words: room.saturating_sub(fixed + after(shown)),
+        parts: shown,
+    }
+}
+
+/// How many of a line's words' `clusters` (its characters, each with its
+/// width) show in `room`, which leaves out the ellipsis after them. The cut
+/// falls where a word ends, and a group in parentheses ("(7 more lines)")
+/// shows whole or not at all. Where that keeps less than half the room (one
+/// long path), the cut falls inside the word, and a space before it goes.
+pub fn cut_at_word<S: AsRef<str>>(clusters: &[(S, usize)], room: usize) -> usize {
+    let space = |at: usize| clusters[at].0.as_ref().chars().all(char::is_whitespace);
+    let mut used = 0;
+    let mut depth = 0usize;
+    // Where the group in parentheses the cut would fall in starts.
+    let mut group = 0;
+    // The end of the last whole word that fits, and the room it takes.
+    let mut word = (0, 0);
+    let mut inside = clusters.len();
+    for (at, (cluster, width)) in clusters.iter().enumerate() {
+        if at > 0 && depth == 0 && space(at) && !space(at - 1) {
+            word = (at, used);
+        }
+        if used + width > room {
+            inside = at;
+            break;
+        }
+        used += width;
+        for c in cluster.as_ref().chars() {
+            match c {
+                '(' => {
+                    if depth == 0 {
+                        group = at;
+                    }
+                    depth += 1;
+                }
+                ')' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    if inside == clusters.len() {
+        return inside;
+    }
+    if word.0 > 0 && word.1 * 2 >= room {
+        return word.0;
+    }
+    // (Never inside a group, which goes whole.)
+    let mut kept = if depth > 0 { group } else { inside };
+    while kept > 0 && space(kept - 1) {
+        kept -= 1;
+    }
+    kept
+}
+
+/// Where a path's `folders` (characters with their widths, each folder
+/// ending in "/") start to show in `room`, cut where a folder starts so
+/// whole folders show after the "…/" that stands for the rest (which `room`
+/// leaves out). Their length when none fits.
+pub fn folders_from<S: AsRef<str>>(folders: &[(S, usize)], room: usize) -> usize {
+    let mut used = 0;
+    let mut from = folders.len();
+    while from > 0 {
+        let mut start = from - 1;
+        while start > 0 && !matches!(folders[start - 1].0.as_ref(), "/" | "\\") {
+            start -= 1;
+        }
+        let width: usize = folders[start..from].iter().map(|(_, width)| width).sum();
+        if used + width > room {
+            break;
+        }
+        used += width;
+        from = start;
+    }
+    from
+}
+
+/// How a file tool's line fits its room ([`file_fit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileFit {
+    /// Its outcome's words show.
+    pub outcome: bool,
+    /// The room its folders have. Under their width they show from where
+    /// [`folders_from`] says, after "…/".
+    pub folders: usize,
+    /// The room its file's name has, with the rest of the line after it.
+    pub name: usize,
+}
+
+/// How a file tool's line fits `room`, from the widths of what never gives
+/// way (its verb, its ✓ or ✗ or how long it has run), its outcome's words,
+/// its folders, its file's name, and the "…/" that stands for folders left
+/// out (`elided`). The name keeps its room whole, after "…/" where it has
+/// folders, and the outcome's words show only beside that. Then the folders
+/// give way from their start, a folder at a time, and only then the name,
+/// at its end.
+pub fn file_fit(
+    fixed: usize,
+    outcome: usize,
+    folders: usize,
+    name: usize,
+    elided: usize,
+    room: usize,
+) -> FileFit {
+    if fixed + outcome + folders + name <= room {
+        return FileFit {
+            outcome: true,
+            folders,
+            name,
+        };
+    }
+    let least = if folders > 0 { elided.min(folders) } else { 0 };
+    let outcome_shows = outcome > 0 && fixed + least + name + outcome <= room;
+    let left = room.saturating_sub(fixed + if outcome_shows { outcome } else { 0 });
+    let folders = if folders + name <= left {
+        folders
+    } else {
+        left.saturating_sub(name).clamp(least, folders)
+    };
+    FileFit {
+        outcome: outcome_shows,
+        folders,
+        name: left.saturating_sub(folders),
     }
 }
 
@@ -2949,6 +3166,310 @@ mod tests {
     /// Back-to-back waits are one row, which says whom they waited for.
     /// What came to each is on its own line inside, and a wait alone says
     /// it on its row.
+    #[test]
+    fn a_wait_names_its_runs_once() {
+        let runs = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+        };
+        let came = |finished: &[&str], stopped: &[&str]| Came {
+            finished: runs(finished),
+            stopped: runs(stopped),
+            ..Came::default()
+        };
+        // Every run the wait names finished or stopped, which its own words
+        // already name, so what came names none of them again.
+        for (finished, stopped, waited) in [
+            (&["r4"][..], &[][..], &["r4"][..]),
+            (&["r4", "r3"], &[], &["r3", "r4"]),
+            (&["r2", "r3", "r4"], &[], &["r2", "r3", "r4"]),
+            (&[], &["r4"], &["r4"]),
+        ] {
+            let words = came_words(&came(finished, stopped), &runs(waited));
+            assert!(waited.iter().all(|run| !words.contains(run)), "{words}");
+            assert_ne!(words, came_words(&Came::default(), &runs(waited)));
+        }
+        // Some of them, another run, or what came to a wait on any worker,
+        // which its words don't name, are named.
+        for (finished, waited, named) in [
+            (&["r3"][..], &["r3", "r4"][..], "r3"),
+            (&["r91"], &["r3"], "r91"),
+            (&["r3"], &[], "r3"),
+        ] {
+            let words = came_words(&came(finished, &[]), &runs(waited));
+            assert!(words.contains(named), "{words}");
+        }
+        // The row says each run once.
+        let wait = Act {
+            kind: Wait,
+            target: "r4".into(),
+            came: Some(came(&["r4"], &[])),
+            ..Act::default()
+        };
+        let said = alone(&wait, CallStatus::Ok, None).said();
+        assert_eq!(said.matches("r4").count(), 1, "{said}");
+    }
+
+    /// The mark on a call's line says how the call went, and for a look at
+    /// a job or a wait on it, what it found of the job, which its Quiet row's
+    /// ✗ says too.
+    #[test]
+    fn the_mark_follows_what_a_look_or_a_wait_found() {
+        let found = |kind, found| Act {
+            kind,
+            target: "4d2c1a9b-0000".into(),
+            found,
+            ..Act::default()
+        };
+        use CallStatus::{Failed, Ok, Running};
+        for (kind, finding, status, expected) in [
+            (JobWait, None, Ok, Some(Ok)),
+            (JobWait, Some(JobFound::Running), Ok, Some(Ok)),
+            (JobWait, Some(JobFound::Finished), Ok, Some(Ok)),
+            (JobWait, Some(JobFound::Failed), Ok, Some(Failed)),
+            (ActKind::Check, Some(JobFound::Failed), Ok, Some(Failed)),
+            (JobWait, Some(JobFound::Input), Ok, None),
+            (JobWait, Some(JobFound::Stopped), Ok, None),
+            (JobWait, Some(JobFound::Finished), Failed, Some(Failed)),
+            (JobWait, None, Running, None),
+            (Read, None, Failed, Some(Failed)),
+        ] {
+            let act = found(kind, finding);
+            assert_eq!(
+                mark(Some(status), Some(&act)),
+                mark_of(status, finding),
+                "{kind:?} {finding:?} {status:?}"
+            );
+            assert_eq!(
+                mark(Some(status), Some(&act)),
+                expected,
+                "{kind:?} {finding:?}"
+            );
+            if status == Ok {
+                let words = alone(&act, status, None);
+                assert_eq!(
+                    words.failed,
+                    expected == Some(Failed),
+                    "{kind:?} {finding:?}"
+                );
+            }
+        }
+        assert_eq!(mark(None, None), None);
+    }
+
+    /// What [`mark`] gives, as the table above reads.
+    fn mark_of(status: CallStatus, found: Option<JobFound>) -> Option<CallStatus> {
+        match (status, found) {
+            (CallStatus::Running, _) => None,
+            (CallStatus::Ok, Some(JobFound::Failed)) => Some(CallStatus::Failed),
+            (CallStatus::Ok, Some(JobFound::Input | JobFound::Stopped)) => None,
+            (status, _) => Some(status),
+        }
+    }
+
+    /// A code run that failed says it couldn't do what its code is for, as
+    /// any call that failed does, not what one that went well says, and one
+    /// that a stop cut short says what it did.
+    #[test]
+    fn a_failed_code_run_says_it_couldnt() {
+        let purpose = "rename the setting in every crate";
+        let code = act(ActKind::Code, purpose);
+        let done = alone(&code, CallStatus::Ok, None).text;
+        let failed = alone(&code, CallStatus::Failed, Some(FAILED));
+        assert!(failed.failed);
+        assert!(failed.text.ends_with(purpose), "{}", failed.text);
+        assert_ne!(failed.text, done);
+        assert_eq!(
+            failed.text,
+            alone(&act(ActKind::Read, "a.rs"), CallStatus::Failed, None)
+                .text
+                .replace("read a.rs", &phrases_of(&code).verb)
+        );
+        let stopped = alone(&code, CallStatus::Failed, Some(STOPPED));
+        assert_eq!(stopped.text, done);
+        assert!(!stopped.failed);
+    }
+
+    /// A call's words after "Couldn’t", as its row would say them.
+    fn phrases_of(act: &Act) -> Phrases {
+        phrases(&Member {
+            index: 0,
+            call: Call {
+                act: Some(act),
+                ..Call::default()
+            },
+            act,
+            name: Names::default().of(None, act),
+            late: false,
+        })
+    }
+
+    /// A line's words keep their start, the parts after them give way whole,
+    /// the last first, and then the words are cut where a word ends.
+    #[test]
+    fn a_line_gives_way_its_parts_whole_then_its_words_at_a_word() {
+        // All of it fits.
+        assert_eq!(
+            fit(20, 24, 4, &[8, 6], 40),
+            Fit {
+                words: 22,
+                parts: 2
+            }
+        );
+        // The parts stay while the words keep 24, which take the rest.
+        assert_eq!(
+            fit(30, 24, 0, &[8, 6], 40),
+            Fit {
+                words: 26,
+                parts: 2
+            }
+        );
+        // Then the last part goes first, whole.
+        assert_eq!(
+            fit(30, 24, 0, &[8, 6], 37),
+            Fit {
+                words: 29,
+                parts: 1
+            }
+        );
+        assert_eq!(
+            fit(30, 24, 0, &[8, 6], 31),
+            Fit {
+                words: 31,
+                parts: 0
+            }
+        );
+        // Words shorter than 24 keep only their own width.
+        assert_eq!(
+            fit(10, 24, 0, &[8], 18),
+            Fit {
+                words: 10,
+                parts: 1
+            }
+        );
+        // What never gives way stays, and the words take what's left.
+        assert_eq!(
+            fit(30, 24, 10, &[8], 20),
+            Fit {
+                words: 10,
+                parts: 0
+            }
+        );
+        let cut = |text: &str, room: usize| {
+            let clusters: Vec<(String, usize)> = text.chars().map(|c| (c.to_string(), 1)).collect();
+            text.chars()
+                .take(cut_at_word(&clusters, room))
+                .collect::<String>()
+        };
+        // At the end of a word, without the space after it.
+        assert_eq!(cut("Waiting for job c876812b", 9), "Waiting");
+        assert_eq!(
+            cut("Running cargo build --release -p arko", 22),
+            "Running cargo build"
+        );
+        // A group in parentheses goes whole.
+        let heredoc = "$ cat > docs/release-notes.md <<'EOF'  (7 more lines)";
+        assert_eq!(cut(heredoc, 48), "$ cat > docs/release-notes.md <<'EOF'");
+        assert_eq!(cut("$ cat (7 more lines)", 13), "$ cat");
+        assert_eq!(cut("(7 more lines)", 8), "");
+        // Inside a word only where the last that ends keeps under half.
+        assert_eq!(
+            cut("$ ./target/release/arko-something", 19),
+            "$ ./target/release/"
+        );
+        assert_eq!(cut("abcdefghij", 4), "abcd");
+        assert_eq!(cut("short", 9), "short");
+    }
+
+    /// A path's folders give way from their start, a whole folder at a time.
+    #[test]
+    fn folders_give_way_a_folder_at_a_time() {
+        let clusters = |text: &str| -> Vec<(String, usize)> {
+            text.chars().map(|c| (c.to_string(), 1)).collect()
+        };
+        let folders = "path/results/shortening/";
+        let kept = |room| {
+            folders
+                .chars()
+                .skip(folders_from(&clusters(folders), room))
+                .collect::<String>()
+        };
+        assert_eq!(kept(24), folders);
+        assert_eq!(kept(20), "results/shortening/");
+        assert_eq!(kept(18), "shortening/");
+        assert_eq!(kept(10), "");
+        assert_eq!(
+            "a\\b\\"
+                .chars()
+                .skip(folders_from(&clusters("a\\b\\"), 2))
+                .collect::<String>(),
+            "b\\"
+        );
+    }
+
+    /// A file's line keeps its name whole. Its outcome's words show only
+    /// beside the name and "…/", its folders give way next, and the name
+    /// only after them.
+    #[test]
+    fn a_file_line_keeps_its_name_and_its_outcome_beside_it() {
+        // Verb and mark 9, outcome 7, folders 24, name 31, "…/" 2.
+        let parts = |room| file_fit(9, 7, 24, 31, 2, room);
+        assert_eq!(
+            parts(71),
+            FileFit {
+                outcome: true,
+                folders: 24,
+                name: 31
+            }
+        );
+        // The folders give way first, down to "…/", the outcome stays.
+        assert_eq!(
+            parts(58),
+            FileFit {
+                outcome: true,
+                folders: 11,
+                name: 31
+            }
+        );
+        assert_eq!(
+            parts(49),
+            FileFit {
+                outcome: true,
+                folders: 2,
+                name: 31
+            }
+        );
+        // Then the outcome goes whole, which leaves the folders more.
+        assert_eq!(
+            parts(48),
+            FileFit {
+                outcome: false,
+                folders: 8,
+                name: 31
+            }
+        );
+        // And the name gives way last.
+        assert_eq!(
+            parts(30),
+            FileFit {
+                outcome: false,
+                folders: 2,
+                name: 19
+            }
+        );
+        for room in 0..80 {
+            let fit = parts(room);
+            if room >= 9 + 2 + 31 {
+                assert!(
+                    9 + 7 * usize::from(fit.outcome) + fit.folders + fit.name <= room.max(9 + 2)
+                );
+                assert_eq!(fit.name, 31.max(fit.name), "{room}: {fit:?}");
+            }
+        }
+    }
+
     #[test]
     fn waits_merge_and_say_what_came() {
         let wait = |runs: &str, came: Came| Act {

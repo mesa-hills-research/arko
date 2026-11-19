@@ -8,7 +8,7 @@ style 1 0 2 fg=#419cff bg=#202020
 style 1 2 40 fg=#dedede bg=#202020
 text 2 ""
 style 2 0 40 fg=#dedede bg=#131313
-text 3 "▾ Ran code to count TODO comments per c…"
+text 3 "▾ Ran code to count TODO comments per…"
 style 3 0 2 fg=#9d9d9d bg=#131313
 style 3 2 40 fg=#dedede bg=#131313
 text 4 "│ Ran code to count TODO comments per"
@@ -189,17 +189,17 @@ style 33 0 14 fg=#9d9d9d bg=#131313
 style 33 14 40 fg=#dedede bg=#131313
 text 34 ""
 style 34 0 40 fg=#dedede bg=#131313
-text 35 "▾ Ran code to rename the setting in…  ✗"
+text 35 "▾ Couldn’t run code to rename the…    ✗"
 style 35 0 2 fg=#9d9d9d bg=#131313
 style 35 2 38 fg=#dedede bg=#131313
 style 35 38 39 fg=#ff5257 bg=#131313
 style 35 39 40 fg=#dedede bg=#131313
-text 36 "│ Ran code to rename the setting in"
-style 36 0 35 fg=#9d9d9d bg=#131313
-style 36 35 40 fg=#dedede bg=#131313
-text 37 "│ every crate"
-style 37 0 13 fg=#9d9d9d bg=#131313
-style 37 13 40 fg=#dedede bg=#131313
+text 36 "│ Couldn’t run code to rename the"
+style 36 0 33 fg=#9d9d9d bg=#131313
+style 36 33 40 fg=#dedede bg=#131313
+text 37 "│ setting in every crate"
+style 37 0 24 fg=#9d9d9d bg=#131313
+style 37 24 40 fg=#dedede bg=#131313
 text 38 "│  for (const path of"
 style 38 0 2 fg=#9d9d9d bg=#131313
 style 38 2 3 fg=#dedede bg=#232323
@@ -265,229 +265,232 @@ style 47 2 40 fg=#dedede bg=#232323
 text 48 "│ Read 1 file and wrote 1 file"
 style 48 0 30 fg=#9d9d9d bg=#131313
 style 48 30 40 fg=#dedede bg=#131313
-text 49 "│ Couldn’t read config.rs · No such…  ✗"
+text 49 "│ Couldn’t read config.rs · No such   ✗"
 style 49 0 2 fg=#9d9d9d bg=#131313
 style 49 2 38 fg=#dedede bg=#131313
 style 49 38 39 fg=#ff5257 bg=#131313
 style 49 39 40 fg=#dedede bg=#131313
-text 50 "│ The code threw on line 2, at a call of"
-style 50 0 40 fg=#9d9d9d bg=#131313
-text 51 "│ read_file that failed: No such file or"
+text 50 "│ file or directory (os error 2)"
+style 50 0 2 fg=#9d9d9d bg=#131313
+style 50 2 40 fg=#dedede bg=#131313
+text 51 "│ The code threw on line 2, at a call of"
 style 51 0 40 fg=#9d9d9d bg=#131313
-text 52 "│ directory (os error 2)"
-style 52 0 24 fg=#9d9d9d bg=#131313
-style 52 24 40 fg=#dedede bg=#131313
-text 53 "│ Before it ended, the code wrote 1"
-style 53 0 35 fg=#9d9d9d bg=#131313
-style 53 35 40 fg=#dedede bg=#131313
-text 54 "│ file."
-style 54 0 7 fg=#9d9d9d bg=#131313
-style 54 7 40 fg=#dedede bg=#131313
-text 55 ""
-style 55 0 40 fg=#dedede bg=#131313
-text 56 "▾ Ran code to clean the build folders"
-style 56 0 2 fg=#9d9d9d bg=#131313
-style 56 2 40 fg=#dedede bg=#131313
-text 57 "│  for (const name of [\"target\","
+text 52 "│ read_file that failed: No such file or"
+style 52 0 40 fg=#9d9d9d bg=#131313
+text 53 "│ directory (os error 2)"
+style 53 0 24 fg=#9d9d9d bg=#131313
+style 53 24 40 fg=#dedede bg=#131313
+text 54 "│ Before it ended, the code wrote 1"
+style 54 0 35 fg=#9d9d9d bg=#131313
+style 54 35 40 fg=#dedede bg=#131313
+text 55 "│ file."
+style 55 0 7 fg=#9d9d9d bg=#131313
+style 55 7 40 fg=#dedede bg=#131313
+text 56 ""
+style 56 0 40 fg=#dedede bg=#131313
+text 57 "▾ Ran code to clean the build folders"
 style 57 0 2 fg=#9d9d9d bg=#131313
-style 57 2 3 fg=#dedede bg=#232323
-style 57 3 6 fg=#87b1f6 bg=#232323
-style 57 6 8 fg=#dedede bg=#232323
-style 57 8 13 fg=#87b1f6 bg=#232323
-style 57 13 19 fg=#dedede bg=#232323
-style 57 19 21 fg=#87b1f6 bg=#232323
-style 57 21 23 fg=#dedede bg=#232323
-style 57 23 31 fg=#a3e09f bg=#232323
-style 57 31 40 fg=#dedede bg=#232323
-text 58 "│  \"web/dist\"]) {"
+style 57 2 40 fg=#dedede bg=#131313
+text 58 "│  for (const name of [\"target\","
 style 58 0 2 fg=#9d9d9d bg=#131313
 style 58 2 3 fg=#dedede bg=#232323
-style 58 3 13 fg=#a3e09f bg=#232323
-style 58 13 40 fg=#dedede bg=#232323
-text 59 "│    try {"
+style 58 3 6 fg=#87b1f6 bg=#232323
+style 58 6 8 fg=#dedede bg=#232323
+style 58 8 13 fg=#87b1f6 bg=#232323
+style 58 13 19 fg=#dedede bg=#232323
+style 58 19 21 fg=#87b1f6 bg=#232323
+style 58 21 23 fg=#dedede bg=#232323
+style 58 23 31 fg=#a3e09f bg=#232323
+style 58 31 40 fg=#dedede bg=#232323
+text 59 "│  \"web/dist\"]) {"
 style 59 0 2 fg=#9d9d9d bg=#131313
-style 59 2 5 fg=#dedede bg=#232323
-style 59 5 8 fg=#87b1f6 bg=#232323
-style 59 8 40 fg=#dedede bg=#232323
-text 60 "│      await tools.shell({ command: `rm"
+style 59 2 3 fg=#dedede bg=#232323
+style 59 3 13 fg=#a3e09f bg=#232323
+style 59 13 40 fg=#dedede bg=#232323
+text 60 "│    try {"
 style 60 0 2 fg=#9d9d9d bg=#131313
-style 60 2 7 fg=#dedede bg=#232323
-style 60 7 12 fg=#87b1f6 bg=#232323
-style 60 12 19 fg=#dedede bg=#232323
-style 60 19 24 fg=#bcc4e0 bg=#232323
-style 60 24 27 fg=#dedede bg=#232323
-style 60 27 34 fg=#bcc4e0 bg=#232323
-style 60 34 36 fg=#dedede bg=#232323
-style 60 36 39 fg=#a3e09f bg=#232323
-style 60 39 40 fg=#dedede bg=#232323
-text 61 "│      -rf ${name}` });"
+style 60 2 5 fg=#dedede bg=#232323
+style 60 5 8 fg=#87b1f6 bg=#232323
+style 60 8 40 fg=#dedede bg=#232323
+text 61 "│      await tools.shell({ command: `rm"
 style 61 0 2 fg=#9d9d9d bg=#131313
 style 61 2 7 fg=#dedede bg=#232323
-style 61 7 11 fg=#a3e09f bg=#232323
-style 61 11 18 fg=#dedede bg=#232323
-style 61 18 19 fg=#a3e09f bg=#232323
-style 61 19 40 fg=#dedede bg=#232323
-text 62 "│    } catch (error) {"
+style 61 7 12 fg=#87b1f6 bg=#232323
+style 61 12 19 fg=#dedede bg=#232323
+style 61 19 24 fg=#bcc4e0 bg=#232323
+style 61 24 27 fg=#dedede bg=#232323
+style 61 27 34 fg=#bcc4e0 bg=#232323
+style 61 34 36 fg=#dedede bg=#232323
+style 61 36 39 fg=#a3e09f bg=#232323
+style 61 39 40 fg=#dedede bg=#232323
+text 62 "│      -rf ${name}` });"
 style 62 0 2 fg=#9d9d9d bg=#131313
 style 62 2 7 fg=#dedede bg=#232323
-style 62 7 12 fg=#87b1f6 bg=#232323
-style 62 12 40 fg=#dedede bg=#232323
-text 63 "│      console.log(`${name}:"
+style 62 7 11 fg=#a3e09f bg=#232323
+style 62 11 18 fg=#dedede bg=#232323
+style 62 18 19 fg=#a3e09f bg=#232323
+style 62 19 40 fg=#dedede bg=#232323
+text 63 "│    } catch (error) {"
 style 63 0 2 fg=#9d9d9d bg=#131313
-style 63 2 15 fg=#dedede bg=#232323
-style 63 15 18 fg=#bcc4e0 bg=#232323
-style 63 18 19 fg=#dedede bg=#232323
-style 63 19 20 fg=#a3e09f bg=#232323
-style 63 20 27 fg=#dedede bg=#232323
-style 63 27 28 fg=#a3e09f bg=#232323
-style 63 28 40 fg=#dedede bg=#232323
-text 64 "│      ${error.message}`);"
+style 63 2 7 fg=#dedede bg=#232323
+style 63 7 12 fg=#87b1f6 bg=#232323
+style 63 12 40 fg=#dedede bg=#232323
+text 64 "│      console.log(`${name}:"
 style 64 0 2 fg=#9d9d9d bg=#131313
 style 64 2 15 fg=#dedede bg=#232323
-style 64 15 22 fg=#bcc4e0 bg=#232323
-style 64 22 23 fg=#dedede bg=#232323
-style 64 23 24 fg=#a3e09f bg=#232323
-style 64 24 40 fg=#dedede bg=#232323
-text 65 "│    }"
+style 64 15 18 fg=#bcc4e0 bg=#232323
+style 64 18 19 fg=#dedede bg=#232323
+style 64 19 20 fg=#a3e09f bg=#232323
+style 64 20 27 fg=#dedede bg=#232323
+style 64 27 28 fg=#a3e09f bg=#232323
+style 64 28 40 fg=#dedede bg=#232323
+text 65 "│      ${error.message}`);"
 style 65 0 2 fg=#9d9d9d bg=#131313
-style 65 2 40 fg=#dedede bg=#232323
-text 66 "│  }"
+style 65 2 15 fg=#dedede bg=#232323
+style 65 15 22 fg=#bcc4e0 bg=#232323
+style 65 22 23 fg=#dedede bg=#232323
+style 65 23 24 fg=#a3e09f bg=#232323
+style 65 24 40 fg=#dedede bg=#232323
+text 66 "│    }"
 style 66 0 2 fg=#9d9d9d bg=#131313
 style 66 2 40 fg=#dedede bg=#232323
-text 67 "│  return \"Done.\";"
+text 67 "│  }"
 style 67 0 2 fg=#9d9d9d bg=#131313
-style 67 2 3 fg=#dedede bg=#232323
-style 67 3 9 fg=#87b1f6 bg=#232323
-style 67 9 10 fg=#dedede bg=#232323
-style 67 10 17 fg=#a3e09f bg=#232323
-style 67 17 40 fg=#dedede bg=#232323
-text 68 "│ Couldn’t run rm -rf target · refus… ✗"
+style 67 2 40 fg=#dedede bg=#232323
+text 68 "│  return \"Done.\";"
 style 68 0 2 fg=#9d9d9d bg=#131313
-style 68 2 38 fg=#dedede bg=#131313
-style 68 38 39 fg=#ff5257 bg=#131313
-style 68 39 40 fg=#dedede bg=#131313
-text 69 "│ Ran 1 command"
-style 69 0 15 fg=#9d9d9d bg=#131313
-style 69 15 40 fg=#dedede bg=#131313
-text 70 "│ target: refused (The command guard"
-style 70 0 36 fg=#9d9d9d bg=#131313
-style 70 36 40 fg=#dedede bg=#131313
-text 71 "│ refused it.)"
-style 71 0 14 fg=#9d9d9d bg=#131313
-style 71 14 40 fg=#dedede bg=#131313
-text 72 "│ Done."
-style 72 0 7 fg=#9d9d9d bg=#131313
-style 72 7 40 fg=#dedede bg=#131313
-text 73 ""
-style 73 0 40 fg=#dedede bg=#131313
-text 74 "▾ Ran code to build each crate (stopped)"
-style 74 0 40 fg=#9d9d9d bg=#131313
-text 75 "│  for (const name of [\"arko_ai\","
-style 75 0 2 fg=#9d9d9d bg=#131313
-style 75 2 3 fg=#dedede bg=#232323
-style 75 3 6 fg=#87b1f6 bg=#232323
-style 75 6 8 fg=#dedede bg=#232323
-style 75 8 13 fg=#87b1f6 bg=#232323
-style 75 13 19 fg=#dedede bg=#232323
-style 75 19 21 fg=#87b1f6 bg=#232323
-style 75 21 23 fg=#dedede bg=#232323
-style 75 23 32 fg=#a3e09f bg=#232323
-style 75 32 40 fg=#dedede bg=#232323
-text 76 "│  \"arko_agents\"]) {"
-style 76 0 2 fg=#9d9d9d bg=#131313
-style 76 2 3 fg=#dedede bg=#232323
-style 76 3 16 fg=#a3e09f bg=#232323
-style 76 16 40 fg=#dedede bg=#232323
-text 77 "│    await tools.shell({ command: `cargo"
+style 68 2 3 fg=#dedede bg=#232323
+style 68 3 9 fg=#87b1f6 bg=#232323
+style 68 9 10 fg=#dedede bg=#232323
+style 68 10 17 fg=#a3e09f bg=#232323
+style 68 17 40 fg=#dedede bg=#232323
+text 69 "│ Couldn’t run rm -rf target ·        ✗"
+style 69 0 2 fg=#9d9d9d bg=#131313
+style 69 2 38 fg=#dedede bg=#131313
+style 69 38 39 fg=#ff5257 bg=#131313
+style 69 39 40 fg=#dedede bg=#131313
+text 70 "│ refused"
+style 70 0 2 fg=#9d9d9d bg=#131313
+style 70 2 40 fg=#dedede bg=#131313
+text 71 "│ Ran 1 command"
+style 71 0 15 fg=#9d9d9d bg=#131313
+style 71 15 40 fg=#dedede bg=#131313
+text 72 "│ target: refused (The command guard"
+style 72 0 36 fg=#9d9d9d bg=#131313
+style 72 36 40 fg=#dedede bg=#131313
+text 73 "│ refused it.)"
+style 73 0 14 fg=#9d9d9d bg=#131313
+style 73 14 40 fg=#dedede bg=#131313
+text 74 "│ Done."
+style 74 0 7 fg=#9d9d9d bg=#131313
+style 74 7 40 fg=#dedede bg=#131313
+text 75 ""
+style 75 0 40 fg=#dedede bg=#131313
+text 76 "▾ Ran code to build each crate (stopped)"
+style 76 0 40 fg=#9d9d9d bg=#131313
+text 77 "│  for (const name of [\"arko_ai\","
 style 77 0 2 fg=#9d9d9d bg=#131313
-style 77 2 5 fg=#dedede bg=#232323
-style 77 5 10 fg=#87b1f6 bg=#232323
-style 77 10 17 fg=#dedede bg=#232323
-style 77 17 22 fg=#bcc4e0 bg=#232323
-style 77 22 25 fg=#dedede bg=#232323
-style 77 25 32 fg=#bcc4e0 bg=#232323
-style 77 32 34 fg=#dedede bg=#232323
-style 77 34 40 fg=#a3e09f bg=#232323
-text 78 "│    build -p ${name}` });"
+style 77 2 3 fg=#dedede bg=#232323
+style 77 3 6 fg=#87b1f6 bg=#232323
+style 77 6 8 fg=#dedede bg=#232323
+style 77 8 13 fg=#87b1f6 bg=#232323
+style 77 13 19 fg=#dedede bg=#232323
+style 77 19 21 fg=#87b1f6 bg=#232323
+style 77 21 23 fg=#dedede bg=#232323
+style 77 23 32 fg=#a3e09f bg=#232323
+style 77 32 40 fg=#dedede bg=#232323
+text 78 "│  \"arko_agents\"]) {"
 style 78 0 2 fg=#9d9d9d bg=#131313
-style 78 2 5 fg=#dedede bg=#232323
-style 78 5 14 fg=#a3e09f bg=#232323
-style 78 14 21 fg=#dedede bg=#232323
-style 78 21 22 fg=#a3e09f bg=#232323
-style 78 22 40 fg=#dedede bg=#232323
-text 79 "│  }"
+style 78 2 3 fg=#dedede bg=#232323
+style 78 3 16 fg=#a3e09f bg=#232323
+style 78 16 40 fg=#dedede bg=#232323
+text 79 "│    await tools.shell({ command: `cargo"
 style 79 0 2 fg=#9d9d9d bg=#131313
-style 79 2 40 fg=#dedede bg=#232323
-text 80 "│ Ran 1 command"
-style 80 0 15 fg=#9d9d9d bg=#131313
-style 80 15 40 fg=#dedede bg=#131313
-text 81 ""
-style 81 0 40 fg=#dedede bg=#131313
-text 82 "▾ Running code to run each crat… · 41s …"
-style 82 0 2 fg=#9d9d9d bg=#131313
-style 82 2 32 fg=#dedede bg=#131313
-style 82 32 40 fg=#9d9d9d bg=#131313
-text 83 "│ Running code to run each crate's tests"
-style 83 0 40 fg=#9d9d9d bg=#131313
-text 84 "│  for (const name of [\"arko_index\","
+style 79 2 5 fg=#dedede bg=#232323
+style 79 5 10 fg=#87b1f6 bg=#232323
+style 79 10 17 fg=#dedede bg=#232323
+style 79 17 22 fg=#bcc4e0 bg=#232323
+style 79 22 25 fg=#dedede bg=#232323
+style 79 25 32 fg=#bcc4e0 bg=#232323
+style 79 32 34 fg=#dedede bg=#232323
+style 79 34 40 fg=#a3e09f bg=#232323
+text 80 "│    build -p ${name}` });"
+style 80 0 2 fg=#9d9d9d bg=#131313
+style 80 2 5 fg=#dedede bg=#232323
+style 80 5 14 fg=#a3e09f bg=#232323
+style 80 14 21 fg=#dedede bg=#232323
+style 80 21 22 fg=#a3e09f bg=#232323
+style 80 22 40 fg=#dedede bg=#232323
+text 81 "│  }"
+style 81 0 2 fg=#9d9d9d bg=#131313
+style 81 2 40 fg=#dedede bg=#232323
+text 82 "│ Ran 1 command"
+style 82 0 15 fg=#9d9d9d bg=#131313
+style 82 15 40 fg=#dedede bg=#131313
+text 83 ""
+style 83 0 40 fg=#dedede bg=#131313
+text 84 "▾ Running code to run each… · 41s …"
 style 84 0 2 fg=#9d9d9d bg=#131313
-style 84 2 3 fg=#dedede bg=#232323
-style 84 3 6 fg=#87b1f6 bg=#232323
-style 84 6 8 fg=#dedede bg=#232323
-style 84 8 13 fg=#87b1f6 bg=#232323
-style 84 13 19 fg=#dedede bg=#232323
-style 84 19 21 fg=#87b1f6 bg=#232323
-style 84 21 23 fg=#dedede bg=#232323
-style 84 23 35 fg=#a3e09f bg=#232323
-style 84 35 40 fg=#dedede bg=#232323
-text 85 "│  \"arko_ai\"]) {"
+style 84 2 27 fg=#dedede bg=#131313
+style 84 27 35 fg=#9d9d9d bg=#131313
+style 84 35 40 fg=#dedede bg=#131313
+text 85 "│  for (const name of [\"arko_index\","
 style 85 0 2 fg=#9d9d9d bg=#131313
 style 85 2 3 fg=#dedede bg=#232323
-style 85 3 12 fg=#a3e09f bg=#232323
-style 85 12 40 fg=#dedede bg=#232323
-text 86 "│    const output = await tools.shell({"
+style 85 3 6 fg=#87b1f6 bg=#232323
+style 85 6 8 fg=#dedede bg=#232323
+style 85 8 13 fg=#87b1f6 bg=#232323
+style 85 13 19 fg=#dedede bg=#232323
+style 85 19 21 fg=#87b1f6 bg=#232323
+style 85 21 23 fg=#dedede bg=#232323
+style 85 23 35 fg=#a3e09f bg=#232323
+style 85 35 40 fg=#dedede bg=#232323
+text 86 "│  \"arko_ai\"]) {"
 style 86 0 2 fg=#9d9d9d bg=#131313
-style 86 2 5 fg=#dedede bg=#232323
-style 86 5 10 fg=#87b1f6 bg=#232323
-style 86 10 20 fg=#dedede bg=#232323
-style 86 20 25 fg=#87b1f6 bg=#232323
-style 86 25 32 fg=#dedede bg=#232323
-style 86 32 37 fg=#bcc4e0 bg=#232323
-style 86 37 40 fg=#dedede bg=#232323
-text 87 "│    command: `cargo test -p ${name}`"
+style 86 2 3 fg=#dedede bg=#232323
+style 86 3 12 fg=#a3e09f bg=#232323
+style 86 12 40 fg=#dedede bg=#232323
+text 87 "│    const output = await tools.shell({"
 style 87 0 2 fg=#9d9d9d bg=#131313
 style 87 2 5 fg=#dedede bg=#232323
-style 87 5 12 fg=#bcc4e0 bg=#232323
-style 87 12 14 fg=#dedede bg=#232323
-style 87 14 29 fg=#a3e09f bg=#232323
-style 87 29 36 fg=#dedede bg=#232323
-style 87 36 37 fg=#a3e09f bg=#232323
+style 87 5 10 fg=#87b1f6 bg=#232323
+style 87 10 20 fg=#dedede bg=#232323
+style 87 20 25 fg=#87b1f6 bg=#232323
+style 87 25 32 fg=#dedede bg=#232323
+style 87 32 37 fg=#bcc4e0 bg=#232323
 style 87 37 40 fg=#dedede bg=#232323
-text 88 "│    });"
+text 88 "│    command: `cargo test -p ${name}`"
 style 88 0 2 fg=#9d9d9d bg=#131313
-style 88 2 40 fg=#dedede bg=#232323
-text 89 "│    console.log(output.split(\"\\n\").pop("
+style 88 2 5 fg=#dedede bg=#232323
+style 88 5 12 fg=#bcc4e0 bg=#232323
+style 88 12 14 fg=#dedede bg=#232323
+style 88 14 29 fg=#a3e09f bg=#232323
+style 88 29 36 fg=#dedede bg=#232323
+style 88 36 37 fg=#a3e09f bg=#232323
+style 88 37 40 fg=#dedede bg=#232323
+text 89 "│    });"
 style 89 0 2 fg=#9d9d9d bg=#131313
-style 89 2 13 fg=#dedede bg=#232323
-style 89 13 16 fg=#bcc4e0 bg=#232323
-style 89 16 24 fg=#dedede bg=#232323
-style 89 24 29 fg=#bcc4e0 bg=#232323
-style 89 29 30 fg=#dedede bg=#232323
-style 89 30 34 fg=#a3e09f bg=#232323
-style 89 34 36 fg=#dedede bg=#232323
-style 89 36 39 fg=#bcc4e0 bg=#232323
-style 89 39 40 fg=#dedede bg=#232323
-text 90 "│    ));"
+style 89 2 40 fg=#dedede bg=#232323
+text 90 "│    console.log(output.split(\"\\n\").pop("
 style 90 0 2 fg=#9d9d9d bg=#131313
-style 90 2 40 fg=#dedede bg=#232323
-text 91 "│  }"
+style 90 2 13 fg=#dedede bg=#232323
+style 90 13 16 fg=#bcc4e0 bg=#232323
+style 90 16 24 fg=#dedede bg=#232323
+style 90 24 29 fg=#bcc4e0 bg=#232323
+style 90 29 30 fg=#dedede bg=#232323
+style 90 30 34 fg=#a3e09f bg=#232323
+style 90 34 36 fg=#dedede bg=#232323
+style 90 36 39 fg=#bcc4e0 bg=#232323
+style 90 39 40 fg=#dedede bg=#232323
+text 91 "│    ));"
 style 91 0 2 fg=#9d9d9d bg=#131313
 style 91 2 40 fg=#dedede bg=#232323
-text 92 "│ Listed 1 folder and ran 1 command"
-style 92 0 35 fg=#9d9d9d bg=#131313
-style 92 35 40 fg=#dedede bg=#131313
-text 93 ""
-style 93 0 40 fg=#dedede bg=#131313
+text 92 "│  }"
+style 92 0 2 fg=#9d9d9d bg=#131313
+style 92 2 40 fg=#dedede bg=#232323
+text 93 "│ Listed 1 folder and ran 1 command"
+style 93 0 35 fg=#9d9d9d bg=#131313
+style 93 35 40 fg=#dedede bg=#131313
 text 94 ""
 style 94 0 40 fg=#dedede bg=#131313
 text 95 ""
