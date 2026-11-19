@@ -298,9 +298,9 @@ pub struct Act {
     pub calls: Option<Calls>,
 }
 
-/// The calls a code run's code made (`run_code`), for its rows: the count
-/// and the call that runs on its Quiet row, what they did and those that
-/// failed when it's open, and each call's Full line in Full.
+/// The calls a code run's code made (`run_code`), for its rows. Its Quiet
+/// row counts them and names the one that runs, open it says what they did
+/// and which failed, and Full has each call's line.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, serde(deny_unknown_fields))]
 pub struct Calls {

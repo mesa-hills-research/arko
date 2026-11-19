@@ -4249,7 +4249,7 @@ struct Look<'a> {
     calls: Option<&'a Calls>,
 }
 
-/// What a code run's calls did, after its code in its open Quiet row: one
+/// What a code run's calls did, after its code in its open Quiet row, one
 /// muted line of what those that went well did, then a line with ✗ at its
 /// right for each that failed or was refused.
 fn run_quiet_lines(calls: &Calls, theme: &Theme, width: usize) -> Vec<Wrapped> {

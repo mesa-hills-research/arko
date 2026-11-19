@@ -1304,8 +1304,8 @@ fn upper_first(text: &str) -> String {
     }
 }
 
-/// What the row of a code run says: what its code is for, and while it
-/// runs how many calls the code made and the one that runs. A stop leaves
+/// What the row of a code run says, which is what its code is for, and
+/// while it runs how many calls the code made and the one that runs. A stop leaves
 /// it in the past tense, since what the code did stands.
 fn code_run(member: &Member, Phrases { doing, done, .. }: Phrases) -> Words {
     let calls = member.act.calls.as_ref();
