@@ -4468,10 +4468,15 @@ fn quiet_room(words: &quiet::Words, width: usize, clock: Option<&str>) -> usize 
 }
 
 /// Whether a Quiet row's line at `width` cuts its words, so the row opens to
-/// them whole. (Not counting how long it has run, so a row doesn't come to
-/// open as that grows.)
+/// them whole. (Not counting how long it has run or how it runs, such as a
+/// code run's count of calls and the call that runs, so a row doesn't come
+/// to open, nor its words whole come into it, as those change.)
 fn quiet_cut(words: &quiet::Words, width: usize) -> bool {
-    text_width(&rendered(&words.text)) > quiet_room(words, width, None)
+    let steady = quiet::Words {
+        live: Vec::new(),
+        ..words.clone()
+    };
+    text_width(&rendered(&words.text)) > quiet_room(&steady, width, None)
 }
 
 /// A Quiet row's line, one line at any width. Its marker (▸, ▾ while `fold`
@@ -5970,6 +5975,36 @@ mod tests {
                 "{view:?}: it closes again"
             );
         }
+    }
+
+    /// Whether a Quiet row shows its words whole inside it goes by its words
+    /// and the width alone. A code run's count of calls and the call that
+    /// runs take room on its line as they come and cut its words there, and
+    /// the words whole don't come into the open row above its code.
+    #[test]
+    fn how_a_row_runs_leaves_its_words_whole_out_of_it() {
+        let words = quiet::Words {
+            text: "Running code to rename the setting in every crate".into(),
+            running: true,
+            ..quiet::Words::default()
+        };
+        let width = MARGIN + text_width(&words.text) + 4;
+        let live = quiet::Words {
+            live: vec!["2 tool calls".into(), "reading src/main.rs".into()],
+            ..words.clone()
+        };
+        let line = |words: &quiet::Words| {
+            quiet_line(words, Some(true), &Theme::terminal(), width, None)
+                .iter()
+                .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+                .collect::<String>()
+        };
+        assert!(line(&live).contains("2 tool calls"), "{}", line(&live));
+        assert!(!line(&live).contains("every crate"), "its line cuts them");
+        assert!(!quiet_cut(&words, width));
+        assert!(!quiet_cut(&live, width));
+        // (Where the words alone don't fit, they show whole.)
+        assert!(quiet_cut(&live, width - 6));
     }
 
     /// A question card is one quiet line while its questions are open (the
