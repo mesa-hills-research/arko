@@ -281,6 +281,9 @@ impl Page {
             thoughts_open: Opened::new(),
             thoughts_open_quiet: Opened::new(),
         };
+        // The files attached are the page's too, whatever a lock or another
+        // view takes away.
+        crate::attach::own_chips();
         PAGE.with(|cell| cell.set(Some(page)));
         page
     }

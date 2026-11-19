@@ -85,20 +85,20 @@ thread_local! {
     static AWAKE: RefCell<Option<wasm_bindgen::JsValue>> = const { RefCell::new(None) };
     /// The request each chip's upload makes now, by chip.
     static ATTEMPTS: RefCell<HashMap<u64, Attempt>> = RefCell::new(HashMap::new());
-    /// What owns the chips' signals, the message box's, which lasts as long
-    /// as the page.
+    /// What owns the chips' signals, the page's.
     static OWNER: RefCell<Option<Owner>> = const { RefCell::new(None) };
 }
 
-/// Makes the chips' signals the message box's from now on. Signals made
-/// while a file is picked would otherwise belong to the Attach button,
-/// which a worker's view takes away, and they'd go with it.
+/// Makes the chips' signals the current owner's from now on, the page's,
+/// as the page's uploads read them. Signals made while a file is picked
+/// would otherwise belong to the Attach button, which a worker's view takes
+/// away, and those of the message box go when a lock takes it away.
 pub fn own_chips() {
     OWNER.with(|owner| *owner.borrow_mut() = Owner::current());
 }
 
-/// A chip's signals for `state` and `id`, and its feed, owned by the
-/// message box ([`own_chips`]).
+/// A chip's signals for `state` and `id`, and its feed, owned by the page
+/// ([`own_chips`]).
 fn chip_signals(
     state: Upload,
     id: Option<String>,
@@ -1002,5 +1002,33 @@ mod tests {
             None
         );
         assert_eq!(ready(&[chip(Upload::Failed, Some("u1"))]), None);
+    }
+
+    /// A lock takes the message box away while a file uploads, and the
+    /// upload, which goes on, still reads its chip, which is the page's.
+    #[test]
+    fn a_lock_during_an_upload_leaves_its_chip() {
+        let app = Owner::new();
+        app.with(|| {
+            let page = crate::testing::page();
+            let message_box = Owner::new();
+            let chip = message_box.with(|| {
+                let (state, id, feed) = chip_signals(Upload::Sending(40), Some("u1".into()), None);
+                Chip {
+                    key: 1,
+                    name: "a.png".into(),
+                    bytes: 1,
+                    preview: None,
+                    feed,
+                    state,
+                    id,
+                }
+            });
+            page.attached.set(vec![chip.clone()]);
+            drop(message_box);
+            assert!(still_attached(&chip) && this_feeds(&chip));
+            assert_eq!(chip.id.get_untracked().as_deref(), Some("u1"));
+            assert_eq!(next_waiting(), None);
+        });
     }
 }

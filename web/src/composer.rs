@@ -203,7 +203,6 @@ pub fn Composer() -> impl IntoView {
     });
     // The files attached, kept across a reload of the tab. Another feed's
     // uploads are no use, and a page shown again goes on with its uploads.
-    crate::attach::own_chips();
     crate::attach::restore();
     let attached = page.attached;
     // Whether an approval answer takes the box's words, kept here so a text
